@@ -21,6 +21,8 @@ export function useChatWidthLayout(
   navigationLocked: RefObject<boolean>,
 ) {
   const [contentWidth, setContentWidth] = useState(704)
+  // Restoration must use this element's measured layout, not the startup estimate.
+  const [measuredContent, setMeasuredContent] = useState<HTMLElement | null>(null)
   const widthRef = useRef(contentWidth)
   const anchorRef = useRef<ReadingAnchor | null>(null)
   const cancelAnchor = useCallback(() => { anchorRef.current = null }, [])
@@ -54,6 +56,7 @@ export function useChatWidthLayout(
     }
     const style = getComputedStyle(content)
     updateWidth(content.clientWidth - parseFloat(style.paddingLeft || '0') - parseFloat(style.paddingRight || '0'))
+    setMeasuredContent(content)
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width
@@ -108,5 +111,5 @@ export function useChatWidthLayout(
     if (modelCommitted) cancelAnchor()
   }, [cancelAnchor, content, follow, navigationLocked, viewport])
 
-  return { contentWidth, anchorRef, prepareWidthChange, restoreAnchor }
+  return { contentWidth, widthReady: content !== null && measuredContent === content, anchorRef, prepareWidthChange, restoreAnchor }
 }

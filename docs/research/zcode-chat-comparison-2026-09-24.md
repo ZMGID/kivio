@@ -4,21 +4,21 @@
 
 参考：ZCode 3.14.0，提交 `328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f`；本地源码位于 `E:\ZM database\ZCode-reference`。Kivio 对照基于本次工作区源码。工程规则仍以[统一工程规范](../engineering-standards.md)为准，既有需求与验收见[渲染性能 PRD](../prd/chat-rendering-performance-prd.md)。
 
-**证据口径：第 2 节是此前的 Kivio 合成场景修复与测量；第 3～8 节保留实施前的源码对照和建议。后续实现已推进，当前交付与验证以第 9 节为准。没有两款应用的同场景性能比较，也没有读取用户对话。**
+**证据口径：第 2 节是此前的 Kivio 合成场景修复与测量；第 3～8 节保留实施前的源码对照和建议。当前交付见第 9 节，针对 `3e102b3e` 的复核见第 10 节，其阅读位置缺陷的后续修复见第 11 节。没有两款应用的同场景性能比较，也没有读取用户对话。**
 
 ## 1. 结论与状态
 
 | 事项 | 结论 | 当前状态 |
 | --- | --- | --- |
 | 快速滚动错位、空白与重代码块负载 | 同步提交、像素预算 overscan、真实代码占位已落地 | 合成场景已验证，见第 2 节 |
-| 回切对话重复读取 | 借鉴会话显示状态短期保温，需容量和失效规则 | 源码事实，收益待测 |
-| 返回原阅读位置 | 保存消息 key、内容版本与相对偏移 | 已实现，含迟到高度/历史补全回归 |
+| 回切对话重复读取 | 已有 30 秒、4 项、24 MiB 快照保温与 revision 校验 | 已实现，真实回切收益待测 |
+| 返回原阅读位置 | 已修正卸载采样时机，并等待真实宽度后恢复 | 浏览器回切通过，误差 0～2px，见第 11 节 |
 | 选择/粘贴附件期间切会话 | 异步结果绑定发起草稿，显式迁移新会话 | 已实现，延迟回归通过 |
-| 图片重复读取与解码 | 收拢预览生命周期，列表优先缩略图 | 源码事实，成本待测 |
+| 图片重复读取与解码 | 已有在途复用、有界缓存、artifact 列表缩略图与按需原图 | 已实现，真实附件成本待测 |
 | 原生滚动条被重新钉底 | 无明确手势时，跟随纠正规则可能与用户定位冲突 | 待 Tauri 实机验证 |
 | 整套 UI 替换 | 协议、宿主和产品语义耦合大，按能力适配更合适 | 不建议整包替换 |
 
-阅读入口：[已完成修复与实测](#2-已完成的滚动修复与实测) · [会话加载](#3-会话加载切换与恢复) · [滚动与渲染](#4-滚动与渲染几何) · [附件](#5-附件与图片生命周期) · [实施清单](#6-移植清单与实施顺序) · [许可](#7-依赖与许可) · [源码范围](#8-源码覆盖与验证边界)。
+阅读入口：[本次复核](#10-实施后复核3e102b3e) · [已完成修复与实测](#2-已完成的滚动修复与实测) · [会话加载](#3-会话加载切换与恢复) · [滚动与渲染](#4-滚动与渲染几何) · [附件](#5-附件与图片生命周期) · [实施清单](#6-移植清单与实施顺序) · [许可](#7-依赖与许可) · [源码范围](#8-源码覆盖与验证边界)。
 
 ## 2. 已完成的滚动修复与实测
 
@@ -299,3 +299,116 @@ ZCode 的阶段计时字段值得借鉴：renderer prepare、host prepare、prov
 本轮补上了输入历史按需读取、已有会话搜索未加载消息、A→B→A 分页重试、实时过程读者不被裁掉，以及不同发布批次下最终状态等价验证。原先打开会话即全量补读的后台路径已删除。后端仍完整读取 JSON 后裁切，不宣称已做磁盘分页。
 
 [本轮完整验收记录与测量](../perf/chat-acceptance-2026-09-24.md)包含测试命令、F1～F4 浏览器结果和未完成项。代码和浏览器回归已验证；F3 长任务、Tauri 原生窗口、真实附件/多窗口和旧版本同机性能对照尚未完成验收，因此整份性能 PRD 仍不能标为全部达标。
+
+## 10. 实施后复核（3e102b3e）
+
+2026-09-24 复核 `54b43bc4 → 3e102b3e` 的五个提交，共 52 个变更文件。ZCode 仍对照本文固定提交。此次为代码审查与验证，产品源码未修改，范围外的工作区修改不在本次结论内。
+
+### 10.1 已确认问题：离开会话时保存了失效的滚动位置
+
+**P1 · 功能正确性 · 审查时复现，后续已修复（第 11 节）。** 审查版本的 [MessageList.tsx](../../src/chat/MessageList.tsx) 在普通 `useEffect` 的卸载清理中调用 `saveMeasurementSnapshotRef.current()`。真实浏览器中，此时视口已从文档移除，读取到的 `scrollTop` 为 0；虚拟行仍可能保留之前的测量，因此还会组合出错误的大负数 `rowOffset`。A → B → A 后，阅读位置恢复到顶部，直接破坏本批新增的阅读位置记忆。
+
+在现有 `chat-performance.html`、真实 MessageList、Edge、合成 F1/F2 上复现：
+
+| 阶段 | 观察值 |
+| --- | --- |
+| F1 滚到历史中部并解除跟随 | `scrollTop = 8451`，`scrollHeight = 17629` |
+| 切到 F2，F1 DOM 已卸载 | 原视口 `scrollTop = 0` |
+| 读取 F1 阅读位置缓存 | `following = false`，`scrollTop = 0`，`rowOffset = -7868` |
+| 切回 F1 并等待布局 | `scrollTop = 0` |
+
+现有 `MessageList.scrolling.test.tsx` 的恢复测试直接预置阅读位置，没有经过真实 DOM 卸载后的保存过程，因此此次 254 项回归全部通过仍会漏掉此缺陷。
+
+**ZCode 可借鉴的具体实现：** [ConversationTimeline.tsx](https://github.com/zai-org/ZCode/blob/328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f/packages/ui/src/v4/ConversationTimeline.tsx#L1421-L1429) 用 layout cleanup 在 DOM 尚有效时保存；同实例切 scope 则在 DOM mutation 前采样，同时保留最近一次有效状态。Kivio 应把有效采样接入现有 scroll owner，并避免卸载后的零值覆盖有效记录。
+
+浏览器内临时拦截模块响应，仅把这一处 cleanup 改成 `useLayoutEffect` 后，保存值恢复为 `8479`、`rowOffset = 18`，回切为 `8500`，不再跳到顶部。该实验没有写入产品源码，也不代表完整修复验收：仍有 21px 差异，后续应检查测高完成后的同一行相对位置，并覆盖不同宽度、迟到图片和用户打断恢复。
+
+复现步骤：启动 `npm run dev:ui`，打开 `/scripts/fixtures/chat-performance.html`；在浏览器中运行以下代码，再读取 `window.reviewResult`。必须使用原始模块响应，不带上述实验拦截。
+
+```js
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+window.chatAcceptance.show('F1');
+await wait(600);
+const viewport = document.querySelector('.chat-scroll-viewport');
+viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -500, bubbles: true }));
+viewport.scrollTop = Math.floor((viewport.scrollHeight - viewport.clientHeight) / 2);
+viewport.dispatchEvent(new Event('scroll'));
+await wait(500);
+const before = viewport.scrollTop;
+window.chatAcceptance.show('F2');
+await wait(100);
+const { recallChatReadingPosition } = await import('/src/chat/chatReadingPosition.ts');
+const saved = recallChatReadingPosition('F1');
+window.chatAcceptance.show('F1');
+await wait(800);
+window.reviewResult = {
+  before, saved,
+  restored: document.querySelector('.chat-scroll-viewport').scrollTop,
+};
+```
+
+### 10.2 与 ZCode 的当前差距
+
+| 能力 | 本次 Kivio 实现与判断 | 接下来值得借鉴的部分 |
+| --- | --- | --- |
+| 首屏和补页 | 已有尾部 60 条、512 KiB 软预算，兼顾多答组；轻量目录避免为目录加载全文。分页核对 revision/total/end，并隔离失效导航。这批方向正确 | 两边冷打开都可能完整处理后端历史；下一步按阶段测量读盘、准备、IPC、commit、遮罩结束，不能把窗口接口当作磁盘分页 |
+| 按需加载 | 已删除打开即全量补读；补页有去重与重试。未加载目标的搜索/目录跳转、输入历史 ↑ 仍可触发全量读取 | 显式补页与全文目标读取是当前取舍；若目标跳转测得昂贵，再优化定位窗口。ZCode 宽屏目录也可能拉全量，不照搬其自动全拉行为 |
+| 短期回切 | 30 秒、4 项、24 MiB 快照缓存，命中前核对 repository revision；完整读取不会误用部分窗口 | ZCode 保温的是继续接收事件的共享 store。Kivio 当前快照方案更小，先测命中率和回切耗时，无需为一致的时长引入第二套状态 store |
+| 阅读位置 | key、内容版本、相对偏移及历史前插锚点均已实现；保存时机有上述已复现缺陷 | 优先补 DOM mutation 前采样、待测高恢复、用户输入撤销。保留 Kivio 现有布局/内容版本测量缓存 |
+| 大单轮过程 | 历史过程跨组先显示最近 20 项，每次再加 20；实时已展示过程保持，完成后重新展开才重置预算。最终正文和交付产物保留 | 当前限制的是挂载过程卡数量，完整单条消息与派生数据仍可能很大；先测真实大单轮，再决定是否需要更细的显示数据边界 |
+| 附件归属 | 文件选择、粘贴、拖入结果绑定发起草稿；新建会话显式迁移，迟到结果/移除有回归；Excel 文本优先已落地 | 继续验证原生剪贴板、文件选择器和跨窗口生命周期，不能用 mock 成功替代桌面验收 |
+| 图片 | 已有在途请求合并；稳定已发送路径可短期缓存，绝对路径不长期缓存。artifact 列表用缩略图；查看器和右键导出按需原图，失败不会默默导出缩略图 | 用户图片附件仍可能完整 data URL 读取；尚无分块传输或消费者取消读取。应先测重复读取、编码、解码和峰值内存，再决定借鉴 ZCode 的分块/取消边界 |
+| 发送和流式结果 | 用户消息 ID 从乐观占位贯穿后端保存，去掉按相同文本数量猜测；不同刷新批次的终态等价已有回归 | 保留现有运行协议，继续以删除、替换、取消和终态边界约束合并，不复制 ZCode 专有协议类型 |
+
+建议下一批顺序：先修复并补浏览器回切保存回归；再完成 Tauri 冷打开、缓存回切、历史目标跳转、真实图片的分阶段测量；根据测量决定是否投入后端读取缓存、目标窗口或分块媒体。当前 F3 长任务与压力负载长帧仍在，不应宣称滚动和加载整体已经验收完成。
+
+### 10.3 本次检查清单与验证边界
+
+OCR delegate preview 列出 31 个可审查文件；以下均已检查变更及相关调用，共 **31/31（100%），跳过 0**。另外 21 个被工具规则排除的路径为 18 个前端测试、2 篇文档和 1 个 HTML fixture；测试已运行，文档与 fixture 用作验收证据，不把工具过滤误报为代码审查遗漏。
+
+| 分组 | 已检查路径 |
+| --- | --- |
+| 验收（2） | `docs/perf/chat-acceptance-2026-09-24.json`；`scripts/probe-chat-acceptance.playwright.js` |
+| 后端（7） | `src-tauri/src/chat/commands/{attachments,catalog,interaction,send,tests}.rs`；`src-tauri/src/chat/repository.rs`；`src-tauri/src/lib.rs` |
+| 接口（3） | `src/api/tauri.ts`；`src/chat/{api,types}.ts` |
+| 页面与渲染（8） | `src/chat/{Chat,ChatImageContextMenu,ChatImageViewer,ChatInlineImage,ChatMarkdown,InputBar,MessageBubble,MessageList}.tsx` |
+| 状态与资源（9） | `src/chat/{attachmentPreview,chatExecutionOwner,chatNavigationController,chatReadingPosition,chatSendController,composerDraft,conversationHistoryWindow,conversationWarmCache,optimisticUserPresentation}.ts` |
+| 弹窗与跟随（2） | `src/chat/popout/usePopoutSession.ts`；`src/chat/scroll/useScrollFollow.ts` |
+
+本次实际重跑：18 个变更测试文件，254 项全部通过，限制为两个 worker。命令：
+
+```powershell
+$reviewTests = @(git diff --name-only 54b43bc4..3e102b3e -- 'src/**/*.test.ts' 'src/**/*.test.tsx')
+npx vitest run @reviewTests --maxWorkers 2 --minWorkers 1
+```
+
+额外进行了上述 Edge 回切复现与浏览器内单点对照实验。没有重新运行全量 2426 项、Rust 测试、构建和原生桌面验收；第 9 节所链接记录中的成绩属于前次实施验收。现有浏览器验收脚本测量的是同步 UI 提交，不能当作冷读/IPC/可交互的完整切换耗时。
+
+## 11. 阅读位置修复与回归（2026-09-24）
+
+在用户确认修复后，修改现有 MessageList 和宽度测量 hook，未增加新的滚动负责人：
+
+1. **在 DOM 移除前保存。** 把保存阅读位置和测量快照的卸载清理改为 `useLayoutEffect`，避免 detached DOM 的零值污染记录。
+2. **在真实宽度就绪后恢复。** `useChatWidthLayout` 暴露当前内容元素是否完成首次宽度测量；MessageList 等该状态就绪再恢复一次。仅改 cleanup 后，文本场景仍偏移约 30px，代码场景约 282px；定位发现恢复使用的是初始 `704px` 布局，随后切成实测 `864px` 布局。这是第 10.1 节小幅偏移的同类原因。后续宽度变化仍由已有宽度锚点处理。
+
+新增 [浏览器回归脚本](../../scripts/probe-chat-reading-position.playwright.js)，复用现有合成 fixture。先在原实现上观察到保存为 0、目标行消失的失败，再在修复后通过：
+
+| 场景 | 离开 / 保存 scrollTop | 回切后同一行相对视口偏差 |
+| --- | --- | ---: |
+| F1 文本，同宽回切 | 8371 / 8371 | 2px |
+| F2 代码，同宽回切 | 17636 / 17636 | 0px |
+| F1 文本，窗口 1280 → 760px 后回切 | 8350 / 8350 | 0px |
+| F2 代码，窗口 1280 → 760px 后回切 | 17635 / 17635 | 0px |
+
+脚本另外断言恢复后的新滚动不会被拉回、离开时在底部的会话回切仍贴底。缩窄宽度低于消息列最大宽度，确实发生列宽变化。测量使用 Edge 和真实组件，无模型请求、无用户对话。
+
+验证结果：5 个相关测试文件、63 项通过；`npx tsc --noEmit`、两个修改源码文件的 ESLint、`npm run architecture:check` 通过。既有 `probe-chat-scroll.playwright.js` 的普通/压力负载也通过，反向跳帧和空白帧均为 0。本次只修复阅读位置，未做 Tauri 原生窗口、真实附件和完整冷加载性能验收。
+
+复现回归入口（先启动 `npm run dev:ui`，测试期间避免其他编辑触发 Vite 整页刷新）：
+
+```powershell
+playwright-cli -s=chat-reading open http://127.0.0.1:5713/scripts/fixtures/chat-performance.html --browser=msedge
+playwright-cli -s=chat-reading run-code --filename=scripts/probe-chat-reading-position.playwright.js
+playwright-cli -s=chat-reading eval "window.chatReadingPositionReport"
+playwright-cli -s=chat-reading close
+```

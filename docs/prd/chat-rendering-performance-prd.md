@@ -10,6 +10,8 @@
 | 关联文档 | [Chat 综合优化 PRD](./chat-optimization-prd.md)、[Chat 架构](../CHAT_ARCHITECTURE.md) |
 | 参考实现 | `LiveAgent`、`desktop-cc-gui` |
 
+后续源码对照、2026-09-24 滚动修复实测及尚未实施的候选，统一见 [Kivio 对话体验改进：ZCode 对照与实施清单](../research/zcode-chat-comparison-2026-09-24.md)。本 PRD 保留既有需求与验收职责。
+
 ---
 
 ## 1. 结论摘要

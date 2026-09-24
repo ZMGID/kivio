@@ -550,7 +550,7 @@ function MessageListBase({
     trackKeys: true,
     growthSignal: streamGrowthSignal,
   })
-  const { contentWidth, anchorRef: widthAnchorRef, prepareWidthChange, restoreAnchor: restoreWidthAnchor } = useChatWidthLayout(
+  const { contentWidth, widthReady, anchorRef: widthAnchorRef, prepareWidthChange, restoreAnchor: restoreWidthAnchor } = useChatWidthLayout(
     contentEl, viewportEl, followHandle, navigationLockRef,
   )
 
@@ -1053,7 +1053,9 @@ function MessageListBase({
       virtualizer.takeSnapshot(),
     )
   }
-  useEffect(() => () => saveMeasurementSnapshotRef.current(), [])
+  // Passive unmount cleanup runs after the viewport is detached, when browsers
+  // report scrollTop = 0. Capture while the old DOM still has valid geometry.
+  useLayoutEffect(() => () => saveMeasurementSnapshotRef.current(), [])
 
   const pageAnchorRef = useRef<{ key: string; revision: string; offset: number } | null>(null)
   const historyNavigationRef = useRef<AbortController | null>(null)
@@ -1992,7 +1994,7 @@ function MessageListBase({
   // Switching back restores a stable row plus its offset. Search/navigation
   // has higher priority, and a missing row falls back to the normal bottom.
   useLayoutEffect(() => {
-    if (!viewportEl) return
+    if (!viewportEl || !widthReady) return
     const saved = rememberedReadingPosition
     if (saved && !saved.following && !focusMessageId) {
       const index = historyItems.findIndex((item) => item.key === saved.rowKey)
@@ -2013,10 +2015,11 @@ function MessageListBase({
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
-  // Only the initial viewport binding owns restoration. Further row/width
-  // changes are handled by the existing virtualizer and width anchor.
+  // Wait for the measured width: the initial 704px estimate can put the same
+  // row at a different offset even on a warm return. Subsequent row/width
+  // changes remain owned by the virtualizer and width anchor.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, viewportEl])
+  }, [conversationId, viewportEl, widthReady])
 
   useLayoutEffect(() => {
     if (!followHandle.isFollowing()) capturePageAnchor()
