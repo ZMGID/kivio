@@ -722,7 +722,7 @@ function renderProcessSegments({
 /**
  * 一轮过程共用一个 Working 开关；产物前后的过程按时间顺序分别展示。
  * - 整轮生成中默认展开，后续过程不再被搬到已交付产物上方。
- * - 实时展示过思考预览的过程结束后保留；历史首挂仍默认收起。
+ * - 纯思考预览结束后保留；含工具的过程结束后收起，历史首挂仍默认收起。
  * - 用户手动点过开关后以用户操作为准。
  * - 折叠态只留 header，不挂组内 ReasoningBlock / ToolCallBlock / 过程旁白。
  */
@@ -869,7 +869,10 @@ function TimelineSegments({
     && segments.some(segment => segment.kind === 'reasoning' && segmentText(segment).trim())) {
     setSawLiveReasoning(true)
   }
-  const defaultOpen = messageStreaming || (previewEnabled && sawLiveReasoning)
+  // Keeping a one-line thought must not keep an entire tool run expanded.
+  // Include legacy tool records whose timeline segments have not been stored.
+  const hasToolProcess = toolCalls.length > 0 || segments.some(segment => segment.kind === 'tool')
+  const defaultOpen = messageStreaming || (previewEnabled && sawLiveReasoning && !hasToolProcess)
   const prepared = useMemo(() => {
     const ordered = segments
     const toolCallById = new Map<string, ToolCallRecord>()
