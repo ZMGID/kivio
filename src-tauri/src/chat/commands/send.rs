@@ -76,7 +76,19 @@ pub(crate) async fn chat_send_message(
     text_attachments: Option<Vec<TextAttachmentInput>>,
     active_skill_id: Option<String>,
     plan_message_id: Option<String>,
+    user_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let user_message_id = match user_message_id {
+        Some(id)
+            if id
+                .strip_prefix("msg_")
+                .is_some_and(|value| Uuid::parse_str(value).is_ok()) =>
+        {
+            id
+        }
+        Some(_) => return Err("Invalid user message id".into()),
+        None => format!("msg_{}", Uuid::new_v4()),
+    };
     // 内存文本附件（粘贴长文本虚拟 txt）：前端总传；缺省为空数组以兼容旧调用。
     let mut text_attachments = text_attachments.unwrap_or_default();
     // Busy 拒绝：该会话仍有任意一条 run 在跑（含多模型并发组）时不允许再发新消息。
@@ -92,6 +104,13 @@ pub(crate) async fn chat_send_message(
     };
 
     let mut conversation = load_conversation(&app, &conversation_id)?;
+    if conversation
+        .messages
+        .iter()
+        .any(|message| message.id == user_message_id)
+    {
+        return Err("User message already exists".into());
+    }
 
     let plan_message_id = plan_message_id.or_else(|| {
         (conversation.agent_plan_state.document.is_some()
@@ -203,7 +222,7 @@ pub(crate) async fn chat_send_message(
 
     // 创建用户消息
     let user_message = ChatMessage {
-        id: format!("msg_{}", Uuid::new_v4()),
+        id: user_message_id,
         role: "user".to_string(),
         content: content.clone(),
         attachments: message_attachments,

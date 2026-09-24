@@ -122,7 +122,7 @@ export function createChatSendController({
         const startedAt = now()
         lease = executionOwner.begin({
           conversationId: conversation.id, kind: 'send', startedAt, claim,
-          optimistic: { content, attachments, stored: conversation.messages },
+          optimistic: { content, attachments },
           group: fanOut ? {
             groupId: `grp-local-${startedAt}`,
             arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),

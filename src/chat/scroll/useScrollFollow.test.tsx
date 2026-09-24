@@ -20,6 +20,7 @@ function Harness() {
       <output data-testid="show-jump-button">{String(showJumpButton)}</output>
       <button type="button" onClick={handle.jumpToBottom}>jump</button>
       <button type="button" onClick={handle.releaseFollow}>release</button>
+      <button type="button" onClick={() => handle.restoreReadingPosition(200)}>restore</button>
       <button type="button" onClick={() => handle.scrollToOffset(240)}>scroll-offset</button>
       <button type="button" onClick={() => handle.scrollToOffset(240, { adjustments: 12 })}>scroll-adjusted</button>
       <button type="button" onClick={() => handle.scrollToOffset(240, { behavior: 'smooth' })}>scroll-smooth</button>
@@ -84,6 +85,15 @@ describe('useScrollFollow scroll source timing', () => {
     const viewport = mount()
 
     // LiveAgent: bare scroll while following re-pins; detach needs wheel/touch/keys.
+    fireEvent.wheel(viewport, { deltaY: -40 })
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+  })
+
+  it('restores a detached reader and lets a new wheel gesture keep control', () => {
+    const viewport = mount()
+    fireEvent.click(screen.getByText('restore'))
+    expect(viewport.scrollTop).toBe(200)
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
     fireEvent.wheel(viewport, { deltaY: -40 })
     expect(screen.getByTestId('following')).toHaveTextContent('false')
   })

@@ -19,6 +19,7 @@ interface NavigationPorts {
   currentConversationId: () => string | null
   listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
+  readConversationWindow?: (conversationId: string) => Promise<Conversation>
   isConversationInFlight: (conversationId: string) => boolean
   prepareNewConversation: () => void
   clearEmptyChat: () => void
@@ -244,7 +245,9 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
     ports.prepareSelection(hint?.focusMessageId ?? null, true)
     try {
-      const conversation = await ports.readConversation(conversationId)
+      const conversation = await ((hint?.focusMessageId || ports.isConversationInFlight(conversationId))
+        ? ports.readConversation(conversationId)
+        : (ports.readConversationWindow?.(conversationId) ?? ports.readConversation(conversationId)))
       if (!isCurrentConversationTransition(requestId, conversationId)) return
       ports.showConversation(conversation, { renderRequestId: requestId, selection: true })
       if (conversation.messages.length === 0) {

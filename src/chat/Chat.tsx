@@ -9,6 +9,9 @@ import { useSettingsExit } from './hooks/useSettingsExit'
 import { useSidebarLayout } from './hooks/useSidebarLayout'
 import { useAssistantActions } from './hooks/useAssistantActions'
 import { createChatNavigationController } from './chatNavigationController'
+import { createConversationWarmCache } from './conversationWarmCache'
+import { EMPTY_HISTORY_DIRECTORY, isPartialConversation, prependConversationHistoryPage } from './conversationHistoryWindow'
+import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
@@ -134,7 +137,7 @@ import {
 import {
   resetGroups,
 } from './groupStreamingStore'
-import { onChatPerfProfiler, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
+import { onChatPerfProfiler, recordChatPerfSample, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
 import { GoalCard } from './GoalCard'
@@ -356,6 +359,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!initialViewIsSettingsRef.current) emitContentReady()
   }, [emitContentReady])
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
+  const historyPageInFlightRef = useRef(new Set<string>())
+  const [warmConversationCache] = useState(createConversationWarmCache)
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
   /** 全局搜索跳转目标；MessageList 完成滚动后清空。 */
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
@@ -555,6 +560,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // B：彻底把一个会话从所有本地乐观/in-flight/快照状态中剔除（ghost 清理）。
   // 不触碰 currentConversation/route，由调用方按场景决定。
   const dropConversationLocally = useCallback((conversationId: string) => {
+    warmConversationCache.forget(conversationId)
+    forgetChatReadingPosition(conversationId)
     delete streamErrorsRef.current[conversationId]
     interactionInbox.observe({ kind: 'drop', conversationId })
     previewOwner.drop(conversationId)
@@ -563,7 +570,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     queueCommands.clearConversation(conversationId)
     setOptimisticSidebarConversations((items) => items.filter((item) => item.id !== conversationId))
     syncGeneratingConversationIds()
-  }, [executionOwner, interactionInbox, previewOwner, queueCommands, syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox, previewOwner, queueCommands, syncGeneratingConversationIds, warmConversationCache])
 
   const setStreamErrorForConversation = useCallback((conversationId: string, error: string) => {
     if (error) {
@@ -607,8 +614,64 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
     }
     setCurrentConversation((previous) => conversation && previous?.id === conversation.id
-      && conversation.revision < previous.revision ? previous : conversation)
+      && (conversation.revision < previous.revision
+        || (conversation.revision === previous.revision
+          && isPartialConversation(conversation) && !isPartialConversation(previous)))
+      ? previous : conversation)
   }, [])
+
+  const partialConversation = isPartialConversation(currentConversation)
+  const historyConversationId = currentConversation?.id
+  const historyConversationRevision = currentConversation?.revision
+  useEffect(() => {
+    if (!partialConversation || !historyConversationId) return
+    const id = historyConversationId
+    let cancelled = false
+    const started = performance.now()
+    void chatApi.getConversation(id).then((complete) => {
+      recordChatPerfSample({
+        name: 'conversation-background-hydrate', durationMs: performance.now() - started,
+        mountedRows: 0, domNodes: 0, detail: `${id}:messages=${complete.messages.length}`,
+      })
+      if (!cancelled && currentConversationIdRef.current === id) applyConversation(complete)
+    }).catch((error) => {
+      if (!cancelled) console.error('Failed to hydrate conversation history:', error)
+    })
+    return () => { cancelled = true }
+  }, [applyConversation, historyConversationId, historyConversationRevision, partialConversation])
+
+  const loadOlderHistory = useCallback(async () => {
+    const current = currentConversationRef.current
+    if (!current || !isPartialConversation(current) || historyPageInFlightRef.current.has(current.id)) return
+    historyPageInFlightRef.current.add(current.id)
+    try {
+      const page = await chatApi.getConversationPage(current.id, current.history_start!)
+      if (currentConversationIdRef.current !== current.id) return
+      const latest = currentConversationRef.current
+      if (!latest || latest.id !== current.id || !isPartialConversation(latest)) return
+      const merged = prependConversationHistoryPage(latest, page)
+      if (merged) applyConversation(merged)
+      else {
+        const complete = await chatApi.getConversation(current.id)
+        if (currentConversationIdRef.current === current.id) applyConversation(complete)
+      }
+    } catch (error) {
+      console.error('Failed to load older conversation history:', error)
+    } finally {
+      historyPageInFlightRef.current.delete(current.id)
+    }
+  }, [applyConversation])
+
+  const focusHistoryMessage = useCallback(async (conversationId: string, messageId: string) => {
+    try {
+      const complete = await chatApi.getConversation(conversationId)
+      if (currentConversationIdRef.current !== conversationId) return
+      applyConversation(complete)
+      setFocusMessageId(messageId)
+    } catch (error) {
+      console.error('Failed to load historical navigation target:', error)
+    }
+  }, [applyConversation])
 
   const occupyConversationInMain = useCallback((
     conversationId: string,
@@ -641,7 +704,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const applyConversationMeta = useCallback((updated: Conversation) => {
     setCurrentConversation((prev) => {
       if (!prev || prev.id !== updated.id || updated.revision < prev.revision) return prev
-      return { ...updated, messages: prev.messages }
+      return {
+        ...updated,
+        messages: prev.messages,
+        history_start: prev.history_start,
+        history_total: prev.history_total,
+        history_directory: prev.history_directory,
+      }
     })
   }, [])
 
@@ -876,7 +945,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     currentConversation: () => currentConversationRef.current,
     currentConversationId: () => currentConversationIdRef.current,
     listPopouts: popoutOwner.list,
-    readConversation: chatApi.getConversation,
+    readConversation: async (conversationId) => {
+      const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
+        .catch(() => null)
+      return cached ?? chatApi.getConversation(conversationId)
+    },
+    readConversationWindow: async (conversationId) => {
+      const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
+        .catch(() => null)
+      if (cached) return cached
+      const readingPosition = recallChatReadingPosition(conversationId)
+      return readingPosition && !readingPosition.following
+        ? chatApi.getConversation(conversationId)
+        : chatApi.getConversationWindow(conversationId)
+    },
     isConversationInFlight: (conversationId) => executionOwner.snapshot(conversationId).inFlight,
     prepareNewConversation: () => {
       setSelectedProject(null)
@@ -916,6 +998,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     occupyPopout: (conversationId) => occupyConversationInMain(conversationId, currentConversationRef.current),
     prepareSelection: (focusMessageId, fresh) => {
       if (fresh) {
+        const leaving = currentConversationRef.current
+        if (leaving && !isPartialConversation(leaving) && !executionOwner.snapshot(leaving.id).inFlight) warmConversationCache.rememberSoon(leaving)
         setAssistantStreamStatsByMessageId({})
         setHookWarning(null)
       }
@@ -950,7 +1034,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     activeAgentRuntime, activeModel, activeProviderId, applyConversation, clearDisplayedConversation,
     dropConversationLocally, executionOwner, occupyConversationInMain, popoutOwner,
     previewOwner, refreshSidebar, resetComposerDraftContext, resetContext, restoreStreamingPreview,
-    setStreamErrorForConversation,
+    setStreamErrorForConversation, warmConversationCache,
   ])
 
   const openEmbeddedSettingsForPlugins = useCallback(() => {
@@ -2600,6 +2684,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const messageListProps = useMemo<MessageListProps>(() => ({
     conversationId: currentConversation?.id,
     messages: displayMessages,
+    historyStart: currentConversation?.history_start ?? 0,
+    historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
+    onLoadOlder: loadOlderHistory,
+    onFocusHistoryMessage: focusHistoryMessage,
     renderRequestId: conversationRenderRequestId,
     onInitialRender: handleConversationFirstCommit,
     agentPlanState: currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null,
@@ -2637,6 +2725,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     currentConversation,
     conversationRenderRequestId,
     displayMessages,
+    loadOlderHistory,
+    focusHistoryMessage,
     handleConversationFirstCommit,
     handleDeleteMessage,
     handleExecuteAgentPlan,

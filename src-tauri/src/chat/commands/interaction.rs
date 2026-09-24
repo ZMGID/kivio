@@ -117,6 +117,7 @@ pub(crate) async fn chat_execute_agent_plan(
         None,
         None,
         Some(message_id.unwrap_or_default()),
+        None,
     )
     .await
 }

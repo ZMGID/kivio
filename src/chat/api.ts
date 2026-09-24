@@ -3,12 +3,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
 import { estimateTokens } from '../utils/tokens'
 import { isTauriRuntime } from './utils'
+import { recordChatPerfSample } from './chatPerformanceProbe'
+import { historyWindowStart } from './conversationHistoryWindow'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
 import type { ConversationPin } from './conversationPins'
 import type {
   AgentRuntimeConfig,
   ChatAssistant,
   ChatAssistantSnapshot,
+  ChatMessage,
   ChatProject,
   ChatSet,
   Conversation,
@@ -337,6 +340,52 @@ const mockChatApi = {
     return withMockContext(conversation)
   },
 
+  async getConversationWindow(conversationId: string): Promise<Conversation> {
+    const conversation = await mockChatApi.getConversation(conversationId)
+    const total = conversation.messages.length
+    const start = historyWindowStart(conversation.messages, total)
+    const directory: NonNullable<Conversation['history_directory']> = conversation.messages.flatMap((message, index) => message.role === 'user'
+      ? [{ kind: 'turn' as const, id: `turn-${message.id}`, message_id: message.id, message_index: index, title: message.content.slice(0, 120) }]
+      : [])
+    const indexById = new Map(conversation.messages.map((message, index) => [message.id, index]))
+    const context = conversation.context_state ?? conversation.contextState
+    for (const record of context?.compaction_boundaries ?? context?.compactionBoundaries ?? []) {
+      const anchor = record.display_after_message_id ?? record.displayAfterMessageId
+        ?? record.source_until_message_id ?? record.sourceUntilMessageId
+      const index = anchor ? indexById.get(anchor) : undefined
+      if (index === undefined || !anchor) continue
+      directory.push({ kind: 'compaction', id: `compaction-${record.id}`, message_id: anchor,
+        message_index: index, title: '已压缩此前上下文', answer_preview: record.summary_content?.slice(0, 120) })
+    }
+    for (const record of context?.clear_boundaries ?? context?.clearBoundaries ?? []) {
+      const anchor = record.source_until_message_id ?? record.sourceUntilMessageId
+      const index = anchor ? indexById.get(anchor) : undefined
+      if (index === undefined || !anchor) continue
+      directory.push({ kind: 'clear', id: `clear-${record.id}`, message_id: anchor,
+        message_index: index, title: '清空上下文' })
+    }
+    directory.sort((a, b) => a.message_index - b.message_index)
+    return {
+      ...conversation,
+      messages: conversation.messages.slice(start),
+      history_start: start,
+      history_total: total,
+      history_directory: directory,
+    }
+  },
+
+  async getConversationPage(conversationId: string, before: number) {
+    const conversation = await mockChatApi.getConversation(conversationId)
+    const end = Math.min(before, conversation.messages.length)
+    const start = historyWindowStart(conversation.messages, end)
+    return { revision: conversation.revision, start, end, total: conversation.messages.length, messages: conversation.messages.slice(start, end) }
+  },
+
+  async getConversationRevision(conversationId: string): Promise<number | null> {
+    try { return (await mockChatApi.getConversation(conversationId)).revision }
+    catch { return null }
+  },
+
   async createConversation(
     providerId?: string,
     model?: string,
@@ -543,6 +592,7 @@ const mockChatApi = {
     attachments: PendingAttachment[] = [],
     activeSkillId?: string | null,
     planMessageId?: string,
+    userMessageId?: string,
   ): Promise<Conversation> {
     if (planMessageId !== undefined) throw new Error('请在桌面应用中执行计划文档')
     const conversations = loadMockConversations()
@@ -555,7 +605,7 @@ const mockChatApi = {
     conversation.messages = [
       ...conversation.messages,
       {
-        id: `msg_dev_${crypto.randomUUID()}`,
+        id: userMessageId ?? `msg_dev_${crypto.randomUUID()}`,
         role: 'user',
         content,
         attachments: attachments.map((attachment) => ({
@@ -1149,6 +1199,57 @@ export const chatApi = {
     return result.conversation
   },
 
+  async getConversationWindow(conversationId: string): Promise<Conversation> {
+    if (!isTauriRuntime()) return mockChatApi.getConversationWindow(conversationId)
+    const started = performance.now()
+    const result = await invoke<{
+      success: boolean
+      conversation: Conversation
+      history_start: number
+      history_total: number
+      history_directory: NonNullable<Conversation['history_directory']>
+      read_ms: number
+      prepare_ms: number
+    }>('chat_get_conversation_window', { conversationId })
+    if (!result.success) throw new Error('Failed to get conversation window')
+    recordChatPerfSample({
+      name: 'conversation-window-load', durationMs: performance.now() - started,
+      mountedRows: 0, domNodes: 0,
+      detail: `${conversationId}:diskParse=${result.read_ms.toFixed(1)}ms:prepare=${result.prepare_ms.toFixed(1)}ms:transport=${Math.max(0, performance.now() - started - result.read_ms - result.prepare_ms).toFixed(1)}ms`,
+    })
+    return {
+      ...result.conversation,
+      history_start: result.history_start,
+      history_total: result.history_total,
+      history_directory: result.history_directory,
+    }
+  },
+
+  async getConversationPage(conversationId: string, before: number): Promise<{
+    revision: number
+    start: number
+    end: number
+    total: number
+    messages: ChatMessage[]
+  }> {
+    if (!isTauriRuntime()) return mockChatApi.getConversationPage(conversationId, before)
+    const result = await invoke<{
+      success: boolean
+      revision: number
+      start: number
+      end: number
+      total: number
+      messages: ChatMessage[]
+    }>('chat_get_conversation_page', { conversationId, before })
+    if (!result.success) throw new Error('Failed to get conversation page')
+    return result
+  },
+
+  async getConversationRevision(conversationId: string): Promise<number | null> {
+    if (!isTauriRuntime()) return mockChatApi.getConversationRevision(conversationId)
+    return invoke<number | null>('chat_get_conversation_revision', { conversationId })
+  },
+
   async exportConversationMarkdown(
     conversationId: string,
     path: string,
@@ -1465,9 +1566,10 @@ export const chatApi = {
     attachments: PendingAttachment[] = [],
     activeSkillId?: string | null,
     planMessageId?: string,
+    userMessageId?: string,
   ): Promise<Conversation> {
     if (!isTauriRuntime()) {
-      return mockChatApi.sendMessage(conversationId, content, attachments, activeSkillId, planMessageId)
+      return mockChatApi.sendMessage(conversationId, content, attachments, activeSkillId, planMessageId, userMessageId)
     }
     // 磁盘附件传路径；内存文本附件（粘贴长文本虚拟 txt）直接传内容，由后端注入 prompt，不落盘。
     const diskPaths = attachments.filter((a) => a.content === undefined).map((a) => a.path)
@@ -1483,6 +1585,7 @@ export const chatApi = {
         textAttachments,
         activeSkillId,
         planMessageId,
+        userMessageId,
       }
     )
     if (!result.success || !result.conversation) {

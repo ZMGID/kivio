@@ -343,6 +343,26 @@ impl ConversationRepository {
         .await
     }
 
+    /// Cheap freshness probe for renderer display snapshots. The index is
+    /// updated by repository writes; no conversation body crosses IPC here.
+    pub async fn revision(&self, app: &AppHandle, id: &str) -> RepositoryResult<Option<u64>> {
+        let _barrier = self.barrier.read().await;
+        let app = app.clone();
+        let id = id.to_string();
+        Self::spawn_storage(
+            move || {
+                let index = super::storage::load_index_or_scan(&app)?;
+                Ok(index
+                    .conversations
+                    .iter()
+                    .find(|item| item.id == id)
+                    .and_then(|item| item.revision))
+            },
+            "read conversation revision",
+        )
+        .await
+    }
+
     /// 以下纯读操作只拿共享 barrier。索引完整时**不拿 `index_lock`**。
     ///
     /// `index_lock` 存在的意义是串行化 index.json 的 read-modify-write（`persist_locked` /

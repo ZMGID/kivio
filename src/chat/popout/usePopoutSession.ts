@@ -289,7 +289,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       const startedAt = Date.now()
       lease = executionOwner.begin({
         conversationId, kind: 'send', startedAt, claim,
-        optimistic: { content: trimmed, attachments, stored: conv.messages },
+        optimistic: { content: trimmed, attachments },
         group: fanOut ? {
           groupId: `grp-local-${startedAt}`,
           arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),

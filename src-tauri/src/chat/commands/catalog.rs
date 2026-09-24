@@ -171,6 +171,150 @@ pub(crate) async fn chat_get_conversation(
     }))
 }
 
+/// Return a bounded first-paint window and a compact turn directory. The
+/// repository remains authoritative; edits and sends still use full snapshots.
+#[tauri::command]
+pub(crate) async fn chat_get_conversation_window(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
+    let repository = crate::chat::repository::repository(&app);
+    let mut conversation = match repository
+        .externalize_stored_images(&app, &conversation_id)
+        .await
+    {
+        Ok(conversation) => conversation,
+        Err(_) => repository
+            .get(&app, &conversation_id)
+            .await
+            .map_err(crate::chat::repository::repository_error)?,
+    };
+    let read_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    reconcile_conversation_orphan_tool_segments(&mut conversation);
+    strip_transcripts_for_frontend(&mut conversation);
+    let total = conversation.messages.len();
+    let start = history_window_start(&conversation.messages, total);
+    let mut directory = Vec::new();
+    let message_indices: std::collections::HashMap<&str, usize> = conversation
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| (message.id.as_str(), index))
+        .collect();
+    for (index, message) in conversation.messages.iter().enumerate() {
+        if message.role != "user" {
+            continue;
+        }
+        directory.push(serde_json::json!({
+            "kind": "turn",
+            "id": format!("turn-{}", message.id),
+            "message_id": message.id,
+            "message_index": index,
+            "title": message.content.chars().take(120).collect::<String>(),
+        }));
+    }
+    for record in &conversation.context_state.compaction_boundaries {
+        let anchor = record
+            .display_after_message_id
+            .as_deref()
+            .unwrap_or(&record.source_until_message_id);
+        let Some(&index) = message_indices.get(anchor) else {
+            continue;
+        };
+        directory.push(serde_json::json!({
+            "kind": "compaction",
+            "id": format!("compaction-{}", record.id),
+            "message_id": anchor,
+            "message_index": index,
+            "title": "已压缩此前上下文",
+            "answer_preview": record.summary_content.chars().take(120).collect::<String>(),
+        }));
+    }
+    for record in &conversation.context_state.clear_boundaries {
+        let Some(&index) = message_indices.get(record.source_until_message_id.as_str()) else {
+            continue;
+        };
+        directory.push(serde_json::json!({
+            "kind": "clear",
+            "id": format!("clear-{}", record.id),
+            "message_id": record.source_until_message_id,
+            "message_index": index,
+            "title": "清空上下文",
+        }));
+    }
+    directory.sort_by_key(|entry| entry["message_index"].as_u64().unwrap_or(u64::MAX));
+    conversation.messages = conversation.messages.split_off(start);
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+        "history_start": start,
+        "history_total": total,
+        "history_directory": directory,
+        "read_ms": read_ms,
+        "prepare_ms": started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
+    }))
+}
+
+/// Older pages are admitted only by the renderer when revision still matches.
+#[tauri::command]
+pub(crate) async fn chat_get_conversation_page(
+    app: AppHandle,
+    conversation_id: String,
+    before: usize,
+) -> Result<serde_json::Value, String> {
+    let mut conversation = crate::chat::repository::repository(&app)
+        .get(&app, &conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+    reconcile_conversation_orphan_tool_segments(&mut conversation);
+    strip_transcripts_for_frontend(&mut conversation);
+    let total = conversation.messages.len();
+    let end = before.min(total);
+    let start = history_window_start(&conversation.messages, end);
+    Ok(serde_json::json!({
+        "success": true,
+        "revision": conversation.revision,
+        "start": start,
+        "end": end,
+        "total": total,
+        "messages": &conversation.messages[start..end],
+    }))
+}
+
+fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> usize {
+    let mut start = end.saturating_sub(60);
+    if start == 0 || start >= end {
+        return start;
+    }
+    // Keep the first visible multi-answer arm with its siblings and user
+    // message. The extra allowance stays bounded even for corrupt old groups.
+    if messages[start].role == "assistant" {
+        if let Some(group) = messages[start].group_id.as_deref() {
+            while start > end.saturating_sub(64)
+                && messages[start - 1].group_id.as_deref() == Some(group)
+            {
+                start -= 1;
+            }
+        }
+        if start > 0 && messages[start].role == "assistant" && messages[start - 1].role == "user" {
+            start -= 1;
+        }
+    }
+    start
+}
+
+#[tauri::command]
+pub(crate) async fn chat_get_conversation_revision(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<Option<u64>, String> {
+    crate::chat::repository::repository(&app)
+        .revision(&app, &conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)
+}
+
 /// 读取时对账(只读、不写盘):对每条 assistant 消息补齐孤立工具分段为中断态记录,
 /// 使**存量**坏会话(改动前落库、含「有分段无记录」的消息)打开即正常显示,而不必等
 /// 该消息被重新落库自愈。必须在 [`strip_transcripts_for_frontend`] **之前**跑——它会清空

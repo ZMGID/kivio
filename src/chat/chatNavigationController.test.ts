@@ -23,11 +23,13 @@ function conversation(id: string): Conversation {
   }
 }
 
-function setup() {
+function setup(withWindow = false) {
   let current: Conversation | null = null
   let inFlight = false
   const reads = new Map<string, ReturnType<typeof deferred<Conversation>>>()
   const readStarted = deferred<string>()
+  const windowReads = new Map<string, ReturnType<typeof deferred<Conversation>>>()
+  const windowStarted = deferred<string>()
   const ownership = deferred<ReadonlySet<string>>()
   const shown: string[] = []
   const errors: string[] = []
@@ -51,6 +53,12 @@ function setup() {
       readStarted.resolve(id)
       return pending.promise
     },
+    readConversationWindow: withWindow ? (id) => {
+      const pending = deferred<Conversation>()
+      windowReads.set(id, pending)
+      windowStarted.resolve(id)
+      return pending.promise
+    } : undefined,
     isConversationInFlight: () => inFlight,
     prepareNewConversation,
     clearEmptyChat,
@@ -70,7 +78,7 @@ function setup() {
     discardConversation: (_id, error) => { errors.push(error.message) },
   })
   return {
-    controller, ownership, reads, readStarted, shown, errors, occupyPopout,
+    controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors, occupyPopout,
     prepareNewConversation, clearEmptyChat, requestClearChat, deleteConversation,
     cancelDeletedRun, finalizeDeletedChat, reportClearError,
     setCurrent: (value: Conversation | null) => { current = value },
@@ -82,6 +90,28 @@ describe('chat navigation controller', () => {
   beforeEach(() => {
     invalidateConversationTransition()
     window.location.hash = '#chat'
+  })
+
+  it('uses a first-paint window for ordinary selection', async () => {
+    const state = setup(true)
+    const selecting = state.controller.selectConversation('a')
+    state.ownership.resolve(new Set())
+    expect(await state.windowStarted.promise).toBe('a')
+    state.windowReads.get('a')!.resolve(conversation('a'))
+    await selecting
+    expect(state.shown).toEqual(['a'])
+    expect(state.reads.size).toBe(0)
+  })
+
+  it('loads full history for a search target outside the first window', async () => {
+    const state = setup(true)
+    const selecting = state.controller.selectConversation('a', { focusMessageId: 'old' })
+    state.ownership.resolve(new Set())
+    expect(await state.readStarted.promise).toBe('a')
+    state.reads.get('a')!.resolve(conversation('a'))
+    await selecting
+    expect(state.shown).toEqual(['a'])
+    expect(state.windowReads.size).toBe(0)
   })
 
   it('does not reopen a created conversation after New invalidates its pending creation', async () => {

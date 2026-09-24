@@ -522,6 +522,17 @@ export interface Conversation {
   provider_id: string
   model: string
   messages: ChatMessage[]
+  /** Renderer-only partial window metadata. Omitted on complete snapshots. */
+  history_start?: number
+  history_total?: number
+  history_directory?: Array<{
+    kind: 'turn' | 'compaction' | 'clear'
+    id: string
+    message_id: string
+    message_index: number
+    title: string
+    answer_preview?: string
+  }>
   active_skill_id?: string | null
   activeSkillId?: string | null
   assistant_id?: string | null

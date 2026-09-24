@@ -14,6 +14,22 @@ const ports = () => ({
 })
 
 describe('chat execution owner', () => {
+  it('uses the optimistic message identity for the persisted send', async () => {
+    const persisted = conversation('a')
+    const sendMessage = vi.fn().mockResolvedValue(persisted)
+    const owner = createChatExecutionOwner(undefined, { sendMessage })
+    const lease = owner.begin({
+      conversationId: 'a', kind: 'send', startedAt: 100,
+      optimistic: { content: 'again', attachments: [] },
+    })!
+    const pending = owner.overlayMessages('a', [
+      { id: 'older', role: 'user', content: 'again', timestamp: 1 },
+    ])
+    expect(pending).toHaveLength(2)
+    const id = pending[1].id
+    await owner.submitPreparedRun({ lease, content: 'again', attachments: [], attachmentSkillId: null }, portsWithOutcome())
+    expect(sendMessage).toHaveBeenCalledWith('a', 'again', [], null, undefined, id)
+  })
   it('advances a per-conversation turn epoch only when a newer execution starts', async () => {
     const owner = createChatExecutionOwner()
     const initial = owner.turnEpoch('a')

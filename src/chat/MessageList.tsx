@@ -7,7 +7,7 @@ import {
   type Range,
   type ReactVirtualizerOptions,
 } from '@tanstack/react-virtual'
-import type { AgentPlanState, ChatMessage, ChatToolArtifact, ConversationContextState, DegradedAnswer } from './types'
+import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, ConversationContextState, DegradedAnswer } from './types'
 import { MessageBubble } from './MessageBubble'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
@@ -19,6 +19,7 @@ import type { MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
 import { AddSelectionToChat } from './AddSelectionToChat'
 import { copyToClipboard } from '../utils/clipboard'
+import { Button } from '../components/Button'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
 import { CompactionSummaryPanel } from './CompactionSummaryPanel'
@@ -62,6 +63,8 @@ import {
 import { createLiveRowModel } from './liveRowModel'
 import { useLiveRowMeasurement } from './hooks/useLiveRowMeasurement'
 import { useChatWidthLayout } from './hooks/useChatWidthLayout'
+import { recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
+import { EMPTY_HISTORY_DIRECTORY } from './conversationHistoryWindow'
 
 
 export interface AssistantStreamStats {
@@ -87,6 +90,10 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 export interface MessageListProps {
   conversationId?: string | null
   messages: ChatMessage[]
+  historyStart?: number
+  historyDirectory?: NonNullable<Conversation['history_directory']>
+  onLoadOlder?: () => void | Promise<void>
+  onFocusHistoryMessage?: (conversationId: string, messageId: string) => void | Promise<void>
   renderRequestId?: number
   onInitialRender?: (conversationId: string, requestId: number) => void
   agentPlanState?: AgentPlanState | null
@@ -238,6 +245,10 @@ function MessageListBase({
   lang = 'zh',
   focusMessageId = null,
   onFocusMessageHandled,
+  historyStart = 0,
+  historyDirectory = EMPTY_HISTORY_DIRECTORY,
+  onLoadOlder,
+  onFocusHistoryMessage,
 }: MessageListProps) {
   // Durable worker receipts belong to the model context and the task dock,
   // not the parent timeline. Use the backend's reserved receipt identity so
@@ -470,7 +481,8 @@ function MessageListBase({
     return finish
   }, [conversationId, contentEl])
 
-  const prevMessageCountRef = useRef(0)
+  const prevMessageCountRef = useRef(messages.length)
+  const prevLastMessageIdRef = useRef(messages[messages.length - 1]?.id)
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
   const [visibleNavigatorNodeIds, setVisibleNavigatorNodeIds] = useState<string[]>([])
   const [outlineSources, setOutlineSources] = useState<Map<string, OutlineSourceRecord>>(() => new Map())
@@ -790,6 +802,10 @@ function MessageListBase({
   const hasWideGroups = multiAnswerViewMode === 'columns'
     && (Boolean(liveGroup) || historyItems.some((item) => item.kind === 'group'))
   const layoutKey = `${conversationId ?? 'empty'}:${contentWidth}:${multiAnswerViewMode}`
+  const rememberedReadingPosition = useMemo(
+    () => conversationId ? recallChatReadingPosition(conversationId) : null,
+    [conversationId],
+  )
   const { liveRowRef, getLiveRowSize, measureRow } = useLiveRowMeasurement(layoutKey, liveRowKey)
   const measurementRevision = useMemo(
     () => historyItems.map(measurementKey).join('|'),
@@ -1015,6 +1031,19 @@ function MessageListBase({
   const saveMeasurementSnapshotRef = useRef<() => void>(() => {})
   saveMeasurementSnapshotRef.current = () => {
     if (!viewportEl) return
+    if (conversationId) {
+      const scrollTop = viewportEl.scrollTop
+      const anchor = virtualizer.getVirtualItems().find((row) => row.end > scrollTop && itemAt(row.index)?.kind !== 'spacer')
+      const item = anchor ? itemAt(anchor.index) : null
+      rememberChatReadingPosition(conversationId, {
+        following: followHandle.isFollowing(),
+        rowKey: item?.key ?? null,
+        rowRevision: item ? measurementKey(item) : null,
+        rowOffset: anchor ? scrollTop - anchor.start : 0,
+        scrollTop,
+        layoutKey,
+      })
+    }
     saveMeasurementSnapshot(
       conversationId,
       layoutKey,
@@ -1023,6 +1052,32 @@ function MessageListBase({
     )
   }
   useEffect(() => () => saveMeasurementSnapshotRef.current(), [])
+
+  const pageAnchorRef = useRef<{ key: string; offset: number } | null>(null)
+  const previousHistoryStartRef = useRef(historyStart)
+  const requestOlderHistory = useCallback(() => {
+    if (!viewportEl || !onLoadOlder) return
+    const row = virtualizer.getVirtualItems().find((item) => item.end > viewportEl.scrollTop
+      && itemAt(item.index)?.kind !== 'spacer')
+      ?? virtualizer.measurementsCache.find((item) => itemAt(item.index)?.kind !== 'spacer')
+    const key = row ? itemAt(row.index)?.key : null
+    if (row && key) pageAnchorRef.current = { key, offset: viewportEl.scrollTop - row.start }
+    followHandle.releaseFollow()
+    void onLoadOlder()
+  }, [followHandle, itemAt, onLoadOlder, viewportEl, virtualizer])
+
+  useLayoutEffect(() => {
+    const previous = previousHistoryStartRef.current
+    previousHistoryStartRef.current = historyStart
+    if (historyStart >= previous || !pageAnchorRef.current) return
+    const anchor = pageAnchorRef.current
+    pageAnchorRef.current = null
+    const index = historyItems.findIndex((item) => item.key === anchor.key)
+    if (index < 0) return
+    const start = virtualizer.measurementsCache[index]?.start
+      ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
+    if (start !== undefined) followHandle.restoreReadingPosition(start + anchor.offset)
+  }, [followHandle, historyItems, historyStart, virtualizer])
 
   useLayoutEffect(() => {
     if (!contentEl) return
@@ -1035,11 +1090,29 @@ function MessageListBase({
     })
   }, [contentEl, conversationId, historyItems.length, virtualItems.length])
 
-  const navigatorNodes = useMemo(() => {
+  const loadedNavigatorNodes = useMemo(() => {
     // targetRenderIndex 仍是「全历史逻辑下标」，导航时用 data-chat-row-index 查找。
     const renderIndexByKey = new Map(historyItems.map((item, index) => [item.key, index]))
     return buildMessageNavigatorNodes({ folded, boundaries, clearBoundaries, renderIndexByKey })
   }, [boundaries, clearBoundaries, folded, historyItems])
+  const navigatorNodes = useMemo(() => {
+    if (historyStart === 0 || historyDirectory.length === 0) return loadedNavigatorNodes
+    const loadedById = new Map(loadedNavigatorNodes.map((node) => [node.id, node]))
+    const directoryNodes: MessageNavigatorNode[] = historyDirectory.map((entry) => {
+      const loaded = loadedById.get(entry.id)
+      if (loaded) return loaded
+      if (entry.kind === 'turn') return {
+        kind: 'turn', id: entry.id, userMessageId: entry.message_id,
+        targetRenderIndex: -1, title: entry.title, answerPreview: entry.answer_preview ?? '', modelLabel: '',
+      }
+      return {
+        kind: entry.kind, id: entry.id, targetRenderIndex: -1,
+        title: entry.title, answerPreview: entry.answer_preview ?? '', modelLabel: '',
+      }
+    })
+    const directoryIds = new Set(historyDirectory.map((entry) => entry.id))
+    return [...directoryNodes, ...loadedNavigatorNodes.filter((node) => !directoryIds.has(node.id))]
+  }, [historyDirectory, historyStart, loadedNavigatorNodes])
   const outlineItemsByOwner = useMemo(() => {
     const byOwner = new Map<string, MarkdownHeadingOutlineItem[]>()
     for (const source of outlineSources.values()) {
@@ -1064,7 +1137,7 @@ function MessageListBase({
   const activeOutlineItems = activeOutlineOwnerId
     ? outlineItemsByOwner.get(activeOutlineOwnerId) ?? []
     : []
-  navigatorNodesRef.current = navigatorNodes
+  navigatorNodesRef.current = loadedNavigatorNodes
   const navigatorTurnCount = navigatorNodes.reduce(
     (count, node) => count + (node.kind === 'turn' ? 1 : 0),
     0,
@@ -1406,6 +1479,11 @@ function MessageListBase({
     updateActiveNavigatorNode(node.id)
 
     if (node.targetRenderIndex < 0 || node.targetRenderIndex >= historyItems.length) {
+      const entry = historyDirectory.find((item) => item.id === node.id)
+      let targetId = entry?.message_id ?? (node.kind === 'turn' ? node.userMessageId : null)
+      if (entry?.kind === 'compaction') targetId = `compaction-summary-${entry.id.slice('compaction-'.length)}`
+      if (entry?.kind === 'clear') targetId = `context-clear-divider-${entry.id.slice('clear-'.length)}`
+      if (targetId && conversationId) void onFocusHistoryMessage?.(conversationId, targetId)
       return
     }
 
@@ -1421,6 +1499,9 @@ function MessageListBase({
     clearNavigatorPrepare,
     followHandle,
     historyItems.length,
+    historyDirectory,
+    conversationId,
+    onFocusHistoryMessage,
     prepareThenJumpToNavigatorNode,
     updateActiveNavigatorNode,
   ])
@@ -1475,6 +1556,10 @@ function MessageListBase({
     let targetIndex = -1
     for (let i = 0; i < historyItems.length; i++) {
       const item = historyItems[i]
+      if (item.key === focusMessageId) {
+        targetIndex = i
+        break
+      }
       if (item.kind === 'message' && item.message.id === focusMessageId) {
         targetIndex = i
         break
@@ -1855,25 +1940,48 @@ function MessageListBase({
   const tailWrapRef = useRef<HTMLDivElement | null>(null)
   const tailSpacerRef = useRef<HTMLDivElement | null>(null)
 
-  // 切换会话：重置跟随并瞬间定位到底部（ResizeObserver 首次投递也会兜底钉一次）。
+  // Switching back restores a stable row plus its offset. Search/navigation
+  // has higher priority, and a missing row falls back to the normal bottom.
   useLayoutEffect(() => {
+    if (!viewportEl) return
+    const saved = rememberedReadingPosition
+    if (saved && !saved.following && !focusMessageId) {
+      const index = historyItems.findIndex((item) => item.key === saved.rowKey)
+      if (index >= 0 && (!saved.rowRevision || saved.rowRevision === measurementKey(historyItems[index]))) {
+        const start = virtualizer.measurementsCache[index]?.start
+          ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
+        if (start !== undefined) {
+          followHandle.restoreReadingPosition(start + saved.rowOffset)
+          return
+        }
+      }
+      if (!saved.rowKey && saved.layoutKey === layoutKey) {
+        followHandle.restoreReadingPosition(saved.scrollTop)
+        return
+      }
+    }
     followHandle.stickToBottom()
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
-  }, [conversationId, followHandle, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
+  // Only the initial viewport binding owns restoration. Further row/width
+  // changes are handled by the existing virtualizer and width anchor.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, viewportEl])
 
   // New user messages force follow; committed answers keep an existing follow intent.
   useLayoutEffect(() => {
     const count = messages.length
 
-    if (count > prevMessageCountRef.current) {
+    if (count > prevMessageCountRef.current
+      && messages[count - 1]?.id !== prevLastMessageIdRef.current) {
       const lastRole = messages[count - 1]?.role
       if (lastRole === 'user' || (lastRole === 'assistant' && followHandle.isFollowing())) {
         followHandle.stickToBottom()
       }
     }
     prevMessageCountRef.current = count
+    prevLastMessageIdRef.current = messages[count - 1]?.id
   }, [messages, followHandle])
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
@@ -2210,6 +2318,11 @@ function MessageListBase({
           onNavigate={navigateToNavigatorNode}
 
         />
+      )}
+      {historyStart > 0 && onLoadOlder && (
+        <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
+          <Button size="sm" onClick={requestOlderHistory}>加载更早消息</Button>
+        </div>
       )}
       <div
         ref={setScrollEl}

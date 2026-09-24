@@ -3,7 +3,7 @@ import { createChatRunSettlement, type ChatRunTerminal } from './chatRunSettleme
 import { createChatSendReservations } from './chatSendReservations'
 import { createOptimisticUserPresentation } from './optimisticUserPresentation'
 import { chatApi } from './api'
-import type { ChatMessage, Conversation, PendingAttachment } from './types'
+import type { Conversation, PendingAttachment } from './types'
 
 type Reservation = NonNullable<ReturnType<ReturnType<typeof createChatSendReservations>['claim']>>
 type SettlementPorts = Parameters<ReturnType<typeof createChatRunSettlement>['settleInvoke']>[3]
@@ -60,7 +60,7 @@ type BeginIntent = {
   conversationId: string
   kind: 'send' | 'regenerate' | 'replyWithModel'
   startedAt: number
-  optimistic?: { content: string; attachments: PendingAttachment[]; stored: ChatMessage[] }
+  optimistic?: { content: string; attachments: PendingAttachment[] }
   group?: { groupId: string; arms: GroupArmSeed[] }
   claim?: SendClaim
 }
@@ -85,6 +85,7 @@ export function createChatExecutionOwner(
   const active = new Map<string, {
     lease: ExecutionLease
     optimisticToken: number | null
+    userMessageId: string | null
     groupId: string | null
     runIds: Set<string>
     startedAt: number
@@ -218,14 +219,16 @@ export function createChatExecutionOwner(
       retireExternal(id)
       const token = settlement.beginInvoke(id)
       const lease = { conversationId: id, token }
-      const optimisticToken = intent.optimistic
+      const optimisticClaim = intent.optimistic
         ? optimistic.begin(
           id, intent.optimistic.content, intent.optimistic.attachments,
-          intent.startedAt, intent.optimistic.stored,
-        ).token
+          intent.startedAt,
+        )
         : null
+      const optimisticToken = optimisticClaim?.token ?? null
       active.set(id, {
-        lease, optimisticToken, groupId: intent.group?.groupId ?? null,
+        lease, optimisticToken, userMessageId: optimisticClaim?.message.id ?? null,
+        groupId: intent.group?.groupId ?? null,
         runIds: new Set(), startedAt: intent.startedAt, claim: intent.claim,
       })
       try {
@@ -394,6 +397,7 @@ export function createChatExecutionOwner(
           intent.attachments,
           intent.attachmentSkillId,
           intent.planMessageId,
+          active.get(intent.lease.conversationId)?.userMessageId ?? undefined,
         )
         persistedForSettlement = conversation
         outcome = { kind: 'persisted', conversation }
