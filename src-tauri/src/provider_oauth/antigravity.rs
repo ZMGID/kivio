@@ -491,7 +491,10 @@ mod tests {
             assert!(!response.contains(state));
         }
         assert!(task.await.unwrap().err().unwrap().contains("declined"));
-        let _listener = callback_listener(address).unwrap();
+        // A completed TCP connection can keep the port in TIME_WAIT on macOS.
+        // Refusing a new connection verifies that the listener is gone without
+        // depending on when the OS allows the same port to be rebound.
+        assert!(tokio::net::TcpStream::connect(address).await.is_err());
     }
     #[test]
     fn validates_callback() {
