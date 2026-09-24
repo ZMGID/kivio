@@ -1,7 +1,7 @@
 {
   "name": "kivio",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Kivio Desktop - Screen-level AI assistant for macOS and Windows",
   "license": "GPL-3.0-or-later",
   "author": "ZM",
