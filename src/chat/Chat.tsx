@@ -3,6 +3,7 @@ import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
+import { ArtifactsCenter } from './ArtifactsCenter'
 import { useChatRouting } from './hooks/useChatRouting'
 import { useSettingsExit } from './hooks/useSettingsExit'
 import { useSidebarLayout } from './hooks/useSidebarLayout'
@@ -186,7 +187,6 @@ const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => 
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
-const ArtifactsCenter = lazy(() => import('./ArtifactsCenter').then((module) => ({ default: module.ArtifactsCenter })))
 
 const AutomationCenter = lazy(() => import('./automation/AutomationCenter').then((module) => ({
   default: module.AutomationCenter,
@@ -2389,6 +2389,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // 六个中心页共用 key="center"：React 复用同一个 div，入场动画只在「从会话页进来」时跑一次。
   // 各页各自 key 的话每次互切都是新节点 → 重播 opacity 0→1，中间几帧透出背景，就是那下闪。
   const centerPageClass = `chat-motion-view-in chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col ${centerPagePadTop}`
+  const worksPageClass = `chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col ${centerPagePadTop}`
 
   const handleOpenConversationPopout = useCallback(async (conversationId: string) => {
     try {
@@ -2810,11 +2811,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             </Suspense>
           </div>
         ) : chatView === 'artifacts' ? (
-          <div key="center" className={centerPageClass}>
+          <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
-            <Suspense fallback={null}>
-              <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
-            </Suspense>
+            <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
           </div>
         ) : chatView === 'notes' ? (
           <div key="center" className={centerPageClass}>

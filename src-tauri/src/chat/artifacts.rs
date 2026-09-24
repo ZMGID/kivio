@@ -160,6 +160,56 @@ fn unique_persist_path(dir: &Path, filename: &str) -> PathBuf {
     dir.join(format!("{stem}-{}{ext}", uuid::Uuid::new_v4().simple()))
 }
 
+fn export_artifact(
+    root: &Path,
+    source: &Path,
+    destination: &Path,
+    unique: bool,
+) -> Result<(), String> {
+    if !destination.is_absolute() {
+        return Err("Destination must be absolute".into());
+    }
+    let parent = destination
+        .parent()
+        .ok_or("Invalid destination")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if parent.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
+        return Err("Choose a location outside the managed Works folder".into());
+    }
+    if unique {
+        let filename = destination
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Invalid destination")?;
+        let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
+        for _ in 0..100 {
+            let target = unique_persist_path(&parent, filename);
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+            {
+                Ok(mut output) => {
+                    if let Err(error) = std::io::copy(&mut input, &mut output) {
+                        drop(output);
+                        let _ = fs::remove_file(&target);
+                        return Err(error.to_string());
+                    }
+                    return Ok(());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        return Err("Could not choose a unique destination".into());
+    }
+    if destination.canonicalize().ok() != source.canonicalize().ok() {
+        fs::copy(source, destination).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn persist_filename(name: &str) -> String {
     sanitized_name(name, name).unwrap_or_else(|_| "artifact.bin".into())
 }
@@ -676,52 +726,62 @@ fn omit_repeated_image_reads(items: &mut Vec<LibraryItem>) {
 }
 
 #[tauri::command]
-pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> {
+pub async fn chat_artifacts_list(
+    app: AppHandle,
+    import_history: Option<bool>,
+) -> Result<LibraryPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = root(&app)?;
-        let removed = load_removed(&root);
         let index = super::storage::load_index(&app)?;
         let mut warnings = 0;
-        // The conversation revision owns invalidation. Failed imports remain
-        // retryable; unchanged conversations need no repeated JSON/image reads.
-        let import_cache = root.join("imported-revisions.json");
-        let mut imported: HashMap<String, u64> = fs::read(&import_cache)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut cache_changed = false;
-        for item in &index.conversations {
-            if item
-                .revision
-                .is_some_and(|revision| imported.get(&item.id) == Some(&revision))
-            {
-                continue;
-            }
-            match super::storage::load_conversation(&app, &item.id) {
-                Ok(conversation) => {
-                    let count = import_conversation(&app, &root, &conversation, &removed);
-                    warnings += count;
-                    if count == 0 {
-                        if let Some(revision) = item.revision {
-                            imported.insert(item.id.clone(), revision);
-                            cache_changed = true;
+        if import_history.unwrap_or(true) {
+            let removed = load_removed(&root);
+            // The conversation revision owns invalidation. Failed imports remain
+            // retryable; unchanged conversations need no repeated JSON/image reads.
+            let import_cache = root.join("imported-revisions.json");
+            let mut imported: HashMap<String, u64> = fs::read(&import_cache)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
+            let mut cache_changed = false;
+            for item in &index.conversations {
+                if item
+                    .revision
+                    .is_some_and(|revision| imported.get(&item.id) == Some(&revision))
+                {
+                    continue;
+                }
+                match super::storage::load_conversation(&app, &item.id) {
+                    Ok(conversation) => {
+                        let count = import_conversation(&app, &root, &conversation, &removed);
+                        warnings += count;
+                        if count == 0 {
+                            if let Some(revision) = item.revision {
+                                imported.insert(item.id.clone(), revision);
+                                cache_changed = true;
+                            }
                         }
                     }
+                    Err(_) => warnings += 1,
                 }
-                Err(_) => warnings += 1,
+            }
+            if cache_changed {
+                if super::storage::atomic_write(
+                    &import_cache,
+                    &serde_json::to_string(&imported).map_err(|e| e.to_string())?,
+                    "artifact import cache",
+                )
+                .is_err()
+                {
+                    warnings += 1;
+                }
             }
         }
-        if cache_changed {
-            if super::storage::atomic_write(
-                &import_cache,
-                &serde_json::to_string(&imported).map_err(|e| e.to_string())?,
-                "artifact import cache",
-            )
-            .is_err()
-            {
-                warnings += 1;
-            }
-        }
+        let sources: HashMap<_, _> = index
+            .conversations
+            .iter()
+            .map(|conversation| (conversation.id.as_str(), conversation))
+            .collect();
         let mut items = Vec::new();
         let records = root.join("records");
         if records.exists() {
@@ -737,10 +797,7 @@ pub async fn chat_artifacts_list(app: AppHandle) -> Result<LibraryPage, String> 
                     warnings += 1;
                     continue;
                 };
-                let source = index
-                    .conversations
-                    .iter()
-                    .find(|c| c.id == record.conversation_id);
+                let source = sources.get(record.conversation_id.as_str()).copied();
                 if !visible_in_works(record.delivered, source.is_some()) {
                     continue;
                 }
@@ -806,7 +863,6 @@ pub async fn chat_artifact_action(
             return Err("Artifact file is missing".into());
         }
         match action.as_str() {
-            "preview" => super::attachments::read_attachment_as_data_url(Path::new(path)).map(Some),
             "reveal" => {
                 crate::dock::fs::reveal_file_in_manager(Path::new(path))?;
                 Ok(None)
@@ -819,23 +875,14 @@ pub async fn chat_artifact_action(
                     .map_err(|e| e.to_string())?;
                 Ok(None)
             }
-            "export" => {
+            "export" | "export_unique" => {
                 let destination = destination.ok_or("Choose a destination")?;
-                if !Path::new(&destination).is_absolute() {
-                    return Err("Destination must be absolute".into());
-                }
-                let target = Path::new(&destination);
-                let parent = target
-                    .parent()
-                    .ok_or("Invalid destination")?
-                    .canonicalize()
-                    .map_err(|e| e.to_string())?;
-                if parent.starts_with(root.canonicalize().map_err(|e| e.to_string())?) {
-                    return Err("Choose a location outside the managed Works folder".into());
-                }
-                if target.canonicalize().ok() != Path::new(path).canonicalize().ok() {
-                    fs::copy(path, destination).map_err(|e| e.to_string())?;
-                }
+                let target = if action == "export_unique" {
+                    Path::new(&destination).join(persist_filename(&record.artifact.name))
+                } else {
+                    PathBuf::from(destination)
+                };
+                export_artifact(&root, Path::new(path), &target, action == "export_unique")?;
                 Ok(None)
             }
             _ => Err("Unsupported artifact action".into()),
@@ -966,6 +1013,30 @@ mod tests {
         );
         assert!(sanitized_name("drawing.png", "../secret").is_err());
         assert!(sanitized_name("drawing.png", "").is_err());
+    }
+
+    #[test]
+    fn bulk_exports_keep_existing_and_same_named_files() {
+        let managed = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let first = managed.path().join("first.txt");
+        let second = managed.path().join("second.txt");
+        fs::write(&first, "first").unwrap();
+        fs::write(&second, "second").unwrap();
+        let target = destination.path().join("report.txt");
+        fs::write(&target, "existing").unwrap();
+        export_artifact(managed.path(), &first, &target, true).unwrap();
+        export_artifact(managed.path(), &second, &target, true).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "existing");
+        assert_eq!(
+            fs::read_to_string(destination.path().join("report-2.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.path().join("report-3.txt")).unwrap(),
+            "second"
+        );
+        assert_eq!(persist_filename("../escape.txt"), "artifact.bin");
     }
 
     #[test]

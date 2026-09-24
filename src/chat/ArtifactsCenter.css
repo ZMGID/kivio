@@ -28,6 +28,7 @@
 .kv-work-check { top: 8px; left: 8px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--bg-input); box-shadow: var(--shadow-sm); }
 .kv-work-more { top: 6px; right: 6px; }
 .kv-work-card:hover .kv-work-check, .kv-work-card:hover .kv-work-more,
+.kv-work-card:focus-within .kv-work-check, .kv-work-card:focus-within .kv-work-more,
 .kv-work-card.is-selected .kv-work-check, .kv-work-card.is-selected .kv-work-more,
 .kv-works.is-selecting .kv-work-check { opacity: 1; pointer-events: auto; }
 .kv-work-check input { margin: 0; }
@@ -45,11 +46,6 @@
 .kv-work-file-format span { font-size: 10px; letter-spacing: 1px; font-weight: 600; }
 .kv-work-file-cover > strong { font-size: 14px; line-height: 1.4; font-weight: 550; letter-spacing: -.2px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kv-work-file-caption { margin-top: 8px; font-size: 10px; color: var(--accent); }
-.kv-work-file-cover.has-excerpt { background: var(--color-card); border: 1px solid var(--color-border); border-radius: inherit; }
-.has-excerpt .kv-work-file-format { margin-bottom: 10px; }
-.has-excerpt > strong { font-size: 13px; flex-shrink: 0; -webkit-line-clamp: 2; }
-.kv-work-file-cover > p { font-size: 10px; line-height: 1.7; white-space: pre-wrap; color: var(--color-muted-foreground); margin: 8px 0 0; overflow: hidden; mask-image: linear-gradient(#000 55%, transparent); }
-.kv-work-file-cover > p.is-code { font-family: var(--font-mono); font-size: 9px; color: var(--accent); }
 .kv-works-grid.is-list { display: flex; flex-direction: column; gap: 0; }
 .is-list .kv-work-card { display: flex; align-items: center; gap: 10px; border-radius: 0; border-bottom: 1px solid var(--color-border); padding: 8px 4px; }
 .is-list .kv-work-open { display: flex; align-items: center; width: auto; flex: 1; gap: 14px; }
@@ -58,7 +54,7 @@
 .is-list .kv-work-cover { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 6px; }
 .is-list .kv-work-file-cover { padding: 0; align-items: center; justify-content: center; }
 .is-list .kv-work-file-format { margin: 0; }
-.is-list .kv-work-file-format span, .is-list .kv-work-file-cover > strong, .is-list .kv-work-file-caption, .is-list .kv-work-file-cover > p, .is-list .kv-work-versions { display: none; }
+.is-list .kv-work-file-format span, .is-list .kv-work-file-cover > strong, .is-list .kv-work-file-caption, .is-list .kv-work-versions { display: none; }
 .is-list .kv-work-check, .is-list .kv-work-more { position: static; opacity: 1; pointer-events: auto; box-shadow: none; background: transparent; }
 .is-list .kv-work-more { margin-left: auto; }
 .is-list .kv-work-info { flex: 1; padding: 0; }
@@ -71,29 +67,9 @@
 .kv-works-import-note { position: relative; flex-shrink: 0; margin-top: auto; font-size: 11px; color: var(--color-muted-foreground); }
 .kv-works-import-note summary { cursor: pointer; width: fit-content; list-style-position: inside; }
 .kv-works-import-note p { position: absolute; left: 0; bottom: calc(100% + 8px); width: min(420px, 100%); margin: 0; padding: 10px 12px; line-height: 1.7; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-card); box-shadow: var(--shadow-sm); }
-.kv-modal.kv-work-dialog { max-width: min(1060px, 94vw); width: 94vw; max-height: 92vh; margin: auto; padding: 0; }
-.kv-work-dialog-inner { display: flex; flex-direction: column; height: min(820px, 90vh); }
-.kv-work-dialog header { display: flex; align-items: center; padding: 17px 22px; gap: 13px; border-bottom: 1px solid var(--color-border); }
-.kv-work-dialog-icon { display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); width: 40px; height: 44px; border-radius: 7px; flex-shrink: 0; }
-.kv-work-dialog-title { min-width: 0; flex: 1; }
-.kv-work-dialog h2 { font-size: 15px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0 0 5px; }
-.kv-work-dialog header p { font-size: 11px; color: var(--color-muted-foreground); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kv-work-preview { flex: 1; min-height: 160px; overflow: auto; display: flex; align-items: center; justify-content: center; background: var(--color-muted); }
-.kv-work-preview > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
-.kv-work-preview iframe { width: 100%; height: 100%; border: 0; }
-.kv-work-document { align-self: flex-start; width: min(760px, 100%); min-height: 100%; margin: 28px; padding: 40px 46px; background: var(--color-card); box-shadow: var(--shadow-sm); }
-.kv-work-text { align-self: stretch; flex: 1; padding: 28px 32px; margin: 0; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
-.kv-work-preview > p { padding: 30px; font-size: 14px; }
-.kv-work-file-detail { display: flex; align-items: center; flex-direction: column; gap: 14px; text-align: center; padding: 32px; }
-.kv-work-file-detail > svg, .kv-work-file-detail > span { color: var(--accent); }
-.kv-work-file-detail > span { font-size: 11px; letter-spacing: 1px; }
-.kv-work-file-detail h3 { font-size: 24px; font-weight: 550; overflow-wrap: anywhere; }
-.kv-work-file-detail p { color: var(--color-muted-foreground); font-size: 13px; }
-.kv-work-dialog footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--color-border); }
-.kv-work-dialog .kv-works-notice { margin: 0 18px 14px; }
 .kv-modal.kv-work-rename { display: flex; flex-direction: column; gap: 12px; }
 .kv-work-rename h2 { font-size: 14px; font-weight: 550; margin: 0; }
 .kv-work-rename-actions { display: flex; justify-content: flex-end; gap: 8px; }
 @container (max-width: 740px) { .kv-works-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 16px 12px; } }
 @container (max-width: 500px) { .kv-works-header { align-items: stretch; flex-direction: column; gap: 16px; } .kv-works-search { width: 100%; } .kv-works-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 10px; } .kv-work-file-cover { padding: 12px; } .kv-work-format { display: none; } .is-list .kv-work-meta { width: auto; flex-direction: column; margin-left: 0; } }
-@media (max-width: 650px) { .kv-works { padding: 18px 16px; } .kv-work-document { margin: 12px; padding: 24px; } .kv-work-dialog footer { padding: 12px; } }
+@media (max-width: 650px) { .kv-works { padding: 18px 16px; } }
