@@ -307,8 +307,19 @@ pub(crate) async fn chat_get_conversation_page(
     }))
 }
 
-fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> usize {
-    let mut start = end.saturating_sub(60);
+pub(super) fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> usize {
+    let mut start = end;
+    let mut bytes: usize = 0;
+    while start > end.saturating_sub(60) {
+        let size = serde_json::to_vec(&messages[start - 1]).map_or(usize::MAX, |data| data.len());
+        // Always include one message. A single large message remains intact;
+        // its process details are progressively disclosed by the renderer.
+        if start < end && bytes.saturating_add(size) > 512 * 1024 {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        start -= 1;
+    }
     if start == 0 || start >= end {
         return start;
     }
@@ -316,9 +327,8 @@ fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> us
     // message. The extra allowance stays bounded even for corrupt old groups.
     if messages[start].role == "assistant" {
         if let Some(group) = messages[start].group_id.as_deref() {
-            while start > end.saturating_sub(64)
-                && messages[start - 1].group_id.as_deref() == Some(group)
-            {
+            let group_floor = start.saturating_sub(4);
+            while start > group_floor && messages[start - 1].group_id.as_deref() == Some(group) {
                 start -= 1;
             }
         }

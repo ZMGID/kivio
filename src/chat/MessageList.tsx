@@ -154,7 +154,7 @@ const OPEN_SETTLE_QUIET_MS = 80
 
 
 
-// 列表里每一项的统一形态。整条会话全量喂给虚拟列表（消息都在内存，virtualizer 只渲可见项），
+// 列表里每一项的统一形态。已加载的历史窗口交给虚拟列表（virtualizer 只渲可见项），
 // 屏外的气泡连同其 KaTeX host / Markdown / 图片 DOM 真正从 DOM 卸载。
 type HistoryRenderItem =
   | { kind: 'spacer'; key: 'padding-top' | 'padding-bottom'; size: number }

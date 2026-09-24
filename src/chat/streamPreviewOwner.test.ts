@@ -10,6 +10,42 @@ const packet = (conversationId: string, runId: string, type: string, delta?: str
 } as ChatStreamPayload)
 
 describe('stream preview owner', () => {
+  it.each([2, 7, 31])('preserves terminal state with publication batches of %i across tool replacements and run resets', batchSize => {
+    const replay = (flushEvery: number) => {
+      resetStreamStore()
+      const owner = createStreamPreviewOwner()
+      owner.activate('a')
+      owner.begin('a', 100)
+      owner.receive(packet('a', 'discarded', 'text_delta', 'Must disappear'), 100)
+      // Deletion/truncation discards the old projection and its pending frame.
+      owner.drop('a')
+      owner.begin('a', 200)
+      for (let i = 0; i < 63; i++) {
+        owner.receive(packet('a', 'current', i % 3 ? 'text_delta' : 'reasoning_delta', `${i}|`), 200 + i)
+        if (i % 5 === 0) owner.projectDisplay({ kind: 'tool', payload: {
+          id: 'tool', toolCallId: 'tool', conversationId: 'a', runId: 'current',
+          messageId: 'a-assistant', name: 'read_file', source: 'native',
+          status: i === 60 ? 'success' : 'running', argumentsPreview: `version-${i}`,
+          round: 1, sensitive: false, artifacts: [],
+        } as ChatToolProgressPayload })
+        if ((i + 1) % flushEvery === 0) vi.runAllTimers()
+      }
+      owner.receive(packet('a', 'current', 'run_cancelled'), 300)
+      owner.complete('a', { kind: 'error' })
+      vi.runAllTimers()
+      const result = structuredClone({ snapshot: getSnapshot(), coarse: getCoarse() })
+      owner.dispose()
+      return result
+    }
+    const sequential = replay(1)
+    expect(replay(batchSize)).toEqual(sequential)
+    expect(sequential.snapshot.content).not.toContain('Must disappear')
+    expect(sequential.snapshot.content).toContain('62|')
+    expect(sequential.snapshot.toolCalls).toHaveLength(1)
+    expect(sequential.snapshot.toolCalls[0].status).toBe('completed')
+    expect(sequential.coarse).toMatchObject({ streaming: false, streamFrozen: true })
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>

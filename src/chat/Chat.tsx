@@ -10,7 +10,7 @@ import { useSidebarLayout } from './hooks/useSidebarLayout'
 import { useAssistantActions } from './hooks/useAssistantActions'
 import { createChatNavigationController } from './chatNavigationController'
 import { createConversationWarmCache } from './conversationWarmCache'
-import { EMPTY_HISTORY_DIRECTORY, isPartialConversation, prependConversationHistoryPage } from './conversationHistoryWindow'
+import { EMPTY_HISTORY_DIRECTORY, isPartialConversation } from './conversationHistoryWindow'
 import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
@@ -137,7 +137,7 @@ import {
 import {
   resetGroups,
 } from './groupStreamingStore'
-import { onChatPerfProfiler, recordChatPerfSample, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
+import { onChatPerfProfiler, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
 import { GoalCard } from './GoalCard'
@@ -359,7 +359,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!initialViewIsSettingsRef.current) emitContentReady()
   }, [emitContentReady])
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
-  const historyPageInFlightRef = useRef(new Set<string>())
   const [historyLoadError, setHistoryLoadError] = useState<{ conversationId: string; message: string } | null>(null)
   const [warmConversationCache] = useState(createConversationWarmCache)
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
@@ -621,56 +620,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       ? previous : conversation)
   }, [])
 
-  const partialConversation = isPartialConversation(currentConversation)
-  const historyConversationId = currentConversation?.id
-  const historyConversationRevision = currentConversation?.revision
-  useEffect(() => {
-    if (!partialConversation || !historyConversationId) return
-    const id = historyConversationId
-    let cancelled = false
-    const started = performance.now()
-    void chatApi.getConversation(id).then((complete) => {
-      recordChatPerfSample({
-        name: 'conversation-background-hydrate', durationMs: performance.now() - started,
-        mountedRows: 0, domNodes: 0, detail: `${id}:messages=${complete.messages.length}`,
-      })
-      if (!cancelled && currentConversationIdRef.current === id) {
-        applyConversation(complete)
-        setHistoryLoadError((previous) => previous?.conversationId === id ? null : previous)
-      }
-    }).catch((error) => {
-      if (!cancelled) console.error('Failed to hydrate conversation history:', error)
-    })
-    return () => { cancelled = true }
-  }, [applyConversation, historyConversationId, historyConversationRevision, partialConversation])
 
-  const loadOlderHistory = useCallback(async () => {
+  const loadInputHistory = useCallback(async () => {
     const current = currentConversationRef.current
-    if (!current || !isPartialConversation(current) || historyPageInFlightRef.current.has(current.id)) return
-    historyPageInFlightRef.current.add(current.id)
-    setHistoryLoadError(null)
+    if (!current) return null
+    const lease = captureConversationNavigation()
     try {
-      const page = await chatApi.getConversationPage(current.id, current.history_start!)
-      if (currentConversationIdRef.current !== current.id) return
-      const latest = currentConversationRef.current
-      if (!latest || latest.id !== current.id || !isPartialConversation(latest)) return
-      const merged = prependConversationHistoryPage(latest, page)
-      if (merged) applyConversation(merged)
-      else {
-        const complete = await chatApi.getConversation(current.id)
-        if (currentConversationIdRef.current === current.id) applyConversation(complete)
-      }
-      setHistoryLoadError((previous) => previous?.conversationId === current.id ? null : previous)
+      const complete = await chatApi.getConversation(current.id)
+      if (!isCurrentConversationNavigation(lease) || currentConversationIdRef.current !== current.id) return null
+      return complete.messages.filter(message => message.role === 'user').map(message => message.content)
     } catch (error) {
-      console.error('Failed to load older conversation history:', error)
-      if (currentConversationIdRef.current === current.id) setHistoryLoadError({
-        conversationId: current.id,
-        message: '加载更早消息失败，请重试。',
-      })
-    } finally {
-      historyPageInFlightRef.current.delete(current.id)
+      if (isCurrentConversationNavigation(lease) && currentConversationIdRef.current === current.id) {
+        setStreamErrorForConversation(current.id, '读取输入历史失败，请重试。')
+      }
+      console.error('Failed to load input history:', error)
+      return null
     }
-  }, [applyConversation])
+  }, [setStreamErrorForConversation])
 
   const occupyConversationInMain = useCallback((
     conversationId: string,
@@ -947,7 +913,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     readConversation: async (conversationId) => {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
         .catch(() => null)
-      return cached ?? chatApi.getConversation(conversationId)
+      return cached && !isPartialConversation(cached) ? cached : chatApi.getConversation(conversationId)
     },
     readConversationWindow: async (conversationId) => {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
@@ -958,6 +924,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         ? chatApi.getConversation(conversationId)
         : chatApi.getConversationWindow(conversationId)
     },
+    readHistoryPage: chatApi.getConversationPage,
+    showHistoryPage: applyConversation,
     isConversationInFlight: (conversationId) => executionOwner.snapshot(conversationId).inFlight,
     prepareNewConversation: () => {
       setSelectedProject(null)
@@ -1005,7 +973,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     prepareSelection: (focusMessageId, fresh) => {
       if (fresh) {
         const leaving = currentConversationRef.current
-        if (leaving && !isPartialConversation(leaving) && !executionOwner.snapshot(leaving.id).inFlight) warmConversationCache.rememberSoon(leaving)
+        if (leaving && !executionOwner.snapshot(leaving.id).inFlight) warmConversationCache.rememberSoon(leaving)
         setAssistantStreamStatsByMessageId({})
         setHookWarning(null)
       }
@@ -2606,6 +2574,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     externalAgentName: activeAgentRuntime.externalAgentId ?? null,
     conversationId: currentConversation?.id ?? null,
     inputHistory: currentConversation?.messages.filter((message) => message.role === 'user').map((message) => message.content),
+    onLoadInputHistory: isPartialConversation(currentConversation) ? loadInputHistory : undefined,
     knowledgeBaseIds: composerKnowledgeBaseIds,
     onChangeKnowledgeBaseIds: handleChangeKnowledgeBaseIds,
     forceKnowledgeSearch: composerForceKnowledgeSearch,
@@ -2646,6 +2615,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     composerKnowledgeBaseIds,
     composerAdditionalDirectories,
     composerUsageSlot,
+    loadInputHistory,
     conversationProject,
     currentConversation,
     currentConversationIsBlank,
@@ -2694,7 +2664,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
     historyLoadError: historyLoadError?.conversationId === currentConversation?.id
       ? historyLoadError?.message : null,
-    onLoadOlder: loadOlderHistory,
+    onLoadOlder: navigation.loadOlderHistory,
     onFocusHistoryMessage: navigation.focusHistoryMessage,
     renderRequestId: conversationRenderRequestId,
     onInitialRender: handleConversationFirstCommit,
@@ -2734,8 +2704,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     historyLoadError,
     conversationRenderRequestId,
     displayMessages,
-    loadOlderHistory,
     navigation.focusHistoryMessage,
+    navigation.loadOlderHistory,
     handleConversationFirstCommit,
     handleDeleteMessage,
     handleExecuteAgentPlan,

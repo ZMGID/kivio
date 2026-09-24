@@ -440,6 +440,8 @@ export interface InputBarProps {
   conversationId?: string | null
   /** 当前会话的用户消息，按发送时间从旧到新排列。 */
   inputHistory?: readonly string[]
+  /** Load older prompts only when the reader starts browsing input history. */
+  onLoadInputHistory?: () => Promise<readonly string[] | null>
   /** 本会话挂载的知识库 id；缺省时 knowledge_search 检索全部库 */
   knowledgeBaseIds?: string[]
   onChangeKnowledgeBaseIds?: (ids: string[]) => void | Promise<void>
@@ -522,6 +524,7 @@ export const InputBar = memo(function InputBar({
   externalAgentName = null,
   conversationId = null,
   inputHistory = [],
+  onLoadInputHistory,
   knowledgeBaseIds = [],
   onChangeKnowledgeBaseIds,
   forceKnowledgeSearch = false,
@@ -559,6 +562,7 @@ export const InputBar = memo(function InputBar({
   const draftKeyValue = draftKey(conversationId)
   const [input, setInput] = useState(() => getComposerDraft(draftKeyValue)?.input ?? '')
   const historyRef = useRef<{ entries: string[]; index: number; draft: string } | null>(null)
+  const historyReadRef = useRef<object | null>(null)
   const historyCaretRef = useRef<number | null>(null)
   useLayoutEffect(() => {
     if (historyCaretRef.current === null) return
@@ -619,6 +623,7 @@ export const InputBar = memo(function InputBar({
   useEffect(() => {
     if (draftScopeRef.current.key === draftKeyValue) return
     historyRef.current = null
+    historyReadRef.current = null
     historyCaretRef.current = null
     draftScopeRef.current.key = draftKeyValue
     // Creation commits migrate the store before this binding changes. Ordinary
@@ -1300,6 +1305,7 @@ export const InputBar = memo(function InputBar({
     // 等待发送时用户可能已经切到另一条有自己草稿的会话。只清本次提交实际归属的输入框。
     if (draftScopeRef.current.key !== sentDraftKey) return
     historyRef.current = null
+    historyReadRef.current = null
     setInput('')
     setQuotes([])
     setAttachments([])
@@ -1367,6 +1373,7 @@ export const InputBar = memo(function InputBar({
   const handleSend = async () => {
     const trimmed = input.trim()
     if (sendPending || (!trimmed && quotes.length === 0 && attachments.length === 0) || sendDisabledReason) return
+    historyReadRef.current = null
     // 生成中：有排队入口就排队（本轮结束后自动发出），没有就照旧什么都不做。
     if (disabled && !onQueue) return
     const quotedBlock = quotes
@@ -1426,6 +1433,7 @@ export const InputBar = memo(function InputBar({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'ArrowUp') historyReadRef.current = null
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
 
     if (e.key === 'Tab' && e.shiftKey && modeEntryEnabled && !disabled) {
@@ -1488,6 +1496,28 @@ export const InputBar = memo(function InputBar({
         (up ? el.selectionStart === 0 : el.selectionEnd === input.length)
       if (el.selectionStart === el.selectionEnd && atBoundary) {
         if (!historyRef.current && up) {
+          if (onLoadInputHistory) {
+            e.preventDefault()
+            if (historyReadRef.current) return
+            const request = {}
+            const key = draftScopeRef.current.key
+            historyReadRef.current = request
+            void onLoadInputHistory().catch(error => {
+              console.error('Failed to load input history:', error)
+              return null
+            }).then(result => {
+              if (!mountedRef.current || historyReadRef.current !== request
+                || draftScopeRef.current.key !== key || el.value !== input) return
+              const entries = (result ?? inputHistory).filter(text => text.trim())
+              if (!entries.length) return
+              historyRef.current = { entries, index: entries.length - 1, draft: input }
+              const next = entries[entries.length - 1]
+              historyCaretRef.current = next.length
+              setInput(next)
+              setSlashPanelOpen(false)
+            }).finally(() => { if (historyReadRef.current === request) historyReadRef.current = null })
+            return
+          }
           const entries = inputHistory.filter((text) => text.trim())
           if (entries.length) historyRef.current = { entries, index: entries.length, draft: input }
         }
@@ -1525,6 +1555,7 @@ export const InputBar = memo(function InputBar({
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     historyRef.current = null
+    historyReadRef.current = null
     const nextValue = e.target.value
     setInput(nextValue)
     // 高度/滚动条由 input 的 layout effect 统一跟，这里不再内联量一遍。

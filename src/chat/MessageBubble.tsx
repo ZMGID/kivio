@@ -733,6 +733,8 @@ function TimelineGroupBlock({
   userOpen,
   defaultOpen,
   onToggle,
+  hiddenProcessCount,
+  onShowEarlier,
   toolCalls,
   toolCallById,
   artifacts,
@@ -750,6 +752,8 @@ function TimelineGroupBlock({
   userOpen: boolean | null
   defaultOpen: boolean
   onToggle: () => void
+  hiddenProcessCount: number
+  onShowEarlier: () => void
   toolCalls: ToolCallRecord[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
@@ -815,6 +819,11 @@ function TimelineGroupBlock({
       <ChatDisclosureBody open={renderDetails} animate={userOpen !== null}>
         {() => (
           <div className="space-y-1.5">
+            {showHeader && hiddenProcessCount > 0 && (
+              <Button size="sm" variant="ghost" data-chat-disclosure onClick={onShowEarlier}>
+                显示更早的过程（{hiddenProcessCount}）
+              </Button>
+            )}
             {/* A new tool can move existing commentary into this group. Keep
                 those segments visible instead of replaying opacity from zero. */}
             {renderProcessSegments({
@@ -863,6 +872,10 @@ function TimelineSegments({
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  // Bound historical inspection across groups separated by artifacts. Never
+  // evict steps already shown during a live run, including its settle handoff.
+  const [processLimit, setProcessLimit] = useState(20)
+  if (messageStreaming && processLimit !== Infinity) setProcessLimit(Infinity)
   const previewEnabled = useContext(ReasoningPreviewContext)
   const [sawLiveReasoning, setSawLiveReasoning] = useState(false)
   if (previewEnabled && userOpen !== false && reasoningStreaming && !sawLiveReasoning
@@ -935,6 +948,8 @@ function TimelineSegments({
   }, [segments, toolCalls, completed, messageStreaming])
 
   const { toolCallById, citations, reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
+  const visibleProcess = new Set(allProcessSegments.slice(-processLimit))
+  const hiddenProcessCount = Math.max(0, allProcessSegments.length - processLimit)
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
   return (
     <section aria-label="回答时间线" className="space-y-1.5">
@@ -979,12 +994,17 @@ function TimelineSegments({
         return (
           <TimelineGroupBlock
             key={groupKey}
-            segments={item.segments}
+            segments={item.segments.filter(segment => visibleProcess.has(segment))}
             allProcessSegments={allProcessSegments}
             showHeader={showHeader}
             userOpen={userOpen}
             defaultOpen={defaultOpen}
-            onToggle={() => setUserOpen(current => !(current ?? defaultOpen))}
+            onToggle={() => {
+              if (!messageStreaming && !(userOpen ?? defaultOpen)) setProcessLimit(20)
+              setUserOpen(current => !(current ?? defaultOpen))
+            }}
+            hiddenProcessCount={hiddenProcessCount}
+            onShowEarlier={() => setProcessLimit(limit => limit + 20)}
             toolCalls={toolCalls}
             toolCallById={toolCallById}
             artifacts={artifacts}

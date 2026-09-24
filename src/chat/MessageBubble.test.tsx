@@ -5,6 +5,55 @@ import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
 describe('assistant body visibility', () => {
+  it('keeps already visible live steps mounted through growth and completion', () => {
+    const make = (count: number): ChatMessage => ({
+      id: 'growing-process', role: 'assistant', timestamp: 1, content: '',
+      tool_calls: Array.from({ length: count }, (_, i) => ({
+        id: `tool-${i}`, name: `live_step_${i}`, source: 'native', status: 'completed',
+      })),
+      segments: Array.from({ length: count }, (_, i) => ({
+        id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
+      })),
+    })
+    const { rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    rerender(<MessageBubble message={make(21)} messageStreaming />)
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    // Explicitly open keeps the user's reading intent through settle.
+    fireEvent.click(screen.getByRole('button', { name: /^Working/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Working/ }))
+    rerender(<MessageBubble message={make(21)} />)
+    expect(screen.getByText('live_step_0')).toBeVisible()
+  })
+
+  it('bounds a large tool process and lets the reader reveal earlier steps without hiding the answer', () => {
+    const message: ChatMessage = {
+      id: 'large-process', role: 'assistant', timestamp: 1, content: 'Final result',
+      stream_outcome: 'completed',
+      tool_calls: Array.from({ length: 55 }, (_, i) => ({
+        id: `tool-${i}`, name: `step_${i}`, source: 'native', status: 'completed',
+      })),
+      segments: [
+        ...Array.from({ length: 55 }, (_, i) => ({
+          id: `segment-${i}`, kind: 'tool' as const, phase: 'tool_loop' as const,
+          order: i, tool_call_id: `tool-${i}`,
+        })),
+        { id: 'answer', kind: 'text', phase: 'synthesis', order: 55, text: 'Final result' },
+      ],
+    }
+    render(<MessageBubble message={message} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    expect(screen.getByText('Final result')).toBeVisible()
+    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
+    expect(screen.getByText('step_54')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（35）' }))
+    expect(screen.getByText('step_15')).toBeVisible()
+    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（15）' }))
+    expect(screen.getByText('step_0')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
+  })
+
   it.each(['cancelled', undefined])('folds cancelled progress with outcome %s and preserves the partial answer', outcome => {
     render(<MessageBubble message={{
       id: 'partial-answer', role: 'assistant', timestamp: 1, content: 'Useful partial answer', stream_outcome: outcome,

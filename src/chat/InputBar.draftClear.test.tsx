@@ -58,6 +58,58 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 发送清草稿', () => {
+  it('falls back to loaded prompts when older input history cannot be read', async () => {
+    render(<InputBar onSend={() => {}} conversationId="history-offline" inputHistory={['available']} onLoadInputHistory={async () => null} />)
+    const input = screen.getByRole('textbox')
+    await act(async () => { fireEvent.keyDown(input, { key: 'ArrowUp' }) })
+    expect(input).toHaveValue('available')
+  })
+
+  it('revokes pending input history as soon as the send button starts a submission', async () => {
+    let resolveHistory!: (history: string[]) => void
+    let resolveSend!: (accepted: boolean) => void
+    render(<InputBar conversationId="history-send" onSend={() => new Promise<boolean>(done => { resolveSend = done })}
+      onLoadInputHistory={() => new Promise<string[]>(done => { resolveHistory = done })} />)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'sending draft' } })
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await act(async () => resolveHistory(['wrong old prompt']))
+    expect(input).toHaveValue('sending draft')
+    await act(async () => resolveSend(false))
+  })
+
+  it('loads older prompts on demand and restores the draft after browsing', async () => {
+    const load = vi.fn(async () => ['old outside window', 'recent'])
+    render(<InputBar onSend={() => {}} conversationId="lazy-history" inputHistory={['recent']} onLoadInputHistory={load} />)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: 'draft' } })
+    expect(load).not.toHaveBeenCalled()
+    await act(async () => { fireEvent.keyDown(input, { key: 'ArrowUp' }) })
+    expect(input).toHaveValue('recent')
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    expect(input).toHaveValue('old outside window')
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input).toHaveValue('draft')
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not replace new typing or another draft with a delayed history read', async () => {
+    let resolve!: (history: string[]) => void
+    const load = () => new Promise<string[]>(done => { resolve = done })
+    const { rerender } = render(<InputBar onSend={() => {}} conversationId="lazy-history-a" onLoadInputHistory={load} />)
+    const input = screen.getByRole('textbox')
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    fireEvent.change(input, { target: { value: 'typed while loading' } })
+    await act(async () => resolve(['old']))
+    expect(input).toHaveValue('typed while loading')
+    fireEvent.keyDown(input, { key: 'ArrowUp' })
+    rerender(<InputBar onSend={() => {}} conversationId="lazy-history-b" />)
+    await act(async () => resolve(['wrong conversation']))
+    expect(input).toHaveValue('')
+  })
+
   it('does not write the outgoing input into the target when editing and switching share a commit', () => {
     setComposerDraft('batched-draft-a', { input: 'A draft', quotes: [], attachments: [] })
     setComposerDraft('batched-draft-b', { input: 'B draft', quotes: [], attachments: [] })

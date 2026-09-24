@@ -40,6 +40,21 @@ use super::tooling::{
 use super::*;
 
 #[test]
+fn history_window_bounds_payload_and_keeps_oversized_message_reachable() {
+    let messages: Vec<ChatMessage> = (0..60)
+        .map(|index| {
+            serde_json::from_value(serde_json::json!({
+        "id": format!("m{index}"), "role": "user", "content": "x".repeat(180_000), "timestamp": 1
+    })).unwrap()
+        })
+        .collect();
+    assert!(super::catalog::history_window_start(&messages, 60) > 55);
+    let mut oversized = messages[0].clone();
+    oversized.content = "x".repeat(900_000);
+    assert_eq!(super::catalog::history_window_start(&[oversized], 1), 0);
+}
+
+#[test]
 fn resolve_thinking_maps_levels_and_defaults_to_high() {
     // 有 effort 旋钮的模型（gpt-5.6 支持 low/medium/high/xhigh/max）。模型库里查得到，
     // 不需要 provider（provider 只用于读 model_overrides + Anthropic 家族兜底）。

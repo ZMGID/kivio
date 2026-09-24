@@ -1,0 +1,47 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Chat performance acceptance</title></head>
+<body><div id="root"></div><script type="module">
+// Synthetic data only. Uses the real list, tool renderer and streaming owner.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
+import { MessageList } from '/src/chat/MessageList.tsx';
+import { createChatPerformanceFixture } from '/src/chat/performanceFixtures.ts';
+import { createStreamPreviewOwner } from '/src/chat/streamPreviewOwner.ts';
+import { getChatPerfReport, resetChatPerfProbeForTests, onChatPerfProfiler, useChatPerfLongTaskProbe } from '/src/chat/chatPerformanceProbe.ts';
+import '/src/styles/app.css';
+import 'streamdown/styles.css';
+
+globalThis.__KIVIO_CHAT_PERF__ = true;
+const owner = createStreamPreviewOwner();
+const fixtures = Object.fromEntries(['F1','F2','F3','F4'].map(id => [id, createChatPerformanceFixture(id)]));
+fixtures.tools = { messages: [{ id: 'large-process', role: 'assistant', timestamp: 1, content: '',
+  tool_calls: Array.from({length: 500}, (_, i) => ({id: `tool-${i}`, name: `step_${i}`, source: 'native', status: 'completed'})),
+  segments: Array.from({length: 500}, (_, i) => ({id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`})),
+}] };
+function Harness() {
+  useChatPerfLongTaskProbe();
+  const [id, setId] = React.useState('F1');
+  const [narrow, setNarrow] = React.useState(false);
+  window.chatAcceptance = {
+    show(next) { owner.drop(id); owner.activate(next); flushSync(() => setId(next)); },
+    resize() { flushSync(() => setNarrow(value => !value)); },
+    reset: resetChatPerfProbeForTests,
+    report: getChatPerfReport,
+    async stream() {
+      owner.activate('F4'); owner.begin('F4', 100);
+      const text = fixtures.F4.streamingContent;
+      for (let i = 0; i < text.length; i += 80) {
+        owner.receive({type: 'text_delta', conversationId: 'F4', runId: 'fixture', messageId: 'f4-assistant', delta: text.slice(i, i + 80)});
+        await new Promise(resolve => setTimeout(resolve, 8));
+      }
+      owner.receive({type: 'run_completed', conversationId: 'F4', runId: 'fixture', messageId: 'f4-assistant'});
+      owner.complete('F4', {kind: 'error'}); // Freeze for inspection; no backend/model.
+    },
+  };
+  return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'calc(100% - 260px)':'100%', display:'flex', flexDirection:'column'}},
+    React.createElement(React.Profiler, {id:'acceptance-list', onRender:onChatPerfProfiler},
+      React.createElement(MessageList, {key:id, conversationId:id, messages:fixtures[id].messages})));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Harness));
+</script></body></html>

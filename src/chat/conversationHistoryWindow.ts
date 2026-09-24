@@ -12,11 +12,21 @@ export interface ConversationHistoryPage {
 
 /** Match the native window edge so multi-answer arms do not start mid-group. */
 export function historyWindowStart(messages: ChatMessage[], end: number): number {
-  let start = Math.max(0, end - 60)
+  let start = end
+  let bytes = 0
+  while (start > Math.max(0, end - 60)) {
+    const size = new TextEncoder().encode(JSON.stringify(messages[start - 1])).byteLength
+    // One oversized message must still be reachable. Its process details are
+    // paged in MessageBubble, never truncated in the stored conversation.
+    if (start < end && bytes + size > 512 * 1024) break
+    bytes += size
+    start -= 1
+  }
   if (start === 0 || start >= end || messages[start].role !== 'assistant') return start
   const group = messages[start].group_id ?? messages[start].groupId
   if (group) {
-    while (start > Math.max(0, end - 64)
+    const groupFloor = Math.max(0, start - 4)
+    while (start > groupFloor
       && (messages[start - 1].group_id ?? messages[start - 1].groupId) === group) start -= 1
   }
   if (start > 0 && messages[start].role === 'assistant' && messages[start - 1].role === 'user') start -= 1

@@ -30,3 +30,11 @@ it('starts the visible window before a split multi-answer group', () => {
   }))
   expect(historyWindowStart(messages, 64)).toBe(3)
 })
+
+it('limits heavy history windows by payload size while always making progress', () => {
+  const messages = Array.from({ length: 60 }, (_, index) => ({
+    ...message(String(index)), content: 'x'.repeat(180_000),
+  }))
+  expect(historyWindowStart(messages, 60)).toBeGreaterThan(55)
+  expect(historyWindowStart([{ ...message('huge'), content: 'x'.repeat(900_000) }], 1)).toBe(0)
+})

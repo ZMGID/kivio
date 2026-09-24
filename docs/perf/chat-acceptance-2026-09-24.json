@@ -1,0 +1,77 @@
+[
+  {
+    "id": "F2",
+    "interactionMs": 32.1000000089407,
+    "resizeMs": 0.3999999910593033,
+    "before": {
+      "rows": 3,
+      "nodes": 513
+    },
+    "rows": 3,
+    "nodes": 513,
+    "bottomGap": 0,
+    "maxCommitMs": 24.099999994039536,
+    "longTasks": 0,
+    "maxLongTaskMs": 0
+  },
+  {
+    "id": "F3",
+    "interactionMs": 88.5,
+    "resizeMs": 0.29999999701976776,
+    "before": {
+      "rows": 9,
+      "nodes": 1073
+    },
+    "rows": 9,
+    "nodes": 1073,
+    "bottomGap": 0,
+    "maxCommitMs": 40.5,
+    "longTasks": 2,
+    "maxLongTaskMs": 89
+  },
+  {
+    "id": "F1",
+    "interactionMs": 30.299999997019768,
+    "resizeMs": 0.20000000298023224,
+    "before": {
+      "rows": 16,
+      "nodes": 374
+    },
+    "rows": 16,
+    "nodes": 374,
+    "bottomGap": 0,
+    "maxCommitMs": 15.900000005960464,
+    "longTasks": 0,
+    "maxLongTaskMs": 0
+  },
+  {
+    "id": "F4",
+    "interactionMs": 4.899999991059303,
+    "resizeMs": 0.29999999701976776,
+    "before": {
+      "rows": 2,
+      "nodes": 2478
+    },
+    "rows": 2,
+    "nodes": 2487,
+    "bottomGap": 0,
+    "maxCommitMs": 21.100000008940697,
+    "longTasks": 0,
+    "maxLongTaskMs": 0
+  },
+  {
+    "id": "tools",
+    "interactionMs": 12.599999994039536,
+    "resizeMs": 0.20000000298023224,
+    "before": {
+      "rows": 2,
+      "nodes": 272
+    },
+    "rows": 2,
+    "nodes": 272,
+    "bottomGap": 381,
+    "maxCommitMs": 4.5,
+    "longTasks": 0,
+    "maxLongTaskMs": 0
+  }
+]

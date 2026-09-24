@@ -6,7 +6,7 @@ const MAX_BYTES = 24 * 1024 * 1024
 
 type Entry = { conversation: Conversation; bytes: number; expiresAt: number }
 
-/** Owns complete display snapshots between short navigation round trips.
+/** Owns loaded display windows between short navigation round trips.
  * Every hit must be checked against the repository index revision first. */
 export function createConversationWarmCache(now = Date.now) {
   const entries = new Map<string, Entry>()
