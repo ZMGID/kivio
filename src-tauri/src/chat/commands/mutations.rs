@@ -630,6 +630,13 @@ pub(crate) async fn chat_rewind_to_message(
         if snapshot.messages[idx].role != "user" {
             return Err("仅支持回到用户提问".to_string());
         }
+        // 外部 CLI 的历史真身在 CLI 自己的原生会话里，只截 Kivio 这份，下一轮 resume 仍会带上
+        // 被删掉的轮次，所以下一轮发送前要先把原生会话拉回可见历史（ADR-0006）。
+        // 校验通过后、截断之前记下「待回退」：记不下就整体失败、不留半截状态。不能提前到校验
+        // 之前——没有原生回退的 CLI 会据此丢弃会话、改为补历史，一次被拒绝的回退不该触发它。
+        if snapshot.agent_runtime.is_external() {
+            crate::external_agents::session::mark_history_rewound(&app, &conversation_id)?;
+        }
         let content = snapshot.messages[idx].content.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {

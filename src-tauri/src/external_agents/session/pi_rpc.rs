@@ -1539,24 +1539,8 @@ fn pi_user_entry_text(entry: &Value) -> Option<String> {
     .then(|| flatten_pi_tool_content(message.get("content").unwrap_or(&Value::Null)))
 }
 
-fn canonical_pi_user_prompt(text: &str) -> String {
-    let user = text
-        .rsplit_once("# User request")
-        .map(|(_, value)| value.trim_start_matches(['\r', '\n', ' ', '\t']))
-        .unwrap_or(text);
-    normalize_space(user)
-}
-
 fn pi_prompt_matches(entry_text: &str, visible_text: &str) -> bool {
-    let expected = normalize_space(visible_text);
-    if expected.is_empty() {
-        return false;
-    }
-    let actual = canonical_pi_user_prompt(entry_text);
-    actual == expected
-        || actual
-            .strip_prefix(&expected)
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+    super::native_prompt_matches(entry_text, visible_text)
 }
 
 fn active_pi_branch<'a>(entries: &'a [Value], leaf_id: &str) -> Result<Vec<&'a Value>, String> {
@@ -3401,6 +3385,63 @@ mod tests {
             .unwrap()
             .expect("visible target");
         assert_eq!(selected["id"], "u2");
+    }
+
+    fn pi_numbered_turns(count: usize) -> Vec<Value> {
+        let mut entries = Vec::new();
+        let mut parent: Option<String> = None;
+        for n in 1..=count {
+            let user = format!("u{n}");
+            let answer = format!("a{n}");
+            entries.push(json!({"type":"message","id":user,"parentId":parent,"timestamp":format!("2026-09-25T10:00:{:02}.000Z", n * 2),"message":{"role":"user","content":n.to_string()}}));
+            entries.push(json!({"type":"message","id":answer,"parentId":user,"timestamp":format!("2026-09-25T10:00:{:02}.000Z", n * 2 + 1),"message":{"role":"assistant","content":"ok"}}));
+            parent = Some(answer);
+        }
+        entries
+    }
+
+    fn visible_turns(contents: &[&str]) -> Vec<PiRegenerateUserMessage> {
+        contents
+            .iter()
+            .map(|content| PiRegenerateUserMessage {
+                content: (*content).into(),
+                timestamp: 1_758_794_400,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn send_after_rewind_forks_before_the_first_removed_turn() {
+        // Pi holds 1..7; Kivio was rewound to the third prompt, leaving 1, 2.
+        let entries = pi_numbered_turns(7);
+        for next in ["3", "something else"] {
+            let selected =
+                select_pi_regenerate_entry(&entries, Some("a7"), &visible_turns(&["1", "2", next]))
+                    .unwrap()
+                    .expect("rewound turn");
+            assert_eq!(selected["id"], "u3", "next prompt {next:?}");
+        }
+    }
+
+    #[test]
+    fn send_after_rewinding_the_first_prompt_forks_from_the_root() {
+        let entries = pi_numbered_turns(3);
+        let selected = select_pi_regenerate_entry(&entries, Some("a3"), &visible_turns(&["new"]))
+            .unwrap()
+            .expect("root turn");
+        assert_eq!(selected["id"], "u1");
+        assert!(pi_entry_parent_id(selected).is_none());
+    }
+
+    #[test]
+    fn send_after_a_rewind_that_removed_nothing_native_does_not_fork() {
+        // Rewinding a prompt Pi never accepted leaves both histories aligned.
+        let entries = pi_numbered_turns(2);
+        assert_eq!(
+            select_pi_regenerate_entry(&entries, Some("a2"), &visible_turns(&["1", "2", "3"]))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

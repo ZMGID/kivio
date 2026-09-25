@@ -1,7 +1,8 @@
-use crate::chat::types::AdditionalDirectory;
+use crate::chat::types::{AdditionalDirectory, ChatMessage};
 use crate::external_agents::skill_stage::{with_skill_root_preamble, SKILLS_CWD_ALIAS};
 use crate::external_agents::types::RuntimeAgentDef;
 
+#[derive(Clone)]
 pub struct ComposedExternalPrompt {
     pub full_prompt: String,
     pub instructions_block: String,
@@ -70,6 +71,13 @@ pub fn compose_external_prompt(
         instructions_parts.push(skill_section);
     }
 
+    assemble_prompt(instructions_parts, latest_user_message)
+}
+
+fn assemble_prompt(
+    instructions_parts: Vec<String>,
+    latest_user_message: &str,
+) -> ComposedExternalPrompt {
     let instructions_block = instructions_parts.join("\n\n---\n\n");
 
     let mut full = String::new();
@@ -85,6 +93,80 @@ pub fn compose_external_prompt(
         full_prompt: full,
         instructions_block,
     }
+}
+
+/// Upper bound for the history carried into a fresh native session after a rewind. Newest
+/// messages are kept; the CLI still receives the full latest request.
+const REWIND_HISTORY_MAX_CHARS: usize = 60_000;
+
+/// After a rewind, a CLI without native branching starts a fresh native session. This is the one
+/// exception to "no history replay" (R3): the visible Kivio history that remains is carried once
+/// as text, so the CLI knows what the user still sees and nothing that was removed. Tool calls are
+/// represented only by the text around them.
+///
+/// `messages` is the visible history before the request being sent.
+pub fn rewind_history_block(messages: &[ChatMessage]) -> String {
+    let mut entries: Vec<String> = messages
+        .iter()
+        .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
+        .filter(|message| !message.content.trim().is_empty())
+        .map(|message| {
+            let speaker = if message.role == "user" {
+                "User"
+            } else {
+                "Assistant"
+            };
+            format!("{speaker}:\n{}", message.content.trim())
+        })
+        .collect();
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    while let Some(entry) = entries.pop() {
+        let size = entry.chars().count();
+        if used + size > REWIND_HISTORY_MAX_CHARS {
+            if kept.is_empty() {
+                // Even the newest message alone is over budget: keep its beginning.
+                let head: String = entry.chars().take(REWIND_HISTORY_MAX_CHARS).collect();
+                kept.push(format!("{head}\n(This message is truncated.)"));
+            } else {
+                entries.push(entry);
+            }
+            break;
+        }
+        used += size;
+        kept.push(entry);
+    }
+    kept.reverse();
+    let omitted = if entries.is_empty() {
+        ""
+    } else {
+        "(Earlier messages are omitted.)\n\n"
+    };
+    format!(
+        "## Conversation so far\n\nThe user rewound this conversation, so it continues in a new session. \
+         This is the conversation that remains; treat anything else you may recall as removed.\n\n{omitted}{}",
+        kept.join("\n\n")
+    )
+}
+
+/// Compose the first prompt of a fresh native session that replaces a rewound one.
+pub fn compose_external_prompt_with_history(
+    composed: ComposedExternalPrompt,
+    history_block: &str,
+    latest_user_message: &str,
+) -> ComposedExternalPrompt {
+    if history_block.trim().is_empty() {
+        return composed;
+    }
+    let mut parts = Vec::new();
+    if !composed.instructions_block.trim().is_empty() {
+        parts.push(composed.instructions_block);
+    }
+    parts.push(history_block.to_string());
+    assemble_prompt(parts, latest_user_message)
 }
 
 pub fn cwd_hint(cwd: &str, additional_directories: &[AdditionalDirectory]) -> String {
@@ -139,6 +221,65 @@ pub fn build_external_daemon_instructions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(role: &str, content: &str) -> ChatMessage {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("{role}-{content}"),
+            "role": role,
+            "content": content,
+            "timestamp": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn rewind_history_keeps_the_visible_turns_before_the_request() {
+        let history = rewind_history_block(&[
+            message("user", "1"),
+            message("assistant", "noted 1"),
+            message("user", "2"),
+            message("assistant", " "),
+        ]);
+        assert!(history.contains("User:\n1\n\nAssistant:\nnoted 1\n\nUser:\n2"));
+        assert!(!history.contains("omitted"));
+        assert!(rewind_history_block(&[]).is_empty());
+
+        let composed = compose_external_prompt_with_history(
+            compose_external_prompt("system rules", None, None, None, false, "3"),
+            &history,
+            "3",
+        );
+        // The request stays last so native prompt matching still sees only "3".
+        assert!(composed.full_prompt.starts_with("# Instructions"));
+        assert!(composed.full_prompt.ends_with("# User request\n\n3"));
+        assert!(composed.full_prompt.contains("system rules"));
+        assert!(crate::external_agents::session::native_prompt_matches(
+            &composed.full_prompt,
+            "3"
+        ));
+    }
+
+    #[test]
+    fn rewind_history_is_bounded_and_keeps_the_newest_messages() {
+        let long = "x".repeat(REWIND_HISTORY_MAX_CHARS / 2);
+        let history = rewind_history_block(&[
+            message("user", &format!("oldest {long}")),
+            message("user", &format!("middle {long}")),
+            message("user", "newest"),
+        ]);
+        assert!(history.contains("(Earlier messages are omitted.)"));
+        assert!(!history.contains("oldest"));
+        assert!(history.contains("middle"));
+        assert!(history.ends_with("User:\nnewest"));
+
+        let huge = rewind_history_block(&[
+            message("user", "before"),
+            message("assistant", &"y".repeat(REWIND_HISTORY_MAX_CHARS * 2)),
+        ]);
+        assert!(huge.contains("(This message is truncated.)"));
+        assert!(huge.contains("(Earlier messages are omitted.)"));
+        assert!(huge.chars().count() < REWIND_HISTORY_MAX_CHARS + 1_000);
+    }
 
     #[test]
     fn compose_includes_instructions_and_user_request() {
@@ -218,13 +359,7 @@ mod tests {
         let def = crate::external_agents::registry::get_agent_def("claude").expect("claude def");
         assert!(instructions_via_launch_flag(def));
         for other in [
-            "codex",
-            "pi",
-            "kimi",
-            "opencode",
-            "grok",
-            "gemini",
-            "hermes",
+            "codex", "pi", "kimi", "opencode", "grok", "gemini", "hermes",
         ] {
             let def = crate::external_agents::registry::get_agent_def(other).expect("agent def");
             assert!(

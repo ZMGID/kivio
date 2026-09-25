@@ -307,9 +307,13 @@ fn claude_args_with_session_flag(args: &[String], flag: &str, session_id: &str) 
             skip_next = false;
             continue;
         }
-        if arg == "--session-id" || arg == "--resume" {
+        if arg == "--session-id" || arg == "--resume" || arg == "--resume-session-at" {
             // 成对出现，值一起摘掉（值本身可能长得像别的东西，绝不能只摘 flag）。
             skip_next = true;
+            continue;
+        }
+        // 回退分叉（`claude_args_rewound_fork`）的开关只对 `--resume` 有意义，随它一起摘。
+        if arg == "--fork-session" {
             continue;
         }
         out.push(arg.clone());
@@ -324,10 +328,29 @@ fn claude_args_with_session_flag(args: &[String], flag: &str, session_id: &str) 
 /// codex / ACP 的 native id 是握手响应给的；claude 的是我们自己在参数里放进去的，
 /// 所以重连时只能从参数读回来（`system/init` / `result` 的 `session_id` 会在第一轮覆盖它）。
 pub fn claude_session_id_from_args(args: &[String]) -> Option<String> {
-    args.windows(2)
-        .find(|pair| pair[0] == "--session-id" || pair[0] == "--resume")
-        .map(|pair| pair[1].clone())
-        .filter(|id| !id.is_empty())
+    // `--resume <old> --fork-session --session-id <new>` runs as <new>, so `--session-id` wins.
+    let value_of = |flag: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+            .filter(|id| !id.is_empty())
+    };
+    value_of("--session-id").or_else(|| value_of("--resume"))
+}
+
+/// Resume a fork of the session that ends at `entry_id` (a transcript chain-entry UUID), running
+/// as `fork_id`. Claude copies the kept prefix into the new session and leaves the original
+/// transcript untouched (checked with claude 2.1.282: `system/init` reports `fork_id`).
+pub fn claude_args_rewound_fork(args: &[String], entry_id: &str, fork_id: &str) -> Vec<String> {
+    let mut out = args.to_vec();
+    out.extend([
+        "--resume-session-at".to_string(),
+        entry_id.to_string(),
+        "--fork-session".to_string(),
+        "--session-id".to_string(),
+        fork_id.to_string(),
+    ]);
+    out
 }
 
 /// 从启动参数读回 `--model` 的值。
@@ -875,5 +898,32 @@ mod tests {
             None,
         );
         assert_eq!(claude_session_id_from_args(&bare), None);
+    }
+
+    #[test]
+    fn rewound_fork_runs_under_the_fork_id() {
+        let args = claude_args_rewound_fork(&args_with("--resume", "old"), "entry-9", "fork-1");
+        assert!(args.windows(2).any(|w| w == ["--resume", "old"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--resume-session-at", "entry-9"]));
+        assert!(args.contains(&"--fork-session".to_string()));
+        // The live handle and stored binding must follow the fork, not the original session.
+        assert_eq!(
+            claude_session_id_from_args(&args).as_deref(),
+            Some("fork-1")
+        );
+        // Losing the original session drops the whole fork request, not just `--resume`.
+        let fresh = claude_args_fresh_session(&args, "fresh");
+        assert!(
+            !fresh.iter().any(|arg| arg.starts_with("--resume")
+                || arg == "--fork-session"
+                || arg == "entry-9"),
+            "{fresh:?}"
+        );
+        assert_eq!(
+            claude_session_id_from_args(&fresh).as_deref(),
+            Some("fresh")
+        );
     }
 }
