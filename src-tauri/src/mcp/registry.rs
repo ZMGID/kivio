@@ -28,6 +28,9 @@ pub struct NativeToolContext {
     pub run_id: String,
     /// Generation of the issuing agent loop (for cancellation cascade).
     pub generation: u64,
+    /// Agent-loop round of the issuing call. Providers may reuse tool call ids
+    /// across responses, so ids are only unique together with the round.
+    pub round: u32,
     /// Sub-agent nesting depth of the issuing agent loop (0 = top-level).
     pub depth: u8,
 }

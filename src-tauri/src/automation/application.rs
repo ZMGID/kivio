@@ -291,6 +291,7 @@ impl ToolExecutor for WorkflowToolExecutor {
                 tool_call_id: Some(ctx.tool_call_id.to_string()),
                 run_id: ctx.run_id.to_string(),
                 generation: ctx.generation,
+                round: ctx.round,
                 depth: ctx.depth,
             };
             crate::mcp::registry::call_tool(
