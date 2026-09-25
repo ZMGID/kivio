@@ -259,6 +259,25 @@ pub(crate) async fn run_external_cli_reply_in(
         None
     };
 
+    // A rewind truncated only Kivio's copy; the CLI's native session still holds the removed
+    // turns. Decide how to bring it back to the visible history before this prompt is sent.
+    let rewind = (!is_slash
+        && matches!(entry, AgentRunEntry::Send)
+        && crate::external_agents::session::history_rewound(app, &conversation.id))
+    .then(|| {
+        plan_native_rewind(
+            app,
+            def,
+            &conversation.id,
+            &visible_user_prompts(conversation),
+        )
+    });
+    if rewind == Some(NativeRewind::Replay) {
+        // Dropped before resolving the resume context, so this turn opens a fresh native session
+        // and sends the session instructions again.
+        crate::external_agents::session::forget_native_session(app, &conversation.id);
+    }
+
     let resume_ctx = resolve_agent_resume_context(
         app,
         &conversation.id,
@@ -270,7 +289,7 @@ pub(crate) async fn run_external_cli_reply_in(
     let pi_realign = realigns_native_history(
         def.run.regenerate,
         entry,
-        resume_ctx.history_rewound,
+        rewind == Some(NativeRewind::PiFork),
         is_slash,
     );
 
@@ -303,6 +322,26 @@ pub(crate) async fn run_external_cli_reply_in(
         )
     };
     let mut composed = composed;
+    // A fresh native session that replaces a rewound one carries the remaining visible history
+    // once. Codex tries a native revert first and only uses this prompt if that fails.
+    let mut rewind_first_prompt = matches!(
+        rewind,
+        Some(NativeRewind::Replay | NativeRewind::CodexRevert)
+    )
+    .then(|| {
+        crate::external_agents::prompt::compose_external_prompt_with_history(
+            composed.clone(),
+            &crate::external_agents::prompt::rewind_history_block(history_before_request(
+                &conversation.messages,
+            )),
+            latest_user_message,
+        )
+    });
+    if rewind == Some(NativeRewind::Replay) {
+        if let Some(prompt) = rewind_first_prompt.take() {
+            composed = prompt;
+        }
+    }
     // Pi's native `fork` excludes the selected user message. When regenerating (or sending after
     // a rewind to) the very first turn, that leaves a blank native session, so the resubmitted
     // prompt must carry the session instructions again. Non-root forks already retain the
@@ -348,9 +387,12 @@ pub(crate) async fn run_external_cli_reply_in(
         );
         composed.full_prompt.push_str(&image_note);
         composed.full_prompt.push_str(&file_note);
-        if let Some(root_prompt) = pi_regenerate_root_prompt.as_mut() {
-            root_prompt.full_prompt.push_str(&image_note);
-            root_prompt.full_prompt.push_str(&file_note);
+        for prompt in pi_regenerate_root_prompt
+            .iter_mut()
+            .chain(rewind_first_prompt.iter_mut())
+        {
+            prompt.full_prompt.push_str(&image_note);
+            prompt.full_prompt.push_str(&file_note);
         }
     }
 
@@ -454,6 +496,18 @@ pub(crate) async fn run_external_cli_reply_in(
             args
         }
         None => args,
+    };
+    // Claude trims natively: resume a fork of the session that ends at the kept entry. The fork
+    // leaves the original transcript intact; its id is persisted once the turn completes.
+    let args = match &rewind {
+        Some(NativeRewind::ClaudeResumeAt(entry_id)) => {
+            crate::external_agents::defs::claude::claude_args_rewound_fork(
+                &args,
+                entry_id,
+                &Uuid::new_v4().to_string(),
+            )
+        }
+        _ => args,
     };
 
     let extra_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -646,7 +700,11 @@ pub(crate) async fn run_external_cli_reply_in(
             conversation.agent_runtime.external_agent_preset.clone(),
             persistent_mcp,
             &launch_config,
-            &composed.full_prompt,
+            rewind_first_prompt
+                .as_ref()
+                .map_or(composed.full_prompt.as_str(), |prompt| {
+                    prompt.full_prompt.as_str()
+                }),
             persistent_turn_prompt(
                 def.stream_format,
                 &composed.full_prompt,
@@ -656,6 +714,19 @@ pub(crate) async fn run_external_cli_reply_in(
             &extra_writable_roots,
             &additional_cli_dirs,
             pi_regenerate.as_ref(),
+            PersistentRewind {
+                // The live process still holds the removed turns in memory.
+                reconnect: matches!(
+                    rewind,
+                    Some(
+                        NativeRewind::Replay
+                            | NativeRewind::ClaudeResumeAt(_)
+                            | NativeRewind::CodexRevert
+                    )
+                ),
+                codex_visible_users: (rewind == Some(NativeRewind::CodexRevert))
+                    .then(|| visible_user_prompts(conversation)),
+            },
             &mut emit_event,
             &cancel_check,
             approval_host.as_ref(),
@@ -798,13 +869,16 @@ pub(crate) async fn run_external_cli_reply_in(
         }
     }
 
-    let actual_native_session_id = matches!(
+    let rewind_settled = rewind.is_some() && stream_outcome == "completed";
+    // A Claude rewind resumed into a fork with a new id; keep resuming that fork from now on.
+    let claude_forked = rewind_settled && matches!(rewind, Some(NativeRewind::ClaudeResumeAt(_)));
+    let actual_native_session_id = (matches!(
         def.stream_format,
         StreamFormat::PiRpc | StreamFormat::AntigravityStreamJson
-    )
-    .then(|| crate::external_agents::session::load_live_handle(app, &conversation_id))
-    .flatten()
-    .map(|handle| handle.native_id);
+    ) || claude_forked)
+        .then(|| crate::external_agents::session::load_live_handle(app, &conversation_id))
+        .flatten()
+        .map(|handle| handle.native_id);
     persist_delivered_session(
         app,
         &conversation_id,
@@ -816,6 +890,10 @@ pub(crate) async fn run_external_cli_reply_in(
         &daemon_instructions,
         is_slash,
     )?;
+    // Only a completed turn proves the native history now matches; otherwise retry next send.
+    if rewind_settled {
+        crate::external_agents::session::clear_history_rewound(app, &conversation_id);
+    }
 
     // A7：把 CLI 自压的边界落到会话上。此前只发了实时压缩更新、从不落盘，
     // 于是「已压缩 N 次」永远不涨、刷新或重开会话后分隔线消失（那条注释说要记一次压缩，
@@ -933,6 +1011,97 @@ impl StreamSegmentTracker {
     }
 }
 
+/// How this CLI's native history is brought back to the visible history after a rewind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NativeRewind {
+    /// Pi forks its own session tree (the regenerate path).
+    PiFork,
+    /// The native history already matches the visible history.
+    Aligned,
+    /// Claude resumes a fork of its session that ends at this transcript entry.
+    ClaudeResumeAt(String),
+    /// Codex reverts the resumed thread; a fresh thread carrying the history is the fallback.
+    CodexRevert,
+    /// Start a fresh native session that carries the remaining visible history once.
+    Replay,
+}
+
+fn plan_native_rewind(
+    app: &AppHandle,
+    def: &RuntimeAgentDef,
+    conversation_id: &str,
+    visible_users: &[String],
+) -> NativeRewind {
+    let stored = crate::external_agents::session::load_session(app, conversation_id)
+        .filter(|stored| stored.agent_id == def.id);
+    if matches!(def.run.regenerate, RegenerateStrategy::PiRpc) {
+        // Without a native session there is nothing to fork; a fresh one carries the history.
+        return if stored.is_some() {
+            NativeRewind::PiFork
+        } else {
+            NativeRewind::Replay
+        };
+    }
+    match def.stream_format {
+        StreamFormat::CodexAppServer => NativeRewind::CodexRevert,
+        StreamFormat::ClaudeStreamJson => stored
+            .and_then(|stored| {
+                crate::external_agents::import::claude_transcript_prompts(&stored.session_id)
+            })
+            .map_or(NativeRewind::Replay, |prompts| {
+                claude_rewind_from_prompts(&prompts, visible_users)
+            }),
+        _ => NativeRewind::Replay,
+    }
+}
+
+/// Rewinding the first prompt keeps nothing, so a fresh session is the exact equivalent. An
+/// unreadable or compacted transcript cannot be trimmed safely and falls back to replay.
+fn claude_rewind_from_prompts(
+    prompts: &[crate::external_agents::import::ClaudeTranscriptPrompt],
+    visible_users: &[String],
+) -> NativeRewind {
+    use crate::external_agents::session::{native_rewind_point, NativeRewindPoint};
+    let native: Vec<String> = prompts.iter().map(|prompt| prompt.text.clone()).collect();
+    match native_rewind_point(&native, visible_users) {
+        NativeRewindPoint::Aligned => NativeRewind::Aligned,
+        NativeRewindPoint::DropFrom(index) => prompts[index]
+            .parent_uuid
+            .clone()
+            .map_or(NativeRewind::Replay, NativeRewind::ClaudeResumeAt),
+        NativeRewindPoint::Unmatched => NativeRewind::Replay,
+    }
+}
+
+/// Kivio's user prompts, oldest first, ending with the one being sent.
+fn visible_user_prompts(conversation: &Conversation) -> Vec<String> {
+    conversation
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
+        .map(|message| message.content.clone())
+        .collect()
+}
+
+/// The visible history before the request being sent (everything before the last user message).
+fn history_before_request(
+    messages: &[crate::chat::types::ChatMessage],
+) -> &[crate::chat::types::ChatMessage] {
+    let end = messages
+        .iter()
+        .rposition(|message| message.role == "user")
+        .unwrap_or(messages.len());
+    &messages[..end]
+}
+
+/// Rewind work that must happen while the persistent connection is established.
+struct PersistentRewind {
+    /// Replace the live process: it still holds the removed turns in memory.
+    reconnect: bool,
+    /// Codex: revert the resumed thread to these visible prompts before the turn.
+    codex_visible_users: Option<Vec<String>>,
+}
+
 /// Pi moves its native session back to the visible Kivio history before regenerating, and before
 /// the first send after a rewind: rewinding only truncates Kivio's copy, while Pi resumes its own
 /// full transcript. Slash turns are not user messages and keep the rewind pending for the next
@@ -940,15 +1109,18 @@ impl StreamSegmentTracker {
 fn realigns_native_history(
     strategy: RegenerateStrategy,
     entry: AgentRunEntry,
-    history_rewound: bool,
+    pi_fork_rewind: bool,
     is_slash: bool,
 ) -> bool {
     matches!(strategy, RegenerateStrategy::PiRpc)
         && match entry {
             AgentRunEntry::Regenerate => true,
-            AgentRunEntry::Send => history_rewound && !is_slash,
+            AgentRunEntry::Send => pi_fork_rewind && !is_slash,
         }
 }
+
+/// Error prefix: Codex resumed the thread but could not revert it to the rewound history.
+const CODEX_REWIND_UNAVAILABLE: &str = "codex rewind unavailable: ";
 
 struct PiRegenerateRequest {
     visible_users: Vec<crate::external_agents::session::pi_rpc::PiRegenerateUserMessage>,
@@ -981,6 +1153,7 @@ async fn run_persistent_turn<E, C>(
     extra_writable_roots: &[String],
     additional_directories: &[String],
     pi_regenerate: Option<&PiRegenerateRequest>,
+    rewind: PersistentRewind,
     emit: &mut E,
     cancel: &C,
     // 本轮的工具审批出口。`None` = 不接（协议不支持 / 用户没选会询问的权限档位）——
@@ -1020,8 +1193,9 @@ where
     // ⇒ 丢弃条目（actor 自行关停旧进程）并走下面的连接分支**带原生 resume**，于是新 flag
     // 生效而上下文不丢（spec 第 8 条：UI 所见必须与会话实际配置一致）。
     let force_pi_fork = matches!(protocol, StreamFormat::PiRpc) && pi_regenerate.is_some();
+    let force_reconnect = force_pi_fork || rewind.reconnect;
     let previous_control = state.external_live_sessions().control_any(conversation_id);
-    let reusable_control = if force_pi_fork {
+    let reusable_control = if force_reconnect {
         None
     } else {
         state.external_live_sessions().reusable_control(
@@ -1037,7 +1211,7 @@ where
             // native session log. Close the actor and wait for its receiver to disappear first.
             close_live_control(&stale).await?;
         }
-        if force_pi_fork {
+        if force_reconnect {
             state.external_live_sessions().remove(conversation_id);
         }
     }
@@ -1106,7 +1280,7 @@ where
                 // We intended to continue an existing native session iff a matching handle was
                 // persisted. If the resume then fails and we fall back to fresh, the prior context
                 // is lost and the user must be told (R4) rather than silently getting a blank slate.
-                let intended_resume = resume_native.is_some();
+                let mut intended_resume = resume_native.is_some();
                 let connected = match connect_persistent_session(
                     protocol,
                     resolved_bin,
@@ -1122,6 +1296,7 @@ where
                     Some(background_task_sink(app, conversation_id)),
                     Some(dsh_idle_sink(app, conversation_id)),
                     dsh_idle_approvals_for(protocol, app, conversation_id),
+                    rewind.codex_visible_users.as_deref(),
                 )
                 .await
                 {
@@ -1153,6 +1328,33 @@ where
                             Some(background_task_sink(app, conversation_id)),
                             Some(dsh_idle_sink(app, conversation_id)),
                             dsh_idle_approvals_for(protocol, app, conversation_id),
+                            None,
+                        )
+                        .await?
+                    }
+                    // Codex could not revert its thread to the rewound history. Start a fresh
+                    // thread instead: `first_prompt` carries the visible history, so this is not
+                    // a context reset.
+                    Err(err) if err.starts_with(CODEX_REWIND_UNAVAILABLE) => {
+                        eprintln!("[external-agent] {err}; starting a fresh thread");
+                        intended_resume = false;
+                        crate::external_agents::session::clear_live_handle(app, conversation_id);
+                        connect_persistent_session(
+                            protocol,
+                            resolved_bin,
+                            &turn_args,
+                            cwd,
+                            model.as_deref(),
+                            reasoning.as_deref(),
+                            sandbox.as_deref(),
+                            preset.as_deref(),
+                            &mcp_servers,
+                            None,
+                            additional_directories,
+                            Some(background_task_sink(app, conversation_id)),
+                            Some(dsh_idle_sink(app, conversation_id)),
+                            dsh_idle_approvals_for(protocol, app, conversation_id),
+                            None,
                         )
                         .await?
                     }
@@ -1414,6 +1616,7 @@ async fn reconnect_fresh(
         Some(background_task_sink(app, conversation_id)),
         Some(dsh_idle_sink(app, conversation_id)),
         dsh_idle_approvals_for(protocol, app, conversation_id),
+        None,
     )
     .await?;
     let _ = save_live_handle(
@@ -2631,6 +2834,9 @@ async fn connect_persistent_session(
     >,
     dsh_idle_sink: Option<crate::external_agents::session::dsh_jsonrpc::DshIdleSink>,
     dsh_idle_approvals: Option<crate::external_agents::session::live::ApprovalBridge>,
+    // Codex only: after resuming, revert the thread to these visible prompts (see
+    // `CODEX_REWIND_UNAVAILABLE`).
+    codex_rewind: Option<&[String]>,
 ) -> Result<PersistentConnection, String> {
     use crate::external_agents::session::acp::{spawn_acp_session_actor, AcpSession};
     use crate::external_agents::session::claude_stream::{
@@ -2727,6 +2933,13 @@ async fn connect_persistent_session(
                     eprintln!("[external-agent] codex resume failed (thread {tid}): {err}");
                     err
                 })?;
+                let mut session = session;
+                if let Some(visible_users) = codex_rewind {
+                    if let Err(err) = session.revert_to_visible(visible_users).await {
+                        session.close().await;
+                        return Err(format!("{CODEX_REWIND_UNAVAILABLE}{err}"));
+                    }
+                }
                 let id = session.thread_id().to_string();
                 let child_pid = session.child_pid();
                 return Ok(PersistentConnection {
@@ -3648,6 +3861,59 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn claude_rewind_resumes_at_the_entry_before_the_first_removed_prompt() {
+        use crate::external_agents::import::ClaudeTranscriptPrompt;
+        let prompts: Vec<ClaudeTranscriptPrompt> =
+            [(None, "1"), (Some("a1"), "2"), (Some("a2"), "3")]
+                .into_iter()
+                .map(|(parent, text)| ClaudeTranscriptPrompt {
+                    text: text.to_string(),
+                    parent_uuid: parent.map(str::to_string),
+                })
+                .collect();
+        let visible = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            claude_rewind_from_prompts(&prompts, &visible(&["1", "2", "new"])),
+            NativeRewind::ClaudeResumeAt("a2".into())
+        );
+        // Rewinding the first prompt keeps nothing: a fresh session is exact.
+        assert_eq!(
+            claude_rewind_from_prompts(&prompts, &visible(&["new"])),
+            NativeRewind::Replay
+        );
+        assert_eq!(
+            claude_rewind_from_prompts(&prompts, &visible(&["1", "2", "3", "4"])),
+            NativeRewind::Aligned
+        );
+        // A compacted or unrelated transcript is not trimmed.
+        assert_eq!(
+            claude_rewind_from_prompts(&prompts, &visible(&["other", "new"])),
+            NativeRewind::Replay
+        );
+    }
+
+    #[test]
+    fn history_before_request_stops_at_the_last_user_message() {
+        let message = |role: &str, content: &str| -> crate::chat::types::ChatMessage {
+            serde_json::from_value(serde_json::json!({
+                "id": content, "role": role, "content": content, "timestamp": 0
+            }))
+            .unwrap()
+        };
+        let messages = vec![
+            message("user", "1"),
+            message("assistant", "a"),
+            message("user", "2"),
+        ];
+        let kept: Vec<&str> = history_before_request(&messages)
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(kept, ["1", "a"]);
+        assert!(history_before_request(&[]).is_empty());
+    }
+
     #[test]
     fn pi_realigns_on_the_first_ordinary_send_after_a_rewind() {
         use AgentRunEntry::{Regenerate, Send};

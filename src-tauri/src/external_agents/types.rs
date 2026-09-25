@@ -628,11 +628,6 @@ pub struct ExternalAgentSession {
     /// means "let the CLI use its default" (i.e. `--model` was not passed).
     #[serde(default)]
     pub model: Option<String>,
-    /// Kivio history was rewound after this native session recorded later turns. A CLI that can
-    /// branch its native session (Pi) must move back to the visible history before the next send;
-    /// otherwise it silently keeps the removed turns. Cleared once the native session is moved.
-    #[serde(default)]
-    pub history_rewound: bool,
 }
 
 pub fn default_model_option() -> RuntimeModelOption {

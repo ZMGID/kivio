@@ -206,6 +206,87 @@ fn claude_message_text(value: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// A user prompt on the active branch of a Claude transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudeTranscriptPrompt {
+    pub text: String,
+    /// The chain entry just before this prompt: the last entry kept when rewinding it.
+    pub parent_uuid: Option<String>,
+}
+
+/// User prompts on the active branch of a Claude session, oldest first, for rewinding the native
+/// session to the visible history. `None` when the transcript cannot be found or read.
+pub(crate) fn claude_transcript_prompts(session_id: &str) -> Option<Vec<ClaudeTranscriptPrompt>> {
+    use std::io::{BufRead, BufReader};
+
+    let root = claude_projects_root()?;
+    let path = std::fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .map(|dir| dir.path().join(format!("{session_id}.jsonl")))
+        .find(|candidate| candidate.is_file())?;
+    let file = std::fs::File::open(path).ok()?;
+    let entries: Vec<serde_json::Value> = BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect();
+    Some(claude_active_prompts(&entries))
+}
+
+/// Walk from the newest conversational entry back through `parentUuid`. Sidechains (sub-agents),
+/// meta entries and tool results are not user prompts. A compaction boundary has no parent, so
+/// prompts before it are not returned; callers then cannot align and must not trim.
+fn claude_active_prompts(entries: &[serde_json::Value]) -> Vec<ClaudeTranscriptPrompt> {
+    fn uuid(entry: &serde_json::Value) -> Option<&str> {
+        entry.get("uuid").and_then(|v| v.as_str())
+    }
+    fn parent(entry: &serde_json::Value) -> Option<&str> {
+        entry
+            .get("parentUuid")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+    }
+    let main_chain: Vec<&serde_json::Value> = entries
+        .iter()
+        .filter(|entry| entry.get("isSidechain").and_then(|v| v.as_bool()) != Some(true))
+        .filter(|entry| uuid(entry).is_some())
+        .collect();
+    let by_uuid: std::collections::HashMap<&str, &serde_json::Value> = main_chain
+        .iter()
+        .filter_map(|entry| uuid(entry).map(|id| (id, *entry)))
+        .collect();
+    let Some(leaf) = main_chain.iter().rev().find(|entry| {
+        matches!(
+            entry.get("type").and_then(|v| v.as_str()),
+            Some("user") | Some("assistant")
+        )
+    }) else {
+        return Vec::new();
+    };
+    let mut prompts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut cursor = Some(*leaf);
+    while let Some(entry) = cursor {
+        if !seen.insert(uuid(entry)) {
+            break;
+        }
+        let is_prompt = entry.get("type").and_then(|v| v.as_str()) == Some("user")
+            && entry.get("isMeta").and_then(|v| v.as_bool()) != Some(true);
+        if is_prompt {
+            if let Some(text) = claude_message_text(entry) {
+                prompts.push(ClaudeTranscriptPrompt {
+                    text,
+                    parent_uuid: parent(entry).map(str::to_string),
+                });
+            }
+        }
+        cursor = parent(entry).and_then(|id| by_uuid.get(id).copied());
+    }
+    prompts.reverse();
+    prompts
+}
+
 fn truncate_title(text: &str) -> String {
     const MAX_CHARS: usize = 60;
     let mut out: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
@@ -1087,7 +1168,6 @@ pub async fn import_one_session(
                 // 但**不会**丢弃会话。填一个假的反而会让首轮误以为可以跳过。
                 stable_prompt_hash: None,
                 model: None,
-                history_rewound: false,
             },
         )?;
     } else {
@@ -1275,6 +1355,39 @@ mod tests {
         assert_eq!(identity.0, "abc-123");
         assert_eq!(identity.1, r"C:\Users\demo\proj");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claude_active_prompts_follow_the_newest_branch() {
+        use serde_json::json;
+        let entries = vec![
+            json!({"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"1"}}),
+            json!({"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}),
+            // An abandoned branch from a previous rewind.
+            json!({"type":"user","uuid":"old2","parentUuid":"a1","message":{"role":"user","content":"old 2"}}),
+            json!({"type":"assistant","uuid":"olda2","parentUuid":"old2","message":{"role":"assistant","content":"ok"}}),
+            json!({"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","content":[{"type":"text","text":"2"}]}}),
+            json!({"type":"assistant","uuid":"a2","parentUuid":"u2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t"}]}}),
+            json!({"type":"user","uuid":"r2","parentUuid":"a2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}}),
+            json!({"type":"user","uuid":"meta","parentUuid":"r2","isMeta":true,"message":{"role":"user","content":"caveat"}}),
+            json!({"type":"assistant","uuid":"a2b","parentUuid":"meta","message":{"role":"assistant","content":"done"}}),
+            json!({"type":"user","uuid":"side","parentUuid":"a2b","isSidechain":true,"message":{"role":"user","content":"sub-agent"}}),
+            json!({"type":"file-history-snapshot","messageId":"a2b"}),
+        ];
+        let prompts = claude_active_prompts(&entries);
+        assert_eq!(
+            prompts,
+            vec![
+                ClaudeTranscriptPrompt {
+                    text: "1".into(),
+                    parent_uuid: None
+                },
+                ClaudeTranscriptPrompt {
+                    text: "2".into(),
+                    parent_uuid: Some("a1".into())
+                },
+            ]
+        );
     }
 
     #[test]

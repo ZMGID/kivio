@@ -1287,6 +1287,38 @@ const CODEX_THREAD_START_TIMEOUT: Duration = Duration::from_secs(30);
 /// timeout; treating that as "thread missing" opens a blank session.
 const CODEX_THREAD_RESUME_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Upper bound on `thread/turns/list` pages read while aligning a rewind (100 turns each).
+const CODEX_REWIND_MAX_PAGES: usize = 50;
+
+/// `(turn id, user prompt text)` for each turn of a `thread/turns/list` page that starts with a
+/// user message. Turns without one (e.g. compaction) are not user prompts.
+fn codex_prompt_turns(page: &Value) -> Vec<(String, String)> {
+    page.get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| {
+            let id = turn.get("id").and_then(Value::as_str)?;
+            let text = turn
+                .get("items")
+                .and_then(Value::as_array)?
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("userMessage"))
+                .flat_map(|item| {
+                    item.get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter(|input| input.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|input| input.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then(|| (id.to_string(), text))
+        })
+        .collect()
+}
+
 impl CodexAppServerSession {
     /// Spawn `codex app-server`, `initialize`, then create or resume a thread. The process and
     /// thread persist for subsequent `run_turn` calls.
@@ -1405,6 +1437,71 @@ impl CodexAppServerSession {
 
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    /// After a Kivio rewind, drop the turns of the resumed thread that the visible history no
+    /// longer has (`thread/revert` rewrites only the stored history, not files). Fails when the
+    /// prompts cannot be matched or this Codex lacks `thread/turns/list` / `thread/revert`; the
+    /// caller then starts a fresh thread carrying the visible history instead.
+    pub async fn revert_to_visible(&mut self, visible_users: &[String]) -> Result<(), String> {
+        use crate::external_agents::session::{native_rewind_point, NativeRewindPoint};
+
+        let mut turns = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..CODEX_REWIND_MAX_PAGES {
+            let mut params = json!({
+                "threadId": self.thread_id,
+                "sortDirection": "asc",
+                "itemsView": "summary",
+                "limit": 100,
+            });
+            if let Some(cursor) = &cursor {
+                params["cursor"] = json!(cursor);
+            }
+            let page = self.request("thread/turns/list", params).await?;
+            turns.extend(codex_prompt_turns(&page));
+            cursor = page
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|cursor| !cursor.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        if cursor.is_some() {
+            return Err("thread history is too long to align".to_string());
+        }
+        let native: Vec<String> = turns.iter().map(|(_, text)| text.clone()).collect();
+        match native_rewind_point(&native, visible_users) {
+            NativeRewindPoint::Aligned => Ok(()),
+            NativeRewindPoint::DropFrom(index) => self
+                .request(
+                    "thread/revert",
+                    json!({ "threadId": self.thread_id, "beforeTurnId": turns[index].0 }),
+                )
+                .await
+                .map(|_| ()),
+            NativeRewindPoint::Unmatched => {
+                Err("thread history does not match the visible conversation".to_string())
+            }
+        }
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        write_rpc(&mut self.stdin, id, method, params)
+            .await
+            .map_err(|e| format!("{method}: {e}"))?;
+        read_until_response(
+            &mut self.reader,
+            &mut self.stdin,
+            id,
+            CODEX_THREAD_RESUME_TIMEOUT,
+        )
+        .await
+        .map_err(|e| format!("{method}: {e}"))
     }
 
     /// 常驻子进程的 pid。只作为注册表元数据（诊断 / 「两轮是不是同一个进程」），
@@ -2599,6 +2696,29 @@ pub fn spawn_codex_session_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_prompt_turns_keep_user_text_and_turn_ids() {
+        let page = json!({"data": [
+            {"id": "t1", "items": [
+                {"type": "userMessage", "id": "i1", "content": [
+                    {"type": "text", "text": "first"},
+                    {"type": "image", "url": "x"}
+                ]},
+                {"type": "agentMessage", "id": "i2", "text": "ok"}
+            ]},
+            {"id": "compact", "items": [{"type": "contextCompaction", "id": "i3"}]},
+            {"id": "t2", "items": [{"type": "userMessage", "id": "i4", "content": [{"type": "text", "text": "second"}]}]}
+        ], "nextCursor": null});
+        assert_eq!(
+            codex_prompt_turns(&page),
+            vec![
+                ("t1".to_string(), "first".to_string()),
+                ("t2".to_string(), "second".to_string())
+            ]
+        );
+        assert!(codex_prompt_turns(&json!({})).is_empty());
+    }
 
     #[test]
     fn production_codex_paths_do_not_use_the_binary_compatibility_launcher() {

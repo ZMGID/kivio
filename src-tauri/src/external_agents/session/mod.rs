@@ -64,8 +64,6 @@ pub struct AgentResumeContext {
     /// Effective model at delivery time, normalized (empty / "default" → `None`). Persisted
     /// alongside the session so the stored record reflects what the CLI was last asked to use.
     pub delivered_model: Option<String>,
-    /// The stored native session still holds turns removed by a Kivio rewind.
-    pub history_rewound: bool,
 }
 
 /// Normalize a model selection to what actually gets passed to the CLI: blank or the sentinel
@@ -94,7 +92,6 @@ pub fn resolve_agent_resume_context(
             stored_stable_prompt_hash: None,
             skip_instructions: false,
             delivered_model,
-            history_rewound: false,
         };
     }
 
@@ -121,7 +118,6 @@ pub fn resolve_agent_resume_context(
             stored_stable_prompt_hash: stored.stable_prompt_hash.clone(),
             skip_instructions: skip,
             delivered_model,
-            history_rewound: stored.history_rewound,
         };
     }
 
@@ -132,7 +128,6 @@ pub fn resolve_agent_resume_context(
         stored_stable_prompt_hash: None,
         skip_instructions: false,
         delivered_model,
-        history_rewound: false,
     }
 }
 
@@ -159,8 +154,6 @@ pub fn replace_stored_session_id(
     let _ = save_session(app, &stored);
 }
 
-/// Bind the native session produced by a Pi fork. The fork already moved the native history to
-/// the visible Kivio history, so a pending rewind is settled too.
 pub fn update_stored_session_id(
     app: &AppHandle,
     conversation_id: &str,
@@ -172,21 +165,41 @@ pub fn update_stored_session_id(
         return Ok(());
     };
     stored.session_id = session_id.to_string();
-    stored.history_rewound = false;
     save_session(app, &stored)
 }
 
-/// Record that Kivio removed turns the native session still holds. Without a stored native
-/// session there is nothing to move back, so this is a no-op.
+// Rewinding truncates only Kivio's copy of an external conversation; the CLI's native session
+// still holds the removed turns. This marker records that the native history must be brought
+// back to the visible history before the next ordinary send. It lives beside the bindings but
+// is not a `.json` binding file, so binding scans (`import::bound_sessions`) never see it.
+fn rewound_marker_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
+    Ok(sessions_dir(app)?.join(format!("rewound-{conversation_id}.marker")))
+}
+
 pub fn mark_history_rewound(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
-    let Some(mut stored) = load_session(app, conversation_id) else {
-        return Ok(());
-    };
-    if stored.history_rewound {
-        return Ok(());
+    let path = rewound_marker_path(app, conversation_id)?;
+    crate::chat::storage::atomic_write(&path, "", "external agent rewind marker")
+}
+
+pub fn history_rewound(app: &AppHandle, conversation_id: &str) -> bool {
+    rewound_marker_path(app, conversation_id).is_ok_and(|path| path.exists())
+}
+
+/// Drop this conversation's native session binding (resume record and live handle) so the next
+/// connection starts a fresh native session. The CLI's own transcript is left untouched, and so is
+/// the import record and the rewind marker.
+pub fn forget_native_session(app: &AppHandle, conversation_id: &str) {
+    if let Ok(path) = session_path(app, conversation_id) {
+        let _ = fs::remove_file(path);
     }
-    stored.history_rewound = true;
-    save_session(app, &stored)
+    clear_live_handle(app, conversation_id);
+}
+
+/// Called once a turn has run against the realigned native history.
+pub fn clear_history_rewound(app: &AppHandle, conversation_id: &str) {
+    if let Ok(path) = rewound_marker_path(app, conversation_id) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 pub fn persist_delivered_session(
@@ -215,7 +228,6 @@ pub fn persist_delivered_session(
                     session_id: session_id.to_string(),
                     stable_prompt_hash: Some(stable_prompt_hash(instructions)),
                     model: resume_ctx.delivered_model.clone(),
-                    history_rewound: false,
                 },
             )?;
         }
@@ -237,9 +249,116 @@ pub fn persist_delivered_session(
     Ok(())
 }
 
+/// Whether a user prompt recorded by a CLI is the visible Kivio prompt. Kivio may have wrapped it
+/// in `# Instructions … # User request` and appended attachment notes, so compare the user
+/// section and accept a trailing note. A blank visible prompt (image-only) never matches by text.
+pub(crate) fn native_prompt_matches(native_text: &str, visible_text: &str) -> bool {
+    fn normalize_space(value: &str) -> String {
+        value.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    let expected = normalize_space(visible_text);
+    if expected.is_empty() {
+        return false;
+    }
+    let user = native_text
+        .rsplit_once("# User request")
+        .map(|(_, value)| value.trim_start_matches(['\r', '\n', ' ', '\t']))
+        .unwrap_or(native_text);
+    let actual = normalize_space(user);
+    actual == expected
+        || actual
+            .strip_prefix(&expected)
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+}
+
+/// Where a CLI's native history stands relative to the visible Kivio history after a rewind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeRewindPoint {
+    /// The native history already ends where the visible history does: nothing to drop.
+    Aligned,
+    /// Drop the native user turn at this index and every turn after it.
+    DropFrom(usize),
+    /// The histories cannot be matched safely; the native session must not be trimmed.
+    Unmatched,
+}
+
+/// `native` holds the CLI's user prompts on its active history, oldest first. `visible` holds
+/// Kivio's user prompts, oldest first, ending with the prompt about to be sent. A blank visible
+/// prompt (image-only) is matched by position only.
+pub fn native_rewind_point(native: &[String], visible: &[String]) -> NativeRewindPoint {
+    let Some((_, kept)) = visible.split_last() else {
+        return NativeRewindPoint::Unmatched;
+    };
+    let prefix_matches = native.len() >= kept.len()
+        && native.iter().zip(kept).all(|(native, visible)| {
+            visible.trim().is_empty() || native_prompt_matches(native, visible)
+        });
+    if !prefix_matches {
+        NativeRewindPoint::Unmatched
+    } else if native.len() == kept.len() {
+        NativeRewindPoint::Aligned
+    } else {
+        NativeRewindPoint::DropFrom(kept.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{normalize_model, stable_prompt_hash};
+    use super::{
+        native_prompt_matches, native_rewind_point, normalize_model, stable_prompt_hash,
+        NativeRewindPoint,
+    };
+
+    fn prompts(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn native_rewind_point_drops_from_the_first_removed_turn() {
+        let native = prompts(&["1", "2", "3", "4", "5"]);
+        assert_eq!(
+            native_rewind_point(&native, &prompts(&["1", "2", "again 3"])),
+            NativeRewindPoint::DropFrom(2)
+        );
+        // Rewinding the first prompt drops the whole native history.
+        assert_eq!(
+            native_rewind_point(&native, &prompts(&["new"])),
+            NativeRewindPoint::DropFrom(0)
+        );
+    }
+
+    #[test]
+    fn native_rewind_point_leaves_aligned_or_unknown_histories_alone() {
+        let native = prompts(&["1", "2"]);
+        // The removed prompt never reached the CLI.
+        assert_eq!(
+            native_rewind_point(&native, &prompts(&["1", "2", "3"])),
+            NativeRewindPoint::Aligned
+        );
+        // A kept prompt differs, or the CLI compacted its early turns away.
+        assert_eq!(
+            native_rewind_point(&native, &prompts(&["1", "other", "3"])),
+            NativeRewindPoint::Unmatched
+        );
+        assert_eq!(
+            native_rewind_point(&prompts(&["2"]), &prompts(&["1", "2", "3"])),
+            NativeRewindPoint::Unmatched
+        );
+        assert_eq!(
+            native_rewind_point(&native, &[]),
+            NativeRewindPoint::Unmatched
+        );
+    }
+
+    #[test]
+    fn native_prompt_matching_ignores_kivio_wrappers_and_notes() {
+        let wrapped = "# Instructions (read first)\n\nBe brief\n\n---\n\n# User request\n\nfix  the bug\n\n[attached: a.png]";
+        assert!(native_prompt_matches(wrapped, "fix the bug"));
+        // A trailing note may follow the prompt, but not the rest of a word.
+        assert!(!native_prompt_matches(wrapped, "fix the bu"));
+        assert!(!native_prompt_matches(wrapped, "fix a bug"));
+        assert!(!native_prompt_matches("anything", "  "));
+    }
 
     #[test]
     fn stable_prompt_hash_is_deterministic() {
@@ -402,6 +521,9 @@ pub fn remove_all_bindings(app: &AppHandle, conversation_id: &str) -> Vec<String
     }
     if let Ok(base) = sessions_dir(app) {
         targets.push(base.join(format!("imported-{conversation_id}.json")));
+    }
+    if let Ok(path) = rewound_marker_path(app, conversation_id) {
+        targets.push(path);
     }
     for path in targets {
         if !path.exists() {

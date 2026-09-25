@@ -1539,24 +1539,8 @@ fn pi_user_entry_text(entry: &Value) -> Option<String> {
     .then(|| flatten_pi_tool_content(message.get("content").unwrap_or(&Value::Null)))
 }
 
-fn canonical_pi_user_prompt(text: &str) -> String {
-    let user = text
-        .rsplit_once("# User request")
-        .map(|(_, value)| value.trim_start_matches(['\r', '\n', ' ', '\t']))
-        .unwrap_or(text);
-    normalize_space(user)
-}
-
 fn pi_prompt_matches(entry_text: &str, visible_text: &str) -> bool {
-    let expected = normalize_space(visible_text);
-    if expected.is_empty() {
-        return false;
-    }
-    let actual = canonical_pi_user_prompt(entry_text);
-    actual == expected
-        || actual
-            .strip_prefix(&expected)
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+    super::native_prompt_matches(entry_text, visible_text)
 }
 
 fn active_pi_branch<'a>(entries: &'a [Value], leaf_id: &str) -> Result<Vec<&'a Value>, String> {
