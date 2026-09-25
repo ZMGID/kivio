@@ -59,6 +59,25 @@ pub(crate) fn is_valid_artifact_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
+/// Read selection and result registration must use the same ordered IDs.
+/// Empty optional fields from model calls are not artifact references.
+pub(crate) fn input_artifact_ids(arguments: &Value) -> Result<Vec<String>, String> {
+    let Some(value) = arguments.get("artifact_ids") else {
+        return Ok(Vec::new());
+    };
+    let values = value.as_array().ok_or("artifact_ids must be an array")?;
+    let mut ids = Vec::new();
+    for value in values {
+        let Some(id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
 fn record_path(root: &Path, id: &str) -> Result<PathBuf, String> {
     if !is_valid_artifact_id(id) {
         return Err("Invalid artifact ID".into());
@@ -427,6 +446,15 @@ fn register(
     Ok(record)
 }
 
+fn edit_parent(root: &Path, conversation: &str, arguments: &Value) -> Result<Option<ArtifactRecord>, String> {
+    let ids = input_artifact_ids(arguments)?;
+    let [id] = ids.as_slice() else {
+        return Ok(None);
+    };
+    Ok(load(root, id).ok()
+        .filter(|record| record.conversation_id == conversation))
+}
+
 pub fn prepare_output<'a>(
     app: &AppHandle,
     conversation_id: &str,
@@ -441,25 +469,15 @@ pub fn prepare_output<'a>(
     let source_tool = tool.name.clone();
     let trusted_native = tool.source == "native";
     let generated = tool.source == "mixer" && tool.name == "mixer_generate_image";
-    let prepared = trusted_native
-        && tool.name == "present_artifacts"
-        && arguments["mode"].as_str() != Some("preview");
-    let read_ids: Vec<String> = if trusted_native && tool.name == "read" {
-        arguments["artifact_ids"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect()
+    let presentation = trusted_native && tool.name == "present_artifacts";
+    let prepared = presentation && arguments["mode"].as_str() != Some("preview");
+    let read_ids = if trusted_native && tool.name == "read" {
+        input_artifact_ids(arguments)
     } else {
-        Vec::new()
+        Ok(Vec::new())
     };
-    let parent = arguments["artifact_ids"]
-        .as_array()
-        .filter(|ids| ids.len() == 1)
-        .and_then(|ids| ids[0].as_str())
-        .map(str::to_string);
-    let present_ids: Vec<String> = if prepared {
+    let edit_arguments = generated.then(|| arguments.clone());
+    let present_ids: Vec<String> = if presentation {
         // Native presentation already filtered malformed IDs. Re-reading the
         // raw arguments here would reintroduce them and discard valid files.
         output
@@ -478,13 +496,20 @@ pub fn prepare_output<'a>(
         if output.is_error || (output.artifacts.is_empty() && present_ids.is_empty()) {
             return Ok(output);
         }
+        let read_ids = read_ids?;
         tauri::async_runtime::spawn_blocking(move || {
             let root = root(&app)?;
             for id in &present_ids {
                 resolve(&app, &conversation_id, id)?;
-                let mut record = load(&root, id)?;
-                record.delivered = true;
-                save(&root, &record)?;
+            }
+            // Validate every selected ID before marking any file delivered.
+            // Preview shares validation but does not publish to Works.
+            if prepared {
+                for id in &present_ids {
+                    let mut record = load(&root, id)?;
+                    record.delivered = true;
+                    save(&root, &record)?;
+                }
             }
             if !read_ids.is_empty() && read_ids.len() == output.artifacts.len() {
                 for (artifact, id) in output.artifacts.iter_mut().zip(&read_ids) {
@@ -492,13 +517,9 @@ pub fn prepare_output<'a>(
                 }
                 return Ok(output);
             }
-            let parent_record = if generated && output.artifacts.len() == 1 {
-                parent
-                    .as_deref()
-                    .and_then(|id| load(&root, id).ok())
-                    .filter(|r| r.conversation_id == conversation_id)
-            } else {
-                None
+            let parent_record = match edit_arguments.as_ref() {
+                Some(arguments) if output.artifacts.len() == 1 => edit_parent(&root, &conversation_id, arguments)?,
+                _ => None,
             };
             for artifact in &mut output.artifacts {
                 let id = format!("art_{}", uuid::Uuid::new_v4().simple());
@@ -903,6 +924,16 @@ pub async fn chat_artifact_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_artifact_ids_ignore_empty_placeholders_and_deduplicate() {
+        assert!(input_artifact_ids(&serde_json::json!({"artifact_ids": ["", " "]})).unwrap().is_empty());
+        assert_eq!(input_artifact_ids(&serde_json::json!({
+            "artifact_ids": [" art_first ", "", "art_second", "art_first"]
+        })).unwrap(), vec!["art_first", "art_second"]);
+        assert!(input_artifact_ids(&serde_json::json!({})).unwrap().is_empty());
+        assert!(input_artifact_ids(&serde_json::json!({"artifact_ids": "art_first"})).is_err());
+    }
+
     fn record(id: &str, content: &[u8]) -> ArtifactRecord {
         ArtifactRecord {
             id: id.into(),
@@ -923,6 +954,21 @@ mod tests {
                 size_bytes: None,
             },
         }
+    }
+
+    #[test]
+    fn tool_contract_edit_parent_uses_normalized_single_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let original = record("art_original", b"image");
+        save(root.path(), &original).unwrap();
+        for ids in [serde_json::json!([" art_original "]), serde_json::json!(["art_original", "", "art_original"])] {
+            let parent = edit_parent(root.path(), "conv_test", &serde_json::json!({"artifact_ids": ids}))
+                .unwrap().expect("one normalized reference must retain its work");
+            assert_eq!(parent.id, original.id);
+            assert_eq!(parent.work_id, original.work_id);
+        }
+        assert!(edit_parent(root.path(), "other_conversation", &serde_json::json!({"artifact_ids": ["art_original"]})).unwrap().is_none());
+        assert!(edit_parent(root.path(), "conv_test", &serde_json::json!({"artifact_ids": ["art_original", "art_other"]})).unwrap().is_none());
     }
     #[test]
     fn register_keeps_existing_source_path_and_does_not_copy() {

@@ -1650,7 +1650,7 @@ fn collect_mixer_input_images(
     drafts: &[crate::chat::ChatMessage],
     arguments: &Value,
 ) -> Result<Vec<InputImage>, String> {
-    let artifact_ids = string_list_arg(arguments, "artifact_ids");
+    let artifact_ids = crate::chat::artifacts::input_artifact_ids(arguments)?;
     let paths = string_list_arg(arguments, "paths");
     let mut images = Vec::new();
     let mut missing = Vec::new();
