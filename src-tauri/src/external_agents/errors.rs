@@ -328,7 +328,7 @@ mod tests {
                 "initialize: ACP handshake timeout",
                 None,
                 "",
-                "cursor-agent"
+                "opencode"
             )
             .kind,
             ExternalAgentErrorKind::Timeout

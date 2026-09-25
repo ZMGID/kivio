@@ -1263,7 +1263,6 @@ mod tests {
         let cases: &[(&str, &[&str])] = &[
             ("claude", &["update"]),
             ("codex", &["update"]),
-            ("cursor-agent", &["update"]),
             ("opencode", &["upgrade"]),
             ("pi", &["update", "--self"]),
             ("grok", &["update"]),

@@ -404,7 +404,6 @@ export const i18n = {
     externalAgentsModelsCount: '{count} 个模型',
     externalAgentsPath: '路径',
     externalAgentsVersion: '版本',
-    externalAgentsCursorToolLimit: '流式协议不暴露工具步骤，Chat 中仅显示最终回复文本。',
     // 第三方供应商（中转站）
     externalAgentsProviderSection: '供应商',
     externalAgentsProviderNone: '使用 CLI 自身配置',
@@ -2376,7 +2375,6 @@ export const i18n = {
     externalAgentsModelsCount: '{count} model(s)',
     externalAgentsPath: 'Path',
     externalAgentsVersion: 'Version',
-    externalAgentsCursorToolLimit: 'The stream protocol does not expose tool steps; Chat only shows the final reply text.',
     // Third-party providers (relays)
     externalAgentsProviderSection: 'Provider',
     externalAgentsProviderNone: "Use the CLI's own config",

@@ -222,7 +222,6 @@ mod tests {
             "pi",
             "kimi",
             "opencode",
-            "cursor-agent",
             "grok",
             "gemini",
             "hermes",

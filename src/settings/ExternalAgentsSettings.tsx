@@ -678,10 +678,6 @@ function AgentDetail({
         )}
       </div>
 
-      {agent.id === 'cursor-agent' && agent.available && (
-        <p className="kv-row-desc mb-3">{t.externalAgentsCursorToolLimit}</p>
-      )}
-
       <ProviderSection
         lang={lang}
         agentId={agent.id}

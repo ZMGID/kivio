@@ -21,7 +21,6 @@ export function isAskUserToolName(name: string): boolean {
     || folded === 'askuserquestion'
     || folded === 'requestuserinput'
     || folded === 'requestuserinputasync'
-    || folded === 'cursor/askquestion'
     || folded === 'elicitation/create'
   ) {
     return true

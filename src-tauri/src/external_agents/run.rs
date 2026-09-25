@@ -4157,7 +4157,7 @@ mod tests {
         assert!(needs_host("dsh"));
         assert!(needs_host("codex"));
         assert!(needs_host("grok"));
-        assert!(needs_host("cursor-agent"));
+        assert!(get_agent_def("cursor-agent").is_none());
         assert!(get_agent_def("cursor").is_none());
         assert!(!needs_host("claude"));
     }
@@ -4376,7 +4376,7 @@ mod tests {
         assert_eq!(
             persistent_failure_action(
                 "ACP session exited mid-turn",
-                "cursor-agent",
+                "opencode",
                 false,
                 false,
                 false
@@ -4387,7 +4387,7 @@ mod tests {
         assert_eq!(
             persistent_failure_action(
                 "ACP session exited mid-turn",
-                "cursor-agent",
+                "opencode",
                 true,
                 false,
                 false
@@ -4511,7 +4511,7 @@ mod tests {
         assert_eq!(
             persistent_failure_action(
                 "session/load: Session not found",
-                "cursor-agent",
+                "opencode",
                 false,
                 false,
                 true

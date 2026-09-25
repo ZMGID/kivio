@@ -4,7 +4,6 @@ use crate::external_agents::types::RuntimeAgentDef;
 pub const AGENT_DEFS: &[RuntimeAgentDef] = &[
     claude::CLAUDE_AGENT_DEF,
     codex::CODEX_AGENT_DEF,
-    acp::CURSOR_AGENT_DEF,
     acp::OPENCODE_AGENT_DEF,
     acp::GEMINI_AGENT_DEF,
     acp::KIMI_AGENT_DEF,
@@ -29,8 +28,8 @@ mod tests {
     };
 
     #[test]
-    fn registry_has_eleven_agents() {
-        assert_eq!(AGENT_DEFS.len(), 11);
+    fn registry_has_ten_agents() {
+        assert_eq!(AGENT_DEFS.len(), 10);
         assert!(get_agent_def("antigravity").is_some());
         assert!(get_agent_def("claude").is_some());
         assert!(get_agent_def("opencode").is_some());
@@ -38,6 +37,7 @@ mod tests {
         assert!(get_agent_def("hermes").is_some());
         assert!(get_agent_def("grok").is_some());
         assert!(get_agent_def("dsh").is_some());
+        assert!(get_agent_def("cursor-agent").is_none());
         assert!(get_agent_def("unknown").is_none());
     }
 
@@ -58,11 +58,6 @@ mod tests {
                 "codex",
                 CurrentConfigStrategy::Codex,
                 ProviderProfileStrategy::Codex,
-            ),
-            (
-                "cursor-agent",
-                CurrentConfigStrategy::None,
-                ProviderProfileStrategy::Environment,
             ),
             (
                 "opencode",
@@ -282,7 +277,7 @@ mod tests {
             assert_eq!(def.sandbox_options, *expected, "sandbox options for {id}");
         }
 
-        for id in ["cursor-agent", "opencode", "gemini", "kimi", "pi", "hermes"] {
+        for id in ["opencode", "gemini", "kimi", "pi", "hermes"] {
             let def = get_agent_def(id).expect("agent must be registered");
             assert!(
                 def.sandbox_options.is_empty(),

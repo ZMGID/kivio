@@ -367,7 +367,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
   beforeEach(() => {
     detectAgents.mockReset()
     detectAgents.mockResolvedValue([
-      { id: 'cursor', name: 'Cursor Agent', available: true, models: [{ id: 'default', label: 'Default' }] },
+      { id: 'opencode', name: 'OpenCode', available: true, models: [{ id: 'default', label: 'Default' }] },
       { id: 'claude', name: 'Claude Code', available: true, models: [{ id: 'default', label: 'Default' }] },
     ])
   })
@@ -376,7 +376,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
     const onRuntimeChange = vi.fn()
     render(
       <RuntimePicker
-        agentRuntime={runtime}
+        agentRuntime={{ ...runtime, externalAgentId: 'opencode' }}
         onRuntimeChange={onRuntimeChange}
         conversationId="c1"
         locked
@@ -388,7 +388,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
       fireEvent.click(screen.getAllByRole('button')[0])
     })
     expect(screen.getByText('已绑定，新建可切换')).toBeInTheDocument()
-    // 非当前代理全部禁用：Kivio Agent / Chat 与 claude；当前 agent（cursor）保持可选。
+    // 非当前代理全部禁用：Kivio Agent / Chat 与 claude；当前 agent（opencode）保持可选。
     expect(screen.getByRole('radio', { name: 'Kivio Agent' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: 'Kivio Chat' })).toBeDisabled()
     act(() => {
@@ -396,7 +396,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
     })
     expect(onRuntimeChange).not.toHaveBeenCalled()
     expect(screen.getByRole('radio', { name: /Claude Code/ })).toBeDisabled()
-    expect(screen.getByRole('radio', { name: /Cursor Agent/ })).not.toBeDisabled()
+    expect(screen.getByRole('radio', { name: /OpenCode/ })).not.toBeDisabled()
   })
 
 
@@ -437,7 +437,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
     const onRuntimeChange = vi.fn()
     render(
       <RuntimePicker
-        agentRuntime={runtime}
+        agentRuntime={{ ...runtime, externalAgentId: 'opencode' }}
         onRuntimeChange={onRuntimeChange}
         conversationId={null}
       />,
@@ -464,7 +464,7 @@ describe('RuntimePicker（一 agent 一对话绑定锁）', () => {
     const onRuntimeChange = vi.fn()
     render(
       <RuntimePicker
-        agentRuntime={runtime}
+        agentRuntime={{ ...runtime, externalAgentId: 'opencode' }}
         onRuntimeChange={onRuntimeChange}
         conversationId="c1"
       />,

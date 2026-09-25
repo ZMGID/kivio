@@ -1,4 +1,4 @@
-//! Shared definition for the ACP-family external agents (cursor / gemini / opencode / hermes / kimi).
+//! Shared definition for the ACP-family external agents (gemini / opencode / hermes / kimi).
 //!
 //! All launch over the Agent Client Protocol (`StreamFormat::AcpJsonRpc`), probe models via
 //! `ModelProbeStrategy::Acp`, discover slash commands via `SlashStrategy::Acp`, and build a
@@ -105,13 +105,6 @@ const ACP_IMPORT_POLICY: AgentImportPolicy = AgentImportPolicy {
     history_title: super::super::types::HistoryTitleStrategy::None,
 };
 
-const CURSOR_MODELS: &[(&str, &str)] = &[
-    ("default", "Default"),
-    ("auto", "auto"),
-    ("sonnet-4", "sonnet-4"),
-    ("gpt-5", "gpt-5"),
-];
-
 const GEMINI_MODELS: &[(&str, &str)] = &[
     ("default", "Default"),
     ("gemini-3-pro-preview", "gemini-3-pro-preview"),
@@ -149,21 +142,6 @@ const HERMES_MODELS: &[(&str, &str)] = &[
 ];
 
 const GEMINI_ENV: &[(&str, &str)] = &[("GEMINI_CLI_TRUST_WORKSPACE", "true")];
-
-const CURSOR_INSTALL: AgentInstallSpec = AgentInstallSpec {
-    npm_package: None,
-    npm_install_args: &[],
-    pypi_package: None,
-    script_unix: Some("curl https://cursor.com/install -fsS | bash"),
-    script_windows: Some("irm 'https://cursor.com/install?win32=true' | iex"),
-    update: UpdateStrategy::Command(&["update"]),
-    latest_version: LatestVersionStrategy::Registry,
-    docs: "https://cursor.com/docs/cli",
-    config_dir: Some(".cursor"),
-    config_dir_env: None,
-    requires_pnpm: false,
-    post_install: PostInstallStrategy::None,
-};
 
 const GEMINI_INSTALL: AgentInstallSpec = AgentInstallSpec {
     npm_package: Some("@google/gemini-cli"),
@@ -242,27 +220,6 @@ const KIMI_MODELS: &[(&str, &str)] = &[
         "K2.7 Coding (kimi-code/kimi-for-coding)",
     ),
 ];
-
-pub const CURSOR_AGENT_DEF: RuntimeAgentDef = acp_def(
-    "cursor-agent",
-    "Cursor Agent",
-    "cursor-agent",
-    &[],
-    Some(&["status"]),
-    CURSOR_MODELS,
-    &["acp"],
-    &[],
-    ModelProbeStrategy::Acp,
-    CurrentConfigStrategy::None,
-    ProviderProfileStrategy::Environment,
-    ContextWindowStrategy::Generic,
-    UsageFallbackStrategy::None,
-    super::super::types::AgentErrorPolicy::login("cursor-agent login"),
-    None,
-    ACP_IMPORT_POLICY,
-    CURSOR_INSTALL,
-    build_acp_args,
-);
 
 pub const GEMINI_AGENT_DEF: RuntimeAgentDef = acp_def(
     "gemini",
@@ -369,7 +326,6 @@ mod tests {
             sandbox: None,
         };
         let cases: &[(&RuntimeAgentDef, &[&str])] = &[
-            (&CURSOR_AGENT_DEF, &["acp"]),
             (&GEMINI_AGENT_DEF, &["--acp"]),
             (&OPENCODE_AGENT_DEF, &["acp"]),
             (&HERMES_AGENT_DEF, &["acp", "--accept-hooks"]),

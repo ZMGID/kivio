@@ -23,8 +23,6 @@ function agentDisplayName(agentId: string): string {
       return 'OpenCode'
     case 'codex':
       return 'Codex'
-    case 'cursor':
-      return 'Cursor Agent'
     case 'gemini':
       return 'Gemini CLI'
     case 'kimi':

@@ -4,7 +4,6 @@ import Antigravity from '@lobehub/icons/es/Antigravity/components/Color'
 const ICON_EXT: Record<string, 'svg'> = {
   claude: 'svg',
   codex: 'svg',
-  'cursor-agent': 'svg',
   opencode: 'svg',
   gemini: 'svg',
   kimi: 'svg',
@@ -14,7 +13,7 @@ const ICON_EXT: Record<string, 'svg'> = {
   dsh: 'svg',
 }
 
-const MONO_ICONS = new Set(['codex', 'cursor-agent', 'opencode', 'hermes', 'grok'])
+const MONO_ICONS = new Set(['codex', 'opencode', 'hermes', 'grok'])
 
 interface AgentIconProps {
   id: string
