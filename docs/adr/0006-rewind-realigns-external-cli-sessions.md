@@ -8,8 +8,8 @@ status: accepted
 
 现在回退分两步：
 
-1. 截断前在 `external-agent-sessions/rewound-<对话 id>.marker` 记一笔「待回退」。记不下就整体失败，不截断。
-2. 下一轮普通发送（斜杠命令除外）先把原生历史拉回可见历史，再发这条消息；这一轮完整成功才清除标记，失败则下一轮重试。
+1. 确认目标是用户提问后、截断之前，在 `external-agent-sessions/rewound-<对话 id>.marker` 记一笔「待回退」。记不下就整体失败，不截断；被拒绝的回退不留标记，以免补历史的 CLI 无谓地换掉会话。
+2. 下一轮普通发送（斜杠命令除外）先把原生历史拉回可见历史，再发这条消息；这一轮完整成功才清除标记。Pi / Claude 的原生回退那一轮出错时，标记改为「补历史」，下一轮不再重试同一种原生回退（例如 CLI 去掉了所依赖的参数，重试只会一直失败）。
 
 各 CLI 的拉回方式：
 
@@ -31,6 +31,7 @@ Claude 转录读不到、对不上（例如 CLI 压缩过上下文），或 Code
 ## Consequences
 
 - 「补历史」是「不重放历史」原则的一次性例外：只在回退后的第一轮，只带可见的文字（工具调用只剩前后文字），上限约 6 万字符，保留最新的部分。
-- Claude 的做法依赖隐藏参数 `--resume-session-at`，在 claude 2.1.282 上实测：`system/init` 报告的是 `--session-id` 指定的新 id，新转录只含保留的前缀，原转录不变。CLI 若去掉该参数，续接会失败并走已有的会话重置提示。
+- Claude 的做法依赖隐藏参数 `--resume-session-at`，在 claude 2.1.282 上实测：`system/init` 报告的是 `--session-id` 指定的新 id，新转录只含保留的前缀，原转录不变。CLI 若去掉该参数，那一轮会报错。
+- Codex 在 0.157.0 上实测：`thread/turns/list` 的 `summary` 视图带 `userMessage`，`thread/revert` 后重新 `thread/resume` 仍只剩保留的轮次。更早的版本若没有这两个方法，自动退到补历史。
 - Codex 的 `thread/revert` 只改写线程历史，不撤销文件改动；「回到这里」对其他 CLI 同样不撤销文件改动。
 - 删除单条消息仍不同步到 CLI，不在本决定范围内。

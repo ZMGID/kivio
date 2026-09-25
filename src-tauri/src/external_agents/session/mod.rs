@@ -176,13 +176,41 @@ fn rewound_marker_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf
     Ok(sessions_dir(app)?.join(format!("rewound-{conversation_id}.marker")))
 }
 
+const REPLAY_MARKER: &str = "replay";
+
+/// How a pending rewind is to be applied on the next send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingRewind {
+    /// Try the CLI's native way of trimming its session first.
+    Native,
+    /// A native attempt already failed: start a fresh session carrying the visible history.
+    Replay,
+}
+
 pub fn mark_history_rewound(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
     let path = rewound_marker_path(app, conversation_id)?;
     crate::chat::storage::atomic_write(&path, "", "external agent rewind marker")
 }
 
-pub fn history_rewound(app: &AppHandle, conversation_id: &str) -> bool {
-    rewound_marker_path(app, conversation_id).is_ok_and(|path| path.exists())
+/// A native rewind turn failed; retrying it would fail the same way (e.g. a CLI that dropped a
+/// flag), so the next send replays instead.
+pub fn require_rewind_replay(app: &AppHandle, conversation_id: &str) {
+    if let Ok(path) = rewound_marker_path(app, conversation_id) {
+        let _ = crate::chat::storage::atomic_write(
+            &path,
+            REPLAY_MARKER,
+            "external agent rewind marker",
+        );
+    }
+}
+
+pub fn pending_rewind(app: &AppHandle, conversation_id: &str) -> Option<PendingRewind> {
+    let raw = fs::read_to_string(rewound_marker_path(app, conversation_id).ok()?).ok()?;
+    Some(if raw.trim() == REPLAY_MARKER {
+        PendingRewind::Replay
+    } else {
+        PendingRewind::Native
+    })
 }
 
 /// Drop this conversation's native session binding (resume record and live handle) so the next

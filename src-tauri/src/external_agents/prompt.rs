@@ -126,8 +126,14 @@ pub fn rewind_history_block(messages: &[ChatMessage]) -> String {
     let mut used = 0usize;
     while let Some(entry) = entries.pop() {
         let size = entry.chars().count();
-        if used + size > REWIND_HISTORY_MAX_CHARS && !kept.is_empty() {
-            entries.push(entry);
+        if used + size > REWIND_HISTORY_MAX_CHARS {
+            if kept.is_empty() {
+                // Even the newest message alone is over budget: keep its beginning.
+                let head: String = entry.chars().take(REWIND_HISTORY_MAX_CHARS).collect();
+                kept.push(format!("{head}\n(This message is truncated.)"));
+            } else {
+                entries.push(entry);
+            }
             break;
         }
         used += size;
@@ -265,6 +271,14 @@ mod tests {
         assert!(!history.contains("oldest"));
         assert!(history.contains("middle"));
         assert!(history.ends_with("User:\nnewest"));
+
+        let huge = rewind_history_block(&[
+            message("user", "before"),
+            message("assistant", &"y".repeat(REWIND_HISTORY_MAX_CHARS * 2)),
+        ]);
+        assert!(huge.contains("(This message is truncated.)"));
+        assert!(huge.contains("(Earlier messages are omitted.)"));
+        assert!(huge.chars().count() < REWIND_HISTORY_MAX_CHARS + 1_000);
     }
 
     #[test]

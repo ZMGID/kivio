@@ -261,17 +261,19 @@ pub(crate) async fn run_external_cli_reply_in(
 
     // A rewind truncated only Kivio's copy; the CLI's native session still holds the removed
     // turns. Decide how to bring it back to the visible history before this prompt is sent.
-    let rewind = (!is_slash
-        && matches!(entry, AgentRunEntry::Send)
-        && crate::external_agents::session::history_rewound(app, &conversation.id))
-    .then(|| {
-        plan_native_rewind(
-            app,
-            def,
-            &conversation.id,
-            &visible_user_prompts(conversation),
-        )
-    });
+    use crate::external_agents::session::PendingRewind;
+    let rewind = (!is_slash && matches!(entry, AgentRunEntry::Send))
+        .then(|| crate::external_agents::session::pending_rewind(app, &conversation.id))
+        .flatten()
+        .map(|pending| match pending {
+            PendingRewind::Replay => NativeRewind::Replay,
+            PendingRewind::Native => plan_native_rewind(
+                app,
+                def,
+                &conversation.id,
+                &visible_user_prompts(conversation),
+            ),
+        });
     if rewind == Some(NativeRewind::Replay) {
         // Dropped before resolving the resume context, so this turn opens a fresh native session
         // and sends the session instructions again.
@@ -891,8 +893,17 @@ pub(crate) async fn run_external_cli_reply_in(
         is_slash,
     )?;
     // Only a completed turn proves the native history now matches; otherwise retry next send.
+    // A failed native attempt is not retried as is: the next send replays instead. (Codex
+    // already falls back to a fresh thread within the turn.)
     if rewind_settled {
         crate::external_agents::session::clear_history_rewound(app, &conversation_id);
+    } else if stream_outcome == "error"
+        && matches!(
+            rewind,
+            Some(NativeRewind::PiFork | NativeRewind::ClaudeResumeAt(_))
+        )
+    {
+        crate::external_agents::session::require_rewind_replay(app, &conversation_id);
     }
 
     // A7：把 CLI 自压的边界落到会话上。此前只发了实时压缩更新、从不落盘，
