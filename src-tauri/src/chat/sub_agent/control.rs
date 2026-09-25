@@ -493,6 +493,7 @@ pub fn dispatch(
         let arguments = model_arguments(
             ctx.arguments,
             &ctx.native_ctx.run_id,
+            ctx.native_ctx.round,
             ctx.native_ctx.tool_call_id.as_deref(),
         )?;
         let value = operate(
@@ -521,7 +522,14 @@ pub fn dispatch(
 
 /// Transport retries reuse the same tool identity. Keep durable message keys
 /// out of the model's required arguments, while retaining explicit retry keys.
-fn model_arguments(args: &Value, parent_run: &str, call_id: Option<&str>) -> Result<Value, String> {
+/// Some providers reuse tool call ids across responses, so the key includes
+/// the round: a later call with a repeated id is a new message, not a retry.
+fn model_arguments(
+    args: &Value,
+    parent_run: &str,
+    round: u32,
+    call_id: Option<&str>,
+) -> Result<Value, String> {
     let mut args = args.clone();
     if matches!(args["operation"].as_str(), Some("message" | "continue"))
         && args["message_id"]
@@ -531,7 +539,7 @@ fn model_arguments(args: &Value, parent_run: &str, call_id: Option<&str>) -> Res
         let call_id = call_id
             .filter(|id| !id.is_empty())
             .ok_or("Cannot assign message_id without a tool call id")?;
-        args["message_id"] = json!(format!("agent-control:{parent_run}:{call_id}"));
+        args["message_id"] = json!(format!("agent-control:{parent_run}:{round}:{call_id}"));
     }
     Ok(args)
 }
@@ -663,7 +671,7 @@ mod tests {
             .unwrap();
         let original =
             json!({"operation":"continue", "id":child.id, "message":"Implement the fix"});
-        let args = model_arguments(&original, "parent", Some("call-1")).unwrap();
+        let args = model_arguments(&original, "parent", 1, Some("call-1")).unwrap();
         let resume = |args: &Value| {
             runtime.resume(
                 "conv",
@@ -678,7 +686,7 @@ mod tests {
         assert!(starts);
         assert_ne!(continued.current().id, child.current().id);
         let (replayed, starts) =
-            resume(&model_arguments(&original, "parent", Some("call-1")).unwrap()).unwrap();
+            resume(&model_arguments(&original, "parent", 1, Some("call-1")).unwrap()).unwrap();
         assert!(!starts);
         assert_eq!(replayed.runs.len(), 2);
         assert_eq!(replayed.messages.len(), 1);
@@ -686,16 +694,71 @@ mod tests {
         let mut retry = original.clone();
         retry["message_id"] = receipt["accepted_message_id"].clone();
         assert!(
-            !resume(&model_arguments(&retry, "parent", Some("call-2")).unwrap())
+            !resume(&model_arguments(&retry, "parent", 2, Some("call-2")).unwrap())
                 .unwrap()
                 .1
         );
         retry["message"] = json!("Different instructions");
         assert!(resume(&retry).unwrap_err().contains("different content"));
         assert_ne!(
-            model_arguments(&original, "next-parent", Some("call-1")).unwrap()["message_id"],
+            model_arguments(&original, "next-parent", 1, Some("call-1")).unwrap()["message_id"],
             args["message_id"]
         );
+    }
+
+    #[test]
+    fn model_continue_with_reused_call_id_in_later_round_runs_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(directory.path().into()).unwrap();
+        let child = runtime
+            .start(
+                "conv",
+                "parent",
+                "start",
+                "A",
+                Profile::default(),
+                "Inspect",
+            )
+            .unwrap();
+        let finish = |record: &Record| {
+            runtime
+                .finish(
+                    "conv",
+                    &record.id,
+                    &record.current().id,
+                    Ok(("Report".into(), None)),
+                )
+                .unwrap();
+        };
+        finish(&child);
+        let resume = |round: u32, message: &str| {
+            let args = model_arguments(
+                &json!({"operation":"continue", "id":child.id, "message":message}),
+                "parent",
+                round,
+                Some("call_0"),
+            )
+            .unwrap();
+            runtime.resume(
+                "conv",
+                &child.id,
+                "parent",
+                args["message_id"].as_str().unwrap(),
+                "main_agent",
+                message,
+            )
+        };
+        let (first, starts) = resume(3, "Check the logs").unwrap();
+        assert!(starts);
+        finish(&first);
+        // The provider numbers calls per response, so a later round repeats call_0.
+        let (second, starts) = resume(7, "Check the logs").unwrap();
+        assert!(starts);
+        assert_eq!(second.runs.len(), 3);
+        finish(&second);
+        let (third, starts) = resume(9, "Check the config instead").unwrap();
+        assert!(starts);
+        assert_eq!(third.messages.len(), 3);
     }
 
     #[test]
@@ -723,6 +786,7 @@ mod tests {
         let args = model_arguments(
             &json!({"operation":"message", "id":child.id, "message":"Extra context"}),
             "parent",
+            1,
             Some("call-1"),
         )
         .unwrap();
