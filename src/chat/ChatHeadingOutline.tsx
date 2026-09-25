@@ -1,11 +1,8 @@
-import { memo, useEffect, useMemo, useRef, useState, type FocusEvent } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
-import { IconButton } from '../components/Button'
+import { memo, useEffect, useRef, useState, type CSSProperties, type FocusEvent } from 'react'
 import { useT } from '../components/i18n'
 import { primaryHeadingDepth, type MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 
 interface ChatHeadingOutlineProps {
-  ownerMessageId: string
   items: MarkdownHeadingOutlineItem[]
   activeAnchorId: string | null
   onNavigate: (item: MarkdownHeadingOutlineItem) => void
@@ -18,137 +15,73 @@ function sameItems(a: MarkdownHeadingOutlineItem[], b: MarkdownHeadingOutlineIte
   })
 }
 
+/**
+ * 刻度与标题是同一行：收起时只露出刻度，悬停或聚焦时原地展开标题，
+ * 每行位置不变，指针下的刻度就是对应标题，直接点击即可跳转。
+ */
 function ChatHeadingOutlineBase({
-  ownerMessageId,
   items,
   activeAnchorId,
   onNavigate,
 }: ChatHeadingOutlineProps) {
   const t = useT()
-  const shellRef = useRef<HTMLElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const closeTimerRef = useRef<number | null>(null)
+  const listRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const [showChildren, setShowChildren] = useState(false)
   const primaryDepth = primaryHeadingDepth(items)
-  const hasChildren = primaryDepth != null && items.some((item) => item.depth > primaryDepth)
-  const visibleItems = useMemo(
-    () => showChildren || primaryDepth == null
-      ? items
-      : items.filter((item) => item.depth === primaryDepth),
-    [items, primaryDepth, showChildren],
-  )
 
   useEffect(() => {
-    setShowChildren(false)
-  }, [ownerMessageId])
-
-  useEffect(() => () => {
-    if (closeTimerRef.current != null) window.clearTimeout(closeTimerRef.current)
-  }, [])
-
-  useEffect(() => {
-    const panel = panelRef.current
-    if (!panel) return
+    const list = listRef.current
+    if (!list) return
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
       event.stopPropagation()
       let delta = event.deltaY
       if (event.deltaMode === 1) delta *= 13
-      else if (event.deltaMode === 2) delta *= panel.clientHeight
-      panel.scrollTop += delta
+      else if (event.deltaMode === 2) delta *= list.clientHeight
+      list.scrollTop += delta
     }
-    panel.addEventListener('wheel', onWheel, { passive: false })
-    return () => panel.removeEventListener('wheel', onWheel)
-  }, [])
-
-  const cancelClose = () => {
-    if (closeTimerRef.current == null) return
-    window.clearTimeout(closeTimerRef.current)
-    closeTimerRef.current = null
-  }
-
-  const openRail = () => {
-    cancelClose()
-    setOpen(true)
-  }
-
-  const closeRailLater = () => {
-    cancelClose()
-    closeTimerRef.current = window.setTimeout(() => {
-      closeTimerRef.current = null
-      setOpen(false)
-    }, 200)
-  }
+    list.addEventListener('wheel', onWheel, { passive: false })
+    return () => list.removeEventListener('wheel', onWheel)
+  }, [items.length, primaryDepth])
 
   const handleBlurCapture = (event: FocusEvent<HTMLElement>) => {
     const next = event.relatedTarget
-    if (next instanceof Node && shellRef.current?.contains(next)) return
-    closeRailLater()
+    if (next instanceof Node && listRef.current?.contains(next)) return
+    setOpen(false)
   }
 
   if (items.length < 2 || primaryDepth == null) return null
 
   return (
     <aside
-      ref={shellRef}
       className={`chat-heading-navigator${open ? ' is-expanded' : ''}`}
       aria-label={t.chatHeadingNavigator}
-      onPointerEnter={openRail}
-      onPointerLeave={closeRailLater}
-      onFocusCapture={openRail}
-      onBlurCapture={handleBlurCapture}
+      style={{ ['--heading-count' as string]: String(items.length) } as CSSProperties}
     >
-      <div className="chat-heading-navigator-rail">
+      <div
+        ref={listRef}
+        className="chat-heading-navigator-list custom-scrollbar"
+        onPointerEnter={() => setOpen(true)}
+        onPointerLeave={() => setOpen(false)}
+        onFocusCapture={() => setOpen(true)}
+        onBlurCapture={handleBlurCapture}
+      >
         {items.map((item) => {
           const active = item.anchorId === activeAnchorId
+          const level = item.depth - primaryDepth
           return (
             <button
               key={item.anchorId}
               type="button"
-              className={`chat-heading-navigator-tick ${active ? 'is-active' : ''}`}
-              aria-current={active ? 'location' : undefined}
-              aria-label={t.chatHeadingLabel.replace('{title}', item.title)}
-              onClick={() => onNavigate(item)}
-            >
-              <span style={{ ['--heading-depth' as string]: String(item.depth - primaryDepth) }} />
-            </button>
-          )
-        })}
-      </div>
-
-      <div
-        ref={panelRef}
-        className="chat-heading-navigator-panel custom-scrollbar"
-        aria-hidden={!open}
-      >
-        {hasChildren && (
-          <IconButton
-            className="chat-heading-navigator-level-toggle"
-            size="xs"
-            variant="ghost"
-            label={showChildren ? t.chatHeadingCollapseLevels : t.chatHeadingExpandLevels}
-            aria-pressed={showChildren}
-            tabIndex={open ? 0 : -1}
-            onClick={() => setShowChildren((value) => !value)}
-          >
-            {showChildren ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </IconButton>
-        )}
-        {visibleItems.map((item, index) => {
-          const active = item.anchorId === activeAnchorId
-          return (
-            <button
-              key={item.anchorId}
-              type="button"
-              className={`chat-heading-navigator-item ${active ? 'is-active' : ''} ${index === 0 && hasChildren ? 'has-level-toggle' : ''}`}
-              style={{ ['--heading-indent' as string]: `${(item.depth - primaryDepth) * 14}px` }}
+              className={`chat-heading-navigator-item ${active ? 'is-active' : ''}`}
+              style={{ ['--heading-depth' as string]: String(level) } as CSSProperties}
               title={item.title}
+              aria-label={t.chatHeadingLabel.replace('{title}', item.title)}
               aria-current={active ? 'location' : undefined}
-              tabIndex={open ? 0 : -1}
               onClick={() => onNavigate(item)}
             >
-              <span>{item.title}</span>
+              <span className="chat-heading-navigator-tick" aria-hidden="true" />
+              <span className="chat-heading-navigator-title">{item.title}</span>
             </button>
           )
         })}
@@ -160,8 +93,7 @@ function ChatHeadingOutlineBase({
 export const ChatHeadingOutline = memo(
   ChatHeadingOutlineBase,
   (previous, next) => (
-    previous.ownerMessageId === next.ownerMessageId
-    && previous.activeAnchorId === next.activeAnchorId
+    previous.activeAnchorId === next.activeAnchorId
     && previous.onNavigate === next.onNavigate
     && sameItems(previous.items, next.items)
   ),

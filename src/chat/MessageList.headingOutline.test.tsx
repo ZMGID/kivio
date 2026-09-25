@@ -35,13 +35,12 @@ describe('MessageList heading outline', () => {
 
     fireEvent.scroll(viewport)
     await waitFor(() => expect(screen.getByLabelText('回答标题目录')).toBeInTheDocument())
-    fireEvent.pointerEnter(screen.getByLabelText('回答标题目录'))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'aaa' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: '跳转到：aaa' })).toBeInTheDocument())
 
     readingSecond = true
     fireEvent.scroll(viewport)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'bbb' })).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: 'aaa' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: '跳转到：bbb' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: '跳转到：aaa' })).not.toBeInTheDocument()
     const firstHeading = first.querySelector('h1')!
     const secondHeading = second.querySelector('h1')!
     expect(firstHeading.id).not.toBe(secondHeading.id)
@@ -51,7 +50,7 @@ describe('MessageList heading outline', () => {
     second.closest<HTMLElement>('[data-chat-row-index]')!.getBoundingClientRect = () => (
       { top: 0, bottom: 1000, height: 1000 } as DOMRect
     )
-    fireEvent.click(screen.getByRole('button', { name: 'bbb' }))
+    fireEvent.click(screen.getByRole('button', { name: '跳转到：bbb' }))
     await waitFor(() => expect(secondHeading.getBoundingClientRect).toHaveBeenCalled())
     expect(firstHeading.getBoundingClientRect).not.toHaveBeenCalled()
 
@@ -59,8 +58,8 @@ describe('MessageList heading outline', () => {
     fireEvent.wheel(viewport, { deltaY: -800 })
     readingSecond = false
     fireEvent.scroll(viewport)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'aaa' })).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: 'bbb' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: '跳转到：aaa' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: '跳转到：bbb' })).not.toBeInTheDocument()
   })
 
   it('includes only final answer headings in the settled outline', async () => {
@@ -90,9 +89,8 @@ describe('MessageList heading outline', () => {
     answer.getBoundingClientRect = () => ({ top: 0, bottom: 1000, height: 1000 } as DOMRect)
     fireEvent.scroll(viewport)
     await waitFor(() => expect(screen.getByLabelText('回答标题目录')).toBeInTheDocument())
-    fireEvent.pointerEnter(screen.getByLabelText('回答标题目录'))
-    expect(screen.getByRole('button', { name: 'Final one' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Questions' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '跳转到：Final one' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '跳转到：Questions' })).not.toBeInTheDocument()
     expect(screen.queryByText('Process heading')).not.toBeInTheDocument()
 
     // With only one turn, scrolling away must still clear the answer outline.
