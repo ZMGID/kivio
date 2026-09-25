@@ -177,8 +177,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       setActiveTab(tab)
     }
   }, [])
-  // 用量统计页内的二级视图：用量统计 / 请求调试（请求调试原为独立导航项，现并入用量统计）
-  const [usageView, setUsageView] = useState<'stats' | 'debug'>('stats')
+  // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
+  const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
   useEffect(() => {
     if (initialTab) navigateToSettingsTab(initialTab)
   }, [initialTab, navigateToSettingsTab])
@@ -824,7 +824,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'plugins' as const, label: t.tabPlugins, icon: PluginsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
-    { id: 'usage' as const, label: lang === 'zh' ? '用量统计' : 'Usage', icon: UsageIcon },
+    { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
     // 关于固定在分类列表最末
     { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: AboutIcon },
   ]
@@ -892,10 +892,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         : 'Tavily/Exa keys; enable web search for Lens and Chat.',
     },
     usage: {
-      title: lang === 'zh' ? '用量统计' : 'Usage',
-      subtitle: lang === 'zh'
-        ? '查看本地模型请求、Token、成本估算和来源分布；请求调试并入此页。'
-        : 'Inspect local model requests, tokens, cost, and usage distribution; request debug lives here too.',
+      title: lang === 'zh' ? '使用统计' : 'Usage',
+      subtitle: '',
     },
     providers: {
       title: t.tabModels,
@@ -979,9 +977,36 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             className={`kv-page-header ${variant === 'embedded' ? 'settings-embedded-header' : ''}`}
             onMouseDown={handleSettingsDragMouseDown}
           >
-            <div key={activeTab} className="settings-section-title-enter">
-              <div className="kv-page-title">{pageMeta[activeTab].title}</div>
-              <div className="kv-page-sub">{pageMeta[activeTab].subtitle}</div>
+            <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
+              <div className="flex items-center gap-3">
+                <div className="kv-page-title">{pageMeta[activeTab].title}</div>
+                {activeTab === 'usage' && (
+                  <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
+                    {([
+                      { id: 'app' as const, label: lang === 'zh' ? '应用用量' : 'App usage' },
+                      { id: 'calls' as const, label: lang === 'zh' ? '调用明细' : 'Call details' },
+                      { id: 'debug' as const, label: lang === 'zh' ? '请求调试' : 'Request debug' },
+                    ]).map(option => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        className={`rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
+                          usageView === option.id
+                            ? 'bg-[var(--bg)] text-[var(--text)] shadow-sm'
+                            : 'text-[var(--text-muted)]'
+                        }`}
+                        onClick={() => setUsageView(option.id)}
+                        data-tauri-drag-region="false"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {pageMeta[activeTab].subtitle ? (
+                <div className="kv-page-sub">{pageMeta[activeTab].subtitle}</div>
+              ) : null}
             </div>
             <div className="kv-page-header-right">{pageMeta[activeTab].right}</div>
           </header>
@@ -1260,37 +1285,17 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               />
             )}
 
-            {/* ===== 用量统计标签页（内含请求调试二级视图） ===== */}
+            {/* ===== 使用统计：应用用量 / 调用明细 / 请求调试 ===== */}
             {activeTab === 'usage' && (
-              <div className="space-y-3">
-                <div className="kv-seg w-fit">
-                  <button
-                    type="button"
-                    className={usageView === 'stats' ? 'active' : ''}
-                    onClick={() => setUsageView('stats')}
-                    data-tauri-drag-region="false"
-                  >
-                    {lang === 'zh' ? '用量统计' : 'Usage'}
-                  </button>
-                  <button
-                    type="button"
-                    className={usageView === 'debug' ? 'active' : ''}
-                    onClick={() => setUsageView('debug')}
-                    data-tauri-drag-region="false"
-                  >
-                    {lang === 'zh' ? '请求调试' : 'Request debug'}
-                  </button>
-                </div>
-                {usageView === 'stats' ? (
-                  <UsageStatsPanel lang={lang} />
-                ) : (
-                  <RequestDebugPanel
-                    lang={lang}
-                    enabled={settings.chatTools.requestDebugEnabled ?? false}
-                    onToggleEnabled={(v) => updateChatTools({ requestDebugEnabled: v })}
-                  />
-                )}
-              </div>
+              usageView === 'debug' ? (
+                <RequestDebugPanel
+                  lang={lang}
+                  enabled={settings.chatTools.requestDebugEnabled ?? false}
+                  onToggleEnabled={(v) => updateChatTools({ requestDebugEnabled: v })}
+                />
+              ) : (
+                <UsageStatsPanel lang={lang} view={usageView} />
+              )
             )}
 
             {/* ===== 模型管理标签页 ===== */}

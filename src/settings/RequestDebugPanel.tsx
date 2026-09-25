@@ -686,7 +686,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
 
   return (
     <div className="flex flex-col gap-4">
-      <SettingsGroup title={zh ? '请求调试' : 'Request debug'}>
+      <SettingsGroup>
         <SettingRow
           label={zh ? '记录 provider 请求' : 'Capture provider requests'}
           description={
@@ -701,11 +701,12 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
       </SettingsGroup>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => void refresh()} data-tauri-drag-region="false">
+        <Button variant="ghost" size="sm" onClick={() => void refresh()} data-tauri-drag-region="false">
           <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
           {zh ? '刷新' : 'Refresh'}
         </Button>
         <Button
+          variant="ghost"
           size="sm"
           onClick={exportJson}
           disabled={records.length === 0}
@@ -715,6 +716,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
           {zh ? '导出 JSON' : 'Export JSON'}
         </Button>
         <Button
+          variant="ghost"
           size="sm"
           onClick={() => void clearAll()}
           disabled={records.length === 0}

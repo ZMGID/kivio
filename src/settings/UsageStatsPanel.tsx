@@ -15,6 +15,7 @@ type UsageView = 'logs' | 'providers' | 'models'
 
 type UsageStatsPanelProps = {
   lang: string
+  view: 'app' | 'calls'
 }
 
 const SOURCE_OPTIONS = [
@@ -140,16 +141,6 @@ function formatReasoningEffort(value: string | null | undefined) {
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
 }
 
-function SummaryTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-md border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2.5">
-      <div className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">{label}</div>
-      <div className="mt-1 truncate text-[19px] font-semibold leading-6 text-neutral-950 dark:text-neutral-50">{value}</div>
-      {sub && <div className="mt-1 truncate text-[10.5px] text-neutral-500 dark:text-neutral-500">{sub}</div>}
-    </div>
-  )
-}
-
 function formatPercent(value?: number | null) {
   const n = Number(value ?? 0)
   if (!Number.isFinite(n) || n <= 0) return '0%'
@@ -229,11 +220,11 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
   const isDark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
 
   const WIDTH = 640
-  const HEIGHT = 180
-  const PAD_L = 44
-  const PAD_R = 40
-  const PAD_T = 10
-  const PAD_B = 20
+  const HEIGHT = 168
+  const PAD_L = 8
+  const PAD_R = 8
+  const PAD_T = 16
+  const PAD_B = 8
 
   const geom = useMemo(() => {
     const visible = TREND_SERIES.filter(series => !hidden.has(series.key))
@@ -300,7 +291,7 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center justify-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         {TREND_SERIES.map(series => (
           <button
             key={series.key}
@@ -342,7 +333,8 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
       <div className="relative">
         <svg
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-          className="h-48 w-full overflow-visible"
+          className="block w-full overflow-visible"
+          style={{ aspectRatio: `${WIDTH} / ${HEIGHT}` }}
           role="img"
           aria-label="token usage trend"
           onMouseMove={onMove}
@@ -364,10 +356,10 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
           {[0, 0.5, 1].map(fraction => (
             <text
               key={`l-${fraction}`}
-              x={PAD_L - 6}
-              y={PAD_T + geom.plotH - fraction * geom.plotH + 3.5}
-              textAnchor="end"
-              className="fill-neutral-500 text-[10px] tabular-nums dark:fill-neutral-500"
+              x={PAD_L + 4}
+              y={PAD_T + geom.plotH - fraction * geom.plotH + (fraction === 1 ? 12 : -4)}
+              textAnchor="start"
+              className="fill-neutral-400 text-[10px] tabular-nums dark:fill-neutral-500"
             >
               {formatTokens(geom.maxTokens * fraction)}
             </text>
@@ -377,9 +369,9 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
             [0, 0.5, 1].map(fraction => (
               <text
                 key={`r-${fraction}`}
-                x={WIDTH - PAD_R + 6}
-                y={PAD_T + geom.plotH - fraction * geom.plotH + 3.5}
-                textAnchor="start"
+                x={WIDTH - PAD_R - 4}
+                y={PAD_T + geom.plotH - fraction * geom.plotH + (fraction === 1 ? 12 : -4)}
+                textAnchor="end"
                 className="text-[10px] tabular-nums"
                 style={{ fill: isDark ? HIT_RATE_COLOR.darkStroke : HIT_RATE_COLOR.stroke }}
               >
@@ -473,14 +465,49 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
         )}
       </div>
       <div
-        className={`mt-1 flex text-[10.5px] text-neutral-500 dark:text-neutral-500 ${points.length === 1 ? 'justify-center' : 'justify-between'}`}
-        style={{ paddingLeft: PAD_L, paddingRight: PAD_R }}
+        className="relative mt-1 h-4 text-[10.5px] text-neutral-500 dark:text-neutral-500"
+        style={{ marginLeft: `${(PAD_L / WIDTH) * 100}%`, marginRight: `${(PAD_R / WIDTH) * 100}%` }}
       >
-        <span>{points[0]?.label}</span>
-        {points.length > 1 && <span>{points[points.length - 1]?.label}</span>}
+        {trendAxisLabels(points, lang).map(item => {
+          const shift = item.index === 0 ? '0' : item.index === points.length - 1 ? '-100%' : '-50%'
+          return (
+            <span
+              key={item.index}
+              className="absolute whitespace-nowrap"
+              style={{ left: `${item.pct}%`, transform: `translateX(${shift})` }}
+            >
+              {item.text}
+            </span>
+          )
+        })}
       </div>
     </div>
   )
+}
+
+function trendAxisLabel(point: UsageTrendPoint, lang: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(point.date)
+  if (!match || point.date.includes(' ')) return point.label
+  const month = Number(match[2])
+  const day = Number(match[3])
+  return lang === 'zh' ? `${month}月${day}日` : `${month}/${day}`
+}
+
+function trendAxisLabels(points: UsageTrendPoint[], lang: string) {
+  if (points.length === 0) return []
+  const indexes = points.length <= 8
+    ? points.map((_, index) => index)
+    : Array.from(new Set([
+      0,
+      ...Array.from({ length: 5 }, (_, step) => Math.round((step + 1) * (points.length - 1) / 6)),
+      points.length - 1,
+    ]))
+  const span = Math.max(points.length - 1, 1)
+  return indexes.map(index => ({
+    index,
+    pct: (index / span) * 100,
+    text: trendAxisLabel(points[index], lang),
+  }))
 }
 
 type PieSlice = {
@@ -559,14 +586,16 @@ function ModelDonut({ rows, lang }: { rows: UsageGroupStats[]; lang: string }) {
 
   const CX = 100
   const CY = 100
-  const R_OUT = 92
-  const R_IN = 56
-  let angle = 0
+  const R_OUT = 84
+  const R_IN = 62
+  const gap = slices.length > 1 ? 0.035 : 0
+  let angle = -gap / 2
   const arcs = slices.map((slice, index) => {
-    const start = angle
     const sweep = (slice.value / total) * Math.PI * 2
+    const start = angle + gap / 2
+    const end = angle + sweep - gap / 2
     angle += sweep
-    return { slice, index, start, end: angle, path: donutArcPath(CX, CY, R_OUT, R_IN, start, angle) }
+    return { slice, index, path: donutArcPath(CX, CY, R_OUT, R_IN, start, Math.max(end, start + 0.01)) }
   })
   const active = hover != null ? slices[hover] : null
 
@@ -574,76 +603,59 @@ function ModelDonut({ rows, lang }: { rows: UsageGroupStats[]; lang: string }) {
     <div className="@container">
       {/* SettingsGroup 已是卡片外壳,这里不再套边框/背景(避免卡中卡)。
           容器查询:≥28rem 环形图与表格同行(卡不被撑高),更窄才堆叠。 */}
-      <div className="flex flex-col items-center gap-4 @md:flex-row @md:items-start">
+      <div className="flex flex-col items-center gap-6 @md:flex-row @md:items-center">
         <div className="relative shrink-0">
-        <svg viewBox="0 0 200 200" className="h-36 w-36" role="img" aria-label="model token distribution">
+        <svg viewBox="0 0 200 200" className="h-40 w-40" role="img" aria-label="model token distribution">
+          <circle cx={CX} cy={CY} r={(R_OUT + R_IN) / 2} fill="none" stroke="var(--bg-input-subtle)" strokeWidth={R_OUT - R_IN} />
           {arcs.map(arc => (
             <path
               key={arc.index}
               d={arc.path}
               fill={arc.slice.color}
-              opacity={hover == null || hover === arc.index ? 1 : 0.35}
-              stroke={isDark ? '#0a0a0a' : '#ffffff'}
-              strokeWidth="1.5"
+              opacity={hover == null || hover === arc.index ? 1 : 0.28}
               onMouseEnter={() => setHover(arc.index)}
               onMouseLeave={() => setHover(null)}
-              style={{ transition: 'opacity 120ms' }}
+              style={{ transition: 'opacity 160ms' }}
             />
           ))}
         </svg>
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
-          <div className="max-w-24 truncate text-[11px] text-neutral-500 dark:text-neutral-400">
-            {active ? active.label : lang === 'zh' ? '总 Token' : 'Total'}
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-8 text-center">
+          <div className="max-w-[4.5rem] truncate text-[10px] text-[var(--text-muted)]">
+            {active ? active.label : (lang === 'zh' ? '合计' : 'Total')}
           </div>
-          <div className="text-[16px] font-semibold text-neutral-900 dark:text-neutral-50">
+          <div className="text-[18px] font-semibold leading-none tabular-nums text-[var(--text)]">
             {formatTokens(active ? active.value : total)}
           </div>
-          <div className="text-[10.5px] text-neutral-500 dark:text-neutral-500">
-            {active ? formatPercent(active.value / total) : `${formatCount(slices.reduce((sum, slice) => sum + slice.requests, 0))} ${lang === 'zh' ? '次' : 'req'}`}
+          <div className="mt-1 text-[10px] text-[var(--text-faint)]">
+            {active
+              ? formatPercent(active.value / total)
+              : `${formatCount(slices.reduce((sum, slice) => sum + slice.requests, 0))} ${lang === 'zh' ? '次' : 'req'}`}
           </div>
         </div>
       </div>
-      <div className="w-full min-w-0 flex-1 @md:w-auto">
-        <table className="w-full table-fixed text-left text-[12px]">
-          <colgroup>
-            <col />
-            <col className="w-[58px]" />
-            <col className="w-[40px]" />
-            <col className="w-[52px]" />
-          </colgroup>
-          <thead className="text-[10.5px] uppercase tracking-wide text-neutral-500 dark:text-neutral-500">
-            <tr>
-              <th className="py-1 pr-2 font-semibold">{lang === 'zh' ? '模型' : 'Model'}</th>
-              <th className="py-1 pr-2 text-right font-semibold">Token</th>
-              <th className="py-1 pr-2 text-right font-semibold">{lang === 'zh' ? '占比' : 'Share'}</th>
-              <th className="py-1 text-right font-semibold">{lang === 'zh' ? '成本' : 'Cost'}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-            {slices.map((slice, index) => (
-              <tr
-                key={`${slice.label}-${index}`}
-                className={`text-neutral-800 dark:text-neutral-100 ${hover === index ? 'bg-[var(--bg-hover)]' : ''}`}
-                onMouseEnter={() => setHover(index)}
-                onMouseLeave={() => setHover(null)}
-              >
-                <td className="py-1.5 pr-2" title={slice.sub ? `${slice.label} · ${slice.sub}` : slice.label}>
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-                    <span className="truncate font-medium">{slice.label}</span>
-                  </div>
-                  {slice.sub && (
-                    <div className="truncate pl-3.5 text-[10.5px] text-neutral-500 dark:text-neutral-500">{slice.sub}</div>
-                  )}
-                </td>
-                <td className="py-1.5 pr-2 text-right tabular-nums">{formatTokens(slice.value)}</td>
-                <td className="py-1.5 pr-2 text-right tabular-nums">{formatPercent(slice.value / total)}</td>
-                <td className="py-1.5 text-right tabular-nums">{formatCost(slice.cost)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        {slices.map((slice, index) => (
+          <div
+            key={`${slice.label}-${index}`}
+            className={`flex items-center gap-3 py-1.5 ${hover === index ? 'bg-[var(--bg-hover)]' : ''}`}
+            onMouseEnter={() => setHover(index)}
+            onMouseLeave={() => setHover(null)}
+            title={slice.sub ? `${slice.label} · ${slice.sub}` : slice.label}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[12px] font-medium text-neutral-800 dark:text-neutral-100">{slice.label}</div>
+              <div className="truncate text-[10.5px] text-neutral-500 dark:text-neutral-500">
+                {formatTokens(slice.value)} tokens{slice.sub ? ` · ${slice.sub}` : ''}
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-[12px] tabular-nums text-neutral-800 dark:text-neutral-100">{formatPercent(slice.value / total)}</div>
+              <div className="text-[10.5px] tabular-nums text-neutral-500">{formatCost(slice.cost)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
       </div>
     </div>
   )
@@ -699,6 +711,207 @@ function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: strin
   )
 }
 
+function UsageSeg<T extends string>({ options, value, onChange }: {
+  options: { id: T; label: string }[]
+  value: T
+  onChange: (id: T) => void
+}) {
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5">
+      {options.map(option => (
+        <button
+          key={option.id}
+          type="button"
+          className={`rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
+            value === option.id
+              ? 'bg-[var(--bg)] text-[var(--text)] shadow-sm'
+              : 'text-[var(--text-muted)]'
+          }`}
+          onClick={() => onChange(option.id)}
+          data-tauri-drag-region="false"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+const ACTIVITY_LEVELS = ['#e7e5e4', '#d6e6f8', '#93c2f0', '#3b82d6', '#1d4f91']
+
+function dayKey(date: Date) {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
+function mondayOf(date: Date) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const offset = (next.getDay() + 6) % 7
+  next.setDate(next.getDate() - offset)
+  return next
+}
+
+function activityLevel(value: number, max: number) {
+  if (value <= 0 || max <= 0) return 0
+  const ratio = value / max
+  if (ratio < 0.25) return 1
+  if (ratio < 0.5) return 2
+  if (ratio < 0.75) return 3
+  return 4
+}
+
+function TokenActivity({ points, lang }: { points: UsageTrendPoint[]; lang: string }) {
+  const [mode, setMode] = useState<'day' | 'week' | 'total'>('day')
+  const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null)
+  const zh = lang === 'zh'
+  const byDate = useMemo(() => {
+    const map = new Map<string, { tokens: number; requests: number }>()
+    for (const point of points) {
+      const key = point.date.slice(0, 10)
+      const current = map.get(key) ?? { tokens: 0, requests: 0 }
+      current.tokens += point.totalTokens
+      current.requests += point.requests
+      map.set(key, current)
+    }
+    return map
+  }, [points])
+
+  const weeks = useMemo(() => {
+    const today = new Date()
+    const end = mondayOf(today)
+    const start = new Date(end)
+    start.setDate(start.getDate() - 52 * 7)
+    const columns: Date[][] = []
+    for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 7)) {
+      const days: Date[] = []
+      for (let i = 0; i < 7; i += 1) {
+        const day = new Date(cursor)
+        day.setDate(cursor.getDate() + i)
+        days.push(day)
+      }
+      columns.push(days)
+    }
+    return columns
+  }, [])
+
+  const weekTotals = useMemo(() => weeks.map(days => days.reduce((sum, day) => sum + (byDate.get(dayKey(day))?.tokens ?? 0), 0)), [weeks, byDate])
+  const cumulative = useMemo(() => {
+    const map = new Map<string, number>()
+    let running = 0
+    for (const days of weeks) {
+      for (const day of days) {
+        running += byDate.get(dayKey(day))?.tokens ?? 0
+        map.set(dayKey(day), running)
+      }
+    }
+    return map
+  }, [weeks, byDate])
+  const max = useMemo(() => {
+    if (mode === 'week') return Math.max(0, ...weekTotals)
+    if (mode === 'total') return Math.max(0, ...cumulative.values())
+    return Math.max(0, ...[...byDate.values()].map(day => day.tokens))
+  }, [mode, weekTotals, cumulative, byDate])
+
+  const monthSpans = weeks.reduce<{ key: string; label: string; span: number }[]>((spans, days, index) => {
+    const first = days[0]
+    const prev = index > 0 ? weeks[index - 1][0] : null
+    const label = !prev || first.getMonth() !== prev.getMonth()
+      ? (zh ? `${first.getMonth() + 1}月` : first.toLocaleString('en-US', { month: 'short' }))
+      : ''
+    if (label || spans.length === 0) spans.push({ key: dayKey(first), label, span: 1 })
+    else spans[spans.length - 1].span += 1
+    return spans
+  }, [])
+
+  return (
+    <section className="relative rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[13px] font-medium text-[var(--text)]">{zh ? 'Token 活动' : 'Token activity'}</div>
+        <UsageSeg
+          value={mode}
+          onChange={setMode}
+          options={[
+            { id: 'day' as const, label: zh ? '每日' : 'Daily' },
+            { id: 'week' as const, label: zh ? '每周' : 'Weekly' },
+            { id: 'total' as const, label: zh ? '累计' : 'Total' },
+          ]}
+        />
+      </div>
+      <div className="custom-scrollbar overflow-x-auto">
+        <div className="flex min-w-[640px] gap-[3px]">
+          {weeks.map((days, weekIndex) => (
+            <div key={dayKey(days[0])} className="flex flex-1 flex-col gap-[3px]">
+              {days.map(day => {
+                const key = dayKey(day)
+                const dayStats = byDate.get(key)
+                const value = mode === 'total'
+                  ? (cumulative.get(key) ?? 0)
+                  : mode === 'week'
+                    ? weekTotals[weekIndex]
+                    : (dayStats?.tokens ?? 0)
+                const future = day.getTime() > Date.now()
+                const selected = hover?.key === key
+                return (
+                  <div
+                    key={key}
+                    className="aspect-square w-full rounded-[3px]"
+                    style={{
+                      backgroundColor: future ? 'transparent' : ACTIVITY_LEVELS[activityLevel(value, max)],
+                      boxShadow: selected ? '0 0 0 1px var(--bg), 0 0 0 2.5px #7eb6ea' : undefined,
+                      transform: selected ? 'scale(1.45)' : undefined,
+                      position: selected ? 'relative' : undefined,
+                      zIndex: selected ? 1 : undefined,
+                      cursor: future ? undefined : 'pointer',
+                    }}
+                    onMouseEnter={future ? undefined : (event) => {
+                      const rect = event.currentTarget.getBoundingClientRect()
+                      const card = event.currentTarget.closest('section')
+                      const cardRect = card?.getBoundingClientRect() ?? rect
+                      setHover({
+                        key,
+                        x: rect.left - cardRect.left + rect.width / 2,
+                        y: rect.top - cardRect.top,
+                      })
+                    }}
+                    onMouseLeave={future ? undefined : () => setHover(current => current?.key === key ? null : current)}
+                  />
+                )
+              })}
+            </div>
+          ))}
+        </div>
+        <div className="mt-1.5 flex min-w-[640px] text-[10px] text-[var(--text-muted)]">
+          {monthSpans.map(span => (
+            <div key={span.key} className="min-w-0 whitespace-nowrap" style={{ flex: span.span }}>
+              {span.label}
+            </div>
+          ))}
+        </div>
+      </div>
+      {hover && (() => {
+        const day = byDate.get(hover.key)
+        const [year, month, date] = hover.key.split('-').map(Number)
+        const label = zh ? `${year}年${month}月${date}日` : hover.key
+        const tokens = day?.tokens ?? 0
+        const requests = day?.requests ?? 0
+        return (
+          <div
+            className="pointer-events-none absolute z-30 whitespace-nowrap rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-[12px] shadow-md"
+            style={{ left: hover.x, top: hover.y - 8, transform: 'translate(-50%, -100%)' }}
+          >
+            <div className="font-medium text-[var(--text)]">{label}</div>
+            <div className="mt-0.5 text-[var(--text-muted)]">
+              {formatTokens(tokens)} tokens · {formatCount(requests)} {zh ? '次请求' : 'requests'}
+            </div>
+          </div>
+        )
+      })()}
+    </section>
+  )
+}
+
 function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
   if (logs.length === 0) {
     return (
@@ -708,111 +921,61 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
     )
   }
   return (
-    <div className="custom-scrollbar overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--bg-input)]">
-      <table className="w-full min-w-[1040px] table-fixed text-left text-[12px]">
-        <colgroup>
-          <col className="w-[98px]" />
-          <col className="w-[118px]" />
-          <col className="w-[112px]" />
-          <col className="w-[170px]" />
-          <col className="w-[82px]" />
-          <col className="w-[150px]" />
-          <col className="w-[82px]" />
-          <col className="w-[108px]" />
-          <col className="w-[96px]" />
-        </colgroup>
-        <thead className="border-b border-[var(--border)] text-[10.5px] uppercase tracking-wide text-[var(--text-muted)]">
-          <tr>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '时间' : 'Time'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '来源' : 'Source'}</th>
-            <th className="px-3 py-2 font-semibold">Provider</th>
-            <th className="px-3 py-2 font-semibold">Model</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '推理强度' : 'Effort'}</th>
-            <th className="px-3 py-2 font-semibold">Token</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成本' : 'Cost'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '延迟' : 'Latency'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '状态' : 'Status'}</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-          {logs.map(record => (
-            <tr key={record.id} className="text-neutral-800 dark:text-neutral-100">
-              <td className="px-3 py-2 tabular-nums">{formatTime(record.createdAt, lang)}</td>
-              <td className="px-3 py-2">
-                <div className="truncate font-medium">{sourceLabel(record.source, lang)}</div>
-                <div className="truncate text-[10.5px] text-neutral-500 dark:text-neutral-500">{record.operation}</div>
-              </td>
-              <td className="truncate px-3 py-2" title={record.providerName || record.providerId}>
-                {record.providerName || record.providerId}
-              </td>
-              <td className="truncate px-3 py-2 font-mono text-[11.5px]" title={record.model}>{record.model}</td>
-              <td className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-200">
-                {formatReasoningEffort(record.reasoningEffort)}
-              </td>
-              <td className="px-3 py-2 tabular-nums">
-                <div className="flex items-center gap-3 text-neutral-800 dark:text-neutral-100">
-                  <span
-                    className="inline-flex min-w-0 items-center gap-1 text-emerald-700 dark:text-emerald-400"
-                    title={lang === 'zh' ? '输入 Token' : 'Input tokens'}
-                  >
-                    <ArrowDown aria-hidden="true" size={12} strokeWidth={1.8} />
-                    <span className="text-neutral-800 dark:text-neutral-100">{formatOptionalTokens(record.inputTokens)}</span>
-                  </span>
-                  <span
-                    className="inline-flex min-w-0 items-center gap-1 text-violet-600 dark:text-violet-400"
-                    title={lang === 'zh' ? '输出 Token' : 'Output tokens'}
-                  >
-                    <ArrowUp aria-hidden="true" size={12} strokeWidth={1.8} />
-                    <span className="text-neutral-800 dark:text-neutral-100">
-                      {record.source === 'knowledge_base' ? '--' : formatOptionalTokens(record.outputTokens)}
-                    </span>
-                  </span>
-                </div>
-                <div
-                  className="mt-1 flex items-center gap-1 text-[10.5px] text-sky-700 dark:text-sky-400"
-                  title={lang === 'zh' ? '缓存读取 Token' : 'Cache read tokens'}
-                >
-                  <Database aria-hidden="true" size={11} strokeWidth={1.7} />
-                  <span>{formatOptionalTokens(record.cachedInputTokens)}</span>
-                  {(record.cacheCreationInputTokens ?? 0) > 0 && (
-                    <span className="ml-1 text-amber-700 dark:text-amber-400">
-                      {lang === 'zh' ? '写入' : 'write'} {formatTokens(record.cacheCreationInputTokens)}
-                    </span>
-                  )}
-                </div>
-              </td>
-              <td className="px-3 py-2 tabular-nums">{record.costUsd == null ? '--' : formatCost(record.costUsd)}</td>
-              <td className="px-3 py-2 tabular-nums">
-                <div className="border-l-2 border-emerald-500/70 pl-2 leading-[1.45]">
-                  <div>
-                    <span className="mr-1.5 text-[10.5px] text-[var(--text-muted)]">{lang === 'zh' ? '首字' : 'First'}</span>
-                    {formatDuration(record.firstTokenMs)}
-                  </div>
-                  <div>
-                    <span className="mr-1.5 text-[10.5px] text-[var(--text-muted)]">{lang === 'zh' ? '总耗时' : 'Total'}</span>
-                    {formatDuration(record.durationMs)}
-                  </div>
-                </div>
-              </td>
-              <td className="px-3 py-2">
-                <span className={`kv-tag ${record.status === 'success' ? 'ok' : record.status === 'cancelled' ? 'warn' : 'danger'}`}>
-                  {statusLabel(record.status, lang)}
+    <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-input)] text-[12px]">
+      {logs.map(record => (
+        <div key={record.id} className="px-3 py-2 text-neutral-800 dark:text-neutral-100">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="shrink-0 tabular-nums text-[var(--text-muted)]">{formatTime(record.createdAt, lang)}</span>
+            <span className="shrink-0 font-medium">{sourceLabel(record.source, lang)}</span>
+            <span className="min-w-0 truncate font-mono text-[11.5px]" title={record.model}>{record.model}</span>
+            <span className={`kv-tag ml-auto shrink-0 ${record.status === 'success' ? 'ok' : record.status === 'cancelled' ? 'warn' : 'danger'}`}>
+              {statusLabel(record.status, lang)}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+            <span className="truncate text-[var(--text-muted)]" title={record.providerName || record.providerId}>
+              {record.providerName || record.providerId}
+              {record.operation ? ` · ${record.operation}` : ''}
+            </span>
+            <span className="text-neutral-700 dark:text-neutral-200">{formatReasoningEffort(record.reasoningEffort)}</span>
+            <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400" title={lang === 'zh' ? '输入 Token' : 'Input tokens'}>
+              <ArrowDown aria-hidden="true" size={12} strokeWidth={1.8} />
+              <span className="text-neutral-800 dark:text-neutral-100">{formatOptionalTokens(record.inputTokens)}</span>
+            </span>
+            <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400" title={lang === 'zh' ? '输出 Token' : 'Output tokens'}>
+              <ArrowUp aria-hidden="true" size={12} strokeWidth={1.8} />
+              <span className="text-neutral-800 dark:text-neutral-100">
+                {record.source === 'knowledge_base' ? '--' : formatOptionalTokens(record.outputTokens)}
+              </span>
+            </span>
+            <span className="inline-flex items-center gap-1 text-sky-700 dark:text-sky-400" title={lang === 'zh' ? '缓存读取 Token' : 'Cache read tokens'}>
+              <Database aria-hidden="true" size={11} strokeWidth={1.7} />
+              <span>{formatOptionalTokens(record.cachedInputTokens)}</span>
+              {(record.cacheCreationInputTokens ?? 0) > 0 && (
+                <span className="text-amber-700 dark:text-amber-400">
+                  {lang === 'zh' ? '写入' : 'write'} {formatTokens(record.cacheCreationInputTokens)}
                 </span>
-                <div className={`mt-1 text-[10px] ${record.usageSource === 'missing' ? 'text-amber-700 dark:text-amber-400' : 'text-[var(--text-muted)]'}`}>
-                  {record.usageSource === 'missing' ? (lang === 'zh' ? 'Usage 缺失' : 'Usage missing') : 'provider'}
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              )}
+            </span>
+            <span className="tabular-nums">{record.costUsd == null ? '--' : formatCost(record.costUsd)}</span>
+            <span className="tabular-nums text-[var(--text-muted)]">
+              {lang === 'zh' ? '首字' : 'First'} {formatDuration(record.firstTokenMs)}
+              {' · '}
+              {lang === 'zh' ? '总耗时' : 'Total'} {formatDuration(record.durationMs)}
+            </span>
+            {record.usageSource === 'missing' && (
+              <span className="text-amber-700 dark:text-amber-400">{lang === 'zh' ? 'Usage 缺失' : 'Usage missing'}</span>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
 
-export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
+export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   const [range, setRange] = useState<UsageRange>('7d')
-  const [view, setView] = useState<UsageView>('logs')
+  const [viewMode, setViewMode] = useState<UsageView>('logs')
   const [source, setSource] = useState('all')
   const [status, setStatus] = useState('all')
   const [providerSearch, setProviderSearch] = useState('')
@@ -821,6 +984,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   const [debouncedModelSearch, setDebouncedModelSearch] = useState('')
   const [logPageIndex, setLogPageIndex] = useState(0)
   const [stats, setStats] = useState<UsageStatsResponse | null>(null)
+  const [activity, setActivity] = useState<UsageTrendPoint[]>([])
   const [loading, setLoading] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [error, setError] = useState('')
@@ -859,6 +1023,19 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
     void loadStats()
   }, [loadStats])
 
+  useEffect(() => {
+    if (view !== 'app') return
+    let cancelled = false
+    void api.usageGetStats({ range: '365d', limit: 1, offset: 0 }).then(data => {
+      if (!cancelled) setActivity(data.trend)
+    }).catch(() => {
+      if (!cancelled) setActivity([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [view])
+
   const clearStats = useCallback(async () => {
     const ok = window.confirm(lang === 'zh' ? '清空所有本地用量统计？' : 'Clear all local usage statistics?')
     if (!ok) return
@@ -866,6 +1043,7 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
     setError('')
     try {
       await api.usageClear()
+      setActivity([])
       await loadStats()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -879,6 +1057,23 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
   const pageCount = Math.max(1, Math.ceil(totalLogs / LOG_PAGE_SIZE))
   const canGoPrev = logPageIndex > 0 && !loading
   const canGoNext = logPageIndex + 1 < pageCount && !loading
+  const zh = lang === 'zh'
+  const rangeOptions: { id: UsageRange; label: string }[] = [
+    { id: 'today', label: zh ? '当天' : 'Today' },
+    { id: '1d', label: zh ? '近 1 日' : '1d' },
+    { id: '7d', label: zh ? '近 7 日' : '7d' },
+    { id: '30d', label: zh ? '近 30 日' : '30d' },
+  ]
+  const metricItems = [
+    { label: zh ? '累计 Token' : 'Total tokens', value: formatTokens(summary?.totalTokens), sub: `${formatCount(summary?.totalRequests)} ${zh ? '次' : 'req'}` },
+    { label: zh ? '成本' : 'Cost', value: formatCost(summary?.totalCostUsd), sub: '' },
+    {
+      label: zh ? '缓存命中率' : 'Cache hit rate',
+      value: summary && summary.inputTokens > 0 ? formatPercent(summary.cachedInputTokens / summary.inputTokens) : '0%',
+      sub: '',
+    },
+    { label: zh ? '平均耗时' : 'Avg duration', value: formatDuration(summary?.averageDurationMs), sub: '' },
+  ]
 
   useEffect(() => {
     if (logPageIndex > 0 && (totalLogs === 0 || logPageIndex >= pageCount)) {
@@ -901,164 +1096,155 @@ export function UsageStatsPanel({ lang }: UsageStatsPanelProps) {
     setStatus(next)
   }, [])
 
-  return (
-    <div className="space-y-3">
-      <SettingsGroup title={lang === 'zh' ? '总览' : 'Overview'}>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="kv-seg">
-            {(['today', '1d', '7d', '30d'] as UsageRange[]).map(option => (
-              <button
-                key={option}
-                type="button"
-                className={range === option ? 'active' : ''}
-                onClick={() => updateRange(option)}
-                data-tauri-drag-region="false"
-              >
-                {option === 'today' ? (lang === 'zh' ? '当天' : 'Today') : option}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Button size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
-              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-              {lang === 'zh' ? '刷新' : 'Refresh'}
-            </Button>
-            <Button variant="danger" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
-              <Trash2 size={11} />
-              {lang === 'zh' ? '清空' : 'Clear'}
-            </Button>
-          </div>
+  const details = (
+    <SettingsGroup>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <UsageSeg value={range} onChange={updateRange} options={rangeOptions} />
+        <UsageSeg
+          value={viewMode}
+          onChange={setViewMode}
+          options={[
+            { id: 'logs' as const, label: zh ? '请求日志' : 'Logs' },
+            { id: 'providers' as const, label: 'Provider' },
+            { id: 'models' as const, label: zh ? '模型' : 'Models' },
+          ]}
+        />
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
+            <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
+            {zh ? '刷新' : 'Refresh'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
+            <Trash2 size={11} />
+            {zh ? '清空' : 'Clear'}
+          </Button>
         </div>
-
-        {error && (
-          <div className="kv-panel warn mb-3">
-            <div className="kv-panel-body">{error}</div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
-          <SummaryTile label={lang === 'zh' ? '总 Token' : 'Total tokens'} value={formatTokens(summary?.totalTokens)} sub={`${formatCount(summary?.totalRequests)} ${lang === 'zh' ? '次请求' : 'requests'}`} />
-          <SummaryTile label={lang === 'zh' ? '估算成本' : 'Estimated cost'} value={formatCost(summary?.totalCostUsd)} sub={lang === 'zh' ? '按本地模型价格估算' : 'From local model pricing'} />
-          <SummaryTile label={lang === 'zh' ? '输入 / 输出' : 'Input / Output'} value={`${formatTokens(summary?.inputTokens)} / ${formatTokens(summary?.outputTokens)}`} sub={lang === 'zh' ? 'provider 返回 usage 时统计' : 'Provider usage only'} />
-          {/* 命中率提到独立卡，下面「缓存命中」那张就只报 token 数，不再重复同一个百分比。 */}
-          <SummaryTile
-            label={lang === 'zh' ? '缓存命中率' : 'Cache hit rate'}
-            value={
-              summary && summary.inputTokens > 0
-                ? formatPercent(summary.cachedInputTokens / summary.inputTokens)
-                : '0%'
-            }
-            sub={lang === 'zh' ? '命中缓存的输入 token 占比' : 'Share of input tokens served from cache'}
-          />
-          <SummaryTile
-            label={lang === 'zh' ? '缓存命中' : 'Cached input'}
-            value={formatTokens(summary?.cachedInputTokens)}
-          />
-          <SummaryTile
-            label={lang === 'zh' ? '成功率' : 'Success rate'}
-            value={summary && summary.totalRequests > 0
-              ? formatPercent(summary.successfulRequests / summary.totalRequests)
-              : '--'}
-            sub={`${formatCount(summary?.successfulRequests)} ${lang === 'zh' ? '成功' : 'ok'} · ${formatCount(summary?.failedRequests)} ${lang === 'zh' ? '失败' : 'failed'}`}
-          />
-          <SummaryTile label={lang === 'zh' ? '推理 Token' : 'Reasoning'} value={formatTokens(summary?.reasoningTokens)} />
-          <SummaryTile label={lang === 'zh' ? '平均耗时' : 'Avg duration'} value={formatDuration(summary?.averageDurationMs)} />
-        </div>
-      </SettingsGroup>
-
-      {/* 容器查询:按内容区实际宽度(非视口)决定并排/堆叠——设置窗口可任意缩放,
-          视口断点在这里不可靠。≥64rem(1024px)容器宽才并排,保证每卡内部
-          环形图+表格仍能同行。 */}
-      <div className="@container">
-        <div className="grid grid-cols-1 gap-3 @5xl:grid-cols-2">
-          <SettingsGroup title={lang === 'zh' ? '模型分布' : 'Model distribution'}>
-            <ModelDonut rows={stats?.modelStats ?? []} lang={lang} />
-          </SettingsGroup>
-
-          <SettingsGroup title={lang === 'zh' ? '趋势' : 'Trend'}>
-            <TrendChart points={stats?.trend ?? []} lang={lang} />
-          </SettingsGroup>
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Select
+          className="w-40"
+          value={source}
+          onChange={updateSource}
+          options={SOURCE_OPTIONS.map(value => ({ value, label: sourceLabel(value, lang) }))}
+        />
+        <Select
+          className="w-36"
+          value={status}
+          onChange={updateStatus}
+          options={STATUS_OPTIONS.map(value => ({ value, label: statusLabel(value, lang) }))}
+        />
+        <div className="grid min-w-[240px] flex-1 grid-cols-1 gap-2 sm:grid-cols-2">
+          <Input value={providerSearch} onChange={setProviderSearch} placeholder={zh ? '搜索 Provider' : 'Search provider'} />
+          <Input value={modelSearch} onChange={setModelSearch} placeholder={zh ? '搜索模型' : 'Search model'} mono />
         </div>
       </div>
 
-      <SettingsGroup title={lang === 'zh' ? '明细' : 'Details'}>
-        <div className="mb-3 flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="kv-seg">
-              {[
-                { id: 'logs' as const, label: lang === 'zh' ? '请求日志' : 'Logs' },
-                { id: 'providers' as const, label: 'Provider' },
-                { id: 'models' as const, label: lang === 'zh' ? '模型' : 'Models' },
-              ].map(option => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className={view === option.id ? 'active' : ''}
-                  onClick={() => setView(option.id)}
-                  data-tauri-drag-region="false"
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <Select
-              className="w-40"
-              value={source}
-              onChange={updateSource}
-              options={SOURCE_OPTIONS.map(value => ({ value, label: sourceLabel(value, lang) }))}
-            />
-            <Select
-              className="w-36"
-              value={status}
-              onChange={updateStatus}
-              options={STATUS_OPTIONS.map(value => ({ value, label: statusLabel(value, lang) }))}
-            />
-          </div>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            <Input value={providerSearch} onChange={setProviderSearch} placeholder={lang === 'zh' ? '搜索 Provider' : 'Search provider'} />
-            <Input value={modelSearch} onChange={setModelSearch} placeholder={lang === 'zh' ? '搜索模型' : 'Search model'} mono />
+      {viewMode === 'logs' && <LogsTable logs={stats?.logs ?? []} lang={lang} />}
+      {viewMode === 'providers' && <GroupTable rows={stats?.providerStats ?? []} lang={lang} type="provider" />}
+      {viewMode === 'models' && <GroupTable rows={stats?.modelStats ?? []} lang={lang} type="model" />}
+
+      {stats && viewMode === 'logs' && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-500">
+          <span>
+            {zh
+              ? `显示 ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)} 条`
+              : `Showing ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)}`}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              onClick={() => setLogPageIndex(page => Math.max(0, page - 1))}
+              disabled={!canGoPrev}
+              data-tauri-drag-region="false"
+              title={zh ? '上一页' : 'Previous page'}
+            >
+              <ChevronLeft size={11} />
+              {zh ? '上一页' : 'Prev'}
+            </Button>
+            <span className="min-w-12 text-center tabular-nums">
+              {logPageIndex + 1} / {pageCount}
+            </span>
+            <Button
+              size="sm"
+              onClick={() => setLogPageIndex(page => Math.min(pageCount - 1, page + 1))}
+              disabled={!canGoNext}
+              data-tauri-drag-region="false"
+              title={zh ? '下一页' : 'Next page'}
+            >
+              {zh ? '下一页' : 'Next'}
+              <ChevronRight size={11} />
+            </Button>
           </div>
         </div>
+      )}
+    </SettingsGroup>
+  )
 
-        {view === 'logs' && <LogsTable logs={stats?.logs ?? []} lang={lang} />}
-        {view === 'providers' && <GroupTable rows={stats?.providerStats ?? []} lang={lang} type="provider" />}
-        {view === 'models' && <GroupTable rows={stats?.modelStats ?? []} lang={lang} type="model" />}
-
-        {stats && view === 'logs' && (
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 dark:text-neutral-500">
-            <span>
-              {lang === 'zh'
-                ? `显示 ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)} 条`
-                : `Showing ${pageRangeLabel(logPageIndex, LOG_PAGE_SIZE, totalLogs)}`}
-            </span>
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                onClick={() => setLogPageIndex(page => Math.max(0, page - 1))}
-                disabled={!canGoPrev}
-                data-tauri-drag-region="false"
-                title={lang === 'zh' ? '上一页' : 'Previous page'}
-              >
-                <ChevronLeft size={11} />
-                {lang === 'zh' ? '上一页' : 'Prev'}
-              </Button>
-              <span className="min-w-12 text-center tabular-nums">
-                {logPageIndex + 1} / {pageCount}
-              </span>
-              <Button
-                size="sm"
-                onClick={() => setLogPageIndex(page => Math.min(pageCount - 1, page + 1))}
-                disabled={!canGoNext}
-                data-tauri-drag-region="false"
-                title={lang === 'zh' ? '下一页' : 'Next page'}
-              >
-                {lang === 'zh' ? '下一页' : 'Next'}
-                <ChevronRight size={11} />
-              </Button>
-            </div>
+  if (view === 'calls') {
+    return (
+      <div className="space-y-3">
+        {error && (
+          <div className="kv-panel warn">
+            <div className="kv-panel-body">{error}</div>
           </div>
         )}
-      </SettingsGroup>
+        {details}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {error && (
+        <div className="kv-panel warn">
+          <div className="kv-panel-body">{error}</div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] sm:grid-cols-4">
+        {metricItems.map(item => (
+          <div key={item.label} className="min-w-0 border-[var(--border)] px-3 py-3 text-center even:border-l sm:border-l sm:first:border-l-0">
+            <div className="text-[17px] font-semibold tabular-nums text-[var(--text)]">{item.value}</div>
+            <div className="mt-1 text-[11px] text-[var(--text-muted)]">{item.label}</div>
+            <div className="mt-0.5 min-h-[14px] text-[10px] text-[var(--text-faint)]">{item.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <TokenActivity points={activity.length > 0 ? activity : (stats?.trend ?? [])} lang={lang} />
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[13px] text-[var(--text-muted)]">{zh ? '时间范围' : 'Range'}</div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <Button variant="ghost" size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
+              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
+              {zh ? '刷新' : 'Refresh'}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
+              <Trash2 size={11} />
+              {zh ? '清空' : 'Clear'}
+            </Button>
+          </div>
+          <UsageSeg
+            value={range}
+            onChange={updateRange}
+            options={rangeOptions}
+          />
+        </div>
+      </div>
+
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+        <div className="mb-2 text-[13px] font-medium text-[var(--text)]">
+          {range === 'today' ? (zh ? '今日 Token 趋势' : 'Today token trend') : (zh ? '每日 Token 趋势图' : 'Daily token trend')}
+        </div>
+        <TrendChart points={stats?.trend ?? []} lang={lang} />
+      </section>
+
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+        <div className="mb-2 text-[13px] font-medium text-[var(--text)]">{zh ? '模型用量' : 'Model usage'}</div>
+        <ModelDonut rows={stats?.modelStats ?? []} lang={lang} />
+      </section>
     </div>
   )
 }

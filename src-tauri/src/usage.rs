@@ -461,6 +461,7 @@ fn range_start(range: &str) -> Option<i64> {
         "1d" => Some(now.saturating_sub(86_400)),
         "30d" => Some(now.saturating_sub(30 * 86_400)),
         "90d" => Some(now.saturating_sub(90 * 86_400)),
+        "365d" => Some(now.saturating_sub(365 * 86_400)),
         "all" => None,
         // default 7d
         _ => Some(now.saturating_sub(7 * 86_400)),
@@ -641,6 +642,7 @@ fn range_days(range: &str) -> Option<usize> {
         "today" | "1d" => Some(1),
         "30d" => Some(30),
         "90d" => Some(90),
+        "365d" => Some(365),
         "all" => None,
         // default 7d
         _ => Some(7),

@@ -1354,7 +1354,7 @@ export type PluginInstallBrief = {
   userMessage: string
 }
 
-export type UsageRange = 'today' | '1d' | '7d' | '30d'
+export type UsageRange = 'today' | '1d' | '7d' | '30d' | '365d'
 
 export type UsageStatsQuery = {
   range?: UsageRange

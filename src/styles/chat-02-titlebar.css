@@ -147,6 +147,15 @@
   padding-right: max(150px, var(--settings-content-inset));
 }
 
+/* 设置页入场有 transform，页头里的按钮抬不进这条带的上面。带本身透明，
+   点击交给下面的页头（页头空白处仍会 startDragging）；只有窗口按钮自己接收点击。 */
+.chat-titlebar-strip--settings {
+  pointer-events: none;
+}
+.chat-titlebar-strip--settings .chat-win-controls {
+  pointer-events: auto;
+}
+
 .chat-win-controls {
   display: flex;
   align-items: center;
