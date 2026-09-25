@@ -675,6 +675,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         history_start: prev.history_start,
         history_total: prev.history_total,
         history_directory: prev.history_directory,
+        history_artifacts: prev.history_artifacts,
       }
     })
   }, [])
@@ -2662,6 +2663,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     messages: displayMessages,
     historyStart: currentConversation?.history_start ?? 0,
     historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
+    historyArtifacts: currentConversation?.history_artifacts,
     historyLoadError: historyLoadError?.conversationId === currentConversation?.id
       ? historyLoadError?.message : null,
     onLoadOlder: navigation.loadOlderHistory,

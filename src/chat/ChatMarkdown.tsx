@@ -1119,7 +1119,9 @@ function MarkdownArtifactImage({
         src={src}
         alt={alt}
         name={artifact?.name ?? rawSrc}
-        path={artifact?.path ?? artifact?.filePath ?? artifact?.localPath ?? rawSrc}
+        path={artifact
+          ? artifact.path ?? artifact.filePath ?? artifact.localPath
+          : /^(?:[a-z]:[\\/]|\/|\\\\)/i.test(rawSrc) ? rawSrc : undefined}
         conversationId={conversationId}
         onOpenViewer={openViewer}
         className="mb-2 mr-2"

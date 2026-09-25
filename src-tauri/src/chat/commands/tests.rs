@@ -40,6 +40,55 @@ use super::tooling::{
 use super::*;
 
 #[test]
+fn history_window_and_pages_resolve_only_missing_artifact_dependencies() {
+    let artifact = serde_json::json!({"id":"art_early", "name":"early.png",
+        "mime_type":"image/png", "data_url":"data:image/png;base64,AAAA", "path":"early.png"});
+    let mut messages: Vec<ChatMessage> = (0..130)
+        .map(|index| test_chat_message(&format!("m{index}"), "assistant", "reply", index))
+        .collect();
+    messages[0].artifacts = serde_json::from_value(serde_json::json!([
+        artifact, {"id":"art_unused", "name":"unused.png", "mime_type":"image/png", "data_url":"large-unused"}
+    ])).unwrap();
+    messages[129].content = "![earlier](artifact:art_early) `artifact:art_unused`".into();
+    messages[69].content = "[earlier again](artifact://art_early)".into();
+    for end in [130, 70] {
+        let start = super::catalog::history_window_start(&messages, end);
+        assert_eq!(end - start, 60);
+        let dependencies = crate::chat::artifacts::history_reference_artifacts(&messages, start..end);
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].id.as_deref(), Some("art_early"));
+        assert_eq!(dependencies[0].path.as_deref(), Some("early.png"));
+    }
+    assert!(messages[129].artifacts.is_empty(), "display dependencies must not change message ownership");
+    assert!(crate::chat::artifacts::history_reference_artifacts(&messages, 0..130).is_empty());
+}
+
+#[test]
+fn history_window_resolves_segment_and_presentation_dependencies_from_tools() {
+    let artifact = serde_json::json!({"id":"art_tool", "name":"tool.png", "mime_type":"image/png", "data_url":""});
+    let mut origin = test_chat_message("origin", "assistant", "", 1);
+    origin.tool_calls = serde_json::from_value(serde_json::json!([{
+        "id":"read", "name":"read", "source":"native", "arguments":"{}", "status":"success", "artifacts":[artifact]
+    }])).unwrap();
+    let mut target = test_chat_message("target", "assistant", "", 2);
+    target.segments = serde_json::from_value(serde_json::json!([{
+        "id":"text", "kind":"text", "phase":"plain", "order":0, "text":"![tool](artifact:art_tool)"
+    }])).unwrap();
+    let mut messages = vec![origin, target];
+    assert_eq!(crate::chat::artifacts::history_reference_artifacts(&messages, 1..2).len(), 1);
+    messages[1].segments.clear();
+    for mode in ["preview", "prepare"] {
+        messages[1].tool_calls = serde_json::from_value(serde_json::json!([{
+            "id":"present", "name":"present_artifacts", "source":"native", "arguments":"{}", "status":"success",
+            "structured_content":{"type":"artifact_presentation", "artifactIds":["art_tool", "art_tool", "art_missing"], "mode":mode}
+        }])).unwrap();
+        let dependencies = crate::chat::artifacts::history_reference_artifacts(&messages, 1..2);
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].id.as_deref(), Some("art_tool"));
+    }
+}
+
+#[test]
 fn history_window_bounds_payload_and_keeps_oversized_message_reachable() {
     let messages: Vec<ChatMessage> = (0..60)
         .map(|index| {

@@ -64,7 +64,7 @@ import { createLiveRowModel } from './liveRowModel'
 import { useLiveRowMeasurement } from './hooks/useLiveRowMeasurement'
 import { useChatWidthLayout } from './hooks/useChatWidthLayout'
 import { recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
-import { EMPTY_HISTORY_DIRECTORY } from './conversationHistoryWindow'
+import { EMPTY_HISTORY_ARTIFACTS, EMPTY_HISTORY_DIRECTORY } from './conversationHistoryWindow'
 
 
 export interface AssistantStreamStats {
@@ -92,6 +92,7 @@ export interface MessageListProps {
   messages: ChatMessage[]
   historyStart?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
+  historyArtifacts?: ChatToolArtifact[]
   onLoadOlder?: () => void | Promise<void>
   historyLoadError?: string | null
   onFocusHistoryMessage?: (conversationId: string, messageId: string, signal: AbortSignal) => void | Promise<void>
@@ -248,6 +249,7 @@ function MessageListBase({
   onFocusMessageHandled,
   historyStart = 0,
   historyDirectory = EMPTY_HISTORY_DIRECTORY,
+  historyArtifacts = EMPTY_HISTORY_ARTIFACTS,
   onLoadOlder,
   historyLoadError,
   onFocusHistoryMessage,
@@ -259,7 +261,7 @@ function MessageListBase({
     message.role === 'assistant' && message.id.startsWith('subagent-result-')
   )), [storedMessages])
   const conversationArtifactsById = useMemo(() => {
-    const artifacts = new Map<string, ChatToolArtifact>()
+    const artifacts = new Map(historyArtifacts.map(artifact => [artifactId(artifact), artifact]))
     for (const message of messages) {
       const toolCalls = message.tool_calls ?? message.toolCalls ?? []
       for (const artifact of [
@@ -271,7 +273,7 @@ function MessageListBase({
       }
     }
     return artifacts
-  }, [messages])
+  }, [messages, historyArtifacts])
   useChatPerfRenderProbe('MessageList', {
     conversationId,
     messages: messages.length,

@@ -171,6 +171,28 @@ describe('composer custom editing menu', () => {
     expect(getComposerDraft('paste-remounted')?.attachments[0]?.name).toBe('remounted.csv')
   })
 
+  it('rejects a removed attachment after draft migration and composer remount', async () => {
+    setComposerDraft(draftKey(undefined), { input: '', quotes: [], attachments: [
+      { id: 'old-remounted', name: 'same-remounted.csv', path: '/tmp/same-remounted.csv', type: 'file' },
+    ] })
+    let resolve!: (value: { success: true; files: { path: string }[] }) => void
+    api.chatReadClipboardFiles.mockReturnValue(new Promise(r => { resolve = r }))
+    const welcome = render(<InputBar onSend={() => {}} layout="inline" />)
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: new TestTransfer() })
+    await waitFor(() => expect(api.chatReadClipboardFiles).toHaveBeenCalled())
+    act(() => { migrateNewChatDraft(draftKey(undefined), 'removed-after-remount') })
+    welcome.unmount()
+    render(<InputBar onSend={() => {}} conversationId="removed-after-remount" />)
+    fireEvent.click(screen.getByRole('button', { name: 'remove same-remounted.csv' }))
+    expect(getComposerDraft('removed-after-remount')?.attachments ?? []).toEqual([])
+    await act(async () => resolve({ success: true, files: [{ path: '/tmp/same-remounted.csv' }] }))
+    expect(getComposerDraft('removed-after-remount')?.attachments ?? []).toEqual([])
+    expect(screen.queryByText('same-remounted.csv')).toBeNull()
+    // A new explicit paste after removal is a new intent, not an old result.
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: new TestTransfer() })
+    expect(await screen.findByText('same-remounted.csv')).toBeInTheDocument()
+  })
+
   it('prefers spreadsheet cells over a clipboard image', async () => {
     const view = render(<InputBar onSend={() => {}} conversationId="paste-sheet" />)
     const transfer = new TestTransfer()

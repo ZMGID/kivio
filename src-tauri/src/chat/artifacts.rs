@@ -711,11 +711,59 @@ fn import_conversation(
     warnings
 }
 
+/// Window metadata only: resolve dependencies without changing message ownership,
+/// delivery state, or the stored conversation. No original image bytes are read.
+pub(crate) fn history_reference_artifacts(
+    messages: &[ChatMessage],
+    range: std::ops::Range<usize>,
+) -> Vec<ChatToolArtifact> {
+    let mut needed = HashSet::new();
+    let mut present = HashSet::new();
+    for message in &messages[range] {
+        let mut text = message.content.clone();
+        for segment in &message.segments {
+            if let Some(segment_text) = &segment.text {
+                text.push_str("\n\n");
+                text.push_str(segment_text);
+            }
+        }
+        needed.extend(referenced_ids(&text));
+        for tool in &message.tool_calls {
+            if tool.source == "native" && tool.name == "present_artifacts" {
+                if let Some(value) = tool.structured_content.as_ref()
+                    .filter(|value| value["type"] == "artifact_presentation") {
+                    for id in value.get("artifactIds").or_else(|| value.get("artifact_ids"))
+                        .and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                        needed.insert(id.trim().to_string());
+                    }
+                }
+            }
+        }
+        present.extend(message.artifacts.iter()
+            .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))
+            .filter_map(|artifact| artifact.id.clone()));
+    }
+    needed.retain(|id| !present.contains(id));
+    if needed.is_empty() { return Vec::new(); }
+    let mut selected = std::collections::BTreeMap::new();
+    for artifact in messages.iter().flat_map(|message| message.artifacts.iter()
+        .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))) {
+        if let Some(id) = artifact.id.as_ref().filter(|id| needed.contains(*id)) {
+            selected.insert(id, artifact);
+        }
+    }
+    selected.into_values().cloned().collect()
+}
+
 fn referenced_ids(text: &str) -> HashSet<String> {
-    let fence = regex::Regex::new(r"(?s)```.*?```|`[^`]*`").unwrap();
+    if !text.contains("artifact:") { return HashSet::new(); }
+    static PATTERNS: std::sync::OnceLock<(regex::Regex, regex::Regex)> = std::sync::OnceLock::new();
+    let (fence, reference) = PATTERNS.get_or_init(|| (
+        regex::Regex::new(r"(?s)```.*?```|`[^`]*`").unwrap(),
+        regex::Regex::new(r"artifact:(?://)?(art_[A-Za-z0-9_-]+)").unwrap(),
+    ));
     let text = fence.replace_all(text, "");
-    regex::Regex::new(r"artifact:(?://)?(art_[A-Za-z0-9_-]+)")
-        .unwrap()
+    reference
         .captures_iter(&text)
         .map(|c| c[1].into())
         .collect()

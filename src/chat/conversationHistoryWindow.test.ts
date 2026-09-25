@@ -22,6 +22,16 @@ it('rejects pages from edited, truncated or unrelated windows', () => {
   expect(prependConversationHistoryPage(window, { ...page, end: 2 })).toBeNull()
 })
 
+it('retains and deduplicates referenced artifacts while prepending a matching page', () => {
+  const first = { id: 'art_first', name: 'first.png' }
+  const second = { id: 'art_second', name: 'second.png' }
+  const result = prependConversationHistoryPage({ ...window, history_artifacts: [first] }, {
+    revision: 5, start: 0, end: 1, total: 2, messages: [message('old')],
+    history_artifacts: [first, second],
+  })
+  expect(result?.history_artifacts).toEqual([first, second])
+})
+
 it('starts the visible window before a split multi-answer group', () => {
   const messages = Array.from({ length: 64 }, (_, index) => ({
     ...message(String(index)),

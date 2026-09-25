@@ -34,7 +34,7 @@ import { ComposerAddMenu } from './ComposerAddMenu'
 import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerContextMenu'
 import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
-import { beginComposerDraftOperation, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
+import { beginComposerAttachmentOperation, beginComposerDraftOperation, invalidateComposerAttachmentPath, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
 import { applyComposerAutoHeight } from './composerAutoHeight'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
@@ -61,10 +61,7 @@ import { isTauriRuntime } from './utils'
 import { isVideoFile } from './attachmentType'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
-type AttachmentOperationScope = ReturnType<typeof beginComposerDraftOperation> & { removedPaths: Set<string> }
-function beginAttachmentOperation(key: string): AttachmentOperationScope {
-  return Object.assign(beginComposerDraftOperation(key), { removedPaths: new Set<string>() })
-}
+type AttachmentOperationScope = ReturnType<typeof beginComposerAttachmentOperation>
 const SPREADSHEET_HTML = /<table\b|office:excel|Excel\.Sheet|Microsoft\s+Excel|mso-(?:number-format|displayed-decimal-separator)/iu
 function preferSpreadsheetText(text: string, html: string): boolean {
   return text.length > 0 && (text.includes('\t') || SPREADSHEET_HTML.test(html))
@@ -614,7 +611,6 @@ export const InputBar = memo(function InputBar({
     })
     return () => { unsubscribe(); release() }
   }, [])
-  const pendingAttachmentScopesRef = useRef(new Set<AttachmentOperationScope>())
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
@@ -1183,8 +1179,7 @@ export const InputBar = memo(function InputBar({
 
   const openAttachmentPicker = useCallback(async () => {
     if (composerLocked) return
-    const scope = beginAttachmentOperation(draftScopeRef.current.key)
-    pendingAttachmentScopesRef.current.add(scope)
+    const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
     setToolPanelOpen(false)
     closeProjectMenu()
     setSlashPanelOpen(false)
@@ -1205,7 +1200,6 @@ export const InputBar = memo(function InputBar({
         scope,
       )
     } finally {
-      pendingAttachmentScopesRef.current.delete(scope)
       scope.release()
     }
   }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
@@ -1575,8 +1569,7 @@ export const InputBar = memo(function InputBar({
   ) => {
     if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) return
 
-    const scope = operationScope ?? beginAttachmentOperation(draftScopeRef.current.key)
-    pendingAttachmentScopesRef.current.add(scope)
+    const scope = operationScope ?? beginComposerAttachmentOperation(draftScopeRef.current.key)
     try {
       const clipText = e.clipboardData.getData('text/plain')
       const spreadsheetText = preferSpreadsheetText(clipText, e.clipboardData.getData('text/html'))
@@ -1704,7 +1697,6 @@ export const InputBar = memo(function InputBar({
         )
       }
     } finally {
-      pendingAttachmentScopesRef.current.delete(scope)
       scope.release()
     }
   }
@@ -1713,8 +1705,7 @@ export const InputBar = memo(function InputBar({
     textareaRef, scopeKey: draftKeyValue, readOnly: composerLocked || optimizeBusy,
     onError: setAttachmentError,
     onPaste: async (target) => {
-      const scope = beginAttachmentOperation(draftScopeRef.current.key)
-      pendingAttachmentScopesRef.current.add(scope)
+      const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
       try {
         // 桌面端全部走系统剪贴板；WebView 的 read/readText 会弹出网站权限请求。
         let nativePaths: string[] = []
@@ -1759,7 +1750,6 @@ export const InputBar = memo(function InputBar({
         console.error('Failed to read clipboard:', err)
         setScopedAttachmentError('无法读取剪贴板，请重试或使用 Ctrl+V。', scope)
       } finally {
-        pendingAttachmentScopesRef.current.delete(scope)
         scope.release()
       }
     },
@@ -1768,9 +1758,7 @@ export const InputBar = memo(function InputBar({
   const removeAttachment = (id: string) => {
     const removed = attachments.find((attachment) => attachment.id === id)
     if (removed) {
-      for (const scope of pendingAttachmentScopesRef.current) {
-        if (scope.key === draftScopeRef.current.key) scope.removedPaths.add(removed.path)
-      }
+      invalidateComposerAttachmentPath(draftScopeRef.current.key, removed.path)
     }
     setAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
     setAttachmentError('')
@@ -1929,11 +1917,10 @@ export const InputBar = memo(function InputBar({
 
       if (event.payload.type === 'drop') {
         setDragActive(false)
-        const scope = beginAttachmentOperation(draftScopeRef.current.key)
-        pendingAttachmentScopesRef.current.add(scope)
+        const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
         void pendingFromPaths(event.payload.paths)
           .then((attachments) => addAttachments(attachments, undefined, scope))
-          .finally(() => { pendingAttachmentScopesRef.current.delete(scope); scope.release() })
+          .finally(() => { scope.release() })
       }
     }).then((handler) => {
       if (cancelled) {

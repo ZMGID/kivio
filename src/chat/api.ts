@@ -4,7 +4,7 @@ import { isPlaceholderTitle, optimisticConversationTitle } from './conversationT
 import { estimateTokens } from '../utils/tokens'
 import { isTauriRuntime } from './utils'
 import { recordChatPerfSample } from './chatPerformanceProbe'
-import { historyWindowStart } from './conversationHistoryWindow'
+import { historyReferenceArtifacts, historyWindowStart, type ConversationHistoryPage } from './conversationHistoryWindow'
 import { resolveCompactionBoundaries } from './compactionBoundary'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
 import type { ConversationPin } from './conversationPins'
@@ -12,7 +12,6 @@ import type {
   AgentRuntimeConfig,
   ChatAssistant,
   ChatAssistantSnapshot,
-  ChatMessage,
   ChatProject,
   ChatSet,
   Conversation,
@@ -371,6 +370,7 @@ const mockChatApi = {
       history_start: start,
       history_total: total,
       history_directory: directory,
+      history_artifacts: historyReferenceArtifacts(conversation.messages, start, total),
     }
   },
 
@@ -378,7 +378,9 @@ const mockChatApi = {
     const conversation = await mockChatApi.getConversation(conversationId)
     const end = Math.min(before, conversation.messages.length)
     const start = historyWindowStart(conversation.messages, end)
-    return { revision: conversation.revision, start, end, total: conversation.messages.length, messages: conversation.messages.slice(start, end) }
+    return { revision: conversation.revision, start, end, total: conversation.messages.length,
+      messages: conversation.messages.slice(start, end),
+      history_artifacts: historyReferenceArtifacts(conversation.messages, start, end) }
   },
 
   async getConversationRevision(conversationId: string): Promise<number | null> {
@@ -1208,6 +1210,7 @@ export const chatApi = {
       history_start: number
       history_total: number
       history_directory: NonNullable<Conversation['history_directory']>
+      history_artifacts?: Conversation['history_artifacts']
       read_ms: number
       prepare_ms: number
     }>('chat_get_conversation_window', { conversationId })
@@ -1222,25 +1225,13 @@ export const chatApi = {
       history_start: result.history_start,
       history_total: result.history_total,
       history_directory: result.history_directory,
+      history_artifacts: result.history_artifacts,
     }
   },
 
-  async getConversationPage(conversationId: string, before: number): Promise<{
-    revision: number
-    start: number
-    end: number
-    total: number
-    messages: ChatMessage[]
-  }> {
+  async getConversationPage(conversationId: string, before: number): Promise<ConversationHistoryPage> {
     if (!isTauriRuntime()) return mockChatApi.getConversationPage(conversationId, before)
-    const result = await invoke<{
-      success: boolean
-      revision: number
-      start: number
-      end: number
-      total: number
-      messages: ChatMessage[]
-    }>('chat_get_conversation_page', { conversationId, before })
+    const result = await invoke<ConversationHistoryPage & { success: boolean }>('chat_get_conversation_page', { conversationId, before })
     if (!result.success) throw new Error('Failed to get conversation page')
     return result
   },

@@ -19,6 +19,15 @@ vi.mock('@tanstack/react-virtual', async (importOriginal) => {
 
 afterEach(() => { act(() => reset()); clearChatReadingPositions(); vi.restoreAllMocks() })
 
+it('renders a cross-window image from supplied history dependencies', async () => {
+  const { container } = render(<MessageList conversationId="window-image" historyStart={70}
+    messages={[{ id: 'tail-reference', role: 'assistant', timestamp: 1, content: '![earlier](artifact:art_early)' }]}
+    historyArtifacts={[{ id: 'art_early', name: 'early.png', mime_type: 'image/png', data_url: 'data:image/png;base64,AAAA' }]} />)
+  await act(async () => { await Promise.resolve() })
+  expect(container.textContent).not.toContain('文件不可用')
+  expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,AAAA')
+})
+
 it('restores an earlier row when reopening a conversation that ends in a user message', async () => {
   rememberChatReadingPosition('restore-reading', {
     following: false, rowKey: 'short-20', rowOffset: 18,

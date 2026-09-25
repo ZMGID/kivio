@@ -22,7 +22,7 @@ export function subscribeComposerDraft(listener: (key: string, draft: ComposerDr
 }
 
 /** A pending operation follows only an explicitly committed draft migration. */
-const operations = new Set<{ key: string }>()
+const operations = new Set<{ key: string; removedPaths?: Set<string> }>()
 export function registerComposerDraftScope(scope: { key: string }) {
   operations.add(scope)
   return () => { operations.delete(scope) }
@@ -30,6 +30,18 @@ export function registerComposerDraftScope(scope: { key: string }) {
 export function beginComposerDraftOperation(key: string) {
   const scope = { key }
   return Object.assign(scope, { release: registerComposerDraftScope(scope) })
+}
+
+/** Pending attachments outlive a composer instance and follow draft migration. */
+export function beginComposerAttachmentOperation(key: string) {
+  const scope = { key, removedPaths: new Set<string>() }
+  return Object.assign(scope, { release: registerComposerDraftScope(scope) })
+}
+
+export function invalidateComposerAttachmentPath(key: string, path: string): void {
+  for (const scope of operations) {
+    if (scope.key === key) scope.removedPaths?.add(path)
+  }
 }
 
 export function draftKey(conversationId: string | null | undefined): string {

@@ -196,6 +196,7 @@ pub(crate) async fn chat_get_conversation_window(
     let total = conversation.messages.len();
     let start = history_window_start(&conversation.messages, total);
     let directory = conversation_history_directory(&conversation);
+    let history_artifacts = crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..total);
     conversation.messages = conversation.messages.split_off(start);
     Ok(serde_json::json!({
         "success": true,
@@ -203,6 +204,7 @@ pub(crate) async fn chat_get_conversation_window(
         "history_start": start,
         "history_total": total,
         "history_directory": directory,
+        "history_artifacts": history_artifacts,
         "read_ms": read_ms,
         "prepare_ms": started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
     }))
@@ -304,6 +306,7 @@ pub(crate) async fn chat_get_conversation_page(
         "end": end,
         "total": total,
         "messages": &conversation.messages[start..end],
+        "history_artifacts": crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..end),
     }))
 }
 

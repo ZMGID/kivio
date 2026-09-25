@@ -525,6 +525,8 @@ export interface Conversation {
   /** Renderer-only partial window metadata. Omitted on complete snapshots. */
   history_start?: number
   history_total?: number
+  /** Only artifacts referenced by loaded messages but defined outside their window. */
+  history_artifacts?: ChatToolArtifact[]
   history_directory?: Array<{
     kind: 'turn' | 'compaction' | 'clear'
     id: string
