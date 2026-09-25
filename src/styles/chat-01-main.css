@@ -609,19 +609,38 @@ button.chat-composer-status-item:hover {
 
 /* 回答标题目录：和右侧轮次导航共用主区的绝对层，不参与消息列宽度计算。
    刻度和标题是同一行：收起时只露出刻度，悬停时原地展开标题，行位置不动，也不做过渡动画。
-   行高按可用高度和标题数自适应（24–36px），放不下时列表滚动。 */
+   行高按可用高度和标题数自适应（24–36px），放不下时列表滚动。
+   层级靠刻度长短和标题字重区分：主级刻度最长、标题最重，子级依次缩短、变淡并缩进。 */
 .chat-heading-navigator {
+  --outline-tick: rgb(163 163 163);
+  --outline-strong: rgb(23 23 23);
+  --outline-text: rgb(64 64 64);
+  --outline-sub: rgb(115 115 115);
+  --outline-hover: rgb(23 23 23 / 0.06);
+  --outline-panel: var(--theme-surface-soft);
+  --outline-edge: rgb(229 229 229 / 0.95);
   position: absolute;
   z-index: 13;
   top: 16px;
   bottom: 16px;
   left: 6px;
   display: flex;
-  width: min(300px, calc(100vw - 48px));
+  width: min(320px, calc(100vw - 48px));
   flex-direction: column;
+  align-items: flex-start;
   justify-content: center;
   container-type: size;
   pointer-events: none;
+}
+
+.dark .chat-heading-navigator {
+  --outline-tick: rgb(115 115 115);
+  --outline-strong: rgb(245 245 245);
+  --outline-text: rgb(212 212 212);
+  --outline-sub: rgb(150 150 150);
+  --outline-hover: rgb(245 245 245 / 0.08);
+  --outline-panel: #262629;
+  --outline-edge: rgb(64 64 64 / 0.95);
 }
 
 .chat-heading-navigator-list {
@@ -646,10 +665,13 @@ button.chat-composer-status-item:hover {
   display: none;
 }
 
+/* 展开时面板贴合标题宽度，短目录不拉出大片空白；过长标题在最大宽度处省略。 */
 .chat-heading-navigator.is-expanded .chat-heading-navigator-list {
-  width: 100%;
-  background: var(--theme-surface-soft);
-  box-shadow: 0 0 0 1px rgb(229 229 229 / 0.95), 0 14px 38px rgb(0 0 0 / 0.12);
+  width: max-content;
+  min-width: 180px;
+  max-width: 100%;
+  background: var(--outline-panel);
+  box-shadow: 0 0 0 1px var(--outline-edge), 0 14px 38px rgb(0 0 0 / 0.12);
 }
 
 .chat-heading-navigator-item {
@@ -660,13 +682,17 @@ button.chat-composer-status-item:hover {
   align-items: center;
   border: 0;
   border-radius: 7px;
-  padding: 0 8px 0 0;
+  padding: 0 10px 0 0;
   background: transparent;
-  color: rgb(163 163 163);
+  color: var(--outline-text);
   font-size: 12px;
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
+}
+
+.chat-heading-navigator-item:focus-visible {
+  outline: none;
 }
 
 .chat-heading-navigator-tick {
@@ -679,71 +705,47 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-tick::before {
   content: '';
   display: block;
-  width: calc(8px + min(var(--heading-depth), 2) * 2px);
+  width: calc(14px - min(var(--heading-depth), 2) * 3.5px);
   height: 1.5px;
   border-radius: 999px;
-  background: currentColor;
+  background: var(--outline-tick);
+}
+
+.chat-heading-navigator-item:hover .chat-heading-navigator-tick::before,
+.chat-heading-navigator-item:focus-visible .chat-heading-navigator-tick::before,
+.chat-heading-navigator-item.is-active .chat-heading-navigator-tick::before {
+  height: 2px;
+  background: var(--outline-strong);
 }
 
 .chat-heading-navigator-title {
   display: none;
   min-width: 0;
-  padding-left: calc(min(var(--heading-depth), 2) * 14px);
+  padding-left: calc(min(var(--heading-depth), 2) * 12px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item {
-  color: rgb(82 82 82);
+.chat-heading-navigator-item.is-sub .chat-heading-navigator-title {
+  color: var(--outline-sub);
+  font-weight: 400;
 }
 
 .chat-heading-navigator.is-expanded .chat-heading-navigator-title {
   display: block;
 }
 
-.chat-heading-navigator-item:hover,
-.chat-heading-navigator-item:focus-visible,
-.chat-heading-navigator-item.is-active,
 .chat-heading-navigator.is-expanded .chat-heading-navigator-item:hover,
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item:focus-visible,
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item.is-active {
-  color: rgb(23 23 23);
-  outline: none;
+.chat-heading-navigator.is-expanded .chat-heading-navigator-item:focus-visible {
+  background: var(--outline-hover);
 }
 
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item:hover,
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item:focus-visible,
-.chat-heading-navigator.is-expanded .chat-heading-navigator-item.is-active {
-  background: rgb(23 23 23 / 0.07);
-}
-
-.dark .chat-heading-navigator-item {
-  color: rgb(115 115 115);
-}
-
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-list {
-  background: #262629;
-  box-shadow: 0 0 0 1px rgb(64 64 64 / 0.95), 0 14px 38px rgb(0 0 0 / 0.12);
-}
-
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item {
-  color: rgb(190 190 190);
-}
-
-.dark .chat-heading-navigator-item:hover,
-.dark .chat-heading-navigator-item:focus-visible,
-.dark .chat-heading-navigator-item.is-active,
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item:hover,
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item:focus-visible,
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item.is-active {
-  color: rgb(245 245 245);
-}
-
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item:hover,
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item:focus-visible,
-.dark .chat-heading-navigator.is-expanded .chat-heading-navigator-item.is-active {
-  background: rgb(245 245 245 / 0.1);
+.chat-heading-navigator-item:hover .chat-heading-navigator-title,
+.chat-heading-navigator-item:focus-visible .chat-heading-navigator-title,
+.chat-heading-navigator-item.is-active .chat-heading-navigator-title {
+  color: var(--outline-strong);
 }
 
 .chat-message-navigator-viewport {

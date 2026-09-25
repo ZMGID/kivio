@@ -44,6 +44,21 @@ function ChatHeadingOutlineBase({
     return () => list.removeEventListener('wheel', onWheel)
   }, [items.length, primaryDepth])
 
+  // 标题多到需要滚动时，让当前位置的刻度留在可见范围内；只滚目录自身，不牵动正文。
+  useEffect(() => {
+    const list = listRef.current
+    if (!list || activeAnchorId == null || list.scrollHeight <= list.clientHeight) return
+    const row = Array.from(list.children).find(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.dataset.anchorId === activeAnchorId,
+    )
+    if (!row) return
+    const top = row.offsetTop - list.offsetTop
+    if (top < list.scrollTop) list.scrollTop = top
+    else if (top + row.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = top + row.offsetHeight - list.clientHeight
+    }
+  }, [activeAnchorId, items.length])
+
   const handleBlurCapture = (event: FocusEvent<HTMLElement>) => {
     const next = event.relatedTarget
     if (next instanceof Node && listRef.current?.contains(next)) return
@@ -73,7 +88,8 @@ function ChatHeadingOutlineBase({
             <button
               key={item.anchorId}
               type="button"
-              className={`chat-heading-navigator-item ${active ? 'is-active' : ''}`}
+              className={`chat-heading-navigator-item${level > 0 ? ' is-sub' : ''}${active ? ' is-active' : ''}`}
+              data-anchor-id={item.anchorId}
               style={{ ['--heading-depth' as string]: String(level) } as CSSProperties}
               title={item.title}
               aria-label={t.chatHeadingLabel.replace('{title}', item.title)}
