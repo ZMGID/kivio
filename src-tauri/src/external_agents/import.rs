@@ -1087,6 +1087,7 @@ pub async fn import_one_session(
                 // 但**不会**丢弃会话。填一个假的反而会让首轮误以为可以跳过。
                 stable_prompt_hash: None,
                 model: None,
+                history_rewound: false,
             },
         )?;
     } else {

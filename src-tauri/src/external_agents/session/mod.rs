@@ -64,6 +64,8 @@ pub struct AgentResumeContext {
     /// Effective model at delivery time, normalized (empty / "default" → `None`). Persisted
     /// alongside the session so the stored record reflects what the CLI was last asked to use.
     pub delivered_model: Option<String>,
+    /// The stored native session still holds turns removed by a Kivio rewind.
+    pub history_rewound: bool,
 }
 
 /// Normalize a model selection to what actually gets passed to the CLI: blank or the sentinel
@@ -92,6 +94,7 @@ pub fn resolve_agent_resume_context(
             stored_stable_prompt_hash: None,
             skip_instructions: false,
             delivered_model,
+            history_rewound: false,
         };
     }
 
@@ -118,6 +121,7 @@ pub fn resolve_agent_resume_context(
             stored_stable_prompt_hash: stored.stable_prompt_hash.clone(),
             skip_instructions: skip,
             delivered_model,
+            history_rewound: stored.history_rewound,
         };
     }
 
@@ -128,6 +132,7 @@ pub fn resolve_agent_resume_context(
         stored_stable_prompt_hash: None,
         skip_instructions: false,
         delivered_model,
+        history_rewound: false,
     }
 }
 
@@ -154,6 +159,8 @@ pub fn replace_stored_session_id(
     let _ = save_session(app, &stored);
 }
 
+/// Bind the native session produced by a Pi fork. The fork already moved the native history to
+/// the visible Kivio history, so a pending rewind is settled too.
 pub fn update_stored_session_id(
     app: &AppHandle,
     conversation_id: &str,
@@ -165,6 +172,20 @@ pub fn update_stored_session_id(
         return Ok(());
     };
     stored.session_id = session_id.to_string();
+    stored.history_rewound = false;
+    save_session(app, &stored)
+}
+
+/// Record that Kivio removed turns the native session still holds. Without a stored native
+/// session there is nothing to move back, so this is a no-op.
+pub fn mark_history_rewound(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    let Some(mut stored) = load_session(app, conversation_id) else {
+        return Ok(());
+    };
+    if stored.history_rewound {
+        return Ok(());
+    }
+    stored.history_rewound = true;
     save_session(app, &stored)
 }
 
@@ -194,6 +215,7 @@ pub fn persist_delivered_session(
                     session_id: session_id.to_string(),
                     stable_prompt_hash: Some(stable_prompt_hash(instructions)),
                     model: resume_ctx.delivered_model.clone(),
+                    history_rewound: false,
                 },
             )?;
         }

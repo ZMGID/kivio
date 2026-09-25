@@ -624,6 +624,12 @@ pub(crate) async fn chat_rewind_to_message(
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
+    // 外部 CLI 的历史真身在 CLI 自己的原生会话里，只截 Kivio 这份，下一轮 resume 仍会带上
+    // 被删掉的轮次。先记下「待回退」再截：记不下就整体失败、不留半截状态；记下了而截断失败，
+    // 下一轮对齐时两边前缀一致，也不会误回退。能分支原生会话的 CLI（Pi）在下一轮发送前据此回退。
+    if snapshot.agent_runtime.is_external() {
+        crate::external_agents::session::mark_history_rewound(&app, &conversation_id)?;
+    }
     let mut attempt = 0;
     let (mut conversation, content) = loop {
         let idx = find_message_index(&snapshot, &message_id)?;

@@ -267,6 +267,12 @@ pub(crate) async fn run_external_cli_reply_in(
         &daemon_instructions,
         conversation.agent_runtime.external_model.as_deref(),
     );
+    let pi_realign = realigns_native_history(
+        def.run.regenerate,
+        entry,
+        resume_ctx.history_rewound,
+        is_slash,
+    );
 
     let skill_dir = skill_detail.as_ref().and_then(|d| d.meta.path.clone());
     let skill_body = skill_detail.as_ref().map(|d| d.body.clone());
@@ -297,13 +303,11 @@ pub(crate) async fn run_external_cli_reply_in(
         )
     };
     let mut composed = composed;
-    // Pi's native `fork` excludes the selected user message. When regenerating the very first
-    // turn, that leaves a blank native session, so the resubmitted prompt must carry the session
-    // instructions again. Non-root forks already retain the original first-turn instruction
-    // wrapper and use the ordinary resume prompt.
-    let mut pi_regenerate_root_prompt = (matches!(def.run.regenerate, RegenerateStrategy::PiRpc)
-        && matches!(entry, AgentRunEntry::Regenerate))
-    .then(|| {
+    // Pi's native `fork` excludes the selected user message. When regenerating (or sending after
+    // a rewind to) the very first turn, that leaves a blank native session, so the resubmitted
+    // prompt must carry the session instructions again. Non-root forks already retain the
+    // original first-turn instruction wrapper and use the ordinary resume prompt.
+    let mut pi_regenerate_root_prompt = pi_realign.then(|| {
         if is_slash {
             compose_external_prompt_passthrough(latest_user_message)
         } else {
@@ -454,9 +458,7 @@ pub(crate) async fn run_external_cli_reply_in(
 
     let extra_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
-    let pi_regenerate = (matches!(def.run.regenerate, RegenerateStrategy::PiRpc)
-        && matches!(entry, AgentRunEntry::Regenerate))
-    .then(|| PiRegenerateRequest {
+    let pi_regenerate = pi_realign.then(|| PiRegenerateRequest {
         visible_users: conversation
             .messages
             .iter()
@@ -931,6 +933,23 @@ impl StreamSegmentTracker {
     }
 }
 
+/// Pi moves its native session back to the visible Kivio history before regenerating, and before
+/// the first send after a rewind: rewinding only truncates Kivio's copy, while Pi resumes its own
+/// full transcript. Slash turns are not user messages and keep the rewind pending for the next
+/// ordinary send.
+fn realigns_native_history(
+    strategy: RegenerateStrategy,
+    entry: AgentRunEntry,
+    history_rewound: bool,
+    is_slash: bool,
+) -> bool {
+    matches!(strategy, RegenerateStrategy::PiRpc)
+        && match entry {
+            AgentRunEntry::Regenerate => true,
+            AgentRunEntry::Send => history_rewound && !is_slash,
+        }
+}
+
 struct PiRegenerateRequest {
     visible_users: Vec<crate::external_agents::session::pi_rpc::PiRegenerateUserMessage>,
     root_prompt: String,
@@ -1036,7 +1055,7 @@ where
             Ok(forked) => forked,
             Err(error) => {
                 session.close().await;
-                return Err(format!("Pi 重新生成前无法回退原生会话：{error}"));
+                return Err(format!("Pi 无法把原生会话回退到当前可见历史：{error}"));
             }
         };
         let native_id = forked.session_id.clone();
@@ -3629,6 +3648,26 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pi_realigns_on_the_first_ordinary_send_after_a_rewind() {
+        use AgentRunEntry::{Regenerate, Send};
+        let pi = |entry, rewound, slash| {
+            realigns_native_history(RegenerateStrategy::PiRpc, entry, rewound, slash)
+        };
+        assert!(pi(Send, true, false));
+        assert!(!pi(Send, false, false));
+        // A slash turn is not a user message; the rewind stays pending for the next send.
+        assert!(!pi(Send, true, true));
+        assert!(pi(Regenerate, false, false));
+        // CLIs without native branching cannot realign and keep their current behavior.
+        assert!(!realigns_native_history(
+            RegenerateStrategy::None,
+            Send,
+            true,
+            false
+        ));
+    }
+
     #[test]
     fn antigravity_preserves_turn_context_and_restarts_for_launch_changes() {
         let protocol = StreamFormat::AntigravityStreamJson;
