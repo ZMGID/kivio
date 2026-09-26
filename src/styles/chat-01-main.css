@@ -644,6 +644,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-heading-navigator-list {
+  position: relative;
   display: flex;
   box-sizing: border-box;
   width: 38px;
@@ -746,6 +747,18 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-item:focus-visible .chat-heading-navigator-title,
 .chat-heading-navigator-item.is-active .chat-heading-navigator-title {
   color: var(--outline-strong);
+}
+
+/* 为层级按钮留出独立的一列，标题文字和点击区域均不延伸到按钮下方。 */
+.chat-heading-navigator.is-expanded .chat-heading-navigator-list.has-level-toggle {
+  padding-right: 34px;
+}
+
+.chat-heading-navigator-level-toggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
 }
 
 .chat-message-navigator-viewport {
