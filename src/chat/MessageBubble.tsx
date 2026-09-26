@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -30,7 +30,6 @@ import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
-import { ReasoningPreviewContext } from './reasoningPreview'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
@@ -565,6 +564,8 @@ function TimelineSegmentNode({
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
   reasoningSegmentCount,
+  activeReasoningId,
+  onReasoningExpand,
 }: {
   segment: ChatMessageSegment
   index: number
@@ -577,6 +578,8 @@ function TimelineSegmentNode({
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
   reasoningSegmentCount: number
+  activeReasoningId?: string
+  onReasoningExpand: () => void
 }) {
   if (segment.kind === 'tool') {
     return (
@@ -595,6 +598,8 @@ function TimelineSegmentNode({
       <ReasoningBlock
         reasoning={reasoning}
         streaming={reasoningStreaming && index === segmentCount - 1}
+        previewActive={segment.id === activeReasoningId}
+        onExpand={onReasoningExpand}
         durationMs={
           reasoningDurationMsBySegmentId?.[segment.id]
             ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)
@@ -658,6 +663,8 @@ function renderProcessSegments({
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
   reasoningSegmentCount,
+  activeReasoningId,
+  onReasoningExpand,
 }: {
   segments: ChatMessageSegment[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
@@ -668,6 +675,8 @@ function renderProcessSegments({
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
   reasoningSegmentCount: number
+  activeReasoningId?: string
+  onReasoningExpand: () => void
 }) {
   const nodes: ReactNode[] = []
   const segmentCount = segments.length
@@ -711,6 +720,8 @@ function renderProcessSegments({
           reasoningDurationMs={reasoningDurationMs}
           reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
           reasoningSegmentCount={reasoningSegmentCount}
+          activeReasoningId={activeReasoningId}
+          onReasoningExpand={onReasoningExpand}
         />
       </div>,
     )
@@ -722,7 +733,7 @@ function renderProcessSegments({
 /**
  * 一轮过程共用一个 Working 开关；产物前后的过程按时间顺序分别展示。
  * - 整轮生成中默认展开，后续过程不再被搬到已交付产物上方。
- * - 纯思考预览结束后保留；含工具的过程结束后收起，历史首挂仍默认收起。
+ * - 整轮结束后统一收起过程，历史首挂也默认收起。
  * - 用户手动点过开关后以用户操作为准。
  * - 折叠态只留 header，不挂组内 ReasoningBlock / ToolCallBlock / 过程旁白。
  */
@@ -733,6 +744,7 @@ function TimelineGroupBlock({
   userOpen,
   defaultOpen,
   onToggle,
+  onReasoningExpand,
   hiddenProcessCount,
   onShowEarlier,
   toolCalls,
@@ -752,6 +764,7 @@ function TimelineGroupBlock({
   userOpen: boolean | null
   defaultOpen: boolean
   onToggle: () => void
+  onReasoningExpand: () => void
   hiddenProcessCount: number
   onShowEarlier: () => void
   toolCalls: ToolCallRecord[]
@@ -836,6 +849,8 @@ function TimelineGroupBlock({
               reasoningDurationMs,
               reasoningDurationMsBySegmentId,
               reasoningSegmentCount,
+              activeReasoningId: messageStreaming ? allProcessSegments.at(-1)?.id : undefined,
+              onReasoningExpand,
             })}
           </div>
         )}
@@ -876,16 +891,7 @@ function TimelineSegments({
   // evict steps already shown during a live run, including its settle handoff.
   const [processLimit, setProcessLimit] = useState(20)
   if (messageStreaming && processLimit !== Infinity) setProcessLimit(Infinity)
-  const previewEnabled = useContext(ReasoningPreviewContext)
-  const [sawLiveReasoning, setSawLiveReasoning] = useState(false)
-  if (previewEnabled && userOpen !== false && reasoningStreaming && !sawLiveReasoning
-    && segments.some(segment => segment.kind === 'reasoning' && segmentText(segment).trim())) {
-    setSawLiveReasoning(true)
-  }
-  // Keeping a one-line thought must not keep an entire tool run expanded.
-  // Include legacy tool records whose timeline segments have not been stored.
-  const hasToolProcess = toolCalls.length > 0 || segments.some(segment => segment.kind === 'tool')
-  const defaultOpen = messageStreaming || (previewEnabled && sawLiveReasoning && !hasToolProcess)
+  const defaultOpen = messageStreaming
   const prepared = useMemo(() => {
     const ordered = segments
     const toolCallById = new Map<string, ToolCallRecord>()
@@ -999,6 +1005,7 @@ function TimelineSegments({
             showHeader={showHeader}
             userOpen={userOpen}
             defaultOpen={defaultOpen}
+            onReasoningExpand={() => setUserOpen(true)}
             onToggle={() => {
               if (!messageStreaming && !(userOpen ?? defaultOpen)) setProcessLimit(20)
               setUserOpen(current => !(current ?? defaultOpen))
@@ -1371,6 +1378,7 @@ function MessageBubbleComponent({
           <ReasoningBlock
             reasoning={message.reasoning ?? ''}
             streaming={reasoningStreaming}
+            previewActive={messageStreaming}
             durationMs={reasoningDurationMs}
           />
         )}

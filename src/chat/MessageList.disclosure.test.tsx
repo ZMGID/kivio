@@ -42,8 +42,9 @@ async function mount() {
 }
 
 describe('MessageList disclosure scroll anchoring', () => {
-  it('retains the live thinking node when the streamed row becomes stored history', async () => {
+  it('collapses live thinking when the completed turn becomes stored history', async () => {
     const thought = { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Live preview survives commit' } as const
+    const answer = { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Done' } as const
     act(() => {
       setCoarse({ streaming: true })
       patchSnapshot({ runId: 'preview-run', messageId: 'preview-answer', streaming: true, reasoningStreaming: true, reasoning: thought.text, segments: [thought] })
@@ -51,21 +52,27 @@ describe('MessageList disclosure scroll anchoring', () => {
     const { rerender, container } = render(<MessageList conversationId="preview-commit" messages={[]} />)
     await act(async () => { await Promise.resolve() })
     const preview = screen.getByTestId('reasoning-preview')
+    act(() => patchSnapshot({ reasoningStreaming: false, content: 'Done', segments: [thought, answer] }))
+    expect(screen.getByTestId('reasoning-preview')).toBe(preview)
+    expect(preview).toBeVisible()
+    expect(screen.getByText('Done')).toBeVisible()
     act(() => {
       setCoarse({ streamFrozen: true })
       patchSnapshot({ streaming: false, reasoningStreaming: false })
     })
-    expect(preview).toBeVisible()
+    expect(screen.queryByTestId('reasoning-preview')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('Done')).toBeVisible()
     const message: ChatMessage = { id: 'preview-answer', role: 'assistant', content: 'Done', timestamp: 1, stream_outcome: 'completed', segments: [
-      thought, { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Done' },
+      thought, answer,
     ] }
     rerender(<MessageList conversationId="preview-commit" messages={[message]} />)
     act(() => reset())
     await act(async () => { await Promise.resolve() })
     expect(container.querySelector('[data-chat-message-list-item="message"]')).not.toBeNull()
-    expect(screen.getByTestId('reasoning-preview')).toBe(preview)
-    expect(preview).toBeVisible()
-    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByTestId('reasoning-preview')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('Done')).toBeVisible()
     rerender(<MessageList conversationId="other-conversation" messages={[]} />)
     rerender(<MessageList conversationId="preview-commit" messages={[message]} />)
     await act(async () => { await Promise.resolve() })
