@@ -2363,6 +2363,7 @@ function MessageListBase({
     <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
       {activeOutlineOwnerId && activeOutlineItems.length >= 2 && (
         <ChatHeadingOutline
+          conversationId={conversationId}
           items={activeOutlineItems}
           activeAnchorId={activeOutlineAnchorId}
           onNavigate={navigateToOutlineHeading}

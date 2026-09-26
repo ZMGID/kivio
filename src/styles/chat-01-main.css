@@ -644,6 +644,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-heading-navigator-list {
+  position: relative;
   display: flex;
   box-sizing: border-box;
   width: 38px;
@@ -746,6 +747,14 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-item:focus-visible .chat-heading-navigator-title,
 .chat-heading-navigator-item.is-active .chat-heading-navigator-title {
   color: var(--outline-strong);
+}
+
+.chat-heading-navigator-level-toggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  background: var(--outline-panel);
 }
 
 .chat-message-navigator-viewport {

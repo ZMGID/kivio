@@ -1,8 +1,15 @@
-import { memo, useEffect, useRef, useState, type CSSProperties, type FocusEvent } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
+import { IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
+import {
+  getRememberedChatHeadingOutlineExpanded,
+  rememberChatHeadingOutlineExpanded,
+} from './chatHeadingOutlinePersistence'
 import { primaryHeadingDepth, type MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 
 interface ChatHeadingOutlineProps {
+  conversationId: string | null | undefined
   items: MarkdownHeadingOutlineItem[]
   activeAnchorId: string | null
   onNavigate: (item: MarkdownHeadingOutlineItem) => void
@@ -20,6 +27,7 @@ function sameItems(a: MarkdownHeadingOutlineItem[], b: MarkdownHeadingOutlineIte
  * 每行位置不变，指针下的刻度就是对应标题，直接点击即可跳转。
  */
 function ChatHeadingOutlineBase({
+  conversationId,
   items,
   activeAnchorId,
   onNavigate,
@@ -27,7 +35,21 @@ function ChatHeadingOutlineBase({
   const t = useT()
   const listRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [showChildren, setShowChildren] = useState(() => (
+    getRememberedChatHeadingOutlineExpanded(conversationId)
+  ))
   const primaryDepth = primaryHeadingDepth(items)
+  const hasChildren = primaryDepth != null && items.some((item) => item.depth > primaryDepth + 1)
+  const visibleItems = useMemo(
+    () => showChildren || primaryDepth == null
+      ? items
+      : items.filter((item) => item.depth <= primaryDepth + 1),
+    [items, primaryDepth, showChildren],
+  )
+
+  useEffect(() => {
+    setShowChildren(getRememberedChatHeadingOutlineExpanded(conversationId))
+  }, [conversationId])
 
   useEffect(() => {
     const list = listRef.current
@@ -57,7 +79,7 @@ function ChatHeadingOutlineBase({
     else if (top + row.offsetHeight > list.scrollTop + list.clientHeight) {
       list.scrollTop = top + row.offsetHeight - list.clientHeight
     }
-  }, [activeAnchorId, items.length])
+  }, [activeAnchorId, items.length, visibleItems.length])
 
   const handleBlurCapture = (event: FocusEvent<HTMLElement>) => {
     const next = event.relatedTarget
@@ -81,7 +103,23 @@ function ChatHeadingOutlineBase({
         onFocusCapture={() => setOpen(true)}
         onBlurCapture={handleBlurCapture}
       >
-        {items.map((item) => {
+        {hasChildren && open && (
+          <IconButton
+            className="chat-heading-navigator-level-toggle"
+            size="xs"
+            variant="ghost"
+            label={showChildren ? t.chatHeadingCollapseLevels : t.chatHeadingExpandLevels}
+            aria-pressed={showChildren}
+            onClick={() => setShowChildren((value) => {
+              const next = !value
+              rememberChatHeadingOutlineExpanded(conversationId, next)
+              return next
+            })}
+          >
+            {showChildren ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </IconButton>
+        )}
+        {visibleItems.map((item) => {
           const active = item.anchorId === activeAnchorId
           const level = item.depth - primaryDepth
           return (
@@ -109,7 +147,8 @@ function ChatHeadingOutlineBase({
 export const ChatHeadingOutline = memo(
   ChatHeadingOutlineBase,
   (previous, next) => (
-    previous.activeAnchorId === next.activeAnchorId
+    previous.conversationId === next.conversationId
+    && previous.activeAnchorId === next.activeAnchorId
     && previous.onNavigate === next.onNavigate
     && sameItems(previous.items, next.items)
   ),
