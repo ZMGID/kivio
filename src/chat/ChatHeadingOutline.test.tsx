@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { LangContext } from '../components/i18n'
 import { ChatHeadingOutline } from './ChatHeadingOutline'
 import { clearRememberedChatHeadingOutlineState } from './chatHeadingOutlinePersistence'
 import { outlineItemsForSource } from './markdownHeadingOutline'
@@ -60,7 +61,7 @@ describe('ChatHeadingOutline', () => {
     )
     const list = screen.getByLabelText('回答标题目录').querySelector('.chat-heading-navigator-list')!
     fireEvent.pointerEnter(list)
-    fireEvent.click(screen.getByRole('button', { name: '展开二、三级标题' }))
+    fireEvent.click(screen.getByRole('button', { name: '显示所有标题层级' }))
     expect(screen.getByRole('button', { name: '跳转到：Third' })).toBeInTheDocument()
 
     rerender(
@@ -84,5 +85,31 @@ describe('ChatHeadingOutline', () => {
     )
     fireEvent.pointerEnter(screen.getByLabelText('回答标题目录').querySelector('.chat-heading-navigator-list')!)
     expect(screen.getByRole('button', { name: '跳转到：Third' })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['zh', '显示所有标题层级', '仅显示主级和次级标题', '跳转到：Third', '跳转到：Second'],
+    ['en', 'Show all heading levels', 'Show primary and secondary headings', 'Jump to: Third', 'Jump to: Second'],
+  ] as const)('labels the visible levels accurately in %s and preserves heading navigation', (lang, expand, collapse, third, second) => {
+    const onNavigate = vi.fn()
+    render(
+      <LangContext.Provider value={lang}>
+        <ChatHeadingOutline
+          conversationId="conversation-labels"
+          items={items}
+          activeAnchorId={items[0]!.anchorId}
+          onNavigate={onNavigate}
+        />
+      </LangContext.Provider>,
+    )
+    const list = document.querySelector('.chat-heading-navigator-list')!
+    fireEvent.pointerEnter(list)
+    fireEvent.click(screen.getByRole('button', { name: expand }))
+    fireEvent.click(screen.getByRole('button', { name: third }))
+    expect(onNavigate).toHaveBeenCalledWith(items[2])
+    fireEvent.click(screen.getByRole('button', { name: collapse }))
+    expect(screen.queryByRole('button', { name: third })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: second }))
+    expect(onNavigate).toHaveBeenLastCalledWith(items[1])
   })
 })

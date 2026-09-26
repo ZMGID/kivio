@@ -97,7 +97,7 @@ function ChatHeadingOutlineBase({
     >
       <div
         ref={listRef}
-        className="chat-heading-navigator-list custom-scrollbar"
+        className={`chat-heading-navigator-list custom-scrollbar${hasChildren ? ' has-level-toggle' : ''}`}
         onPointerEnter={() => setOpen(true)}
         onPointerLeave={() => setOpen(false)}
         onFocusCapture={() => setOpen(true)}
