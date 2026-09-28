@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "case": "auto-1",
+      "data": {
+        "after_estimated_tokens": 934,
+        "answer": "{\"project\":\"ORCHID-82\",\"date\":\"2030-06-18\",\"port\":7421,\"timeout_seconds\":37,\"retries\":3,\"rejected_port\":9000,\"build_label\":\"LILAC-56\",\"read_only\":true,\"next_task\":\"Review cancellation behavior\"}",
+        "before_estimated_tokens": 100566,
+        "reloaded_answer": "{\"project\":\"ORCHID-82\",\"date\":\"2030-06-18\",\"port\":7421,\"timeout_seconds\":37,\"retries\":3,\"rejected_port\":9000,\"build_label\":\"LILAC-56\",\"read_only\":true,\"next_task\":\"Review cancellation behavior\"}",
+        "snapshot_bytes": 3810
+      },
+      "elapsed_ms": 5717,
+      "ok": true
+    },
+    {
+      "case": "auto-2",
+      "data": {
+        "after_estimated_tokens": 1134,
+        "answer": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior\"\n}",
+        "before_estimated_tokens": 120660,
+        "reloaded_answer": "{\"project\":\"ORCHID-82\",\"date\":\"2030-06-18\",\"port\":7421,\"timeout_seconds\":37,\"retries\":3,\"rejected_port\":9000,\"build_label\":\"LILAC-56\",\"read_only\":true,\"next_task\":\"review cancellation behavior\"}",
+        "snapshot_bytes": 4628
+      },
+      "elapsed_ms": 6857,
+      "ok": true
+    },
+    {
+      "case": "auto-3",
+      "data": {
+        "after_estimated_tokens": 981,
+        "answer": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior\"\n}",
+        "before_estimated_tokens": 140568,
+        "reloaded_answer": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior\"\n}",
+        "snapshot_bytes": 4010
+      },
+      "elapsed_ms": 7096,
+      "ok": true
+    },
+    {
+      "case": "repeated-manual",
+      "elapsed_ms": 24140,
+      "ok": true,
+      "rounds": [
+        {
+          "after_estimated_tokens": 1107,
+          "answer": {
+            "Ok": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior; do not implement changes\"\n}"
+          },
+          "before_estimated_tokens": 30702,
+          "elapsed_ms": 5664,
+          "ok": true,
+          "round": 1
+        },
+        {
+          "after_estimated_tokens": 1143,
+          "answer": {
+            "Ok": "{\"project\":\"ORCHID-82\",\"date\":\"2030-06-18\",\"port\":7421,\"timeout_seconds\":37,\"retries\":3,\"rejected_port\":9000,\"build_label\":\"LILAC-56\",\"read_only\":true,\"next_task\":\"review cancellation behavior; do not implement changes\"}"
+          },
+          "before_estimated_tokens": 31147,
+          "elapsed_ms": 4464,
+          "ok": true,
+          "round": 2
+        },
+        {
+          "after_estimated_tokens": 1141,
+          "answer": {
+            "Ok": "{\"project\":\"ORCHID-82\",\"date\":\"2030-06-18\",\"port\":7421,\"timeout_seconds\":37,\"retries\":3,\"rejected_port\":9000,\"build_label\":\"LILAC-56\",\"read_only\":true,\"next_task\":\"review cancellation behavior; do not implement changes\"}"
+          },
+          "before_estimated_tokens": 36196,
+          "elapsed_ms": 4753,
+          "ok": true,
+          "round": 3
+        },
+        {
+          "after_estimated_tokens": 1143,
+          "answer": {
+            "Ok": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior; do not implement changes\"\n}"
+          },
+          "before_estimated_tokens": 41195,
+          "elapsed_ms": 4306,
+          "ok": true,
+          "round": 4
+        },
+        {
+          "after_estimated_tokens": 1145,
+          "answer": {
+            "Ok": "{\n  \"project\": \"ORCHID-82\",\n  \"date\": \"2030-06-18\",\n  \"port\": 7421,\n  \"timeout_seconds\": 37,\n  \"retries\": 3,\n  \"rejected_port\": 9000,\n  \"build_label\": \"LILAC-56\",\n  \"read_only\": true,\n  \"next_task\": \"review cancellation behavior; do not implement changes\"\n}"
+          },
+          "before_estimated_tokens": 46196,
+          "elapsed_ms": 4943,
+          "ok": true,
+          "round": 5
+        }
+      ]
+    },
+    {
+      "case": "cancellation",
+      "elapsed_ms": 2001,
+      "ok": true
+    }
+  ],
+  "model": "deepseek-flash",
+  "passed": true
+}

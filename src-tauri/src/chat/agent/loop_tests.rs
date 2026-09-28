@@ -18,6 +18,9 @@ use crate::mcp::types::{
 use crate::settings::{ChatToolsConfig, ModelProvider};
 use crate::state::AppState;
 
+#[path = "compaction_live_tests.rs"]
+mod compaction_live_tests;
+
 #[derive(Clone, Debug)]
 struct RecordedDelta {
     delta: String,
