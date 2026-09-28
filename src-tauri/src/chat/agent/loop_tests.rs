@@ -5040,6 +5040,41 @@ async fn zcode_summary_request_carries_run_tools_or_text_history() {
     }
 }
 
+/// A provider without tool support rejects the definitions. The summary retries once
+/// with the history as text instead of failing (and feeding the circuit breaker).
+#[tokio::test]
+async fn zcode_summary_retries_without_tools_when_provider_rejects_them() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Status(400, r#"{"error":{"message":"tools not supported"}}"#.into()),
+        MockResponse::Sse(vec![long_summary_sse_tagged("handoff"), "[DONE]".into()]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let outcome = crate::chat::agent::compaction::summarize_history(
+        &state,
+        &config.provider,
+        &config.model,
+        &tool_round_history(),
+        true,
+        &config.tools,
+        32_000,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        crate::chat::agent::compaction::CompactOutcome::Compacted(..)
+    ));
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    let retry: Value = serde_json::from_str(&bodies[1]).unwrap();
+    assert!(retry.get("tools").is_none());
+    assert!(retry.to_string().contains("[Tool call] read"));
+}
+
 /// Manual compaction drops the oldest rounds after an overflow. Like ZCode, a request
 /// that would then open with an assistant turn gets a user marker first.
 #[tokio::test]

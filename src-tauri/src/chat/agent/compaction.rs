@@ -243,7 +243,7 @@ pub(crate) async fn summarize_history(
     if !enough(initial_kept) {
         return CompactOutcome::Skipped;
     }
-    let tools = if tools.len() > COMPACT_TOOL_KEEP_MAX_COUNT {
+    let mut tools = if tools.len() > COMPACT_TOOL_KEEP_MAX_COUNT {
         &[][..]
     } else {
         tools
@@ -324,6 +324,11 @@ pub(crate) async fn summarize_history(
             Err(error) => error,
         };
         let lower = error.to_lowercase();
+        // A provider without tool support rejects the definitions; send the history as text.
+        if !tools.is_empty() && super::stop::is_tools_unsupported_error(&error) {
+            tools = &[];
+            continue;
+        }
         if super::recovery::classify(&error) == super::recovery::FailureKind::ContextOverflow {
             if preserve_recent {
                 // Move complete recent groups out of the summary input, without dropping them.
@@ -898,7 +903,11 @@ pub(crate) async fn compact_send_view(
             model: &config.model,
             messages: &state.runtime_messages,
             preserve_recent: true,
-            tools: &state.tools,
+            tools: if state.provider_tools_unsupported {
+                &[]
+            } else {
+                &state.tools
+            },
             // Keep the model's real output budget, not the run's shorter answer budget.
             max_output_tokens: chat_max_output_tokens_for_model(
                 Some(&config.provider),
