@@ -182,6 +182,8 @@ export function ContextIndicator({
   const compressLabel = isExternalContext
     ? (compressing ? t.contextCliCompacting : t.contextCliCompact)
     : (compressing ? t.contextCompressing : t.contextCompress)
+  // Automatic compaction runs inside a generation, and stopping it stops that generation.
+  const stopLabel = generating ? t.contextStopGeneration : t.contextStopCompression
   const autoPercent = autoCompactPercent(contextState)
   const autoHint = isExternalContext || autoPercent == null
     ? null
@@ -280,13 +282,13 @@ export function ContextIndicator({
             <Button
               variant="ghost"
               size="sm"
-              aria-label={compressing && onStopCompression ? (lang === 'zh' ? '停止压缩' : 'Stop compaction') : t.contextCompressAria}
+              aria-label={compressing && onStopCompression ? stopLabel : t.contextCompressAria}
               title={autoHint ? `${compressLabel} · ${autoHint}` : compressLabel}
               onClick={compressing && onStopCompression ? onStopCompression : onCompress}
               disabled={compressing ? !onStopCompression : !canCompress}
             >
               {compressing ? <Square size={13} /> : <Archive size={13} strokeWidth={1.9} />}
-              <span>{compressing && onStopCompression ? (lang === 'zh' ? '停止压缩' : 'Stop compaction') : compressLabel}</span>
+              <span>{compressing && onStopCompression ? stopLabel : compressLabel}</span>
             </Button>
             {onClear && (
               <button

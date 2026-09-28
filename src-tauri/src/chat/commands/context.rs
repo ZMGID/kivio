@@ -157,10 +157,10 @@ pub(crate) async fn chat_compress_context(
     .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     // Reload after admission, then CAS the summary and retained messages as one update.
     conversation = load_conversation(&app, &conversation_id)?;
-    tokio::select! {
-        result = compress_conversation_context(&app, &state, &mut conversation, "manual") => result?,
+    let _compacted = tokio::select! {
+        result = compress_conversation_context(&app, &state, &mut conversation) => result?,
         _ = super::interaction::wait_for_chat_cancel(state.inner(), &conversation_id, generation) => return Err("压缩已停止".into()),
-    }
+    };
     if !state
         .chat_runtime()
         .is_generation_active(&conversation_id, generation)
@@ -189,6 +189,8 @@ pub(crate) async fn chat_clear_context(
 }
 
 /// Local context mutations share one compute → persist → event → response path.
+/// `generation` marks a manual compaction; its result survives revision bumps that
+/// leave the summarized history intact (statistics refreshes, renames).
 async fn finalize_local_context_change(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -205,15 +207,36 @@ async fn finalize_local_context_change(
     }) {
         return Err("压缩已停止".into());
     }
-    conversation = crate::chat::repository::repository(app)
-        .update_context(
-            app,
-            conversation_id,
-            conversation.revision,
-            context_state.clone(),
-        )
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+    let repository = crate::chat::repository::repository(app);
+    let mut expected_revision = conversation.revision;
+    let mut attempts = 0;
+    conversation = loop {
+        match repository
+            .update_context(
+                app,
+                conversation_id,
+                expected_revision,
+                context_state.clone(),
+            )
+            .await
+        {
+            Ok(updated) => break updated,
+            Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
+                if generation.is_some() && attempts < 3 =>
+            {
+                attempts += 1;
+                let latest = repository
+                    .get(app, conversation_id)
+                    .await
+                    .map_err(crate::chat::repository::repository_error)?;
+                if !super::messages::history_unchanged(&latest, &conversation, None) {
+                    return Err("压缩期间会话已变化，原有历史保持不变，请重新压缩".into());
+                }
+                expected_revision = latest.revision;
+            }
+            Err(err) => return Err(crate::chat::repository::repository_error(err)),
+        }
+    };
     emit_chat_context_state(app, &conversation.id, conversation.revision, &context_state);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
@@ -1028,16 +1051,13 @@ pub(super) async fn compress_conversation_context(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
-    trigger: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let settings = state.settings_read().clone();
     crate::chat::agent::compaction::compact_conversation(
         app,
         state.inner(),
         &settings,
         conversation,
-        trigger,
-        None,
     )
     .await
 }

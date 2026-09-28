@@ -170,10 +170,12 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     try {
       if (next.kind === 'compact') {
         const outcome = await callbacksRef.current.onCompactContext?.(conversation)
-        accepted = outcome?.status === 'completed' || outcome?.status === 'cancelled'
-        if (outcome?.status === 'completed' && clearedEpoch === (clearedEpochRef.current.get(conversationId) ?? 0)) {
+        // Every outcome consumes the entry. A failure is reported by the context panel and,
+        // as in ZCode, does not hold back later work; a stop also stops later work.
+        accepted = true
+        if (outcome?.status !== 'cancelled' && clearedEpoch === (clearedEpochRef.current.get(conversationId) ?? 0)) {
           deliveringRef.current.delete(conversationId)
-          await drain(outcome.conversation)
+          await drain(outcome?.status === 'completed' ? outcome.conversation : conversation)
         }
       } else {
         accepted = await callbacksRef.current.onSendMessage(

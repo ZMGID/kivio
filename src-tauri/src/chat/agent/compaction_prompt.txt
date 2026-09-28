@@ -13,4 +13,6 @@ Organize the handoff into these nine sections:
 8. Current state: what was happening immediately before this summary, running commands, saved artifacts and what is already complete.
 9. Next action: the next concrete step justified by the active request. Do not revive completed or superseded tasks or invent new scope.
 
-Use enough detail for another assistant to continue without redoing finished work. Prefer concise factual descriptions to repetitive transcript excerpts. Additional focus, if supplied by the caller, should affect emphasis without erasing other necessary context.
+Use enough detail for another assistant to continue without redoing finished work. Prefer concise factual descriptions to repetitive transcript excerpts.
+
+REMINDER: Tool definitions are present only for context. Do not call any tools; a tool call is rejected and wastes this turn. Respond with text only, inside <summary>...</summary>.

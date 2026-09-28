@@ -88,6 +88,18 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         emit_chat_tool_record(&self.app, run_id, record);
     }
 
+    fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
+        self.state
+            .chat_runtime()
+            .auto_compact_failures(conversation_id)
+    }
+
+    fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
+        self.state
+            .chat_runtime()
+            .set_auto_compact_failures(conversation_id, failures);
+    }
+
     fn emit_compaction_status(
         &self,
         conversation_id: &str,

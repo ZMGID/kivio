@@ -55,6 +55,10 @@ struct TestHost {
     steering: Mutex<std::collections::VecDeque<Vec<SteeringMessage>>>,
     /// 原生 follow-up 信箱，同样按批。只在终答边界被 `take_follow_up_messages` 取走。
     follow_up: Mutex<std::collections::VecDeque<Vec<SteeringMessage>>>,
+    /// Conversation-level automatic compaction failure count (circuit breaker).
+    auto_compact_failures: Mutex<u32>,
+    /// Compaction phases emitted, in order.
+    compaction_phases: Mutex<Vec<String>>,
 }
 
 impl TestHost {
@@ -138,6 +142,27 @@ impl TestHost {
 }
 
 impl AgentHost for TestHost {
+    fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
+        *self.auto_compact_failures.lock().unwrap()
+    }
+
+    fn set_auto_compact_failures(&self, _conversation_id: &str, failures: u32) {
+        *self.auto_compact_failures.lock().unwrap() = failures;
+    }
+
+    fn emit_compaction_status(
+        &self,
+        _conversation_id: &str,
+        phase: &str,
+        _trigger: Option<&str>,
+        _boundary: Option<&crate::chat::types::CompactionBoundaryRecord>,
+    ) {
+        self.compaction_phases
+            .lock()
+            .unwrap()
+            .push(phase.to_string());
+    }
+
     fn wait_for_child_results<'a>(
         &'a self,
         conversation: &'a str,
@@ -2253,6 +2278,8 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
     config.runtime_messages = vec![
         serde_json::json!({ "role": "system", "content": "system prompt" }),
         serde_json::json!({ "role": "user", "content": "D".repeat(12_000), "_ui_message_id": "old_user" }),
+        serde_json::json!({ "role": "assistant", "content": "older answer", "_ui_message_id": "older_reply" }),
+        serde_json::json!({ "role": "user", "content": "follow-up", "_ui_message_id": "follow_up" }),
         serde_json::json!({ "role": "assistant", "content": "old answer", "_ui_message_id": "old_reply" }),
         serde_json::json!({ "role": "user", "content": "请读取文件", "_ui_message_id": "current_user" }),
     ];
@@ -3074,94 +3101,193 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
         .any(|m| m.to_string().contains(&"F".repeat(1_000))));
 }
 
-/// Gap 2 (Layer 3 anti-thrashing): when the history is persistently over the
-/// compaction budget and every summary call FAILS, the loop must NOT keep
-/// re-summarizing-and-failing forever (the real-world "6× failed compaction"
-/// regression). After `COMPACTION_THRASH_LIMIT` (2) unresolved rounds it ends
-/// the turn gracefully with the gathered tool results — a degraded answer, not
-/// an `Err`, and a BOUNDED number of model calls.
-#[tokio::test]
-async fn run_loop_compaction_thrash_degrades_with_gathered_results() {
-    let summary_failure = || {
-        MockResponse::Status(
-            401,
-            r#"{"error":{"message":"summary provider authentication failed"}}"#.to_string(),
-        )
-    };
-    let server = MockModelServer::start(vec![
-        // Round 1 entry: compaction summary call #1 → fails (unresolved 0→1).
-        summary_failure(),
-        // Round 1 planning → one read tool call (gathers a result).
-        MockResponse::Sse(planning_tool_call_sse_events()),
-        // Round 2 entry: compaction summary call #2 → fails (unresolved 1→2);
-        // the thrash limit is now reached, so the loop degrades BEFORE any
-        // further planning call. No more responses are consumed after this.
-        summary_failure(),
-    ]);
-    let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    // Small window so the pre-filled ordinary history remains over budget even
-    // after the huge tool output is microcompacted, forcing a summary attempt at
-    // the top of every planning round.
+fn summary_auth_failure() -> MockResponse {
+    MockResponse::Status(
+        401,
+        r#"{"error":{"message":"summary provider authentication failed"}}"#.to_string(),
+    )
+}
+
+fn final_answer_sse(text: &str) -> MockResponse {
+    MockResponse::Sse(vec![
+        serde_json::json!({"choices":[{"delta":{"content":text}}]}).to_string(),
+        "[DONE]".to_string(),
+    ])
+}
+
+/// Over budget with three rounds of history (budget 2976 at a 17k window).
+fn over_budget_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
+    let mut config = test_run_config(state, base_url);
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
-            context_window: Some(600),
+            context_window: Some(17_000),
             ..Default::default()
         },
     );
-    // Allow a second round so the loop re-enters planning after the tool round
-    // and trips the thrash guard there.
-    config.effective_chat_tools.max_tool_rounds = Some(2);
-    // Pre-fill oversized ordinary history plus an earlier tool output and a small
-    // recent tail. The summary call always errors, so the send view never shrinks
-    // enough and unresolved_rounds climbs to the limit.
-    let large_non_tool = "G".repeat(9_000);
-    config.runtime_messages.push(serde_json::json!({
-        "role": "user", "content": large_non_tool
-    }));
-    let huge = "A".repeat(9_000);
-    config.runtime_messages.push(serde_json::json!({
-        "role": "assistant", "content": "", "tool_calls": [
-            {"id": "old_call", "type": "function", "function": {"name": "read", "arguments": "{}"}}
-        ]
-    }));
-    config.runtime_messages.push(serde_json::json!({
-        "role": "tool", "tool_call_id": "old_call", "content": huge
-    }));
-    for i in 0..8 {
-        config.runtime_messages.push(serde_json::json!({
-            "role": if i % 2 == 0 { "user" } else { "assistant" },
-            "content": format!("history {i}")
-        }));
-    }
+    config.runtime_messages = vec![
+        serde_json::json!({ "role": "system", "content": "system prompt" }),
+        serde_json::json!({ "role": "user", "content": "G".repeat(12_000) }),
+        serde_json::json!({ "role": "assistant", "content": "older answer" }),
+        serde_json::json!({ "role": "user", "content": "follow-up" }),
+        serde_json::json!({ "role": "assistant", "content": "previous answer" }),
+        serde_json::json!({ "role": "user", "content": "请读取文件" }),
+    ];
+    config
+}
+
+/// ZCode policy: a failed automatic compaction does not end the turn. The request goes
+/// out uncompacted (the budget keeps a safety margin below the window) and the failure
+/// only feeds the conversation-level circuit breaker.
+#[tokio::test]
+async fn run_loop_failed_auto_compaction_still_answers() {
+    // Two rounds, each preceded by a failed compaction. The old policy ended the
+    // turn after the second failure without asking the model.
+    let server = MockModelServer::start(vec![
+        summary_auth_failure(),
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        summary_auth_failure(),
+        final_answer_sse("未压缩也照常回答。"),
+    ]);
+    let state = test_app_state();
     let host = TestHost::default();
-    let executor = RecordingExecutor::default();
-
-    let result = run_agent_loop(config, &host, &executor)
+    let mut config = over_budget_config(&state, &server.base_url);
+    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
         .await
-        .expect("anti-thrashing must end the turn, not bubble Err");
+        .expect("a failed compaction must not fail the run");
 
-    // Degraded but completed via the recovery path — not an error, not a loop.
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, "未压缩也照常回答。");
+    let bodies = server.captured_bodies();
+    assert_eq!(
+        bodies.len(),
+        4,
+        "each round: one summary attempt, then the real request"
+    );
+    assert!(
+        bodies[3].contains(&"G".repeat(1_000)),
+        "request is sent uncompacted"
+    );
+    assert_eq!(*host.auto_compact_failures.lock().unwrap(), 2);
+    assert_eq!(
+        *host.compaction_phases.lock().unwrap(),
+        vec!["started", "failed", "started", "failed"]
+    );
+}
+
+/// After three consecutive failures, remembered across runs, automatic compaction pauses;
+/// a later success resets the count.
+#[tokio::test]
+async fn run_loop_auto_compaction_circuit_breaker_pauses_and_resets() {
+    let server = MockModelServer::start(vec![final_answer_sse("熔断中直接回答。")]);
+    let state = test_app_state();
+    let host = TestHost::default();
+    *host.auto_compact_failures.lock().unwrap() = 3;
+    let result = run_agent_loop(
+        over_budget_config(&state, &server.base_url),
+        &host,
+        &RecordingExecutor::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.content, "熔断中直接回答。");
+    let bodies = server.captured_bodies();
+    assert_eq!(
+        bodies.len(),
+        1,
+        "no summary request while the breaker is open"
+    );
+    assert!(!bodies[0].contains("context summarization assistant"));
+    assert!(host.compaction_phases.lock().unwrap().is_empty());
+
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec![
+            long_summary_sse_tagged("SUMMARY_MARKER"),
+            "[DONE]".to_string(),
+        ]),
+        final_answer_sse("压缩后回答。"),
+    ]);
+    let host = TestHost::default();
+    *host.auto_compact_failures.lock().unwrap() = 2;
+    run_agent_loop(
+        over_budget_config(&state, &server.base_url),
+        &host,
+        &RecordingExecutor::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *host.auto_compact_failures.lock().unwrap(),
+        0,
+        "success resets the breaker"
+    );
+}
+
+/// Too little history to summarize is a healthy no-op: no summary request, no
+/// started/failed events, and no failure counted.
+#[tokio::test]
+async fn run_loop_skips_compaction_without_enough_history() {
+    let server = MockModelServer::start(vec![final_answer_sse("直接回答。")]);
+    let state = test_app_state();
+    let mut config = over_budget_config(&state, &server.base_url);
+    // Two rounds: automatic compaction keeps the latest, leaving too little to summarize.
+    config.runtime_messages.drain(2..4);
+    let host = TestHost::default();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .unwrap();
+    assert_eq!(result.content, "直接回答。");
+    assert_eq!(server.captured_bodies().len(), 1);
+    assert!(host.compaction_phases.lock().unwrap().is_empty());
+    assert_eq!(*host.auto_compact_failures.lock().unwrap(), 0);
+}
+
+/// ZCode rapid-refill breaker: when the context refills within fewer than three tool
+/// batches after compaction three times in a row, compacting again cannot help, so the
+/// turn ends gracefully with the gathered tool results and a bounded number of calls.
+#[tokio::test]
+async fn run_loop_rapid_refill_ends_turn_with_gathered_results() {
+    let summary = || {
+        MockResponse::Sse(vec![
+            long_summary_sse_tagged("SUMMARY_MARKER"),
+            "[DONE]".to_string(),
+        ])
+    };
+    let server = MockModelServer::start(vec![
+        summary(),
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        summary(),
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        summary(),
+        MockResponse::Sse(planning_tool_call_sse_events()),
+    ]);
+    let state = test_app_state();
+    let mut config = over_budget_config(&state, &server.base_url);
+    // Budget 276 tokens: the tool schemas alone exceed it, so every round is over budget.
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(14_300),
+            ..Default::default()
+        },
+    );
+    config.effective_chat_tools.max_tool_rounds = Some(6);
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .expect("the breaker ends the turn, not the run");
+
     assert_eq!(result.stream_outcome, "compaction_thrash");
-    // The gathered round-1 tool result is surfaced in the degraded answer.
-    assert_eq!(result.tool_records.len(), 1);
-    assert!(matches!(
-        result.tool_records[0].status,
-        ToolCallStatus::Success
-    ));
+    assert_eq!(result.tool_records.len(), 3);
     assert!(
         result.content.contains("result:read"),
-        "degraded answer must carry the gathered tool result, got: {}",
+        "degraded answer carries the gathered tool results, got: {}",
         result.content
     );
-    // BOUNDED model calls: summary#1 + planning#1 + summary#2 = exactly 3.
-    // The thrash guard fires before a 2nd planning call, so we never see the
-    // 6× failed-compaction loop from the regression.
     assert_eq!(
         server.captured_bodies().len(),
-        3,
-        "anti-thrashing must bound model calls (summary + planning + summary), no repeat-fail loop"
+        6,
+        "three compactions and three planning calls, then no further compaction"
     );
 }
 
@@ -3463,7 +3589,15 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
         MockResponse::Sse(sse_from_completion_json(&retry_answer)),
     ]);
     let state = test_app_state();
-    let config = test_run_config(&state, &server.base_url);
+    let mut config = test_run_config(&state, &server.base_url);
+    // An earlier exchange gives compaction something to summarize besides the kept round.
+    config.runtime_messages.splice(
+        1..1,
+        [
+            serde_json::json!({ "role": "user", "content": "earlier request" }),
+            serde_json::json!({ "role": "assistant", "content": "earlier answer" }),
+        ],
+    );
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
@@ -4656,6 +4790,8 @@ async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
     let messages = vec![
         serde_json::json!({"role":"system","content":"project rules"}),
         serde_json::json!({"role":"user","content":"original request"}),
+        serde_json::json!({"role":"assistant","content":"first completed work"}),
+        serde_json::json!({"role":"user","content":"follow-up request"}),
         serde_json::json!({"role":"assistant","content":"older completed work"}),
         serde_json::json!({"role":"user","content":"new request"}),
         serde_json::json!({"role":"assistant","tool_calls":[{"id":"kept_call","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}}]}),
@@ -4667,12 +4803,10 @@ async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
         &config.model,
         &messages,
         true,
-        200_000,
+        &[],
         32_000,
-        3,
         "test",
         "reply",
-        None,
         None,
         None,
     )
@@ -4699,7 +4833,7 @@ async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
 }
 
 #[tokio::test]
-async fn zcode_manual_summary_consumes_full_history_and_honors_focus() {
+async fn zcode_manual_summary_consumes_full_history() {
     let server = MockModelServer::start(vec![MockResponse::Sse(vec![
         long_summary_sse_tagged("manual summary"),
         "[DONE]".into(),
@@ -4717,12 +4851,10 @@ async fn zcode_manual_summary_consumes_full_history_and_honors_focus() {
         &config.model,
         &messages,
         false,
-        200_000,
+        &[],
         32_000,
-        3,
         "test",
         "reply",
-        Some("retain error details"),
         None,
         None,
     )
@@ -4733,7 +4865,6 @@ async fn zcode_manual_summary_consumes_full_history_and_honors_focus() {
     assert_eq!(history.len(), 2);
     let bodies = server.captured_bodies();
     assert!(bodies[0].contains("latest original answer"));
-    assert!(bodies[0].contains("retain error details"));
     assert!(bodies[0].contains("20000"));
 }
 
@@ -4744,6 +4875,8 @@ async fn zcode_summary_cancel_keeps_original_messages() {
     let messages = vec![
         serde_json::json!({"role":"user","content":"task"}),
         serde_json::json!({"role":"assistant","content":"work"}),
+        serde_json::json!({"role":"user","content":"more"}),
+        serde_json::json!({"role":"assistant","content":"more work"}),
     ];
     let before = messages.clone();
     let result = crate::chat::agent::compaction::summarize_history(
@@ -4752,12 +4885,10 @@ async fn zcode_summary_cancel_keeps_original_messages() {
         &config.model,
         &messages,
         true,
-        200_000,
+        &[],
         32_000,
-        3,
         "test",
         "reply",
-        None,
         Some(Box::pin(async {})),
         None,
     )
@@ -4788,6 +4919,8 @@ async fn zcode_planning_overflow_forces_compaction_below_threshold() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.runtime_messages.extend([
+        serde_json::json!({"role":"assistant","content":"earlier answer"}),
+        serde_json::json!({"role":"user","content":"follow-up"}),
         serde_json::json!({"role":"assistant","content":"previous answer"}),
         serde_json::json!({"role":"user","content":"latest request"}),
     ]);
@@ -4821,12 +4954,10 @@ async fn zcode_summary_rejects_truncated_output_without_replacing_history() {
         &config.model,
         &messages,
         false,
-        200_000,
+        &[],
         32_000,
-        1,
         "test",
         "reply",
-        None,
         None,
         None,
     )
@@ -4837,6 +4968,153 @@ async fn zcode_summary_rejects_truncated_output_without_replacing_history() {
     ));
     assert_eq!(messages, original);
     assert_eq!(server.captured_bodies().len(), 1);
+}
+
+fn tool_round_history() -> Vec<Value> {
+    vec![
+        serde_json::json!({"role":"system","content":"rules"}),
+        serde_json::json!({"role":"user","content":"oldest request"}),
+        serde_json::json!({"role":"assistant","content":null,"tool_calls":[{"id":"old_call","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}}]}),
+        serde_json::json!({"role":"tool","tool_call_id":"old_call","content":"old tool output"}),
+        serde_json::json!({"role":"user","content":"next request"}),
+        serde_json::json!({"role":"assistant","content":"middle work"}),
+        serde_json::json!({"role":"user","content":"new request"}),
+        serde_json::json!({"role":"assistant","content":"latest work"}),
+    ]
+}
+
+/// ZCode sends the run's tools with the summary request, so providers accept the
+/// tool-call history (Anthropic requires definitions for tool_use blocks) and the
+/// prompt cache can be reused. Without definitions the history travels as text.
+#[tokio::test]
+async fn zcode_summary_request_carries_run_tools_or_text_history() {
+    for with_tools in [true, false] {
+        let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+            long_summary_sse_tagged("handoff"),
+            "[DONE]".into(),
+        ])]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url);
+        let tools = if with_tools {
+            config.tools.clone()
+        } else {
+            Vec::new()
+        };
+        let outcome = crate::chat::agent::compaction::summarize_history(
+            &state,
+            &config.provider,
+            &config.model,
+            &tool_round_history(),
+            true,
+            &tools,
+            32_000,
+            "test",
+            "reply",
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            crate::chat::agent::compaction::CompactOutcome::Compacted(..)
+        ));
+        let body: Value = serde_json::from_str(&server.captured_bodies()[0]).unwrap();
+        if with_tools {
+            assert!(body["tools"]
+                .as_array()
+                .is_some_and(|tools| !tools.is_empty()));
+            assert!(
+                body.to_string().contains("old_call"),
+                "structured tool history kept"
+            );
+        } else {
+            assert!(body.get("tools").is_none());
+            let text = body.to_string();
+            assert!(
+                !text.contains("old_call"),
+                "no tool_call ids without definitions"
+            );
+            assert!(text.contains("[Tool call] read"));
+            assert!(text.contains("[Tool result]\\nold tool output"));
+        }
+    }
+}
+
+/// Manual compaction drops the oldest rounds after an overflow. Like ZCode, a request
+/// that would then open with an assistant turn gets a user marker first.
+#[tokio::test]
+async fn zcode_manual_truncation_marks_dropped_history() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Status(400, "maximum context length exceeded".into()),
+        MockResponse::Sse(vec![long_summary_sse_tagged("handoff"), "[DONE]".into()]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let outcome = crate::chat::agent::compaction::summarize_history(
+        &state,
+        &config.provider,
+        &config.model,
+        &tool_round_history(),
+        false,
+        &[],
+        32_000,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
+    assert!(matches!(
+        outcome,
+        crate::chat::agent::compaction::CompactOutcome::Compacted(..)
+    ));
+    let body: Value = serde_json::from_str(&server.captured_bodies()[1]).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let first = messages.iter().find(|m| m["role"] != "system").unwrap();
+    assert_eq!(first["role"], "user");
+    assert!(first.to_string().contains("earlier conversation truncated"));
+    assert!(!body.to_string().contains("oldest request"));
+}
+
+/// GLM-style providers end an overlong summary request with an empty `length` finish;
+/// like ZCode that is overflow pressure, retried with more history preserved.
+#[tokio::test]
+async fn zcode_empty_length_summary_is_treated_as_overflow() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":""},"finish_reason":"length"}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+        MockResponse::Sse(vec![long_summary_sse_tagged("handoff"), "[DONE]".into()]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let mut history = tool_round_history();
+    history.extend([
+        serde_json::json!({"role":"user","content":"even newer request"}),
+        serde_json::json!({"role":"assistant","content":"newest work"}),
+    ]);
+    let outcome = crate::chat::agent::compaction::summarize_history(
+        &state,
+        &config.provider,
+        &config.model,
+        &history,
+        true,
+        &[],
+        32_000,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
+    let crate::chat::agent::compaction::CompactOutcome::Compacted(compacted, _) = outcome else {
+        panic!("empty length finish should reselect and retry");
+    };
+    assert!(serde_json::to_string(&compacted)
+        .unwrap()
+        .contains("latest work"));
+    assert_eq!(server.captured_bodies().len(), 2);
 }
 
 #[tokio::test]
@@ -4859,7 +5137,9 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
             let config = test_run_config(&state, &server.base_url);
             let messages = vec![
                 serde_json::json!({"role":"system","content":"rules"}),
-                serde_json::json!({"role":"user","content":"oldest request"}),
+                serde_json::json!({"role":"user","content":format!("oldest request {}", "detail ".repeat(40))}),
+                serde_json::json!({"role":"assistant","content":"ancient work"}),
+                serde_json::json!({"role":"user","content":"older request"}),
                 serde_json::json!({"role":"assistant","content":"middle work"}),
                 serde_json::json!({"role":"user","content":"new request"}),
                 serde_json::json!({"role":"assistant","content":"latest work"}),
@@ -4871,12 +5151,10 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
                 &config.model,
                 &messages,
                 preserve_recent,
-                200_000,
+                &[],
                 32_000,
-                1,
                 "test",
                 "reply",
-                None,
                 None,
                 None,
             )
@@ -4922,10 +5200,17 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
         let server = MockModelServer::start(responses);
         let state = test_app_state();
         let config = test_run_config(&state, &server.base_url);
-        let messages = vec![
+        let mut messages = vec![
             serde_json::json!({"role":"user","content":"task"}),
             serde_json::json!({"role":"assistant","content":"work"}),
         ];
+        if preserve_recent {
+            // Automatic compaction keeps one round, so it needs one more to summarize.
+            messages.extend([
+                serde_json::json!({"role":"user","content":"more"}),
+                serde_json::json!({"role":"assistant","content":"more work"}),
+            ]);
+        }
         let original = messages.clone();
         let outcome = crate::chat::agent::compaction::summarize_history(
             &state,
@@ -4933,12 +5218,10 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
             &config.model,
             &messages,
             preserve_recent,
-            200_000,
+            &[],
             32_000,
-            1,
             "test",
             "reply",
-            None,
             None,
             None,
         )
