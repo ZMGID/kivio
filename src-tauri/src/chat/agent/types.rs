@@ -69,6 +69,9 @@ pub struct AgentRunConfig<'a> {
     pub initial_anchor_trailing_estimate: usize,
     /// 对话工作目录，用于扫描项目 `.kivio/skills` 与 `.agents/skills`。
     pub skill_project_cwd: Option<std::path::PathBuf>,
+    /// The conversation's todo list when the run starts. Only read when the run
+    /// exposes `todo_write`, to build todo reminders (`chat::todo`).
+    pub todo_state: crate::chat::types::AgentTodoState,
 }
 
 impl AgentRunConfig<'_> {

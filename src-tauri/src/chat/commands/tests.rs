@@ -322,7 +322,6 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
                 None,
                 None,
                 None,
-                None,
                 &[],
             );
             assert_eq!(prompt.matches("Create distinctive interfaces.").count(), 1);
@@ -2371,6 +2370,52 @@ fn regenerate_truncation_edits_user_content_and_truncates_after() {
         covered.context_state.summary.as_ref().map(|s| s.stale),
         Some(true)
     );
+}
+
+#[test]
+fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
+    use crate::chat::types::{AgentTodoItem, AgentTodoStatus, ToolCallRecord};
+    fn snapshot(content: &str) -> AgentTodoState {
+        AgentTodoState {
+            items: vec![AgentTodoItem {
+                id: "1".to_string(),
+                content: content.to_string(),
+                status: AgentTodoStatus::InProgress,
+                ..Default::default()
+            }],
+            updated_at: 1,
+        }
+    }
+    fn todo_call(state: &AgentTodoState) -> ToolCallRecord {
+        let mut record: ToolCallRecord = serde_json::from_value(serde_json::json!({
+            "id": "call", "name": "todo_write", "status": "success"
+        }))
+        .unwrap();
+        record.structured_content = Some(serde_json::json!({ "todoState": state }));
+        record
+    }
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.messages[1].tool_calls = vec![todo_call(&snapshot("early step"))];
+    conversation.messages[3].tool_calls = vec![todo_call(&snapshot("later step"))];
+    conversation.agent_todo_state = snapshot("later step");
+
+    // Regenerating the last answer drops its todo_write; the list follows the history.
+    apply_regenerate_truncation(&mut conversation, 3, None).unwrap();
+    super::mutations::restore_todo_state_from_history(&mut conversation);
+    assert_eq!(conversation.agent_todo_state.items[0].content, "early step");
+
+    // Going back before any todo_write empties it.
+    conversation.messages.truncate(1);
+    super::mutations::restore_todo_state_from_history(&mut conversation);
+    assert!(conversation.agent_todo_state.items.is_empty());
+
+    // External CLIs keep their own list: not every CLI leaves a record to rebuild it from.
+    let mut external = test_conversation_with_summary(false);
+    external.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+    external.agent_runtime.external_agent_id = Some("codex".to_string());
+    external.agent_todo_state = snapshot("codex plan");
+    super::mutations::restore_todo_state_from_history(&mut external);
+    assert_eq!(external.agent_todo_state.items[0].content, "codex plan");
 }
 
 #[test]

@@ -151,7 +151,6 @@ pub fn build_chat_system_prompt(
     memory_prompt: Option<&str>,
     agent_plan_prompt: Option<&str>,
     agent_ask_user_prompt: Option<&str>,
-    agent_todo_prompt: Option<&str>,
     project_context: Option<&ProjectPromptContext>,
     workbench_dir: Option<&str>,
     knowledge_base_prompt: Option<&str>,
@@ -175,7 +174,6 @@ pub fn build_chat_system_prompt(
         memory_prompt,
         agent_plan_prompt,
         agent_ask_user_prompt,
-        agent_todo_prompt,
         project_context,
         workbench_dir,
         knowledge_base_prompt,
@@ -352,7 +350,6 @@ pub fn build_chat_system_prompt_with_segments(
     memory_prompt: Option<&str>,
     agent_plan_prompt: Option<&str>,
     agent_ask_user_prompt: Option<&str>,
-    agent_todo_prompt: Option<&str>,
     project_context: Option<&ProjectPromptContext>,
     workbench_dir: Option<&str>,
     knowledge_base_prompt: Option<&str>,
@@ -545,13 +542,6 @@ pub fn build_chat_system_prompt_with_segments(
                 ask_user,
             );
         }
-    }
-
-    if let Some(todo) = agent_todo_prompt
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        append_context_segment(&mut prompt, &mut segments, "agent_todo", "Agent todo", todo);
     }
 
     // Per-conversation workbench path (`…/conv_xxx`) is the only system-prompt
@@ -845,7 +835,6 @@ pub fn context_segment_color(id: &str) -> Option<&'static str> {
         "runtime_context" => Some("#3E8B60"),
         "memory_l1" => Some("#4F9A9A"),
         "agent_plan" => Some("#8A724C"),
-        "agent_todo" => Some("#5F7C5A"),
         "tool_definitions" => Some("#7553CF"),
         "skills" => Some("#BD8A3E"),
         "mcp" => Some("#B04B8D"),
@@ -1301,7 +1290,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
@@ -1337,7 +1325,6 @@ mod tests {
                 None,
                 "",
                 false,
-                None,
                 None,
                 None,
                 None,
@@ -1431,7 +1418,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             Some("/Users/me/Kivio/workspace/conv_abc"),
             None,
             None,
@@ -1499,7 +1485,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             Some("/Users/me/Kivio/workspace/conv_abc"),
             None,
             None,
@@ -1547,7 +1532,6 @@ mod tests {
                 None,
                 "",
                 false,
-                None,
                 None,
                 None,
                 None,
@@ -1614,7 +1598,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
@@ -1647,7 +1630,6 @@ mod tests {
             None,
             "",
             false,
-            None,
             None,
             None,
             None,
@@ -1688,7 +1670,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             Some("/Users/me/Obsidian/MyVault"),
             &[],
         );
@@ -1722,7 +1703,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
@@ -1745,7 +1725,6 @@ mod tests {
             Some("   "),
             "",
             false,
-            None,
             None,
             None,
             None,
@@ -1980,7 +1959,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
@@ -2033,7 +2011,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
         assert!(prompt.contains("Speak like a careful editor."), "{prompt}");
@@ -2062,7 +2039,6 @@ mod tests {
             None,
             "",
             true,
-            None,
             None,
             None,
             None,
@@ -2126,7 +2102,6 @@ mod tests {
             sources.is_chat_runtime,
             None,
             sources.agent_plan_prompt.as_deref(),
-            None,
             None,
             None,
             None,

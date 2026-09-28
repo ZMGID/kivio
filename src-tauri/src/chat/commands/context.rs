@@ -866,11 +866,9 @@ pub(super) async fn compute_context_state(
         user_tools_available,
     );
     let ask_user_tools_available = append_agent_ask_user_tools(&mut tools);
-    let todo_tools_available = if chat_mode || plan_mode {
-        false
-    } else {
-        append_agent_todo_tools(&mut tools)
-    };
+    if !chat_mode && !plan_mode {
+        append_agent_todo_tools(&mut tools);
+    }
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
     let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
@@ -927,15 +925,6 @@ pub(super) async fn compute_context_state(
         Some(&crate::chat::ask_user::format_prompt(
             ask_user_tools_available,
         )),
-        if chat_mode || plan_mode {
-            None
-        } else {
-            Some(crate::chat::todo::format_prompt(
-                &conversation.agent_todo_state,
-                todo_tools_available,
-            ))
-        }
-        .as_deref(),
         project_prompt_context_for(app, conversation).as_ref(),
         crate::chat::storage::resolve_conversation_working_directory(
             app,

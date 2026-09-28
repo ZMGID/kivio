@@ -256,6 +256,8 @@ function todoStatusLabel(status?: string): string {
       return '进行中'
     case 'pending':
       return '待处理'
+    case 'cancelled':
+      return '已取消'
     default:
       return status ? compactText(status, 24) : ''
   }
@@ -272,7 +274,7 @@ function normalizeTodoItem(value: unknown): AgentTodoItem | null {
     // dsh 的 todo_write 没有 id，官方用 content 当身份。
     id: id || content,
     content,
-    status: (status === 'completed' || status === 'in_progress' || status === 'pending'
+    status: (status === 'completed' || status === 'in_progress' || status === 'pending' || status === 'cancelled'
       ? status
       : 'pending') as AgentTodoStatus,
   }
@@ -289,7 +291,8 @@ function todoCounts(items?: AgentTodoItem[]): { completed: number; total: number
   if (!items?.length) return null
   return {
     completed: items.filter((item) => item.status === 'completed').length,
-    total: items.length,
+    // 取消的条目不计入分母，与输入框上方的 Todo 条一致。
+    total: items.filter((item) => item.status !== 'cancelled').length,
   }
 }
 
@@ -307,6 +310,11 @@ function structuredTodoState(toolCall: ToolCallRecord): AgentTodoState | null {
     updated_at: typeof todoState.updated_at === 'number' ? todoState.updated_at : undefined,
     updatedAt: typeof todoState.updatedAt === 'number' ? todoState.updatedAt : undefined,
   }
+}
+
+/** 内置 todo_write 在全部完成/取消时清空清单，结构化结果里带 `cleared: true`。 */
+function structuredTodoCleared(toolCall: ToolCallRecord): boolean {
+  return objectValue(toolCall.structured_content ?? toolCall.structuredContent)?.cleared === true
 }
 
 function stringArrayValue(value: unknown): string[] {
@@ -1635,9 +1643,9 @@ function getToolTarget(toolCall: ToolCallRecord): string {
         return compactText(name || firstString(args?.id), 140)
       }
       case 'todo_write': {
-        const counts = formatTodoCounts(
-          structuredTodoState(toolCall)?.items ?? normalizeTodoItems(args?.todos),
-        )
+        // 清单被清空（全部完成）时结构化快照是空表，计数改看本次写入的参数。
+        const snapshot = structuredTodoState(toolCall)?.items
+        const counts = formatTodoCounts(snapshot?.length ? snapshot : normalizeTodoItems(args?.todos))
         return counts || compactText(firstString(args?.objective, args?.content), 140)
       }
       case 'taskcreate': {
@@ -1726,6 +1734,7 @@ function getResultPreview(toolCall: ToolCallRecord): string {
   const todoItems = structuredTodoState(toolCall)?.items
   if (rawName === 'todo_write' || rawName === 'todo_update' || todoItems) {
     if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''
+    if (structuredTodoCleared(toolCall)) return '已全部完成'
     const counts = formatTodoCounts(todoItems)
     return counts ? `已同步 ${counts}` : '已同步'
   }
