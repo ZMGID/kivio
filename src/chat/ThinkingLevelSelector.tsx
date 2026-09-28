@@ -4,6 +4,7 @@ import { api } from '../api/tauri'
 import { useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
 import type { ThinkingLevel } from './types'
+import { useEscapeToClose } from './useEscapeToClose'
 
 interface ThinkingLevelSelectorProps {
   /** 当前等级；null = 未显式设置，按默认档 DEFAULT_LEVEL 处理。 */
@@ -39,6 +40,7 @@ function ThinkingLevelSelectorBase({
 }: ThinkingLevelSelectorProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
   const [levels, setLevels] = useState<string[]>(FALLBACK_LEVELS)
   const [levelsLoaded, setLevelsLoaded] = useState(false)
 

@@ -49,7 +49,7 @@ import { AskUserBlock } from './AskUserBlock'
 import { ChatMarkdown } from './ChatMarkdown'
 import { WebSearchIcon } from '../settings/public/icons'
 import { api } from '../api/tauri'
-import { useT } from '../components/i18n'
+import { useT, type I18n } from '../components/i18n'
 import { automationHash, setHash } from './chatRoutes'
 import { loadAttachmentDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
@@ -248,16 +248,16 @@ function objectValue(value: unknown): Record<string, unknown> | null {
     : null
 }
 
-function todoStatusLabel(status?: string): string {
+function todoStatusLabel(t: I18n, status?: string): string {
   switch (status) {
     case 'completed':
-      return '已完成'
+      return t.agentTodoStatusDone
     case 'in_progress':
-      return '进行中'
+      return t.agentTodoStatusNow
     case 'pending':
-      return '待处理'
+      return t.agentTodoStatusNext
     case 'cancelled':
-      return '已取消'
+      return t.agentTodoStatusSkipped
     default:
       return status ? compactText(status, 24) : ''
   }
@@ -294,6 +294,10 @@ function todoCounts(items?: AgentTodoItem[]): { completed: number; total: number
     // 取消的条目不计入分母，与输入框上方的 Todo 条一致。
     total: items.filter((item) => item.status !== 'cancelled').length,
   }
+}
+
+function countLabel(n: number, one: string, many: string): string {
+  return n === 1 ? one : many.replace('{n}', String(n))
 }
 
 function formatTodoCounts(items?: AgentTodoItem[]): string {
@@ -438,24 +442,24 @@ function isSubagentLaunchReceipt(text: string | undefined): boolean {
     || trimmed.startsWith('started subagent ')
 }
 
-function subagentDisplayStatus(toolCall: ToolCallRecord, status: ToolCallStatus): ToolCallStatus {
-  if (status === 'completed' && isSubagentLaunchReceipt(getResultPreview(toolCall))) {
+function subagentDisplayStatus(t: I18n, toolCall: ToolCallRecord, status: ToolCallStatus): ToolCallStatus {
+  if (status === 'completed' && isSubagentLaunchReceipt(getResultPreview(t, toolCall))) {
     return 'running'
   }
   return status
 }
 
-function subagentStatusLine(view: SubagentView | null, status: ToolCallStatus): string {
-  if (status === 'completed') return '已完成'
-  if (status === 'error') return view?.error ? compactText(view.error, 160) : '运行失败'
-  if (status === 'cancelled') return '已取消'
+function subagentStatusLine(t: I18n, view: SubagentView | null, status: ToolCallStatus): string {
+  if (status === 'completed') return t.toolCardDone
+  if (status === 'error') return view?.error ? compactText(view.error, 160) : t.toolCardFailed
+  if (status === 'cancelled') return t.toolCardCancelled
   if (status === 'running') {
     const lastStep = view?.steps?.length ? view.steps[view.steps.length - 1] : ''
     if (lastStep) return compactText(lastStep, 160)
     if (view?.preview) return compactText(view.preview, 160)
-    return '运行中…'
+    return t.toolCardRunning
   }
-  return '准备运行…'
+  return t.toolCardStarting
 }
 
 function CardEyebrow({ running = false }: { running?: boolean }) {
@@ -573,7 +577,8 @@ function ConsultCard({
 }
 
 function SubAgentCard({ toolCall }: ToolCallBlockProps) {
-  const status = subagentDisplayStatus(toolCall, normalizeToolCallStatus(toolCall.status))
+  const t = useT()
+  const status = subagentDisplayStatus(t, toolCall, normalizeToolCallStatus(toolCall.status))
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
@@ -586,12 +591,12 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const name = subagentName(view, args)
   const model = view?.model || ''
   const duration = status === 'running' ? '' : formatDuration(getDuration(toolCall))
-  const statusLine = subagentStatusLine(view, status)
+  const statusLine = subagentStatusLine(t, view, status)
   const prompt = subagentPrompt(args)
   // 内置 agent 的最终结果在 structured content 里；外部 CLI（claude Agent/Task）没有
   // structured，最终结果落在 result_preview——终态时兜底取它，否则 Result 区恒空。
   const result =
-    view?.result || (status !== 'running' && status !== 'pending' ? getResultPreview(toolCall) : '')
+    view?.result || (status !== 'running' && status !== 'pending' ? getResultPreview(t, toolCall) : '')
   const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
   const steps = view?.steps ?? []
   const preview = view?.preview || ''
@@ -692,6 +697,7 @@ function isAdvisorRecord(toolCall: ToolCallRecord): boolean {
 /** Dedicated card for an `advisor` consultation: a standalone card whose body
  *  (question + advice) is collapsible, collapsed by default to stay compact. */
 function AdvisorCard({ toolCall }: ToolCallBlockProps) {
+  const t = useT()
   const status = normalizeToolCallStatus(toolCall.status)
   const view = useMemo(() => structuredAdvisor(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
@@ -702,7 +708,7 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const duration = formatDuration(getDuration(toolCall))
   const statusLine =
-    status === 'running' ? '咨询中…' : status === 'error' ? (error || '咨询失败') : ''
+    status === 'running' ? t.toolCardAdvisorRunning : status === 'error' ? (error || t.toolCardAdvisorFailed) : ''
 
   const hasBody = Boolean(question || advice || error)
 
@@ -852,7 +858,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
         ? t.chatAutomationCancelled
         : ''
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
-  const result = status !== 'running' && status !== 'pending' ? getResultPreview(toolCall) : ''
+  const result = status !== 'running' && status !== 'pending' ? getResultPreview(t, toolCall) : ''
 
   return (
     <ConsultCard
@@ -984,17 +990,18 @@ function isKnowledgeSearchRecord(toolCall: ToolCallRecord): boolean {
  *  shell as SUBAGENT/ADVISOR. Body shows the query plus the retrieved [n]
  *  passages (KnowledgeHits) or, when nothing matched, the plain result text. */
 function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
+  const t = useT()
   const status = normalizeToolCallStatus(toolCall.status)
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
   const hits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
 
   const query = stringValue(args?.query)
   const duration = formatDuration(getDuration(toolCall))
-  const resultText = getResultPreview(toolCall)
+  const resultText = getResultPreview(t, toolCall)
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const count = hits?.length ?? 0
   const statusLine =
-    status === 'running' ? '检索中…' : status === 'error' ? (error || '检索失败') : ''
+    status === 'running' ? t.toolCardKnowledgeRunning : status === 'error' ? (error || t.toolCardKnowledgeFailed) : ''
 
   const hasBody = Boolean(query || hits || (status !== 'running' && resultText) || error)
 
@@ -1087,6 +1094,7 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
  *  the numbered, clickable source directory; falls back to the plain result text when
  *  structured citations are absent (old persisted records). */
 function WebSearchCard({ toolCall }: ToolCallBlockProps) {
+  const t = useT()
   const status = normalizeToolCallStatus(toolCall.status)
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
   const view = useMemo(() => webSearchCardView(toolCall), [toolCall])
@@ -1095,10 +1103,10 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const citations = view?.citations ?? []
   const provider = view?.provider || ''
   const duration = formatDuration(getDuration(toolCall))
-  const resultText = getResultPreview(toolCall)
+  const resultText = getResultPreview(t, toolCall)
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const statusLine =
-    status === 'running' ? '搜索中…' : status === 'error' ? (error || '搜索失败') : ''
+    status === 'running' ? t.toolCardWebRunning : status === 'error' ? (error || t.toolCardWebFailed) : ''
 
   const hasBody = Boolean(
     queries.length ||
@@ -1135,7 +1143,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
             status !== 'running' &&
             status !== 'pending' &&
             resultText && (
-              <CardSection label="结果">
+              <CardSection label={t.toolCardResult}>
                 <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                   {resultText}
                 </div>
@@ -1220,14 +1228,14 @@ function cleanWinPath(path: string): string {
   return path.replace(/^(\\\\\?\\|\/\/\?\/)/, '')
 }
 
-function fileMutationTarget(mutation: FileMutationStructuredContent): string {
+function fileMutationTarget(t: I18n, mutation: FileMutationStructuredContent): string {
   if (mutation.files?.length === 1) return cleanWinPath(mutation.files[0]?.path || '')
-  if (mutation.files?.length) return `${mutation.files.length} 个文件`
+  if (mutation.files?.length) return t.toolCardFileCount.replace('{n}', String(mutation.files.length))
   return cleanWinPath(mutation.resolvedPath || mutation.resolved_path || '')
 }
 
-function fileMutationPreview(mutation: FileMutationStructuredContent): string {
-  const target = fileMutationTarget(mutation)
+function fileMutationPreview(t: I18n, mutation: FileMutationStructuredContent): string {
+  const target = fileMutationTarget(t, mutation)
   const stats = mutation.files?.length ? fileMutationStats(mutation) : ''
   return [target, stats].filter(Boolean).join(' · ')
 }
@@ -1305,6 +1313,7 @@ function InlineDiffStats({
 }
 
 function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredContent }) {
+  const t = useT()
   const files = mutation.files ?? []
   const warnings = mutation.warnings ?? []
   const diagnostics = mutation.diagnostics ?? []
@@ -1322,7 +1331,7 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
             {files.map((file, index) => (
               <div key={`${file.path}-${index}`} className="flex min-w-0 items-center gap-1.5">
                 <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
-                  {fileOperationLabel(file.operation)}
+                  {fileOperationLabel(t, file.operation)}
                 </span>
                 <span className="min-w-0 truncate">{cleanWinPath(file.path)}</span>
                 <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400">
@@ -1365,24 +1374,24 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
   )
 }
 
-function fileOperationLabel(operation: string): string {
+function fileOperationLabel(t: I18n, operation: string): string {
   switch (operation) {
     case 'create':
-      return '新增'
+      return t.toolCardFileOpCreate
     case 'overwrite':
-      return '覆盖'
+      return t.toolCardFileOpOverwrite
     case 'edit':
-      return '修改'
+      return t.toolCardFileOpEdit
     case 'delete':
-      return '删除'
+      return t.toolCardFileOpDelete
     case 'noop':
-      return '无变更'
+      return t.toolCardFileOpNoop
     default:
-      return operation || '变更'
+      return operation || t.toolCardFileOpOther
   }
 }
 
-function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, unknown> | null): string {
+function fileToolArgumentPreview(t: I18n, toolCall: ToolCallRecord, args: Record<string, unknown> | null): string {
   const rawName = toolRawName(toolCall)
   const path = toolPathArgument(args)
   const query = typeof args?.query === 'string'
@@ -1392,17 +1401,17 @@ function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, 
       : ''
   const glob = typeof args?.glob === 'string' ? args.glob.trim() : ''
   if (rawName === 'write' || rawName === 'write_file') {
-    return path ? path : '写入文件'
+    return path ? path : t.toolCardWriteFile
   }
   if (rawName === 'edit' || rawName === 'edit_file') {
     const edits = Array.isArray(args?.edits) ? args.edits : null
     if (edits) {
-      const label = edits.length === 1 ? '1 处编辑' : `${edits.length} 处编辑`
+      const label = countLabel(edits.length, t.toolCardEditOne, t.toolCardEditMany)
       return [path, label].filter(Boolean).join(' · ')
     }
     // Legacy single-edit records (old_string/new_string) from persisted conversations.
     const oldString = typeof args?.old_string === 'string' ? compactText(args.old_string, 80) : ''
-    return [path, oldString ? `替换 ${oldString}` : ''].filter(Boolean).join(' · ')
+    return [path, oldString ? t.toolCardReplace.replace('{text}', oldString) : ''].filter(Boolean).join(' · ')
   }
   if (rawName === 'grep' || rawName === 'search_files') {
     const scope = glob
@@ -1410,7 +1419,7 @@ function fileToolArgumentPreview(toolCall: ToolCallRecord, args: Record<string, 
       : path
     if (!query && !scope) return ''
     const scopeLabel = scope ? compactText(scope, 120) : ''
-    const queryLabel = query ? `搜索 ${compactText(query, 80)}` : ''
+    const queryLabel = query ? t.toolCardSearch.replace('{query}', compactText(query, 80)) : ''
     return [queryLabel, scopeLabel].filter(Boolean).join(' · ')
   }
   return ''
@@ -1561,7 +1570,7 @@ const READ_PREVIEW_MAX_LINE_CHARS = 160
 
 /** 展开区「结果」：保留换行的前几行（带行号）+ 省略计数 + 末尾续读通知，与模型看到的
  *  尾注一致。不走 compact()：把两千行正文压成一段 220 字的糊，续读提示也跟着糊掉。 */
-function formatReadFilePreview(view: ReadFileView): string {
+function formatReadFilePreview(t: I18n, view: ReadFileView): string {
   const lines = view.content ? view.content.split('\n') : []
   const shown = lines.slice(0, READ_PREVIEW_MAX_LINES)
   const start = Math.max(1, view.startLine)
@@ -1571,14 +1580,14 @@ function formatReadFilePreview(view: ReadFileView): string {
     return `${start + index}  ${body}`
   })
   const hidden = lines.length - shown.length
-  if (hidden > 0) parts.push(`… 还有 ${hidden} 行`)
+  if (hidden > 0) parts.push(t.toolCardMoreLines.replace('{n}', String(hidden)))
   parts.push(...view.notices)
   return parts.join('\n')
 }
 
 /** 折叠行的「目标」：以输入参数为主（文件名 / 命令 / pattern / url），不含动词、不含结果。
  *  Cursor 风格 —— 行内只呈现「动词 + 目标」，其余细节（结果、diff、错误）放展开区。 */
-function getToolTarget(toolCall: ToolCallRecord): string {
+function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
   const raw = toolRawName(toolCall)
   const args = parsedArguments(toolCall)
   const path = toolPathArgument(args)
@@ -1593,9 +1602,9 @@ function getToolTarget(toolCall: ToolCallRecord): string {
       case 'edit_file': {
         const mutation = structuredFileMutation(toolCall)
         if (mutation && (mutation.files?.length ?? 0) > 1) {
-          return `${mutation.files!.length} files`
+          return t.toolCardFileCount.replace('{n}', String(mutation.files!.length))
         }
-        const target = (mutation && fileMutationTarget(mutation)) || path
+        const target = (mutation && fileMutationTarget(t, mutation)) || path
         return target.includes('/') || target.includes('\\') ? basename(target) : target
       }
       case 'bash':
@@ -1655,7 +1664,7 @@ function getToolTarget(toolCall: ToolCallRecord): string {
       case 'taskupdate': {
         const counts = formatTodoCounts(structuredTodoState(toolCall)?.items)
         if (counts) return counts
-        const status = typeof args?.status === 'string' ? todoStatusLabel(args.status) : ''
+        const status = typeof args?.status === 'string' ? todoStatusLabel(t, args.status) : ''
         const target = firstString(args?.subject, args?.taskId, args?.id, args?.task_id)
         return [status, compactText(target, 120)].filter(Boolean).join(' · ')
       }
@@ -1665,11 +1674,11 @@ function getToolTarget(toolCall: ToolCallRecord): string {
         return compactText(firstString(args?.content, args?.id), 120)
       case 'mixer_vision': {
         const count = numberValue(args?.images)
-        return count > 0 ? `${count} image${count > 1 ? 's' : ''}` : ''
+        return count > 0 ? countLabel(count, t.toolCardImageOne, t.toolCardImageMany) : ''
       }
       case 'mixer_video_analysis': {
         const count = numberValue(args?.videos)
-        return count > 0 ? `${count} video${count > 1 ? 's' : ''}` : ''
+        return count > 0 ? countLabel(count, t.toolCardVideoOne, t.toolCardVideoMany) : ''
       }
       case 'mixer_generate_image':
         return compactText(firstString(args?.prompt), 140)
@@ -1678,38 +1687,40 @@ function getToolTarget(toolCall: ToolCallRecord): string {
     }
   })()
   if (primary) return primary
-  return getArgumentPreview(toolCall)
+  return getArgumentPreview(t, toolCall)
 }
 
-function getArgumentPreview(toolCall: ToolCallRecord): string {
+function getArgumentPreview(t: I18n, toolCall: ToolCallRecord): string {
   if (isKivioToolDraft(toolCall)) return ''
   const rawName = toolRawName(toolCall)
   const args = parsedArguments(toolCall)
   if (rawName === 'todo_write') {
     const todos = normalizeTodoItems(args?.todos)
     const counts = formatTodoCounts(todos)
-    return counts ? `清单 ${counts}` : todos.length ? `清单 ${todos.length} 项` : '替换 Todo 清单'
+    return counts
+      ? t.toolCardTodoList.replace('{counts}', counts)
+      : todos.length ? t.toolCardTodoItems.replace('{n}', String(todos.length)) : t.toolCardTodoReplace
   }
   if (rawName === 'todo_update') {
     const content = typeof args?.content === 'string' ? compactText(args.content, 120) : ''
-    const status = typeof args?.status === 'string' ? todoStatusLabel(args.status) : ''
+    const status = typeof args?.status === 'string' ? todoStatusLabel(t, args.status) : ''
     const id = typeof args?.id === 'string' ? compactText(args.id, 80) : ''
     const target = content || id
-    return ['更新条目', status, target].filter(Boolean).join(' · ')
+    return [t.toolCardTodoUpdate, status, target].filter(Boolean).join(' · ')
   }
   const fileMutation = structuredFileMutation(toolCall)
   if (fileMutation) {
-    return fileMutationPreview(fileMutation)
+    return fileMutationPreview(t, fileMutation)
   }
-  const fileArgsPreview = fileToolArgumentPreview(toolCall, args)
+  const fileArgsPreview = fileToolArgumentPreview(t, toolCall, args)
   if (fileArgsPreview) return fileArgsPreview
   if (rawName === 'mixer_vision') {
     const imageCount = typeof args?.images === 'number' ? args.images : null
     const provider = typeof args?.provider === 'string' ? args.provider : ''
     const model = typeof args?.model === 'string' ? args.model : ''
     const imageLabel = imageCount == null
-      ? '图片'
-      : `图片 ${imageCount} 张`
+      ? t.toolCardImages
+      : countLabel(imageCount, t.toolCardImageOne, t.toolCardImageMany)
     const modelLabel = [provider, model].filter(Boolean).join(' / ')
     return modelLabel ? `${imageLabel} · ${modelLabel}` : imageLabel
   }
@@ -1717,7 +1728,7 @@ function getArgumentPreview(toolCall: ToolCallRecord): string {
     const prompt = typeof args?.prompt === 'string' ? compactText(args.prompt, 140) : ''
     const size = typeof args?.size === 'string' && args.size ? args.size : ''
     const quality = typeof args?.quality === 'string' && args.quality ? args.quality : ''
-    const count = typeof args?.n === 'number' && Number.isFinite(args.n) ? `${args.n} 张` : ''
+    const count = typeof args?.n === 'number' && Number.isFinite(args.n) ? countLabel(args.n, t.toolCardImageOne, t.toolCardImageMany) : ''
     return [prompt, size, quality, count].filter(Boolean).join(' · ')
   }
   return (
@@ -1728,25 +1739,25 @@ function getArgumentPreview(toolCall: ToolCallRecord): string {
   )
 }
 
-function getResultPreview(toolCall: ToolCallRecord): string {
+function getResultPreview(t: I18n, toolCall: ToolCallRecord): string {
   if (isKivioToolDraft(toolCall)) return ''
   const rawName = toolRawName(toolCall)
   const todoItems = structuredTodoState(toolCall)?.items
   if (rawName === 'todo_write' || rawName === 'todo_update' || todoItems) {
     if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''
-    if (structuredTodoCleared(toolCall)) return '已全部完成'
+    if (structuredTodoCleared(toolCall)) return t.toolCardTodoAllDone
     const counts = formatTodoCounts(todoItems)
-    return counts ? `已同步 ${counts}` : '已同步'
+    return counts ? t.toolCardTodoSyncedCounts.replace('{counts}', counts) : t.toolCardTodoSynced
   }
   const fileMutation = structuredFileMutation(toolCall)
   if (fileMutation) {
     if (fileMutation.ok === false) {
-      return `未完成 ${fileMutationPreview(fileMutation)}`
+      return t.toolCardFileNotApplied.replace('{target}', fileMutationPreview(t, fileMutation))
     }
-    return `已应用 ${fileMutationPreview(fileMutation)}`
+    return t.toolCardFileApplied.replace('{target}', fileMutationPreview(t, fileMutation))
   }
   const readFile = structuredReadFile(toolCall)
-  if (readFile) return formatReadFilePreview(readFile)
+  if (readFile) return formatReadFilePreview(t, readFile)
   const raw =
     toolCall.result_preview ||
     toolCall.resultPreview ||
@@ -1855,11 +1866,12 @@ function DefaultToolCallBlock({
   toolCall,
   defaultOpen = false,
 }: ToolCallBlockProps) {
+  const t = useT()
   const status = normalizeToolCallStatus(toolCall.status)
   const [open, setOpen] = useState(defaultOpen)
 
   const toolName = getToolName(toolCall)
-  const target = useMemo(() => getToolTarget(toolCall), [toolCall])
+  const target = useMemo(() => getToolTarget(t, toolCall), [t, toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
   const fileMutation = useMemo(() => structuredFileMutation(toolCall), [toolCall])
   const inlineStats = useMemo(
@@ -1872,8 +1884,8 @@ function DefaultToolCallBlock({
     [toolCall, fileMutation, args],
   )
   const knowledgeHits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
-  const argumentPreview = useMemo(() => getArgumentPreview(toolCall), [toolCall])
-  const resultPreview = useMemo(() => getResultPreview(toolCall), [toolCall])
+  const argumentPreview = useMemo(() => getArgumentPreview(t, toolCall), [t, toolCall])
+  const resultPreview = useMemo(() => getResultPreview(t, toolCall), [t, toolCall])
   // 文件类工具（Read/Write/Edit）的目标路径：折叠行文件名可点，跳到右侧 dock 查看器预览。
   const previewPath = useMemo(() => {
     const raw = toolRawName(toolCall)
@@ -1919,7 +1931,7 @@ function DefaultToolCallBlock({
             status === 'running' ? ' chat-motion-tool-shimmer' : ''
           }`}
         >
-          {toolName || '工具'}
+          {toolName || t.toolCardFallbackName}
         </span>
         {target && (
           <span
@@ -1965,7 +1977,7 @@ function DefaultToolCallBlock({
             {argumentPreview && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
-                  {'参数'}
+                  {t.toolCardArgs}
                 </div>
                 <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                   {argumentPreview}
@@ -1975,7 +1987,7 @@ function DefaultToolCallBlock({
             {resultPreview && !knowledgeHits && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
-                  {'结果'}
+                  {t.toolCardResult}
                 </div>
                 <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                   {resultPreview}

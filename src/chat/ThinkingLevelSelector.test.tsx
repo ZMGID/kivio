@@ -104,4 +104,23 @@ describe('ThinkingLevelSelector', () => {
     expect(screen.getByRole('button')).toHaveTextContent('XHigh')
     expect(onChange).not.toHaveBeenCalled()
   })
+
+  it('Esc 关闭已展开的下拉', () => {
+    render(
+      <ThinkingLevelSelector
+        value="high"
+        currentProviderId="p1"
+        currentModel="m1"
+        onChange={() => {}}
+      />,
+    )
+    act(() => {
+      fireEvent.click(screen.getByRole('button'))
+    })
+    expect(screen.getByText('Off')).toBeInTheDocument()
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+    expect(screen.queryByText('Off')).not.toBeInTheDocument()
+  })
 })

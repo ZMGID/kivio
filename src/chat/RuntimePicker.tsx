@@ -6,6 +6,7 @@ import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
 import { IconButton } from '../components/Button'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
+import { useEscapeToClose } from './useEscapeToClose'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
@@ -103,6 +104,7 @@ function stripEffortDescription(id: string, label: string): string {
 function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId, locked = false }: RuntimePickerProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -303,6 +305,8 @@ function ExternalModelSelectorBase({
   const t = useT()
   const [open, setOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
+  useEscapeToClose(reasoningOpen, () => setReasoningOpen(false))
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const modelMenuMaxH = usePopoverMaxHeight(open, modelMenuRef, 'down', 320)
   // 懒查：只探选中 agent 的模型（cwd-scoped），不再拉全量列表。保留上次结果，不清空闪。

@@ -1,4 +1,4 @@
-import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { api } from '../../api/tauri'
 import { chatApi } from '../api'
 import type { createChatNavigationController } from '../chatNavigationController'
@@ -6,6 +6,7 @@ import { insertTextIntoComposer } from '../composerInsert'
 import type { AssistantStreamStats } from '../MessageList'
 import { setCoarse as setStreamCoarse } from '../streamingStore'
 import type { Conversation } from '../types'
+import { i18n, type Lang } from '../../components/i18n'
 
 type ChatNavigationController = ReturnType<typeof createChatNavigationController>
 
@@ -22,6 +23,7 @@ export interface UseMessageActionsOptions {
   setAssistantStreamStatsByMessageId: Dispatch<SetStateAction<Record<string, AssistantStreamStats>>>
   refreshSidebar: () => void
   refreshContextStats: (conversationId: string) => Promise<void>
+  lang: Lang
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -57,7 +59,11 @@ export function useMessageActions({
   setAssistantStreamStatsByMessageId,
   refreshSidebar,
   refreshContextStats,
+  lang,
 }: UseMessageActionsOptions) {
+  // 文案走 ref：切语言不该换掉 handler 身份（否则打穿气泡 memo）。
+  const tRef = useRef(i18n[lang])
+  tRef.current = i18n[lang]
   const updateMessage = useCallback(async (messageId: string, content: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
@@ -67,14 +73,14 @@ export function useMessageActions({
       refreshSidebar()
     } catch (err) {
       console.error('Failed to update message:', err)
-      setStreamErrorForConversation(conv.id, errorMessage(err, '保存失败'))
+      setStreamErrorForConversation(conv.id, errorMessage(err, tRef.current.chatMessageSaveFailed))
     }
   }, [applyConversationIfCurrent, currentConversationRef, refreshSidebar, setStreamErrorForConversation])
 
   const deleteMessage = useCallback(async (messageId: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
-    if (!window.confirm('确定删除这条消息吗？')) return
+    if (!window.confirm(tRef.current.chatMessageDeleteConfirm)) return
     try {
       const updated = await chatApi.deleteMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, updated)) {
@@ -87,7 +93,7 @@ export function useMessageActions({
       refreshSidebar()
     } catch (err) {
       console.error('Failed to delete message:', err)
-      setStreamErrorForConversation(conv.id, errorMessage(err, '删除失败'))
+      setStreamErrorForConversation(conv.id, errorMessage(err, tRef.current.chatMessageDeleteFailed))
     }
   }, [
     applyConversationIfCurrent, currentConversationRef, refreshSidebar,
@@ -99,7 +105,7 @@ export function useMessageActions({
   const rewindToMessage = useCallback(async (messageId: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
-    if (!window.confirm('回到这里？这条提问及其之后的所有消息会被删除，原文放回输入框。')) return
+    if (!window.confirm(tRef.current.chatMessageRewindConfirm)) return
     try {
       const { conversation, content } = await chatApi.rewindToMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, conversation)) {
@@ -112,7 +118,7 @@ export function useMessageActions({
       void refreshContextStats(conversation.id)
     } catch (err) {
       console.error('Failed to rewind conversation:', err)
-      setStreamErrorForConversation(conv.id, errorMessage(err, '回到这里失败'))
+      setStreamErrorForConversation(conv.id, errorMessage(err, tRef.current.chatMessageRewindFailed))
     }
   }, [
     applyConversationIfCurrent, currentConversationRef, refreshContextStats, refreshSidebar,
@@ -134,7 +140,7 @@ export function useMessageActions({
       }
     } catch (err) {
       console.error('Failed to fork conversation:', err)
-      setStreamErrorForConversation(conv.id, errorMessage(err, '建分支失败'))
+      setStreamErrorForConversation(conv.id, errorMessage(err, tRef.current.chatMessageBranchFailed))
     }
   }, [currentConversationRef, navigation, refreshSidebar, setAssistantStreamStatsByMessageId, setStreamErrorForConversation])
 
@@ -149,7 +155,7 @@ export function useMessageActions({
       return true
     } catch (err) {
       console.error('Failed to save message to note:', err)
-      setStreamError(err instanceof Error ? err.message : String(err) || '存为笔记失败')
+      setStreamError(err instanceof Error ? err.message : String(err) || tRef.current.chatMessageSaveNoteFailed)
       return false
     }
   }, [currentConversationRef])
@@ -163,7 +169,7 @@ export function useMessageActions({
       applyConversationMeta(updated)
     } catch (err) {
       console.error('Failed to set group selection:', err)
-      setStreamErrorForConversation(conv.id, errorMessage(err, '选中失败'))
+      setStreamErrorForConversation(conv.id, errorMessage(err, tRef.current.chatMessageSelectFailed))
     }
   }, [applyConversationMeta, currentConversationRef, setStreamErrorForConversation])
 

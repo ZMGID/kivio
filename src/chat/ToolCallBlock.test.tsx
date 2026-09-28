@@ -24,6 +24,7 @@ vi.mock('./attachmentPreview', () => ({
 
 import { ImageReadCluster, ToolCallBlock } from './ToolCallBlock'
 import type { ToolCallRecord } from './types'
+import { LangContext } from '../components/i18n'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -175,6 +176,23 @@ describe('ToolCallBlock', () => {
     await user.click(screen.getByRole('button', { name: /Read/ }))
     expect(screen.getByText('参数')).toBeInTheDocument()
     expect(screen.getAllByText(/README\.md/).length).toBeGreaterThan(0)
+  })
+
+  it('labels details in the UI language instead of hardcoded Chinese', async () => {
+    const user = userEvent.setup()
+    render(
+      <LangContext.Provider value="en">
+        <ToolCallBlock
+          toolCall={buildToolCall({
+            arguments: { path: 'README.md' },
+          })}
+          defaultOpen={false}
+        />
+      </LangContext.Provider>,
+    )
+    await user.click(screen.getByRole('button', { name: /Read/ }))
+    expect(screen.getByText('Arguments')).toBeInTheDocument()
+    expect(screen.queryByText('参数')).not.toBeInTheDocument()
   })
 
   it('uses the search pattern as the grep target', () => {

@@ -2168,7 +2168,7 @@ export const InputBar = memo(function InputBar({
                 }}
                 placeholder={usesExternalRuntime
                   ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
-                  : 'Ask me anything...'}
+                  : t.chatComposerPlaceholder}
                 className={`${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
               />
               {composerContextMenu.menu}

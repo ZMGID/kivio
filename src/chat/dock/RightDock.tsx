@@ -1,6 +1,6 @@
 // Right Dock 容器：tab 条（文件树 / Git / 终端 / 任务）+ 常驻面板 + 左缘拖拽调宽 + 折叠滑出。
 // 宽度通过 CSS 变量 --chat-dock-width 直写（拖拽过程不触发 React 重渲），松手才持久化。
-import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Activity, FolderTree, GitBranch, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
@@ -120,6 +120,12 @@ export const RightDock = memo(function RightDock({
   useEffect(() => {
     if (terminalActive) setTerminalMounted(true)
   }, [terminalActive])
+  // 折叠后仍挂载（用于滑出动画），卡片被负 margin 推到窗口外；不设 inert 的话 Tab 会聚焦到
+  // 屏外按钮，浏览器为了露出焦点把 .chat-window-shell 横向滚走一个面板宽度。同 Sidebar 的做法。
+  useLayoutEffect(() => {
+    const el = shellRef.current
+    if (el) el.inert = !open
+  }, [open])
   return (
     <aside
       ref={shellRef}

@@ -439,6 +439,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     return 'chat'
   })
   const [uiLang, setUiLang] = useState<Lang>('zh')
+  // 给只建一次的 controller 回调读当前语言用，免得把 uiLang 塞进它们的依赖而重建。
+  const uiLangRef = useRef(uiLang)
+  uiLangRef.current = uiLang
   const [extensionsNavItem, setExtensionsNavItem] = useState<ExtensionsNavItem | null>(null)
   // 工具目录 / MCP 开关 / 审批策略 / 供应商能力表（apiFormat 用于判断内置搜索能不能选）。
   const {
@@ -962,7 +965,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     },
     requestClearChat: (conversationId) => {
       if (executionOwner.snapshot(conversationId).inFlight || previewOwner.isStreaming(conversationId)) return 'busy'
-      return window.confirm('Clear this chat? This will delete the current conversation history.')
+      return window.confirm(i18n[uiLangRef.current].chatClearChatConfirm)
         ? 'confirmed' : 'cancelled'
     },
     deleteConversation: async (conversationId) => { await chatApi.deleteConversation(conversationId) },
@@ -2065,6 +2068,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setAssistantStreamStatsByMessageId,
     refreshSidebar,
     refreshContextStats,
+    lang: uiLang,
   })
 
   const presentRunCommandEvent = useCallback((event: RunCommandPresentationEvent) => {

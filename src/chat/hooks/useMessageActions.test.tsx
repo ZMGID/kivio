@@ -51,6 +51,7 @@ function setup(current: Conversation | null = conversation()) {
     setAssistantStreamStatsByMessageId,
     refreshSidebar,
     refreshContextStats,
+    lang: 'zh',
   }))
   return {
     ...rendered, currentConversationRef, navigation, applyConversationIfCurrent, applyConversationMeta,

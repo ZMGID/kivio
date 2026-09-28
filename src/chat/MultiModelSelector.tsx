@@ -8,6 +8,7 @@ import { ModelIcon } from '../components/ModelIcon'
 import { IconButton } from '../components/Button'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { ModelRef } from './types'
+import { useEscapeToClose } from './useEscapeToClose'
 
 const MAX_REPLY_MODELS = 4
 
@@ -26,6 +27,7 @@ function sameRef(a: ModelRef, b: ModelRef): boolean {
 function MultiModelSelectorBase({ value, onChange, placement = 'up' }: MultiModelSelectorProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const triggerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)

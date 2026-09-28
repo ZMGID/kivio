@@ -163,4 +163,13 @@ describe('RightDock tabs', () => {
     expect(screen.getByTestId('files-panel')).toBe(files)
     expect(screen.getByLabelText('File search')).toHaveValue('pending search')
   })
+
+  it('makes the collapsed dock inert so Tab cannot focus its off-screen buttons', () => {
+    const props = dockProps({ open: false })
+    const view = render(<RightDock {...props} />)
+    const shell = view.container.querySelector('aside.chat-dock-shell') as HTMLElement
+    expect(shell.inert).toBe(true)
+    view.rerender(<RightDock {...props} open />)
+    expect(shell.inert).toBe(false)
+  })
 })

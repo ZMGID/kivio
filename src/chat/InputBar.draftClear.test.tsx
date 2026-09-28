@@ -6,6 +6,7 @@ import { vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { insertTextIntoComposer } from './composerInsert'
 import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
+import { i18n } from '../components/i18n'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({
@@ -224,14 +225,14 @@ describe('InputBar 发送清草稿', () => {
 
   it('onSend 同一提交内卸载 InputBar 时，草稿 store 也被清空（欢迎页首发竞态）', async () => {
     render(<UnmountOnSend conversationId="c-draft-race" />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '我右键无法创建txt文件了' } })
     expect(getComposerDraft(draftKey('c-draft-race'))?.input).toBe('我右键无法创建txt文件了')
 
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
     // 卸载丢弃了 setInput('') 与写回 effect —— 只有 handleSend 里的同步清 store 能保证这条。
-    expect(screen.queryByPlaceholderText('Ask me anything...')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText(i18n.zh.chatComposerPlaceholder)).not.toBeInTheDocument()
     await waitFor(() => {
       expect(getComposerDraft(draftKey('c-draft-race'))).toBeUndefined()
     })
@@ -239,7 +240,7 @@ describe('InputBar 发送清草稿', () => {
 
   it('发送未被接受时保留输入草稿', async () => {
     render(<InputBar onSend={() => Promise.resolve(false)} conversationId="c-send-rejected" />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '不要丢掉这条消息' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
@@ -258,7 +259,7 @@ describe('InputBar 发送清草稿', () => {
         }}
       />,
     )
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '发送失败也要回来' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
@@ -280,7 +281,7 @@ describe('InputBar 发送清草稿', () => {
         }}
       />,
     )
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '第一句' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
     await waitFor(() => expect(textarea).toHaveValue(''))
@@ -313,7 +314,7 @@ describe('InputBar 发送清草稿', () => {
         }}
       />,
     )
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '发出后马上清空' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
@@ -328,7 +329,7 @@ describe('InputBar 发送清草稿', () => {
     let resolveSend!: (accepted: boolean) => void
     const send = new Promise<boolean>((resolve) => { resolveSend = resolve })
     const { rerender } = render(<InputBar onSend={() => send} conversationId={null} />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '首条消息' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 
@@ -350,7 +351,7 @@ describe('InputBar 发送清草稿', () => {
       attachments: [],
     })
     const { rerender } = render(<InputBar onSend={() => send} conversationId="c-sending" />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '正在发送的消息' } })
     fireEvent.keyDown(textarea, { key: 'Enter' })
 

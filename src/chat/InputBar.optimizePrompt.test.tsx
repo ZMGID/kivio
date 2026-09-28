@@ -2,6 +2,7 @@ vi.mock('./ComposerEditor', () => import('./ComposerEditor.testSupport'))
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
+import { i18n } from '../components/i18n'
 
 const optimizePrompt = vi.fn<(text: string, conversationId?: string | null) => Promise<string>>(
   async (text) => `${text.trim()}（已优化）`,
@@ -31,7 +32,7 @@ describe('InputBar 问题优化', () => {
 
   it('点击后把草稿换成优化结果，再点可撤销', async () => {
     render(<InputBar onSend={() => {}} conversationId="c1" />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '帮我看看这个' } })
     const button = screen.getByRole('button', { name: '优化问题' })
     expect(button).not.toBeDisabled()
@@ -60,7 +61,7 @@ describe('InputBar 问题优化', () => {
       }),
     )
     render(<InputBar onSend={() => {}} conversationId="c1" />)
-    const textarea = screen.getByPlaceholderText('Ask me anything...')
+    const textarea = screen.getByPlaceholderText(i18n.zh.chatComposerPlaceholder)
     fireEvent.change(textarea, { target: { value: '帮我看看这个' } })
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: '优化问题' }))

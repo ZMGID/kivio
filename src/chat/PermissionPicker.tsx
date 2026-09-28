@@ -5,6 +5,7 @@ import { derivePermissionModes } from './permissionModes'
 import { chatTitlebarIconButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { AgentRuntimeConfig } from './types'
+import { useEscapeToClose } from './useEscapeToClose'
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
@@ -25,6 +26,7 @@ function PermissionPickerBase({
 }: PermissionPickerProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
   const menuRef = useRef<HTMLDivElement>(null)
   const maxH = usePopoverMaxHeight(open, menuRef, 'down', 320)
 

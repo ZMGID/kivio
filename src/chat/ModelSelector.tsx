@@ -8,6 +8,7 @@ import { ModelIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { chatTitlebarPillButtonClass } from './platform'
+import { useEscapeToClose } from './useEscapeToClose'
 
 interface ModelSelectorProps {
   currentProviderId: string
@@ -30,6 +31,7 @@ function ModelSelectorBase({
 }: ModelSelectorProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
+  useEscapeToClose(open, () => setOpen(false))
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const [favorites, setFavorites] = useState<string[]>([])
   const menuRef = useRef<HTMLDivElement>(null)
