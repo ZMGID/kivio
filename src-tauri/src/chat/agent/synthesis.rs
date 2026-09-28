@@ -230,6 +230,8 @@ fn last_user_text(messages: &[Value]) -> Option<String> {
         .iter()
         .rev()
         .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        // Runtime todo reminders are user-role messages but never the question.
+        .filter(|m| !crate::chat::todo::is_reminder_message(m))
         .find_map(|message| {
             // Tool-generated image turns carry no question. Keep looking for
             // the user's text, including multimodal messages and steering.
@@ -500,4 +502,18 @@ fn log_empty_synthesis_output(
         stream.reasoning.as_deref().map(|value| value.chars().count()).unwrap_or(0),
         stream.tool_calls.len(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_user_text_skips_todo_reminders() {
+        let messages = vec![
+            json!({ "role": "user", "content": "修一下登录页" }),
+            json!({ "role": "user", "content": "<todo-reminder>\n1. [pending] x\n</todo-reminder>" }),
+        ];
+        assert_eq!(last_user_text(&messages).as_deref(), Some("修一下登录页"));
+    }
 }

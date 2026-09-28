@@ -325,7 +325,12 @@ pub(super) fn apply_regenerate_truncation(
 
 /// Truncating history also rewinds the agent todo list to the last snapshot the
 /// retained messages recorded, so it never shows steps from a removed future.
+/// External CLIs keep their list: Codex plan updates and ACP todo notifications
+/// leave no tool record to rebuild it from.
 pub(super) fn restore_todo_state_from_history(conversation: &mut Conversation) {
+    if conversation.agent_runtime.is_external() {
+        return;
+    }
     let restored = crate::chat::todo::state_from_messages(
         &conversation.messages,
         &conversation.group_selections,

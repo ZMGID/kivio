@@ -381,7 +381,8 @@ fn reminder_message(body: &str) -> Value {
     })
 }
 
-fn is_reminder_message(message: &Value) -> bool {
+/// Whether `message` is a todo reminder appended by the runtime, not user input.
+pub(crate) fn is_reminder_message(message: &Value) -> bool {
     message["role"] == "user"
         && message["content"]
             .as_str()

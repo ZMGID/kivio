@@ -2408,6 +2408,14 @@ fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
     conversation.messages.truncate(1);
     super::mutations::restore_todo_state_from_history(&mut conversation);
     assert!(conversation.agent_todo_state.items.is_empty());
+
+    // External CLIs keep their own list: not every CLI leaves a record to rebuild it from.
+    let mut external = test_conversation_with_summary(false);
+    external.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+    external.agent_runtime.external_agent_id = Some("codex".to_string());
+    external.agent_todo_state = snapshot("codex plan");
+    super::mutations::restore_todo_state_from_history(&mut external);
+    assert_eq!(external.agent_todo_state.items[0].content, "codex plan");
 }
 
 #[test]
