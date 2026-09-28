@@ -195,6 +195,19 @@ describe('ToolCallBlock', () => {
     expect(screen.queryByText('参数')).not.toBeInTheDocument()
   })
 
+  it('keeps $ sequences from tool arguments intact in localized previews', async () => {
+    const user = userEvent.setup()
+    const query = "printf $'a\\n' $$ $&"
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({ toolName: 'grep', result_preview: '', arguments: { query } })}
+        defaultOpen={false}
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: /Grep/ }))
+    expect(screen.getByText(`搜索 ${query}`)).toBeInTheDocument()
+  })
+
   it('uses the search pattern as the grep target', () => {
     render(
       <ToolCallBlock

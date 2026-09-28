@@ -296,8 +296,13 @@ function todoCounts(items?: AgentTodoItem[]): { completed: number; total: number
   }
 }
 
+// 函数式替换：值里的 `$&` / `$'` / `$$` 等（shell、正则里很常见）原样显示，不当替换模式解析。
+function fill(template: string, key: string, value: string | number): string {
+  return template.replace(`{${key}}`, () => String(value))
+}
+
 function countLabel(n: number, one: string, many: string): string {
-  return n === 1 ? one : many.replace('{n}', String(n))
+  return n === 1 ? one : fill(many, 'n', n)
 }
 
 function formatTodoCounts(items?: AgentTodoItem[]): string {
@@ -1230,7 +1235,7 @@ function cleanWinPath(path: string): string {
 
 function fileMutationTarget(t: I18n, mutation: FileMutationStructuredContent): string {
   if (mutation.files?.length === 1) return cleanWinPath(mutation.files[0]?.path || '')
-  if (mutation.files?.length) return t.toolCardFileCount.replace('{n}', String(mutation.files.length))
+  if (mutation.files?.length) return fill(t.toolCardFileCount, 'n', mutation.files.length)
   return cleanWinPath(mutation.resolvedPath || mutation.resolved_path || '')
 }
 
@@ -1411,7 +1416,7 @@ function fileToolArgumentPreview(t: I18n, toolCall: ToolCallRecord, args: Record
     }
     // Legacy single-edit records (old_string/new_string) from persisted conversations.
     const oldString = typeof args?.old_string === 'string' ? compactText(args.old_string, 80) : ''
-    return [path, oldString ? t.toolCardReplace.replace('{text}', oldString) : ''].filter(Boolean).join(' · ')
+    return [path, oldString ? fill(t.toolCardReplace, 'text', oldString) : ''].filter(Boolean).join(' · ')
   }
   if (rawName === 'grep' || rawName === 'search_files') {
     const scope = glob
@@ -1419,7 +1424,7 @@ function fileToolArgumentPreview(t: I18n, toolCall: ToolCallRecord, args: Record
       : path
     if (!query && !scope) return ''
     const scopeLabel = scope ? compactText(scope, 120) : ''
-    const queryLabel = query ? t.toolCardSearch.replace('{query}', compactText(query, 80)) : ''
+    const queryLabel = query ? fill(t.toolCardSearch, 'query', compactText(query, 80)) : ''
     return [queryLabel, scopeLabel].filter(Boolean).join(' · ')
   }
   return ''
@@ -1580,7 +1585,7 @@ function formatReadFilePreview(t: I18n, view: ReadFileView): string {
     return `${start + index}  ${body}`
   })
   const hidden = lines.length - shown.length
-  if (hidden > 0) parts.push(t.toolCardMoreLines.replace('{n}', String(hidden)))
+  if (hidden > 0) parts.push(fill(t.toolCardMoreLines, 'n', hidden))
   parts.push(...view.notices)
   return parts.join('\n')
 }
@@ -1602,7 +1607,7 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
       case 'edit_file': {
         const mutation = structuredFileMutation(toolCall)
         if (mutation && (mutation.files?.length ?? 0) > 1) {
-          return t.toolCardFileCount.replace('{n}', String(mutation.files!.length))
+          return fill(t.toolCardFileCount, 'n', mutation.files!.length)
         }
         const target = (mutation && fileMutationTarget(t, mutation)) || path
         return target.includes('/') || target.includes('\\') ? basename(target) : target
@@ -1698,8 +1703,8 @@ function getArgumentPreview(t: I18n, toolCall: ToolCallRecord): string {
     const todos = normalizeTodoItems(args?.todos)
     const counts = formatTodoCounts(todos)
     return counts
-      ? t.toolCardTodoList.replace('{counts}', counts)
-      : todos.length ? t.toolCardTodoItems.replace('{n}', String(todos.length)) : t.toolCardTodoReplace
+      ? fill(t.toolCardTodoList, 'counts', counts)
+      : todos.length ? fill(t.toolCardTodoItems, 'n', todos.length) : t.toolCardTodoReplace
   }
   if (rawName === 'todo_update') {
     const content = typeof args?.content === 'string' ? compactText(args.content, 120) : ''
@@ -1747,14 +1752,14 @@ function getResultPreview(t: I18n, toolCall: ToolCallRecord): string {
     if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''
     if (structuredTodoCleared(toolCall)) return t.toolCardTodoAllDone
     const counts = formatTodoCounts(todoItems)
-    return counts ? t.toolCardTodoSyncedCounts.replace('{counts}', counts) : t.toolCardTodoSynced
+    return counts ? fill(t.toolCardTodoSyncedCounts, 'counts', counts) : t.toolCardTodoSynced
   }
   const fileMutation = structuredFileMutation(toolCall)
   if (fileMutation) {
     if (fileMutation.ok === false) {
-      return t.toolCardFileNotApplied.replace('{target}', fileMutationPreview(t, fileMutation))
+      return fill(t.toolCardFileNotApplied, 'target', fileMutationPreview(t, fileMutation))
     }
-    return t.toolCardFileApplied.replace('{target}', fileMutationPreview(t, fileMutation))
+    return fill(t.toolCardFileApplied, 'target', fileMutationPreview(t, fileMutation))
   }
   const readFile = structuredReadFile(toolCall)
   if (readFile) return formatReadFilePreview(t, readFile)
