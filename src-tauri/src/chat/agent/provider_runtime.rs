@@ -67,13 +67,14 @@ pub(crate) struct SummaryRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: &'a [Value],
-    pub keep_tokens: usize,
+    pub preserve_recent: bool,
     pub window: usize,
     pub max_output_tokens: u32,
     pub retry_attempts: usize,
     pub conversation_id: &'a str,
     pub message_id: &'a str,
     pub cancel: Option<ProviderFuture<'a, ()>>,
+    pub host: Option<&'a dyn AgentHost>,
 }
 
 pub(crate) trait ProviderRuntime: Send + Sync {
@@ -147,7 +148,7 @@ impl ProviderRuntime for AppState {
             request.provider,
             request.model,
             request.messages,
-            request.keep_tokens,
+            request.preserve_recent,
             request.window,
             request.max_output_tokens,
             request.retry_attempts,
@@ -155,6 +156,7 @@ impl ProviderRuntime for AppState {
             request.message_id,
             None,
             request.cancel,
+            request.host,
         ))
     }
 }

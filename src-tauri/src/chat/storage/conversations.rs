@@ -132,6 +132,18 @@ pub(crate) fn write_conversation_file(
         }
     }
 
+    if let Some(replay) = conversation
+        .context_state
+        .summary
+        .as_mut()
+        .and_then(|s| s.replay.as_mut())
+    {
+        crate::chat::attachments::externalize_compaction_images(
+            app,
+            &conversation.id,
+            &mut replay.messages,
+        );
+    }
     write_conversation_file_at_path(&path, conversation)
 }
 

@@ -359,7 +359,7 @@ fn silent_overflow_aware_kind(
 async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunState) -> String {
     let config = env.config;
     // 压缩一次(L1 snip → L2 摘要);返回压缩后的发送视图,并已写回 state.runtime_messages。
-    let compacted = super::compaction::maybe_compact_send_view(env, state).await;
+    let compacted = super::compaction::compact_send_view(env, state, true).await;
     // 恢复重试内部有 send_with_retry 多次退避——必须接取消，否则用户点停止后卡到重试耗尽。
     let result = tokio::select! {
         result = config.provider_runtime.message(super::provider_runtime::MessageRequest {

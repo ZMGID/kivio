@@ -92,6 +92,8 @@ pub(crate) struct RunState {
     /// 压成功并降到预算内则清零，否则递增。达到 `COMPACTION_THRASH_LIMIT` 时规划循环优雅收尾
     /// （用已收集的工具结果降级），而不是反复触发压缩并连续失败后才报错。
     pub(crate) compaction_unresolved_rounds: u32,
+    pub(crate) tool_batches_since_compact: u32,
+    pub(crate) rapid_refills: u32,
     pub(crate) pending_compaction_boundary: Option<crate::chat::types::CompactionBoundaryRecord>,
     /// L2 压缩产出的落盘 summary（与 boundary 同期生成）。run 结束时由 `attach_usage`
     /// 挂到 `AgentRunResult.compaction_summary`，commands.rs 据此写回 `context_state.summary`
@@ -254,6 +256,8 @@ pub async fn run_agent_loop(
         initial_anchor_valid: true,
         compacted: false,
         compaction_unresolved_rounds: 0,
+        tool_batches_since_compact: 0,
+        rapid_refills: 0,
         pending_compaction_boundary: None,
         pending_compaction_summary: None,
         generated_images: Vec::new(),
@@ -460,7 +464,9 @@ pub async fn run_agent_loop(
             turn.end_message();
 
             match run_tool_round(&env, &mut state, round, planned).await {
-                ToolRoundOutcome::Continue => {}
+                ToolRoundOutcome::Continue => {
+                    state.tool_batches_since_compact += 1;
+                }
                 ToolRoundOutcome::RoundLimit => break,
                 ToolRoundOutcome::Cancelled(result) => {
                     if let Some(hooks) = hooks {
@@ -563,6 +569,11 @@ fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunRes
         let final_message =
             super::stop::final_assistant_api_message(&result.content, result.reasoning.as_deref());
         history.push(final_message);
+        if let Some(summary) = &mut state.pending_compaction_summary {
+            if let Some(replay) = &mut summary.replay {
+                replay.messages = super::compaction::replacement_body(&history);
+            }
+        }
         result.compacted_history = Some(history);
     }
     result.compaction_boundary = state.pending_compaction_boundary.take();

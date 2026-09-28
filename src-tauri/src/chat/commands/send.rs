@@ -13,8 +13,7 @@ use crate::state::AppState;
 use super::catalog::strip_transcripts_for_frontend;
 use super::complete_assistant_reply;
 use super::context::{
-    compress_conversation_context, compute_context_state, context_likely_over_limit,
-    emit_chat_context_state, rollback_user_message_after_failed_send, should_auto_compress_context,
+    compute_context_state, emit_chat_context_state, persist_context_state_best_effort,
 };
 use super::fan_out::run_reply_fan_out;
 use super::reply_runtime::{resolve_reply_arms, ChatSendReservation, CHAT_REPLY_BUSY_ERROR};
@@ -325,89 +324,12 @@ pub(crate) async fn chat_send_message(
     .await
     {
         Ok(context_state) => {
-            conversation.context_state = context_state;
-            if should_auto_compress_context(&conversation.context_state, &conversation) {
-                match compress_conversation_context(&state, &mut conversation, "auto").await {
-                    Ok(()) => {
-                        let refreshed = compute_context_state(
-                            &app,
-                            &state,
-                            &conversation,
-                            Some(api_content.as_str()),
-                            &last_user_image_paths,
-                        )
-                        .await?;
-                        conversation.context_state = refreshed.clone();
-                        conversation.updated_at = chrono::Local::now().timestamp();
-                        conversation = crate::chat::repository::repository(&app)
-                            .mutate(&app, &conversation_id, |latest| {
-                                latest.context_state = refreshed.clone();
-                                Ok(())
-                            })
-                            .await
-                            .map_err(crate::chat::repository::repository_error)?;
-                        emit_chat_context_state(
-                            &app,
-                            &conversation.id,
-                            conversation.revision,
-                            &refreshed,
-                        );
-                    }
-                    Err(err) => {
-                        eprintln!("Auto context compression failed: {err}");
-                        if context_likely_over_limit(&conversation.context_state) {
-                            rollback_user_message_after_failed_send(
-                                &app,
-                                &state,
-                                &mut conversation,
-                                &user_message.id,
-                                provisional_title.as_deref(),
-                            )
-                            .await?;
-                            strip_transcripts_for_frontend(&mut conversation);
-                            return Ok(serde_json::json!({
-                                "success": false,
-                                "conversation": conversation,
-                                "error": format!(
-                                    "Context is likely over the model limit and automatic compression failed: {err}. Please compress manually or switch to a larger-context model."
-                                ),
-                            }));
-                        }
-                        conversation.context_state.warning = Some(format!(
-                            "Automatic compression failed: {err}. The uncompressed request was sent because the estimate is still within the model window."
-                        ));
-                        let next_context_state = conversation.context_state.clone();
-                        conversation = crate::chat::repository::repository(&app)
-                            .mutate(&app, &conversation_id, |latest| {
-                                latest.context_state = next_context_state;
-                                Ok(())
-                            })
-                            .await
-                            .map_err(crate::chat::repository::repository_error)?;
-                        emit_chat_context_state(
-                            &app,
-                            &conversation.id,
-                            conversation.revision,
-                            &conversation.context_state,
-                        );
-                    }
-                }
-            } else {
-                let context_state = conversation.context_state.clone();
-                conversation = crate::chat::repository::repository(&app)
-                    .mutate(&app, &conversation_id, |latest| {
-                        latest.context_state = context_state.clone();
-                        Ok(())
-                    })
-                    .await
-                    .map_err(crate::chat::repository::repository_error)?;
-                emit_chat_context_state(
-                    &app,
-                    &conversation.id,
-                    conversation.revision,
-                    &context_state,
-                );
-            }
+            // Usage is a cache. A concurrent refresh/rename must not abort an
+            // already persisted user message or overwrite a newer summary.
+            conversation = persist_context_state_best_effort(
+                &app, &conversation_id, conversation, context_state,
+            ).await?;
+            emit_chat_context_state(&app, &conversation.id, conversation.revision, &conversation.context_state);
         }
         Err(err) => {
             eprintln!("Context usage estimate failed before send: {err}");

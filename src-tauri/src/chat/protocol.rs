@@ -529,6 +529,7 @@ pub struct ChatContextSummaryPayload {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
 pub struct ChatContextStatePayload {
+    pub auto_compact_threshold_tokens: Option<u64>,
     pub estimated_input_tokens: u64,
     pub context_window_tokens: Option<u64>,
     pub context_window_estimated: bool,
@@ -555,6 +556,7 @@ impl From<&crate::chat::ConversationContextState> for ChatContextStatePayload {
     fn from(state: &crate::chat::ConversationContextState) -> Self {
         Self {
             estimated_input_tokens: state.estimated_input_tokens as u64,
+            auto_compact_threshold_tokens: state.auto_compact_threshold_tokens.map(|v| v as u64),
             context_window_tokens: state.context_window_tokens.map(|value| value as u64),
             context_window_estimated: state.context_window_estimated,
             usage_ratio: state.usage_ratio,
@@ -2406,7 +2408,7 @@ mod tests {
                 "type": "context_updated",
                 "contextState": {
                     "estimatedInputTokens": 0, "contextWindowTokens": null,
-                    "contextWindowEstimated": false, "usageRatio": null, "status": "idle",
+                    "contextWindowEstimated": false, "autoCompactThresholdTokens": null, "usageRatio": null, "status": "idle",
                     "segments": [], "lastMeasuredAt": 1, "lastCompressedAt": null,
                     "compressedMessageCount": 0, "compressionCount": 0, "summary": null,
                     "compactionBoundaries": [], "clearBoundaries": [], "warning": null, "contextSource": null,

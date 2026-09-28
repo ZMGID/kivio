@@ -90,7 +90,7 @@ pub(crate) async fn planning_step(
     let host = env.host;
     let step_number = state.step_number;
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
-    let send_messages = super::compaction::maybe_compact_send_view(env, state).await;
+    let mut send_messages = super::compaction::maybe_compact_send_view(env, state).await;
 
     // Gap 2（Layer 3 anti-thrashing）：连续多轮「需要压缩但压不下去」时（摘要调用反复失败/为空），
     // 不要再用必然超窗的发送视图去打规划调用、再失败——而是用已收集的工具结果优雅收尾。
@@ -173,6 +173,7 @@ pub(crate) async fn planning_step(
     };
     // 内置搜索由实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     let mut interrupt_attempt = 0u32;
+    let mut overflow_attempted = false;
     let planning_result = loop {
         match config
             .provider_runtime
@@ -281,6 +282,19 @@ pub(crate) async fn planning_step(
                         err.to_string(),
                     ),
                 ));
+            }
+            Err(err)
+                if !overflow_attempted
+                    && super::recovery::classify(&err.to_string())
+                        == super::recovery::FailureKind::ContextOverflow =>
+            {
+                overflow_attempted = true;
+                let previous = send_messages.clone();
+                send_messages = super::compaction::compact_send_view(env, state, true).await;
+                if previous == send_messages {
+                    break Err(err.to_string());
+                }
+                continue;
             }
             Err(err)
                 if err.is_stream_read_interrupted()
@@ -611,7 +625,11 @@ pub(crate) async fn call_chat_completion_message_streamed(
     let output = generate_via_stream_collect(state, provider, retry_attempts, request)
         .await
         .map_err(|err| err.to_string())?;
-    Ok(output.to_openai_compatible_message())
+    let mut message = output.to_openai_compatible_message();
+    if let Some(reason) = output.finish_reason {
+        message["finish_reason"] = serde_json::json!(reason);
+    }
+    Ok(message)
 }
 
 /// 无头流式收集 sink：丢弃所有增量。摘要调用只消费返回的 `GenerateOutput.text`

@@ -213,9 +213,7 @@ pub(super) fn apply_reply_with_model_result(
     }
     let new_id = message.id.clone();
     upsert_assistant_message(conversation, message);
-    conversation
-        .group_selections
-        .insert(prep.group_id.clone(), new_id);
+    conversation.select_group_answer(prep.group_id.clone(), new_id);
 }
 
 /// 更新单条消息（仅助手回复）
@@ -1343,7 +1341,7 @@ pub(crate) async fn chat_set_group_selection(
             if !valid {
                 return Err("选中的回答不属于该多答组".to_string());
             }
-            conversation.group_selections.insert(group_id, message_id);
+            conversation.select_group_answer(group_id, message_id);
             Ok(())
         })
         .await

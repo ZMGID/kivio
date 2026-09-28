@@ -10,7 +10,7 @@ import { chatApi } from '../api'
 import { latestCompactionBoundaryId, mergeCompactionContextState } from '../compactionBoundary'
 import { latestClearBoundaryId, mergeClearContextState } from '../contextClearBoundary'
 import { applyLiveContextUsage } from '../contextPanel'
-import type { Conversation, ConversationContextState } from '../types'
+import type { Conversation, ConversationContextState, ContextCompactionResult } from '../types'
 import { useTauriEvent } from './useTauriEvent'
 
 /** 边界（压缩 / 清空）落地后高亮的时长，与 CompactionDivider 的入场动画对齐。 */
@@ -129,9 +129,8 @@ export function useConversationContext({
     if (conversationId) void refreshContextStats(conversationId)
   }, [currentConversationIdRef, refreshContextStats])
 
-  const compressCurrent = useCallback(async () => {
-    const conversationId = currentConversationIdRef.current
-    if (!conversationId || compactingConversationIds.has(conversationId)) return
+  const compressConversation = useCallback(async (conversationId: string): Promise<ContextCompactionResult> => {
+    if (compactingConversationIds.has(conversationId)) return { status: 'failed' }
     markConversationCompacting(conversationId, true)
     setContextError('')
     try {
@@ -145,10 +144,12 @@ export function useConversationContext({
           window.setTimeout(resolve, COMPRESS_SETTLE_MS)
         })
       }
+      return { status: 'completed', conversation: result.conversation }
     } catch (err) {
       if (currentConversationIdRef.current === conversationId) {
         setContextError(errorMessage(err, '上下文压缩失败'))
       }
+      return { status: errorMessage(err, '') === '压缩已停止' ? 'cancelled' : 'failed' }
     } finally {
       // 清零不看「我还在不在这个会话」——切走后原来那个守卫永远不成立，标志会卡死。
       markConversationCompacting(conversationId, false)
@@ -157,6 +158,11 @@ export function useConversationContext({
     compactingConversationIds, currentConversationIdRef, flashCompactionBoundary,
     markConversationCompacting, patchContextState, refreshSidebar,
   ])
+
+  const compressCurrent = useCallback(async () => {
+    const id = currentConversationIdRef.current
+    if (id) await compressConversation(id)
+  }, [compressConversation, currentConversationIdRef])
 
   const clearCurrent = useCallback(async () => {
     const conversationId = currentConversationIdRef.current
@@ -200,9 +206,9 @@ export function useConversationContext({
     // 压缩状态按事件里的会话记，不看是不是当前会话：后台会话的 started/completed
     // 都要收进集合，否则切走再切回来会漏掉开始、或者永远等不到结束。
     if (payload.trigger !== 'manual') {
-      markConversationCompacting(conversationId, payload.phase === 'started')
+      markConversationCompacting(conversationId, payload.phase === 'started' || payload.phase === 'retrying')
     }
-    if (payload.phase === 'started') return
+    if (payload.phase === 'started' || payload.phase === 'retrying') return
     // 下面这些改的是当前会话的展示状态（边界动画 / currentConversation），仍要按当前会话过滤。
     if (conversationId !== currentConversationIdRef.current) return
     const boundary = payload.boundary
@@ -238,6 +244,7 @@ export function useConversationContext({
     refreshContextStats,
     refreshCurrent,
     compressCurrent,
+    compressConversation,
     clearCurrent,
   }
 }

@@ -206,3 +206,12 @@ describe('applyLiveContextUsage', () => {
     expect(applyLiveContextUsage(undefined, { usedTokens: 100 })).toBeNull()
   })
 })
+
+
+import { autoCompactPercent } from './contextPanel'
+
+it('uses the backend compaction budget instead of a fixed percentage', () => {
+  expect(autoCompactPercent({ contextWindowTokens: 200000, autoCompactThresholdTokens: 166000 })).toBe(83)
+  expect(autoCompactPercent({ context_window_tokens: 128000, auto_compact_threshold_tokens: 106808 })).toBe(83)
+  expect(autoCompactPercent({ contextWindowTokens: 200000 })).toBeNull()
+})

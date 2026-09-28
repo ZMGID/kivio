@@ -171,6 +171,19 @@ fn is_context_overflow(lower: &str) -> bool {
     OVERFLOW_PATTERNS.iter().any(|n| lower.contains(n))
 }
 
+/// Some OpenAI-compatible streams report overflow as a successful terminal frame.
+pub(crate) fn is_context_overflow_finish(reason: &str) -> bool {
+    matches!(
+        reason.trim().to_ascii_lowercase().as_str(),
+        "context_exceeded"
+            | "context_length_exceeded"
+            | "context_window_exceeded"
+            | "model_context_window_exceeded"
+            | "model_context_exceeded"
+            | "prompt_too_long"
+    )
+}
+
 /// 静默超窗的判定线：provider 实报的 prompt token 占窗口的比例。
 /// 取 0.99 对齐 pi `isContextOverflow` 的 case 3；case 2 的「严格大于窗口」是它的子集,
 /// 一条线同时盖住两种形态。

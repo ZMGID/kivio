@@ -97,7 +97,7 @@ export function QueuedMessages({
               )}
               {!submitted && (
                 <span className="chat-composer-queue-actions flex shrink-0 items-center gap-0.5">
-                  {canSteer && (
+                  {canSteer && message.kind !== 'compact' && (
                     <IconButton
                       size="xs"
                       variant="ghost"

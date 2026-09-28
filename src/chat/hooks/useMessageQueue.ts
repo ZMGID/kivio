@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { chatApi } from '../api'
 import { userFollowUpId, userSteerId } from '../segments'
-import type { Conversation, PendingAttachment } from '../types'
+import type { Conversation, PendingAttachment, ContextCompactionResult } from '../types'
 
 /** 排队中的一条消息。`id` 一路带到后端并回到插话卡上，用来对账出队。 */
 export interface QueuedMessage {
+  kind?: 'compact'
   id: string
   content: string
   attachments: PendingAttachment[]
@@ -26,6 +27,7 @@ export function isQueuedSubmitted(message: QueuedMessage): boolean {
 }
 
 interface UseMessageQueueParams {
+  onCompactContext?: (conversation: Conversation) => Promise<ContextCompactionResult>
   /**
    * 发出一条排队消息；返回 false = 此刻发不出去（仍在生成 / 模型未配置），条目留在队首。
    * 与 `useExternalSendQueue` 同一约定。
@@ -52,14 +54,14 @@ function nextQueuedId(): string {
  * 只在内存里。`steer` / `followUp` 成功只标记已提交，**不出队**；出队等插话卡
  * （实时事件或落库对账）。收尾一律走 `settleAfterRun`。
  */
-export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingChange }: UseMessageQueueParams) {
+export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingChange, onCompactContext }: UseMessageQueueParams) {
   const [queued, setQueued] = useState<Record<string, QueuedMessage[]>>({})
   const queuedRef = useRef(queued)
   /** 每会话只能有一条正在交付；run 收尾会显式转交下一条的交付权。 */
   const deliveringRef = useRef<Map<string, string>>(new Map())
   const clearedEpochRef = useRef<Map<string, number>>(new Map())
-  const callbacksRef = useRef({ onSendMessage, onRestoreToComposer, onPendingChange })
-  callbacksRef.current = { onSendMessage, onRestoreToComposer, onPendingChange }
+  const callbacksRef = useRef({ onSendMessage, onRestoreToComposer, onPendingChange, onCompactContext })
+  callbacksRef.current = { onSendMessage, onRestoreToComposer, onPendingChange, onCompactContext }
 
   const patch = useCallback((
     conversationId: string,
@@ -104,6 +106,15 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     return message
   }, [patch])
 
+  const enqueueCompact = useCallback((conversationId: string) => {
+    const id = `compact-${conversationId}`
+    if (deliveringRef.current.get(conversationId) === id
+      || queuedRef.current[conversationId]?.some((item) => item.kind === 'compact')) return
+    patch(conversationId, (items) => [...items, {
+      id, kind: 'compact', content: '/compact', attachments: [], steering: false,
+    }])
+  }, [patch])
+
   const remove = useCallback((conversationId: string, messageId: string) => {
     const message = find(conversationId, messageId)
     if (!message || isQueuedSubmitted(message)) return
@@ -146,7 +157,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
    * 一轮结束后发出队首一条。已提交的条目留给 `settleAfterRun` 先对账/解开，
    * 运行中不能把 CLI 已接住的那条再发一遍。
    */
-  const drain = useCallback(async (conversation: Conversation) => {
+  const drain = useCallback(async (conversation: Conversation): Promise<void> => {
     const conversationId = conversation.id
     if (deliveringRef.current.has(conversationId)) return
     const next = (queuedRef.current[conversationId] ?? [])
@@ -157,11 +168,20 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     patch(conversationId, (items) => items.filter((item) => item.id !== next.id))
     let accepted = false
     try {
-      accepted = await callbacksRef.current.onSendMessage(
-        next.content,
-        next.attachments,
-        { conversationOverride: conversation },
-      )
+      if (next.kind === 'compact') {
+        const outcome = await callbacksRef.current.onCompactContext?.(conversation)
+        accepted = outcome?.status === 'completed' || outcome?.status === 'cancelled'
+        if (outcome?.status === 'completed' && clearedEpoch === (clearedEpochRef.current.get(conversationId) ?? 0)) {
+          deliveringRef.current.delete(conversationId)
+          await drain(outcome.conversation)
+        }
+      } else {
+        accepted = await callbacksRef.current.onSendMessage(
+          next.content,
+          next.attachments,
+          { conversationOverride: conversation },
+        )
+      }
     } catch (err) {
       console.error('Failed to send a queued message:', err)
     } finally {
@@ -179,7 +199,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     messageId: string,
   ): Promise<boolean> => {
     const message = find(conversationId, messageId)
-    if (!message || isQueuedSubmitted(message)) return false
+    if (!message || message.kind === 'compact' || isQueuedSubmitted(message)) return false
     patch(conversationId, (items) => items.map((item) => (
       item.id === messageId ? { ...item, steerRejected: false } : item
     )))
@@ -213,7 +233,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
   ): Promise<boolean> => {
     const conversationId = conversation.id
     const message = find(conversationId, messageId)
-    if (!message || isQueuedSubmitted(message)) return false
+    if (!message || message.kind === 'compact' || isQueuedSubmitted(message)) return false
     patch(conversationId, (items) => items.map((item) => (
       item.id === messageId
         ? { ...item, followingUp: true, followUpRejected: false }
@@ -281,15 +301,16 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
   }, [confirm, drain, releaseSubmitted])
 
   const commands = useMemo(() => ({
-    enqueue, remove, restoreToComposer, restoreClearedQueue, clearConversation,
+    enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
     drain, steer, followUp, confirm, settleAfterRun,
-  }), [enqueue, remove, restoreToComposer, restoreClearedQueue, clearConversation,
+  }), [enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
     drain, steer, followUp, confirm, settleAfterRun])
 
   return {
     queued,
     commands,
     enqueue,
+    enqueueCompact,
     remove,
     restoreToComposer,
     restoreClearedQueue,

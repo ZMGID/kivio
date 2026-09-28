@@ -1,0 +1,77 @@
+   Compiling kivio v3.0.1 (E:\ZM database\kivioC\src-tauri)
+warning: use of deprecated method `tauri_plugin_shell::Shell::<R>::open`: Use tauri-plugin-opener instead.
+   --> src\external_agents\dsh_plugins.rs:867:10
+    |
+867 |         .open(path.display().to_string(), None)
+    |          ^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `tauri_plugin_shell::Shell::<R>::open`: Use tauri-plugin-opener instead.
+   --> src\notes.rs:397:10
+    |
+397 |         .open(&path, None)
+    |          ^^^^
+
+warning: method `clear_external_agent_models_cache` is never used
+   --> src\external_agents\discovery_state.rs:254:12
+    |
+166 | impl ExternalDiscoveryState {
+    | --------------------------- method in this implementation
+...
+254 |     pub fn clear_external_agent_models_cache(&self, agent_id: &str) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `try_mark_busy` and `pi_control` are never used
+   --> src\external_agents\session\live.rs:341:19
+    |
+283 | impl LiveSessionRegistry {
+    | ------------------------ methods in this implementation
+...
+341 |     pub(crate) fn try_mark_busy(&self, conversation_id: &str) -> Result<TurnBusyGuard, String> {
+    |                   ^^^^^^^^^^^^^
+...
+379 |     pub(crate) fn pi_control(&self, conversation_id: &str) -> Option<mpsc::Sender<SessionCommand>> {
+    |                   ^^^^^^^^^^
+
+warning: method `mcp_test_session_count` is never used
+   --> src\state.rs:454:25
+    |
+ 94 | impl AppState {
+    | ------------- method in this implementation
+...
+454 |     pub(crate) async fn mcp_test_session_count(&self) -> usize {
+    |                         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `kivio` (lib test) generated 5 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 56.62s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\kivio-7af636bc1fc2130c.exe)
+
+running 3 tests
+
+thread 'chat::agent::loop_::tests::audit_compaction_rejects_length_terminated_summary' (29700) panicked at E:\ZM database\kivioC\src-tauri/../docs/research/context-compaction-audit-2026-09-27.repro.rs:23:5:
+length-terminated summary was accepted as a complete replacement
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test chat::agent::loop_::tests::audit_compaction_rejects_length_terminated_summary ... FAILED
+Chat synthesis stream failed after tool records; recovering: Chat stream Error: 400 Bad Request - {"error":{"message":"This model's maximum context length is 8192 tokens"}} (attempt 1/1)
+
+thread 'chat::agent::loop_::tests::audit_compaction_overflow_forces_summary_below_local_threshold' (18292) panicked at E:\ZM database\kivioC\src-tauri/../docs/research/context-compaction-audit-2026-09-27.repro.rs:50:5:
+provider reported overflow, but all 3 requests bypassed summarization
+test chat::agent::loop_::tests::audit_compaction_overflow_forces_summary_below_local_threshold ... FAILED
+
+thread 'chat::agent::loop_::tests::audit_compaction_second_summary_call_remains_cancellable' (16920) panicked at E:\ZM database\kivioC\src-tauri/../docs/research/context-compaction-audit-2026-09-27.repro.rs:86:5:
+cancel signal did not interrupt the second summary request
+test chat::agent::loop_::tests::audit_compaction_second_summary_call_remains_cancellable ... FAILED
+
+failures:
+
+failures:
+    chat::agent::loop_::tests::audit_compaction_overflow_forces_summary_below_local_threshold
+    chat::agent::loop_::tests::audit_compaction_rejects_length_terminated_summary
+    chat::agent::loop_::tests::audit_compaction_second_summary_call_remains_cancellable
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 2690 filtered out; finished in 1.02s
+
+error: test failed, to rerun pass `--lib`

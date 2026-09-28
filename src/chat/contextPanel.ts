@@ -1,8 +1,6 @@
 import type { I18n } from '../components/i18n'
 import type { ContextUsageSegment, ConversationContextState } from './types'
 
-/** 与 `chat/agent/compaction.rs` 中 `AUTO_COMPACT_RATIO`（0.90）保持一致 */
-export const CONTEXT_AUTO_COMPRESS_PERCENT = 90
 export const CONTEXT_WARNING_PERCENT = 70
 export const CONTEXT_CRITICAL_PERCENT = 95
 
@@ -219,4 +217,12 @@ export function fullnessLabel(
     return isExternalContext ? t.contextFullnessCliPending : t.contextFullnessEstimated
   }
   return t.contextFullnessPercentFull.replace('{percent}', compactPercent(usageRatio))
+}
+
+/** The backend owns model-dependent input reserves; never repeat its policy in the UI. */
+export function autoCompactPercent(state: ConversationContextState | null | undefined): number | null {
+  const budget = state?.auto_compact_threshold_tokens ?? state?.autoCompactThresholdTokens
+  const window = state?.context_window_tokens ?? state?.contextWindowTokens
+  return budget != null && window != null && window > 0
+    ? Math.round(budget / window * 100) : null
 }

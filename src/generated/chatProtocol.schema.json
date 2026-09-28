@@ -152,6 +152,14 @@
     "ChatContextStatePayload": {
       "additionalProperties": false,
       "properties": {
+        "autoCompactThresholdTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "clearBoundaries": {
           "items": {
             "$ref": "#/$defs/ChatContextClearBoundaryPayload"

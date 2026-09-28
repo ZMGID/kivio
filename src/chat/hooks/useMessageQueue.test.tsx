@@ -35,6 +35,30 @@ beforeEach(() => {
 })
 
 describe('useMessageQueue', () => {
+  it.each(['steer', 'followUp'] as const)('deferred skill %s preserves the original task and attachments for normal sending', async (kind) => {
+    mockSteer.mockResolvedValue(false)
+    mockFollowUp.mockResolvedValue(false)
+    const { result, onSendMessage } = setup()
+    if (kind === 'followUp') onSendMessage.mockResolvedValueOnce(false)
+    const content = '  请用 /wizard task  '
+    const attachments = [{
+      id: 'paste-skill', type: 'file' as const, name: 'notes.txt',
+      path: 'memory://paste-skill', content: '/other-command is quoted source material',
+    }]
+    let id = ''
+    act(() => { id = result.current.enqueue('conv-1', content, attachments)!.id })
+    const queued = result.current.queued['conv-1'][0]
+    const accepted = await act(async () => kind === 'steer'
+      ? await result.current.steer('conv-1', id)
+      : await result.current.followUp(conversation, id))
+    expect(accepted).toBe(false)
+    expect(result.current.queued['conv-1'][0]).toMatchObject({ content: queued.content, attachments })
+    if (kind === 'steer') expect(onSendMessage).not.toHaveBeenCalled()
+    await act(async () => { await result.current.settleAfterRun('conv-1', conversation) })
+    expect(onSendMessage).toHaveBeenCalledWith(queued.content, attachments, { conversationOverride: conversation })
+    expect(result.current.queued['conv-1']).toBeUndefined()
+  })
+
   it('只给同一会话一个正在交付的条目，另一个并发 drain 不抢发下一条', async () => {
     let releaseFirst!: (accepted: boolean) => void
     const firstDelivery = new Promise<boolean>((resolve) => { releaseFirst = resolve })
@@ -428,4 +452,53 @@ describe('useMessageQueue', () => {
     expect(onSendMessage).toHaveBeenCalledWith('B', [], expect.anything())
     expect(result.current.queued['conv-1'].map((item) => item.content)).toEqual(['A'])
   })
+})
+
+
+describe('queued context compaction', () => {
+  it('deduplicates compaction and sends the next message with the returned snapshot', async () => {
+    const updated = { ...conversation, revision: 9 }
+    const order: string[] = []
+    const onCompactContext = vi.fn(async () => { order.push('compact'); return { status: 'completed' as const, conversation: updated } })
+    const onSendMessage = vi.fn(async () => { order.push('send'); return true })
+    const { result } = renderHook(() => useMessageQueue({ onCompactContext, onSendMessage, onRestoreToComposer: vi.fn() }))
+    act(() => {
+      result.current.commands.enqueueCompact(conversation.id)
+      result.current.commands.enqueueCompact(conversation.id)
+      result.current.enqueue(conversation.id, 'continue', [])
+    })
+    expect(result.current.queued[conversation.id]).toHaveLength(2)
+    await act(async () => { await result.current.drain(conversation) })
+    expect(order).toEqual(['compact', 'send'])
+    expect(onSendMessage).toHaveBeenCalledWith('continue', [], { conversationOverride: updated })
+    expect(result.current.queued[conversation.id]).toBeUndefined()
+  })
+
+  it('keeps a failed compact at the front and does not send later work', async () => {
+    const onSendMessage = vi.fn()
+    const { result } = renderHook(() => useMessageQueue({ onCompactContext: async () => ({ status: 'failed' as const }), onSendMessage, onRestoreToComposer: vi.fn() }))
+    act(() => {
+      result.current.commands.enqueueCompact(conversation.id)
+      result.current.enqueue(conversation.id, 'continue', [])
+    })
+    await act(async () => { await result.current.drain(conversation) })
+    expect(onSendMessage).not.toHaveBeenCalled()
+    expect(result.current.queued[conversation.id].map((m) => m.content)).toEqual(['/compact', 'continue'])
+  })
+})
+
+
+it('consumes a cancelled compact without requeuing or automatically sending later work', async () => {
+  const onSendMessage = vi.fn()
+  const { result } = renderHook(() => useMessageQueue({
+    onCompactContext: async () => ({ status: 'cancelled' as const }),
+    onSendMessage, onRestoreToComposer: vi.fn(),
+  }))
+  act(() => {
+    result.current.commands.enqueueCompact(conversation.id)
+    result.current.enqueue(conversation.id, 'later work', [])
+  })
+  await act(async () => { await result.current.drain(conversation) })
+  expect(onSendMessage).not.toHaveBeenCalled()
+  expect(result.current.queued[conversation.id].map((m) => m.content)).toEqual(['later work'])
 })

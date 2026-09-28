@@ -11,15 +11,51 @@ use crate::mcp::types::ChatToolArtifact;
 use crate::settings::Settings;
 use crate::state::AppState;
 
-use super::context::{
-    compute_context_state, emit_chat_context_state, try_auto_compress_context_after_update,
-};
+use super::context::{compute_context_state, emit_chat_context_state};
 use super::interaction::emit_chat_plan_state;
 use super::title::{generate_title, is_auto_title};
 use super::{
     AgentPlanState, ChatMessage, ChatMessageSegment, ChatMessageSegmentKind,
     ChatMessageSegmentPhase, Conversation, ToolCallRecord, ToolCallStatus,
 };
+
+/// Commit a compaction only if the history it read is still current. Title and
+/// statistics updates may race it; edits and clears must win over a late summary.
+pub(super) fn adopt_compacted_context(
+    latest: &mut Conversation,
+    source: &Conversation,
+    reply_id: &str,
+) {
+    let Some(summary) = source.context_state.summary.as_ref() else {
+        return;
+    };
+    if !summary
+        .replay
+        .as_ref()
+        .is_some_and(|r| r.through_message_id == reply_id)
+        || latest.context_state.clear_boundaries.last().map(|b| &b.id)
+            != source.context_state.clear_boundaries.last().map(|b| &b.id)
+        || latest.group_selections != source.group_selections
+    {
+        return;
+    }
+    let unchanged = source
+        .messages
+        .iter()
+        .filter(|m| m.id != reply_id)
+        .all(|expected| {
+            let Some(actual) = latest.messages.iter().find(|m| m.id == expected.id) else {
+                return false;
+            };
+            match (serde_json::to_value(expected), serde_json::to_value(actual)) {
+                (Ok(expected), Ok(actual)) => expected == actual,
+                _ => false,
+            }
+        });
+    if unchanged {
+        latest.context_state = source.context_state.clone();
+    }
+}
 
 /// 多答组的列标识：(group_id, provider_id, model)。单模型为 None（字段写 None）。
 type AssistantGroupMeta = (String, String, String);
@@ -317,6 +353,7 @@ pub(crate) async fn push_assistant_message(
     let conversation_id = conversation.id.clone();
     let mut persisted = crate::chat::repository::repository(app)
         .mutate(app, &conversation_id, |latest| {
+            adopt_compacted_context(latest, conversation, &message.id);
             upsert_assistant_message(latest, message);
             if let Some(title) = generated_title {
                 let title_is_still_auto = is_auto_title(&latest.title, first_user.as_deref());
@@ -342,7 +379,6 @@ pub(crate) async fn push_assistant_message(
         match compute_context_state(app, state, &persisted, None, &[]).await {
             Ok(context_state) => {
                 persisted.context_state = context_state;
-                try_auto_compress_context_after_update(app, state, &mut persisted, None, &[]).await;
                 let next_context = persisted.context_state.clone();
                 match crate::chat::repository::repository(app)
                     .update_context(app, &conversation_id, persisted.revision, next_context)

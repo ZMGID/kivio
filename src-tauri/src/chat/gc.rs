@@ -264,7 +264,7 @@ pub fn unreferenced_attachment_names(
 }
 
 /// 一条会话里被引用到的附件文件名：消息附件、artifact 的 `path`、`model_messages` 里
-/// 图片部件的 `path`。三处都要算，漏一处就会误删还在用的文件。
+/// 图片部件的 `path`，以及压缩快照的媒体引用。遗漏快照会误删仍用于续聊的文件。
 pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSet<String> {
     let mut referenced = HashSet::new();
     for message in &conversation.messages {
@@ -312,6 +312,16 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
         // 漏掉就会把中断草稿还要用的图当成孤儿删掉。
         for api_message in &message.api_messages {
             collect_attachment_uri_names(api_message, &mut referenced);
+        }
+    }
+    if let Some(replay) = conversation
+        .context_state
+        .summary
+        .as_ref()
+        .and_then(|summary| summary.replay.as_ref())
+    {
+        for message in &replay.messages {
+            collect_attachment_uri_names(message, &mut referenced);
         }
     }
     referenced

@@ -954,7 +954,7 @@ impl ConversationRepository {
                     group_id,
                     message_id,
                 } => {
-                    conversation.group_selections.insert(group_id, message_id);
+                    conversation.select_group_answer(group_id, message_id);
                 }
             }
             Ok(())

@@ -488,7 +488,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     animateClearBoundaryId,
     refreshContextStats,
     refreshCurrent: handleRefreshContext,
-    compressCurrent: handleCompressContext,
+    compressConversation,
     clearCurrent: handleClearContext,
   } = useConversationContext({ currentConversation, currentConversationIdRef, setCurrentConversation, refreshSidebar })
   const contextCompressing = currentConversation
@@ -540,6 +540,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // These hooks retain the latest callbacks internally, so their commands can be
   // used by earlier lifecycle handlers without a second Chat-level ref bridge.
   const messageQueue = useMessageQueue({
+    onCompactContext: (conversation) => compressConversation(conversation.id),
     onSendMessage: (content, attachments, options) =>
       handleSendMessage(content, attachments, options),
     onRestoreToComposer: (message) => insertTextIntoComposer(message.content),
@@ -548,6 +549,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     },
   })
   const queueCommands = messageQueue.commands
+  const handleStopCompression = useCallback(() => {
+    const id = currentConversationIdRef.current
+    if (id) void chatApi.cancelStream(id).catch((err) => console.error('Failed to stop compaction:', err))
+  }, [])
+  const handleCompressContext = useCallback(async () => {
+    const conversation = currentConversationRef.current
+    if (!conversation || compactingConversationIds.has(conversation.id)) return
+    queueCommands.enqueueCompact(conversation.id)
+    if (!executionOwner.snapshot(conversation.id).inFlight && !previewOwner.isStreaming(conversation.id)) {
+      await queueCommands.drain(conversation)
+    }
+  }, [compactingConversationIds, executionOwner, previewOwner, queueCommands])
+
   const { drainExternalSends, wakeAfterRun } = useExternalSendQueue({
     onEnterConversationView: () => setChatView('conversation'),
     onImportConversation: (messages, attachmentPaths) =>
@@ -587,8 +601,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     Boolean(currentConversationIdRef.current && (
       executionOwner.snapshot(currentConversationIdRef.current).inFlight
       || previewOwner.isStreaming(currentConversationIdRef.current)
+      || compactingConversationIds.has(currentConversationIdRef.current)
     ))
-  ), [executionOwner, previewOwner])
+  ), [executionOwner, previewOwner, compactingConversationIds])
 
   const applyConversation = useCallback((conversation: Conversation | null) => {
     const current = currentConversationRef.current
@@ -2224,6 +2239,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         usesExternalRuntime={usesExternalRuntime}
         onRefresh={handleRefreshContext}
         onCompress={handleCompressContext}
+        onStopCompression={handleStopCompression}
         onClear={usesExternalRuntime ? undefined : handleClearContext}
         lang={uiLang}
       />
@@ -2236,6 +2252,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       displayMessages,
       handleClearContext,
       handleCompressContext,
+      handleStopCompression,
       handleRefreshContext,
       streamCoarse.streaming,
       uiLang,

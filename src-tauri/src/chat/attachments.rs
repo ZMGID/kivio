@@ -1856,6 +1856,40 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn compaction_fix_replay_image_survives_gc_and_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let payload = general_purpose::STANDARD.encode(b"retained-image");
+        let original = format!("data:image/png;base64,{payload}");
+        let mut replay = vec![api_image_message(&original)];
+        externalize_api_message_images_in_dir(dir.path(), &mut replay);
+        let file_name = api_image_url(&replay[0]).rsplit('/').next().unwrap().to_string();
+        let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
+            "id":"gc-replay", "title":"test", "provider_id":"p", "model":"m", "created_at":1, "updated_at":1,
+            "messages":[{"id":"u", "role":"user", "content":"image", "timestamp":1,
+                "attachments":[{"id":"a", "type":"image", "name":"photo.png", "path":"att_original.png"}]},
+                {"id":"a", "role":"assistant", "content":"answer", "timestamp":2}],
+            "context_state":{"summary":{"id":"s", "content":"summary", "source_message_ids":["u"],
+                "source_until_message_id":"u", "token_estimate_before":10, "token_estimate_after":5,
+                "created_at":2, "provider_id":"p", "model":"m", "stale":false,
+                "replay":{"through_message_id":"a", "messages":replay}}}
+        })).unwrap();
+        let disk = dir.path().join("conversation.json");
+        fs::write(&disk, serde_json::to_vec(&conversation).unwrap()).unwrap();
+        let mut restored: crate::chat::Conversation = serde_json::from_slice(&fs::read(disk).unwrap()).unwrap();
+        let referenced = crate::chat::gc::referenced_attachment_names(&restored);
+        let orphan = "msgimg-unreferenced.png".to_string();
+        fs::write(dir.path().join(&orphan), b"unused").unwrap();
+        for name in crate::chat::gc::unreferenced_attachment_names(&[file_name.clone(), orphan.clone()], &referenced) {
+            fs::remove_file(dir.path().join(name)).unwrap();
+        }
+        assert!(dir.path().join(&file_name).exists(), "live replay image was deleted");
+        assert!(!dir.path().join(orphan).exists(), "unused files must still be collected");
+        let tail = &mut restored.context_state.summary.as_mut().unwrap().replay.as_mut().unwrap().messages;
+        rehydrate_api_message_images_in_dir(dir.path(), tail);
+        assert_eq!(api_image_url(&tail[0]), original);
+    }
+
     /// 回放前必须还原成 data URL，且 mime 逐字保留（不能靠扩展名猜）。
     #[test]
     fn rehydrate_api_message_images_round_trips() {
@@ -1947,5 +1981,16 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Reuse the existing attachment store for the compacted provider tail.
+pub(crate) fn externalize_compaction_images(
+    app: &AppHandle,
+    conversation_id: &str,
+    messages: &mut [serde_json::Value],
+) {
+    if let Ok(dir) = conversation_attachments_dir(app, conversation_id) {
+        externalize_api_message_images_in_dir(&dir, messages);
     }
 }

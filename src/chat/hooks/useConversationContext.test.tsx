@@ -261,3 +261,13 @@ describe('useConversationContext: clear + live usage', () => {
     expect(result.current.ctx.contextError).toBe('')
   })
 })
+
+
+it('reports cancellation separately from a retryable compaction failure', async () => {
+  mockCompress.mockRejectedValue('压缩已停止')
+  const { result } = setup()
+  let outcome: unknown
+  await act(async () => { outcome = await result.current.ctx.compressConversation('c1') })
+  expect(outcome).toEqual({ status: 'cancelled' })
+  expect(result.current.ctx.compactingConversationIds.has('c1')).toBe(false)
+})

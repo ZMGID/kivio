@@ -403,6 +403,8 @@ export interface ConversationContextState {
   estimatedInputTokens?: number
   context_window_tokens?: number | null
   contextWindowTokens?: number | null
+  auto_compact_threshold_tokens?: number | null
+  autoCompactThresholdTokens?: number | null
   context_window_estimated?: boolean
   contextWindowEstimated?: boolean
   usage_ratio?: number | null
@@ -684,3 +686,9 @@ export type ChatUserProfile = {
   displayName: string
   avatarUrl: string
 }
+
+/** Outcome of a manual compaction; cancellation consumes its queue entry. */
+export type ContextCompactionResult =
+  | { status: 'completed'; conversation: Conversation }
+  | { status: 'cancelled' }
+  | { status: 'failed' }

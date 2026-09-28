@@ -72,6 +72,14 @@ impl FileLedger {
     }
 }
 
+/// Exact provider-visible tail after compaction; persisted with the summary.
+/// The UI transcript stays intact. Old conversations without this field retain cutoff replay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionReplay {
+    pub through_message_id: String,
+    pub messages: Vec<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationContextSummary {
     pub id: String,
@@ -91,6 +99,8 @@ pub struct ConversationContextSummary {
     /// Files touched by tool calls in the summarized region (see [`FileLedger`]).
     #[serde(default)]
     pub file_ledger: Option<FileLedger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<CompactionReplay>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -101,6 +111,8 @@ pub struct ConversationContextState {
     pub context_window_tokens: Option<usize>,
     #[serde(default)]
     pub context_window_estimated: bool,
+    #[serde(default)]
+    pub auto_compact_threshold_tokens: Option<usize>,
     #[serde(default)]
     pub usage_ratio: Option<f32>,
     #[serde(default = "default_context_usage_status")]
@@ -631,6 +643,36 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Changing a selected answer also changes the input represented by a saved
+    /// summary/tail. Callers validate membership before selecting an answer.
+    pub(crate) fn select_group_answer(&mut self, group_id: String, message_id: String) {
+        if self.group_selections.get(&group_id) == Some(&message_id) {
+            return;
+        }
+        // Use the earliest sibling, not the newly selected answer: a new answer
+        // can follow the snapshot while replacing one already inside it.
+        if let Some(index) = self.messages.iter().position(|message| {
+            message.role == "assistant" && message.group_id.as_deref() == Some(&group_id)
+        }) {
+            self.invalidate_summary_from(index);
+        }
+        self.group_selections.insert(group_id, message_id);
+    }
+
+    pub(crate) fn invalidate_summary_from(&mut self, changed_index: usize) {
+        let Some(summary) = self.context_state.summary.as_mut() else {
+            return;
+        };
+        let through = summary.replay.as_ref()
+            .map(|replay| replay.through_message_id.as_str())
+            .unwrap_or(&summary.source_until_message_id);
+        let boundary = self.messages.iter().position(|message| message.id == through);
+        if boundary.map(|index| changed_index <= index).unwrap_or(true) {
+            summary.stale = true;
+            self.context_state.status = "stale".to_string();
+        }
+    }
+
     /// Inclusive index of the last message discarded by the latest context clear.
     ///
     /// If the cutoff message was deleted but later messages remain, fall back to

@@ -65,25 +65,18 @@ pub(crate) async fn chat_get_context_stats(
         context_state.clone(),
     )
     .await?;
+    let context_state = conversation.context_state.clone();
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
-        "contextState": context_state,
+        "contextState": crate::chat::protocol::ChatContextStatePayload::from(&context_state),
         "conversation": conversation,
     }))
 }
 
-/// 把刚算出来的上下文状态落盘。**抢不到版本不算失败**。
-///
-/// 上面那次计算是个 async 的慢活（外部 CLI 那条还要探模型），期间生成中的那一轮每落一条
-/// 消息就把会话推进一版，于是拿着旧 revision 去写必然撞 `Conflict`。而这个命令语义上是
-/// **读**（用户点刷新问「我的上下文多满」），落盘只是顺手缓存 —— 把缓存失败变成用户可见的
-/// 红字是纯粹的噪声：面板里那条「conversation revision conflict (conv_…): expected 2,
-/// actual 6」就是这么来的（生成中打开面板必现）。
-///
-/// 撞了先用**最新**的 revision 重试一次（多数情况下这一次就成了）；再撞就放弃落盘，直接把
-/// 算出来的状态返回给前端 —— 反正轮末的权威计算会自己写一次。
-async fn persist_context_state_best_effort(
+/// Cache statistics only against the snapshot used to compute them. A conflict
+/// returns the latest state so a stale refresh cannot overwrite a new summary.
+pub(super) async fn persist_context_state_best_effort(
     app: &AppHandle,
     conversation_id: &str,
     conversation: crate::chat::Conversation,
@@ -105,18 +98,7 @@ async fn persist_context_state_best_effort(
                 .get(app, conversation_id)
                 .await
                 .map_err(crate::chat::repository::repository_error)?;
-            let revision = latest.revision;
-            match repository
-                .update_context(app, conversation_id, revision, context_state)
-                .await
-            {
-                Ok(updated) => Ok(updated),
-                // 还在被推进（生成中）⇒ 不落盘，返回刚读到的会话 + 算出来的状态。
-                Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. }) => {
-                    Ok(latest)
-                }
-                Err(err) => Err(crate::chat::repository::repository_error(err)),
-            }
+            Ok(latest)
         }
         Err(err) => Err(crate::chat::repository::repository_error(err)),
     }
@@ -157,12 +139,42 @@ pub(crate) async fn chat_compress_context(
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({
             "success": true,
-            "contextState": context_state,
+            "contextState": crate::chat::protocol::ChatContextStatePayload::from(&context_state),
             "conversation": conversation,
         }));
     }
-    compress_conversation_context(&state, &mut conversation, "manual").await?;
-    finalize_local_context_change(&app, &state, &conversation_id, conversation).await
+    let _reservation =
+        super::reply_runtime::ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+            .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
+    let generation = state.chat_runtime().begin_generation(&conversation_id);
+    let run_id = format!("compact-{}", uuid::Uuid::new_v4());
+    let _generation_guard = super::reply_runtime::ChatReplyGuard::try_new(
+        state.inner(),
+        &conversation_id,
+        &run_id,
+        generation,
+    )
+    .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
+    // Reload after admission, then CAS the summary and retained messages as one update.
+    conversation = load_conversation(&app, &conversation_id)?;
+    tokio::select! {
+        result = compress_conversation_context(&app, &state, &mut conversation, "manual") => result?,
+        _ = super::interaction::wait_for_chat_cancel(state.inner(), &conversation_id, generation) => return Err("压缩已停止".into()),
+    }
+    if !state
+        .chat_runtime()
+        .is_generation_active(&conversation_id, generation)
+    {
+        return Err("压缩已停止".into());
+    }
+    finalize_local_context_change(
+        &app,
+        &state,
+        &conversation_id,
+        conversation,
+        Some(generation),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -173,7 +185,7 @@ pub(crate) async fn chat_clear_context(
 ) -> Result<serde_json::Value, String> {
     let mut conversation = load_conversation(&app, &conversation_id)?;
     apply_context_clear(&mut conversation)?;
-    finalize_local_context_change(&app, &state, &conversation_id, conversation).await
+    finalize_local_context_change(&app, &state, &conversation_id, conversation, None).await
 }
 
 /// Local context mutations share one compute → persist → event → response path.
@@ -182,9 +194,17 @@ async fn finalize_local_context_change(
     state: &State<'_, AppState>,
     conversation_id: &str,
     mut conversation: Conversation,
+    generation: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let context_state = compute_context_state(app, state, &conversation, None, &[]).await?;
     conversation.context_state = context_state.clone();
+    if generation.is_some_and(|generation| {
+        !state
+            .chat_runtime()
+            .is_generation_active(conversation_id, generation)
+    }) {
+        return Err("压缩已停止".into());
+    }
     conversation = crate::chat::repository::repository(app)
         .update_context(
             app,
@@ -198,7 +218,7 @@ async fn finalize_local_context_change(
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
-        "contextState": context_state,
+        "contextState": crate::chat::protocol::ChatContextStatePayload::from(&context_state),
         "conversation": conversation,
     }))
 }
@@ -232,7 +252,6 @@ pub(super) fn apply_context_clear(conversation: &mut Conversation) -> Result<(),
     Ok(())
 }
 
-const CONTEXT_BLOCK_RATIO: f32 = 1.0;
 const IMAGE_ATTACHMENT_TOKEN_ESTIMATE: usize = 1_600;
 const AUXILIARY_VISION_RESULT_TOKEN_ESTIMATE: usize = 800;
 
@@ -243,10 +262,15 @@ pub(crate) fn active_summary(conversation: &Conversation) -> Option<&Conversatio
         .as_ref()
         .filter(|summary| !summary.stale)
         .filter(|summary| !summary.content.trim().is_empty())?;
+    let through = summary
+        .replay
+        .as_ref()
+        .map(|r| r.through_message_id.as_str())
+        .unwrap_or(&summary.source_until_message_id);
     let until_idx = conversation
         .messages
         .iter()
-        .position(|message| message.id == summary.source_until_message_id)?;
+        .position(|message| message.id == through)?;
     if let Some(clear_idx) = conversation.context_clear_until_index() {
         if until_idx <= clear_idx {
             return None;
@@ -257,10 +281,14 @@ pub(crate) fn active_summary(conversation: &Conversation) -> Option<&Conversatio
 
 fn summary_boundary_index(conversation: &Conversation) -> Option<usize> {
     let summary = active_summary(conversation)?;
-    conversation
-        .messages
-        .iter()
-        .position(|message| message.id == summary.source_until_message_id)
+    conversation.messages.iter().position(|message| {
+        message.id
+            == summary
+                .replay
+                .as_ref()
+                .map(|r| r.through_message_id.as_str())
+                .unwrap_or(&summary.source_until_message_id)
+    })
 }
 
 /// First UI-message index that still belongs in the live model context.
@@ -313,20 +341,7 @@ fn prune_clear_boundaries_if_needed(conversation: &mut Conversation) {
 
 pub(super) fn mark_summary_stale_if_needed(conversation: &mut Conversation, changed_index: usize) {
     prune_clear_boundaries_if_needed(conversation);
-    let Some(summary) = conversation.context_state.summary.as_mut() else {
-        return;
-    };
-    let boundary_index = conversation
-        .messages
-        .iter()
-        .position(|message| message.id == summary.source_until_message_id);
-    if boundary_index
-        .map(|boundary| changed_index <= boundary)
-        .unwrap_or(true)
-    {
-        summary.stale = true;
-        conversation.context_state.status = "stale".to_string();
-    }
+    conversation.invalidate_summary_from(changed_index);
 }
 
 pub(super) fn count_tokens_in_value(value: &Value) -> usize {
@@ -637,6 +652,18 @@ pub(super) fn resolve_usage_anchor(
             if conversation
                 .context_clear_until_index()
                 .is_some_and(|clear_idx| idx <= clear_idx)
+            {
+                return None;
+            }
+            if active_summary(conversation)
+                .and_then(|s| s.replay.as_ref())
+                .and_then(|r| {
+                    conversation
+                        .messages
+                        .iter()
+                        .position(|m| m.id == r.through_message_id)
+                })
+                .is_some_and(|end| idx <= end)
             {
                 return None;
             }
@@ -954,6 +981,14 @@ pub(super) async fn compute_context_state(
         estimated_input_tokens,
         context_window_tokens: Some(context_window_tokens),
         context_window_estimated,
+        auto_compact_threshold_tokens: Some(crate::chat::agent::compaction::auto_compact_budget(
+            context_window_tokens,
+            crate::chat::model_metadata::chat_max_output_tokens_on_wire(
+                provider.as_ref(),
+                &conversation.model,
+                settings.chat.max_output_tokens,
+            ),
+        )),
         usage_ratio,
         status,
         segments,
@@ -982,128 +1017,15 @@ pub(super) async fn compute_context_state(
     })
 }
 
-pub(super) fn context_likely_over_limit(context_state: &ConversationContextState) -> bool {
-    context_state
-        .usage_ratio
-        .map(|ratio| ratio >= CONTEXT_BLOCK_RATIO)
-        .unwrap_or(false)
-}
-
-pub(super) async fn rollback_user_message_after_failed_send(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    conversation: &mut Conversation,
-    user_message_id: &str,
-    revert_title: Option<&str>,
-) -> Result<(), String> {
-    conversation
-        .messages
-        .retain(|message| message.id != user_message_id);
-    if let Some(title) = revert_title {
-        if conversation.title == title {
-            conversation.title = super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string();
-        }
-    }
-    conversation.updated_at = chrono::Local::now().timestamp();
-    match compute_context_state(app, state, conversation, None, &[]).await {
-        Ok(mut context_state) => {
-            context_state.warning = None;
-            conversation.context_state = context_state.clone();
-        }
-        Err(context_err) => {
-            eprintln!("Context usage estimate failed after send rollback: {context_err}");
-        }
-    }
-    let context_state = conversation.context_state.clone();
-    let persisted = crate::chat::repository::repository(app)
-        .mutate(app, &conversation.id, |latest| {
-            latest
-                .messages
-                .retain(|message| message.id != user_message_id);
-            latest.context_state = context_state;
-            if let Some(title) = revert_title {
-                if latest.title == title {
-                    latest.title = super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string();
-                }
-            }
-            Ok(())
-        })
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
-    // 落盘之后再发：revision 必须是权威的那个，否则前端 applyEvent 会按旧 revision 丢弃。
-    emit_chat_context_state(
-        app,
-        &persisted.id,
-        persisted.revision,
-        &persisted.context_state,
-    );
-    *conversation = persisted;
-    Ok(())
-}
-
-pub(super) fn should_auto_compress_context(
-    context_state: &ConversationContextState,
-    conversation: &Conversation,
-) -> bool {
-    if conversation.agent_runtime.is_external() {
-        return false;
-    }
-    let Some(ratio) = context_state.usage_ratio else {
-        return false;
-    };
-    if ratio < crate::chat::agent::compaction::AUTO_COMPACT_RATIO {
-        return false;
-    }
-    crate::chat::agent::compaction::has_compressible_old_segment(conversation)
-}
-
-pub(super) async fn try_auto_compress_context_after_update(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    conversation: &mut Conversation,
-    last_user_api_content: Option<&str>,
-    last_user_image_paths: &[PathBuf],
-) {
-    if !should_auto_compress_context(&conversation.context_state, conversation) {
-        return;
-    }
-    match compress_conversation_context(state, conversation, "auto").await {
-        Ok(()) => {
-            match compute_context_state(
-                app,
-                state,
-                conversation,
-                last_user_api_content,
-                last_user_image_paths,
-            )
-            .await
-            {
-                Ok(refreshed) => {
-                    // 不清 warning：compute_context_state 已保留 compact_conversation 设好的
-                    // decay_warning_for(count)（R-4 多次压缩准确度提示）；此处若置 None 会把它抹掉，
-                    // 与另一条自动压缩路径（见上方 auto-compress 分支）行为不一致。
-                    conversation.context_state = refreshed;
-                }
-                Err(err) => {
-                    eprintln!("Context usage estimate failed after auto compression: {err}");
-                }
-            }
-        }
-        Err(err) => {
-            eprintln!("Auto context compression failed: {err}");
-            conversation.context_state.warning =
-                Some(format!("Automatic compression failed: {err}."));
-        }
-    }
-}
-
 pub(super) async fn compress_conversation_context(
+    app: &AppHandle,
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
     trigger: &str,
 ) -> Result<(), String> {
     let settings = state.settings_read().clone();
     crate::chat::agent::compaction::compact_conversation(
+        app,
         state.inner(),
         &settings,
         conversation,
@@ -1266,7 +1188,7 @@ fn tag_ui_message_id(mut message: Value, ui_message_id: &str) -> Value {
 
 /// `app` 为 `None` 时跳过图片 rehydrate（纯估算调用方不需要真实 base64——token 口径
 /// 本来就不计图片字节）。真正要发给模型的路径必须传 `Some`。
-pub(super) fn build_chat_api_messages(
+pub(crate) fn build_chat_api_messages(
     app: Option<&AppHandle>,
     system_prompt: &str,
     conversation: &Conversation,
@@ -1300,14 +1222,23 @@ pub(crate) fn build_chat_api_messages_with_video(
         "content": system_prompt,
     })];
 
-    // 有 active summary 时：注入一条 system role 的 `Previous conversation summary:`，
-    // 之后只 replay boundary 之后的原文。boundary 由 token 预算决定（compaction::token_split_chat_messages，
-    // recent tail ≤ RECENT_KEEP_TOKENS）；boundary 之前的原文已被摘要覆盖、不重发。
-    // 当累计再增长到裸窗口 90% 时会触发再次压缩（auto / agent_loop）。
-    // 有 clear 切点时：切点及之前的原文不重发、也不注入被切点覆盖的旧摘要。
+    // Replay the summary plus its exact retained body, then append only UI messages
+    // beyond the snapshot. Legacy summaries still use their source boundary.
+    // A context clear invalidates snapshots at or before its boundary.
     let start_idx = context_replay_start_index(conversation);
     if let Some(summary) = active_summary(conversation) {
         messages.push(summary_message(summary));
+        if let Some(replay) = &summary.replay {
+            let mut tail = replay.messages.clone();
+            if let Some(app) = app {
+                crate::chat::attachments::rehydrate_api_message_images(
+                    app,
+                    &conversation.id,
+                    &mut tail,
+                );
+            }
+            messages.extend(tail);
+        }
     }
 
     let mut remaining_video_bytes = crate::chat::video::MAX_VIDEO_BYTES;
