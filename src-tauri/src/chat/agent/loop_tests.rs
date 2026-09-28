@@ -706,6 +706,7 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
         skill_project_cwd: None,
+        todo_state: Default::default(),
     }
 }
 
@@ -5271,4 +5272,62 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
             if preserve_recent { 1 } else { 2 }
         );
     }
+}
+
+/// The todo list lives outside the system prompt. When none of its `todo_write`
+/// calls are in the history (compaction, context clear), the loop restates it as a
+/// reminder at the end of the request, persists that reminder with the turn, and
+/// does not repeat it on later steps.
+#[tokio::test]
+async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        r#"{"choices":[{"delta":{"content":"继续推进。"}}]}"#.to_string(),
+        "[DONE]".to_string(),
+    ])]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.push(crate::chat::todo::todo_write_tool());
+    config.todo_state = crate::chat::types::AgentTodoState {
+        items: vec![crate::chat::types::AgentTodoItem {
+            id: "1".to_string(),
+            content: "接好协议事件".to_string(),
+            status: crate::chat::types::AgentTodoStatus::InProgress,
+            ..Default::default()
+        }],
+        updated_at: 1,
+    };
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("run completes");
+
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 1);
+    let body: serde_json::Value = serde_json::from_str(&bodies[0]).expect("json body");
+    let messages = body["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages[0]["content"], "system prompt",
+        "system prompt carries no todo state"
+    );
+    let last = messages.last().expect("last message");
+    let reminder = last["content"].as_str().unwrap_or_default();
+    assert_eq!(last["role"], "user");
+    assert!(reminder.starts_with("<todo-reminder>"), "{reminder}");
+    assert!(
+        reminder.contains("1. [in_progress] 接好协议事件"),
+        "{reminder}"
+    );
+    assert_eq!(
+        result
+            .api_messages
+            .iter()
+            .filter(|m| m["content"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("<todo-reminder>")))
+            .count(),
+        1,
+        "the reminder is persisted with the turn so later turns see it was sent"
+    );
 }

@@ -1,5 +1,6 @@
 import { CheckCircle2, ListTodo, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useT, type I18n } from '../components/i18n'
 import type { AgentTodoItem, AgentTodoState } from './types'
 
 interface AgentTodoIndicatorProps {
@@ -10,16 +11,16 @@ interface AgentTodoIndicatorProps {
 
 const EMPTY_TODO_ITEMS: AgentTodoItem[] = []
 
-function statusLabel(status: AgentTodoItem['status']): string {
+function statusLabel(status: AgentTodoItem['status'], t: I18n): string {
   switch (status) {
     case 'completed':
-      return 'Done'
+      return t.agentTodoStatusDone
     case 'in_progress':
-      return 'Now'
+      return t.agentTodoStatusNow
     case 'cancelled':
-      return 'Skip'
+      return t.agentTodoStatusSkipped
     default:
-      return 'Next'
+      return t.agentTodoStatusNext
   }
 }
 
@@ -59,10 +60,14 @@ function formatUpdatedAt(todoState?: AgentTodoState | null): string {
 }
 
 export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentTodoIndicatorProps) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const inStatusBar = placement === 'status'
   const items = todoState?.items ?? EMPTY_TODO_ITEMS
   const completedCount = items.filter((item) => item.status === 'completed').length
+  // 取消的条目不计入分母：全部处理完时显示 3/3，而不是 3/5。
+  const countedTotal = items.filter((item) => item.status !== 'cancelled').length
+  const contentById = useMemo(() => new Map(items.map((item) => [item.id, item.content])), [items])
   const currentItem = useMemo(
     () =>
       items.find((item) => item.status === 'in_progress') ??
@@ -89,7 +94,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
                   : 'text-neutral-700 hover:bg-black/[0.05] hover:text-neutral-950 dark:text-neutral-200 dark:hover:bg-white/[0.07] dark:hover:text-neutral-50'
               }`
         }
-        aria-label="Agent todo"
+        aria-label={t.agentTodoTitle}
         title={inStatusBar && !allDone && currentItem ? currentItem.content : undefined}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
@@ -100,7 +105,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
           <ListTodo size={14} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
         )}
         <span className="shrink-0 tabular-nums">
-          {allDone ? 'Done' : 'Todo'} {completedCount}/{items.length}
+          {allDone ? t.agentTodoChipDone : t.agentTodoChip} {completedCount}/{countedTotal}
         </span>
         {/* ponytail: 状态条只放计数，当前任务文本点开弹层看 —— 铺满整行读起来是噪音。 */}
         {!inStatusBar && !allDone && currentItem && (
@@ -122,22 +127,22 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="text-[13px] font-semibold leading-none text-neutral-900 dark:text-neutral-50">
-                  Agent todo
+                  {t.agentTodoTitle}
                 </span>
                 <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
-                  {completedCount}/{items.length}
+                  {completedCount}/{countedTotal}
                 </span>
               </div>
               {updatedAt && (
                 <div className="mt-1 text-[10.5px] leading-none text-neutral-400 dark:text-neutral-500">
-                  Updated {updatedAt}
+                  {t.agentTodoUpdatedAt.replace('{time}', updatedAt)}
                 </div>
               )}
             </div>
             <button
               type="button"
               className="-mr-1 -mt-1 rounded-md p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-              aria-label="Close todo panel"
+              aria-label={t.agentTodoClose}
               onClick={() => setOpen(false)}
             >
               <X size={14} />
@@ -150,7 +155,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
                 <span className={`mt-[7px] size-2.5 rounded-full transition-colors duration-[var(--kv-dur-normal)] ${dotClass(item.status)}`} />
                 <div className="min-w-0">
                   <div className="mb-0.5 text-[10px] font-medium uppercase leading-none tracking-normal text-neutral-400 dark:text-neutral-500">
-                    {statusLabel(item.status)}
+                    {statusLabel(item.status, t)}
                   </div>
                   <div className={textClass(item.status)}>
                     {item.content}
@@ -161,8 +166,11 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
                     </div>
                   )}
                   {item.blocked_by && item.blocked_by.length > 0 && (
-                    <div className="mt-0.5 text-[10.5px] leading-none text-neutral-400 dark:text-neutral-500">
-                      blocked by: {item.blocked_by.join(', ')}
+                    <div className="mt-0.5 text-[10.5px] leading-snug text-neutral-400 dark:text-neutral-500">
+                      {t.agentTodoBlockedBy.replace(
+                        '{items}',
+                        item.blocked_by.map((id) => contentById.get(id) ?? id).join(', '),
+                      )}
                     </div>
                   )}
                 </div>

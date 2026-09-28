@@ -14,8 +14,8 @@ use super::super::storage::{
     resolve_conversation_working_directory,
 };
 use super::super::{
-    AdditionalDirectory, AgentPlanState, AgentTodoState, ChatMessage, Conversation,
-    ConversationContextState, ForkOrigin,
+    AdditionalDirectory, AgentPlanState, ChatMessage, Conversation, ConversationContextState,
+    ForkOrigin,
 };
 use super::catalog::{reconcile_conversation_orphan_tool_segments, strip_transcripts_for_frontend};
 use super::context::{
@@ -323,6 +323,18 @@ pub(super) fn apply_regenerate_truncation(
     Ok(())
 }
 
+/// Truncating history also rewinds the agent todo list to the last snapshot the
+/// retained messages recorded, so it never shows steps from a removed future.
+pub(super) fn restore_todo_state_from_history(conversation: &mut Conversation) {
+    let restored = crate::chat::todo::state_from_messages(
+        &conversation.messages,
+        &conversation.group_selections,
+    );
+    if restored.items != conversation.agent_todo_state.items {
+        conversation.agent_todo_state = restored;
+    }
+}
+
 /// 重新生成助手回复（移除该条及之后的消息，再基于此前上下文请求新回复）。
 /// `new_content`：编辑用户提问并重新生成——仅当目标是 user 消息时有效，先替换其内容
 /// 再走截断+重生成（附件保留；一个原子命令，避免"改了历史但不重生成"的不一致状态）。
@@ -367,11 +379,20 @@ pub(crate) async fn chat_regenerate_message(
                 latest
                     .group_selections
                     .retain(|_, selected| existing_ids.contains(selected));
+                restore_todo_state_from_history(latest);
                 Ok(())
             })
             .await
         {
-            Ok(latest) => break latest,
+            Ok(latest) => {
+                crate::chat::todo::emit_chat_todo_state(
+                    &app,
+                    &latest.id,
+                    latest.revision,
+                    &latest.agent_todo_state,
+                );
+                break latest;
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
             {
@@ -652,11 +673,18 @@ pub(crate) async fn chat_rewind_to_message(
                 latest
                     .group_selections
                     .retain(|_, selected| existing_ids.contains(selected));
+                restore_todo_state_from_history(latest);
                 Ok(())
             })
             .await
         {
             Ok(latest) => {
+                crate::chat::todo::emit_chat_todo_state(
+                    &app,
+                    &latest.id,
+                    latest.revision,
+                    &latest.agent_todo_state,
+                );
                 // Like ZCode, a rewound history starts a fresh compaction circuit breaker.
                 state
                     .chat_runtime()
@@ -794,6 +822,8 @@ pub(crate) async fn chat_fork_conversation(
     let base = truncate_chars(&source.title, 40 - FORK_SUFFIX.chars().count());
     let title = format!("{base}{FORK_SUFFIX}");
 
+    // The branch keeps the todo list as it stood at the fork point.
+    let agent_todo_state = crate::chat::todo::state_from_messages(&messages, &group_selections);
     let conversation = Conversation {
         id: new_id,
         revision: 0,
@@ -813,7 +843,7 @@ pub(crate) async fn chat_fork_conversation(
         project_id: source.project_id.clone(),
         set_id: source.set_id.clone(),
         context_state: ConversationContextState::default(),
-        agent_todo_state: AgentTodoState::default(),
+        agent_todo_state,
         agent_plan_state: AgentPlanState::default(),
         goal_state: None,
         knowledge_base_ids: source.knowledge_base_ids.clone(),

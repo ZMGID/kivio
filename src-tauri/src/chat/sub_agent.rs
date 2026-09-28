@@ -684,6 +684,8 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
         skill_project_cwd: req.skill_project_cwd.clone(),
+        // Workers never see or touch the parent's todo list.
+        todo_state: Default::default(),
     };
 
     // No wall-clock cap: a sub-agent now runs to natural completion or until
@@ -1053,7 +1055,6 @@ pub fn handle_agent_spawn<'a>(
             None,
             &persona,
             false,
-            None,
             None,
             None,
             None,

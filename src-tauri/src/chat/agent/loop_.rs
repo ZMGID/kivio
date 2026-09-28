@@ -20,6 +20,26 @@ use super::stop::patch_system_message;
 use super::synthesis::{synthesis_step, SynthesisFlow};
 use super::types::{AgentRunConfig, AgentRunResult};
 
+/// Appends a todo reminder before the next model step when `chat::todo` says one is
+/// due. It goes into both histories, so it is persisted and replayed like a steer and
+/// later steps (and turns) see it was already sent.
+fn append_todo_reminder(config: &AgentRunConfig<'_>, state: &mut RunState) {
+    let todo_exposed = state.tools.iter().any(|tool| {
+        tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)
+    });
+    if !todo_exposed {
+        return;
+    }
+    let current = crate::chat::todo::latest_recorded_state(&state.tool_records)
+        .unwrap_or_else(|| config.todo_state.clone());
+    if let Some(reminder) =
+        crate::chat::todo::reminder_for_next_step(&state.runtime_messages, &current)
+    {
+        state.runtime_messages.push(reminder.clone());
+        state.generated_api_messages.push(reminder);
+    }
+}
+
 /// Immutable per-run environment shared by every loop phase.
 pub(crate) struct LoopEnv<'a> {
     pub(crate) config: &'a AgentRunConfig<'a>,
@@ -376,6 +396,7 @@ pub async fn run_agent_loop(
                     .into_iter()
                     .filter(|message| message["subagent_parent_persisted"] != true),
             );
+            append_todo_reminder(&config, &mut state);
 
             let planned = match planning_step(&env, &mut state, round).await? {
                 PlanningStepOutcome::FinalAnswer => {

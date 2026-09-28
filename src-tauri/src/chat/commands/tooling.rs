@@ -209,9 +209,8 @@ pub(crate) async fn list_tools_for_chat(
     }
 }
 
-pub(super) fn append_agent_todo_tools(tools: &mut Vec<ChatToolDefinition>) -> bool {
+pub(super) fn append_agent_todo_tools(tools: &mut Vec<ChatToolDefinition>) {
     crate::chat::todo::append_tool_definitions(tools);
-    true
 }
 
 pub(super) fn append_goal_tools(

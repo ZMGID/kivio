@@ -905,6 +905,29 @@ describe('ToolCallBlock', () => {
     expect(within(button).getByText('1/2')).toBeInTheDocument()
   })
 
+  it('shows a cleared native todo_write as all done, counting from its arguments', () => {
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'todo_write',
+          source: 'native',
+          status: 'success',
+          arguments: JSON.stringify({
+            todos: [
+              { content: '读协议', status: 'completed' },
+              { content: '接线', status: 'completed' },
+              { content: '旧方案', status: 'cancelled' },
+            ],
+          }),
+          structured_content: { todoState: { items: [], updated_at: 1 }, cleared: true },
+        })}
+      />,
+    )
+    const button = screen.getByRole('button')
+    expect(within(button).getByText('Update todos')).toBeInTheDocument()
+    expect(within(button).getByText('2/2')).toBeInTheDocument()
+  })
+
   it('renders claude TaskCreate / TaskUpdate as readable task rows', () => {
     const { unmount } = render(
       <ToolCallBlock
