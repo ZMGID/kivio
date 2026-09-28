@@ -63,6 +63,14 @@ pub trait AgentHost: Send + Sync {
         record: &ToolCallRecord,
     );
 
+    /// Consecutive automatic compaction failures remembered for the conversation, so the
+    /// ZCode circuit breaker outlives one run. Default: nothing is remembered between runs.
+    fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
+        0
+    }
+
+    fn set_auto_compact_failures(&self, _conversation_id: &str, _failures: u32) {}
+
     /// Live compaction progress for chat timeline UI. Default no-op.
     fn emit_compaction_status(
         &self,

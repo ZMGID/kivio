@@ -29,20 +29,34 @@ pub(super) fn adopt_compacted_context(
     let Some(summary) = source.context_state.summary.as_ref() else {
         return;
     };
-    if !summary
+    if summary
         .replay
         .as_ref()
         .is_some_and(|r| r.through_message_id == reply_id)
-        || latest.context_state.clear_boundaries.last().map(|b| &b.id)
-            != source.context_state.clear_boundaries.last().map(|b| &b.id)
+        && history_unchanged(latest, source, Some(reply_id))
+    {
+        latest.context_state = source.context_state.clone();
+    }
+}
+
+/// Whether `latest` still holds the model-visible history `source` was built from:
+/// every source message (except `skip_id`) unchanged, the same answer selections and
+/// the same latest context clear. Messages appended since are allowed.
+pub(super) fn history_unchanged(
+    latest: &Conversation,
+    source: &Conversation,
+    skip_id: Option<&str>,
+) -> bool {
+    if latest.context_state.clear_boundaries.last().map(|b| &b.id)
+        != source.context_state.clear_boundaries.last().map(|b| &b.id)
         || latest.group_selections != source.group_selections
     {
-        return;
+        return false;
     }
-    let unchanged = source
+    source
         .messages
         .iter()
-        .filter(|m| m.id != reply_id)
+        .filter(|m| Some(m.id.as_str()) != skip_id)
         .all(|expected| {
             let Some(actual) = latest.messages.iter().find(|m| m.id == expected.id) else {
                 return false;
@@ -51,10 +65,7 @@ pub(super) fn adopt_compacted_context(
                 (Ok(expected), Ok(actual)) => expected == actual,
                 _ => false,
             }
-        });
-    if unchanged {
-        latest.context_state = source.context_state.clone();
-    }
+        })
 }
 
 /// 多答组的列标识：(group_id, provider_id, model)。单模型为 None（字段写 None）。

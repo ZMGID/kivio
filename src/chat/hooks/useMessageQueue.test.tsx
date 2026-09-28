@@ -474,16 +474,17 @@ describe('queued context compaction', () => {
     expect(result.current.queued[conversation.id]).toBeUndefined()
   })
 
-  it('keeps a failed compact at the front and does not send later work', async () => {
-    const onSendMessage = vi.fn()
+  it('consumes a failed compact and still sends later work', async () => {
+    // Requeuing a failed compact stalled the queue: nothing else would ever drain it.
+    const onSendMessage = vi.fn(async () => true)
     const { result } = renderHook(() => useMessageQueue({ onCompactContext: async () => ({ status: 'failed' as const }), onSendMessage, onRestoreToComposer: vi.fn() }))
     act(() => {
       result.current.commands.enqueueCompact(conversation.id)
       result.current.enqueue(conversation.id, 'continue', [])
     })
     await act(async () => { await result.current.drain(conversation) })
-    expect(onSendMessage).not.toHaveBeenCalled()
-    expect(result.current.queued[conversation.id].map((m) => m.content)).toEqual(['/compact', 'continue'])
+    expect(onSendMessage).toHaveBeenCalledWith('continue', [], { conversationOverride: conversation })
+    expect(result.current.queued[conversation.id]).toBeUndefined()
   })
 })
 

@@ -87,13 +87,15 @@ pub(crate) struct RunState {
     /// 把压缩后的完整历史回传到 `AgentRunResult.compacted_history`，让跨轮调用方
     /// 用压缩后的历史替换其累积副本（压缩真正跨轮生效，而非仅当轮发送视图瘦身）。
     pub(crate) compacted: bool,
-    /// Anti-thrashing 计数（Gap 2，Layer 3）：连续多少轮「需要压缩（超预算）但压缩没能减小
-    /// 上下文」（摘要调用失败/为空/无可摘要旧段）。在 `maybe_compact_send_view` 里维护——
-    /// 压成功并降到预算内则清零，否则递增。达到 `COMPACTION_THRASH_LIMIT` 时规划循环优雅收尾
-    /// （用已收集的工具结果降级），而不是反复触发压缩并连续失败后才报错。
-    pub(crate) compaction_unresolved_rounds: u32,
+    /// Consecutive automatic compaction failures (ZCode circuit breaker). Seeded from the
+    /// host so the pause outlives a run; a success resets it.
+    pub(crate) auto_compact_failures: u32,
     pub(crate) tool_batches_since_compact: u32,
+    /// Consecutive successful compactions that refilled within a few tool batches.
     pub(crate) rapid_refills: u32,
+    /// Set when the rapid-refill breaker trips; planning then ends the turn gracefully
+    /// with the gathered tool results instead of compacting again.
+    pub(crate) compaction_blocked: bool,
     pub(crate) pending_compaction_boundary: Option<crate::chat::types::CompactionBoundaryRecord>,
     /// L2 压缩产出的落盘 summary（与 boundary 同期生成）。run 结束时由 `attach_usage`
     /// 挂到 `AgentRunResult.compaction_summary`，commands.rs 据此写回 `context_state.summary`
@@ -112,11 +114,6 @@ pub(crate) struct RunState {
     /// （只有 Skill 激活会改），按名字哈希失效足够。
     pub(crate) tool_schema_tokens_cache: Option<(u64, usize)>,
 }
-
-/// 连续「需要压缩但压不下去」多少轮后停止工具循环、优雅收尾（Gap 2，Layer 3 anti-thrashing）。
-/// 取 2：给压缩一次重试机会（provider 偶发抖动可能第二轮成功），第二次仍失败则判定压缩无能为力，
-/// 不再硬撑——避免实测里出现的「压缩连续失败 6+ 次后才超窗报错」。
-pub(crate) const COMPACTION_THRASH_LIMIT: u32 = 2;
 
 impl RunState {
     /// 把单次模型调用的 usage 累加进本轮总账；缺失实报时清除当前锚点。
@@ -255,9 +252,10 @@ pub async fn run_agent_loop(
         runtime_len_at_last_call: 0,
         initial_anchor_valid: true,
         compacted: false,
-        compaction_unresolved_rounds: 0,
+        auto_compact_failures: host.auto_compact_failures(&config.conversation_id),
         tool_batches_since_compact: 0,
         rapid_refills: 0,
+        compaction_blocked: false,
         pending_compaction_boundary: None,
         pending_compaction_summary: None,
         generated_images: Vec::new(),

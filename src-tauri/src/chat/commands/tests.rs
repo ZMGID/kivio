@@ -23,8 +23,9 @@ use super::context::{
 use super::interaction::{format_tool_approval_summary, stream_delta_event_kinds};
 use super::messages::{
     assistant_model_messages_for_storage, build_assistant_message, build_error_arm_message,
-    content_from_segments, normalize_assistant_segments, reasoning_from_segments,
-    reconcile_orphan_tool_segments, replace_final_text_segments_for_edit,
+    content_from_segments, history_unchanged, normalize_assistant_segments,
+    reasoning_from_segments, reconcile_orphan_tool_segments,
+    replace_final_text_segments_for_edit,
 };
 use super::mutations::{
     apply_regenerate_truncation, apply_reply_with_model_result, build_fork_messages,
@@ -2032,6 +2033,129 @@ fn compaction_replay_round_trip_uses_exact_tail_once() {
     assert!(!serde_json::to_string(&messages).unwrap().contains("exact preserved result"));
 }
 
+/// A manual compaction commit survives revision bumps that leave the summarized
+/// history intact (statistics refresh, rename, new messages), but not edits,
+/// answer re-selection or a context clear.
+#[test]
+fn compaction_commit_accepts_only_unchanged_history() {
+    let source = test_conversation_with_summary(false);
+    let mut latest = source.clone();
+    latest.revision += 3;
+    latest.title = "renamed".into();
+    latest.context_state.estimated_input_tokens = 42;
+    latest
+        .messages
+        .push(test_chat_message("later", "user", "later", 9));
+    assert!(history_unchanged(&latest, &source, None));
+
+    let mut edited = source.clone();
+    edited.messages[1].content = "edited".into();
+    assert!(!history_unchanged(&edited, &source, None));
+
+    let mut reselected = source.clone();
+    reselected
+        .group_selections
+        .insert("group".into(), "msg_assistant_1".into());
+    assert!(!history_unchanged(&reselected, &source, None));
+
+    let mut cleared = source.clone();
+    apply_context_clear(&mut cleared).unwrap();
+    assert!(!history_unchanged(&cleared, &source, None));
+}
+
+/// Auto compaction keeps a tail that starts with an assistant tool call. The
+/// persisted summary must stay a user turn: as a system message it would be
+/// hoisted into the system prompt, leaving the tool call as the first provider
+/// message, which Gemini rejects. Run-scoped system notices saved in older
+/// snapshots must not be hoisted into later system prompts either.
+#[test]
+fn compaction_replay_starts_with_user_summary_and_drops_run_notices() {
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.context_state.summary.as_mut().unwrap().replay = Some(
+        crate::chat::types::CompactionReplay {
+            through_message_id: "msg_assistant_2".into(),
+            messages: vec![
+                serde_json::json!({"role":"assistant","content":null,"tool_calls":[{"id":"kept","type":"function","function":{"name":"read","arguments":"{}"}}]}),
+                serde_json::json!({"role":"tool","tool_call_id":"kept","content":"kept result"}),
+                crate::chat::agent::stop::step_limit_system_message(),
+                serde_json::json!({"role":"assistant","content":"kept final answer"}),
+            ],
+        },
+    );
+    conversation
+        .messages
+        .push(test_chat_message("next", "user", "continue", 10));
+
+    let messages =
+        build_chat_api_messages(None, "fresh system", &conversation, None, None, &[]).unwrap();
+    assert_eq!(messages[1]["role"], "user");
+    assert!(messages[1]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("Previous conversation summary:"));
+    assert!(!serde_json::to_string(&messages)
+        .unwrap()
+        .contains("工具调用轮次上限"));
+
+    let request = crate::chat::model::generate_request_from_openai_messages(
+        "test-model",
+        messages,
+        None,
+        Default::default(),
+        "test",
+        Default::default(),
+    );
+    assert_eq!(request.system, "fresh system");
+    assert!(matches!(request.messages[0].role, ModelRole::User));
+    let contents = crate::chat::model::gemini::gemini_contents_from_generate_request(&request);
+    assert_eq!(contents[0]["role"], "user");
+    assert!(contents[0]
+        .to_string()
+        .contains("summary of older messages"));
+}
+
+/// A child report delivered during a compacted run lives both in the snapshot
+/// (where the run saw it) and as a persisted `subagent-result-*` message that
+/// may sort after the reply. It must reach the model exactly once.
+#[test]
+fn compaction_replay_does_not_duplicate_snapshot_child_reports() {
+    let mut conversation = test_conversation_with_summary(false);
+    let mut report = crate::chat::sub_agent::control::report_input("CHILD_A findings");
+    report[crate::chat::sub_agent::control::REPORT_MESSAGE_ID_KEY] =
+        serde_json::json!("subagent-result-a");
+    conversation.context_state.summary.as_mut().unwrap().replay =
+        Some(crate::chat::types::CompactionReplay {
+            through_message_id: "msg_assistant_2".into(),
+            messages: vec![
+                report,
+                serde_json::json!({"role":"assistant","content":"kept final answer"}),
+            ],
+        });
+    conversation.messages.push(test_chat_message(
+        "subagent-result-a",
+        "assistant",
+        "CHILD_A findings",
+        10,
+    ));
+    conversation.messages.push(test_chat_message(
+        "subagent-result-b",
+        "assistant",
+        "CHILD_B findings",
+        11,
+    ));
+
+    let text = serde_json::to_string(
+        &build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(text.matches("CHILD_A findings").count(), 1);
+    assert_eq!(
+        text.matches("CHILD_B findings").count(),
+        1,
+        "reports outside the snapshot still replay"
+    );
+}
+
 #[test]
 fn clear_context_discards_compacted_tail_too() {
     let mut conversation = test_conversation_with_summary(false);
@@ -3350,17 +3474,17 @@ fn file_ledger_flows_into_replayed_summary_message() {
     let messages =
         build_chat_api_messages(None, "system prompt", &conversation, Some(2), None, &[]).unwrap();
 
-    // The injected summary system message (index 1) must carry the ledger block.
+    // The injected summary message (a user turn at index 1) must carry the ledger block.
     let summary_sys = messages
         .iter()
         .find(|m| {
-            m.get("role").and_then(|r| r.as_str()) == Some("system")
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
                 && m.get("content")
                     .and_then(|c| c.as_str())
                     .map(|c| c.contains("### Files touched"))
                     .unwrap_or(false)
         })
-        .expect("a system message carries the Files touched block");
+        .expect("the summary message carries the Files touched block");
     let content = summary_sys["content"].as_str().unwrap();
     assert!(
         content.contains(r#"Modified: "src/main.rs""#),

@@ -85,3 +85,57 @@
 依据为 ZCode `runtime/methods/compact-active-helpers.ts` 的 `createCompactContextExceededFinishError` 及 `runtime/helpers/model-errors.ts` 的终态标记集合。没有增加第二套重试流程。
 
 两个新增回归先在旧实现上失败，修复后通过。通过本地 HTTP/SSE 模拟服务走实际 OpenAI 适配器，覆盖携带非空残缺摘要的各类超窗终态、自动/手动缩减请求后成功、耗尽后不采用残缺摘要。最终聊天模块回归 **1000 通过、1 跳过**；架构检查 12 项及依赖边界通过；`git diff --check` 通过。没有真实供应商故障注入验证；本轮桌面自动化连接被自动审批机制以 `blocked by policy` 拒绝，未执行桌面实测，亦未替换运行中的应用。
+
+## 2026-09-28 快照回放修复（对照 ZCode 深审）
+
+对照 ZCode `328c1a0` 的 `runtime/helpers/compact.ts`（`buildPostCompactRuntimeEntries`）与 `compact/prompt.ts`（`buildCompactSummaryMessage`）复核后，修复两项快照回放缺陷；审查中的其他发现（摘要请求不带工具、自动压缩失败即收尾、手动压缩媒体投影与超窗标记、队列失败卡住、手动 CAS）本轮未处理。
+
+- **摘要落盘角色**：ZCode 的摘要始终是 user 消息。Kivio 运行中同样是 user，但落盘回放改成 system；各适配器会把 system 提升进系统提示，保留片段又从 assistant 工具调用开始，导致下一轮首条消息是 assistant 工具调用（Gemini 要求工具调用紧随 user 或工具结果）。现 `summary_message` 回放为 user；上下文统计按摘要前缀单独计入，不重复计数。
+- **快照混入运行期消息**：快照取自运行中消息列表，而非普通落盘用的 `generated_api_messages`。
+  - 工具轮次上限提示（system）被写入快照后，每轮都会提升进系统提示并禁止调用工具。`replacement_body` 与回放共用 `is_replayable` 排除 system 消息，回放时也覆盖此前已保存的快照。
+  - 子 agent 报告既在快照中，又作为 `subagent-result-*` 消息追加在回复之后，会被发送两次。报告在运行中携带 `_subagent_result_id`，回放时跳过快照已含的结果消息。第一轮可能在回复草稿落库前收集报告，所以不采用直接从快照删除的方案，那样会丢失报告。
+
+验证：新增和扩展的回归覆盖了以下几点：
+- 快照首条为 user 摘要，并确认经 Gemini 适配器后首条仍是 user；
+- 旧快照里的 system 提示在回放时被过滤；
+- 运行循环中触达轮次上限后，快照不含该提示；
+- 子 agent 报告只发送一次，快照外的报告照常回放；
+- 运行期报告携带结果消息 id。
+
+逐项撤回修复后，上述 5 项断言均失败；恢复修复后全部通过。另外，`file_ledger_flows_into_replayed_summary_message` 的断言按新角色从 system 改为 user。本轮在 Linux 容器执行：聊天模块 **1010 通过、2 跳过**；`git diff --check` 通过，改动区域 rustfmt 无差异。构建时为不相关的 Windows/macOS 专属代码（`offline_models.rs`、`windows.rs`）临时加过 Linux 占位，测试后已还原、未提交。未做真实 Gemini/Anthropic 实测，也未做桌面实测。
+
+## 2026-09-28 其余发现的修复
+
+用户要求修复审查中剩余全部发现（R1 小窗口策略仍按原决定不改）。依据 ZCode `328c1a0` 的 `compact-active.ts`、`compact.ts`（`autoCompactIfNeeded` / `reactiveCompactAfterContextExceeded`）、`compact-selection.ts`、`turn-loop-state.ts`、`compact-post-reminders.ts` 与 `compact-active-helpers.ts`。
+
+- **摘要请求的工具定义**：自动压缩把本轮工具随摘要请求发送（超过 100 个时不发送），提示词末尾补充禁止调用工具的提醒；不带工具定义时（含手动压缩），工具调用和结果转为文本，避免供应商拒绝孤立的工具调用历史。
+- **失败策略**：
+  - 原先两次“未解决”就以 `compaction_thrash` 结束本轮；现在失败不结束本轮，请求照常发出，只计入熔断计数。
+  - 熔断计数由 `ChatRuntimeState` 按会话保存，连续三次后暂停自动压缩，成功后清零；子 agent 与测试宿主只在单次运行内计数。
+  - 历史不足以摘要时视为正常跳过，不发 started/failed、不计失败，这也使 R1 场景不再误报失败。
+  - 压缩后仍超预算不再计为失败。
+  - 快速回填在开始前判断、只在成功时记录，触发时才以已收集结果收尾。
+- **手动压缩**：
+  - 摘要请求不带原始视频，按发送视图同一预算收敛图片；压缩模型已知不支持视觉时去掉图片。
+  - 截断重试后若首条为 assistant，先补截断标记。
+  - 提交遇到版本冲突时，用与自动压缩相同的 `history_unchanged` 规则判断：被摘要历史未变则重新提交（最多三次），否则报错并保留原历史。
+- **排队**：压缩失败时消耗该条目并继续发送后续消息，不再卡住队列；停止压缩仍按此前实测决定，不自动发送后续消息。
+- **较小项**：
+  - 文件提醒只取成功读取的文本文件结果，并注明可能是部分内容。
+  - 空正文的 `length` 结束按超窗处理。
+  - 自动压缩中的停止按钮显示为“停止生成”。
+  - 删除未使用的 `window`、`transport_attempts`、`retry_attempts`、`focus`、`trigger` 参数。
+
+测试夹具调整：若干测试原先依赖“只把一条用户消息摘要掉”的宽松行为，按 ZCode 规则这类情况本应跳过或失败，因此给这些夹具补一轮较早的历史，使其继续覆盖原本要验证的重选、取消、超窗重压与耗尽路径；断言本身未放宽。旧的两次失败即收尾测试替换为失败后继续回答、熔断跨轮暂停与清零、历史不足静默跳过、快速回填收尾四项。
+
+验证：
+- 逐项撤回修复后，工具定义、截断标记、空 `length`、文件提醒、媒体投影、静默跳过、失败后继续这 7 项后端新测试全部失败；前端队列与停止文案测试同样在旧实现上失败；恢复后全部通过。
+- 聊天模块 **1021 通过、2 跳过**；前端 203 个测试文件 **1698 项通过**；TypeScript、ESLint、架构检查、协议一致性与 `git diff --check` 通过。
+- 手动压缩冲突重试依赖 `AppHandle`，只以 `history_unchanged` 单元测试覆盖判定规则，未做并发实测。
+- 未做真实供应商或桌面实测；构建所需的 Linux 临时占位已还原、未提交。
+
+合并前复审补充两处：
+- 不支持工具的供应商在每轮第一次规划请求被拒之前就会触发自动压缩，此时摘要请求带着工具定义会被拒绝，重试无效，还会触发熔断。现在被拒时去掉工具、以文本历史重试一次，不计失败；本轮已判定不支持工具时直接不带。
+- 与 ZCode `rewind-message.ts` 一致，回退消息后清零熔断计数。
+
+新增回归测试在未修复时失败、修复后通过；聊天模块 **1022 通过、2 跳过**。

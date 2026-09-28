@@ -157,10 +157,10 @@ pub(crate) async fn chat_compress_context(
     .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     // Reload after admission, then CAS the summary and retained messages as one update.
     conversation = load_conversation(&app, &conversation_id)?;
-    tokio::select! {
-        result = compress_conversation_context(&app, &state, &mut conversation, "manual") => result?,
+    let _compacted = tokio::select! {
+        result = compress_conversation_context(&app, &state, &mut conversation) => result?,
         _ = super::interaction::wait_for_chat_cancel(state.inner(), &conversation_id, generation) => return Err("压缩已停止".into()),
-    }
+    };
     if !state
         .chat_runtime()
         .is_generation_active(&conversation_id, generation)
@@ -189,6 +189,8 @@ pub(crate) async fn chat_clear_context(
 }
 
 /// Local context mutations share one compute → persist → event → response path.
+/// `generation` marks a manual compaction; its result survives revision bumps that
+/// leave the summarized history intact (statistics refreshes, renames).
 async fn finalize_local_context_change(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -205,15 +207,36 @@ async fn finalize_local_context_change(
     }) {
         return Err("压缩已停止".into());
     }
-    conversation = crate::chat::repository::repository(app)
-        .update_context(
-            app,
-            conversation_id,
-            conversation.revision,
-            context_state.clone(),
-        )
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+    let repository = crate::chat::repository::repository(app);
+    let mut expected_revision = conversation.revision;
+    let mut attempts = 0;
+    conversation = loop {
+        match repository
+            .update_context(
+                app,
+                conversation_id,
+                expected_revision,
+                context_state.clone(),
+            )
+            .await
+        {
+            Ok(updated) => break updated,
+            Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
+                if generation.is_some() && attempts < 3 =>
+            {
+                attempts += 1;
+                let latest = repository
+                    .get(app, conversation_id)
+                    .await
+                    .map_err(crate::chat::repository::repository_error)?;
+                if !super::messages::history_unchanged(&latest, &conversation, None) {
+                    return Err("压缩期间会话已变化，原有历史保持不变，请重新压缩".into());
+                }
+                expected_revision = latest.revision;
+            }
+            Err(err) => return Err(crate::chat::repository::repository_error(err)),
+        }
+    };
     emit_chat_context_state(app, &conversation.id, conversation.revision, &context_state);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
@@ -317,8 +340,11 @@ fn summary_message(summary: &ConversationContextSummary) -> Value {
             content.push_str(&block);
         }
     }
+    // User role, as in the run that produced it (ZCode keeps the same shape): a
+    // system message would be hoisted into the system prompt, leaving a retained
+    // tail that starts with an assistant tool call as the first provider message.
     serde_json::json!({
-        "role": "system",
+        "role": "user",
         "content": content,
     })
 }
@@ -587,6 +613,7 @@ fn estimate_messages_segments(
         summary_tokens,
     );
 
+    // The replayed summary is a user turn, but it is already counted above.
     let conversation_tokens = messages
         .iter()
         .filter(|message| {
@@ -595,6 +622,9 @@ fn estimate_messages_segments(
                 .and_then(|role| role.as_str())
                 .map(|role| role != "system")
                 .unwrap_or(true)
+                && !message["content"].as_str().is_some_and(|content| {
+                    content.starts_with(crate::chat::agent::compaction::PERSISTED_SUMMARY_PREFIX)
+                })
         })
         .map(count_tokens_in_value)
         .sum::<usize>();
@@ -1021,16 +1051,13 @@ pub(super) async fn compress_conversation_context(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
-    trigger: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let settings = state.settings_read().clone();
     crate::chat::agent::compaction::compact_conversation(
         app,
         state.inner(),
         &settings,
         conversation,
-        trigger,
-        None,
     )
     .await
 }
@@ -1226,10 +1253,23 @@ pub(crate) fn build_chat_api_messages_with_video(
     // beyond the snapshot. Legacy summaries still use their source boundary.
     // A context clear invalidates snapshots at or before its boundary.
     let start_idx = context_replay_start_index(conversation);
+    let mut snapshot_reports = std::collections::HashSet::new();
     if let Some(summary) = active_summary(conversation) {
         messages.push(summary_message(summary));
         if let Some(replay) = &summary.replay {
-            let mut tail = replay.messages.clone();
+            let mut tail: Vec<Value> = replay
+                .messages
+                .iter()
+                .filter(|m| crate::chat::agent::compaction::is_replayable(m))
+                .cloned()
+                .collect();
+            snapshot_reports.extend(
+                tail.iter()
+                    .filter_map(|m| {
+                        m[crate::chat::sub_agent::control::REPORT_MESSAGE_ID_KEY].as_str()
+                    })
+                    .map(str::to_string),
+            );
             if let Some(app) = app {
                 crate::chat::attachments::rehydrate_api_message_images(
                     app,
@@ -1248,6 +1288,10 @@ pub(crate) fn build_chat_api_messages_with_video(
         }
         // 多答组：仅保留选中条，其余答案不进发给模型的上下文（R6 / AC4）。
         if group_answer_excluded_from_context(conversation, message) {
+            continue;
+        }
+        // The snapshot already carries this child report at the point the run saw it.
+        if snapshot_reports.contains(&message.id) {
             continue;
         }
         let content = if Some(idx) == last_user_idx {

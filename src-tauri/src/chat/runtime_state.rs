@@ -28,6 +28,7 @@ struct ChatRunIndexes {
     pending_steering: HashMap<String, Vec<SteeringMessage>>,
     pending_follow_up: HashMap<String, Vec<SteeringMessage>>,
     pending_goal_user_queue: HashSet<String>,
+    auto_compact_failures: HashMap<String, u32>,
 }
 
 impl ChatRuntimeState {
@@ -157,6 +158,28 @@ impl ChatRuntimeState {
         indexes.pending_steering.remove(conversation_id);
         indexes.pending_follow_up.remove(conversation_id);
         indexes.pending_goal_user_queue.remove(conversation_id);
+        indexes.auto_compact_failures.remove(conversation_id);
+    }
+
+    /// Consecutive automatic compaction failures, kept for the life of the process like
+    /// ZCode's per-session circuit breaker.
+    pub(crate) fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
+        self.indexes()
+            .auto_compact_failures
+            .get(conversation_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
+        let mut indexes = self.indexes();
+        if failures == 0 {
+            indexes.auto_compact_failures.remove(conversation_id);
+        } else {
+            indexes
+                .auto_compact_failures
+                .insert(conversation_id.to_string(), failures);
+        }
     }
 
     pub(crate) fn try_begin_reply(&self, conversation_id: &str, run_id: &str) -> bool {
@@ -275,13 +298,19 @@ mod tests {
         let b = runtime.begin_generation("b");
         assert!(runtime.try_begin_reply("a", "run-a"));
         runtime.set_goal_user_queue_pending("a", true);
+        runtime.set_auto_compact_failures("a", 3);
+        runtime.set_auto_compact_failures("b", 2);
 
         runtime.forget_conversation("a");
 
         assert!(!runtime.is_generation_active("a", a));
         assert!(!runtime.has_active_reply("a"));
         assert!(!runtime.has_goal_user_queue_pending("a"));
+        assert_eq!(runtime.auto_compact_failures("a"), 0);
         assert!(runtime.is_generation_active("b", b));
+        assert_eq!(runtime.auto_compact_failures("b"), 2);
+        runtime.set_auto_compact_failures("b", 0);
+        assert_eq!(runtime.auto_compact_failures("b"), 0);
     }
 
     #[test]

@@ -656,7 +656,13 @@ pub(crate) async fn chat_rewind_to_message(
             })
             .await
         {
-            Ok(latest) => break (latest, content),
+            Ok(latest) => {
+                // Like ZCode, a rewound history starts a fresh compaction circuit breaker.
+                state
+                    .chat_runtime()
+                    .set_auto_compact_failures(&conversation_id, 0);
+                break (latest, content);
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
             {
