@@ -21,6 +21,7 @@ import { api, isTauriRuntime, type Note, type NoteMeta } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { workspaceActivity } from './dock/workspaceActivity'
 import { useLang, useT } from '../components/i18n'
+import { confirmDialog } from '../components/dialogQueue'
 
 const SAVE_DEBOUNCE_MS = 800
 
@@ -324,9 +325,11 @@ export function NotesCenter() {
   const deleteNote = useCallback(
     async (id: string) => {
       const meta = notes.find((n) => n.id === id)
-      const ok = window.confirm(
-        t.chatNotesDeleteNoteConfirm.replace('{title}', displayTitle(meta?.title, t.chatNotesUntitled)),
-      )
+      const ok = await confirmDialog({
+        message: t.chatNotesDeleteNoteConfirm.replace('{title}', () => displayTitle(meta?.title, t.chatNotesUntitled)),
+        confirmLabel: t.dialogDelete,
+        danger: true,
+      })
       if (!ok) return
       setError('')
       try {
@@ -401,7 +404,11 @@ export function NotesCenter() {
 
   const deleteFolder = useCallback(
     async (name: string) => {
-      const ok = window.confirm(t.chatNotesDeleteFolderConfirm.replace('{name}', name))
+      const ok = await confirmDialog({
+        message: t.chatNotesDeleteFolderConfirm.replace('{name}', () => name),
+        confirmLabel: t.dialogDelete,
+        danger: true,
+      })
       if (!ok) return
       setError('')
       try {

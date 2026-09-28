@@ -14,6 +14,7 @@ import {
 import { i18n, type I18n, type Lang } from '../components/i18n'
 import { formatTokensK } from '../utils/tokens'
 import type { ConversationContextState } from './types'
+import { usePopoverMenu } from './usePopoverMenu'
 
 const PANEL_WIDTH = 280
 const PANEL_GAP = 8
@@ -102,6 +103,7 @@ export function ContextIndicator({
   const [pos, setPos] = useState<{ bottom: number; right: number; maxH: number; width: number } | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
+  usePopoverMenu(open, () => setOpen(false), popoverRef)
 
   const estimatedInputTokens = valueFrom(
     contextState?.estimated_input_tokens,

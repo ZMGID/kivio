@@ -17,6 +17,7 @@ import {
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from '../components/i18n'
+import { confirmDialog } from '../components/dialogQueue'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -282,9 +283,9 @@ function SkillRow({
   onRemove: () => Promise<void>
 }) {
   const t = i18n[lang]
-  const remove = () => {
-    const message = t.externalAgentsPiSkillsDeleteConfirm.replace('{name}', skill.name)
-    if (window.confirm(message)) void onRemove()
+  const remove = async () => {
+    const message = t.externalAgentsPiSkillsDeleteConfirm.replace('{name}', () => skill.name)
+    if (await confirmDialog({ message, confirmLabel: t.dialogDelete, danger: true })) void onRemove()
   }
 
   return (
@@ -314,7 +315,7 @@ function SkillRow({
             size="xs"
             label={t.externalAgentsPiSkillsDelete}
             disabled={busy !== null}
-            onClick={remove}
+            onClick={() => void remove()}
           >
             <Trash2 size={12} />
           </IconButton>

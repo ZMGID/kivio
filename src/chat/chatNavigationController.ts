@@ -16,6 +16,8 @@ import { draftKey, migrateNewChatDraft } from './composerDraft'
 import type { Conversation } from './types'
 import { isPartialConversation, prependConversationHistoryPage, type ConversationHistoryPage } from './conversationHistoryWindow'
 
+
+type ClearChatDecision = 'busy' | 'cancelled' | 'confirmed'
 interface NavigationPorts {
   currentConversation: () => Conversation | null
   currentConversationId: () => string | null
@@ -27,8 +29,11 @@ interface NavigationPorts {
   isConversationInFlight: (conversationId: string) => boolean
   prepareNewConversation: () => void
   clearEmptyChat: () => void
-  /** Check busy state before asking for confirmation; no route mutation here. */
-  requestClearChat: (conversationId: string) => 'busy' | 'cancelled' | 'confirmed'
+  /**
+   * Check busy state before asking for confirmation; no route mutation here.
+   * May resolve asynchronously (in-app confirm dialog); re-check busy after the answer.
+   */
+  requestClearChat: (conversationId: string) => ClearChatDecision | Promise<ClearChatDecision>
   deleteConversation: (conversationId: string) => Promise<void>
   cancelDeletedRun: (conversationId: string) => Promise<void>
   /** Synchronously drop local execution state, optionally clear this view, and refresh the list. */
@@ -169,7 +174,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
       return
     }
     // A rejected clear must not revoke a pending navigation's commit right.
-    const decision = ports.requestClearChat(conversationId)
+    const decision = await ports.requestClearChat(conversationId)
     if (decision === 'busy') {
       ports.reportClearError(conversationId, '请先停止当前回复，再清空对话。')
       return

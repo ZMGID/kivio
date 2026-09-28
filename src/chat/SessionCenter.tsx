@@ -52,6 +52,7 @@ import {
 } from './sessionLibrary/format'
 import { HighlightText } from './searchHighlight'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
+import { alertDialog, confirmDialog } from '../components/dialogQueue'
 
 const PAGE_SIZE = 80
 
@@ -344,7 +345,7 @@ export function SessionCenter({
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        window.alert(err instanceof Error ? err.message : String(err))
+        void alertDialog(err instanceof Error ? err.message : String(err))
       } finally {
         setBusy(false)
         setMoveOpen(null)
@@ -376,9 +377,9 @@ export function SessionCenter({
       await chatApi.bulkUpdateConversations(selectedIds, { setId: sid })
     })
 
-  const bulkDelete = () => {
+  const bulkDelete = async () => {
     if (selectedIds.length === 0) return
-    if (!window.confirm(t.chatLibBulkDeleteConfirm.replace('{n}', String(selectedIds.length)))) return
+    if (!(await confirmDialog({ message: t.chatLibBulkDeleteConfirm.replace('{n}', String(selectedIds.length)), confirmLabel: t.dialogDelete, danger: true }))) return
     void runBulk(async () => {
       for (const id of selectedIds) {
         if (generatingConversationIds.has(id)) onForceDropConversation?.(id)
@@ -388,7 +389,7 @@ export function SessionCenter({
         onConversationDeleted?.(currentConversationId)
       }
       if (warnings.length > 0) {
-        window.alert(t.chatDeleteConversationPartial + warnings.slice(0, 8).join('\n'))
+        void alertDialog(t.chatDeleteConversationPartial + warnings.slice(0, 8).join('\n'))
       }
     })
   }
@@ -416,7 +417,7 @@ export function SessionCenter({
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        window.alert(err instanceof Error ? err.message : String(err))
+        void alertDialog(err instanceof Error ? err.message : String(err))
       } finally {
         setBusy(false)
         setMenu(null)
@@ -435,7 +436,7 @@ export function SessionCenter({
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        window.alert(
+        void alertDialog(
           t.chatRegenerateTitleFailed + (err instanceof Error ? err.message : String(err)),
         )
       } finally {
@@ -447,19 +448,19 @@ export function SessionCenter({
 
   const deleteOne = useCallback(
     async (id: string) => {
-      if (!window.confirm(t.chatDeleteConversationConfirm)) return
+      if (!(await confirmDialog({ message: t.chatDeleteConversationConfirm, confirmLabel: t.dialogDelete, danger: true }))) return
       if (generatingConversationIds.has(id)) onForceDropConversation?.(id)
       setBusy(true)
       try {
         const warnings = await chatApi.deleteConversation(id)
         if (warnings.length > 0) {
-          window.alert(t.chatDeleteConversationPartial + warnings.join('\n'))
+          void alertDialog(t.chatDeleteConversationPartial + warnings.join('\n'))
         }
         if (currentConversationId === id) onConversationDeleted?.(id)
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        window.alert(t.chatDeleteConversationFailed + (err instanceof Error ? err.message : String(err)))
+        void alertDialog(t.chatDeleteConversationFailed + (err instanceof Error ? err.message : String(err)))
       } finally {
         setBusy(false)
         setMenu(null)
@@ -880,7 +881,7 @@ export function SessionCenter({
               <Button size="sm" disabled={busy} onClick={bulkExport}>
                 {t.chatLibExport}
               </Button>
-              <Button size="sm" disabled={busy} onClick={bulkDelete} className="text-red-600">
+              <Button size="sm" disabled={busy} onClick={() => void bulkDelete()} className="text-red-600">
                 <Trash2 size={12} />
                 {!compactPad && <span>{t.chatLibDelete}</span>}
               </Button>

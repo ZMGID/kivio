@@ -4,6 +4,7 @@ import { save } from '@tauri-apps/plugin-dialog'
 import { Check, Clipboard, Download, FolderOpen, Maximize2 } from 'lucide-react'
 import { api } from '../api/tauri'
 import { useT } from '../components/i18n'
+import { alertDialog } from '../components/dialogQueue'
 import { useCloseAnimation } from './useCloseAnimation'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 import { base64FromDataUrl, imageExtension } from './imageData'
@@ -75,7 +76,7 @@ export function ChatImageContextMenu({
     // 复用 Lens 标注早就有的剪贴板写图命令（解码 → arboard set_image），不另造一条。
     const result = await api.lensCopyImageToClipboard(payload)
     if (!result.success) {
-      window.alert(t.chatImageCopyFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
+      void alertDialog(t.chatImageCopyFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
       return
     }
     setCopied(true)
@@ -94,7 +95,7 @@ export function ChatImageContextMenu({
     })
     if (!path) return
     const result = await api.lensSaveAnnotatedPng(payload, path)
-    if (!result.success) window.alert(t.chatImageSaveFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
+    if (!result.success) void alertDialog(t.chatImageSaveFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
     onClose()
   }
 

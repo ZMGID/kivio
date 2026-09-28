@@ -6,6 +6,8 @@ import { loadArtifactOriginalDataUrl } from './attachmentPreview'
 import { base64FromDataUrl, imageExtension } from './imageData'
 import { api } from '../api/tauri'
 import { IconButton } from '../components/Button'
+import { alertDialog } from '../components/dialogQueue'
+import { useT } from '../components/i18n'
 
 type ChatImageViewerProps = {
   item: ChatImageViewerItem
@@ -13,6 +15,7 @@ type ChatImageViewerProps = {
 }
 
 export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
+  const t = useT()
   const [zoom, setZoom] = useState(1)
   // 先显示缩略图(item.src),若有 path 则懒加载全分辨率原图并替换。
   const [original, setOriginal] = useState<{ key: string; src: string | null; failed: boolean } | null>(null)
@@ -30,7 +33,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
     if (!base64) return
     const result = await api.lensCopyImageToClipboard(base64)
     if (!result.success) {
-      window.alert(`复制失败：${result.error ?? '未知错误'}`)
+      void alertDialog(t.chatImageCopyFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
       return
     }
     setCopied(true)
@@ -46,7 +49,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
     })
     if (!path) return
     const result = await api.lensSaveAnnotatedPng(base64, path)
-    if (!result.success) window.alert(`保存失败：${result.error ?? '未知错误'}`)
+    if (!result.success) void alertDialog(t.chatImageSaveFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
   }
 
   useEffect(() => {

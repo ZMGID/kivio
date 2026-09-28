@@ -5,7 +5,7 @@ import { derivePermissionModes } from './permissionModes'
 import { chatTitlebarIconButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { AgentRuntimeConfig } from './types'
-import { useEscapeToClose } from './useEscapeToClose'
+import { usePopoverMenu } from './usePopoverMenu'
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
@@ -26,8 +26,8 @@ function PermissionPickerBase({
 }: PermissionPickerProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  useEscapeToClose(open, () => setOpen(false))
   const menuRef = useRef<HTMLDivElement>(null)
+  usePopoverMenu(open, () => setOpen(false), menuRef)
   const maxH = usePopoverMaxHeight(open, menuRef, 'down', 320)
 
   const { options, current } = useMemo(
@@ -52,6 +52,8 @@ function PermissionPickerBase({
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className={`${chatTitlebarIconButtonClass} ${
           open
             ? 'bg-black/[0.06] text-neutral-800 dark:bg-white/[0.09] dark:text-neutral-100'
@@ -65,12 +67,14 @@ function PermissionPickerBase({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div ref={menuRef} style={{ maxHeight: maxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[180px] overflow-y-auto kv-menu">
+          <div role="menu" ref={menuRef} style={{ maxHeight: maxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[180px] overflow-y-auto kv-menu">
             {options.map((option) => {
               const active = option.value === current
               return (
                 <button
                   key={option.value}
+                  role="menuitemradio"
+                  aria-checked={active}
                   type="button"
                   onClick={() => pick(option.value)}
                   className={`kv-menu-row justify-between transition-colors ${

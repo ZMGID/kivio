@@ -1,10 +1,10 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { api } from '../api/tauri'
 import { useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
 import type { ThinkingLevel } from './types'
-import { useEscapeToClose } from './useEscapeToClose'
+import { usePopoverMenu } from './usePopoverMenu'
 
 interface ThinkingLevelSelectorProps {
   /** 当前等级；null = 未显式设置，按默认档 DEFAULT_LEVEL 处理。 */
@@ -40,7 +40,8 @@ function ThinkingLevelSelectorBase({
 }: ThinkingLevelSelectorProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  useEscapeToClose(open, () => setOpen(false))
+  const menuRef = useRef<HTMLDivElement>(null)
+  usePopoverMenu(open, () => setOpen(false), menuRef)
   const [levels, setLevels] = useState<string[]>(FALLBACK_LEVELS)
   const [levelsLoaded, setLevelsLoaded] = useState(false)
 
@@ -105,6 +106,8 @@ function ThinkingLevelSelectorBase({
       <button
         type="button"
         onClick={() => setOpen(!open)}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
         title={t.chatThinkingLevel.replace('{level}', labelFor(effective))}
         aria-label={t.chatThinkingLevel.replace('{level}', labelFor(effective))}
@@ -122,12 +125,14 @@ function ThinkingLevelSelectorBase({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto kv-menu">
+          <div role="menu" ref={menuRef} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto kv-menu">
             {options.map((opt) => {
               const active = opt.value === effective
               return (
                 <button
                   key={opt.value}
+                  role="menuitemradio"
+                  aria-checked={active}
                   type="button"
                   onClick={() => {
                     onChange(opt.value)

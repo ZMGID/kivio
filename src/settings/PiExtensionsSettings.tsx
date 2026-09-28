@@ -19,6 +19,7 @@ import {
 import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from '../components/i18n'
+import { confirmDialog } from '../components/dialogQueue'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -293,9 +294,12 @@ function PackageRow({
     item.resources.length > 0
       ? item.resources.join(' · ')
       : t.externalAgentsPiExtensionsResourcePackage
-  const remove = () => {
-    if (!window.confirm(t.externalAgentsPiExtensionsRemoveConfirm.replace('{name}', item.name)))
-      return
+  const remove = async () => {
+    if (!(await confirmDialog({
+      message: t.externalAgentsPiExtensionsRemoveConfirm.replace('{name}', () => item.name),
+      confirmLabel: t.dialogRemove,
+      danger: true,
+    }))) return
     void onRun(actionKey, () => piExtensionsSettingsApi.piExtensionRemove(item.source))
   }
   return (
@@ -355,7 +359,7 @@ function PackageRow({
           size="sm"
           label={t.externalAgentsPiExtensionsRemove}
           disabled={busy !== null}
-          onClick={remove}
+          onClick={() => void remove()}
         >
           <Trash2 size={13} />
         </IconButton>

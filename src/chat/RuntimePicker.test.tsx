@@ -202,7 +202,7 @@ describe('ExternalModelSelector', () => {
     act(() => {
       fireEvent.click(screen.getByLabelText('思考等级：Off'))
     })
-    expect(screen.getByRole('button', { name: 'Off' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeInTheDocument()
     expect(screen.queryByLabelText('思考等级：Auto')).not.toBeInTheDocument()
   })
 

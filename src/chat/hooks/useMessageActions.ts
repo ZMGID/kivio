@@ -7,6 +7,7 @@ import type { AssistantStreamStats } from '../MessageList'
 import { setCoarse as setStreamCoarse } from '../streamingStore'
 import type { Conversation } from '../types'
 import { i18n, type Lang } from '../../components/i18n'
+import { confirmDialog } from '../../components/dialogQueue'
 
 type ChatNavigationController = ReturnType<typeof createChatNavigationController>
 
@@ -80,7 +81,8 @@ export function useMessageActions({
   const deleteMessage = useCallback(async (messageId: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
-    if (!window.confirm(tRef.current.chatMessageDeleteConfirm)) return
+    const t = tRef.current
+    if (!(await confirmDialog({ message: t.chatMessageDeleteConfirm, confirmLabel: t.dialogDelete, danger: true }))) return
     try {
       const updated = await chatApi.deleteMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, updated)) {
@@ -105,7 +107,8 @@ export function useMessageActions({
   const rewindToMessage = useCallback(async (messageId: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
-    if (!window.confirm(tRef.current.chatMessageRewindConfirm)) return
+    const t = tRef.current
+    if (!(await confirmDialog({ message: t.chatMessageRewindConfirm, confirmLabel: t.dialogRewind, danger: true }))) return
     try {
       const { conversation, content } = await chatApi.rewindToMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, conversation)) {

@@ -49,6 +49,7 @@ import { mapExternalCliSlashCommands, externalCliAgentLabel } from './externalCl
 import type { ModeOption, ModeTone } from './permissionModes'
 import { isTauriRuntime } from './utils'
 import { isVideoFile } from './attachmentType'
+import { usePopoverMenu } from './usePopoverMenu'
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif']
 type AttachmentOperationScope = ReturnType<typeof beginComposerAttachmentOperation>
@@ -505,6 +506,10 @@ export const InputBar = memo(function InputBar({
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
+  const toolPanelRef = useRef<HTMLDivElement>(null)
+  const modeMenuRef = useRef<HTMLDivElement>(null)
+  // 两处项目菜单（有项目的状态栏 / 无项目的工具栏）互斥渲染，共用一个 ref。
+  const projectMenuRef = useRef<HTMLDivElement>(null)
   const [projectOptions, setProjectOptions] = useState<ChatProject[]>([])
   const [projectOptionsLoading, setProjectOptionsLoading] = useState(false)
   const [projectOptionsError, setProjectOptionsError] = useState('')
@@ -1635,38 +1640,9 @@ export const InputBar = memo(function InputBar({
     }
   }, [autoFocus, disabled])
 
-  useEffect(() => {
-    if (!toolPanelOpen) return
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setToolPanelOpen(false)
-      }
-    }
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [toolPanelOpen])
-
-  useEffect(() => {
-    if (!modeMenuOpen) return
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeModeMenu()
-      }
-    }
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [closeModeMenu, modeMenuOpen])
-
-  useEffect(() => {
-    if (!projectMenuOpen) return
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        closeProjectMenu()
-      }
-    }
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [closeProjectMenu, projectMenuOpen])
+  usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
+  usePopoverMenu(modeMenuOpen, closeModeMenu, modeMenuRef)
+  usePopoverMenu(projectMenuOpen, closeProjectMenu, projectMenuRef)
 
   useEffect(() => {
     if (!slashPanelOpen) return
@@ -1903,6 +1879,7 @@ export const InputBar = memo(function InputBar({
           <>
             <div className="fixed inset-0 z-30" onClick={() => setToolPanelOpen(false)} aria-hidden />
             <div
+              ref={toolPanelRef}
               className={`chat-motion-popover absolute inset-x-0 z-40 overflow-hidden kv-menu ${projectPanelPlacementClass}`}
               style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
               data-tauri-drag-region="false"
@@ -2038,6 +2015,7 @@ export const InputBar = memo(function InputBar({
                       aria-hidden
                     />
                     <div
+                      ref={projectMenuRef}
                       className={`chat-motion-popover absolute left-0 z-50 w-[min(260px,calc(100vw-24px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
                       style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
                       data-tauri-drag-region="false"
@@ -2286,6 +2264,7 @@ export const InputBar = memo(function InputBar({
                       aria-hidden
                     />
                     <div
+                      ref={projectMenuRef}
                       className={`chat-motion-popover absolute left-0 z-50 w-[min(260px,calc(100vw-24px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
                       style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
                       data-tauri-drag-region="false"
@@ -2448,6 +2427,7 @@ export const InputBar = memo(function InputBar({
                   <>
                     <div className="fixed inset-0 z-30" onClick={closeModeMenu} aria-hidden />
                     <div
+                      ref={modeMenuRef}
                       className={`chat-motion-popover absolute right-0 z-40 w-[min(236px,calc(100vw-32px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
                       style={{ ['--chat-popover-origin' as string]: modePanelOrigin }}
                       data-tauri-drag-region="false"

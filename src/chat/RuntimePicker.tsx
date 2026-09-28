@@ -6,7 +6,7 @@ import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
 import { IconButton } from '../components/Button'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
-import { useEscapeToClose } from './useEscapeToClose'
+import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
@@ -104,10 +104,10 @@ function stripEffortDescription(id: string, label: string): string {
 function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId, locked = false }: RuntimePickerProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
-  useEscapeToClose(open, () => setOpen(false))
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  usePopoverMenu(open, () => setOpen(false), menuRef)
   const menuMaxH = usePopoverMaxHeight(open, menuRef, 'down', 460)
   // 请求代际：conversationId 切换 / 手动刷新会并发发起检测，只让最新一次的结果落地
   // （也兜住卸载后 setState）。
@@ -305,9 +305,10 @@ function ExternalModelSelectorBase({
   const t = useT()
   const [open, setOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
-  useEscapeToClose(open, () => setOpen(false))
-  useEscapeToClose(reasoningOpen, () => setReasoningOpen(false))
   const modelMenuRef = useRef<HTMLDivElement>(null)
+  const reasoningMenuRef = useRef<HTMLDivElement>(null)
+  usePopoverMenu(open, () => setOpen(false), modelMenuRef)
+  usePopoverMenu(reasoningOpen, () => setReasoningOpen(false), reasoningMenuRef)
   const modelMenuMaxH = usePopoverMaxHeight(open, modelMenuRef, 'down', 320)
   // 懒查：只探选中 agent 的模型（cwd-scoped），不再拉全量列表。保留上次结果，不清空闪。
   const [models, setModels] = useState<DetectedExternalAgent['models']>([])
@@ -499,6 +500,8 @@ function ExternalModelSelectorBase({
         <button
           type="button"
           onClick={() => setOpen(!open)}
+          aria-haspopup="menu"
+          aria-expanded={open}
           className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
           title={displayName}
         >
@@ -588,6 +591,8 @@ function ExternalModelSelectorBase({
           <button
             type="button"
             onClick={() => setReasoningOpen(!reasoningOpen)}
+            aria-haspopup="menu"
+            aria-expanded={reasoningOpen}
             className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
             title={t.chatThinkingLevel.replace('{level}', currentReasoningLabel)}
             aria-label={t.chatThinkingLevel.replace('{level}', currentReasoningLabel)}
@@ -608,12 +613,14 @@ function ExternalModelSelectorBase({
                 onClick={() => setReasoningOpen(false)}
                 aria-hidden
               />
-              <div className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto kv-menu">
+              <div role="menu" ref={reasoningMenuRef} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto kv-menu">
                 {activeReasoningOptions.map((option) => {
                   const active = option.id === reasoningPillValue
                   return (
                     <button
                       key={option.id}
+                      role="menuitemradio"
+                      aria-checked={active}
                       type="button"
                       onClick={() => {
                         onModelChange(agentRuntime.externalModel ?? 'default', option.id)

@@ -9,6 +9,7 @@ import { WorksIcon } from '../settings/public/icons'
 import { artifactDataUrl, artifactMimeType } from './artifacts'
 import { DockContextMenu, type DockMenuAnchor } from './dock/DockContextMenu'
 import './ArtifactsCenter.css'
+import { confirmDialog } from '../components/dialogQueue'
 
 let cachedPage: ArtifactLibraryPage | null = null
 // Allows an explicit cold read in regression tests.
@@ -116,10 +117,11 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   function recordIds(workIds: string[]) {
     return groups.filter(([item]) => workIds.includes(item.workId)).flatMap((items) => items.map((item) => item.id))
   }
-  function deleteWorks(workIds: string[]) {
+  async function deleteWorks(workIds: string[]) {
     const ids = recordIds(workIds)
     if (!ids.length) return
-    if (!window.confirm(zh ? `删除 ${workIds.length} 件作品？原聊天记录仍会保留。` : `Delete ${workIds.length} work${workIds.length === 1 ? '' : 's'}? Source chats stay unchanged.`)) return
+    const message = zh ? `删除 ${workIds.length} 件作品？原聊天记录仍会保留。` : `Delete ${workIds.length} work${workIds.length === 1 ? '' : 's'}? Source chats stay unchanged.`
+    if (!(await confirmDialog({ message, confirmLabel: zh ? '删除' : 'Delete', danger: true }))) return
     void run(async () => {
       const failures: string[] = []
       for (const id of ids) {

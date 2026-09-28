@@ -7,6 +7,7 @@ import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { useT } from '../components/i18n'
 import type { AdditionalDirectory } from './types'
 import { MAX_ADDITIONAL_DIRECTORIES } from './types'
+import { usePopoverMenu } from './usePopoverMenu'
 
 const PROMPT_ONLY_AGENTS = new Set(['pi', 'dsh'])
 
@@ -84,21 +85,15 @@ export function ComposerAddMenu({
       if (ref.current?.contains(e.target as Node)) return
       closeMenu()
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (viewRef.current !== 'root') {
-        setView('root')
-        return
-      }
-      closeMenu()
-    }
     document.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('keydown', onKey)
-    }
+    return () => document.removeEventListener('mousedown', onDown)
   }, [closeMenu, openMenu])
+
+  // Esc 先退回上一级视图，在根视图才关菜单。
+  usePopoverMenu(openMenu, () => {
+    if (viewRef.current !== 'root') setView('root')
+    else closeMenu()
+  }, popoverRef)
 
   const attachedNorm = new Set(directories.map((entry) => normalizeDirPath(entry.path)))
 

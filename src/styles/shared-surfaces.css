@@ -243,3 +243,45 @@
 .dark .kv-scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.25);
 }
+
+/* Tailwind preflight 把所有元素 margin 清零，原生模态 <dialog> 失去 margin:auto 居中，
+   会贴在窗口左上角。所有 <dialog class="kv-modal">（确认框、作品重命名等）在这里补回。 */
+dialog.kv-modal {
+  margin: auto;
+}
+
+/* 应用内确认 / 提示框（src/components/AppDialog.tsx）。外框、配色、阴影沿用 .kv-modal，
+   这里只管内部排版。原生 <dialog> 进顶层，背景遮罩走 dialog.kv-modal::backdrop。 */
+.kv-modal.kv-app-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 360px;
+}
+
+.kv-app-dialog-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.kv-app-dialog-message {
+  margin: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.kv-app-dialog-title + .kv-app-dialog-message {
+  color: var(--text-muted, var(--color-muted-foreground));
+}
+
+.kv-app-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

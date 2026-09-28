@@ -8,6 +8,7 @@ import { AutomationEditor } from './AutomationEditor'
 import { AutomationList } from './AutomationList'
 import { createBlankAutomation } from './graph'
 import type { Automation, AutomationMeta } from '../../api/automationContracts'
+import { confirmDialog } from '../../components/dialogQueue'
 
 function clearTimeoutRef(ref: { current: ReturnType<typeof setTimeout> | null }) {
   if (ref.current == null) return
@@ -266,8 +267,8 @@ export function AutomationCenter() {
           setError(err instanceof Error ? err.message : String(err))
         })
       }}
-      onDelete={(id) => {
-        if (!window.confirm(t.chatAutomationDeleteConfirm)) return
+      onDelete={async (id) => {
+        if (!(await confirmDialog({ message: t.chatAutomationDeleteConfirm, confirmLabel: t.dialogDelete, danger: true }))) return
         void automationApi.remove(id).then(loadList).catch((err) => {
           setError(err instanceof Error ? err.message : String(err))
         })

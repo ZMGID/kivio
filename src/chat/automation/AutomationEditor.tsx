@@ -74,6 +74,7 @@ import type {
   AutomationNodeType,
   FlowNode as FlowNodeModel,
 } from '../../api/automationContracts'
+import { alertDialog } from '../../components/dialogQueue'
 
 const nodeTypes = {
   'trigger.manual': FlowNode,
@@ -577,7 +578,7 @@ function EditorInner({
       await automationApi.exportToFile(automation.id, path)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      window.alert(`${t.chatAutomationExportFailed}${message}`)
+      void alertDialog(`${t.chatAutomationExportFailed}${message}`)
     }
   }, [automation.id, automation.name, onFlushSave, t])
 

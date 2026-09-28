@@ -25,6 +25,7 @@ import { builtinAssistantGlyph } from './assistantIcons'
 import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
 import type { ChatAssistant, SkillMeta } from './types'
+import { confirmDialog } from '../components/dialogQueue'
 
 interface AssistantCenterProps {
   skills: SkillMeta[]
@@ -423,7 +424,7 @@ export function AssistantCenter({
       setView('list')
       return
     }
-    if (!window.confirm(t.chatAssistantDeleteConfirm.replace('{name}', draft.name))) return
+    if (!(await confirmDialog({ message: t.chatAssistantDeleteConfirm.replace('{name}', () => draft.name), confirmLabel: t.dialogDelete, danger: true }))) return
     setSaving(true)
     setError('')
     try {

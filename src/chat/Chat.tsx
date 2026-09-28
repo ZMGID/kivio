@@ -118,6 +118,8 @@ import { getSettingsCached, subscribeSettings, updateSettingsCached } from '../a
 import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { OnboardingShell } from '../onboarding/public/shell'
 import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
+import { AppDialogHost } from '../components/AppDialog'
+import { confirmDialog } from '../components/dialogQueue'
 import { i18n, LangContext, type Lang } from '../components/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
@@ -963,10 +965,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setAssistantStreamStatsByMessageId({})
       setStreamError('')
     },
-    requestClearChat: (conversationId) => {
-      if (executionOwner.snapshot(conversationId).inFlight || previewOwner.isStreaming(conversationId)) return 'busy'
-      return window.confirm(i18n[uiLangRef.current].chatClearChatConfirm)
-        ? 'confirmed' : 'cancelled'
+    requestClearChat: async (conversationId) => {
+      const busy = () => executionOwner.snapshot(conversationId).inFlight || previewOwner.isStreaming(conversationId)
+      if (busy()) return 'busy'
+      const t = i18n[uiLangRef.current]
+      const confirmed = await confirmDialog({ message: t.chatClearChatConfirm, confirmLabel: t.dialogClear, danger: true })
+      if (!confirmed) return 'cancelled'
+      // 对话框不冻结页面：等待期间可能已开始新一轮回复。
+      return busy() ? 'busy' : 'confirmed'
     },
     deleteConversation: async (conversationId) => { await chatApi.deleteConversation(conversationId) },
     cancelDeletedRun: async (conversationId) => { await chatApi.cancelStream(conversationId) },
@@ -3009,6 +3015,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       </div>
     </Profiler>
     </AsyncQuestionsContext.Provider>
+    <AppDialogHost />
     </LangContext.Provider>
   )
 }

@@ -21,6 +21,7 @@ import {
 import { getPopoutConversationId } from './popoutRoutes'
 import { PopoutTitlebar } from './PopoutTitlebar'
 import { usePopoutSession } from './usePopoutSession'
+import { AppDialogHost } from '../../components/AppDialog'
 
 const popoutConversationId = getPopoutConversationId()
 if (popoutConversationId) configureChatProtocolFilter(popoutConversationId)
@@ -249,6 +250,7 @@ export default function ChatPopout({ onContentReady }: ChatPopoutProps) {
   return (
     <LangContext.Provider value={lang}>
       <ChatPopoutBody conversationId={popoutConversationId} lang={lang} />
+      <AppDialogHost />
     </LangContext.Provider>
   )
 }

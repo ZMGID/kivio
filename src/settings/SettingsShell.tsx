@@ -451,6 +451,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (recordingTarget) return
+      // 应用内确认框（原生 <dialog>）自己处理 Esc；捕获阶段在这里先接住会把整个设置页关掉。
+      if (e.target instanceof Element && e.target.closest('dialog[open]')) return
 
       if (modelPickerProviderId) {
         if (e.key === 'Escape') {

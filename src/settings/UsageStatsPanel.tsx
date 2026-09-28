@@ -10,6 +10,7 @@ import {
 } from '../api/tauri'
 import { Button } from '../components/Button'
 import { Input, Select, SettingsGroup } from './components'
+import { confirmDialog } from '../components/dialogQueue'
 
 type UsageView = 'logs' | 'providers' | 'models'
 
@@ -1037,7 +1038,11 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   }, [view])
 
   const clearStats = useCallback(async () => {
-    const ok = window.confirm(lang === 'zh' ? '清空所有本地用量统计？' : 'Clear all local usage statistics?')
+    const ok = await confirmDialog({
+      message: lang === 'zh' ? '清空所有本地用量统计？' : 'Clear all local usage statistics?',
+      confirmLabel: lang === 'zh' ? '清空' : 'Clear',
+      danger: true,
+    })
     if (!ok) return
     setClearing(true)
     setError('')

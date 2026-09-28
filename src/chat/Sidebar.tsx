@@ -43,6 +43,7 @@ import { i18n, useT, type I18n, type Lang } from '../components/i18n'
 import { conversationMarkdownFilename } from './conversationExport'
 import { displayConversationTitle, isPlaceholderTitle, isProvisionalTitle } from './conversationTitle'
 import { SwapTitle } from './SwapTitle'
+import { alertDialog, confirmDialog } from '../components/dialogQueue'
 
 function resolveChatUserProfile(
   chat?: { userDisplayName?: string; userAvatar?: string } | null,
@@ -848,7 +849,7 @@ export const Sidebar = memo(function Sidebar({
       await loadSidebarData({ silent: true })
     } catch (err) {
       console.error('Failed to regenerate conversation title:', err)
-      window.alert(
+      void alertDialog(
         t.chatRegenerateTitleFailed + (err instanceof Error ? err.message : String(err)),
       )
     } finally {
@@ -916,7 +917,7 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const handleDeleteConversation = async (id: string) => {
-    if (!window.confirm(t.chatDeleteConversationConfirm)) return
+    if (!(await confirmDialog({ message: t.chatDeleteConversationConfirm, confirmLabel: t.dialogDelete, danger: true }))) return
     // B3：删"generating"会话先强制清父组件 in-flight/乐观状态，
     // 让乐观合并（visibleConversations）不再保留它。
     if (generatingConversationIds.has(id)) {
@@ -932,12 +933,12 @@ export const Sidebar = memo(function Sidebar({
       // 对话本身已删掉，只是副产物没清干净（典型：工作区里还有进程占着目录）。
       // 以前这类情况整个删除会中止、对话又冒回来，现在只提示一句。
       if (warnings.length > 0) {
-        window.alert(t.chatDeleteConversationPartial + warnings.join('\n'))
+        void alertDialog(t.chatDeleteConversationPartial + warnings.join('\n'))
       }
     } catch (err) {
       console.error('Failed to delete conversation:', err)
       const message = err instanceof Error ? err.message : String(err)
-      window.alert(t.chatDeleteConversationFailed + message)
+      void alertDialog(t.chatDeleteConversationFailed + message)
     } finally {
       // 无论后端删除成功或抛错，都本地剔除该 id 并刷新侧栏，确保 ghost 立即消失。
       setConversations((items) => items.filter((item) => item.id !== id))
@@ -960,7 +961,7 @@ export const Sidebar = memo(function Sidebar({
     } catch (err) {
       const prefix = t.chatExportFailed
       const message = err instanceof Error ? err.message : String(err)
-      window.alert(`${prefix}${message}`)
+      void alertDialog(`${prefix}${message}`)
     }
   }
 
@@ -1028,7 +1029,7 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const handleDeleteSet = async (set: ChatSet) => {
-    if (!window.confirm(t.chatDeleteSetConfirm.replace('{name}', set.name))) {
+    if (!(await confirmDialog({ message: t.chatDeleteSetConfirm.replace('{name}', () => set.name), confirmLabel: t.dialogDelete, danger: true }))) {
       return
     }
     try {
@@ -1090,12 +1091,12 @@ export const Sidebar = memo(function Sidebar({
     try {
       await chatApi.openProjectFolder(project.id)
     } catch (err) {
-      window.alert(typeof err === 'string' ? err : (err as Error).message || t.chatOpenProjectFolderFailed)
+      void alertDialog(typeof err === 'string' ? err : (err as Error).message || t.chatOpenProjectFolderFailed)
     }
   }
 
   const handleDeleteProject = async (project: ChatProject) => {
-    if (!window.confirm(t.chatDeleteProjectConfirm.replace('{name}', project.name))) {
+    if (!(await confirmDialog({ message: t.chatDeleteProjectConfirm.replace('{name}', () => project.name), confirmLabel: t.dialogDelete, danger: true }))) {
       return
     }
     try {
@@ -1116,9 +1117,9 @@ export const Sidebar = memo(function Sidebar({
       : conversations
     if (targetConversations.length === 0) return
     const confirmText = selectedProject
-      ? t.chatDeleteAllInProjectConfirm.replace('{name}', selectedProject.name)
+      ? t.chatDeleteAllInProjectConfirm.replace('{name}', () => selectedProject.name)
       : t.chatDeleteAllConfirm
-    if (!window.confirm(confirmText.replace('{count}', String(targetConversations.length)))) return
+    if (!(await confirmDialog({ message: confirmText.replace('{count}', String(targetConversations.length)), confirmLabel: t.dialogDelete, danger: true }))) return
     try {
       await Promise.all(targetConversations.map((conv) => chatApi.deleteConversation(conv.id)))
       if (currentConversationId && targetConversations.some((conv) => conv.id === currentConversationId)) {

@@ -46,6 +46,7 @@ import type {
   ExternalCliProvider,
   Settings as SettingsData,
 } from '../api/tauri'
+import { alertDialog, confirmDialog } from '../components/dialogQueue'
 
 const EMPTY_CONFIG: ExternalCliAgentConfig = {}
 const DSH_OFFICIAL_PROVIDER_ID = 'deepseek-official'
@@ -970,7 +971,7 @@ function ProviderSection({
       ...(!enabled && current === provider.id ? { currentProvider: '' } : {}),
     })
   }
-  const remove = (provider: ExternalCliProvider) => {
+  const remove = async (provider: ExternalCliProvider) => {
     const deletesNativeFile = Boolean(
       provider.nativeProviderId &&
       nativeProviders.some((native) => native.id === provider.nativeProviderId),
@@ -978,7 +979,7 @@ function ProviderSection({
     const confirmText = deletesNativeFile
       ? t.externalAgentsDshNativeDeleteConfirm
       : t.externalAgentsProviderDeleteConfirm
-    if (!window.confirm(confirmText.replace('{name}', provider.name))) return
+    if (!(await confirmDialog({ message: confirmText.replace('{name}', () => provider.name), confirmLabel: t.dialogDelete, danger: true }))) return
     onPatch({
       providers: providers.filter((p) => p.id !== provider.id),
       ...(current === provider.id ? { currentProvider: '' } : {}),
@@ -1002,17 +1003,20 @@ function ProviderSection({
       const detail = await externalAgentSettingsApi.dshNativeProviderGet(native.id)
       setEditing(dshNativeDetailToProvider(detail))
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err))
+      void alertDialog(err instanceof Error ? err.message : String(err))
     }
   }
 
   const removeNative = async (native: NativeProviderSummary) => {
-    if (!window.confirm(t.externalAgentsDshNativeDeleteConfirm.replace('{name}', native.name)))
-      return
+    if (!(await confirmDialog({
+      message: t.externalAgentsDshNativeDeleteConfirm.replace('{name}', () => native.name),
+      confirmLabel: t.dialogDelete,
+      danger: true,
+    }))) return
     try {
       await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : String(err))
+      void alertDialog(err instanceof Error ? err.message : String(err))
       return
     }
     const adopted = providers.find((provider) => provider.nativeProviderId === native.id)
@@ -1173,7 +1177,7 @@ function ProviderSection({
                   <IconButton
                     size="sm"
                     label={t.externalAgentsRemove}
-                    onClick={() => remove(provider)}
+                    onClick={() => void remove(provider)}
                   >
                     <Trash2 size={13} />
                   </IconButton>

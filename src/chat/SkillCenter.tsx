@@ -30,6 +30,7 @@ import { useT, type I18n } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { SkillStoreBrowser } from './SkillStoreBrowser'
 import { SkillIcon } from '../settings/public/icons'
+import { confirmDialog } from '../components/dialogQueue'
 
 interface SkillCenterProps {
   /** Skill 启用状态 / 列表变化后通知 Chat 刷新其技能列表 */
@@ -480,7 +481,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd }: SkillCenterProps) {
   }, [onSkillsChanged, refreshChatSkills, t])
 
   const handleDeleteSkill = useCallback(async (skill: SkillMeta) => {
-    if (!window.confirm(t.chatSkillDeleteConfirm.replace('{name}', skill.name))) return
+    if (!(await confirmDialog({ message: t.chatSkillDeleteConfirm.replace('{name}', () => skill.name), confirmLabel: t.dialogDelete, danger: true }))) return
     setSkillError('')
     try {
       await api.chatSkillsUninstall(skill.id)
