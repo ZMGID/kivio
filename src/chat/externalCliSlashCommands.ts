@@ -66,6 +66,7 @@ export function mapExternalCliSlashCommands(
       category,
       keywords: [commandName, commandName.split(':').pop() ?? commandName],
       kind: 'cli',
+      agentId: id,
       argumentHint: command.argumentHint?.trim() || undefined,
     }
   })

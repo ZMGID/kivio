@@ -198,6 +198,36 @@ pub(crate) async fn run_external_cli_reply_in(
         );
     }
 
+    // Use the picker's discovery directory: projectless conversations discover
+    // global skills there but execute in their own per-conversation directory.
+    let slash_cwd =
+        crate::external_agents::workspace::resolve_detection_cwd(app, Some(&conversation.id))?;
+    let slash_catalog = state
+        .external_discovery()
+        .get_cached_external_slash_commands(
+            &slash::cache_key(&agent_id, slash_cwd.to_string_lossy().as_ref()),
+            slash::SLASH_COMMANDS_CACHE_TTL,
+            slash::SLASH_COMMANDS_EMPTY_CACHE_TTL,
+        );
+    let slash_catalog = match slash_catalog {
+        Some(commands) if !commands.is_empty() => commands,
+        _ if !crate::chat::slash_commands::command_ranges(latest_user_message).is_empty() => {
+            let (supported, commands, reason) = slash::list_external_cli_slash_commands(
+                app,
+                state,
+                &agent_id,
+                Some(&conversation.id),
+            )
+            .await?;
+            if supported && commands.is_empty() {
+                return Err(reason.unwrap_or_else(|| "斜杠命令列表尚未加载，请刷新后重试。".into()));
+            }
+            commands
+        }
+        _ => Vec::new(),
+    };
+    let inline_prompt = slash::inline_command_prompt(latest_user_message, &slash_catalog)?;
+    let latest_user_message = inline_prompt.as_deref().unwrap_or(latest_user_message);
     let is_slash = is_cli_slash_input(latest_user_message);
 
     let skill_detail = if is_slash {
@@ -363,12 +393,14 @@ pub(crate) async fn run_external_cli_reply_in(
         }
     });
 
-    // 附件（slash 命令不带附件，保持 passthrough 语义）。图片：支持原生图片块的协议按白名单
+    // Skill commands are model requests and may carry files/images. Control commands
+    // retain their existing passthrough behavior. 图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
+    let include_attachments = accepts_prompt_attachments(def.stream_format, latest_user_message);
     let (image_blocks, degraded_image_paths): (
         Vec<crate::external_agents::attachments::ImageBlock>,
         Vec<std::path::PathBuf>,
-    ) = if is_slash {
+    ) = if !include_attachments {
         (Vec::new(), Vec::new())
     } else if def.supports_native_image {
         crate::external_agents::attachments::load_image_blocks(
@@ -378,7 +410,7 @@ pub(crate) async fn run_external_cli_reply_in(
     } else {
         (Vec::new(), image_paths.to_vec())
     };
-    if !is_slash {
+    if include_attachments {
         let image_note = crate::external_agents::attachments::image_paths_note_for(
             Some(&resolved_bin),
             &degraded_image_paths,
@@ -400,7 +432,7 @@ pub(crate) async fn run_external_cli_reply_in(
 
     let mut extra_dirs = extra_allowed_dirs_for_agent(def, &settings.chat_tools.skill_scan_paths);
     // 降级图片 / 文件需要 CLI 自己从磁盘读 → 把本会话附件目录加进 allowed-dir。
-    if !is_slash && (!degraded_image_paths.is_empty() || !file_paths.is_empty()) {
+    if include_attachments && (!degraded_image_paths.is_empty() || !file_paths.is_empty()) {
         if let Ok(dir) = crate::chat::storage::conversation_attachments_dir(app, &conversation.id) {
             extra_dirs.push(dir.to_string_lossy().to_string());
         }
@@ -1793,18 +1825,49 @@ fn launch_config_for_turn(
 /// 静默消失（dsh 没有 file ContentBlock，非图片只能靠这段路径说明）。
 ///
 /// 其余持久协议（codex / ACP）的 full_prompt 首轮**含**指令，复用轮只发最新用户消息，
-/// 保持现有行为。
+/// 保持现有行为。Codex 显式 Skill 使用无指令包装的 passthrough 正文，需保留附件说明。
 fn persistent_turn_prompt<'a>(
     protocol: StreamFormat,
     composed_prompt: &'a str,
     latest_user_message: &'a str,
 ) -> &'a str {
     match protocol {
+        StreamFormat::CodexAppServer
+            if crate::external_agents::session::codex_app_server::codex_skill_command(
+                latest_user_message,
+            )
+            .is_some() =>
+        {
+            composed_prompt
+        }
         StreamFormat::ClaudeStreamJson
         | StreamFormat::DshJsonRpc
         | StreamFormat::PiRpc
         | StreamFormat::AntigravityStreamJson => composed_prompt,
         _ => latest_user_message,
+    }
+}
+
+fn accepts_prompt_attachments(protocol: StreamFormat, prompt: &str) -> bool {
+    if !is_cli_slash_input(prompt) {
+        return true;
+    }
+    match protocol {
+        StreamFormat::CodexAppServer => {
+            crate::external_agents::session::codex_app_server::codex_skill_command(prompt).is_some()
+        }
+        StreamFormat::PiRpc => {
+            let prompt = prompt.trim_start();
+            crate::chat::slash_commands::command_ranges(prompt)
+                .first()
+                .is_some_and(|range| {
+                    range.start == 0
+                        && prompt[range.clone()]
+                            .strip_prefix("/skill:")
+                            .is_some_and(|name| !name.is_empty())
+                })
+        }
+        _ => false,
     }
 }
 
@@ -5277,6 +5340,33 @@ mod tests {
         assert_eq!(
             persistent_turn_prompt(StreamFormat::AcpJsonRpc, composed, latest),
             latest
+        );
+    }
+
+    #[test]
+    fn skill_slash_preserves_attachments_on_fresh_and_reused_turns() {
+        assert!(accepts_prompt_attachments(
+            StreamFormat::CodexAppServer,
+            "/wizard task"
+        ));
+        assert!(accepts_prompt_attachments(
+            StreamFormat::PiRpc,
+            "/skill:wizard task"
+        ));
+        assert!(!accepts_prompt_attachments(
+            StreamFormat::CodexAppServer,
+            "/compact"
+        ));
+        assert!(!accepts_prompt_attachments(StreamFormat::PiRpc, "/compact"));
+        assert!(!accepts_prompt_attachments(
+            StreamFormat::PiRpc,
+            "/skill:wizard/file"
+        ));
+        assert!(!accepts_prompt_attachments(StreamFormat::PiRpc, "/skill:"));
+        let composed = "/wizard task\n\n# 附带文件\nPath: /work/example.pdf";
+        assert_eq!(
+            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, "/wizard task"),
+            composed
         );
     }
 

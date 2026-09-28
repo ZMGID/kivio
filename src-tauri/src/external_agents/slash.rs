@@ -28,6 +28,46 @@ pub fn cache_key(agent_id: &str, cwd: &str) -> String {
     format!("{agent_id}:{cwd}")
 }
 
+/// Native CLIs expect their command first. Adapt only a known command from the
+/// same catalog used by the picker, keeping the stored/displayed user text intact.
+pub(super) fn inline_command_prompt(
+    content: &str,
+    commands: &[ExternalCliSlashCommand],
+) -> Result<Option<String>, String> {
+    let matches: Vec<_> = crate::chat::slash_commands::command_ranges(content)
+        .into_iter()
+        .filter(|range| {
+            commands
+                .iter()
+                .any(|command| command.slash.eq_ignore_ascii_case(&content[range.clone()]))
+        })
+        .collect();
+    if matches.len() > 1 {
+        return Err("一次只能执行一个外部 CLI 斜杠命令，请拆成多条消息发送。".into());
+    }
+    let Some(range) = matches.first() else {
+        return Ok(None);
+    };
+    let prefix = content[..range.start].trim();
+    let command = &content[range.clone()];
+    let suffix = content[range.end..].trim();
+    if prefix.is_empty() {
+        let normalized = if suffix.is_empty() {
+            command.to_owned()
+        } else {
+            format!("{command} {suffix}")
+        };
+        return Ok((normalized != content.trim()).then_some(normalized));
+    }
+    // Keep positional arguments immediately after the command, then the context
+    // written before it. Never drop or persistently reorder the user's draft.
+    Ok(Some(if suffix.is_empty() {
+        format!("{command} {prefix}")
+    } else {
+        format!("{command} {suffix}\n{prefix}")
+    }))
+}
+
 pub fn parse_slash_commands_from_init(value: &Value) -> Vec<ExternalCliSlashCommand> {
     let Some(items) = value.get("slash_commands").and_then(|v| v.as_array()) else {
         return Vec::new();
@@ -308,6 +348,53 @@ pub fn slash_commands_from_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_cli_command_is_adapted_only_from_the_known_catalog() {
+        let commands = parse_slash_commands_from_init(
+            &serde_json::json!({"slash_commands": ["commit", "compact"]}),
+        );
+        assert_eq!(
+            inline_command_prompt("请用/commit fix login", &commands)
+                .unwrap()
+                .as_deref(),
+            Some("/commit fix login\n请用")
+        );
+        assert_eq!(
+            inline_command_prompt("/commit fix login", &commands).unwrap(),
+            None
+        );
+        for text in [
+            "please /unknown args",
+            "https://host/commit",
+            "`/commit`",
+            "/commit/file",
+        ] {
+            assert_eq!(inline_command_prompt(text, &commands).unwrap(), None);
+        }
+        assert!(inline_command_prompt("/commit fix /compact", &commands).is_err());
+    }
+
+    #[test]
+    fn inline_skill_slash_separates_chinese_arguments_even_at_the_start() {
+        let commands =
+            parse_slash_commands_from_init(&serde_json::json!({"slash_commands":["skill:wizard"]}));
+        for (input, expected) in [
+            ("/skill:wizard配置环境", "/skill:wizard 配置环境"),
+            ("/skill:wizard，配置环境", "/skill:wizard ，配置环境"),
+            ("/skill:wizard\n配置环境", "/skill:wizard 配置环境"),
+            ("请用/skill:wizard 配置环境", "/skill:wizard 配置环境\n请用"),
+        ] {
+            assert_eq!(
+                inline_command_prompt(input, &commands).unwrap().as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            inline_command_prompt("/skill:wizard", &commands).unwrap(),
+            None
+        );
+    }
     use serde_json::json;
 
     #[test]

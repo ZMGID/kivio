@@ -1444,7 +1444,7 @@ impl CodexAppServerSession {
     /// prompts cannot be matched or this Codex lacks `thread/turns/list` / `thread/revert`; the
     /// caller then starts a fresh thread carrying the visible history instead.
     pub async fn revert_to_visible(&mut self, visible_users: &[String]) -> Result<(), String> {
-        use crate::external_agents::session::{native_rewind_point, NativeRewindPoint};
+        use crate::external_agents::session::NativeRewindPoint;
 
         let mut turns = Vec::new();
         let mut cursor: Option<String> = None;
@@ -1473,7 +1473,7 @@ impl CodexAppServerSession {
             return Err("thread history is too long to align".to_string());
         }
         let native: Vec<String> = turns.iter().map(|(_, text)| text.clone()).collect();
-        match native_rewind_point(&native, visible_users) {
+        match codex_rewind_point(&native, visible_users) {
             NativeRewindPoint::Aligned => Ok(()),
             NativeRewindPoint::DropFrom(index) => self
                 .request(
@@ -1525,6 +1525,31 @@ impl CodexAppServerSession {
     ) -> Result<(), String> {
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
+        let mut input = if codex_skill_command(prompt).is_some() {
+            // Resolve against this live session's working directory. The picker cache
+            // is presentation data; only the runtime can authorize the skill path.
+            let params = json!({"cwds":[self.cwd], "forceReload":true});
+            let request =
+                tokio::time::timeout(Duration::from_secs(10), self.request("skills/list", params));
+            tokio::pin!(request);
+            let catalog = loop {
+                tokio::select! {
+                    result = &mut request => {
+                        break result.map_err(|_| "加载 Codex Skill 超时，请重试。".to_string())??;
+                    }
+                    command = control.recv() => match command {
+                        Some(SessionCommand::Cancel) => return Err("cancelled".into()),
+                        Some(SessionCommand::Close) | None => return Err("closed".into()),
+                        Some(SessionCommand::Steer { accepted, .. }) => { let _ = accepted.send(false); }
+                        Some(SessionCommand::RunTurn { done, .. }) => { let _ = done.send(Err("session busy".into())); }
+                        Some(SessionCommand::StopTask { .. }) => {}
+                    }
+                }
+            };
+            codex_skill_input(prompt, &catalog)?
+        } else {
+            vec![json!({"type":"text", "text":prompt})]
+        };
         let turn_id = self.next_id;
         self.next_id += 1;
 
@@ -1541,7 +1566,6 @@ impl CodexAppServerSession {
         } else {
             // Codex reads images as `localImage` items pointing at on-disk files; copy each into a
             // private temp dir (its sandbox can't reach the conversation attachments dir).
-            let mut input = vec![json!({ "type": "text", "text": prompt })];
             input.extend(local_image_items(&self.cli_bin, images));
             let turn_params = build_codex_turn_params(
                 &self.thread_id,
@@ -2175,6 +2199,105 @@ const CODEX_BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("undo", "撤销上一步"),
 ];
 
+pub(crate) fn codex_skill_command(prompt: &str) -> Option<&str> {
+    let prompt = prompt.trim_start();
+    let range = crate::chat::slash_commands::command_ranges(prompt)
+        .into_iter()
+        .next()?;
+    if range.start != 0 {
+        return None;
+    }
+    let name = &prompt[1..range.end];
+    (!CODEX_BUILTIN_COMMANDS
+        .iter()
+        .any(|(builtin, _)| name.eq_ignore_ascii_case(builtin)))
+    .then_some(name)
+}
+
+fn available_codex_skills(catalog: &Value) -> impl Iterator<Item = (&str, &str, &Value)> {
+    catalog
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| {
+            if skill.get("enabled").and_then(Value::as_bool) == Some(false) {
+                return None;
+            }
+            let name = skill.get("name")?.as_str()?.trim();
+            let path = skill.get("path")?.as_str()?.trim();
+            (!name.is_empty() && !path.is_empty()).then_some((name, path, skill))
+        })
+}
+
+fn codex_skill_input(prompt: &str, catalog: &Value) -> Result<Vec<Value>, String> {
+    let Some(command) = codex_skill_command(prompt) else {
+        return Ok(vec![json!({ "type": "text", "text": prompt })]);
+    };
+    let candidates: HashSet<_> = available_codex_skills(catalog)
+        .filter(|(name, _, _)| name.eq_ignore_ascii_case(command))
+        .map(|(name, path, _)| (name, path))
+        .collect();
+    if candidates.len() != 1 {
+        return Err(format!("无法明确加载 Codex Skill /{command}：技能不存在、已禁用或存在同名项。请刷新命令列表后重试。"));
+    }
+    let (name, path) = candidates.into_iter().next().unwrap();
+    let arguments = prompt.trim_start()[command.len() + 1..].trim();
+    let text = if arguments.is_empty() {
+        format!("${name}")
+    } else {
+        format!("${name} {arguments}")
+    };
+    Ok(vec![
+        json!({ "type": "text", "text": text }),
+        json!({"type":"skill", "name":name, "path":path}),
+    ])
+}
+
+fn codex_rewind_point(
+    native: &[String],
+    visible: &[String],
+) -> crate::external_agents::session::NativeRewindPoint {
+    // Reproduce only the exact wire transformation evidenced by the corresponding
+    // native $name prompt. Never match by command name alone or read changed skills.
+    let visible: Vec<_> = visible
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let Some(name) = native
+                .get(index)
+                .and_then(|text| text.strip_prefix('$'))
+                .and_then(|text| text.split_whitespace().next())
+            else {
+                return text.clone();
+            };
+            let command = ExternalCliSlashCommand {
+                name: name.into(),
+                slash: format!("/{name}"),
+                description: None,
+                argument_hint: None,
+            };
+            let Ok(adapted) =
+                crate::external_agents::slash::inline_command_prompt(text, &[command])
+            else {
+                return text.clone();
+            };
+            let adapted = adapted.as_deref().unwrap_or(text).trim_start();
+            match codex_skill_command(adapted) {
+                Some(actual) if actual.eq_ignore_ascii_case(name) => {
+                    format!("${name} {}", adapted[actual.len() + 1..].trim())
+                        .trim_end()
+                        .to_owned()
+                }
+                _ => text.clone(),
+            }
+        })
+        .collect();
+    crate::external_agents::session::native_rewind_point(native, &visible)
+}
+
 /// Result of a one-shot Codex model catalog probe (app-server `model/list`).
 ///
 /// Aligns with desktop-cc-gui: runtime list is authoritative; each model carries its own
@@ -2592,40 +2715,29 @@ pub async fn detect_codex_commands(
                 && write_rpc_notification(&mut stdin, "initialized", json!({}))
                     .await
                     .is_ok()
-                && write_rpc(&mut stdin, 2, "skills/list", json!({}))
-                    .await
-                    .is_ok();
+                && write_rpc(
+                    &mut stdin,
+                    2,
+                    "skills/list",
+                    json!({"cwds":[crate::external_agents::wsl::path_for_cli(resolved_bin, cwd)]}),
+                )
+                .await
+                .is_ok();
             if ok {
                 if let Ok(result) = read_until_response(&mut reader, &mut stdin, 2, overall).await {
                     let mut seen: HashSet<String> = out.iter().map(|c| c.name.clone()).collect();
-                    if let Some(groups) = result.get("data").and_then(|v| v.as_array()) {
-                        for group in groups {
-                            let Some(skills) = group.get("skills").and_then(|v| v.as_array())
-                            else {
-                                continue;
-                            };
-                            for skill in skills {
-                                let Some(name) = skill
-                                    .get("name")
+                    for (name, _, skill) in available_codex_skills(&result) {
+                        if seen.insert(name.to_string()) {
+                            out.push(ExternalCliSlashCommand {
+                                slash: format!("/{name}"),
+                                name: name.to_string(),
+                                description: skill
+                                    .get("description")
                                     .and_then(|v| v.as_str())
-                                    .map(str::trim)
-                                    .filter(|s| !s.is_empty())
-                                else {
-                                    continue;
-                                };
-                                if seen.insert(name.to_string()) {
-                                    out.push(ExternalCliSlashCommand {
-                                        slash: format!("/{name}"),
-                                        name: name.to_string(),
-                                        description: skill
-                                            .get("description")
-                                            .and_then(|v| v.as_str())
-                                            .map(|d| d.trim().to_string())
-                                            .filter(|d| !d.is_empty()),
-                                        argument_hint: None,
-                                    });
-                                }
-                            }
+                                    .map(|d| d.trim().to_string())
+                                    .filter(|d| !d.is_empty()),
+                                argument_hint: None,
+                            });
                         }
                     }
                 }
@@ -2672,7 +2784,12 @@ pub fn spawn_codex_session_actor(
                             approvals.as_mut(),
                         )
                         .await;
+                    let closed = result.as_ref().err().is_some_and(|error| error == "closed");
                     let _ = done.send(result);
+                    if closed {
+                        session.close().await;
+                        return;
+                    }
                 }
                 // 轮次之间没有可注入的对象：回 false 让前端把这条留在队列里、
                 // 轮末按普通消息发出去（绝不静默吞掉）。
@@ -2696,6 +2813,138 @@ pub fn spawn_codex_session_actor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_slash_rewind_matches_the_exact_transformed_task() {
+        use crate::external_agents::session::NativeRewindPoint;
+        let native = vec!["$wizard 配置环境\n请用".into(), "later task".into()];
+        assert_eq!(
+            codex_rewind_point(&native, &["请用/wizard 配置环境".into(), "new task".into()]),
+            NativeRewindPoint::DropFrom(1)
+        );
+        assert_eq!(
+            codex_rewind_point(&native, &["请用/wizard 配置别的".into(), "new task".into()]),
+            NativeRewindPoint::Unmatched
+        );
+        assert_eq!(
+            codex_rewind_point(&native, &["请用/other 配置环境".into(), "new task".into()]),
+            NativeRewindPoint::Unmatched
+        );
+        assert_eq!(
+            codex_rewind_point(
+                &["$wizard 配置环境".into()],
+                &["/wizard配置环境".into(), "new task".into()]
+            ),
+            NativeRewindPoint::Aligned
+        );
+    }
+
+    // A real pipe peer exercises serialization and the production run_turn path
+    // without invoking a paid model or requiring an installed Codex binary.
+    #[test]
+    fn skill_slash_protocol_peer() {
+        let Ok(mode) = std::env::var("KIVIO_SKILL_PROTOCOL_PEER") else {
+            return;
+        };
+        use std::io::{BufRead, Write};
+        let stdin = std::io::stdin();
+        let mut lines = stdin.lock().lines();
+        let list: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(list["method"], "skills/list");
+        assert_eq!(list["params"]["cwds"], json!(["/work"]));
+        println!(
+            "{}",
+            json!({"id":list["id"], "result":{"data":[{"skills":[{
+                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":mode == "enabled"
+            }]}]}})
+        );
+        std::io::stdout().flush().unwrap();
+        if mode == "enabled" {
+            let turn: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            assert_eq!(turn["method"], "turn/start");
+            assert_eq!(
+                turn["params"]["input"],
+                json!([
+                    {"type":"text", "text":"$wizard 配置环境"},
+                    {"type":"skill", "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md"}
+                ])
+            );
+            println!(
+                "{}",
+                json!({"method":"turn/completed", "params":{"turn":{"id":"turn-1", "status":"completed"}}})
+            );
+            std::io::stdout().flush().unwrap();
+        }
+        let finish: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            finish["method"], "test/finish",
+            "unexpected turn sent after skill resolution"
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_slash_runtime_resolves_before_dispatch_and_blocks_disabled_skills() {
+        for mode in ["enabled", "disabled"] {
+            let exe = std::env::current_exe().unwrap();
+            let mut child = tokio::process::Command::new(&exe)
+                .args([
+                    "--exact",
+                    "external_agents::session::codex_app_server::tests::skill_slash_protocol_peer",
+                    "--nocapture",
+                ])
+                .env("KIVIO_SKILL_PROTOCOL_PEER", mode)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut session = CodexAppServerSession {
+                stdin: child.stdin.take().unwrap(),
+                reader: BufReader::new(child.stdout.take().unwrap()).lines(),
+                stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
+                child,
+                thread_id: "thread-1".into(),
+                cwd: "/work".into(),
+                cli_bin: exe,
+                next_id: 1,
+                emitted_tools: HashSet::new(),
+                active_turn_id: None,
+                approval_policy: "never",
+            };
+            let (events, _event_rx) = mpsc::channel(32);
+            let (_control_tx, mut control) = mpsc::channel(8);
+            let result = timeout(
+                Duration::from_secs(5),
+                session.run_turn(
+                    "/wizard配置环境",
+                    None,
+                    None,
+                    &[],
+                    &[],
+                    &events,
+                    &mut control,
+                    None,
+                ),
+            )
+            .await
+            .expect("protocol exchange timed out");
+            if mode == "enabled" {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(result.unwrap_err().contains("无法明确加载"));
+            }
+            write_rpc_notification(&mut session.stdin, "test/finish", json!({}))
+                .await
+                .unwrap();
+            let status = timeout(Duration::from_secs(5), session.child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(status.success(), "{}", session.stderr_tail.await.unwrap());
+        }
+    }
 
     #[test]
     fn codex_prompt_turns_keep_user_text_and_turn_ids() {
@@ -3728,6 +3977,56 @@ mod tests {
         assert_eq!(params["model"], json!("gpt-5.3-codex"));
         assert_eq!(params["effort"], json!("high"));
         assert_eq!(params["approvalPolicy"], json!("on-request"));
+    }
+
+    #[test]
+    fn codex_skill_slash_sends_explicit_input_with_the_discovered_path() {
+        let catalog = json!({"data": [{"skills": [
+            {"name": "wizard", "path": "/work/.agents/skills/wizard/SKILL.md", "enabled": true}
+        ]}]});
+        let input = codex_skill_input("/wizard 帮我配置环境", &catalog).unwrap();
+        let params =
+            build_codex_turn_params("thread-1", "/work", input, None, None, &[], "on-request");
+        assert_eq!(
+            params["input"],
+            json!([
+                {"type": "text", "text": "$wizard 帮我配置环境"},
+                {"type": "skill", "name": "wizard", "path": "/work/.agents/skills/wizard/SKILL.md"}
+            ])
+        );
+    }
+
+    #[test]
+    fn codex_skill_slash_fails_closed_for_missing_disabled_or_ambiguous_skills() {
+        for skills in [
+            json!([]),
+            json!([{"name":"wizard", "path":"/skill/SKILL.md", "enabled":false}]),
+            json!([{"name":"wizard", "enabled":true}]),
+            json!([
+                {"name":"wizard", "path":"/a/SKILL.md", "enabled":true},
+                {"name":"wizard", "path":"/b/SKILL.md", "enabled":true}
+            ]),
+        ] {
+            assert!(
+                codex_skill_input("/wizard task", &json!({"data":[{"skills":skills}]})).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn codex_skill_slash_keeps_ordinary_prompts_and_builtins_as_text() {
+        for prompt in [
+            "normal task",
+            "/compact",
+            "`/wizard`",
+            "/wizard/file",
+            "https://host/wizard",
+        ] {
+            assert_eq!(
+                codex_skill_input(prompt, &json!({})).unwrap(),
+                vec![json!({"type":"text", "text":prompt})]
+            );
+        }
     }
 
     #[test]

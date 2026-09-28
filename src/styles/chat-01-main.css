@@ -305,25 +305,20 @@
   background: var(--theme-surface);
 }
 
-/* 有 field-sizing 时高度跟内容走，避开 JS 把 height 塌成 auto 的回流。 */
-.chat-composer-shell textarea {
-  field-sizing: content;
-}
-
 /* 问题优化：两拍，必须看得出「字被换过」。
    等待 = 草稿失焦呼吸；落地 = 旧稿先化开淡出，换字后再清晰落入。
    不用扫光 / background-clip:text（WebView 会退化成色块）。 */
-.chat-composer-shell textarea.is-optimizing {
+.chat-composer-shell .chat-composer-editor.is-optimizing {
   caret-color: transparent;
   animation: chat-composer-optimize-wait 1.7s ease-in-out infinite;
 }
 
-.chat-composer-shell textarea.is-optimize-out {
+.chat-composer-shell .chat-composer-editor.is-optimize-out {
   caret-color: transparent;
   animation: chat-composer-optimize-out var(--kv-dur-slow) var(--kv-ease-out) forwards;
 }
 
-.chat-composer-shell textarea.is-optimize-reveal {
+.chat-composer-shell .chat-composer-editor.is-optimize-reveal {
   animation: chat-composer-optimize-in calc(var(--kv-dur-slow) + var(--kv-dur-fast)) var(--kv-ease-standard) both;
 }
 
@@ -377,9 +372,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .chat-composer-shell textarea.is-optimizing,
-  .chat-composer-shell textarea.is-optimize-out,
-  .chat-composer-shell textarea.is-optimize-reveal {
+  .chat-composer-shell .chat-composer-editor.is-optimizing,
+  .chat-composer-shell .chat-composer-editor.is-optimize-out,
+  .chat-composer-shell .chat-composer-editor.is-optimize-reveal {
     animation: none;
     opacity: 1;
     filter: none;
@@ -392,29 +387,52 @@
   }
 }
 
-/* 斜杠命令高亮：透明字 + 同几何叠层，textarea 只负责光标和选区。 */
-.chat-composer-highlight {
+/* The editor owns caret/selection geometry, including atomic command chips. */
+.chat-composer-editor {
+  width: 100%;
+  min-height: 28px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 6px 4px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  caret-color: var(--text);
+}
+.chat-composer-editor[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  color: var(--text-faint);
   pointer-events: none;
   position: absolute;
-  inset: 0;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
 }
-
-.chat-composer-slash {
+.chat-composer-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0 5px;
+  margin: 0 1px;
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
   color: var(--accent);
+  line-height: 1.4;
+  vertical-align: baseline;
+  white-space: nowrap;
 }
-
-.chat-composer-shell textarea.is-slash-highlight {
-  color: transparent;
-  caret-color: var(--text, #171717);
+.chat-composer-command > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.chat-composer-command-icon { display: inline-flex; flex: none; align-self: center; }
+.chat-composer-command.ProseMirror-selectednode {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
-
-.dark .chat-composer-shell textarea.is-slash-highlight {
-  caret-color: var(--text, #f5f5f5);
-}
+.chat-composer-editor .ProseMirror-separator { display: none; }
 
 /* ===== 输入区三层结构 =====
    原来是「一个 28px 大圆角盒子，图标全塞在里面」→ 盒子被撑到 ~100px 高。

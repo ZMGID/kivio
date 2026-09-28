@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type MouseEvent, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { ComposerEditorHandle } from './ComposerEditor'
 import { TextEditContextMenu } from '../settings/public/textEditing'
 import { copyToClipboard } from '../utils/clipboard'
 import { api } from '../api/tauri'
@@ -9,8 +10,8 @@ export type ComposerPasteTarget = {
   insertText: (text: string) => void
 }
 
-export function useComposerContextMenu({ textareaRef, scopeKey, readOnly, onPaste, onError }: {
-  textareaRef: RefObject<HTMLTextAreaElement>
+export function useComposerContextMenu({ editorRef, scopeKey, readOnly, onPaste, onError }: {
+  editorRef: RefObject<ComposerEditorHandle>
   scopeKey: string
   readOnly: boolean
   onPaste: (target: ComposerPasteTarget) => Promise<void>
@@ -26,12 +27,12 @@ export function useComposerContextMenu({ textareaRef, scopeKey, readOnly, onPast
 
   const close = () => {
     setMenu(null)
-    if (menu?.scopeKey === current.current.scopeKey) textareaRef.current?.focus({ preventScroll: true })
+    if (menu?.scopeKey === current.current.scopeKey) editorRef.current?.focus({ preventScroll: true })
   }
   const isCurrent = () => !!menu && menu.scopeKey === current.current.scopeKey
-    && !current.current.readOnly && textareaRef.current?.value === menu.value
+    && !current.current.readOnly && editorRef.current?.value === menu.value
   const restoreSelection = () => {
-    const el = textareaRef.current
+    const el = editorRef.current
     if (!el || !menu || menu.scopeKey !== current.current.scopeKey) return null
     el.focus({ preventScroll: true })
     el.setSelectionRange(menu.start, menu.end)
@@ -41,12 +42,7 @@ export function useComposerContextMenu({ textareaRef, scopeKey, readOnly, onPast
     if (!isCurrent()) return
     const el = restoreSelection()
     if (!el) return
-    // Use the editor's undo stack; a state-only replacement loses native undo history.
-    if (document.execCommand?.('insertText', false, text)) return
-    const next = `${el.value.slice(0, menu!.start)}${text}${el.value.slice(menu!.end)}`
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(el, next)
-    el.dispatchEvent(new Event('input', { bubbles: true }))
-    el.setSelectionRange(menu!.start + text.length, menu!.start + text.length)
+    el.replaceText(menu!.start, menu!.end, text)
   }
   const copy = async (cut: boolean) => {
     if (!menu || menu.scopeKey !== current.current.scopeKey) return
@@ -62,17 +58,16 @@ export function useComposerContextMenu({ textareaRef, scopeKey, readOnly, onPast
   }
   const history = (command: 'undo' | 'redo') => {
     if (!isCurrent()) return
-    restoreSelection()
-    document.execCommand?.(command)
+    restoreSelection()?.[command]()
   }
-  const onContextMenu = (event: MouseEvent<HTMLTextAreaElement>) => {
+  const onContextMenu = (event: MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
-    const el = event.currentTarget
+    const el = editorRef.current
+    if (!el) return
     el.focus({ preventScroll: true })
     setMenu({ left: event.clientX, top: event.clientY, start: el.selectionStart, end: el.selectionEnd,
-      value: el.value, scopeKey, canUndo: document.queryCommandEnabled?.('undo') ?? false,
-      canRedo: document.queryCommandEnabled?.('redo') ?? false })
+      value: el.value, scopeKey, canUndo: el.canUndo, canRedo: el.canRedo })
   }
   return {
     onContextMenu,
@@ -84,7 +79,7 @@ export function useComposerContextMenu({ textareaRef, scopeKey, readOnly, onPast
       onPaste={() => { void onPaste({ isCurrent, insertText }).catch(() => {
         if (isCurrent()) onError('无法读取剪贴板，请重试或使用 Ctrl+V。')
       }) }}
-      onSelectAll={() => { const el = textareaRef.current; el?.focus(); el?.select() }}
+      onSelectAll={() => { const el = editorRef.current; el?.focus(); el?.select() }}
       onClose={close}
     /> : null,
   }

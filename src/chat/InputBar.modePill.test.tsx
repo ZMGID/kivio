@@ -1,3 +1,4 @@
+vi.mock('./ComposerEditor', () => import('./ComposerEditor.testSupport'))
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'

@@ -1,3 +1,4 @@
+vi.mock('./ComposerEditor', () => import('./ComposerEditor.testSupport'))
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

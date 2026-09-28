@@ -138,13 +138,7 @@ pub(crate) async fn chat_send_message(
         }));
     }
 
-    let goal_started = content.trim().strip_prefix("/goal").and_then(|rest| {
-        if !rest.chars().next().is_some_and(char::is_whitespace) {
-            return None;
-        }
-        let objective = rest.trim();
-        (!objective.is_empty()).then_some(objective.to_string())
-    });
+    let goal_started = crate::chat::slash_commands::goal_objective(&content);
     if goal_started.is_some()
         && conversation.goal_state.as_ref().is_some_and(|goal| {
             !matches!(

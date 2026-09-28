@@ -54,12 +54,16 @@ fn history_window_and_pages_resolve_only_missing_artifact_dependencies() {
     for end in [130, 70] {
         let start = super::catalog::history_window_start(&messages, end);
         assert_eq!(end - start, 60);
-        let dependencies = crate::chat::artifacts::history_reference_artifacts(&messages, start..end);
+        let dependencies =
+            crate::chat::artifacts::history_reference_artifacts(&messages, start..end);
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].id.as_deref(), Some("art_early"));
         assert_eq!(dependencies[0].path.as_deref(), Some("early.png"));
     }
-    assert!(messages[129].artifacts.is_empty(), "display dependencies must not change message ownership");
+    assert!(
+        messages[129].artifacts.is_empty(),
+        "display dependencies must not change message ownership"
+    );
     assert!(crate::chat::artifacts::history_reference_artifacts(&messages, 0..130).is_empty());
 }
 
@@ -73,9 +77,13 @@ fn history_window_resolves_segment_and_presentation_dependencies_from_tools() {
     let mut target = test_chat_message("target", "assistant", "", 2);
     target.segments = serde_json::from_value(serde_json::json!([{
         "id":"text", "kind":"text", "phase":"plain", "order":0, "text":"![tool](artifact:art_tool)"
-    }])).unwrap();
+    }]))
+    .unwrap();
     let mut messages = vec![origin, target];
-    assert_eq!(crate::chat::artifacts::history_reference_artifacts(&messages, 1..2).len(), 1);
+    assert_eq!(
+        crate::chat::artifacts::history_reference_artifacts(&messages, 1..2).len(),
+        1
+    );
     messages[1].segments.clear();
     for mode in ["preview", "prepare"] {
         messages[1].tool_calls = serde_json::from_value(serde_json::json!([{
@@ -368,6 +376,55 @@ fn slash_trigger_ignores_non_slash_and_unknown() {
     assert!(
         try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x", false).is_none()
     );
+}
+
+#[test]
+fn slash_trigger_activates_inline_skills_without_losing_the_task() {
+    let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
+    let config = crate::settings::ChatToolsConfig::default();
+    for content in [
+        "请用/commit fix login",
+        "please /commit fix login",
+        "please\n/commit fix login",
+    ] {
+        let (id, body) =
+            try_apply_skill_slash_trigger(&registry, &config, None, content, false).unwrap();
+        assert_eq!(id, "commit");
+        assert!(body.contains("Write a commit for: fix login"));
+    }
+    for content in [
+        "https://host/commit",
+        "`/commit`",
+        "/commit/file",
+        "> /commit",
+    ] {
+        assert!(try_apply_skill_slash_trigger(&registry, &config, None, content, false).is_none());
+    }
+}
+
+#[test]
+fn slash_trigger_loads_multiple_inline_skills_once() {
+    let registry = skills::SkillRegistry {
+        records: vec![
+            slash_skill_record("review", "Review", vec![]),
+            slash_skill_record("commit", "Commit", vec![]),
+        ],
+        warnings: vec![],
+    };
+    let mut config = crate::settings::ChatToolsConfig::default();
+    let (id, detail) = resolve_request_skill(
+        &registry,
+        &mut config,
+        None,
+        "please /review changes then /commit fix login /review again",
+        None,
+        false,
+    );
+    assert_eq!(id.as_deref(), Some("review"));
+    let body = detail.unwrap().body;
+    assert_eq!(body.matches("<skill_content name=\"Review\">").count(), 1);
+    assert_eq!(body.matches("<skill_content name=\"Commit\">").count(), 1);
+    assert!(body.contains("Write a commit for: fix login"));
 }
 
 #[test]

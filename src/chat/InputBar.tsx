@@ -4,28 +4,16 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   ArrowUp,
-  Archive,
   Check,
   ChevronDown,
-  CircleHelp,
-  Eraser,
   Folder,
   FolderPlus,
   Layers,
-  ListChecks,
-  MessageSquarePlus,
-  Network,
-  Paperclip,
   Plus,
   Search,
-  Settings,
-  Sparkles,
   Square,
-  Terminal,
   TextQuote,
-  Target,
   WandSparkles,
-  Wrench,
   X,
 } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
@@ -35,7 +23,8 @@ import { useComposerContextMenu, type ComposerPasteTarget } from './useComposerC
 import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
 import { beginComposerAttachmentOperation, beginComposerDraftOperation, invalidateComposerAttachmentPath, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
-import { applyComposerAutoHeight } from './composerAutoHeight'
+import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor'
+import { SlashCommandIcon } from './SlashCommandIcon'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
@@ -50,8 +39,9 @@ import type { AdditionalDirectory, AgentPlanMode, AgentPlanState, AgentTodoState
 import {
   buildSlashCommands,
   commandMatches,
-  shouldOpenSlashPopover,
-  matchComposerSlashCommand,
+  findActiveSlashToken,
+  findComposerCommands,
+  type ActiveSlashToken,
   type SlashCommandDefinition,
   type SlashSkill,
 } from './slashCommands'
@@ -77,7 +67,7 @@ function isAttachableClipboardFile(file: File): boolean {
 }
 
 function undoAccidentalFilenamePaste(
-  textarea: HTMLTextAreaElement,
+  textarea: ComposerEditorHandle,
   valueBeforePaste: string,
   clipText: string,
   selectionStart: number,
@@ -93,10 +83,8 @@ function undoAccidentalFilenamePaste(
   const cleaned = `${valueBeforePaste.slice(0, selectionStart)}${valueBeforePaste.slice(selectionEnd)}`
   setValue(cleaned)
   requestAnimationFrame(() => {
-    textarea.value = cleaned
     textarea.selectionStart = selectionStart
     textarea.selectionEnd = selectionStart
-    applyComposerAutoHeight(textarea)
   })
 }
 
@@ -172,11 +160,6 @@ type SlashCommandId =
   | 'attach'
 type LocalSlashCommand = SlashCommandDefinition & { id: SlashCommandId; kind: 'action' }
 
-interface ActiveSlashToken {
-  start: number
-  end: number
-  query: string
-}
 
 const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
   {
@@ -271,41 +254,7 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
   },
 ]
 
-function slashCommandIcon(command: SlashCommandDefinition) {
-  if (command.kind === 'skill') {
-    return Sparkles
-  }
-  if (command.kind === 'cli') {
-    return Terminal
-  }
-  switch (command.id as SlashCommandId) {
-    case 'help':
-      return CircleHelp
-    case 'plan':
-      return ListChecks
-    case 'goal':
-      return Target
-    case 'orchestrate':
-      return Network
-    case 'new':
-      return MessageSquarePlus
-    case 'compact':
-      return Archive
-    case 'clear':
-      return Eraser
-    case 'settings':
-      return Settings
-    case 'tools':
-      return Wrench
-    case 'attach':
-      return Paperclip
-    default:
-      return Sparkles
-  }
-}
 
-// pill 颜色呼应输入框边框：Act=neutral、Plan=emerald、Orchestrate=violet。
-// 档位表由 Chat 传入（内置三档 / 本地 CLI 档位），这里只按 tone 取样式。
 const MODE_PILL_CLASS: Record<ModeTone, { idle: string; iconColor: string }> = {
   neutral: {
     idle: 'text-neutral-600 hover:bg-neutral-200/60 dark:text-neutral-300 dark:hover:bg-neutral-700/55',
@@ -321,25 +270,6 @@ const MODE_PILL_CLASS: Record<ModeTone, { idle: string; iconColor: string }> = {
   },
 }
 
-function findActiveSlashToken(value: string, cursor: number): ActiveSlashToken | null {
-  if (cursor < 0 || cursor > value.length) return null
-
-  let start = cursor
-  while (start > 0 && !/\s/.test(value[start - 1])) {
-    start -= 1
-  }
-
-  const token = value.slice(start, cursor)
-  if (!token.startsWith('/')) return null
-  if (start > 0 && !/\s/.test(value[start - 1])) return null
-  if (token.slice(1).includes('/')) return null
-
-  return {
-    start,
-    end: cursor,
-    query: token.slice(1),
-  }
-}
 
 function imageExtensionForMime(mimeType: string): string {
   switch (mimeType.toLowerCase()) {
@@ -563,7 +493,7 @@ export const InputBar = memo(function InputBar({
   const historyCaretRef = useRef<number | null>(null)
   useLayoutEffect(() => {
     if (historyCaretRef.current === null) return
-    textareaRef.current?.setSelectionRange(historyCaretRef.current, historyCaretRef.current)
+    editorRef.current?.setSelectionRange(historyCaretRef.current, historyCaretRef.current)
     historyCaretRef.current = null
   }, [input])
   const [quotes, setQuotes] = useState<string[]>(() => getComposerDraft(draftKeyValue)?.quotes ?? [])
@@ -583,6 +513,7 @@ export const InputBar = memo(function InputBar({
   const [slashPanelOpen, setSlashPanelOpen] = useState(false)
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const [activeSlashToken, setActiveSlashToken] = useState<ActiveSlashToken | null>(null)
+  const [commandError, setCommandError] = useState('')
   const [externalCliSlashCommands, setExternalCliSlashCommands] = useState<SlashCommandDefinition[]>([])
   const [externalCliSlashHint, setExternalCliSlashHint] = useState<string | null>(null)
   const [externalCliSlashLoading, setExternalCliSlashLoading] = useState(false)
@@ -594,8 +525,7 @@ export const InputBar = memo(function InputBar({
   const optimizeRequestRef = useRef(0)
   const pendingOptimizeTextRef = useRef<string | null>(null)
   const innerRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const slashHighlightRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<ComposerEditorHandle>(null)
   // 草稿持久化：会话 key 变化（切对话且未卸载）时载入对应草稿；每次内容变化写回内存 store。
   // scope 保证写回落到当前会话，不串到刚切走的会话。
   const draftScopeRef = useRef({ key: draftKeyValue })
@@ -621,6 +551,9 @@ export const InputBar = memo(function InputBar({
     historyRef.current = null
     historyReadRef.current = null
     historyCaretRef.current = null
+    setActiveSlashToken(null)
+    setSlashPanelOpen(false)
+    setCommandError('')
     draftScopeRef.current.key = draftKeyValue
     // Creation commits migrate the store before this binding changes. Ordinary
     // navigation only loads the target draft; it never transfers ownership.
@@ -648,7 +581,7 @@ export const InputBar = memo(function InputBar({
       if (next != null) setInput(next)
       setOptimizeMotion('in')
       requestAnimationFrame(() => {
-        const el = textareaRef.current
+        const el = editorRef.current
         if (!el) return
         el.focus({ preventScroll: true })
         el.selectionStart = el.selectionEnd = el.value.length
@@ -771,7 +704,7 @@ export const InputBar = memo(function InputBar({
     if (!onSelectProject) return
     closeProjectMenu()
     await onSelectProject(project)
-    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+    requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
   }, [closeProjectMenu, onSelectProject])
 
   const createBlankProject = useCallback(async () => {
@@ -802,7 +735,7 @@ export const InputBar = memo(function InputBar({
       setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatProjectCreateFailed)
     } finally {
       setProjectCreating(false)
-      requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+      requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
     }
   }, [closeProjectMenu, disabled, onSelectProject, projectCreating, projectOptions, t])
 
@@ -830,28 +763,18 @@ export const InputBar = memo(function InputBar({
       setProjectOptionsError(typeof err === 'string' ? err : err instanceof Error ? err.message : t.chatProjectCreateFailed)
     } finally {
       setProjectCreating(false)
-      requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+      requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
     }
   }, [closeProjectMenu, disabled, onSelectProject, projectCreating, t])
 
-  const updateTextareaHeight = useCallback(() => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    applyComposerAutoHeight(textarea)
-  }, [])
 
-  // 高度/滚动条是 input 的纯函数，统一在这里跟。原来每条改 input 的路径各自补一次
-  // requestAnimationFrame(updateTextareaHeight)，草稿回填那条（见上方 draftKeyValue effect）
-  // 漏了 —— 切走再切回时框子还留着上一条会话的高度且 overflowY:hidden，下半截文本看不到也滚不动。
-  // 用 layout effect 而非 rAF：DOM 提交后、绘制前跑完，不闪；也不必在每个 setInput 后手动记得调。
-  useLayoutEffect(updateTextareaHeight, [input, updateTextareaHeight])
 
   // 消息区「添加到聊天」：把选中文字作为引用卡片挂到输入框上方（发送时才拼进正文）。
   const insertQuoteFromSelection = useCallback((text: string) => {
     const trimmed = text.trim()
     if (!trimmed) return
     setQuotes((prev) => [...prev, trimmed])
-    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
+    requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
   }, [])
 
   useEffect(() => onComposerInsert(insertQuoteFromSelection), [insertQuoteFromSelection])
@@ -864,7 +787,7 @@ export const InputBar = memo(function InputBar({
       return `${prev}${needsSpace ? ' ' : ''}${text}`
     })
     requestAnimationFrame(() => {
-      const textarea = textareaRef.current
+      const textarea = editorRef.current
       if (textarea) {
         textarea.focus({ preventScroll: true })
         textarea.selectionStart = textarea.value.length
@@ -881,7 +804,7 @@ export const InputBar = memo(function InputBar({
   const syncSlashToken = useCallback((value: string, cursor: number) => {
     const token = findActiveSlashToken(value, cursor)
     setActiveSlashToken(token)
-    if (token && shouldOpenSlashPopover()) {
+    if (token && !editorRef.current?.atCommand) {
       setSlashPanelOpen(true)
       setToolPanelOpen(false)
       closeProjectMenu()
@@ -953,21 +876,6 @@ export const InputBar = memo(function InputBar({
     )),
     [allSlashCommands, activeSlashToken?.query],
   )
-  const slashHighlight = useMemo(
-    () => matchComposerSlashCommand(input, allSlashCommands),
-    [allSlashCommands, input],
-  )
-
-  const syncSlashHighlightScroll = useCallback(() => {
-    const textarea = textareaRef.current
-    const overlay = slashHighlightRef.current
-    if (!textarea || !overlay) return
-    overlay.scrollTop = textarea.scrollTop
-    overlay.scrollLeft = textarea.scrollLeft
-  }, [])
-  useLayoutEffect(() => {
-    syncSlashHighlightScroll()
-  }, [input, slashHighlight, syncSlashHighlightScroll])
   const visibleProjectOptions = useMemo(() => {
     const query = projectSearchQuery.trim().toLowerCase()
     return [...projectOptions]
@@ -980,69 +888,12 @@ export const InputBar = memo(function InputBar({
       .slice(0, 8)
   }, [projectOptions, projectSearchQuery])
 
-  const removeActiveSlashToken = useCallback(() => {
-    const token = activeSlashToken
-    if (!token) {
-      setInput('')
-      return
-    }
-
-    setInput((prev) => {
-      const next = `${prev.slice(0, token.start)}${prev.slice(token.end)}`.replace(/^\s+/, '')
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.selectionStart = Math.min(token.start, next.length)
-        textarea.selectionEnd = Math.min(token.start, next.length)
-      })
-      return next
-    })
-  }, [activeSlashToken])
-
   const completeActiveSlashToken = useCallback((command: SlashCommandDefinition) => {
     const token = activeSlashToken
-    if (!token) return
-
-    const cursor = token.start + command.slash.length
-    setInput((prev) => {
-      const next = `${prev.slice(0, token.start)}${command.slash}${prev.slice(token.end)}`
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus({ preventScroll: true })
-        textarea.selectionStart = cursor
-        textarea.selectionEnd = cursor
-      })
-      return next
-    })
-    setActiveSlashToken({
-      start: token.start,
-      end: cursor,
-      query: command.slash.slice(1),
-    })
-    setSlashPanelOpen(true)
-  }, [activeSlashToken])
-
-  // Skill commands complete to `/name ` (trailing space) and close the popover
-  // so the user types arguments; the whole string is sent on Enter and parsed
-  // by the backend slash-trigger preprocessing.
-  const completeSkillSlashToken = useCallback((command: SlashCommandDefinition) => {
-    const token = activeSlashToken
-    if (!token) return
-
-    const insertion = `${command.slash} `
-    const cursor = token.start + insertion.length
-    setInput((prev) => {
-      const next = `${prev.slice(0, token.start)}${insertion}${prev.slice(token.end)}`
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus({ preventScroll: true })
-        textarea.selectionStart = cursor
-        textarea.selectionEnd = cursor
-      })
-      return next
-    })
+    const editor = editorRef.current
+    if (!token || !editor) return
+    editor.replaceText(token.start, token.end, `${command.slash} `)
+    editor.focus({ preventScroll: true })
     setActiveSlashToken(null)
     setSlashPanelOpen(false)
   }, [activeSlashToken])
@@ -1093,7 +944,7 @@ export const InputBar = memo(function InputBar({
           setAttachmentError(result.error)
           return result.attachments
         })
-        textareaRef.current?.focus()
+        editorRef.current?.focus()
       }
     },
     [setScopedAttachmentError, t],
@@ -1116,7 +967,7 @@ export const InputBar = memo(function InputBar({
       await onAgentPlanModeChange(mode)
     }
     requestAnimationFrame(() => {
-      textareaRef.current?.focus({ preventScroll: true })
+      editorRef.current?.focus({ preventScroll: true })
     })
   }, [agentPlanMode, closeModeMenu, closeProjectMenu, disabled, onAgentPlanModeChange])
 
@@ -1132,7 +983,7 @@ export const InputBar = memo(function InputBar({
       await onModeChange(value)
     }
     requestAnimationFrame(() => {
-      textareaRef.current?.focus({ preventScroll: true })
+      editorRef.current?.focus({ preventScroll: true })
     })
   }, [closeModeMenu, closePresetMenu, closeProjectMenu, disabled, modeValue, onModeChange])
 
@@ -1156,7 +1007,7 @@ export const InputBar = memo(function InputBar({
       await onPresetChange(value)
     }
     requestAnimationFrame(() => {
-      textareaRef.current?.focus({ preventScroll: true })
+      editorRef.current?.focus({ preventScroll: true })
     })
   }, [closeModeMenu, closePresetMenu, closeProjectMenu, disabled, onPresetChange, presetLocked, presetValue])
 
@@ -1204,44 +1055,18 @@ export const InputBar = memo(function InputBar({
     }
   }, [addAttachments, closeProjectMenu, composerLocked, pendingFromPaths, setScopedAttachmentError, t])
 
-  const handleSlashCommandSelect = useCallback(async (command: SlashCommandDefinition) => {
+  const executeSlashAction = async (command: SlashCommandDefinition, start: number, end: number) => {
     if (disabled) return
-
-    if (command.kind === 'skill' || command.kind === 'cli') {
-      // Complete the token; user can add args then send with Enter (CLI passthrough).
-      completeSkillSlashToken(command)
-      return
-    }
-
-    if (command.id === 'help') {
-      setInput('/')
-      setActiveSlashToken({ start: 0, end: 1, query: '' })
-      setSlashPanelOpen(true)
-      setToolPanelOpen(false)
-      closeProjectMenu()
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current
-        if (!textarea) return
-        textarea.focus({ preventScroll: true })
-        textarea.selectionStart = 1
-        textarea.selectionEnd = 1
-      })
-      return
-    }
-
-    removeActiveSlashToken()
+    editorRef.current?.replaceText(start, end, '')
+    // A mode action may create a conversation and migrate/remount its composer
+    // before React commits. Persist the consumed command before starting it.
+    updateComposerDraft(draftScopeRef.current.key, draft => ({ ...draft, input: `${input.slice(0, start)}${input.slice(end)}` }))
     setSlashPanelOpen(false)
 
     switch (command.id) {
-      case 'goal':
-        setInput('/goal ')
-        requestAnimationFrame(() => {
-          const textarea = textareaRef.current
-          if (!textarea) return
-          textarea.focus({ preventScroll: true })
-          textarea.selectionStart = 6
-          textarea.selectionEnd = 6
-        })
+      case 'help':
+        editorRef.current?.replaceText(start, start, '/')
+        syncSlashToken(editorRef.current?.value ?? '/', start + 1)
         return
       case 'plan':
         await setAgentPlanMode('plan')
@@ -1279,19 +1104,7 @@ export const InputBar = memo(function InputBar({
         await openAttachmentPicker()
         return
     }
-  }, [
-    disabled,
-    completeSkillSlashToken,
-    onClearChat,
-    onCompactContext,
-    onNewChat,
-    onOpenSettings,
-    onOpenTools,
-    openAttachmentPicker,
-    removeActiveSlashToken,
-    setAgentPlanMode,
-    closeProjectMenu,
-  ])
+  }
 
 
   const clearSentDraft = (sentDraftKey: string) => {
@@ -1312,7 +1125,6 @@ export const InputBar = memo(function InputBar({
     setToolPanelOpen(false)
     closeProjectMenu()
     setSlashPanelOpen(false)
-    if (textareaRef.current) applyComposerAutoHeight(textareaRef.current)
   }
 
   const canUndoOptimize = Boolean(optimizeSnapshot && input === optimizeSnapshot.result)
@@ -1324,7 +1136,7 @@ export const InputBar = memo(function InputBar({
       setOptimizeMotion('idle')
       setInput(next)
       requestAnimationFrame(() => {
-        const el = textareaRef.current
+        const el = editorRef.current
         if (!el) return
         el.focus({ preventScroll: true })
         el.selectionStart = el.selectionEnd = el.value.length
@@ -1367,6 +1179,29 @@ export const InputBar = memo(function InputBar({
   const handleSend = async () => {
     const trimmed = input.trim()
     if (sendPending || (!trimmed && quotes.length === 0 && attachments.length === 0) || sendDisabledReason) return
+    const action = findComposerCommands(input, allSlashCommands).find(item => item.command.kind === 'action' && item.command.id !== 'goal')
+    if (action) {
+      if (disabled) return
+      const scope = beginComposerDraftOperation(draftScopeRef.current.key)
+      const snapshot = { input, quotes: [...quotes], attachments: [...attachments] }
+      const remaining = `${input.slice(0, action.start)}${input.slice(action.end)}`
+      setSendPending(true)
+      setCommandError('')
+      try {
+        await executeSlashAction(action.command, action.start, action.end)
+      } catch (error) {
+        updateComposerDraft(scope.key, draft => (
+          draft.input === remaining || !draft.input ? { ...draft, ...snapshot } : draft
+        ))
+        if (mountedRef.current && draftScopeRef.current.key === scope.key) {
+          setCommandError(error instanceof Error ? error.message : String(error))
+        }
+      } finally {
+        scope.release()
+        if (mountedRef.current) setSendPending(false)
+      }
+      return
+    }
     historyReadRef.current = null
     // 生成中：有排队入口就排队（本轮结束后自动发出），没有就照旧什么都不做。
     if (disabled && !onQueue) return
@@ -1400,13 +1235,12 @@ export const InputBar = memo(function InputBar({
       }
       const restoreRejectedDraft = () => {
         if (!acceptedNotified || !clearedDraftKey) return
-        const typedAfterAccept = (textareaRef.current?.value ?? '').trim().length > 0
+        const typedAfterAccept = (editorRef.current?.value ?? '').trim().length > 0
         if (draftScopeRef.current.key !== clearedDraftKey || typedAfterAccept) return
         setComposerDraft(clearedDraftKey, sentSnapshot)
         setInput(sentSnapshot.input)
         setQuotes(sentSnapshot.quotes)
         setAttachments(sentSnapshot.attachments)
-        if (textareaRef.current) applyComposerAutoHeight(textareaRef.current)
       }
       try {
         const accepted = await onSend(content, attachments, { onAccepted: notifyAccepted })
@@ -1426,9 +1260,9 @@ export const InputBar = memo(function InputBar({
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key !== 'ArrowUp') historyReadRef.current = null
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return
+    if (e.isComposing || e.keyCode === 229) return
 
     if (e.key === 'Tab' && e.shiftKey && modeEntryEnabled && !disabled) {
       e.preventDefault()
@@ -1456,18 +1290,14 @@ export const InputBar = memo(function InputBar({
       if (e.key === 'Tab') {
         e.preventDefault()
         if (selectedSlashCommand) {
-          if (selectedSlashCommand.kind === 'skill') {
-            completeSkillSlashToken(selectedSlashCommand)
-          } else {
-            completeActiveSlashToken(selectedSlashCommand)
-          }
+          completeActiveSlashToken(selectedSlashCommand)
         }
         return
       }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         if (selectedSlashCommand) {
-          void handleSlashCommandSelect(selectedSlashCommand)
+          completeActiveSlashToken(selectedSlashCommand)
         }
         return
       }
@@ -1483,7 +1313,8 @@ export const InputBar = memo(function InputBar({
       !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
       !sendPending && !optimizeBusy
     ) {
-      const el = e.currentTarget
+      const el = editorRef.current
+      if (!el) return
       const up = e.key === 'ArrowUp'
       // 多行文本只在首尾切换历史，保留正文中的光标移动与选区操作。
       const atBoundary = !input.includes('\n') ||
@@ -1547,18 +1378,17 @@ export const InputBar = memo(function InputBar({
     void handleSend()
   }
 
-  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+  const handleInput = (nextValue: string, cursor: number) => {
     historyRef.current = null
     historyReadRef.current = null
-    const nextValue = e.target.value
     setInput(nextValue)
-    // 高度/滚动条由 input 的 layout effect 统一跟，这里不再内联量一遍。
-    syncSlashToken(nextValue, e.target.selectionStart)
+    setCommandError('')
+    syncSlashToken(nextValue, cursor)
   }
 
-  const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
-    const el = e.currentTarget
-    syncSlashToken(el.value, el.selectionStart)
+  const handleSelect = () => {
+    const el = editorRef.current
+    if (el) syncSlashToken(el.value, el.selectionStart)
   }
 
   const handlePaste = async (
@@ -1574,7 +1404,7 @@ export const InputBar = memo(function InputBar({
       const clipText = e.clipboardData.getData('text/plain')
       const spreadsheetText = preferSpreadsheetText(clipText, e.clipboardData.getData('text/html'))
       const attachableClipboardFiles = spreadsheetText ? [] : Array.from(e.clipboardData.files).filter(isAttachableClipboardFile)
-      const textarea = textareaRef.current
+      const textarea = editorRef.current
       const selectionStart = textarea?.selectionStart ?? input.length
       const selectionEnd = textarea?.selectionEnd ?? input.length
       const valueBeforePaste = textarea?.value ?? input
@@ -1623,6 +1453,7 @@ export const InputBar = memo(function InputBar({
       if (hasNativeFiles && textarea && !menuTarget) {
         // 等浏览器默认粘贴与 React onChange 完成后，只在内容完全等于“插入了文件名”时撤销。
         window.setTimeout(() => {
+          if (draftScopeRef.current.key !== scope.key) return
           undoAccidentalFilenamePaste(
             textarea,
             valueBeforePaste,
@@ -1702,7 +1533,7 @@ export const InputBar = memo(function InputBar({
   }
 
   const composerContextMenu = useComposerContextMenu({
-    textareaRef, scopeKey: draftKeyValue, readOnly: composerLocked || optimizeBusy,
+    editorRef, scopeKey: draftKeyValue, readOnly: composerLocked || optimizeBusy,
     onError: setAttachmentError,
     onPaste: async (target) => {
       const scope = beginComposerAttachmentOperation(draftScopeRef.current.key)
@@ -1768,7 +1599,7 @@ export const InputBar = memo(function InputBar({
     if (!autoFocus || disabled) return
     requestAnimationFrame(() => {
       if (shouldComposerAutoFocus(document.activeElement)) {
-        const el = textareaRef.current
+        const el = editorRef.current
         el?.focus({ preventScroll: true })
         // 恢复草稿后光标应落到末尾，而非开头，省得每次手动移到最后再输入。
         if (el) el.selectionStart = el.selectionEnd = el.value.length
@@ -1785,7 +1616,7 @@ export const InputBar = memo(function InputBar({
       if (!focused || cancelled) return
       requestAnimationFrame(() => {
         if (!cancelled && !disabled && shouldComposerAutoFocus(document.activeElement)) {
-          textareaRef.current?.focus({ preventScroll: true })
+          editorRef.current?.focus({ preventScroll: true })
         }
       })
     }).then((handler) => {
@@ -1855,11 +1686,11 @@ export const InputBar = memo(function InputBar({
 
     const updateSlashPanelLeft = () => {
       const inner = innerRef.current
-      const textarea = textareaRef.current
+      const textarea = editorRef.current
       if (!inner || !textarea) return
 
       const innerRect = inner.getBoundingClientRect()
-      const textareaRect = textarea.getBoundingClientRect()
+      const textareaRect = textarea.dom.getBoundingClientRect()
       setSlashPanelLeft(Math.max(0, Math.round(textareaRect.left - innerRect.left)))
     }
 
@@ -1871,7 +1702,7 @@ export const InputBar = memo(function InputBar({
       : new ResizeObserver(updateSlashPanelLeft)
     if (resizeObserver) {
       if (innerRef.current) resizeObserver.observe(innerRef.current)
-      if (textareaRef.current) resizeObserver.observe(textareaRef.current)
+      if (editorRef.current) resizeObserver.observe(editorRef.current.dom)
     }
 
     return () => {
@@ -2136,7 +1967,6 @@ export const InputBar = memo(function InputBar({
             <div className="chat-popover-scroll max-h-[min(184px,34vh)] overflow-y-auto">
               {filteredSlashCommands.length > 0 ? (
                 filteredSlashCommands.map((command, index) => {
-                  const Icon = slashCommandIcon(command)
                   const selected = index === slashSelectedIndex
                   return (
                     <button
@@ -2145,16 +1975,16 @@ export const InputBar = memo(function InputBar({
                       aria-selected={selected}
                       onMouseEnter={() => setSlashSelectedIndex(index)}
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => void handleSlashCommandSelect(command)}
+                      onClick={() => completeActiveSlashToken(command)}
                       className={`flex h-[26px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
                         selected
                           ? 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
                           : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800/70'
                       }`}
                     >
-                      <Icon
+                      <SlashCommandIcon
+                        command={command}
                         size={13}
-                        strokeWidth={1.8}
                         className="shrink-0 text-neutral-600 dark:text-neutral-300"
                       />
                       <span className="min-w-0 flex-1 truncate text-[12px] leading-none">
@@ -2285,6 +2115,9 @@ export const InputBar = memo(function InputBar({
               {optimizeError}
             </div>
           )}
+          {commandError && (
+            <div role="alert" className="mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">{commandError}</div>
+          )}
           {quotes.length > 0 && (
             <div className="chat-motion-fade-up mb-2 flex flex-col gap-1.5">
               {quotes.map((q, i) => (
@@ -2318,55 +2151,25 @@ export const InputBar = memo(function InputBar({
               这 12px 是常量）。垂直方向仍旧不写死数值——shell 的 py 在容器查询里会变。 */}
           <div className="relative -mr-3 pr-3">
             <div className="relative w-[calc(100%-1.75rem)]">
-              {slashHighlight && (
-                <div
-                  ref={slashHighlightRef}
-                  aria-hidden
-                  className="chat-composer-highlight py-1.5 pl-1 pr-1 text-[15px] leading-relaxed text-neutral-900 dark:text-neutral-100"
-                >
-                  {slashHighlight.prefix}
-                  <span className="chat-composer-slash">{slashHighlight.command}</span>
-                  {slashHighlight.rest}
-                  {input.endsWith('\n') ? '\u200b' : null}
-                </div>
-              )}
-              <textarea
-                ref={textareaRef}
+              <ComposerEditor
+                ref={editorRef}
                 value={input}
+                scopeKey={draftKeyValue}
+                commands={allSlashCommands}
                 readOnly={sendPending || optimizeBusy}
-                aria-busy={sendPending || optimizeBusy}
+                busy={sendPending || optimizeBusy}
                 onChange={handleInput}
-                onPaste={(e) => void handlePaste(e)}
+                onPaste={(e) => { if (e.clipboardData) void handlePaste({ clipboardData: e.clipboardData, preventDefault: () => e.preventDefault() }) }}
                 onContextMenu={composerContextMenu.onContextMenu}
                 onKeyDown={handleKeyDown}
                 onSelect={handleSelect}
-                onScroll={syncSlashHighlightScroll}
                 onAnimationEnd={(event) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.animationName === 'chat-composer-optimize-in') {
-                    setOptimizeMotion('idle')
-                  }
+                  if (event.animationName === 'chat-composer-optimize-in') setOptimizeMotion('idle')
                 }}
-                autoCapitalize="off"
-                autoCorrect="off"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={
-                  usesExternalRuntime
-                    ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
-                    : 'Ask me anything...'
-                }
-                rows={1}
-                /* 宽度用 calc 收 28px（= 发送键 28 宽 + right-2 的 8 − 与滚动条留的 4px 呼吸）而不是
-                   w-full + pr-*：滚动条长在**盒子右边缘**，padding 挡不住它，只有把盒子本身收窄
-                   才能让它落到绝对定位的发送键左侧（原来 pr-10 只挡住了文字，滚动条仍压在键下）。
-                   不用 margin —— w-full 是 width:100%，再加 margin 会溢出容器 28px。
-                   custom-scrollbar：与全站同一根 8px 细条，否则这里是 WebView2 原生带箭头的粗条。 */
-                className={`custom-scrollbar block max-h-40 min-h-[28px] w-full select-text resize-none overflow-y-hidden border-0 bg-transparent py-1.5 pl-1 pr-1 text-[15px] leading-relaxed outline-none placeholder:text-neutral-400 disabled:opacity-50 [field-sizing:content] ${
-                  slashHighlight
-                    ? 'is-slash-highlight'
-                    : 'text-neutral-900 dark:text-neutral-100'
-                } ${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
+                placeholder={usesExternalRuntime
+                  ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
+                  : 'Ask me anything...'}
+                className={`${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
               />
               {composerContextMenu.menu}
             </div>

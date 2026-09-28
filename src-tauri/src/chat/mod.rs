@@ -4,6 +4,7 @@ pub(crate) mod artifacts;
 pub mod ask_user;
 pub mod attachments;
 pub mod commands;
+pub(crate) mod slash_commands;
 mod completion_notification;
 pub mod draft_journal;
 pub mod dsml_tools;

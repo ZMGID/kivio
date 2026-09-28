@@ -1,42 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { matchComposerSlashCommand, shouldOpenSlashPopover, splitComposerSlashCommand } from './slashCommands'
+import { findActiveSlashToken, findComposerCommands } from './slashCommands'
 
-describe('shouldOpenSlashPopover', () => {
-  it('opens whenever a slash token is active', () => {
-    expect(shouldOpenSlashPopover()).toBe(true)
+const commands = [
+  { id: 'plan', slash: '/plan', kind: 'action' },
+  { id: 'skill:review', slash: '/review', kind: 'skill' },
+  { id: 'cli:claude:foo', slash: '/plugin:foo', kind: 'cli' },
+] as const
+
+describe('inline slash commands', () => {
+  it('finds queries after Chinese, whitespace and line breaks', () => {
+    for (const prefix of ['', 'please ', '请使用', '正文\n']) {
+      expect(findActiveSlashToken(`${prefix}/rev`, prefix.length + 4)).toEqual({
+        start: prefix.length, end: prefix.length + 4, query: 'rev',
+      })
+    }
   })
-})
-
-describe('splitComposerSlashCommand', () => {
-  it('splits a leading slash command from its arguments', () => {
-    expect(splitComposerSlashCommand('/goal')).toEqual({
-      prefix: '',
-      command: '/goal',
-      rest: '',
-    })
-    expect(splitComposerSlashCommand('/goal 输入目标')).toEqual({
-      prefix: '',
-      command: '/goal',
-      rest: ' 输入目标',
-    })
+  it('replaces the entire token when completing inside a word', () => {
+    expect(findActiveSlashToken('please /review later', 11)).toEqual({ start: 7, end: 14, query: 'rev' })
   })
-
-  it('keeps leading spaces and ignores mid-line slashes', () => {
-    expect(splitComposerSlashCommand('  /plan off')).toEqual({
-      prefix: '  ',
-      command: '/plan',
-      rest: ' off',
-    })
-    expect(splitComposerSlashCommand('hello /goal')).toBeNull()
-    expect(splitComposerSlashCommand('Ask me anything')).toBeNull()
+  it('does not open inside links, paths or code', () => {
+    for (const value of ['https://host/rev', '/tmp/rev', 'C:/rev', '`/rev', '```\n/rev']) {
+      expect(findActiveSlashToken(value, value.length)).toBeNull()
+    }
   })
-
-  it('highlights only an exact known command', () => {
-    const commands = [{ slash: '/goal' }, { slash: '/plan' }]
-    expect(matchComposerSlashCommand('/goal', commands)?.command).toBe('/goal')
-    expect(matchComposerSlashCommand('/goal 输入目标', commands)?.command).toBe('/goal')
-    expect(matchComposerSlashCommand('/goalw', commands)).toBeNull()
-    expect(matchComposerSlashCommand('/go', commands)).toBeNull()
-    expect(matchComposerSlashCommand('/', commands)).toBeNull()
+  it('recognizes multiple commands of every kind in the middle of text', () => {
+    expect(findComposerCommands('请用/review 检查 /plan 再用 /plugin:foo', commands).map(x => x.command.id))
+      .toEqual(['skill:review', 'plan', 'cli:claude:foo'])
+  })
+  it('requires exact known commands and ignores code, URLs and paths', () => {
+    expect(findComposerCommands('/planner /unknown https://host/plan /plan/file `/review`', commands)).toEqual([])
   })
 })

@@ -23,9 +23,9 @@ pub(super) fn allowed_mcp_server_ids<'a>(
         .map(|assistant| assistant.mcp_server_ids.as_slice())
 }
 
-/// Detect a leading `/skill <args>` slash trigger in a user message and, when it
-/// matches an enabled skill, prepare its instructions for the system context.
-/// Returns `(skill_id, instructions)` with argument placeholders substituted.
+/// Resolve explicit skill commands anywhere outside code/URLs in the user task.
+/// Returns the first skill ID and deduplicated instructions for all referenced
+/// skills, with each command's following arguments substituted.
 /// Never replace the user message: its command and task must survive display,
 /// persistence, editing and replay. Skill activation never changes enabled tools.
 ///
@@ -40,37 +40,36 @@ pub(super) fn try_apply_skill_slash_trigger(
     content: &str,
     obsidian_vault_configured: bool,
 ) -> Option<(String, String)> {
-    let trimmed = content.trim_start();
-    let mut parts = trimmed.splitn(2, char::is_whitespace);
-    let first_word = parts.next().unwrap_or_default();
-    if !first_word.starts_with('/') {
-        return None;
+    let matches: Vec<_> = crate::chat::slash_commands::command_ranges(content)
+        .into_iter()
+        .filter_map(|range| {
+            let record = registry.find_by_trigger(&content[range.clone()])?;
+            agent_prepare::skill_allowed_for_conversation(
+                chat_tools,
+                assistant_snapshot,
+                &record.meta.id,
+                obsidian_vault_configured,
+            )
+            .then_some((range, record))
+        })
+        .collect();
+    let first_id = matches.first()?.1.meta.id.clone();
+    let mut seen = std::collections::HashSet::new();
+    let mut instructions = Vec::new();
+    for (index, (range, record)) in matches.iter().enumerate() {
+        if !seen.insert(&record.meta.id) {
+            continue;
+        }
+        let end = matches
+            .get(index + 1)
+            .map_or(content.len(), |(range, _)| range.start);
+        let args_raw = content[range.end..end].trim_start();
+        let mut rendered = (*record).clone();
+        rendered.body =
+            skills::substitute_arguments(&record.body, args_raw, &record.meta.arguments);
+        instructions.push(skills::activate_skill(&rendered));
     }
-    let args_raw = parts.next().unwrap_or_default();
-
-    let record = registry.find_by_trigger(first_word)?;
-    if !agent_prepare::skill_allowed_for_conversation(
-        chat_tools,
-        assistant_snapshot,
-        &record.meta.id,
-        obsidian_vault_configured,
-    ) {
-        // A disabled or out-of-allow-list skill's slash command is left as ordinary text.
-        return None;
-    }
-    if crate::mcp::native_registry::find_entry(first_word.trim_start_matches('/')).is_some() {
-        // A skill id colliding with a built-in tool name would shadow it on the
-        // backend trigger path. The front-end intercepts built-in slash commands
-        // before send, so this is low risk — just note it.
-        eprintln!(
-            "[skill-slash] trigger {first_word} matches a built-in tool name; pinning skill {}",
-            record.meta.id
-        );
-    }
-
-    let mut rendered = record.clone();
-    rendered.body = skills::substitute_arguments(&record.body, args_raw, &record.meta.arguments);
-    Some((record.meta.id.clone(), skills::activate_skill(&rendered)))
+    Some((first_id, instructions.join("\n\n")))
 }
 
 /// Shared by replies (including retries) and context accounting. Explicit slash

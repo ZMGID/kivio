@@ -1,9 +1,9 @@
 // Pure helpers for the InputBar slash-command popover. Kept framework-free so
 // the merge/match logic is unit-testable independently of React.
 //
-// Two kinds of slash commands coexist in the popover, distinguished by `kind`:
+// Three kinds of slash commands coexist in the popover, distinguished by `kind`:
 // - 'action' — built-in session actions (/help, /plan, /new ...) dispatched
-//   locally (onNewChat etc.), never sent as a message.
+//   locally on confirmation (onNewChat etc.), never sent as a message.
 // - 'skill'  — user skills surfaced as `/name`; selecting one only completes the
 //   token (`/name `), and the whole string is sent on Enter. The backend parses
 //   the slash trigger and pins the skill (see try_apply_skill_slash_trigger).
@@ -21,6 +21,51 @@ export interface SlashCommandDefinition {
   keywords: string[]
   kind: SlashCommandKind
   argumentHint?: string
+  agentId?: string
+}
+
+export type ActiveSlashToken = { start: number; end: number; query: string }
+
+// Whitespace and CJK text may introduce a command. URL/path separators may not.
+function isSlashBoundary(value: string, start: number): boolean {
+  return start === 0 || /[\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}，。！？；：（）【】]/u.test(value[start - 1])
+}
+
+function slashTokens(value: string): ActiveSlashToken[] {
+  const tokens: ActiveSlashToken[] = []
+  let codeFence = ''
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '`') {
+      let end = i + 1
+      while (value[end] === '`') end++
+      const fence = value.slice(i, end)
+      if (!codeFence) codeFence = fence
+      else if (fence === codeFence) codeFence = ''
+      i = end - 1
+      continue
+    }
+    if (codeFence || value[i] !== '/' || !isSlashBoundary(value, i)) continue
+    if (value.slice(0, i).split('\n').pop()?.trimStart().startsWith('>')) continue
+    let end = i + 1
+    while (end < value.length && /[a-zA-Z0-9_:-]/.test(value[end])) end++
+    if (value[end] === '/' || value[end] === '.' || value[end] === '\\') continue
+    tokens.push({ start: i, end, query: value.slice(i + 1, end) })
+    i = end - 1
+  }
+  return tokens
+}
+
+export function findActiveSlashToken(value: string, cursor: number): ActiveSlashToken | null {
+  if (cursor < 0 || cursor > value.length) return null
+  const token = slashTokens(value).find(token => token.start < cursor && cursor <= token.end)
+  return token ? { ...token, query: value.slice(token.start + 1, cursor) } : null
+}
+
+export function findComposerCommands<T extends { slash: string }>(value: string, commands: readonly T[]) {
+  return slashTokens(value).flatMap(token => {
+    const command = commands.find(item => item.slash.toLowerCase() === `/${token.query.toLowerCase()}`)
+    return command ? [{ start: token.start, end: token.end, command }] : []
+  })
 }
 
 /** Minimal skill shape the popover needs. */
@@ -82,33 +127,4 @@ export function commandMatches(command: SlashCommandDefinition, query: string): 
     ...command.keywords,
   ].map((item) => item.toLowerCase())
   return searchable.some((item) => item.includes(normalized))
-}
-
-/** Open slash popover whenever the user is typing a `/` token. */
-export function shouldOpenSlashPopover(): boolean {
-  return true
-}
-
-export type ComposerSlashHighlight = {
-  prefix: string
-  command: string
-  rest: string
-}
-
-/** Leading `/name` in the composer — the token that should paint as a command. */
-export function splitComposerSlashCommand(value: string): ComposerSlashHighlight | null {
-  const match = value.match(/^(\s*)(\/[^\s/]*)([\s\S]*)$/)
-  if (!match) return null
-  return { prefix: match[1], command: match[2], rest: match[3] }
-}
-
-/** Highlight only when the leading token is an exact known command. */
-export function matchComposerSlashCommand(
-  value: string,
-  commands: readonly { slash: string }[],
-): ComposerSlashHighlight | null {
-  const parts = splitComposerSlashCommand(value)
-  if (!parts || parts.command === '/') return null
-  const name = parts.command.toLowerCase()
-  return commands.some((command) => command.slash.toLowerCase() === name) ? parts : null
 }
