@@ -2224,6 +2224,69 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
     assert_eq!(last["content"], "总结完成，工具输出已分析。");
 }
 
+/// The tool-round limit notice is a system message that only governs the run that
+/// hit it. The saved compaction snapshot must not carry it: every later request
+/// hoists replayed system messages into the system prompt, forbidding tools forever.
+#[tokio::test]
+async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec![
+            long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
+            "[DONE]".to_string(),
+        ]),
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"达到上限后的回答。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.provider.model_overrides.insert(
+        "test-model".to_string(),
+        crate::settings::ModelInfo {
+            context_window: Some(17_000),
+            ..Default::default()
+        },
+    );
+    // max_tool_rounds stays at 1: the first tool round hits the limit.
+    config.runtime_messages = vec![
+        serde_json::json!({ "role": "system", "content": "system prompt" }),
+        serde_json::json!({ "role": "user", "content": "D".repeat(12_000), "_ui_message_id": "old_user" }),
+        serde_json::json!({ "role": "assistant", "content": "old answer", "_ui_message_id": "old_reply" }),
+        serde_json::json!({ "role": "user", "content": "请读取文件", "_ui_message_id": "current_user" }),
+    ];
+
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .expect("compacted run completes");
+    assert_eq!(result.content, "达到上限后的回答。");
+
+    let limit_notice = crate::chat::agent::stop::step_limit_system_message();
+    assert!(
+        result
+            .compacted_history
+            .as_ref()
+            .unwrap()
+            .contains(&limit_notice),
+        "the run itself must still see the limit notice"
+    );
+    let replay = result
+        .compaction_summary
+        .as_ref()
+        .and_then(|summary| summary.replay.as_ref())
+        .expect("auto compaction saves a replay snapshot");
+    assert!(replay.messages.iter().all(|m| m["role"] != "system"));
+    assert!(replay
+        .messages
+        .iter()
+        .any(|m| m["role"] == "tool" && m["content"] == "result:read"));
+    assert_eq!(
+        replay.messages.last().unwrap()["content"],
+        "达到上限后的回答。"
+    );
+}
+
 /// 真实用量锚点：即便**字符估算**远低于压缩阈值，只要上一轮 provider 实报 usage（config
 /// 锚点）超过预算，run 首次规划前就应触发压缩。构造 window=40k（预算 ~34976）、history
 /// 字符估算 ~25k（< 预算，纯估算不会压），但 initial_anchor_total_tokens=40k（> 预算）→

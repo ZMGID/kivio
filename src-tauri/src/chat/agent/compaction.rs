@@ -34,7 +34,8 @@ pub(crate) fn auto_compact_budget(window: usize, max_output: u32) -> usize {
 }
 
 /// Groups begin at assistant messages, keeping every tool call beside its results.
-/// A synthetic previous summary belongs to the history, never to the immutable prefix.
+/// A synthetic previous summary belongs to the history, never to the immutable prefix
+/// (replayed summaries are user messages; the system-role check stays defensive).
 fn group_starts(messages: &[Value]) -> (usize, Vec<usize>) {
     let prefix = messages
         .iter()
@@ -84,7 +85,22 @@ pub(crate) fn replacement_body(messages: &[Value]) -> Vec<Value> {
                 .is_some_and(|s| s.starts_with(SUMMARY_MARKER_PREFIX))
         })
         .map(|i| i + 1);
-    start.map(|i| messages[i..].to_vec()).unwrap_or_default()
+    start
+        .map(|i| {
+            messages[i..]
+                .iter()
+                .filter(|m| is_replayable(m))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A system message after the summary is a run-scoped notice (e.g. the tool-round
+/// limit). Providers hoist every system message into the system prompt, so replaying
+/// one would impose it on all later turns. Snapshots saved before this rule may hold one.
+pub(crate) fn is_replayable(message: &Value) -> bool {
+    message["role"] != "system"
 }
 
 fn read_reminders(old: &[Value], kept: &[Value]) -> Vec<Value> {
@@ -908,12 +924,14 @@ mod tests {
 
     #[test]
     fn previous_summary_is_not_immutable_prefix() {
-        let messages = vec![
-            json!({"role":"system","content":"rules"}),
-            json!({"role":"system","content":"Previous conversation summary:\nold"}),
-            json!({"role":"assistant","content":"new work"}),
-        ];
-        assert_eq!(group_starts(&messages), (1, vec![1, 2]));
+        for role in ["user", "system"] {
+            let messages = vec![
+                json!({"role":"system","content":"rules"}),
+                json!({"role":role,"content":"Previous conversation summary:\nold"}),
+                json!({"role":"assistant","content":"new work"}),
+            ];
+            assert_eq!(group_starts(&messages), (1, vec![1, 2]));
+        }
     }
 
     #[test]
@@ -930,12 +948,15 @@ mod tests {
     #[test]
     fn replacement_body_preserves_exact_tail_without_system_or_summary() {
         let tail = json!({"role":"assistant","tool_calls":[{"id":"x"}]});
+        let result = json!({"role":"tool","tool_call_id":"x","content":"r"});
         let messages = vec![
             json!({"role":"system","content":"rules"}),
             summary_message("summary"),
             tail.clone(),
+            result.clone(),
+            super::super::stop::step_limit_system_message(),
         ];
-        assert_eq!(replacement_body(&messages), vec![tail]);
+        assert_eq!(replacement_body(&messages), vec![tail, result]);
     }
 
     #[test]

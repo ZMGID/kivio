@@ -144,16 +144,23 @@ where
                 conversation,
                 &record.id,
                 &run.id,
-                persist(message_id, content.clone()),
+                persist(message_id.clone(), content.clone()),
             )
             .await?;
             if inserted {
-                incoming.push(report_input(&content));
+                let mut input = report_input(&content);
+                input[REPORT_MESSAGE_ID_KEY] = json!(message_id);
+                incoming.push(input);
             }
         }
     }
     Ok(incoming)
 }
+
+/// Runtime-only link from a delivered report to its persisted `subagent-result-*`
+/// message. A compaction snapshot that already carries the report uses it to skip
+/// the duplicate UI message on replay; provider conversion drops unknown keys.
+pub(crate) const REPORT_MESSAGE_ID_KEY: &str = "_subagent_result_id";
 
 pub(crate) fn report_input(content: &str) -> Value {
     // A child report is external evidence, not a parent model completion or
@@ -883,6 +890,11 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Request failed"));
+        assert_eq!(
+            reports[0][REPORT_MESSAGE_ID_KEY],
+            format!("subagent-result-{}", child.current().id),
+            "the runtime report links to its persisted result message"
+        );
         assert!(
             !wait_for_parent_results(&runtime, "conv", "parent", || false)
                 .await

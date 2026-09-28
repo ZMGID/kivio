@@ -85,3 +85,21 @@
 依据为 ZCode `runtime/methods/compact-active-helpers.ts` 的 `createCompactContextExceededFinishError` 及 `runtime/helpers/model-errors.ts` 的终态标记集合。没有增加第二套重试流程。
 
 两个新增回归先在旧实现上失败，修复后通过。通过本地 HTTP/SSE 模拟服务走实际 OpenAI 适配器，覆盖携带非空残缺摘要的各类超窗终态、自动/手动缩减请求后成功、耗尽后不采用残缺摘要。最终聊天模块回归 **1000 通过、1 跳过**；架构检查 12 项及依赖边界通过；`git diff --check` 通过。没有真实供应商故障注入验证；本轮桌面自动化连接被自动审批机制以 `blocked by policy` 拒绝，未执行桌面实测，亦未替换运行中的应用。
+
+## 2026-09-28 快照回放修复（对照 ZCode 深审）
+
+对照 ZCode `328c1a0` 的 `runtime/helpers/compact.ts`（`buildPostCompactRuntimeEntries`）与 `compact/prompt.ts`（`buildCompactSummaryMessage`）复核后，修复两项快照回放缺陷；审查中的其他发现（摘要请求不带工具、自动压缩失败即收尾、手动压缩媒体投影与超窗标记、队列失败卡住、手动 CAS）本轮未处理。
+
+- **摘要落盘角色**：ZCode 的摘要始终是 user 消息。Kivio 运行中同样是 user，但落盘回放改成 system；各适配器会把 system 提升进系统提示，保留片段又从 assistant 工具调用开始，导致下一轮首条消息是 assistant 工具调用（Gemini 要求工具调用紧随 user 或工具结果）。现 `summary_message` 回放为 user；上下文统计按摘要前缀单独计入，不重复计数。
+- **快照混入运行期消息**：快照取自运行中消息列表，而非普通落盘用的 `generated_api_messages`。
+  - 工具轮次上限提示（system）被写入快照后，每轮都会提升进系统提示并禁止调用工具。`replacement_body` 与回放共用 `is_replayable` 排除 system 消息，回放时也覆盖此前已保存的快照。
+  - 子 agent 报告既在快照中，又作为 `subagent-result-*` 消息追加在回复之后，会被发送两次。报告在运行中携带 `_subagent_result_id`，回放时跳过快照已含的结果消息。第一轮可能在回复草稿落库前收集报告，所以不采用直接从快照删除的方案，那样会丢失报告。
+
+验证：新增和扩展的回归覆盖了以下几点：
+- 快照首条为 user 摘要，并确认经 Gemini 适配器后首条仍是 user；
+- 旧快照里的 system 提示在回放时被过滤；
+- 运行循环中触达轮次上限后，快照不含该提示；
+- 子 agent 报告只发送一次，快照外的报告照常回放；
+- 运行期报告携带结果消息 id。
+
+逐项撤回修复后，上述 5 项断言均失败；恢复修复后全部通过。另外，`file_ledger_flows_into_replayed_summary_message` 的断言按新角色从 system 改为 user。本轮在 Linux 容器执行：聊天模块 **1010 通过、2 跳过**；`git diff --check` 通过，改动区域 rustfmt 无差异。构建时为不相关的 Windows/macOS 专属代码（`offline_models.rs`、`windows.rs`）临时加过 Linux 占位，测试后已还原、未提交。未做真实 Gemini/Anthropic 实测，也未做桌面实测。

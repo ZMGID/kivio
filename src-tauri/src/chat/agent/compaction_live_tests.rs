@@ -140,7 +140,7 @@ async fn auto_case(provider: ModelProvider, model: String, seed: usize, chars: u
         // Reload the actual saved-summary format and reconstruct the sending view.
         let disk = serde_json::to_vec(&summary).unwrap();
         let restored: crate::chat::types::ConversationContextSummary = serde_json::from_slice(&disk).unwrap();
-        let mut replay = vec![json!({"role":"system","content":format!("{}\n{}", compaction::PERSISTED_SUMMARY_PREFIX, restored.content)})];
+        let mut replay = vec![json!({"role":"user","content":format!("{}\n{}", compaction::PERSISTED_SUMMARY_PREFIX, restored.content)})];
         replay.extend(restored.replay.ok_or("missing replay")?.messages);
         let reloaded_answer = recall(&state, &provider, &model, replay, &format!("reload-{seed}")).await?;
         Ok(json!({"before_estimated_tokens":before,"after_estimated_tokens":after,"answer":result.content,"reloaded_answer":reloaded_answer,"snapshot_bytes":disk.len()}))
