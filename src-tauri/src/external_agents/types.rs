@@ -85,6 +85,7 @@ pub enum LatestVersionStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostInstallStrategy {
     None,
+    VerifyVersion,
     DshProfile,
 }
 

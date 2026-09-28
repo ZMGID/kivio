@@ -87,7 +87,8 @@ pub const PI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     compact_prompt: Some("/compact"),
     install: super::super::types::AgentInstallSpec {
         npm_package: Some("@earendil-works/pi-coding-agent"),
-        npm_install_args: &["--ignore-scripts"],
+        // npm must enforce the published engines.node range before writing a broken CLI.
+        npm_install_args: &["--ignore-scripts", "--engine-strict"],
         pypi_package: None,
         script_unix: None,
         script_windows: None,
@@ -97,7 +98,7 @@ pub const PI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         config_dir: Some(".pi"),
         config_dir_env: None,
         requires_pnpm: false,
-        post_install: super::super::types::PostInstallStrategy::None,
+        post_install: super::super::types::PostInstallStrategy::VerifyVersion,
     },
     import: super::super::types::AgentImportPolicy::NONE,
     run: super::super::types::AgentRunPolicy {

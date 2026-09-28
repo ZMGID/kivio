@@ -1013,50 +1013,66 @@ struct InstallLogEvent {
 
 const INSTALL_TIMEOUT_SECS: u64 = 300;
 
-async fn dsh_cli_starts(bin: &Path) -> Result<(), String> {
-    let mut command = crate::external_agents::spawn::cli_command(bin);
+// Discovery deliberately accepts a spawned process even when it exits unsuccessfully.
+// Installation needs a stronger check: a successful exit and an actual version.
+async fn verify_cli_version(
+    def: &crate::external_agents::types::RuntimeAgentDef,
+    bin: &Path,
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut command = crate::external_agents::spawn::agent_probe_command(def, bin);
     command
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
+        .args(def.version_args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .stderr(std::process::Stdio::piped());
+    let output = tokio::time::timeout(timeout, command.output())
         .await
-        .map_err(|_| "dsh --version 超时".to_string())?
-        .map_err(|e| format!("无法启动 dsh：{e}"))?;
+        .map_err(|_| format!("{} --version 超时，安装未通过启动验证", def.bin))?
+        .map_err(|e| format!("无法启动 {}：{e}", def.name))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let combined = format!("{stderr}\n{stdout}");
     if output.status.success() && !combined.contains("ERR_MODULE_NOT_FOUND") {
-        return Ok(());
+        if let Some(version) = stdout
+            .lines()
+            .chain(stderr.lines())
+            .find_map(extract_semver)
+        {
+            return Ok(version);
+        }
     }
     let detail = [stderr.trim(), stdout.trim()]
         .into_iter()
         .find(|line| !line.is_empty())
-        .unwrap_or("dsh --version 失败");
+        .unwrap_or("没有返回有效版本号");
+    let detail: String = detail.chars().take(4000).collect();
     Err(format!(
-        "DeepSeek Harness 已写入，但 `dsh --version` 无法启动：{detail}"
+        "{} 已写入，但 `{} --version` 未通过启动验证（{}）：{detail}",
+        def.name, def.bin, output.status
     ))
 }
 
-async fn finish_dsh_install(
+async fn finish_cli_install(
     def: &crate::external_agents::types::RuntimeAgentDef,
     emit: &impl Fn(String),
 ) -> Result<(), String> {
+    if matches!(def.install.post_install, PostInstallStrategy::None) {
+        return Ok(());
+    }
     let Some(bin) = crate::external_agents::spawn::resolve_binary(def).await else {
-        return Err(
-            "DeepSeek Harness 已装上，但当前进程还找不到 dsh 命令。请关掉 Kivio 再打开，然后重新扫描。"
-                .to_string(),
-        );
+        return Err(format!(
+            "{} 安装命令已结束，但当前进程还找不到 {} 命令。请检查 CLI 路径设置，或重新打开 Kivio 后扫描。",
+            def.name, def.bin
+        ));
     };
     crate::external_agents::spawn::invalidate_probe_cache(&bin);
-    dsh_cli_starts(&bin).await?;
-    emit("dsh --version 已通过".to_string());
-    emit("正在初始化 Kivio dsh profile（首次需要下载插件）…".to_string());
-    crate::external_agents::dsh_profile::ensure_profile_ready(&bin, None, None).await?;
-    emit("dsh profile 已就绪".to_string());
+    let version = verify_cli_version(def, &bin, Duration::from_secs(20)).await?;
+    emit(format!("{} {version} 启动验证通过", def.name));
+    if matches!(def.install.post_install, PostInstallStrategy::DshProfile) {
+        emit("正在初始化 Kivio dsh profile（首次需要下载插件）…".to_string());
+        crate::external_agents::dsh_profile::ensure_profile_ready(&bin, None, None).await?;
+        emit("dsh profile 已就绪".to_string());
+    }
     Ok(())
 }
 
@@ -1154,12 +1170,10 @@ pub async fn chat_external_cli_install(app: AppHandle, agent_id: String) -> Resu
         // npm -g 刚把 shims 写进 %APPDATA%\npm；装之前这个目录可能还不存在，
         // PATH 里也就没有它。不刷新的话紧接着的探测会说「未安装」。
         expose_node_on_path();
-        if matches!(spec.post_install, PostInstallStrategy::DshProfile) {
-            if let Err(err) = finish_dsh_install(def, &emit).await {
-                emit(err.clone());
-                emit_done(false);
-                return Err(err);
-            }
+        if let Err(err) = finish_cli_install(def, &emit).await {
+            emit(err.clone());
+            emit_done(false);
+            return Err(err);
         }
     }
 
@@ -1206,6 +1220,97 @@ fn open_path(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_version_probe(dir: &Path, windows: &str, unix: &str) -> PathBuf {
+        let path = dir.join(if cfg!(windows) { "probe.cmd" } else { "probe" });
+        let script = if cfg!(windows) {
+            format!("@echo off\r\n{windows}\r\n")
+        } else {
+            format!("#!/bin/sh\n{unix}\n")
+        };
+        std::fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn pi_version_verification_rejects_failed_exit_and_allows_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = get_agent_def("pi").unwrap();
+        let bin = write_version_probe(
+            dir.path(),
+            "echo 0.87.1\r\necho enableCompileCache missing 1>&2\r\nexit /b 1",
+            "echo 0.87.1\necho enableCompileCache missing >&2\nexit 1",
+        );
+        let err = verify_cli_version(def, &bin, Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Pi"));
+        assert!(err.contains("enableCompileCache missing"));
+
+        // A failed probe must not poison the same path after a repair/retry.
+        write_version_probe(
+            dir.path(),
+            "echo 0.87.1\r\nexit /b 0",
+            "echo 0.87.1\nexit 0",
+        );
+        assert_eq!(
+            verify_cli_version(def, &bin, Duration::from_secs(5)).await,
+            Ok("0.87.1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_cli_requires_a_version_even_with_successful_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = write_version_probe(
+            dir.path(),
+            "echo not a version\r\nexit /b 0",
+            "echo not a version\nexit 0",
+        );
+        for id in ["pi", "dsh"] {
+            assert!(
+                verify_cli_version(get_agent_def(id).unwrap(), &bin, Duration::from_secs(5))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn installed_cli_accepts_versions_on_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = write_version_probe(
+            dir.path(),
+            "echo dsh 0.1.0-rc.7 1>&2\r\nexit /b 0",
+            "echo dsh 0.1.0-rc.7 >&2\nexit 0",
+        );
+        assert_eq!(
+            verify_cli_version(get_agent_def("dsh").unwrap(), &bin, Duration::from_secs(5)).await,
+            Ok("0.1.0-rc.7".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn pi_version_verification_handles_missing_command_and_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = get_agent_def("pi").unwrap();
+        assert!(
+            verify_cli_version(def, &dir.path().join("missing.exe"), Duration::from_secs(5))
+                .await
+                .is_err()
+        );
+        // Shell builtins only: timing out must not leave a descendant process behind.
+        let bin = write_version_probe(dir.path(), ":spin\r\ngoto spin", "while :; do :; done");
+        let err = verify_cli_version(def, &bin, Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(err.contains("超时"));
+    }
     #[test]
     fn antigravity_uses_official_native_installers_and_self_update() {
         let spec = install_spec("antigravity").unwrap();
@@ -1336,8 +1441,16 @@ mod tests {
         assert_eq!(grok_win.program, "powershell.exe");
         assert!(grok_win.display.contains("x.ai/cli/install.ps1"));
 
-        let pi = install_plan(&install_spec("pi").unwrap(), HostPlatform::Unix).unwrap();
-        assert!(pi.args.contains(&"--ignore-scripts".to_string()));
+        let pi_spec = install_spec("pi").unwrap();
+        for platform in [HostPlatform::Unix, HostPlatform::Windows] {
+            let pi = install_plan(pi_spec, platform).unwrap();
+            assert!(pi.args.contains(&"--ignore-scripts".to_string()));
+            assert!(
+                pi.args.contains(&"--engine-strict".to_string()),
+                "Pi must reject unsupported Node versions instead of reporting a broken install as successful"
+            );
+        }
+        assert_eq!(pi_spec.post_install, PostInstallStrategy::VerifyVersion);
 
         let hermes = install_spec("hermes").unwrap();
         assert!(install_plan(&hermes, HostPlatform::Unix)
