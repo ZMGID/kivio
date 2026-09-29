@@ -1377,9 +1377,11 @@ button.chat-composer-status-item:hover {
 }
 
 /* 气泡入场：在 fade-up 基础上加轻微缩放，对齐 LiveAgent chatBubbleIn。
-   单列出来（不改 chat-motion-fade-up）避免影响附件 chip/提示行等复用点。 */
+   单列出来（不改 chat-motion-fade-up）避免影响附件 chip/提示行等复用点。
+   结束后释放 transform：长任务气泡可高达数十万像素；保留缩放层会让屏外
+   运行指示器的每次动画触发整个气泡的 Paint/Layerize，阻塞侧栏和滚动。 */
 .chat-motion-bubble-in {
-  animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+  animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
 }
 
 /* 视图/页面切换入场：三段式递进（对齐 LiveAgent hubPageIn/hubPanelIn）——

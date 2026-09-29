@@ -8,7 +8,7 @@ import { build } from 'vite'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const ref = process.argv[2]
-const rendererFiles = ['src/chat/MessageBubble.tsx', 'src/chat/ChatMarkdown.tsx', 'src/chat/citations.ts']
+const rendererFiles = ['src/chat/MessageBubble.tsx', 'src/chat/ChatMarkdown.tsx', 'src/chat/citations.ts', 'src/styles/chat-01-main.css']
 const baseline = new Map(ref ? rendererFiles.map(file => [
   path.resolve(root, file).replaceAll('\\', '/'),
   execFileSync('git', ['show', `${ref}:${file}`], { cwd: root, encoding: 'utf8' }),
