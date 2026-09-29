@@ -6,7 +6,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { MessageList } from '/src/chat/MessageList.tsx';
-import { createChatPerformanceFixture } from '/src/chat/performanceFixtures.ts';
+import { createChatPerformanceFixture, createLongRunningChatFixture } from '/src/chat/performanceFixtures.ts';
 import { createStreamPreviewOwner } from '/src/chat/streamPreviewOwner.ts';
 import { getChatPerfReport, resetChatPerfProbeForTests, onChatPerfProfiler, useChatPerfLongTaskProbe } from '/src/chat/chatPerformanceProbe.ts';
 import '/src/styles/app.css';
@@ -14,7 +14,12 @@ import 'streamdown/styles.css';
 
 globalThis.__KIVIO_CHAT_PERF__ = true;
 const owner = createStreamPreviewOwner();
-const fixtures = Object.fromEntries(['F1','F2','F3','F4'].map(id => [id, createChatPerformanceFixture(id)]));
+const fixtures = Object.fromEntries(['F1','F2','F3','F4','F5'].map(id => [id, createChatPerformanceFixture(id)]));
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const summarize = values => {
+  const sorted = [...values].sort((a,b) => a-b);
+  return {median:sorted[Math.floor(sorted.length*.5)] ?? 0, p95:sorted[Math.min(sorted.length-1,Math.floor(sorted.length*.95))] ?? 0, max:sorted.at(-1) ?? 0};
+};
 fixtures.tools = { messages: [{ id: 'large-process', role: 'assistant', timestamp: 1, content: '',
   tool_calls: Array.from({length: 500}, (_, i) => ({id: `tool-${i}`, name: `step_${i}`, source: 'native', status: 'completed'})),
   segments: Array.from({length: 500}, (_, i) => ({id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`})),
@@ -28,6 +33,45 @@ function Harness() {
     resize() { flushSync(() => setNarrow(value => !value)); },
     reset: resetChatPerfProbeForTests,
     report: getChatPerfReport,
+    async longRun(steps = 300, update = 'text') {
+      owner.drop('F5');
+      owner.begin('F5', Date.now());
+      const fixture = createLongRunningChatFixture(steps);
+      for (const turn of fixture.turns) {
+        owner.receive(turn.text);
+        owner.projectDisplay({kind:'tool', payload:turn.tool});
+      }
+      owner.receive(fixture.active);
+      flushSync(() => { owner.activate('F5'); setId('F5'); });
+      await wait(1200);
+      resetChatPerfProbeForTests();
+      const durations = [], queued = [];
+      const longTasks = [];
+      const observer = PerformanceObserver.supportedEntryTypes.includes('longtask')
+        ? new PerformanceObserver(list => longTasks.push(...list.getEntries().map(entry => ({durationMs:entry.duration,startTime:entry.startTime})))) : null;
+      observer?.observe({entryTypes:['longtask']});
+      for (let index=0; index<20; index++) {
+        await wait(140);
+        const start = performance.now();
+        const task = new Promise(resolve => setTimeout(() => { queued.push(performance.now()-start); resolve(); }, 0));
+        flushSync(() => {
+          if (update === 'tool') owner.projectDisplay({kind:'tool', payload:{...fixture.turns.at(-1).tool, resultPreview:`Tool output ${index}`, status:'running'}});
+          else owner.receive(fixture.append);
+          // Publish at a controlled boundary through the existing owner. The
+          // reported time includes event application + synchronous UI, not its throttle wait.
+          owner.activate('F5');
+        });
+        durations.push(performance.now()-start);
+        await task;
+      }
+      await wait(300);
+      observer?.disconnect();
+      return { steps, update, updateMs:summarize(durations), queuedTaskMs:summarize(queued),
+        domNodes:document.querySelectorAll('*').length,
+        mountedRows:document.querySelectorAll('[data-chat-message-list-item]').length,
+        markdownBlocks:document.querySelectorAll('.chat-markdown').length,
+        longTaskSupport:Boolean(observer), longTasks, report:getChatPerfReport() };
+    },
     async stream() {
       owner.activate('F4'); owner.begin('F4', 100);
       const text = fixtures.F4.streamingContent;

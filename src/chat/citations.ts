@@ -8,6 +8,26 @@ import { isWebCitation, webSearchCardView, type WebCitationRef } from './webSear
 /** 答案正文 `[n]` 角标可查到的来源：知识库命中（KB）或联网搜索来源（web）。 */
 export type CitationView = KbHitView | WebCitationRef
 
+/** Tool progress can replace the container without changing any visible source. */
+export function citationMapsEqual(
+  left: ReadonlyMap<number, CitationView> | undefined,
+  right: ReadonlyMap<number, CitationView> | undefined,
+): boolean {
+  if (left === right) return true
+  if ((left?.size ?? 0) !== (right?.size ?? 0)) return false
+  for (const [n, a] of left ?? []) {
+    const b = right?.get(n)
+    if (!b) return false
+    if (a === b) continue
+    if (isWebCitation(a)) {
+      if (!isWebCitation(b) || a.n !== b.n || a.title !== b.title || a.url !== b.url
+        || a.host !== b.host || a.snippet !== b.snippet || a.publishedDate !== b.publishedDate) return false
+    } else if (isWebCitation(b) || a.n !== b.n || a.docName !== b.docName
+      || a.headingPath !== b.headingPath || a.score !== b.score || a.text !== b.text) return false
+  }
+  return true
+}
+
 /** 汇总本条消息所有 knowledge_search 命中 + web_search 来源，按 n 建索引，供答案里的
  *  `[n]` 角标查源。多次检索 n 会重叠：KB 命中优先（保持既有语义），联网来源只在空位补；
  *  多张 web 卡之间后写覆盖（planning 合成卡在前、synthesis 终态卡在后，答案引用的是后卡）。 */

@@ -53,6 +53,7 @@ import {
 import type { TimelineGroupItem } from './segments'
 
 const DIRECT_IMAGE_GENERATION_PENDING = '[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]'
+const EMPTY_TOOL_CALLS: ToolCallRecord[] = []
 
 // 模块级稳定引用：内联箭头每次渲染新建会打穿 ChatMarkdown 的 memo（导致公式重渲）。
 const handleChatImageClick = (src: string, alt: string, name?: string) =>
@@ -892,15 +893,17 @@ function TimelineSegments({
   const [processLimit, setProcessLimit] = useState(20)
   if (messageStreaming && processLimit !== Infinity) setProcessLimit(Infinity)
   const defaultOpen = messageStreaming
-  const prepared = useMemo(() => {
-    const ordered = segments
+  const toolCallById = useMemo(() => {
     const toolCallById = new Map<string, ToolCallRecord>()
     for (const toolCall of toolCalls) {
       const id = toolRecordId(toolCall)
       if (id) toolCallById.set(id, toolCall)
     }
-
-    const citations = buildCitationMap(toolCalls)
+    return toolCallById
+  }, [toolCalls])
+  const citations = useMemo(() => buildCitationMap(toolCalls), [toolCalls])
+  const prepared = useMemo(() => {
+    const ordered = segments
     const reasoningSegmentCount = ordered.filter((segment) => segment.kind === 'reasoning').length
     const referencedToolIds = new Set(
       ordered
@@ -950,10 +953,10 @@ function TimelineSegments({
       const presentation = artifactPresentationFromToolCall(tool)
       return presentation?.mode === 'prepare' ? presentation.artifactIds : []
     }))].filter(id => !referencedIds.has(id) && !presentedIds.has(id))
-    return { toolCallById, citations, reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds }
-  }, [segments, toolCalls, completed, messageStreaming])
+    return { reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds }
+  }, [segments, toolCalls, toolCallById, completed, messageStreaming])
 
-  const { toolCallById, citations, reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
+  const { reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
   const visibleProcess = new Set(allProcessSegments.slice(-processLimit))
   const hiddenProcessCount = Math.max(0, allProcessSegments.length - processLimit)
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
@@ -1076,7 +1079,7 @@ function MessageBubbleComponent({
   const canMutate = Boolean(onUpdateMessage && onDeleteMessage && onRegenerateMessage)
   const prepared = useMemo(() => {
     const attachments = message.attachments ?? []
-    const toolCalls = message.tool_calls ?? message.toolCalls ?? []
+    const toolCalls = message.tool_calls ?? message.toolCalls ?? EMPTY_TOOL_CALLS
     // 后端 recovery.rs 产出的降级描述；旧会话无此字段 → null → 不渲染卡片。
     const degraded = message.degraded ?? null
     // 降级文案同时走三条路：content、时间线 text 分段、以及这张卡片。卡片已完整表达，

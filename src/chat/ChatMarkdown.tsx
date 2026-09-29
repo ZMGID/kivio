@@ -18,7 +18,7 @@ import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
-import { remarkCitations, type CitationView } from './citations'
+import { citationMapsEqual, remarkCitations, type CitationView } from './citations'
 import { citationPopoverPosition, type CitationPopoverPosition } from './citationPopover'
 import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
@@ -49,6 +49,8 @@ interface ChatMarkdownProps {
   /** 已完成助手回答才传入；ChatMarkdown 负责把同一份规范化 Markdown 的标题注册给消息目录。 */
   outlineSource?: ChatMarkdownOutlineSource
 }
+
+const EMPTY_ARTIFACTS: ChatToolArtifact[] = []
 
 export type MarkdownOutlineSourceUpdate = {
   ownerMessageId: string
@@ -1132,14 +1134,16 @@ function MarkdownArtifactImage({
 
 // Streamdown may memoize a settled Markdown block even when components change.
 // Resolve IDs through context so late artifact events update only these nodes.
-const ArtifactReferenceContext = createContext<{
+const MarkdownReferencesContext = createContext<{
   artifacts: ReadonlyMap<string, ChatToolArtifact>
+  artifactLookup: ReadonlyMap<string, ChatToolArtifact>
+  citations?: ReadonlyMap<number, CitationView>
   conversationId?: string | null
   onImageClick?: ChatMarkdownProps['onImageClick']
-}>({ artifacts: new Map() })
+}>({ artifacts: new Map(), artifactLookup: new Map() })
 
 function MarkdownArtifactReference({ url, label, image }: { url: string; label: string; image: boolean }) {
-  const context = useContext(ArtifactReferenceContext)
+  const context = useContext(MarkdownReferencesContext)
   const id = artifactReferenceId(url)
   const artifact = id ? context.artifacts.get(id) : undefined
   if (!artifact) return <span role="status" className="text-sm text-neutral-500">{label || '文件'}（文件不可用）</span>
@@ -1148,6 +1152,35 @@ function MarkdownArtifactReference({ url, label, image }: { url: string; label: 
       artifact={artifact} conversationId={context.conversationId} onImageClick={context.onImageClick} />
   }
   return <ArtifactFileChip artifact={artifact} conversationId={context.conversationId} variant="inline" />
+}
+
+// Stable component types let cached blocks receive late sources/images through
+// context without reparsing text or remounting their loaded DOM.
+const referencedMarkdownComponents: Components = {
+  ...markdownComponents,
+  a: function MarkdownLink({ href, children }) {
+    const context = useContext(MarkdownReferencesContext)
+    const url = decodeKivioInternalUrl(typeof href === 'string' ? href : '')
+    if (url.startsWith('artifact:')) return <MarkdownArtifactReference url={url} label={codeChildrenToString(children)} image={false} />
+    const cite = /^#kb-cite-(\d{1,3})$/.exec(url)
+    if (cite) {
+      const n = Number(cite[1])
+      const hit = context.citations?.get(n)
+      return hit ? <CitationChip n={n} hit={hit} /> : <>{children}</>
+    }
+    return <LinkAnchor href={url} conversationId={context.conversationId}>{children}</LinkAnchor>
+  },
+  img: function MarkdownImage({ src, alt }) {
+    const context = useContext(MarkdownReferencesContext)
+    const rawSrc = decodeKivioInternalUrl(typeof src === 'string' ? src : '')
+    const altText = alt ?? ''
+    if (rawSrc.startsWith('artifact:')) return <MarkdownArtifactReference url={rawSrc} label={altText} image />
+    const artifact = rawSrc && !isExternalOrAbsoluteImageSrc(rawSrc)
+      ? context.artifactLookup.get(artifactKey(rawSrc)) ?? context.artifactLookup.get(artifactBasename(rawSrc))
+      : undefined
+    return <MarkdownArtifactImage rawSrc={rawSrc} alt={altText} artifact={artifact}
+      conversationId={context.conversationId} onImageClick={context.onImageClick} />
+  },
 }
 
 const streamdownPlugins = {
@@ -1159,6 +1192,9 @@ const streamdownPlugins = {
 const streamdownRemarkPlugins: PluggableList = [
   ...Object.values(defaultRemarkPlugins),
   remarkBreaks,
+  // Parse citation candidates once. Missing sources remain literal text in the
+  // context consumer; a late source can become a chip inside a cached block.
+  remarkCitations(new Set(Array.from({ length: 1000 }, (_, n) => n))),
 ]
 
 // Streamdown 2.5 can leave a block stale after a non-prefix replacement. Scope
@@ -1293,7 +1329,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
 
 function ChatMarkdownComponent({
   content,
-  artifacts = [],
+  artifacts = EMPTY_ARTIFACTS,
   conversationId = null,
   onImageClick,
   variant = 'default',
@@ -1302,54 +1338,13 @@ function ChatMarkdownComponent({
 }: ChatMarkdownProps) {
   const streaming = useContext(MarkdownStreamingContext)
   const [documentRoot, setDocumentRoot] = useState<HTMLDivElement | null>(null)
-  const remarkPlugins = useMemo<PluggableList>(() => {
-    const plugins: PluggableList = [...streamdownRemarkPlugins]
-    if (citations && citations.size > 0) {
-      plugins.push(remarkCitations(new Set(citations.keys())))
-    }
-    return plugins
-  }, [citations])
-  const components = useMemo<Components>(() => {
-    const artifactLookup = buildArtifactLookup(artifacts)
-    return {
-      ...markdownComponents,
-      a: ({ href, children }) => {
-        const url = decodeKivioInternalUrl(typeof href === 'string' ? href : '')
-        if (url.startsWith('artifact:')) return <MarkdownArtifactReference url={url} label={codeChildrenToString(children)} image={false} />
-        const cite = /^#kb-cite-(\d{1,3})$/.exec(url)
-        if (cite) {
-          const n = Number(cite[1])
-          return <CitationChip n={n} hit={citations?.get(n)} />
-        }
-        return <LinkAnchor href={url} conversationId={conversationId}>{children}</LinkAnchor>
-      },
-      img: ({ src, alt }) => {
-        const rawSrc = decodeKivioInternalUrl(typeof src === 'string' ? src : '')
-        const altText = alt ?? ''
-        if (rawSrc.startsWith('artifact:')) return <MarkdownArtifactReference url={rawSrc} label={altText} image />
-        const artifact =
-          rawSrc && !isExternalOrAbsoluteImageSrc(rawSrc)
-            ? artifactLookup.get(artifactKey(rawSrc)) ??
-              artifactLookup.get(artifactBasename(rawSrc))
-            : undefined
-        return (
-          <MarkdownArtifactImage
-            rawSrc={rawSrc}
-            alt={altText}
-            artifact={artifact}
-            conversationId={conversationId}
-            onImageClick={onImageClick}
-          />
-        )
-      },
-    }
-  }, [artifacts, conversationId, onImageClick, citations])
-
   const artifactContext = useMemo(() => ({
     artifacts: new Map(artifacts.filter(a => artifactId(a)).map(a => [artifactId(a), a])),
+    artifactLookup: buildArtifactLookup(artifacts),
+    citations,
     conversationId,
     onImageClick,
-  }), [artifacts, conversationId, onImageClick])
+  }), [artifacts, citations, conversationId, onImageClick])
 
   return (
     <div
@@ -1359,20 +1354,35 @@ function ChatMarkdownComponent({
       data-chat-outline-source-id={outlineSource && !streaming ? outlineSource.sourceId : undefined}
     >
       <MarkdownErrorBoundary fallbackText={content}>
-        <ArtifactReferenceContext.Provider value={artifactContext}>
+        <MarkdownReferencesContext.Provider value={artifactContext}>
           <MarkdownDocument
             content={content}
-            components={components}
-            remarkPlugins={remarkPlugins}
+            components={referencedMarkdownComponents}
+            remarkPlugins={streamdownRemarkPlugins}
             streaming={streaming}
             outlineSource={outlineSource}
             documentRoot={documentRoot}
           />
-        </ArtifactReferenceContext.Provider>
+        </MarkdownReferencesContext.Provider>
       </MarkdownErrorBoundary>
     </div>
   )
 }
 
-// memo：仅当 content / artifacts 变化时才重渲染（配合 MessageBubble 的 memo）
-export const ChatMarkdown = memo(ChatMarkdownComponent)
+// A live message derives new arrays/maps as its tools advance. Compare their
+// actual inputs before entering Markdown; unchanged paragraphs keep their
+// parser, components and loaded images. Artifact objects remain immutable, so
+// replacing an artifact (even with the same ID) must invalidate this boundary.
+export const ChatMarkdown = memo(ChatMarkdownComponent, (previous, next) => {
+  if (previous.content !== next.content || previous.conversationId !== next.conversationId
+    || previous.onImageClick !== next.onImageClick || previous.variant !== next.variant) return false
+  const previousArtifacts = previous.artifacts ?? EMPTY_ARTIFACTS
+  const nextArtifacts = next.artifacts ?? EMPTY_ARTIFACTS
+  if (previousArtifacts !== nextArtifacts && (previousArtifacts.length !== nextArtifacts.length
+    || previousArtifacts.some((artifact, index) => artifact !== nextArtifacts[index]))) return false
+  const a = previous.outlineSource
+  const b = next.outlineSource
+  if (a !== b && (!a || !b || a.ownerMessageId !== b.ownerMessageId
+    || a.sourceId !== b.sourceId || a.onChange !== b.onChange)) return false
+  return citationMapsEqual(previous.citations, next.citations)
+})

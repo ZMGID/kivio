@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatToolArtifact, ToolCallRecord } from './types'
+import type { ChatStreamPayload, ChatToolProgressPayload } from '../api/tauri'
 
-export type ChatPerformanceFixtureId = 'F1' | 'F2' | 'F3' | 'F4'
+export type ChatPerformanceFixtureId = 'F1' | 'F2' | 'F3' | 'F4' | 'F5'
 
 export type ChatPerformanceFixture = {
   id: ChatPerformanceFixtureId
@@ -84,8 +85,28 @@ export function createChatPerformanceFixture(id: ChatPerformanceFixtureId): Chat
   if (id === 'F1') return { id, title: '200 ordinary text rows', messages: makeF1() }
   if (id === 'F2') return { id, title: '20 answers with 200 code blocks', messages: makeF2() }
   if (id === 'F3') return { id, title: 'Structured content mix', messages: makeF3() }
+  if (id === 'F5') return { id, title: 'Long running text/tool timeline', messages: [message('f5-user', 'user', 'Inspect a long running task.', 0)] }
   const fixture = makeF4()
   return { id, title: '20k character streaming answer', ...fixture }
+}
+
+/** Replayed through the existing preview owner, including real tool projection. */
+export function createLongRunningChatFixture(steps = 300, conversationId = 'F5') {
+  const base = { conversationId, runId: 'fixture-long-run', messageId: 'f5-assistant' }
+  const textEvent = (index: number, delta: string): ChatStreamPayload => ({
+    ...base, protocolVersion: 1, scope: 'run', seq: index * 2, baseRevision: 0, type: 'text_delta', delta,
+    segment: { id: `text-${index}`, kind: 'text', phase: 'tool_loop', order: index * 2,
+      stepNumber: null, round: null, text: null, toolCallId: null },
+  })
+  const turns = Array.from({ length: steps }, (_, index) => ({
+    text: textEvent(index, `Step ${index}: checking **implementation** and \`file-${index}.ts\`.\n\n- Read the current configuration and verify the state owner.\n- Check event ordering and callback identity.\n\n| Check | Result |\n| --- | --- |\n| Rendering | passed |\n| State | unchanged |\n\n`),
+    tool: {
+      ...base, toolCallId: `call-${index}`, name: 'read', source: 'native', status: 'completed',
+      argumentsPreview: JSON.stringify({ file_path: `/fixture/file-${index}.ts` }),
+      resultPreview: 'Synthetic file content', artifacts: [],
+    } satisfies ChatToolProgressPayload,
+  }))
+  return { turns, active: textEvent(steps, 'Current output '), append: textEvent(steps, 'next token ') }
 }
 
 export function summarizeChatPerformanceFixture(fixture: ChatPerformanceFixture) {
