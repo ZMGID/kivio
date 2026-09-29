@@ -1,0 +1,29 @@
+/* Animate only the hovered/focused navigation control, never the whole sidebar. */
+[data-nav-motion] { transform-box: view-box; transform-origin: 12px 12px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion] {
+    animation-duration: calc(var(--kv-dur-slow) * 2.5);
+    animation-timing-function: var(--kv-ease-standard);
+    animation-iteration-count: 1;
+  }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="compose"] { animation-name: kv-nav-compose; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="search"] { animation-name: kv-nav-search; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="plugin"] { animation-name: kv-nav-plugin; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="automation"] { animation-name: kv-nav-automation; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="portfolio-back"] { animation-name: kv-nav-portfolio-back; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="portfolio-middle"] { animation-name: kv-nav-portfolio-middle; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="portfolio-front"] { animation-name: kv-nav-portfolio-front; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="extensions-a"] { animation-name: kv-nav-extensions-a; }
+  .kv-nav-motion:is(:hover, :focus-visible):not(:disabled) [data-nav-motion="extensions-b"] { animation-name: kv-nav-extensions-b; }
+}
+
+@keyframes kv-nav-compose { 0%, 100% { transform: none; } 30% { transform: translate(-1px, 1px) rotate(-6deg); } 65% { transform: translate(1px, -1px); } }
+@keyframes kv-nav-search { 0%, 100% { transform: none; } 30% { transform: translate(-1.5px, -.5px) rotate(-8deg); } 65% { transform: translate(1px, 0) rotate(5deg); } }
+@keyframes kv-nav-plugin { 0%, 100% { transform: none; } 30% { transform: translate(1px, -1px); } 65% { transform: translate(-2px, 2px); } }
+@keyframes kv-nav-automation { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+@keyframes kv-nav-portfolio-back { 0%, 100% { transform: none; } 45% { transform: translateY(-1px); } }
+@keyframes kv-nav-portfolio-middle { 0%, 100% { transform: none; } 45% { transform: translateY(.5px); } }
+@keyframes kv-nav-portfolio-front { 0%, 100% { transform: none; } 45% { transform: translateY(1.5px); } }
+@keyframes kv-nav-extensions-a { 0%, 100% { transform: none; } 45% { transform: rotate(-10deg) scale(.92); } }
+@keyframes kv-nav-extensions-b { 0%, 100% { transform: none; } 45% { transform: rotate(10deg) scale(.92); } }

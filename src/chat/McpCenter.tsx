@@ -1,7 +1,7 @@
-// MCP 整页（Chat 窗口「扩展 → MCP」）。已安装按来源分组（个人 / 连接器 / 网络搜索 / 插件），
+// MCP 整页（Chat 窗口「插件 → MCP」）。已安装按来源分组（个人 / 连接器 / 网络搜索 / 插件），
 // 与 Skill 页同一套「凡是已加载的都列出来」；插件与网络搜索 MCP 只读（开关在各自设置页）。
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
 import { ChevronDown, FolderOpen, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { McpIcon } from '../settings/public/icons'
 import { useLang, useT } from '../components/i18n'
@@ -69,7 +69,7 @@ function StatusDot({ state }: { state?: McpServerState }) {
 const TEXTAREA_CLASS =
   'w-full rounded-md border border-neutral-200 bg-white px-2.5 py-2 font-mono text-[12px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100'
 
-export function McpCenter() {
+export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
   const t = useT()
   const lang = useLang()
   const { connect: connectOAuth, prompt: devicePrompt, cancel: cancelOAuth } = useConnectorOAuth()
@@ -588,13 +588,13 @@ export function McpCenter() {
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
       <OAuthDeviceDialog prompt={devicePrompt} onCancel={cancelOAuth} lang={lang} />
 
-      <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex h-full min-h-0 w-full max-w-[1040px] flex-col px-9 pb-10 pt-7">
+      <main className={heading ? "kv-market-scroll custom-scrollbar" : "custom-scrollbar min-h-0 flex-1 overflow-y-auto"}>
+        <div className={heading ? "flex h-full min-h-0 w-full flex-col pb-4" : "mx-auto flex h-full min-h-0 w-full max-w-[1040px] flex-col px-9 pb-10 pt-7"}>
           <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-            <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+            {heading ?? (<h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
               <McpIcon size={24} className="text-neutral-500" />
               MCP
-            </h1>
+            </h1>)}
             <div className="mt-3.5 flex min-w-0 items-center gap-4">
               <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                 {t.chatMcpSubtitle}

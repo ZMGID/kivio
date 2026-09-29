@@ -2,23 +2,20 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
-  Blocks,
   ChevronRight,
   Folder,
   FolderPlus,
   Layers,
-  LayoutGrid,
   MoreHorizontal,
   NotebookPen,
   Plus,
   Search,
   Settings,
   SquarePen,
-  Workflow,
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, KnowledgeIcon, McpIcon, SkillIcon, WorksIcon } from '../settings/public/icons'
+import { AgentIcon, AutomationIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, PluginIcon, PortfolioIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
@@ -76,11 +73,8 @@ const extensionSubItems: Array<{
   icon: (props: { size?: number; className?: string }) => React.JSX.Element
 }> = [
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
-  { id: 'skill', label: () => 'Skill', icon: SkillIcon },
-  { id: 'mcp', label: () => 'MCP', icon: McpIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: (props) => <NotebookPen size={props.size} className={props.className} strokeWidth={1.75} /> },
-  { id: 'automations', label: (t) => t.chatNavAutomations, icon: (props) => <Workflow size={props.size} className={props.className} strokeWidth={1.75} /> },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -317,24 +311,22 @@ interface NavRowProps {
   onClick?: () => void
   disabled?: boolean
   active?: boolean
-  /** 图标在 hover 时的微动效（group-hover transform 工具类） */
-  iconMotion?: string
 }
 
-function NavRow({ icon, label, onClick, disabled, active, iconMotion }: NavRowProps) {
+function NavRow({ icon, label, onClick, disabled, active }: NavRowProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default disabled:opacity-40 ${
+      className={`kv-nav-motion group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default disabled:opacity-40 ${
         active
           ? 'bg-black/[0.06] font-medium text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-50'
           : 'text-neutral-800 hover:bg-black/[0.04] dark:text-neutral-200 dark:hover:bg-white/[0.06]'
       }`}
     >
       <span
-        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200 ${iconMotion ?? ''}`}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200`}
       >
         {icon}
       </span>
@@ -364,15 +356,15 @@ function ExtensionsNav({
       <button
         type="button"
         onClick={() => setExpanded((open) => !open)}
-        className={`group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] font-medium transition-colors ${
+        className={`kv-nav-motion group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] font-medium transition-colors ${
           highlighted
             ? 'bg-black/[0.06] text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-50'
             : 'text-neutral-800 hover:bg-black/[0.04] dark:text-neutral-200 dark:hover:bg-white/[0.06]'
         }`}
         aria-expanded={expanded}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 group-hover:rotate-3 group-hover:scale-110 dark:text-neutral-400 dark:group-hover:text-neutral-200">
-          <LayoutGrid size={17} strokeWidth={1.75} />
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200">
+          <ExtensionsIcon size={18} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{t.chatNavExtensions}</span>
         <ChevronRight
@@ -1410,34 +1402,45 @@ export const Sidebar = memo(function Sidebar({
         className={`shrink-0 space-y-0.5 px-2 pb-2 ${usesNativeTitlebar ? '' : 'pt-2'}`}
         data-tauri-drag-region="false"
       >
+        <div className="flex items-center gap-1 pr-1">
+          <div className="min-w-0 flex-1">
+            <NavRow
+              icon={<ComposeIcon size={18} strokeWidth={1.75} />}
+              label={t.chatNewChat}
+              onClick={onNewConversation}
+            />
+          </div>
+          <IconButton
+            size="md"
+            variant="ghost"
+            className="kv-nav-motion"
+            label={t.chatSearch}
+            aria-expanded={searchOpen}
+            onClick={() => onSearchOpenChange(true)}
+          >
+            <SearchNavIcon size={18} strokeWidth={1.75} />
+          </IconButton>
+        </div>
         <NavRow
-          icon={<SquarePen size={17} strokeWidth={1.75} />}
-          label={t.chatNewChat}
-          onClick={onNewConversation}
-          iconMotion="group-hover:-rotate-6 group-hover:scale-110"
-        />
-        <NavRow
-          icon={<Search size={17} strokeWidth={1.75} />}
-          label={t.chatSearch}
-          onClick={() => onSearchOpenChange(true)}
-          active={searchOpen}
-          iconMotion="group-hover:scale-110"
-        />
-        <NavRow
-          icon={<Blocks size={17} strokeWidth={1.75} />}
+          icon={<PluginIcon size={18} strokeWidth={1.75} />}
           label={t.chatNavPlugins}
           onClick={() => onOpenExtensionsItem('plugins')}
           active={extensionsActive === 'plugins'}
-          iconMotion="group-hover:scale-110"
         />
         <NavRow
-          icon={<WorksIcon size={17} strokeWidth={1.75} />}
+          icon={<AutomationIcon size={18} strokeWidth={1.75} />}
+          label={t.chatNavAutomations}
+          onClick={() => onOpenExtensionsItem('automations')}
+          active={extensionsActive === 'automations'}
+        />
+        <NavRow
+          icon={<PortfolioIcon size={18} strokeWidth={1.75} />}
           label={t.chatNavArtifacts}
           onClick={() => onOpenExtensionsItem('artifacts')}
           active={extensionsActive === 'artifacts'}
         />
         <ExtensionsNav
-          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' ? null : extensionsActive}
+          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' || extensionsActive === 'automations' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />
       </nav>

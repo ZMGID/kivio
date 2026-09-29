@@ -175,8 +175,8 @@ describe('setHash / conversationHash', () => {
 describe('extensionsNavItemForView', () => {
   it('maps center views to the extensions nav item and ignores the rest', () => {
     expect(extensionsNavItemForView('assistants')).toBe('assistants')
-    expect(extensionsNavItemForView('skill')).toBe('skill')
-    expect(extensionsNavItemForView('mcp')).toBe('mcp')
+    expect(extensionsNavItemForView('skill')).toBe('plugins')
+    expect(extensionsNavItemForView('mcp')).toBe('plugins')
     expect(extensionsNavItemForView('knowledge')).toBe('knowledge')
     expect(extensionsNavItemForView('notes')).toBe('notes')
     expect(extensionsNavItemForView('automations')).toBe('automations')

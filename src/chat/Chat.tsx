@@ -1,3 +1,4 @@
+import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
@@ -2902,23 +2903,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               />
             </Suspense>
           </div>
-        ) : chatView === 'skill' ? (
-          <div key="center" className={centerPageClass}>
-            {centerPageTopStrip}
-            <Suspense fallback={null}>
-              <SkillCenter
-                onSkillsChanged={() => void loadSkills()}
-                projectCwd={dockWorkdir || undefined}
-              />
-            </Suspense>
-          </div>
-        ) : chatView === 'mcp' ? (
-          <div key="center" className={centerPageClass}>
-            {centerPageTopStrip}
-            <Suspense fallback={null}>
-              <McpCenter />
-            </Suspense>
-          </div>
         ) : chatView === 'knowledge' ? (
           <div key="center" className={centerPageClass}>
             {centerPageTopStrip}
@@ -2938,10 +2922,26 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               <NotesCenter />
             </Suspense>
           </div>
-        ) : chatView === 'plugins' ? (
+        ) : chatView === 'plugins' || chatView === 'skill' || chatView === 'mcp' ? (
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
-            <MarketPage onUse={handleMarketUse} onSkillsChanged={() => void loadSkills()} />
+            <Suspense fallback={null}>
+              {chatView === 'skill' ? (
+                <SkillCenter
+                  heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />}
+                  onSkillsChanged={() => void loadSkills()}
+                  projectCwd={dockWorkdir || undefined}
+                />
+              ) : chatView === 'mcp' ? (
+                <McpCenter heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />} />
+              ) : (
+                <MarketPage
+                  heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />}
+                  onUse={handleMarketUse}
+                  onSkillsChanged={() => void loadSkills()}
+                />
+              )}
+            </Suspense>
           </div>
         ) : chatView === 'automations' ? (
           <div key="center" className={centerPageClass}>

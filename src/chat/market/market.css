@@ -6,6 +6,13 @@
 .kv-market-heading h1 { font-size: 26px; font-weight: 700; letter-spacing: -.5px; margin: 0; }
 .kv-market-heading p { font-size: 13px; color: var(--color-muted-foreground); margin: 6px 0 0; }
 
+/* Category navigation is a segmented control, separate from action buttons. */
+.kv-plugin-segments { display: inline-flex; align-items: center; flex: none; gap: 2px; padding: 2px; border-radius: 999px; background: var(--color-muted); }
+.kv-plugin-segment { display: inline-flex; align-items: center; justify-content: center; padding: 2px 10px; border: 0; border-radius: 999px; background: transparent; color: var(--color-muted-foreground); font: inherit; font-size: 12px; font-weight: 400; line-height: 20px; white-space: nowrap; cursor: pointer; transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-plugin-segment:hover { background: var(--bg-hover); color: var(--text); }
+.kv-plugin-segment[aria-current="page"] { background: var(--bg-input); color: var(--text); box-shadow: var(--shadow-sm); }
+.kv-plugin-segment:focus-visible { outline: 2px solid var(--color-muted-foreground); outline-offset: 2px; }
+
 .kv-market-search { display: block; margin-bottom: 20px; }
 .kv-market-toolbar { display: flex; align-items: center; gap: 8px; flex: none; }
 .kv-market-tabs { display: flex; gap: 8px; margin-top: 20px; }

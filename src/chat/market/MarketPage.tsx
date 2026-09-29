@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, LayoutGrid, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
@@ -21,6 +21,7 @@ const EMPTY: MarketSnapshot = { categories: [], plugins: [] }
 const viewState = { query: '', scroll: 0 }
 
 export type MarketPageProps = {
+  heading?: ReactNode
   /** 用插件的主 Skill 开一个新对话。 */
   onUse: (plugin: MarketPlugin) => Promise<void>
   /** 安装、卸载、加载切换后刷新对话里的 Skill 列表。 */
@@ -37,7 +38,7 @@ function PluginIcon({ plugin, src, size = 'md' }: { plugin?: MarketPlugin; src?:
   )
 }
 
-export function MarketPage({ onUse, onSkillsChanged }: MarketPageProps) {
+export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps) {
   const zh = useLang() === 'zh'
   const text = (cn: string, en: string) => (zh ? cn : en)
   const [snapshot, setSnapshot] = useState<MarketSnapshot>(EMPTY)
@@ -447,7 +448,7 @@ export function MarketPage({ onUse, onSkillsChanged }: MarketPageProps) {
           <>
             <header className="kv-market-heading">
               <div className="min-w-0">
-                <h1>{text('插件市场', 'Plugin marketplace')}</h1>
+                {heading ?? <h1>{text('插件市场', 'Plugin marketplace')}</h1>}
                 <p>{text('用插件为 Kivio 扩展技能、命令与 MCP 能力', 'Extend Kivio with skills, commands and MCP through plugins')}</p>
               </div>
               <div className="kv-market-toolbar">

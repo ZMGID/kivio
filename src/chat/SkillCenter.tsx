@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
 import {
   Box,
   ChevronDown,
@@ -33,6 +33,7 @@ import { SkillIcon } from '../settings/public/icons'
 import { confirmDialog } from '../components/dialogQueue'
 
 interface SkillCenterProps {
+  heading?: ReactNode
   /** Skill 启用状态 / 列表变化后通知 Chat 刷新其技能列表 */
   onSkillsChanged?: () => void
   /** 当前对话工作目录：扫描项目 `.kivio/skills` 与 `.agents/skills` */
@@ -318,7 +319,7 @@ function SkillUrlImport({ onInstalled }: { onInstalled: () => void }) {
   )
 }
 
-export function SkillCenter({ onSkillsChanged, projectCwd }: SkillCenterProps) {
+export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCenterProps) {
   const t = useT()
   const [settings, setSettings] = useState<Settings | null>(null)
   const [skills, setSkills] = useState<SkillMeta[]>([])
@@ -650,14 +651,14 @@ export function SkillCenter({ onSkillsChanged, projectCwd }: SkillCenterProps) {
       {/* 顶栏：与聊天主区同底色、无分隔；可拖拽，右侧避开窗口按钮 */}
 
       {/* 内容区：直接坐在白底上，与聊天主区无缝 */}
-      <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
+      <main className={heading ? "kv-market-scroll custom-scrollbar" : "custom-scrollbar min-h-0 flex-1 overflow-y-auto"}>
+          <div className={heading ? "w-full pb-4" : "mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7"}>
             {/* 头部：标题 + 副标题 + 图标动作 */}
             <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-              <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+              {heading ?? (<h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
                 <SkillIcon size={24} className="text-neutral-500" />
                 Skill
-              </h1>
+              </h1>)}
               <div className="mt-3.5 flex min-w-0 items-center gap-4">
               <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
                 {t.chatSkillPageSubtitle}

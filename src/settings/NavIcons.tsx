@@ -2,6 +2,8 @@
 // 可直接替换 <Icon size={17} strokeWidth={1.75} />。fill=none + stroke=currentColor，
 // 颜色随上层文字色（选中态 / 深色模式自动跟随）。
 
+import './NavIcons.css'
+
 interface IconProps {
   size?: number
   strokeWidth?: number
@@ -219,6 +221,74 @@ export function HooksIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
       <path d="M13.5 2.5 L5 13.5 H11 L10.5 21.5 L19 10.5 H13 Z" />
+    </svg>
+  )
+}
+
+// 插件：主体模块右上留出接口，独立圆角模块嵌入。
+export function PluginIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M10 4.5 H6 A2.5 2.5 0 0 0 3.5 7 V18 A2.5 2.5 0 0 0 6 20.5 H17 A2.5 2.5 0 0 0 19.5 18 V14 H12.5 A2.5 2.5 0 0 1 10 11.5 Z" />
+      <rect data-nav-motion="plugin" x="14" y="3.5" width="7" height="7" rx="1.75" />
+    </svg>
+  )
+}
+
+export function ComposeIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M10 4.5 H6 A2 2 0 0 0 4 6.5 V18 A2 2 0 0 0 6 20 H17.5 A2 2 0 0 0 19.5 18 V14" />
+      <g data-nav-motion="compose">
+        <path d="m10 11 7.5-7.5 a1.8 1.8 0 0 1 2.5 2.5 L12.5 13.5 9 14 Z" />
+        <path d="m16 5 2.5 2.5" />
+      </g>
+    </svg>
+  )
+}
+
+export function SearchNavIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <g data-nav-motion="search">
+        <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="m15.2 15.2 4.8 4.8" />
+      </g>
+    </svg>
+  )
+}
+
+export function AutomationIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 12 H16" />
+      <path data-nav-motion="automation" d="M12 12 V6.5" />
+    </svg>
+  )
+}
+
+export function PortfolioIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path data-nav-motion="portfolio-back" d="M7 3.5 H17" />
+      <path data-nav-motion="portfolio-middle" d="M5 7 H19" />
+      <rect data-nav-motion="portfolio-front" x="3.5" y="10.5" width="17" height="10" rx="2" />
+    </svg>
+  )
+}
+
+export function ExtensionsIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <g data-nav-motion="extensions-a">
+        <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.5" />
+        <rect x="14" y="14" width="6.5" height="6.5" rx="1.5" />
+      </g>
+      <g data-nav-motion="extensions-b">
+        <rect x="14" y="3.5" width="6.5" height="6.5" rx="1.5" />
+        <rect x="3.5" y="14" width="6.5" height="6.5" rx="1.5" />
+      </g>
     </svg>
   )
 }
