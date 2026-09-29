@@ -28,12 +28,14 @@ function Harness() {
   useChatPerfLongTaskProbe();
   const [id, setId] = React.useState('F1');
   const [narrow, setNarrow] = React.useState(false);
+  const [mount, setMount] = React.useState(0);
   window.chatAcceptance = {
     show(next) { owner.drop(id); owner.activate(next); flushSync(() => setId(next)); },
     resize() { flushSync(() => setNarrow(value => !value)); },
     reset: resetChatPerfProbeForTests,
     report: getChatPerfReport,
     async longRun(steps = 300, update = 'text') {
+      const seedStarted = performance.now();
       owner.drop('F5');
       owner.begin('F5', Date.now());
       const fixture = createLongRunningChatFixture(steps);
@@ -42,7 +44,12 @@ function Harness() {
         owner.projectDisplay({kind:'tool', payload:turn.tool});
       }
       owner.receive(fixture.active);
-      flushSync(() => { owner.activate('F5'); setId('F5'); });
+      const seedMs = performance.now() - seedStarted;
+      const mountStarted = performance.now();
+      flushSync(() => { owner.activate('F5'); setId('F5'); setMount(value => value + 1); });
+      const mountCommitMs = performance.now() - mountStarted;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const mountToSecondFrameMs = performance.now() - mountStarted;
       await wait(1200);
       resetChatPerfProbeForTests();
       const durations = [], queued = [];
@@ -66,7 +73,8 @@ function Harness() {
       }
       await wait(300);
       observer?.disconnect();
-      return { steps, update, updateMs:summarize(durations), queuedTaskMs:summarize(queued),
+      return { steps, update, seedMs, mountCommitMs, mountToSecondFrameMs,
+        updateMs:summarize(durations), queuedTaskMs:summarize(queued),
         domNodes:document.querySelectorAll('*').length,
         mountedRows:document.querySelectorAll('[data-chat-message-list-item]').length,
         markdownBlocks:document.querySelectorAll('.chat-markdown').length,
@@ -86,7 +94,7 @@ function Harness() {
   };
   return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'calc(100% - 260px)':'100%', display:'flex', flexDirection:'column'}},
     React.createElement(React.Profiler, {id:'acceptance-list', onRender:onChatPerfProfiler},
-      React.createElement(MessageList, {key:id, conversationId:id, messages:fixtures[id].messages})));
+      React.createElement(MessageList, {key:`${id}:${mount}`, conversationId:id, messages:fixtures[id].messages})));
 }
 createRoot(document.getElementById('root')).render(React.createElement(Harness));
 </script></body></html>

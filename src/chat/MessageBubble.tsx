@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -35,7 +35,7 @@ import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
-import { buildCitationMap, type CitationView } from './citations'
+import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
   clusterToolCallsForDisplay,
   formatWorkDuration,
@@ -486,19 +486,18 @@ function ClusteredToolCalls({
 
 function TimelineToolSegment({
   segment,
-  toolCallById,
+  toolCall,
   artifacts,
   conversationId,
   excludedArtifactIds,
 }: {
   segment: ChatMessageSegment
-  toolCallById: ReadonlyMap<string, ToolCallRecord>
+  toolCall?: ToolCallRecord
   artifacts: ChatToolArtifact[]
   conversationId?: string | null
   excludedArtifactIds?: ReadonlySet<string>
 }) {
   const toolCallId = segmentToolCallId(segment)
-  const toolCall = toolCallById.get(toolCallId)
   if (!toolCall) {
     return <MissingToolSegment toolCallId={toolCallId} />
   }
@@ -553,40 +552,32 @@ function TimelineTextSegment({
   )
 }
 
-function TimelineSegmentNode({
+const TimelineSegmentNode = memo(function TimelineSegmentNode({
   segment,
-  index,
-  segmentCount,
-  toolCallById,
+  toolCall,
   artifacts,
   citations,
   conversationId,
   reasoningStreaming,
   reasoningDurationMs,
-  reasoningDurationMsBySegmentId,
-  reasoningSegmentCount,
-  activeReasoningId,
+  reasoningPreviewActive,
   onReasoningExpand,
 }: {
   segment: ChatMessageSegment
-  index: number
-  segmentCount: number
-  toolCallById: ReadonlyMap<string, ToolCallRecord>
+  toolCall?: ToolCallRecord
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
   conversationId?: string | null
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
-  reasoningDurationMsBySegmentId?: Record<string, number>
-  reasoningSegmentCount: number
-  activeReasoningId?: string
+  reasoningPreviewActive: boolean
   onReasoningExpand: () => void
 }) {
   if (segment.kind === 'tool') {
     return (
       <TimelineToolSegment
         segment={segment}
-        toolCallById={toolCallById}
+        toolCall={toolCall}
         artifacts={artifacts}
         conversationId={conversationId}
       />
@@ -598,13 +589,10 @@ function TimelineSegmentNode({
     return (
       <ReasoningBlock
         reasoning={reasoning}
-        streaming={reasoningStreaming && index === segmentCount - 1}
-        previewActive={segment.id === activeReasoningId}
+        streaming={reasoningStreaming}
+        previewActive={reasoningPreviewActive}
         onExpand={onReasoningExpand}
-        durationMs={
-          reasoningDurationMsBySegmentId?.[segment.id]
-            ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)
-        }
+        durationMs={reasoningDurationMs}
       />
     )
   }
@@ -618,7 +606,24 @@ function TimelineSegmentNode({
       process
     />
   )
-}
+}, (previous, next) => {
+  if (previous.segment !== next.segment || previous.conversationId !== next.conversationId) return false
+  if (next.segment.kind === 'reasoning') {
+    return previous.reasoningStreaming === next.reasoningStreaming
+      && previous.reasoningDurationMs === next.reasoningDurationMs
+      && previous.reasoningPreviewActive === next.reasoningPreviewActive
+      && previous.onReasoningExpand === next.onReasoningExpand
+  }
+  if (next.segment.kind === 'tool') {
+    const tool = next.toolCall
+    if (previous.toolCall !== tool) return false
+    if (!tool || !isArtifactPresentationToolCall(tool)) return true
+  } else if (!citationMapsEqual(previous.citations, next.citations)) return false
+  // Derived arrays can change on every delta. Records are immutable; a replaced
+  // image or late citation must still invalidate only the leaves that use it.
+  return previous.artifacts === next.artifacts || (previous.artifacts.length === next.artifacts.length
+    && previous.artifacts.every((artifact, index) => artifact === next.artifacts[index]))
+})
 
 /** macOS 经典放射状短线 spinner：8 根短线绕中心放射、透明度阶梯递增，整体步进旋转。 */
 function TimelineSpinner({ size = 16, className }: { size?: number; className?: string }) {
@@ -711,17 +716,14 @@ function renderProcessSegments({
       <div key={segment.id}>
         <TimelineSegmentNode
           segment={segment}
-          index={index}
-          segmentCount={segmentCount}
-          toolCallById={toolCallById}
+          toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
           artifacts={artifacts}
           citations={citations}
           conversationId={conversationId}
-          reasoningStreaming={reasoningStreaming}
-          reasoningDurationMs={reasoningDurationMs}
-          reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
-          reasoningSegmentCount={reasoningSegmentCount}
-          activeReasoningId={activeReasoningId}
+          reasoningStreaming={reasoningStreaming && index === segmentCount - 1}
+          reasoningDurationMs={reasoningDurationMsBySegmentId?.[segment.id]
+            ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)}
+          reasoningPreviewActive={segment.id === activeReasoningId}
           onReasoningExpand={onReasoningExpand}
         />
       </div>,
@@ -888,6 +890,7 @@ function TimelineSegments({
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const handleReasoningExpand = useCallback(() => setUserOpen(true), [])
   // Bound historical inspection across groups separated by artifacts. Never
   // evict steps already shown during a live run, including its settle handoff.
   const [processLimit, setProcessLimit] = useState(20)
@@ -967,7 +970,7 @@ function TimelineSegments({
           return <TimelineToolSegment
             key={item.segment.id}
             segment={item.segment}
-            toolCallById={toolCallById}
+            toolCall={toolCallById.get(segmentToolCallId(item.segment))}
             artifacts={artifacts}
             conversationId={conversationId}
             excludedArtifactIds={presentationExclusions.get(item.segment.id)}
@@ -1008,7 +1011,7 @@ function TimelineSegments({
             showHeader={showHeader}
             userOpen={userOpen}
             defaultOpen={defaultOpen}
-            onReasoningExpand={() => setUserOpen(true)}
+            onReasoningExpand={handleReasoningExpand}
             onToggle={() => {
               if (!messageStreaming && !(userOpen ?? defaultOpen)) setProcessLimit(20)
               setUserOpen(current => !(current ?? defaultOpen))

@@ -17,6 +17,10 @@ async page => {
       });
       if (Math.abs(bottomGap) > 3) throw new Error(`Long run lost bottom anchoring after resize: ${bottomGap}`);
       reports.push({ ...result, bottomGap });
+      // Each timing sample uses the same full width; the narrow layout is only
+      // a separate scroll/resize assertion, never the next sample's baseline.
+      await page.evaluate(() => window.chatAcceptance.resize());
+      await page.waitForTimeout(300);
     }
   }
   await page.evaluate(reports => { window.chatLongRunReport = reports; }, reports);

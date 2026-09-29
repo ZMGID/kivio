@@ -10,6 +10,14 @@ import * as attachmentPreview from './attachmentPreview'
 import type { ChatMessage, ToolCallRecord } from './types'
 
 const markdownRender = vi.hoisted(() => vi.fn())
+const reasoningRender = vi.hoisted(() => vi.fn())
+vi.mock('./ReasoningBlock', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./ReasoningBlock')>()
+  return { ...actual, ReasoningBlock: (props: React.ComponentProps<typeof actual.ReasoningBlock>) => {
+    reasoningRender(props)
+    return <actual.ReasoningBlock {...props} />
+  } }
+})
 vi.mock('streamdown', async (importOriginal) => {
   const actual = await importOriginal<typeof import('streamdown')>()
   return {
@@ -41,6 +49,61 @@ const source: ToolCallRecord = {
 
 describe('live message Markdown render boundary', () => {
   beforeEach(() => markdownRender.mockClear())
+
+  it('keeps settled reasoning out of unrelated text and tool updates while retaining live state changes', () => {
+    const tool: ToolCallRecord = { id: 'read', name: 'read', status: 'running', result_preview: 'before' }
+    const message: ChatMessage = { ...longRun(), tool_calls: [tool], segments: [
+      { id: 'thought', kind: 'reasoning', order: -1, phase: 'tool_loop', text: 'Completed thought' },
+      ...longRun().segments!,
+    ] }
+    const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningDurationMs={2000} />)
+    reasoningRender.mockClear()
+    const next = { ...message, segments: message.segments!.map(segment => segment.id === 'active'
+      ? { ...segment, text: 'Current next' } : segment) }
+    rerender(<MessageBubble message={next} messageStreaming reasoningDurationMs={2000} />)
+    expect(screen.getByText('Current next')).toBeVisible()
+    expect(reasoningRender).not.toHaveBeenCalled()
+    rerender(<MessageBubble message={{ ...next, tool_calls: [{ ...tool, result_preview: 'after' }] }} messageStreaming reasoningDurationMs={2000} />)
+    expect(reasoningRender).not.toHaveBeenCalled()
+    rerender(<MessageBubble message={next} messageStreaming reasoningDurationMs={3000} />)
+    expect(reasoningRender).toHaveBeenCalledTimes(1)
+    expect(reasoningRender.mock.calls[0][0].durationMs).toBe(3000)
+  })
+
+  it('ends the active thought when a new segment arrives and preserves an expanded thought through completion', () => {
+    const thought = { id: 'thought', kind: 'reasoning' as const, order: 0, phase: 'tool_loop' as const, text: 'First line\nLatest thought' }
+    const message: ChatMessage = { id: 'thinking', role: 'assistant', timestamp: 1, content: '', segments: [thought] }
+    const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
+    expect(screen.getByText('Thinking…')).toBeVisible()
+    fireEvent.click(screen.getByTitle('展开完整思考'))
+    const fullThought = screen.getByTestId('reasoning-text')
+    const next: ChatMessage = { ...message, segments: [thought,
+      { id: 'note', kind: 'text', phase: 'tool_loop', order: 1, text: 'Starting work' },
+      { id: 'tool', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'read' },
+    ] }
+    rerender(<MessageBubble message={next} messageStreaming reasoningStreaming />)
+    expect(screen.queryByText('Thinking…')).toBeNull()
+    expect(screen.getByText('Thought')).toBeVisible()
+    rerender(<MessageBubble message={next} />)
+    expect(screen.getByTestId('reasoning-text')).toBe(fullThought)
+    expect(fullThought).toBeVisible()
+  })
+
+  it('replaces missing tool records and updates the same tool ID without closing its details', () => {
+    const message: ChatMessage = { id: 'tools', role: 'assistant', timestamp: 1, content: '', segments: [
+      { id: 'tool', kind: 'tool', phase: 'tool_loop', order: 0, tool_call_id: 'call' },
+    ] }
+    const { rerender } = render(<MessageBubble message={message} messageStreaming />)
+    expect(screen.getByText('工具记录缺失 · call')).toBeVisible()
+    const tool: ToolCallRecord = { id: 'call', name: 'fixture_check', status: 'running', result_preview: 'First output' }
+    rerender(<MessageBubble message={{ ...message, tool_calls: [tool] }} messageStreaming />)
+    expect(screen.queryByText('工具记录缺失 · call')).toBeNull()
+    fireEvent.click(screen.getByText('fixture_check'))
+    expect(screen.getByText('First output')).toBeVisible()
+    rerender(<MessageBubble message={{ ...message, tool_calls: [{ ...tool, status: 'completed', result_preview: 'Updated output' }] }} messageStreaming />)
+    expect(screen.getByText('Updated output')).toBeVisible()
+    expect(screen.queryByText('First output')).toBeNull()
+  })
 
   it('only renders the changed text segment when the active message grows', () => {
     const message = longRun()

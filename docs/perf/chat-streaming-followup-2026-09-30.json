@@ -1,0 +1,795 @@
+{
+  "capturedAt": "2026-09-30T01:46:55.2917803+08:00",
+  "baselineRef": "442f53c4eb69a77138ec474e551cc73b423343d5",
+  "referenceRef": "328c1a0c0ffaa5a4f65e8fa199af5e4c20706e5f",
+  "method": "Production renderer isolation, Edge, 1280x900, 20 controlled updates per case. Two serial before/after repetitions. Excludes two overlapping exploratory current runs. All timing runs finished before native tests and final engineering checks.",
+  "timingLimits": [
+    "Synchronous commit and queued task delay are not native input-to-display latency.",
+    "mountCommitMs includes old-list unmount and fresh-key mount; module caches remain. This is not app cold start.",
+    "One current 1000-step tool sample had p95 30.8ms; retained without trimming."
+  ],
+  "before": [
+    [
+      {
+        "steps": 300,
+        "update": "text",
+        "seedMs": 13,
+        "mountCommitMs": 515.8999999985099,
+        "mountToSecondFrameMs": 590.6000000014901,
+        "updateMs": {
+          "median": 3.2999999970197678,
+          "p95": 5.600000001490116,
+          "max": 5.600000001490116
+        },
+        "queuedTaskMs": {
+          "median": 7.5,
+          "p95": 9.100000001490116,
+          "max": 9.100000001490116
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:36:32.826Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 300,
+        "update": "tool",
+        "seedMs": 12.400000005960464,
+        "mountCommitMs": 422.69999999552965,
+        "mountToSecondFrameMs": 482.8999999985099,
+        "updateMs": {
+          "median": 3.8000000044703484,
+          "p95": 4.600000001490116,
+          "max": 4.600000001490116
+        },
+        "queuedTaskMs": {
+          "median": 7.5,
+          "p95": 12.600000001490116,
+          "max": 12.600000001490116
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:36:38.457Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "text",
+        "seedMs": 83.10000000149012,
+        "mountCommitMs": 1289.3999999985099,
+        "mountToSecondFrameMs": 1663,
+        "updateMs": {
+          "median": 9,
+          "p95": 12,
+          "max": 12
+        },
+        "queuedTaskMs": {
+          "median": 21,
+          "p95": 26,
+          "max": 26
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:36:45.793Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "tool",
+        "seedMs": 80.90000000596046,
+        "mountCommitMs": 1288.7999999970198,
+        "mountToSecondFrameMs": 1668.5999999940395,
+        "updateMs": {
+          "median": 8,
+          "p95": 10.399999998509884,
+          "max": 10.399999998509884
+        },
+        "queuedTaskMs": {
+          "median": 20.700000002980232,
+          "p95": 26.799999997019768,
+          "max": 26.799999997019768
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:36:53.223Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      }
+    ],
+    [
+      {
+        "steps": 300,
+        "update": "text",
+        "seedMs": 8.700000002980232,
+        "mountCommitMs": 458.29999999701977,
+        "mountToSecondFrameMs": 526.5,
+        "updateMs": {
+          "median": 3.899999998509884,
+          "p95": 6.299999997019768,
+          "max": 6.299999997019768
+        },
+        "queuedTaskMs": {
+          "median": 8.899999998509884,
+          "p95": 16.30000000447035,
+          "max": 16.30000000447035
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:39:08.695Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 300,
+        "update": "tool",
+        "seedMs": 8.700000002980232,
+        "mountCommitMs": 399.69999999552965,
+        "mountToSecondFrameMs": 465.5,
+        "updateMs": {
+          "median": 3.3000000044703484,
+          "p95": 4.799999997019768,
+          "max": 4.799999997019768
+        },
+        "queuedTaskMs": {
+          "median": 6.600000001490116,
+          "p95": 12.200000002980232,
+          "max": 12.200000002980232
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:39:14.293Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "text",
+        "seedMs": 81.20000000298023,
+        "mountCommitMs": 1253.3999999985099,
+        "mountToSecondFrameMs": 1637.6000000014901,
+        "updateMs": {
+          "median": 7.5,
+          "p95": 10.5,
+          "max": 10.5
+        },
+        "queuedTaskMs": {
+          "median": 17.799999997019768,
+          "p95": 22.599999994039536,
+          "max": 22.599999994039536
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:39:21.527Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "tool",
+        "seedMs": 90.39999999850988,
+        "mountCommitMs": 1215.2999999970198,
+        "mountToSecondFrameMs": 1587.5,
+        "updateMs": {
+          "median": 8.200000002980232,
+          "p95": 15.700000002980232,
+          "max": 15.700000002980232
+        },
+        "queuedTaskMs": {
+          "median": 22,
+          "p95": 32.30000000447035,
+          "max": 32.30000000447035
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:39:29.007Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      }
+    ]
+  ],
+  "after": [
+    [
+      {
+        "steps": 300,
+        "update": "text",
+        "seedMs": 8.899999998509884,
+        "mountCommitMs": 454.1000000014901,
+        "mountToSecondFrameMs": 519.6000000014901,
+        "updateMs": {
+          "median": 2.399999998509884,
+          "p95": 4.5,
+          "max": 4.5
+        },
+        "queuedTaskMs": {
+          "median": 6.899999998509884,
+          "p95": 10.399999998509884,
+          "max": 10.399999998509884
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:38:25.706Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 300,
+        "update": "tool",
+        "seedMs": 8.100000001490116,
+        "mountCommitMs": 400.79999999701977,
+        "mountToSecondFrameMs": 460.8999999985099,
+        "updateMs": {
+          "median": 3,
+          "p95": 4.300000004470348,
+          "max": 4.300000004470348
+        },
+        "queuedTaskMs": {
+          "median": 13.699999995529652,
+          "p95": 17.5,
+          "max": 17.5
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:38:31.433Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "text",
+        "seedMs": 92.60000000149012,
+        "mountCommitMs": 1218.6999999955297,
+        "mountToSecondFrameMs": 1618.5999999940395,
+        "updateMs": {
+          "median": 5,
+          "p95": 6.799999997019768,
+          "max": 6.799999997019768
+        },
+        "queuedTaskMs": {
+          "median": 17.69999999552965,
+          "p95": 21.5,
+          "max": 21.5
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:38:38.707Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "tool",
+        "seedMs": 76.60000000149012,
+        "mountCommitMs": 1275.6000000014901,
+        "mountToSecondFrameMs": 1651.7000000029802,
+        "updateMs": {
+          "median": 4.899999998509884,
+          "p95": 30.80000000447035,
+          "max": 30.80000000447035
+        },
+        "queuedTaskMs": {
+          "median": 18,
+          "p95": 48,
+          "max": 48
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:38:46.183Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      }
+    ],
+    [
+      {
+        "steps": 300,
+        "update": "text",
+        "seedMs": 10.100000001490116,
+        "mountCommitMs": 437.70000000298023,
+        "mountToSecondFrameMs": 506.3999999985099,
+        "updateMs": {
+          "median": 2.100000001490116,
+          "p95": 3.8000000044703484,
+          "max": 3.8000000044703484
+        },
+        "queuedTaskMs": {
+          "median": 7.700000002980232,
+          "p95": 14.799999997019768,
+          "max": 14.799999997019768
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:40:10.841Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 300,
+        "update": "tool",
+        "seedMs": 8.800000004470348,
+        "mountCommitMs": 400,
+        "mountToSecondFrameMs": 459.79999999701977,
+        "updateMs": {
+          "median": 2,
+          "p95": 4.199999995529652,
+          "max": 4.199999995529652
+        },
+        "queuedTaskMs": {
+          "median": 6,
+          "p95": 8.899999998509884,
+          "max": 8.899999998509884
+        },
+        "domNodes": 10895,
+        "mountedRows": 4,
+        "markdownBlocks": 301,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:40:16.384Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "text",
+        "seedMs": 87.30000000447035,
+        "mountCommitMs": 1288,
+        "mountToSecondFrameMs": 1660.1999999955297,
+        "updateMs": {
+          "median": 5.399999998509884,
+          "p95": 10.5,
+          "max": 10.5
+        },
+        "queuedTaskMs": {
+          "median": 18.100000001490116,
+          "p95": 27.900000005960464,
+          "max": 27.900000005960464
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:40:23.737Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      },
+      {
+        "steps": 1000,
+        "update": "tool",
+        "seedMs": 87.80000000447035,
+        "mountCommitMs": 1490.5,
+        "mountToSecondFrameMs": 1934.5,
+        "updateMs": {
+          "median": 5.5999999940395355,
+          "p95": 7.600000001490116,
+          "max": 7.600000001490116
+        },
+        "queuedTaskMs": {
+          "median": 18,
+          "p95": 28,
+          "max": 28
+        },
+        "domNodes": 36095,
+        "mountedRows": 4,
+        "markdownBlocks": 1001,
+        "liveBubbleTransform": "none",
+        "longTaskSupport": true,
+        "longTasks": [],
+        "report": {
+          "capturedAt": "2026-09-29T17:40:31.457Z",
+          "enabled": false,
+          "longTaskSupport": "unknown",
+          "buckets": [],
+          "samples": [],
+          "longTasks": []
+        },
+        "bottomGap": 0
+      }
+    ]
+  ],
+  "native": {
+    "purpose": "Functional regression only, development WebView2, concurrent engineering checks: no native timing comparison claimed.",
+    "persisted": [
+      {
+        "runtime": "builtin",
+        "conversationId": "conv_e3e861e1-b38f-4201-b285-ff9e96ce1274",
+        "messageId": "msg_629ac1f4-d2d1-498a-bc6a-3e71e14c257d",
+        "outcome": "completed",
+        "tools": [
+          {
+            "id": "call_00_9h60AxUYdJOYC1jO8j1j0825",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_7pjzmf1X47RN7UntdRJB7172",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_ihuMmmT95xe9AClN3cbk0094",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_LTlZH6VRNiDI9glSVQSp7946",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_0lk3TrPuU0t3fEkIOYpg3463",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_ANHbospuwzIVtqmVpD0g9492",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_j31QVsSCeSm18qbl5IG70511",
+            "name": "read",
+            "status": "success"
+          },
+          {
+            "id": "call_00_ET_iWqtam4tvsd11HPWkgu94270",
+            "name": "read",
+            "status": "success"
+          }
+        ],
+        "segments": 18,
+        "characters": 364
+      },
+      {
+        "runtime": "cli",
+        "conversationId": "conv_8daecc26-c49c-4e60-83d1-efb7452d25d8",
+        "messageId": "msg_082ef6fa-c5e7-495d-93a6-d8458a65b89b",
+        "outcome": "completed",
+        "tools": [
+          {
+            "id": "exec-ef379997-a275-4057-9545-c324d87aea11",
+            "name": "Bash",
+            "status": "success"
+          },
+          {
+            "id": "exec-08c8df94-f2c4-4cdd-8787-6d6849281072",
+            "name": "Bash",
+            "status": "success"
+          },
+          {
+            "id": "exec-853d58ce-215d-46c0-9b99-9c384e34dd65",
+            "name": "Bash",
+            "status": "success"
+          },
+          {
+            "id": "exec-0154a5c1-47b6-4356-b581-184a12477fc0",
+            "name": "Bash",
+            "status": "success"
+          },
+          {
+            "id": "exec-d0a22c2f-d5fc-4349-814f-0b827944118a",
+            "name": "Bash",
+            "status": "success"
+          }
+        ],
+        "segments": 11,
+        "characters": 763
+      }
+    ],
+    "builtinInteractions": {
+      "source": "Three successful rounds returned by probe-chat-native-interactions.playwright.js. Probe export was lost to a later development reload; no latency results retained.",
+      "toolsAtRoundStart": [
+        3,
+        5,
+        8
+      ],
+      "streamingAtRoundStart": [
+        true,
+        true,
+        true
+      ],
+      "sidebarsAndPreviewPassed": true,
+      "upwardScrollMoved": [
+        true,
+        true,
+        true
+      ],
+      "outcomesConfirmedFromPersistence": true
+    },
+    "cli": {
+      "maxTools": 5,
+      "maxSegments": 11,
+      "maxContent": 753,
+      "updates": 86,
+      "current": {
+        "atMs": 133121.30000000447,
+        "streaming": false,
+        "tools": 0,
+        "segments": 0,
+        "content": 0,
+        "blocks": 4,
+        "dom": 1114,
+        "error": ""
+      },
+      "interactions": [
+        {
+          "round": 0,
+          "atMs": 24438.30000000447,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 3,
+          "dom": 1016,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2302.222412109375,
+              "height": 2894,
+              "viewport": 591
+            },
+            "after": 1835.5556640625,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 26675.39999999851,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 3,
+          "dom": 1016,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2302.222412109375,
+              "height": 2894,
+              "viewport": 591
+            },
+            "after": 1835.5556640625,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 28899.80000000447,
+          "streaming": true,
+          "tools": 0,
+          "segments": 1,
+          "content": 44,
+          "blocks": 4,
+          "dom": 1048,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2302.222412109375,
+              "height": 2894,
+              "viewport": 591
+            },
+            "after": 1835.5556640625,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 76857.89999999851,
+          "streaming": false,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 4,
+          "dom": 1097,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2358.222412109375,
+              "height": 2950,
+              "viewport": 591
+            },
+            "after": 1891.5556640625,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 80874.60000000149,
+          "streaming": false,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 4,
+          "dom": 1097,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2358.222412109375,
+              "height": 2950,
+              "viewport": 591
+            },
+            "after": 1891.5556640625,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 84430.30000000447,
+          "streaming": false,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 4,
+          "dom": 1097,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 2358.222412109375,
+              "height": 2950,
+              "viewport": 591
+            },
+            "after": 1891.5556640625,
+            "moved": true
+          }
+        }
+      ]
+    }
+  },
+  "validation": {
+    "focusedTests": 95,
+    "testFiles": 295,
+    "tests": 2534,
+    "typeScript": "passed",
+    "lint": "passed",
+    "architecture": "passed, zero temporary exceptions",
+    "productionUiBuild": "passed",
+    "baselineCss": "143153c2 expects both; assertion failed before overlay fix and passed after. Current and 442f53c4 expect backwards and passed.",
+    "standardsReview": "No actionable findings",
+    "specReview": "No actionable findings"
+  }
+}

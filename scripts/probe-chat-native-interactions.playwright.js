@@ -31,6 +31,7 @@ async page => {
   await page.mouse.wheel(0,-500);
   await page.waitForTimeout(200);
   const after=await viewport.evaluate(e=>e.scrollTop);
+  if(before.top<=1 || after>=before.top-1) throw new Error('Long-history viewport did not scroll upward');
   await page.mouse.wheel(0,600);
   results.push({round:i,...state,scroll:{before,after,moved:before.top!==after}});
   await page.waitForTimeout(1000);

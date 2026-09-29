@@ -34,7 +34,7 @@ environment-specific and should be recorded on the same machine and window size.
 ### F5 production comparison
 
 Build the same fixture with current renderers and the pre-fix renderers without
-changing the checkout:
+replacing tracked files:
 
 ```powershell
 node scripts/build-chat-performance.mjs 143153c2
@@ -50,6 +50,11 @@ Open `/scripts/fixtures/chat-performance.html` on each server. Run
 production renderer/reference modules and the chat stylesheet changed by this fix;
 fixtures, dependencies and preview owner are identical. It is a rendering isolation comparison,
 not a complete historical application build.
+CSS imports are read directly by Vite/PostCSS, so the script points the style
+entry at a temporary historical CSS file beside the source and removes it in
+`finally`. Every build asserts the emitted bubble animation fill mode against
+the requested source (`both` at `143153c2`, `backwards` after the animation fix).
+To compare only the later segment memo change, use `442f53c4` as the baseline.
 
 Each run seeds text/tool events through the existing preview owner, waits for
 initial mount, then records 20 updates. Controlled publication measures event
@@ -58,6 +63,11 @@ application and synchronous UI submission, excluding the owner's throttle wait.
 The fixture collects browser long tasks directly in production; the development
 React Profiler/probe report may be empty there. Measure cold mount separately.
 Do not treat an empty production Profiler report as zero rendering cost.
+The fixture also records `seedMs`, `mountCommitMs` and `mountToSecondFrameMs`.
+Each sample uses a fresh MessageList key: the mount commit includes old-list
+cleanup and new-list mounting, with module caches retained. This is a React
+remount measurement, not application cold start or disk/IPC load time. The
+second animation frame is a scheduling boundary, not a display presentation timestamp.
 `liveBubbleTransform` must be `none` after the entrance animation in the current
 build: retaining the completed transform makes very tall live bubbles repaint
 and rebuild compositing layers on each offscreen status animation.
@@ -66,6 +76,9 @@ For the current build, `playwright-cli run-code --filename=scripts/probe-chat-lo
 runs all four F5 combinations on the already-open production fixture, checks
 segment visibility, released transform and bottom anchoring after a width change,
 and stores the full results in `window.chatLongRunReport`.
+It restores full width after each resize assertion so all timing cases use the
+same width. Serial before/after repetitions and remount measurements for the
+segment memo follow-up are in [the follow-up report](chat-streaming-followup-2026-09-30.json).
 
 ## Acceptance measurements
 
