@@ -1,0 +1,3699 @@
+{
+  "date": "2026-09-30",
+  "environment": "Real Kivio Tauri development window / WebView2, real configured providers and CLI, no injected chat events.",
+  "baseCommit": "e50c480c",
+  "notes": [
+    "Both workloads used 60 generated public synthetic Markdown files in a temporary project. No repository or private file content was used as the task input.",
+    "Click metrics measure DOM event timestamp to capture handler, and handler to second requestAnimationFrame. They are not end-to-end input-to-display or file-read completion latency. Content visibility was asserted separately.",
+    "Windows changed size during the session; runtime groups are not directly comparable performance benchmarks.",
+    "The first CLI continuation completed 10 successful tools but a development reload cleared its telemetry. It is excluded from timing results; a second 10-tool continuation was measured after final fixes.",
+    "Main CLI sample predates the file-tree restoration fix. Final continuation and reload restoration check use the final fix.",
+    "Automatic interaction initially timed out on the remembered-expanded-but-unloaded directory issue. A separate early timeout was caused by the probe trying to click behind an already open file preview; the probe now closes it first.",
+    "No infinite-run or multi-hour longevity guarantee is inferred from these runs."
+  ],
+  "builtInCompletedTurns": [
+    {
+      "textCharacters": 174,
+      "toolCalls": 1,
+      "segments": 4,
+      "toolStatuses": {
+        "success": 1
+      }
+    },
+    {
+      "textCharacters": 191,
+      "toolCalls": 1,
+      "segments": 4,
+      "toolStatuses": {
+        "success": 1
+      }
+    },
+    {
+      "textCharacters": 13546,
+      "toolCalls": 28,
+      "segments": 33,
+      "toolStatuses": {
+        "success": 28
+      }
+    },
+    {
+      "textCharacters": 15231,
+      "toolCalls": 30,
+      "segments": 34,
+      "toolStatuses": {
+        "success": 30
+      }
+    }
+  ],
+  "cliCompletedTurns": [
+    {
+      "textCharacters": 9527,
+      "toolCalls": 60,
+      "segments": 121,
+      "toolStatuses": {
+        "success": 60
+      }
+    },
+    {
+      "textCharacters": 3197,
+      "toolCalls": 10,
+      "segments": 21,
+      "toolStatuses": {
+        "success": 10
+      }
+    },
+    {
+      "textCharacters": 3351,
+      "toolCalls": 10,
+      "segments": 21,
+      "toolStatuses": {
+        "success": 10
+      }
+    }
+  ],
+  "fileTreeRestoration": {
+    "reproducedBeforeFix": true,
+    "reloadShowsNestedFileWithoutExtraToggle": true,
+    "previewContentVerified": "# Case 2",
+    "regressionTests": 6
+  },
+  "runs": [
+    {
+      "runtime": "built-in: gpt-6-luna initial short turn, then deepseek-flash",
+      "startedAt": "2026-09-29T16:47:26.325Z",
+      "environment": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "viewport": {
+        "note": "Not sampled; screenshot captured a narrower window than the CLI run."
+      },
+      "maxToolsInLiveTurn": 30,
+      "maxSegmentsInLiveTurn": 34,
+      "maxTextCharactersInLiveTurn": 15277,
+      "maxMarkdownBlocks": 4,
+      "maxDomNodes": 2532,
+      "inputToHandler": {
+        "count": 72,
+        "medianMs": 2.1,
+        "p95Ms": 5.6,
+        "maxMs": 14.1
+      },
+      "handlerToSecondFrame": {
+        "count": 72,
+        "medianMs": 25.5,
+        "p95Ms": 67.1,
+        "maxMs": 87.5
+      },
+      "byAction": [
+        {
+          "label": "收起侧栏",
+          "count": 9,
+          "medianMs": 33.2,
+          "p95Ms": 47.4,
+          "maxMs": 47.4
+        },
+        {
+          "label": "展开侧栏",
+          "count": 9,
+          "medianMs": 38.5,
+          "p95Ms": 67.1,
+          "maxMs": 67.1
+        },
+        {
+          "label": "关闭面板",
+          "count": 9,
+          "medianMs": 46.8,
+          "p95Ms": 66.5,
+          "maxMs": 66.5
+        },
+        {
+          "label": "面板",
+          "count": 9,
+          "medianMs": 45.4,
+          "p95Ms": 87.5,
+          "maxMs": 87.5
+        },
+        {
+          "label": "文件",
+          "count": 9,
+          "medianMs": 5.8,
+          "p95Ms": 12.9,
+          "maxMs": 12.9
+        },
+        {
+          "label": "关闭",
+          "count": 9,
+          "medianMs": 7.9,
+          "p95Ms": 20.6,
+          "maxMs": 20.6
+        },
+        {
+          "label": "group-a",
+          "count": 12,
+          "medianMs": 22.1,
+          "p95Ms": 24.7,
+          "maxMs": 24.7
+        },
+        {
+          "label": "case-002.md",
+          "count": 6,
+          "medianMs": 10.7,
+          "p95Ms": 12.5,
+          "maxMs": 12.5
+        }
+      ],
+      "activeLongTasks": [
+        {
+          "atMs": 287338.4,
+          "duration": 55,
+          "streaming": true
+        },
+        {
+          "atMs": 289521.9,
+          "duration": 65,
+          "streaming": true
+        },
+        {
+          "atMs": 289686.1,
+          "duration": 86,
+          "streaming": true
+        }
+      ],
+      "clicks": [
+        {
+          "label": "收起侧栏",
+          "atMs": 193254.9,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 3.3,
+          "handlerToSecondFrameMs": 26.9
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 193365.3,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 27.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 193493.8,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 5.6,
+          "handlerToSecondFrameMs": 46.8
+        },
+        {
+          "label": "面板",
+          "atMs": 193606.6,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.3,
+          "handlerToSecondFrameMs": 43
+        },
+        {
+          "label": "文件",
+          "atMs": 193723.6,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 5.3
+        },
+        {
+          "label": "关闭",
+          "atMs": 194006,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 7.4
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 195376.9,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.8,
+          "handlerToSecondFrameMs": 27.2
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 195459.6,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 32.8
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 195577.5,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 39.1
+        },
+        {
+          "label": "面板",
+          "atMs": 195682.7,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 38
+        },
+        {
+          "label": "文件",
+          "atMs": 195791.9,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 8.5
+        },
+        {
+          "label": "关闭",
+          "atMs": 196071.1,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 7.6
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 197425.2,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.8,
+          "handlerToSecondFrameMs": 25.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 197518.2,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 29.8
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 197624.5,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 41.6
+        },
+        {
+          "label": "面板",
+          "atMs": 197718,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 39.5
+        },
+        {
+          "label": "文件",
+          "atMs": 197847.1,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 5.8
+        },
+        {
+          "label": "关闭",
+          "atMs": 198147.7,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 7.7
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 262719,
+          "streaming": true,
+          "tools": 21,
+          "segments": 23,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 30.6
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 262838.1,
+          "streaming": true,
+          "tools": 22,
+          "segments": 24,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 31.3
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 262946.6,
+          "streaming": true,
+          "tools": 22,
+          "segments": 24,
+          "inputToHandlerMs": 3.7,
+          "handlerToSecondFrameMs": 44
+        },
+        {
+          "label": "面板",
+          "atMs": 263048,
+          "streaming": true,
+          "tools": 23,
+          "segments": 25,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 44.5
+        },
+        {
+          "label": "文件",
+          "atMs": 263182.8,
+          "streaming": true,
+          "tools": 24,
+          "segments": 26,
+          "inputToHandlerMs": 4.1,
+          "handlerToSecondFrameMs": 6.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 263253.5,
+          "streaming": true,
+          "tools": 24,
+          "segments": 26,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 12.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 263311,
+          "streaming": true,
+          "tools": 25,
+          "segments": 27,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 22.8
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 263377.7,
+          "streaming": true,
+          "tools": 25,
+          "segments": 27,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 9.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 263465.8,
+          "streaming": true,
+          "tools": 26,
+          "segments": 28,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 7.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 264803.9,
+          "streaming": true,
+          "tools": 30,
+          "segments": 32,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 35.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 264913.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 32,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 40.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 265057.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 32,
+          "inputToHandlerMs": 5.2,
+          "handlerToSecondFrameMs": 49.3
+        },
+        {
+          "label": "面板",
+          "atMs": 265199.3,
+          "streaming": true,
+          "tools": 30,
+          "segments": 32,
+          "inputToHandlerMs": 4.5,
+          "handlerToSecondFrameMs": 56
+        },
+        {
+          "label": "文件",
+          "atMs": 265337.7,
+          "streaming": true,
+          "tools": 30,
+          "segments": 33,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 4.3
+        },
+        {
+          "label": "group-a",
+          "atMs": 265401.8,
+          "streaming": true,
+          "tools": 30,
+          "segments": 33,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 18.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 265471.3,
+          "streaming": true,
+          "tools": 30,
+          "segments": 33,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 22.1
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 265551.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 33,
+          "inputToHandlerMs": 3.1,
+          "handlerToSecondFrameMs": 10.9
+        },
+        {
+          "label": "关闭",
+          "atMs": 265642.2,
+          "streaming": true,
+          "tools": 30,
+          "segments": 33,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 8.3
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 267002.1,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.1,
+          "handlerToSecondFrameMs": 33.2
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 267119.2,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 38.5
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 267248.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.5,
+          "handlerToSecondFrameMs": 43.2
+        },
+        {
+          "label": "面板",
+          "atMs": 267351.9,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.8,
+          "handlerToSecondFrameMs": 45.4
+        },
+        {
+          "label": "文件",
+          "atMs": 267472.4,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 11.5,
+          "handlerToSecondFrameMs": 9.2
+        },
+        {
+          "label": "group-a",
+          "atMs": 267577.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 12.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 267641,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 24.5
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 267712.7,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 12.5
+        },
+        {
+          "label": "关闭",
+          "atMs": 267784.1,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 7.9
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 284525,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.3,
+          "handlerToSecondFrameMs": 47.4
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 284654.8,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 64.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 284843.1,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 6.1,
+          "handlerToSecondFrameMs": 66.5
+        },
+        {
+          "label": "面板",
+          "atMs": 284990.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.7,
+          "handlerToSecondFrameMs": 70.2
+        },
+        {
+          "label": "文件",
+          "atMs": 285149.1,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 4.7
+        },
+        {
+          "label": "group-a",
+          "atMs": 285219.4,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 17.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 285288.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 22.8
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 285377.4,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 10.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 285482.4,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.8,
+          "handlerToSecondFrameMs": 8.4
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 286849.7,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.4,
+          "handlerToSecondFrameMs": 43.4
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 286983.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 64.2
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 287165,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 4.4,
+          "handlerToSecondFrameMs": 62.4
+        },
+        {
+          "label": "面板",
+          "atMs": 287306.9,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 87.5
+        },
+        {
+          "label": "文件",
+          "atMs": 287493.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 4,
+          "handlerToSecondFrameMs": 12.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 287584.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 18.4
+        },
+        {
+          "label": "group-a",
+          "atMs": 287653.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 24.7
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 287739.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 9.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 287842.3,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 8.2
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 289184.1,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 45.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 289313.7,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 2.3,
+          "handlerToSecondFrameMs": 67.1
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 289527.3,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 14.1,
+          "handlerToSecondFrameMs": 62.5
+        },
+        {
+          "label": "面板",
+          "atMs": 289688.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 4.9,
+          "handlerToSecondFrameMs": 84.9
+        },
+        {
+          "label": "文件",
+          "atMs": 289866.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 5.4
+        },
+        {
+          "label": "group-a",
+          "atMs": 289953,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 12.8
+        },
+        {
+          "label": "group-a",
+          "atMs": 290006,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 24.1
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 290086.3,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 10.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 290151.2,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "inputToHandlerMs": 3.1,
+          "handlerToSecondFrameMs": 20.6
+        }
+      ],
+      "interactionRounds": [
+        {
+          "round": 0,
+          "atMs": 193214.29999999702,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 2533,
+          "blocks": 4,
+          "dom": 1498,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 9598.400390625,
+              "height": 10196,
+              "viewport": 597
+            },
+            "after": 9131.7333984375,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 195333.8999999985,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 3399,
+          "blocks": 4,
+          "dom": 1533,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 11244.177734375,
+              "height": 11842,
+              "viewport": 597
+            },
+            "after": 10777.51171875,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 197382.6000000015,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 4329,
+          "blocks": 4,
+          "dom": 1562,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 13068.5341796875,
+              "height": 13666,
+              "viewport": 597
+            },
+            "after": 12601.8671875,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 262685.5,
+          "streaming": true,
+          "tools": 21,
+          "segments": 23,
+          "content": 46,
+          "blocks": 2,
+          "dom": 1690,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 31833.51171875,
+              "height": 32431,
+              "viewport": 597
+            },
+            "after": 31366.845703125,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 264762.1000000015,
+          "streaming": true,
+          "tools": 30,
+          "segments": 32,
+          "content": 46,
+          "blocks": 2,
+          "dom": 1810,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 31989.689453125,
+              "height": 32587,
+              "viewport": 597
+            },
+            "after": 31523.0234375,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 266959.200000003,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 275,
+          "blocks": 3,
+          "dom": 1832,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 33406.48828125,
+              "height": 34004,
+              "viewport": 597
+            },
+            "after": 32939.82421875,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 284493.6000000015,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 9016,
+          "blocks": 3,
+          "dom": 2128,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 20097.779296875,
+              "height": 51347,
+              "viewport": 597
+            },
+            "after": 19631.111328125,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 286808.700000003,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 10227,
+          "blocks": 4,
+          "dom": 2353,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 19581.333984375,
+              "height": 53899,
+              "viewport": 597
+            },
+            "after": 19114.66796875,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 289146.1000000015,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 11401,
+          "blocks": 4,
+          "dom": 2385,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 19064.888671875,
+              "height": 56119,
+              "viewport": 597
+            },
+            "after": 18598.22265625,
+            "moved": true
+          }
+        }
+      ],
+      "resize": [],
+      "progressSamples": [
+        {
+          "atMs": 2002.4,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 0,
+          "dom": 438,
+          "error": ""
+        },
+        {
+          "atMs": 12002.3,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 0,
+          "dom": 437,
+          "error": ""
+        },
+        {
+          "atMs": 22003.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 4,
+          "content": 140,
+          "blocks": 2,
+          "dom": 975,
+          "error": ""
+        },
+        {
+          "atMs": 171000.7,
+          "streaming": true,
+          "tools": 0,
+          "segments": 1,
+          "content": 0,
+          "blocks": 2,
+          "dom": 983,
+          "error": ""
+        },
+        {
+          "atMs": 181001.1,
+          "streaming": true,
+          "tools": 24,
+          "segments": 27,
+          "content": 50,
+          "blocks": 3,
+          "dom": 1328,
+          "error": ""
+        },
+        {
+          "atMs": 191001.6,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 1659,
+          "blocks": 4,
+          "dom": 1466,
+          "error": ""
+        },
+        {
+          "atMs": 201001.1,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 6004,
+          "blocks": 4,
+          "dom": 1629,
+          "error": ""
+        },
+        {
+          "atMs": 211001.5,
+          "streaming": true,
+          "tools": 28,
+          "segments": 33,
+          "content": 10988,
+          "blocks": 4,
+          "dom": 1805,
+          "error": ""
+        },
+        {
+          "atMs": 261002.1,
+          "streaming": true,
+          "tools": 14,
+          "segments": 16,
+          "content": 46,
+          "blocks": 2,
+          "dom": 1593,
+          "error": ""
+        },
+        {
+          "atMs": 271000.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 2310,
+          "blocks": 3,
+          "dom": 1904,
+          "error": ""
+        },
+        {
+          "atMs": 281001.5,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 7369,
+          "blocks": 3,
+          "dom": 2080,
+          "error": ""
+        },
+        {
+          "atMs": 291002.9,
+          "streaming": true,
+          "tools": 30,
+          "segments": 34,
+          "content": 12308,
+          "blocks": 4,
+          "dom": 2417,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "runtime": "Codex CLI GPT-5.6-Sol, 60-tool first turn",
+      "startedAt": "2026-09-29T16:53:27.493Z",
+      "environment": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "viewport": {
+        "width": 1295,
+        "height": 787
+      },
+      "maxToolsInLiveTurn": 60,
+      "maxSegmentsInLiveTurn": 121,
+      "maxTextCharactersInLiveTurn": 9371,
+      "maxMarkdownBlocks": 61,
+      "maxDomNodes": 2481,
+      "inputToHandler": {
+        "count": 107,
+        "medianMs": 1.8,
+        "p95Ms": 5.3,
+        "maxMs": 7.4
+      },
+      "handlerToSecondFrame": {
+        "count": 107,
+        "medianMs": 22,
+        "p95Ms": 51.5,
+        "maxMs": 62.9
+      },
+      "byAction": [
+        {
+          "label": "收起侧栏",
+          "count": 17,
+          "medianMs": 31.1,
+          "p95Ms": 56,
+          "maxMs": 56
+        },
+        {
+          "label": "展开侧栏",
+          "count": 17,
+          "medianMs": 28.5,
+          "p95Ms": 44.1,
+          "maxMs": 44.1
+        },
+        {
+          "label": "关闭面板",
+          "count": 11,
+          "medianMs": 36.2,
+          "p95Ms": 53.7,
+          "maxMs": 53.7
+        },
+        {
+          "label": "面板",
+          "count": 11,
+          "medianMs": 36.1,
+          "p95Ms": 62.9,
+          "maxMs": 62.9
+        },
+        {
+          "label": "文件",
+          "count": 11,
+          "medianMs": 6.5,
+          "p95Ms": 11.2,
+          "maxMs": 11.2
+        },
+        {
+          "label": "samples",
+          "count": 2,
+          "medianMs": 10.1,
+          "p95Ms": 10.1,
+          "maxMs": 10.1
+        },
+        {
+          "label": "group-a",
+          "count": 20,
+          "medianMs": 18.5,
+          "p95Ms": 25.1,
+          "maxMs": 26.3
+        },
+        {
+          "label": "case-002.md",
+          "count": 9,
+          "medianMs": 9.8,
+          "p95Ms": 14.9,
+          "maxMs": 14.9
+        },
+        {
+          "label": "关闭",
+          "count": 9,
+          "medianMs": 8.1,
+          "p95Ms": 9.5,
+          "maxMs": 9.5
+        }
+      ],
+      "activeLongTasks": [],
+      "clicks": [
+        {
+          "label": "收起侧栏",
+          "atMs": 84010.9,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 15.6
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 84074.1,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 16.1
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 84140.2,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 17.9
+        },
+        {
+          "label": "面板",
+          "atMs": 84198.6,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 16.6
+        },
+        {
+          "label": "文件",
+          "atMs": 84250.7,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 6.5
+        },
+        {
+          "label": "samples",
+          "atMs": 84279.7,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 8.2
+        },
+        {
+          "label": "samples",
+          "atMs": 134610.1,
+          "streaming": true,
+          "tools": 11,
+          "segments": 23,
+          "inputToHandlerMs": 2.2,
+          "handlerToSecondFrameMs": 10.1
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 152023,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 2.5,
+          "handlerToSecondFrameMs": 18.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 152081.7,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 22.3
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 152148.4,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 20.5
+        },
+        {
+          "label": "面板",
+          "atMs": 152210.1,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 4.2,
+          "handlerToSecondFrameMs": 21.3
+        },
+        {
+          "label": "文件",
+          "atMs": 152274.9,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 6.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 152574.9,
+          "streaming": true,
+          "tools": 13,
+          "segments": 27,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 8.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 213222.6,
+          "streaming": true,
+          "tools": 22,
+          "segments": 44,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 10.4
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 245908.6,
+          "streaming": true,
+          "tools": 26,
+          "segments": 52,
+          "inputToHandlerMs": 3.2,
+          "handlerToSecondFrameMs": 26.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 245994.9,
+          "streaming": true,
+          "tools": 26,
+          "segments": 52,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 28.2
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 246089.5,
+          "streaming": true,
+          "tools": 26,
+          "segments": 52,
+          "inputToHandlerMs": 4.5,
+          "handlerToSecondFrameMs": 39.4
+        },
+        {
+          "label": "面板",
+          "atMs": 246182.1,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 4.4,
+          "handlerToSecondFrameMs": 40.3
+        },
+        {
+          "label": "文件",
+          "atMs": 246339.3,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 5.3,
+          "handlerToSecondFrameMs": 4.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 246672.8,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 15.8
+        },
+        {
+          "label": "group-a",
+          "atMs": 246735.5,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 26.3
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 246806.9,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 14.9
+        },
+        {
+          "label": "关闭",
+          "atMs": 246872.1,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 8.2
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 248207.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 2.7,
+          "handlerToSecondFrameMs": 24.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 248289,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 27
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 248387.1,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 3.7,
+          "handlerToSecondFrameMs": 32.1
+        },
+        {
+          "label": "面板",
+          "atMs": 248453.4,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 36.1
+        },
+        {
+          "label": "文件",
+          "atMs": 248541.7,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 6.4
+        },
+        {
+          "label": "group-a",
+          "atMs": 248848.5,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 10.3
+        },
+        {
+          "label": "group-a",
+          "atMs": 248893.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 22
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 248953.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 9.2
+        },
+        {
+          "label": "关闭",
+          "atMs": 249029.3,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 6.9
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 250345.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 3.6,
+          "handlerToSecondFrameMs": 31.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 250447.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 5.3,
+          "handlerToSecondFrameMs": 29.1
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 250564.8,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 5.2,
+          "handlerToSecondFrameMs": 38.8
+        },
+        {
+          "label": "面板",
+          "atMs": 250658.2,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 4.3,
+          "handlerToSecondFrameMs": 47.8
+        },
+        {
+          "label": "文件",
+          "atMs": 250832.1,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 5.2,
+          "handlerToSecondFrameMs": 5.8
+        },
+        {
+          "label": "group-a",
+          "atMs": 251148,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 10.9
+        },
+        {
+          "label": "group-a",
+          "atMs": 251193.7,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 23.2
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 251265.4,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 9.5
+        },
+        {
+          "label": "关闭",
+          "atMs": 251341.9,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 8.7
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 266964.6,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 32.3
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 267398.2,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 29.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 267780.4,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 30.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 268094.6,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 21.2
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 268352.5,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 23
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 268547.6,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 21.1
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 268766.7,
+          "streaming": true,
+          "tools": 29,
+          "segments": 59,
+          "inputToHandlerMs": 1.2,
+          "handlerToSecondFrameMs": 25.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 268929.6,
+          "streaming": true,
+          "tools": 29,
+          "segments": 59,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 20.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 269156.4,
+          "streaming": true,
+          "tools": 29,
+          "segments": 59,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 22.6
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 269632.9,
+          "streaming": true,
+          "tools": 29,
+          "segments": 59,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 25.3
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 270005,
+          "streaming": true,
+          "tools": 29,
+          "segments": 59,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 31.1
+        },
+        {
+          "label": "group-a",
+          "atMs": 283158.8,
+          "streaming": true,
+          "tools": 30,
+          "segments": 61,
+          "inputToHandlerMs": 1.2,
+          "handlerToSecondFrameMs": 9.6
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 354897.3,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 2.2,
+          "handlerToSecondFrameMs": 28.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 354972.9,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 32.1
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 355048.6,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 35.8
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 355139.2,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 32.1
+        },
+        {
+          "label": "面板",
+          "atMs": 355208.1,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 29.2
+        },
+        {
+          "label": "文件",
+          "atMs": 355284.7,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 1.2,
+          "handlerToSecondFrameMs": 6.2
+        },
+        {
+          "label": "group-a",
+          "atMs": 355590.1,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "inputToHandlerMs": 1.2,
+          "handlerToSecondFrameMs": 22.2
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 355679,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 9.9
+        },
+        {
+          "label": "关闭",
+          "atMs": 355755.9,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 7
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 357097.5,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 32.2
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 357172.8,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 29
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 357261.3,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 36.2
+        },
+        {
+          "label": "面板",
+          "atMs": 357338.1,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 34.1
+        },
+        {
+          "label": "文件",
+          "atMs": 357419.7,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "inputToHandlerMs": 1,
+          "handlerToSecondFrameMs": 6.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 357725.2,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.4,
+          "handlerToSecondFrameMs": 9.4
+        },
+        {
+          "label": "group-a",
+          "atMs": 357771.6,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 18.5
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 357831.5,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 7.6
+        },
+        {
+          "label": "关闭",
+          "atMs": 357907.8,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 7.1
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 359226.4,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 32.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 359325.2,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 4.7,
+          "handlerToSecondFrameMs": 40.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 359438.1,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 35.2
+        },
+        {
+          "label": "面板",
+          "atMs": 359516.2,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 2.2,
+          "handlerToSecondFrameMs": 34.6
+        },
+        {
+          "label": "文件",
+          "atMs": 359602.4,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 6.5
+        },
+        {
+          "label": "group-a",
+          "atMs": 359921.2,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 10.1
+        },
+        {
+          "label": "group-a",
+          "atMs": 359960.7,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.1,
+          "handlerToSecondFrameMs": 20.5
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 360026.4,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 9.8
+        },
+        {
+          "label": "关闭",
+          "atMs": 360109.6,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 7.2
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 469190.3,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 55.8
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 469339.3,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 4.6,
+          "handlerToSecondFrameMs": 44.1
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 469474.8,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 5.8,
+          "handlerToSecondFrameMs": 53.7
+        },
+        {
+          "label": "面板",
+          "atMs": 469594.7,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 2.2,
+          "handlerToSecondFrameMs": 51.5
+        },
+        {
+          "label": "文件",
+          "atMs": 469723.7,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 4.7
+        },
+        {
+          "label": "group-a",
+          "atMs": 470047.2,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 12.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 470104.1,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 22.6
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 470194,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 10.8
+        },
+        {
+          "label": "关闭",
+          "atMs": 470287.9,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 8.1
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 471679,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 4.4,
+          "handlerToSecondFrameMs": 56
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 471846.5,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 6,
+          "handlerToSecondFrameMs": 41.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 471983.8,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 3.3,
+          "handlerToSecondFrameMs": 52
+        },
+        {
+          "label": "面板",
+          "atMs": 472101.2,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 62.9
+        },
+        {
+          "label": "文件",
+          "atMs": 472250.9,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 4.9,
+          "handlerToSecondFrameMs": 7.1
+        },
+        {
+          "label": "group-a",
+          "atMs": 472587.6,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 5.3,
+          "handlerToSecondFrameMs": 15.4
+        },
+        {
+          "label": "group-a",
+          "atMs": 472661.7,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 3.9,
+          "handlerToSecondFrameMs": 25
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 472768.8,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 5.2,
+          "handlerToSecondFrameMs": 14.2
+        },
+        {
+          "label": "关闭",
+          "atMs": 472856.6,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "inputToHandlerMs": 4.5,
+          "handlerToSecondFrameMs": 9.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 474218.2,
+          "streaming": true,
+          "tools": 57,
+          "segments": 114,
+          "inputToHandlerMs": 7.4,
+          "handlerToSecondFrameMs": 48.4
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 474344.1,
+          "streaming": true,
+          "tools": 57,
+          "segments": 114,
+          "inputToHandlerMs": 4,
+          "handlerToSecondFrameMs": 41.9
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 474474.5,
+          "streaming": true,
+          "tools": 57,
+          "segments": 114,
+          "inputToHandlerMs": 5,
+          "handlerToSecondFrameMs": 50.6
+        },
+        {
+          "label": "面板",
+          "atMs": 474604.2,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 5.3,
+          "handlerToSecondFrameMs": 51.3
+        },
+        {
+          "label": "文件",
+          "atMs": 474756.2,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 2,
+          "handlerToSecondFrameMs": 11.2
+        },
+        {
+          "label": "group-a",
+          "atMs": 475075.8,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 24.1
+        },
+        {
+          "label": "group-a",
+          "atMs": 475139,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 0.8,
+          "handlerToSecondFrameMs": 25.1
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 475235.8,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 9.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 475336,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 9.5
+        }
+      ],
+      "interactionRounds": [
+        {
+          "round": 0,
+          "atMs": 245874.19999999553,
+          "streaming": true,
+          "tools": 26,
+          "segments": 52,
+          "content": 3891,
+          "blocks": 26,
+          "dom": 1542,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 5437.60009765625,
+              "height": 6029,
+              "viewport": 591
+            },
+            "after": 4970.93359375,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 248173.19999999553,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "content": 4047,
+          "blocks": 27,
+          "dom": 1558,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 5463.111328125,
+              "height": 6055,
+              "viewport": 591
+            },
+            "after": 4996.44482421875,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 250303.79999999702,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "content": 4047,
+          "blocks": 27,
+          "dom": 1558,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 5463.111328125,
+              "height": 6055,
+              "viewport": 591
+            },
+            "after": 4996.44482421875,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 354869.1000000015,
+          "streaming": true,
+          "tools": 40,
+          "segments": 81,
+          "content": 6230,
+          "blocks": 41,
+          "dom": 1567,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 8471.5556640625,
+              "height": 9063,
+              "viewport": 591
+            },
+            "after": 8004.88916015625,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 357060.69999999553,
+          "streaming": true,
+          "tools": 41,
+          "segments": 82,
+          "content": 6230,
+          "blocks": 41,
+          "dom": 1947,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 8538.755859375,
+              "height": 9131,
+              "viewport": 591
+            },
+            "after": 8072.08935546875,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 359189,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "content": 6384,
+          "blocks": 42,
+          "dom": 1963,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 8655.7333984375,
+              "height": 9247,
+              "viewport": 591
+            },
+            "after": 8189.06689453125,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 469143,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "content": 8681,
+          "blocks": 57,
+          "dom": 2368,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 11848.35546875,
+              "height": 12440,
+              "viewport": 591
+            },
+            "after": 11381.689453125,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 471631.19999999553,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "content": 8696,
+          "blocks": 57,
+          "dom": 2368,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 11848.35546875,
+              "height": 12440,
+              "viewport": 591
+            },
+            "after": 11381.689453125,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 474166.3999999985,
+          "streaming": true,
+          "tools": 57,
+          "segments": 114,
+          "content": 8696,
+          "blocks": 57,
+          "dom": 2379,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 12035.64453125,
+              "height": 12627,
+              "viewport": 591
+            },
+            "after": 11568.978515625,
+            "moved": true
+          }
+        }
+      ],
+      "resize": [
+        {
+          "selector": ".chat-sidebar-resize",
+          "before": 242.9972381591797,
+          "changed": 207.99722290039062,
+          "restored": 242.9972381591797,
+          "atMs": 395814.5,
+          "streaming": true,
+          "tools": 46,
+          "segments": 93,
+          "content": 7161,
+          "blocks": 47,
+          "dom": 2098,
+          "error": ""
+        },
+        {
+          "selector": ".chat-dock-shell > .cursor-col-resize",
+          "before": 358.9930725097656,
+          "changed": 393.9930725097656,
+          "restored": 358.9930725097656,
+          "atMs": 397091,
+          "streaming": true,
+          "tools": 46,
+          "segments": 93,
+          "content": 7161,
+          "blocks": 47,
+          "dom": 2098,
+          "error": ""
+        }
+      ],
+      "progressSamples": [
+        {
+          "atMs": 38001.2,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 0,
+          "dom": 408,
+          "error": ""
+        },
+        {
+          "atMs": 48004.3,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 0,
+          "dom": 421,
+          "error": ""
+        },
+        {
+          "atMs": 58004.7,
+          "streaming": true,
+          "tools": 1,
+          "segments": 2,
+          "content": 56,
+          "blocks": 1,
+          "dom": 481,
+          "error": ""
+        },
+        {
+          "atMs": 68005.2,
+          "streaming": true,
+          "tools": 2,
+          "segments": 4,
+          "content": 202,
+          "blocks": 2,
+          "dom": 508,
+          "error": ""
+        },
+        {
+          "atMs": 78001.7,
+          "streaming": true,
+          "tools": 3,
+          "segments": 7,
+          "content": 486,
+          "blocks": 4,
+          "dom": 551,
+          "error": ""
+        },
+        {
+          "atMs": 88000.7,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "content": 651,
+          "blocks": 5,
+          "dom": 578,
+          "error": ""
+        },
+        {
+          "atMs": 98005.8,
+          "streaming": true,
+          "tools": 6,
+          "segments": 13,
+          "content": 839,
+          "blocks": 7,
+          "dom": 623,
+          "error": ""
+        },
+        {
+          "atMs": 108000.6,
+          "streaming": true,
+          "tools": 7,
+          "segments": 15,
+          "content": 1105,
+          "blocks": 8,
+          "dom": 659,
+          "error": ""
+        },
+        {
+          "atMs": 118000.7,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "content": 1251,
+          "blocks": 9,
+          "dom": 686,
+          "error": ""
+        },
+        {
+          "atMs": 128001.1,
+          "streaming": true,
+          "tools": 10,
+          "segments": 21,
+          "content": 1469,
+          "blocks": 11,
+          "dom": 740,
+          "error": ""
+        },
+        {
+          "atMs": 138000.9,
+          "streaming": true,
+          "tools": 11,
+          "segments": 23,
+          "content": 1709,
+          "blocks": 12,
+          "dom": 785,
+          "error": ""
+        },
+        {
+          "atMs": 148000.5,
+          "streaming": true,
+          "tools": 13,
+          "segments": 26,
+          "content": 1861,
+          "blocks": 13,
+          "dom": 823,
+          "error": ""
+        },
+        {
+          "atMs": 158001,
+          "streaming": true,
+          "tools": 14,
+          "segments": 29,
+          "content": 2116,
+          "blocks": 15,
+          "dom": 866,
+          "error": ""
+        },
+        {
+          "atMs": 168001,
+          "streaming": true,
+          "tools": 15,
+          "segments": 31,
+          "content": 2321,
+          "blocks": 16,
+          "dom": 893,
+          "error": ""
+        },
+        {
+          "atMs": 178001.7,
+          "streaming": true,
+          "tools": 17,
+          "segments": 34,
+          "content": 2476,
+          "blocks": 17,
+          "dom": 931,
+          "error": ""
+        },
+        {
+          "atMs": 188004.6,
+          "streaming": true,
+          "tools": 18,
+          "segments": 37,
+          "content": 2793,
+          "blocks": 19,
+          "dom": 974,
+          "error": ""
+        },
+        {
+          "atMs": 198001.8,
+          "streaming": true,
+          "tools": 20,
+          "segments": 40,
+          "content": 2951,
+          "blocks": 20,
+          "dom": 1012,
+          "error": ""
+        },
+        {
+          "atMs": 208001.7,
+          "streaming": true,
+          "tools": 21,
+          "segments": 43,
+          "content": 3208,
+          "blocks": 22,
+          "dom": 1055,
+          "error": ""
+        },
+        {
+          "atMs": 218002.3,
+          "streaming": true,
+          "tools": 22,
+          "segments": 45,
+          "content": 3422,
+          "blocks": 23,
+          "dom": 1450,
+          "error": ""
+        },
+        {
+          "atMs": 228003,
+          "streaming": true,
+          "tools": 24,
+          "segments": 48,
+          "content": 3575,
+          "blocks": 24,
+          "dom": 1488,
+          "error": ""
+        },
+        {
+          "atMs": 238002.8,
+          "streaming": true,
+          "tools": 25,
+          "segments": 51,
+          "content": 3771,
+          "blocks": 26,
+          "dom": 1522,
+          "error": ""
+        },
+        {
+          "atMs": 248002.1,
+          "streaming": true,
+          "tools": 26,
+          "segments": 53,
+          "content": 4047,
+          "blocks": 27,
+          "dom": 1558,
+          "error": ""
+        },
+        {
+          "atMs": 258002.8,
+          "streaming": true,
+          "tools": 27,
+          "segments": 55,
+          "content": 4205,
+          "blocks": 28,
+          "dom": 1585,
+          "error": ""
+        },
+        {
+          "atMs": 268003,
+          "streaming": true,
+          "tools": 29,
+          "segments": 58,
+          "content": 4362,
+          "blocks": 29,
+          "dom": 1622,
+          "error": ""
+        },
+        {
+          "atMs": 278002.6,
+          "streaming": true,
+          "tools": 30,
+          "segments": 60,
+          "content": 4521,
+          "blocks": 30,
+          "dom": 1649,
+          "error": ""
+        },
+        {
+          "atMs": 288004.8,
+          "streaming": true,
+          "tools": 31,
+          "segments": 63,
+          "content": 4805,
+          "blocks": 32,
+          "dom": 1327,
+          "error": ""
+        },
+        {
+          "atMs": 298002.3,
+          "streaming": true,
+          "tools": 32,
+          "segments": 65,
+          "content": 4981,
+          "blocks": 33,
+          "dom": 1351,
+          "error": ""
+        },
+        {
+          "atMs": 308002.8,
+          "streaming": true,
+          "tools": 34,
+          "segments": 68,
+          "content": 5136,
+          "blocks": 34,
+          "dom": 1389,
+          "error": ""
+        },
+        {
+          "atMs": 318003.1,
+          "streaming": true,
+          "tools": 35,
+          "segments": 71,
+          "content": 5449,
+          "blocks": 36,
+          "dom": 1432,
+          "error": ""
+        },
+        {
+          "atMs": 328003.3,
+          "streaming": true,
+          "tools": 36,
+          "segments": 73,
+          "content": 5607,
+          "blocks": 37,
+          "dom": 1459,
+          "error": ""
+        },
+        {
+          "atMs": 338003.6,
+          "streaming": true,
+          "tools": 38,
+          "segments": 77,
+          "content": 5871,
+          "blocks": 39,
+          "dom": 1513,
+          "error": ""
+        },
+        {
+          "atMs": 348004.4,
+          "streaming": true,
+          "tools": 39,
+          "segments": 79,
+          "content": 6069,
+          "blocks": 40,
+          "dom": 1540,
+          "error": ""
+        },
+        {
+          "atMs": 358001.2,
+          "streaming": true,
+          "tools": 41,
+          "segments": 83,
+          "content": 6293,
+          "blocks": 42,
+          "dom": 1966,
+          "error": ""
+        },
+        {
+          "atMs": 368004,
+          "streaming": true,
+          "tools": 42,
+          "segments": 85,
+          "content": 6538,
+          "blocks": 43,
+          "dom": 1990,
+          "error": ""
+        },
+        {
+          "atMs": 378004.3,
+          "streaming": true,
+          "tools": 44,
+          "segments": 88,
+          "content": 6696,
+          "blocks": 44,
+          "dom": 2028,
+          "error": ""
+        },
+        {
+          "atMs": 388004.2,
+          "streaming": true,
+          "tools": 45,
+          "segments": 91,
+          "content": 7005,
+          "blocks": 46,
+          "dom": 2071,
+          "error": ""
+        },
+        {
+          "atMs": 398005,
+          "streaming": true,
+          "tools": 46,
+          "segments": 93,
+          "content": 7161,
+          "blocks": 47,
+          "dom": 2098,
+          "error": ""
+        },
+        {
+          "atMs": 408000.6,
+          "streaming": true,
+          "tools": 48,
+          "segments": 97,
+          "content": 7363,
+          "blocks": 49,
+          "dom": 2151,
+          "error": ""
+        },
+        {
+          "atMs": 418005.6,
+          "streaming": true,
+          "tools": 49,
+          "segments": 99,
+          "content": 7623,
+          "blocks": 50,
+          "dom": 2179,
+          "error": ""
+        },
+        {
+          "atMs": 428000.7,
+          "streaming": true,
+          "tools": 51,
+          "segments": 102,
+          "content": 7775,
+          "blocks": 51,
+          "dom": 2217,
+          "error": ""
+        },
+        {
+          "atMs": 438005.4,
+          "streaming": true,
+          "tools": 52,
+          "segments": 105,
+          "content": 7930,
+          "blocks": 53,
+          "dom": 2249,
+          "error": ""
+        },
+        {
+          "atMs": 448002.7,
+          "streaming": true,
+          "tools": 53,
+          "segments": 107,
+          "content": 8232,
+          "blocks": 54,
+          "dom": 2287,
+          "error": ""
+        },
+        {
+          "atMs": 458001,
+          "streaming": true,
+          "tools": 54,
+          "segments": 109,
+          "content": 8390,
+          "blocks": 55,
+          "dom": 2314,
+          "error": ""
+        },
+        {
+          "atMs": 468001.1,
+          "streaming": true,
+          "tools": 56,
+          "segments": 113,
+          "content": 8577,
+          "blocks": 57,
+          "dom": 2359,
+          "error": ""
+        },
+        {
+          "atMs": 478002.7,
+          "streaming": true,
+          "tools": 57,
+          "segments": 115,
+          "content": 8854,
+          "blocks": 58,
+          "dom": 2395,
+          "error": ""
+        },
+        {
+          "atMs": 488002.5,
+          "streaming": true,
+          "tools": 59,
+          "segments": 118,
+          "content": 9009,
+          "blocks": 59,
+          "dom": 2433,
+          "error": ""
+        },
+        {
+          "atMs": 498001.5,
+          "streaming": true,
+          "tools": 60,
+          "segments": 121,
+          "content": 9245,
+          "blocks": 61,
+          "dom": 2476,
+          "error": ""
+        }
+      ]
+    },
+    {
+      "runtime": "Codex CLI GPT-5.6-Sol, final 10-tool continuation",
+      "startedAt": "2026-09-29T17:06:24.806Z",
+      "environment": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+      "viewport": {
+        "width": 1295,
+        "height": 787
+      },
+      "maxToolsInLiveTurn": 10,
+      "maxSegmentsInLiveTurn": 21,
+      "maxTextCharactersInLiveTurn": 3325,
+      "maxMarkdownBlocks": 23,
+      "maxDomNodes": 1558,
+      "inputToHandler": {
+        "count": 55,
+        "medianMs": 2.5,
+        "p95Ms": 4.3,
+        "maxMs": 6.2
+      },
+      "handlerToSecondFrame": {
+        "count": 55,
+        "medianMs": 24.9,
+        "p95Ms": 47.5,
+        "maxMs": 56.6
+      },
+      "byAction": [
+        {
+          "label": "Worked for 7m 19s",
+          "count": 1,
+          "medianMs": 48.7,
+          "p95Ms": 48.7,
+          "maxMs": 48.7
+        },
+        {
+          "label": "收起侧栏",
+          "count": 6,
+          "medianMs": 33.1,
+          "p95Ms": 34.7,
+          "maxMs": 34.7
+        },
+        {
+          "label": "展开侧栏",
+          "count": 6,
+          "medianMs": 32.7,
+          "p95Ms": 35.8,
+          "maxMs": 35.8
+        },
+        {
+          "label": "关闭面板",
+          "count": 6,
+          "medianMs": 45.5,
+          "p95Ms": 56.6,
+          "maxMs": 56.6
+        },
+        {
+          "label": "面板",
+          "count": 6,
+          "medianMs": 41.6,
+          "p95Ms": 47.5,
+          "maxMs": 47.5
+        },
+        {
+          "label": "文件",
+          "count": 6,
+          "medianMs": 6.2,
+          "p95Ms": 11.3,
+          "maxMs": 11.3
+        },
+        {
+          "label": "group-a",
+          "count": 12,
+          "medianMs": 22.9,
+          "p95Ms": 33,
+          "maxMs": 33
+        },
+        {
+          "label": "case-002.md",
+          "count": 6,
+          "medianMs": 11.5,
+          "p95Ms": 16.9,
+          "maxMs": 16.9
+        },
+        {
+          "label": "关闭",
+          "count": 6,
+          "medianMs": 9,
+          "p95Ms": 9.7,
+          "maxMs": 9.7
+        }
+      ],
+      "activeLongTasks": [],
+      "clicks": [
+        {
+          "label": "Worked for 7m 19s",
+          "atMs": 8091.6,
+          "streaming": true,
+          "tools": 1,
+          "segments": 2,
+          "inputToHandlerMs": 4.5,
+          "handlerToSecondFrameMs": 48.7
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 9706.6,
+          "streaming": true,
+          "tools": 1,
+          "segments": 2,
+          "inputToHandlerMs": 3.4,
+          "handlerToSecondFrameMs": 30.5
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 9798.3,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3.8,
+          "handlerToSecondFrameMs": 28.7
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 9912,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 45.5
+        },
+        {
+          "label": "面板",
+          "atMs": 10009.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 39.8
+        },
+        {
+          "label": "文件",
+          "atMs": 10094,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 5.8
+        },
+        {
+          "label": "group-a",
+          "atMs": 10405.1,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 12.5
+        },
+        {
+          "label": "group-a",
+          "atMs": 10445.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1,
+          "handlerToSecondFrameMs": 26.4
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 10506.3,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 9.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 10587,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 7.4
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 11934.7,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.4,
+          "handlerToSecondFrameMs": 24.9
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 12015,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 26.4
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 12101.6,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3.1,
+          "handlerToSecondFrameMs": 37.9
+        },
+        {
+          "label": "面板",
+          "atMs": 12189.8,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.7,
+          "handlerToSecondFrameMs": 36.8
+        },
+        {
+          "label": "文件",
+          "atMs": 12269.7,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 6.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 12592.9,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3.4,
+          "handlerToSecondFrameMs": 21.7
+        },
+        {
+          "label": "group-a",
+          "atMs": 12661.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 33
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 12748,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3.2,
+          "handlerToSecondFrameMs": 11.5
+        },
+        {
+          "label": "关闭",
+          "atMs": 12831,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 9
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 14172.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 4.1,
+          "handlerToSecondFrameMs": 33.1
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 14284.4,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 35.8
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 14402.7,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 4.3,
+          "handlerToSecondFrameMs": 47.3
+        },
+        {
+          "label": "面板",
+          "atMs": 14494.9,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.2,
+          "handlerToSecondFrameMs": 45.2
+        },
+        {
+          "label": "文件",
+          "atMs": 14583.1,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.8,
+          "handlerToSecondFrameMs": 5
+        },
+        {
+          "label": "group-a",
+          "atMs": 14889.7,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 3.2,
+          "handlerToSecondFrameMs": 14.5
+        },
+        {
+          "label": "group-a",
+          "atMs": 14934.6,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 29.6
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 15000.3,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.5,
+          "handlerToSecondFrameMs": 10.2
+        },
+        {
+          "label": "关闭",
+          "atMs": 15054,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "inputToHandlerMs": 2.5,
+          "handlerToSecondFrameMs": 9.5
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 75050.3,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 3.7,
+          "handlerToSecondFrameMs": 34.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 75135.1,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 30.3
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 75231.8,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 37.3
+        },
+        {
+          "label": "面板",
+          "atMs": 75308.2,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 2.7,
+          "handlerToSecondFrameMs": 39.7
+        },
+        {
+          "label": "文件",
+          "atMs": 75394.5,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.7,
+          "handlerToSecondFrameMs": 6.2
+        },
+        {
+          "label": "group-a",
+          "atMs": 75700.7,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.9,
+          "handlerToSecondFrameMs": 12.7
+        },
+        {
+          "label": "group-a",
+          "atMs": 75740.4,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 0.9,
+          "handlerToSecondFrameMs": 24.3
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 75823.8,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 12.5
+        },
+        {
+          "label": "关闭",
+          "atMs": 75900,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 9.7
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 77206.9,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 29.2
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 77304.4,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 3.5,
+          "handlerToSecondFrameMs": 32.7
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 77437.1,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 6.2,
+          "handlerToSecondFrameMs": 56.6
+        },
+        {
+          "label": "面板",
+          "atMs": 77543.3,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 3,
+          "handlerToSecondFrameMs": 41.6
+        },
+        {
+          "label": "文件",
+          "atMs": 77630.4,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 5.6
+        },
+        {
+          "label": "group-a",
+          "atMs": 77936.6,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 2.6,
+          "handlerToSecondFrameMs": 13.7
+        },
+        {
+          "label": "group-a",
+          "atMs": 77981.9,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1,
+          "handlerToSecondFrameMs": 22.9
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 78040.9,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 8.7
+        },
+        {
+          "label": "关闭",
+          "atMs": 78088.4,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "inputToHandlerMs": 1.5,
+          "handlerToSecondFrameMs": 7.2
+        },
+        {
+          "label": "收起侧栏",
+          "atMs": 79399.5,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 3.3,
+          "handlerToSecondFrameMs": 33.7
+        },
+        {
+          "label": "展开侧栏",
+          "atMs": 79496.7,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 34.7
+        },
+        {
+          "label": "关闭面板",
+          "atMs": 79597.7,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 3.3,
+          "handlerToSecondFrameMs": 44.5
+        },
+        {
+          "label": "面板",
+          "atMs": 79691.5,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 47.5
+        },
+        {
+          "label": "文件",
+          "atMs": 79793.3,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 2.1,
+          "handlerToSecondFrameMs": 11.3
+        },
+        {
+          "label": "group-a",
+          "atMs": 80100.3,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 13.1
+        },
+        {
+          "label": "group-a",
+          "atMs": 80141,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 1.3,
+          "handlerToSecondFrameMs": 23.1
+        },
+        {
+          "label": "case-002.md",
+          "atMs": 80194.6,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 1.6,
+          "handlerToSecondFrameMs": 16.9
+        },
+        {
+          "label": "关闭",
+          "atMs": 80264.2,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "inputToHandlerMs": 1.8,
+          "handlerToSecondFrameMs": 7
+        }
+      ],
+      "interactionRounds": [
+        {
+          "round": 0,
+          "atMs": 9674.10000000149,
+          "streaming": true,
+          "tools": 1,
+          "segments": 2,
+          "content": 61,
+          "blocks": 13,
+          "dom": 1297,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 26.755556106567383,
+              "height": 3988,
+              "viewport": 591
+            },
+            "after": 0,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 11906.5,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "content": 289,
+          "blocks": 14,
+          "dom": 1313,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 512.0889282226562,
+              "height": 4090,
+              "viewport": 591
+            },
+            "after": 45.42222213745117,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 14141,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "content": 374,
+          "blocks": 14,
+          "dom": 1313,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 557.5111083984375,
+              "height": 4115,
+              "viewport": 591
+            },
+            "after": 90.84444427490234,
+            "moved": true
+          }
+        },
+        {
+          "round": 0,
+          "atMs": 75014.80000000447,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "content": 2491,
+          "blocks": 21,
+          "dom": 1502,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 602.933349609375,
+              "height": 6319,
+              "viewport": 591
+            },
+            "after": 136.2666778564453,
+            "moved": true
+          }
+        },
+        {
+          "round": 1,
+          "atMs": 77175,
+          "streaming": true,
+          "tools": 8,
+          "segments": 17,
+          "content": 2621,
+          "blocks": 21,
+          "dom": 1502,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 648.3555908203125,
+              "height": 6319,
+              "viewport": 591
+            },
+            "after": 181.6888885498047,
+            "moved": true
+          }
+        },
+        {
+          "round": 2,
+          "atMs": 79367.5,
+          "streaming": true,
+          "tools": 9,
+          "segments": 18,
+          "content": 2621,
+          "blocks": 21,
+          "dom": 1513,
+          "error": "",
+          "scroll": {
+            "before": {
+              "top": 693.7777709960938,
+              "height": 6348,
+              "viewport": 591
+            },
+            "after": 227.11111450195312,
+            "moved": true
+          }
+        }
+      ],
+      "resize": [],
+      "progressSamples": [
+        {
+          "atMs": 2002.3,
+          "streaming": true,
+          "tools": 0,
+          "segments": 0,
+          "content": 0,
+          "blocks": 2,
+          "dom": 962,
+          "error": ""
+        },
+        {
+          "atMs": 12008.9,
+          "streaming": true,
+          "tools": 1,
+          "segments": 3,
+          "content": 296,
+          "blocks": 14,
+          "dom": 1312,
+          "error": ""
+        },
+        {
+          "atMs": 22000.4,
+          "streaming": true,
+          "tools": 2,
+          "segments": 5,
+          "content": 673,
+          "blocks": 15,
+          "dom": 1340,
+          "error": ""
+        },
+        {
+          "atMs": 32000.5,
+          "streaming": true,
+          "tools": 3,
+          "segments": 7,
+          "content": 1010,
+          "blocks": 16,
+          "dom": 1367,
+          "error": ""
+        },
+        {
+          "atMs": 42000.7,
+          "streaming": true,
+          "tools": 4,
+          "segments": 9,
+          "content": 1333,
+          "blocks": 17,
+          "dom": 1394,
+          "error": ""
+        },
+        {
+          "atMs": 52000.9,
+          "streaming": true,
+          "tools": 5,
+          "segments": 11,
+          "content": 1646,
+          "blocks": 18,
+          "dom": 1421,
+          "error": ""
+        },
+        {
+          "atMs": 62004.5,
+          "streaming": true,
+          "tools": 7,
+          "segments": 14,
+          "content": 1967,
+          "blocks": 19,
+          "dom": 1459,
+          "error": ""
+        },
+        {
+          "atMs": 72001.2,
+          "streaming": true,
+          "tools": 8,
+          "segments": 16,
+          "content": 2296,
+          "blocks": 20,
+          "dom": 1486,
+          "error": ""
+        },
+        {
+          "atMs": 82001.3,
+          "streaming": true,
+          "tools": 9,
+          "segments": 19,
+          "content": 2712,
+          "blocks": 22,
+          "dom": 1529,
+          "error": ""
+        },
+        {
+          "atMs": 92003.8,
+          "streaming": true,
+          "tools": 10,
+          "segments": 21,
+          "content": 3175,
+          "blocks": 23,
+          "dom": 1556,
+          "error": ""
+        }
+      ]
+    }
+  ],
+  "cancellation": {
+    "phase": "startup, before any tool event",
+    "immediateResume": "failed: thread-start already has an active writer",
+    "laterRetry": "completed with expected values",
+    "fixed": false,
+    "limitation": "Initial cancel probe used an async polling predicate and stopped before tools started; this is not a mid-execution cancellation test."
+  }
+}

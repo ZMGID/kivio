@@ -76,3 +76,33 @@ and stores the full results in `window.chatLongRunReport`.
 - Repeat navigation to the same conversation: measurement snapshot/cache hit.
 - Scroll authority: navigation, TanStack `scrollToIndex`, measurement adjustments and
   bottom pin all use the same programmatic scroll writer.
+
+## Native streaming acceptance (2026-09-30)
+
+Results: [native streaming report](chat-native-streaming-2026-09-30.json) and
+[interpretation, fixes and remaining cancellation issue](../research/zcode-chat-comparison-2026-09-24.md#147-2026-09-30真实模型cli-与文件树实机验收).
+
+Use a debug Tauri window with a local WebView2 CDP port and attach with
+`playwright-cli -s=native attach --cdp=http://localhost:9223`.
+Create a separate temporary project containing `samples/group-a/case-001.md`
+through `case-030.md` and `samples/group-b/case-031.md` through `case-060.md`.
+Each file contains only public test data: title `# Case N`, batch N, alpha 7N,
+beta 11N. Ask the actual runtime to read these files, produce tables and analysis,
+then continue the same conversation. Do not inject preview-owner events.
+
+Before sending, run
+`playwright-cli -s=native run-code --filename=scripts/probe-chat-native-monitor.playwright.js`.
+During early and late output, run
+`playwright-cli -s=native run-code --filename=scripts/probe-chat-native-interactions.playwright.js`.
+The interaction script expects the test file tree and verifies preview content,
+sidebar controls and scrolling. Open file previews are closed before tree clicks;
+directory expansion is read from its chevron, not inferred from virtualized children.
+
+Export `window.realRunProbe.report()` and `window.realInteractions` before any
+development reload. End collection with `window.realRunProbe.stop()` and remove
+those two globals. The monitor is read-only and never submits model messages.
+It records event timestamp to capture handler, handler to second animation frame,
+long tasks and actual stream progress. Frame timing is not file-read completion
+or end-to-end input latency. Timing samples interrupted by a development reload
+must be discarded. The reported native runs used different window sizes and are
+not a cross-runtime benchmark or a multi-hour longevity test.

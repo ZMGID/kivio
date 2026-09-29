@@ -1,9 +1,10 @@
 // 文件树数据 hook：懒加载 + 搜索 + 增删改 + workspace-activity 失效。
 // 请求去重用 ref 内同步记录（同一 render 周期内的重复调用也会被挡），
-// 每个路径一个 epoch 计数丢弃乱序/过期响应（切 workdir 后旧响应不会污染新树）。
+// 按路径记录唯一请求编号，丢弃乱序/过期响应（树重置后旧响应不会污染新树）。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { dockApi } from './api'
 import {
+  ancestorsOf,
   applyListResponse,
   createRootNode,
   joinPath,
@@ -52,10 +53,12 @@ export function useFileTree({ workdir, active, showHidden, expandedPaths }: UseF
   expandedRef.current = expandedPaths
   const inFlightRef = useRef<Set<string>>(new Set())
   const epochRef = useRef<Map<string, number>>(new Map())
+  const nextEpochRef = useRef(0)
   const dirtyRef = useRef(false)
 
   const bumpEpoch = useCallback((path: string): number => {
-    const next = (epochRef.current.get(path) ?? 0) + 1
+    // 树重置后仍不复用编号，隔离隐藏项切换以及 A → B → A 的旧请求。
+    const next = ++nextEpochRef.current
     epochRef.current.set(path, next)
     return next
   }, [])
@@ -86,7 +89,7 @@ export function useFileTree({ workdir, active, showHidden, expandedPaths }: UseF
         const message = err instanceof Error ? err.message : String(err)
         setNodes((prev) => markNodeLoading(prev, path, false, message))
       } finally {
-        inFlightRef.current.delete(path)
+        if (epochRef.current.get(path) === epoch) inFlightRef.current.delete(path)
       }
     },
     [bumpEpoch],
@@ -132,6 +135,18 @@ export function useFileTree({ workdir, active, showHidden, expandedPaths }: UseF
       refreshVisible()
     }
   }, [active, workdir, loadChildren, refreshVisible])
+
+  // 恢复展开状态时只有根节点已加载；每层返回后继续加载可见的已展开目录。
+  // 失败保留错误行等待显式重试，隐藏面板和折叠祖先下的目录不触发读取。
+  useEffect(() => {
+    if (!active || !workdir) return
+    for (const path of expandedPaths) {
+      const node = nodes[path]
+      if (!node || node.kind !== 'dir' || node.loaded || node.loading || node.error) continue
+      if (!ancestorsOf(path).every((ancestor) => expandedPaths.has(ancestor))) continue
+      void loadChildren(path)
+    }
+  }, [active, workdir, nodes, expandedPaths, loadChildren])
 
   // workspace-activity 失效：changedPaths 映射到父目录定向刷新；git-only 事件忽略；
   // 事件过多或截断 → 可见部分整体刷新。非激活期只攒脏标记。
