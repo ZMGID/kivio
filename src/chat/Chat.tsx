@@ -4,6 +4,7 @@ import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
+import { MediaStation } from './MediaStation'
 import { ArtifactsCenter } from './ArtifactsCenter'
 import { MarketPage } from './market/MarketPage'
 import { marketUsePrompt } from './market/marketModel'
@@ -36,6 +37,7 @@ import {
   isChatMcpCenterPath,
   isChatNotesPath,
   isChatArtifactsPath,
+  isChatMediaPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -332,6 +334,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatNotesPath(path)) return 'notes'
+    if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
     // 旧 `#chat/sessions`：对话库已迁设置
@@ -2909,6 +2912,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             <Suspense fallback={null}>
               <KnowledgeCenter />
             </Suspense>
+          </div>
+        ) : chatView === 'media' ? (
+          <div key="center" className={worksPageClass}>
+            {centerPageTopStrip}
+            <MediaStation onOpenSettings={handleOpenChatSettings} />
           </div>
         ) : chatView === 'artifacts' ? (
           <div key="center" className={worksPageClass}>

@@ -376,6 +376,7 @@ pub fn run() {
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
+            app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
@@ -506,6 +507,12 @@ pub fn run() {
             provider_oauth::provider_oauth_disconnect,
             provider_oauth::usage::provider_oauth_usage,
             provider_oauth::account::provider_oauth_account,
+            chat::media_station::media_station_list,
+            chat::media_station::media_station_start,
+            chat::media_station::media_station_cancel,
+            chat::media_station::media_station_read,
+            chat::media_station::media_station_export,
+            chat::media_station::media_station_reference,
             commands::get_settings,
             windows::chat_window_apply_mica,
             windows::chat_window_set_opaque,

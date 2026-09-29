@@ -60,6 +60,10 @@ export function isChatNotesPath(path: string): boolean {
   return chatRouteKind(path) === 'notes'
 }
 
+export function isChatMediaPath(path: string): boolean {
+  return chatRouteKind(path) === 'media'
+}
+
 export function isChatArtifactsPath(path: string): boolean {
   return chatRouteKind(path) === 'artifacts'
 }
@@ -84,9 +88,10 @@ export function setHash(next: string): void {
 }
 
 /** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
-export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'artifacts' | 'plugins'
+export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'artifacts' | 'plugins' | 'media'
 
 export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
+  if (chatView === 'media') return 'media'
   if (chatView === 'artifacts') return 'artifacts'
   if (chatView === 'plugins') return 'plugins'
   if (chatView === 'assistants') return 'assistants'

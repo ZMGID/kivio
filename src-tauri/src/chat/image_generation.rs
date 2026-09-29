@@ -62,6 +62,12 @@ pub(crate) struct InputImage {
     base64: String,
 }
 
+impl InputImage {
+    pub(crate) fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.mime_type, self.base64)
+    }
+}
+
 struct GeneratedImage {
     mime_type: String,
     base64: String,

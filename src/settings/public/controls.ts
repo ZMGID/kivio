@@ -1,1 +1,1 @@
-export { FieldBlock, HotkeyInput, Input, Label, Select, Toggle } from '../components'
+export { FieldBlock, HotkeyInput, Input, SuggestInput, TextArea, Label, Select, Toggle } from '../components'

@@ -9,6 +9,7 @@ import {
   isChatMcpCenterPath,
   isChatNotesPath,
   isChatArtifactsPath,
+  isChatMediaPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -114,6 +115,11 @@ export function useChatRouting({
         onViewChange('notes')
         return
       }
+      if (isChatMediaPath(path)) {
+        onLeaveConversation()
+        onViewChange('media')
+        return
+      }
       if (isChatArtifactsPath(path)) {
         onLeaveConversation()
         onViewChange('artifacts')
@@ -203,6 +209,11 @@ export function useChatRouting({
 
   const openExtensionsItem = useCallback((item: ChatExtensionsNavItem) => {
     setExtensionsNavItem(item)
+    if (item === 'media') {
+      onViewChange('media')
+      syncNonConversationRoute('#chat/media')
+      return
+    }
     if (item === 'artifacts') {
       onViewChange('artifacts')
       syncNonConversationRoute('#chat/artifacts')

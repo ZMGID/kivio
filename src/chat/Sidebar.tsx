@@ -8,6 +8,7 @@ import {
   Layers,
   MoreHorizontal,
   NotebookPen,
+  Clapperboard,
   Plus,
   Search,
   Settings,
@@ -74,6 +75,7 @@ const extensionSubItems: Array<{
 }> = [
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
+  { id: 'media', label: (t) => t.chatNavMedia, icon: (props) => <Clapperboard size={props.size} className={props.className} strokeWidth={1.75} /> },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: (props) => <NotebookPen size={props.size} className={props.className} strokeWidth={1.75} /> },
 ]
 
