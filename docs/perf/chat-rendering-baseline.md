@@ -12,6 +12,7 @@ network data and use a fixed timestamp so the same run produces the same row key
 | F2 | 20 assistant answers with 200 code blocks | code-heavy row estimates and syntax-heavy layout |
 | F3 | tables, KaTeX, Mermaid, tool calls, images | heavy-island hydration and height compensation |
 | F4 | one 20,000-character streaming answer | live Markdown and render cadence |
+| F5 | one live run with 300 or 1,000 alternating text/tool steps | unchanged Markdown inside the active message; text and tool updates |
 
 ## Collection
 
@@ -29,6 +30,42 @@ baselines are recorded; they are architecture checks, not product SLAs.
 
 The fixture unit tests validate shape and size; browser-level numbers remain
 environment-specific and should be recorded on the same machine and window size.
+
+### F5 production comparison
+
+Build the same fixture with current renderers and the pre-fix renderers without
+changing the checkout:
+
+```powershell
+node scripts/build-chat-performance.mjs 143153c2
+node scripts/build-chat-performance.mjs
+npx vite preview --outDir node_modules/.cache/chat-performance/current --port 5714
+# In another terminal, for the baseline:
+npx vite preview --outDir node_modules/.cache/chat-performance/baseline --port 5715
+```
+
+Open `/scripts/fixtures/chat-performance.html` on each server. Run
+`await window.chatAcceptance.longRun(300, 'text')`, then `'tool'`, and repeat at
+1,000 steps for scale. Save the returned JSON. The baseline swaps the three
+production renderer/reference modules and the chat stylesheet changed by this fix;
+fixtures, dependencies and preview owner are identical. It is a rendering isolation comparison,
+not a complete historical application build.
+
+Each run seeds text/tool events through the existing preview owner, waits for
+initial mount, then records 20 updates. Controlled publication measures event
+application and synchronous UI submission, excluding the owner's throttle wait.
+`queuedTaskMs` measures main-thread scheduling delay, not native click latency.
+The fixture collects browser long tasks directly in production; the development
+React Profiler/probe report may be empty there. Measure cold mount separately.
+Do not treat an empty production Profiler report as zero rendering cost.
+`liveBubbleTransform` must be `none` after the entrance animation in the current
+build: retaining the completed transform makes very tall live bubbles repaint
+and rebuild compositing layers on each offscreen status animation.
+
+For the current build, `playwright-cli run-code --filename=scripts/probe-chat-long-run.playwright.js`
+runs all four F5 combinations on the already-open production fixture, checks
+segment visibility, released transform and bottom anchoring after a width change,
+and stores the full results in `window.chatLongRunReport`.
 
 ## Acceptance measurements
 

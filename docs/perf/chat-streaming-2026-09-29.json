@@ -1,0 +1,693 @@
+{
+  "date": "2026-09-29",
+  "environment": "Windows / Edge 154 / production renderer fixture / 1280x900",
+  "baselineRef": "143153c2",
+  "notes": [
+    "Same real components, event owner and full application CSS. Baseline replaces the changed renderer modules and chat stylesheet only.",
+    "20 measured updates after initial mount per sample. Cold mount excluded.",
+    "queuedTaskMs is main-thread scheduling delay, not click latency.",
+    "Native sample uses synthetic preview events in the real Tauri shell; no model requests or persistence. Native click timing is handler entry to second animation frame, not end-to-end input latency."
+  ],
+  "baseline": [
+    {
+      "steps": 300,
+      "update": "text",
+      "updateMs": {
+        "median": 236,
+        "p95": 279.1000000014901,
+        "max": 279.1000000014901
+      },
+      "queuedTaskMs": {
+        "median": 260,
+        "p95": 325.19999999552965,
+        "max": 325.19999999552965
+      },
+      "domNodes": 10895,
+      "mountedRows": 4,
+      "markdownBlocks": 301,
+      "longTaskSupport": true,
+      "longTasks": [
+        {
+          "durationMs": 279,
+          "startTime": 2530.10000000149
+        },
+        {
+          "durationMs": 245,
+          "startTime": 2999
+        },
+        {
+          "durationMs": 242,
+          "startTime": 3437.2000000029802
+        },
+        {
+          "durationMs": 241,
+          "startTime": 3871
+        },
+        {
+          "durationMs": 236,
+          "startTime": 4333.39999999851
+        },
+        {
+          "durationMs": 243,
+          "startTime": 4792.70000000298
+        },
+        {
+          "durationMs": 54,
+          "startTime": 5168.10000000149
+        },
+        {
+          "durationMs": 275,
+          "startTime": 5252.20000000298
+        },
+        {
+          "durationMs": 218,
+          "startTime": 5730.29999999702
+        },
+        {
+          "durationMs": 263,
+          "startTime": 6152
+        },
+        {
+          "durationMs": 268,
+          "startTime": 6612.5
+        },
+        {
+          "durationMs": 55,
+          "startTime": 6881.39999999851
+        },
+        {
+          "durationMs": 63,
+          "startTime": 6938.29999999702
+        },
+        {
+          "durationMs": 59,
+          "startTime": 7002
+        },
+        {
+          "durationMs": 236,
+          "startTime": 7129
+        },
+        {
+          "durationMs": 204,
+          "startTime": 7568.5
+        },
+        {
+          "durationMs": 216,
+          "startTime": 7960.10000000149
+        },
+        {
+          "durationMs": 222,
+          "startTime": 8367.39999999851
+        },
+        {
+          "durationMs": 214,
+          "startTime": 8804.10000000149
+        },
+        {
+          "durationMs": 213,
+          "startTime": 9213.20000000298
+        },
+        {
+          "durationMs": 50,
+          "startTime": 9466.5
+        },
+        {
+          "durationMs": 205,
+          "startTime": 9634
+        },
+        {
+          "durationMs": 219,
+          "startTime": 10010.60000000149
+        },
+        {
+          "durationMs": 221,
+          "startTime": 10444.5
+        },
+        {
+          "durationMs": 208,
+          "startTime": 10870.60000000149
+        }
+      ],
+      "report": {
+        "capturedAt": "2026-09-29T15:15:55.687Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      }
+    },
+    {
+      "steps": 300,
+      "update": "tool",
+      "updateMs": {
+        "median": 217.70000000298023,
+        "p95": 237.20000000298023,
+        "max": 237.20000000298023
+      },
+      "queuedTaskMs": {
+        "median": 245,
+        "p95": 275.5,
+        "max": 275.5
+      },
+      "domNodes": 10895,
+      "mountedRows": 4,
+      "markdownBlocks": 301,
+      "longTaskSupport": true,
+      "longTasks": [
+        {
+          "durationMs": 229,
+          "startTime": 14008.39999999851
+        },
+        {
+          "durationMs": 218,
+          "startTime": 14458.79999999702
+        },
+        {
+          "durationMs": 219,
+          "startTime": 14885.89999999851
+        },
+        {
+          "durationMs": 219,
+          "startTime": 15278
+        },
+        {
+          "durationMs": 211,
+          "startTime": 15713.70000000298
+        },
+        {
+          "durationMs": 218,
+          "startTime": 16134
+        },
+        {
+          "durationMs": 213,
+          "startTime": 16552.29999999702
+        },
+        {
+          "durationMs": 237,
+          "startTime": 16954.5
+        },
+        {
+          "durationMs": 232,
+          "startTime": 17419.20000000298
+        },
+        {
+          "durationMs": 236,
+          "startTime": 17883
+        },
+        {
+          "durationMs": 211,
+          "startTime": 18322
+        },
+        {
+          "durationMs": 204,
+          "startTime": 18741.79999999702
+        },
+        {
+          "durationMs": 211,
+          "startTime": 19163.39999999851
+        },
+        {
+          "durationMs": 212,
+          "startTime": 19598.70000000298
+        },
+        {
+          "durationMs": 217,
+          "startTime": 20014.79999999702
+        },
+        {
+          "durationMs": 217,
+          "startTime": 20446.39999999851
+        },
+        {
+          "durationMs": 220,
+          "startTime": 20852.89999999851
+        },
+        {
+          "durationMs": 217,
+          "startTime": 21279.60000000149
+        },
+        {
+          "durationMs": 214,
+          "startTime": 21706.60000000149
+        },
+        {
+          "durationMs": 217,
+          "startTime": 22109.20000000298
+        }
+      ],
+      "report": {
+        "capturedAt": "2026-09-29T15:16:06.974Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      }
+    }
+  ],
+  "after": [
+    {
+      "steps": 300,
+      "update": "text",
+      "updateMs": {
+        "median": 3.2999999970197678,
+        "p95": 5.699999995529652,
+        "max": 5.699999995529652
+      },
+      "queuedTaskMs": {
+        "median": 6.799999997019768,
+        "p95": 10.299999997019768,
+        "max": 10.299999997019768
+      },
+      "domNodes": 10895,
+      "mountedRows": 4,
+      "markdownBlocks": 301,
+      "liveBubbleTransform": "none",
+      "longTaskSupport": true,
+      "longTasks": [],
+      "report": {
+        "capturedAt": "2026-09-29T15:28:00.529Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      },
+      "bottomGap": 0
+    },
+    {
+      "steps": 300,
+      "update": "tool",
+      "updateMs": {
+        "median": 3.2000000029802322,
+        "p95": 4.600000001490116,
+        "max": 4.600000001490116
+      },
+      "queuedTaskMs": {
+        "median": 6.100000001490116,
+        "p95": 8.399999998509884,
+        "max": 8.399999998509884
+      },
+      "domNodes": 10895,
+      "mountedRows": 4,
+      "markdownBlocks": 301,
+      "liveBubbleTransform": "none",
+      "longTaskSupport": true,
+      "longTasks": [],
+      "report": {
+        "capturedAt": "2026-09-29T15:28:05.319Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      },
+      "bottomGap": 0
+    },
+    {
+      "steps": 1000,
+      "update": "text",
+      "updateMs": {
+        "median": 8.900000005960464,
+        "p95": 13.699999995529652,
+        "max": 13.699999995529652
+      },
+      "queuedTaskMs": {
+        "median": 19.700000002980232,
+        "p95": 24.19999999552965,
+        "max": 24.19999999552965
+      },
+      "domNodes": 36095,
+      "mountedRows": 4,
+      "markdownBlocks": 1001,
+      "liveBubbleTransform": "none",
+      "longTaskSupport": true,
+      "longTasks": [],
+      "report": {
+        "capturedAt": "2026-09-29T15:28:11.508Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      },
+      "bottomGap": 0
+    },
+    {
+      "steps": 1000,
+      "update": "tool",
+      "updateMs": {
+        "median": 7.9000000059604645,
+        "p95": 9.700000002980232,
+        "max": 9.700000002980232
+      },
+      "queuedTaskMs": {
+        "median": 18.5,
+        "p95": 24.5,
+        "max": 24.5
+      },
+      "domNodes": 36095,
+      "mountedRows": 4,
+      "markdownBlocks": 1001,
+      "liveBubbleTransform": "none",
+      "longTaskSupport": true,
+      "longTasks": [],
+      "report": {
+        "capturedAt": "2026-09-29T15:28:16.852Z",
+        "enabled": false,
+        "longTaskSupport": "unknown",
+        "buckets": [],
+        "samples": [],
+        "longTasks": []
+      },
+      "bottomGap": 0
+    }
+  ],
+  "reactOnly1000": {
+    "steps": 1000,
+    "update": "text",
+    "updateMs": {
+      "median": 8.600000001490116,
+      "p95": 12.300000004470348,
+      "max": 12.300000004470348
+    },
+    "queuedTaskMs": {
+      "median": 306.8999999985099,
+      "p95": 318.6000000014901,
+      "max": 318.6000000014901
+    },
+    "domNodes": 36095,
+    "mountedRows": 4,
+    "markdownBlocks": 1001,
+    "longTaskSupport": true,
+    "longTasks": [
+      {
+        "durationMs": 294,
+        "startTime": 36515.60000000149
+      },
+      {
+        "durationMs": 289,
+        "startTime": 36811.10000000149
+      },
+      {
+        "durationMs": 293,
+        "startTime": 37110.20000000298
+      },
+      {
+        "durationMs": 294,
+        "startTime": 37405.30000000447
+      },
+      {
+        "durationMs": 291,
+        "startTime": 37699.30000000447
+      },
+      {
+        "durationMs": 290,
+        "startTime": 38002.5
+      },
+      {
+        "durationMs": 295,
+        "startTime": 38295
+      },
+      {
+        "durationMs": 304,
+        "startTime": 38591
+      },
+      {
+        "durationMs": 293,
+        "startTime": 38905.30000000447
+      },
+      {
+        "durationMs": 295,
+        "startTime": 39199.30000000447
+      },
+      {
+        "durationMs": 300,
+        "startTime": 39497.10000000149
+      },
+      {
+        "durationMs": 295,
+        "startTime": 39808
+      },
+      {
+        "durationMs": 301,
+        "startTime": 40104.80000000447
+      },
+      {
+        "durationMs": 288,
+        "startTime": 40406.5
+      },
+      {
+        "durationMs": 299,
+        "startTime": 40705
+      },
+      {
+        "durationMs": 294,
+        "startTime": 41005.10000000149
+      },
+      {
+        "durationMs": 288,
+        "startTime": 41301.5
+      },
+      {
+        "durationMs": 294,
+        "startTime": 41602.70000000298
+      },
+      {
+        "durationMs": 298,
+        "startTime": 41899
+      },
+      {
+        "durationMs": 294,
+        "startTime": 42207.20000000298
+      },
+      {
+        "durationMs": 295,
+        "startTime": 42502.20000000298
+      },
+      {
+        "durationMs": 293,
+        "startTime": 42807.60000000149
+      },
+      {
+        "durationMs": 284,
+        "startTime": 43101.20000000298
+      },
+      {
+        "durationMs": 308,
+        "startTime": 43387.5
+      },
+      {
+        "durationMs": 306,
+        "startTime": 43704.80000000447
+      },
+      {
+        "durationMs": 293,
+        "startTime": 44012.80000000447
+      },
+      {
+        "durationMs": 292,
+        "startTime": 44306.39999999851
+      },
+      {
+        "durationMs": 306,
+        "startTime": 44609.70000000298
+      },
+      {
+        "durationMs": 296,
+        "startTime": 44917.30000000447
+      },
+      {
+        "durationMs": 316,
+        "startTime": 45215.70000000298
+      },
+      {
+        "durationMs": 295,
+        "startTime": 45541.30000000447
+      },
+      {
+        "durationMs": 294,
+        "startTime": 45839
+      },
+      {
+        "durationMs": 297,
+        "startTime": 46133.70000000298
+      },
+      {
+        "durationMs": 295,
+        "startTime": 46443
+      },
+      {
+        "durationMs": 302,
+        "startTime": 46738.80000000447
+      },
+      {
+        "durationMs": 294,
+        "startTime": 47043.20000000298
+      },
+      {
+        "durationMs": 292,
+        "startTime": 47349.80000000447
+      },
+      {
+        "durationMs": 305,
+        "startTime": 47642.89999999851
+      },
+      {
+        "durationMs": 295,
+        "startTime": 47949
+      },
+      {
+        "durationMs": 303,
+        "startTime": 48254.80000000447
+      },
+      {
+        "durationMs": 323,
+        "startTime": 48559.80000000447
+      },
+      {
+        "durationMs": 300,
+        "startTime": 48883.10000000149
+      },
+      {
+        "durationMs": 292,
+        "startTime": 49194.89999999851
+      },
+      {
+        "durationMs": 294,
+        "startTime": 49493.39999999851
+      },
+      {
+        "durationMs": 295,
+        "startTime": 49794.5
+      },
+      {
+        "durationMs": 302,
+        "startTime": 50099.89999999851
+      },
+      {
+        "durationMs": 292,
+        "startTime": 50408.39999999851
+      },
+      {
+        "durationMs": 305,
+        "startTime": 50705.89999999851
+      },
+      {
+        "durationMs": 292,
+        "startTime": 51022.20000000298
+      },
+      {
+        "durationMs": 288,
+        "startTime": 51314.60000000149
+      },
+      {
+        "durationMs": 303,
+        "startTime": 51604.60000000149
+      },
+      {
+        "durationMs": 294,
+        "startTime": 51916.60000000149
+      },
+      {
+        "durationMs": 291,
+        "startTime": 52213
+      },
+      {
+        "durationMs": 290,
+        "startTime": 52504.30000000447
+      },
+      {
+        "durationMs": 289,
+        "startTime": 52804.70000000298
+      },
+      {
+        "durationMs": 296,
+        "startTime": 53094.70000000298
+      },
+      {
+        "durationMs": 291,
+        "startTime": 53393.39999999851
+      },
+      {
+        "durationMs": 299,
+        "startTime": 53693.60000000149
+      },
+      {
+        "durationMs": 292,
+        "startTime": 53995.20000000298
+      },
+      {
+        "durationMs": 292,
+        "startTime": 54288.10000000149
+      }
+    ],
+    "report": {
+      "capturedAt": "2026-09-29T15:22:22.393Z",
+      "enabled": false,
+      "longTaskSupport": "unknown",
+      "buckets": [],
+      "samples": [],
+      "longTasks": []
+    }
+  },
+  "native": {
+    "environment": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "steps": 300,
+    "clicks": [
+      {
+        "label": "收起侧栏",
+        "clickToSecondFrameMs": 49.399999998509884
+      },
+      {
+        "label": "展开侧栏",
+        "clickToSecondFrameMs": 54.79999999701977
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 65.19999999552965
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 80.5
+      },
+      {
+        "label": "收起侧栏",
+        "clickToSecondFrameMs": 55.29999999701977
+      },
+      {
+        "label": "展开侧栏",
+        "clickToSecondFrameMs": 98.5
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 67.29999999701977
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 57.099999994039536
+      },
+      {
+        "label": "收起侧栏",
+        "clickToSecondFrameMs": 66.89999999850988
+      },
+      {
+        "label": "展开侧栏",
+        "clickToSecondFrameMs": 55.79999999701977
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 61.599999994039536
+      },
+      {
+        "label": "面板",
+        "clickToSecondFrameMs": 53.399999998509884
+      }
+    ],
+    "longTasks": [
+      59
+    ],
+    "markdownBlocks": 303
+  }
+}
