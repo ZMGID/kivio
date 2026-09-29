@@ -1,0 +1,50 @@
+{
+  "categories": [
+    {
+      "id": "productivity",
+      "name": "效率办公"
+    }
+  ],
+  "plugins": [
+    {
+      "id": "feishu-cli",
+      "name": "飞书 CLI",
+      "skillId": "feishu-cli",
+      "summary": "在飞书中处理消息、文档、表格、日历和任务。",
+      "welcome": "告诉我你想在飞书里完成什么。首次使用时我会检查登录与权限。",
+      "inputHint": "帮我看看今天的飞书日程。",
+      "startPrompt": "使用飞书 CLI，告诉我可以做什么。",
+      "setup": "feishu-cli-setup/SKILL.md",
+      "entry": "feishu-cli/SKILL.md",
+      "icon": "feishu-logo.svg",
+      "iconPath": "assets/feishu-logo.svg",
+      "repository": "larksuite/cli",
+      "revision": "ceace6d9349f827a5f5a646aac51e2c5ef428d48",
+      "skills": [],
+      "categoryIds": [
+        "productivity"
+      ],
+      "unpack": "skills"
+    },
+    {
+      "id": "wecom-cli",
+      "name": "企业微信 CLI",
+      "skillId": "wecom-cli",
+      "summary": "用官方 wecom-cli 处理消息、邮件、文档、表格、日程、会议、待办和微盘。",
+      "welcome": "告诉我你想在企业微信里完成什么。首次使用时我会检查登录。",
+      "inputHint": "帮我看看今天的企业微信日程。",
+      "startPrompt": "使用企业微信 CLI，告诉我可以做什么。",
+      "setup": "wecom-cli-setup/SKILL.md",
+      "entry": "wecom-cli/SKILL.md",
+      "icon": "wecom-logo.svg",
+      "iconPath": "assets/wecom-logo.svg",
+      "repository": "WecomTeam/wecom-cli",
+      "revision": "5ef249b2287caad144698e84c188f75345ff3edb",
+      "skills": [],
+      "categoryIds": [
+        "productivity"
+      ],
+      "unpack": "skills"
+    }
+  ]
+}

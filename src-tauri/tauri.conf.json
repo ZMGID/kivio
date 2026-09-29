@@ -25,6 +25,7 @@
     ],
     "resources": {
       "resources/skills": "skills",
+      "resources/plugins": "plugins",
       "../docs/licenses": "licenses"
     },
     "windows": {

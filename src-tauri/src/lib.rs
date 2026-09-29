@@ -14,6 +14,7 @@ pub mod external_agents;
 pub mod fonts;
 pub mod lens;
 pub mod lens_commands;
+pub mod market;
 #[cfg(any(target_os = "macos", test))]
 mod macos_hang_watchdog;
 #[cfg(target_os = "macos")]
@@ -716,8 +717,19 @@ pub fn run() {
             connectors::connector_oauth_connect,
             connectors::connector_oauth_cancel,
             connectors::obsidian::list_obsidian_vaults_cmd,
+            market::market_snapshot,
+            market::market_install,
+            market::market_uninstall,
+            market::market_set_enabled,
             plugins::plugins_list,
             plugins::packages::plugin_packages_list,
+            plugins::packages::details::plugin_packages_describe,
+            plugins::marketplaces::plugin_marketplaces_describe,
+            plugins::marketplaces::plugin_marketplaces_list,
+            plugins::marketplaces::plugin_marketplaces_add,
+            plugins::marketplaces::plugin_marketplaces_refresh,
+            plugins::marketplaces::plugin_marketplaces_remove,
+            plugins::marketplaces::plugin_marketplaces_install,
             plugins::packages::plugin_packages_import,
             plugins::packages::plugin_packages_set_enabled,
             plugins::packages::plugin_packages_remove,

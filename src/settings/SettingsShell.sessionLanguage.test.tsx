@@ -40,6 +40,16 @@ vi.mock('../api/tauri', async (importOriginal) => {
 })
 
 describe('SettingsShell session center language slot', () => {
+  it('keeps connectors as a direct settings page without a duplicate plugin entry', async () => {
+    const user = userEvent.setup()
+    render(<SettingsShell variant="embedded" onClose={vi.fn()} onSettingsChange={vi.fn()} renderReleaseNotes={() => null} />)
+    await user.click(await screen.findByRole('button', { name: '连接器' }))
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '插件' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '插件' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('插件来源')).not.toBeInTheDocument()
+  })
+
   it('renders the unsaved language draft before the canonical snapshot changes', async () => {
     const user = userEvent.setup()
     const renderSessionCenter = (lang: 'zh' | 'en') => <p data-testid="session-language">{lang}</p>
@@ -49,7 +59,6 @@ describe('SettingsShell session center language slot', () => {
         onClose={vi.fn()}
         onSettingsChange={vi.fn()}
         renderSessionCenter={renderSessionCenter}
-        renderPluginCenter={() => null}
         renderReleaseNotes={() => null}
       />,
     )

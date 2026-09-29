@@ -30,8 +30,6 @@ interface UseChatRoutingParams {
   onLeaveConversation: () => void
   /** 读当前会话 id，用于跳过「刚 apply 完又被路由重载一遍」的双读。 */
   currentConversationIdRef: React.MutableRefObject<string | null>
-  /** 旧 `#chat/plugins` 入口：插件已迁入设置，重定向到设置 → 插件。 */
-  onOpenPluginsSettings?: () => void
   /** 旧 `#chat/sessions` 入口：对话库已迁入设置，重定向到设置 → 对话库。 */
   onOpenSessionsSettings?: () => void
   /** 设置页初始 tab；openEmbeddedSettings 写入。 */
@@ -40,7 +38,7 @@ interface UseChatRoutingParams {
   setExtensionsNavItem: Dispatch<SetStateAction<ChatExtensionsNavItem | null>>
 }
 
-type SettingsOpenTab = 'chat' | 'plugins' | 'sessions' | 'usage'
+type SettingsOpenTab = 'chat' | 'connectors' | 'sessions' | 'usage'
 
 /**
  * 聊天窗口的 hash 路由。
@@ -56,7 +54,6 @@ export function useChatRouting({
   onResetConversation,
   onLeaveConversation,
   currentConversationIdRef,
-  onOpenPluginsSettings,
   onOpenSessionsSettings,
   setSettingsInitialTab,
   setExtensionsNavItem,
@@ -133,10 +130,9 @@ export function useChatRouting({
         onOpenSessionsSettings?.()
         return
       }
-      // 插件已迁入设置；旧链接 `#chat/plugins` 重定向到设置 → 插件
       if (isChatPluginCenterPath(path)) {
         onLeaveConversation()
-        onOpenPluginsSettings?.()
+        onViewChange('plugins')
         return
       }
       const conversationId = getRouteConversationId()
@@ -160,7 +156,6 @@ export function useChatRouting({
     currentConversationIdRef,
     onLoadConversation,
     onLeaveConversation,
-    onOpenPluginsSettings,
     onOpenSessionsSettings,
     onResetConversation,
     onViewChange,
@@ -211,6 +206,11 @@ export function useChatRouting({
     if (item === 'artifacts') {
       onViewChange('artifacts')
       syncNonConversationRoute('#chat/artifacts')
+      return
+    }
+    if (item === 'plugins') {
+      onViewChange('plugins')
+      syncNonConversationRoute('#chat/plugins')
       return
     }
     if (item === 'assistants') {

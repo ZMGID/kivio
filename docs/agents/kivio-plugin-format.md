@@ -113,10 +113,16 @@ my-plugin/
 
 ## 安装及兼容
 
-扩展 → 插件 → 通用插件，导入本地包根或 HTTPS Git 仓库及子目录。导入后默认停用，启用后允许执行脚本，作用域为个人。卸载只删除托管副本（包含插件 data）及所属 MCP 注册。
+插件市场 → 添加，可导入本地包根或 HTTPS Git 仓库及子目录。导入后默认停用，启用后允许执行脚本，作用域为个人。卸载只删除托管副本（包含插件 data）及所属 MCP 注册。
 
-清单优先级为 `.kivio-plugin` → `.codex-plugin` → `.claude-plugin`，只加载最高优先级的一份，解析失败不回退。不修改来源仓库的清单。原生包与外部格式共享内部运行设施，但外部格式有独立兼容规则。
+直接导入的清单优先级为 `.kivio-plugin` → `.codex-plugin` → `.claude-plugin`，只加载最高优先级的一份，解析失败不回退。不修改来源仓库的清单。原生包与外部格式共享内部运行设施，但外部格式有独立兼容规则。
 
-当前没有原生 marketplace 索引、项目作用域、自动更新、安装器、平台托管 apps、LSP 或额外 Hook 事件；这些不属于 v1 格式承诺。
+也可通过「添加插件市场」接入 Claude Code 的 `.claude-plugin/marketplace.json`。市场来源接受 GitHub `owner/repo`、HTTPS Git 地址（可附 `#ref`）、本地目录/清单文件、HTTPS JSON 地址；官方市场为 `anthropics/claude-plugins-official`。添加后在「个人」页浏览、搜索、安装。管理入口可以刷新目录、移除来源；移除市场保留已安装插件。刷新目录不自动更新已安装副本。
+
+市场清单要求 `name`、`owner.name`、`plugins[]`；条目要求 `name`、`source`。支持仓库内 `./` 路径、`metadata.pluginRoot` 下的裸目录名、`github`、`url`、`git-subdir` 插件来源，以及 `ref`/完整 `sha`；`url`/`github` 的可选 `path` 与 `git-subdir.path` 共用目录边界检查。只下载 JSON 的市场无法解析仓库相对路径。暂不支持 npm/archive/command 来源、SSH/HTTP、认证辅助脚本；条目会显示不可安装原因。来源和目录缓存归 `plugins/marketplaces.rs`；安装继续调用 `packages.rs`，记录市场来源身份并默认停用。
+
+无 `plugin.json` 时使用市场条目生成托管副本中的清单；有清单时按 Claude 的 strict 规则合并组件，`strict:false` 与条目组件冲突会拒绝。条目 hooks 只接受内联事件对象；同名事件覆盖，不重复注册。不改来源仓库；Claude 市场条目固定读取归一化的 Claude 清单，预览、安装及后续加载保持一致；同目录中的 Kivio/Codex 清单保留但不参与该条目的解析。格式兼容不代表支持 Claude 的全部运行时能力，诊断仍会阻止不完整插件启用。
+
+当前没有项目作用域、自动更新、安装器、平台托管 apps、LSP 或额外 Hook 事件；这些不属于 v1 格式承诺。
 
 可直接导入的示例：`tests/fixtures/plugins/kivio-example`。示例依赖 Node.js，其 Hook 只演示拒绝写入 `protected` 目录的操作，不修改文件，也不是文件系统安全边界。

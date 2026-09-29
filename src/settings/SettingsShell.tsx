@@ -31,7 +31,7 @@ import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDr
 import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  AgentIcon, WebSearchIcon, PluginsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  AgentIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
@@ -72,7 +72,7 @@ import {
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'plugins' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -91,12 +91,6 @@ export interface SettingsShellProps {
   hideNav?: boolean
   /** Chat 宿主提供的领域视图；设置只决定它们出现的位置。 */
   renderSessionCenter?: (lang: Lang) => ReactNode
-  renderPluginCenter: (input: {
-    section: 'plugins' | 'connectors'
-    onSectionChange: (section: 'plugins' | 'connectors') => void
-    lang: Lang
-    connectors: ReactNode
-  }) => ReactNode
   renderReleaseNotes: (markdown: string) => ReactNode
 }
 
@@ -141,7 +135,7 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
-  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, renderSessionCenter, renderPluginCenter, renderReleaseNotes },
+  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, renderSessionCenter, renderReleaseNotes },
   ref,
 ) {
   const onSettingsChangeRef = useRef(onSettingsChange)
@@ -167,21 +161,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
-  const [activeTab, setActiveTab] = useState<Exclude<SettingsTab, 'connectors'>>(initialTab === 'connectors' ? 'plugins' : initialTab ?? 'general')
-  const [pluginSection, setPluginSection] = useState<'plugins' | 'connectors'>(initialTab === 'connectors' ? 'connectors' : 'plugins')
-  const navigateToSettingsTab = useCallback((tab: SettingsTab) => {
-    if (tab === 'connectors') {
-      setPluginSection('connectors')
-      setActiveTab('plugins')
-    } else {
-      setActiveTab(tab)
-    }
-  }, [])
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
   useEffect(() => {
-    if (initialTab) navigateToSettingsTab(initialTab)
-  }, [initialTab, navigateToSettingsTab])
+    if (initialTab) setActiveTab(initialTab)
+  }, [initialTab])
   // 热键被占用未能注册的警告（保存已成功，只是提醒，不阻断）。
   const [saveWarning, setSaveWarning] = useState('')
   const hotkeyRecorder = useSettingsHotkeyRecorder((update) => editorController.edit(update))
@@ -823,7 +808,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
     { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: Monitor },
     { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
-    { id: 'plugins' as const, label: t.tabPlugins, icon: PluginsIcon },
+    { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
@@ -879,9 +864,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       title: t.tabHooks,
       subtitle: t.hooksPageSubtitle,
     },
-    plugins: {
-      title: pluginSection === 'plugins' ? t.tabPlugins : t.tabConnectors,
-      subtitle: pluginSection === 'plugins' ? t.pluginCenterPluginsSubtitle : t.pluginCenterConnectorsSubtitle,
+    connectors: {
+      title: t.tabConnectors,
+      subtitle: t.pluginCenterConnectorsSubtitle,
     },
     sessions: {
       title: t.tabSessions,
@@ -1186,7 +1171,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 nativeBuiltinToolsEnabled={nativeBuiltinToolsEnabled}
                 onUpdateChat={updateChat}
                 onUpdateNativeTools={updateNativeTools}
-                onNavigateTab={navigateToSettingsTab}
+                onNavigateTab={setActiveTab}
               />
             )}
 
@@ -1246,33 +1231,27 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               />
             )}
 
-            {/* ===== 插件与连接器；第三方应用入口已删除 ===== */}
-            {activeTab === 'plugins' && (
-              renderPluginCenter({
-                section: pluginSection,
-                onSectionChange: setPluginSection,
-                lang,
-                connectors:
-                  <ConnectorsPanel
-                    servers={settings.chatTools.servers}
-                    updateChatTools={updateChatTools}
-                    obsidianVaultPath={settings?.obsidianVaultPath ?? ''}
-                    onObsidianVaultPathChange={(path) => updateSettings({ obsidianVaultPath: path })}
-                    lang={lang}
-                    testServer={async (server) => {
-                      try {
-                        const result = await api.chatMcpTestServer(server, settings?.chatTools?.toolTimeoutMs)
-                        return {
-                          ok: result.success,
-                          message: result.error || '',
-                          tools: result.tools,
-                        }
-                      } catch {
-                        return null
-                      }
-                    }}
-                  />,
-              })
+            {/* ===== 连接器；通用插件包由插件市场管理 ===== */}
+            {activeTab === 'connectors' && (
+              <ConnectorsPanel
+                servers={settings.chatTools.servers}
+                updateChatTools={updateChatTools}
+                obsidianVaultPath={settings?.obsidianVaultPath ?? ''}
+                onObsidianVaultPathChange={(path) => updateSettings({ obsidianVaultPath: path })}
+                lang={lang}
+                testServer={async (server) => {
+                  try {
+                    const result = await api.chatMcpTestServer(server, settings?.chatTools?.toolTimeoutMs)
+                    return {
+                      ok: result.success,
+                      message: result.error || '',
+                      tools: result.tools,
+                    }
+                  } catch {
+                    return null
+                  }
+                }}
+              />
             )}
 
             {activeTab === 'sessions' && renderSessionCenter?.(lang)}

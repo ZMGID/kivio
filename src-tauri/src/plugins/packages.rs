@@ -27,6 +27,15 @@ pub struct Package {
     pub enabled: bool,
     pub components: BTreeMap<String, usize>,
     pub diagnostics: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marketplace: Option<PackageMarketplace>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageMarketplace {
+    pub source: String,
+    pub name: String,
+    pub plugin: String,
 }
 pub struct Resolved {
     pub package: Package,
@@ -234,19 +243,22 @@ fn validate_native_manifest(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// A marketplace record pins the Claude format across preview, installation and reload.
+/// Direct imports retain native > Codex > Claude detection without merging formats.
+fn manifest_location(
+    root: &Path,
+    marketplace: bool,
+) -> Result<(&'static str, &'static str), String> {
+    if marketplace {
+        return Ok(("claude", ".claude-plugin/plugin.json"));
+    }
+    [("kivio", ".kivio-plugin/plugin.json"), ("codex", ".codex-plugin/plugin.json"), ("claude", ".claude-plugin/plugin.json")]
+        .into_iter().find(|(_, file)| root.join(file).is_file())
+        .ok_or_else(|| "No .kivio-plugin/plugin.json, .codex-plugin/plugin.json or .claude-plugin/plugin.json at the selected root".into())
+}
+
 pub fn resolve(root: &Path, mut package: Package, data: &Path) -> Result<Resolved, String> {
-    let (format, manifest) = if root.join(".kivio-plugin/plugin.json").is_file() {
-        ("kivio", ".kivio-plugin/plugin.json")
-    } else if root.join(".codex-plugin/plugin.json").is_file() {
-        ("codex", ".codex-plugin/plugin.json")
-    } else if root.join(".claude-plugin/plugin.json").is_file() {
-        ("claude", ".claude-plugin/plugin.json")
-    } else {
-        return Err(
-            "No .kivio-plugin/plugin.json, .codex-plugin/plugin.json or .claude-plugin/plugin.json at the selected root"
-                .into(),
-        );
-    };
+    let (format, manifest) = manifest_location(root, package.marketplace.is_some())?;
     let manifest = read_json(&contained(root, manifest)?)?;
     if format == "kivio" {
         validate_native_manifest(&manifest)?;
@@ -281,6 +293,9 @@ pub fn resolve(root: &Path, mut package: Package, data: &Path) -> Result<Resolve
         "outputStyles",
         "dependencies",
         "experimental",
+        "themes",
+        "userConfig",
+        "channels",
     ] {
         if manifest.get(key).is_some() {
             package
@@ -296,7 +311,11 @@ pub fn resolve(root: &Path, mut package: Package, data: &Path) -> Result<Resolve
         }
     }
     let mut skills = paths(root, manifest.get("skills"), "skills")?;
-    if format == "claude" && manifest.get("skills").is_some() && root.join("skills").exists() {
+    if format == "claude"
+        && package.marketplace.is_none()
+        && manifest.get("skills").is_some()
+        && root.join("skills").exists()
+    {
         let default = contained(root, "skills")?;
         if !skills.contains(&default) {
             skills.insert(0, default);
@@ -563,6 +582,203 @@ fn copy_tree(source: &Path, target: &Path, budget: &mut u64, depth: usize) -> Re
     }
     Ok(())
 }
+
+/// Normalize only the owned copy. Keep catalog overlays out of the runtime loader.
+fn prepare_marketplace_manifest(root: &Path, entry: &Value) -> Result<(), String> {
+    let file = root.join(".claude-plugin/plugin.json");
+    let exists = file.exists();
+    let mut manifest = if exists {
+        read_json(&contained(root, ".claude-plugin/plugin.json")?)?
+    } else {
+        entry.clone()
+    };
+    if !manifest.is_object() {
+        return Err("plugin.json must be an object".into());
+    }
+    let components = [
+        "commands",
+        "agents",
+        "skills",
+        "hooks",
+        "outputStyles",
+        "themes",
+    ];
+    if exists && entry["strict"] == false && components.iter().any(|k| entry.get(k).is_some()) {
+        return Err("strict:false 条目与 plugin.json 同时声明组件，无法安装".into());
+    }
+    if entry.get("hooks").is_some_and(|v| !v.is_object()) {
+        return Err("市场条目的 hooks 必须为内联事件对象".into());
+    }
+    // Component paths supplement conventional folders, except selective root skills.
+    for key in ["commands", "agents", "skills", "outputStyles", "themes"] {
+        let mut values = Vec::new();
+        let selective = key == "skills" && entry["source"] == "." && entry.get(key).is_some();
+        if root.join(key).exists() && !selective {
+            values.push(Value::String(format!("./{key}")));
+        }
+        for value in [manifest.get(key), exists.then(|| entry.get(key)).flatten()]
+            .into_iter()
+            .flatten()
+        {
+            let items = value
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![value.clone()]);
+            for item in items {
+                if !item.is_string() {
+                    return Err(format!("{key} 必须为路径或路径数组"));
+                }
+                if !values.contains(&item) {
+                    values.push(item);
+                }
+            }
+        }
+        if !values.is_empty() {
+            manifest[key] = Value::Array(values);
+        }
+    }
+    if let Some(overlay) = entry.get("hooks") {
+        let mut events = serde_json::Map::new();
+        let mut base = configs(root, None, "hooks/hooks.json")?;
+        if exists {
+            base.extend(configs(root, manifest.get("hooks"), "hooks/hooks.json")?);
+        }
+        for config in base {
+            let map = config
+                .get("hooks")
+                .unwrap_or(&config)
+                .as_object()
+                .ok_or("hooks must be an event map")?;
+            events.extend(map.clone());
+        }
+        events.extend(
+            overlay
+                .get("hooks")
+                .unwrap_or(overlay)
+                .as_object()
+                .ok_or("hooks must be an event map")?
+                .clone(),
+        );
+        fs::create_dir_all(root.join("hooks")).map_err(|e| e.to_string())?;
+        write_json(&root.join("hooks/hooks.json"), &json!({"hooks":events}))?;
+        manifest["hooks"] = json!("./hooks/hooks.json");
+    }
+    for key in [
+        "name",
+        "description",
+        "displayName",
+        "author",
+        "homepage",
+        "repository",
+        "license",
+        "keywords",
+    ] {
+        if let Some(value) = entry.get(key) {
+            manifest[key] = value.clone();
+        }
+    }
+    if exists && manifest.get("version").is_none() {
+        if let Some(value) = entry.get("version") {
+            manifest["version"] = value.clone();
+        }
+    }
+    // Dependency declarations must remain visible to the unsupported-capability diagnostic.
+    if let Some(value) = entry.get("dependencies") {
+        manifest["dependencies"] = value.clone();
+    }
+    if let Some(map) = manifest.as_object_mut() {
+        for key in [
+            "source",
+            "strict",
+            "category",
+            "tags",
+            "defaultEnabled",
+            "relevance",
+            "headers",
+            "headersHelper",
+        ] {
+            map.remove(key);
+        }
+    } else {
+        return Err("plugin.json must be an object".into());
+    }
+    fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?;
+    write_json(&file, &manifest)
+}
+
+pub(super) fn https_url(source: &str) -> Result<url::Url, String> {
+    let url = url::Url::parse(source).map_err(|_| "请输入有效的 HTTPS 地址")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("来源须使用 HTTPS，且不能包含用户名或密码".into());
+    }
+    Ok(url)
+}
+
+async fn git_command(directory: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["-c", "core.hooksPath=", "-c", "protocol.file.allow=never"]);
+    if let Some(dir) = directory {
+        cmd.arg("-C").arg(dir);
+    }
+    cmd.args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        use crate::proc::NoConsoleWindow;
+        cmd.no_console_window();
+    }
+    let output = tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
+        .await
+        .map_err(|_| "Git 操作超时")?
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!("Git: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().into())
+}
+
+pub(super) async fn clone_repository(
+    source: &str,
+    target: &Path,
+    revision: Option<&str>,
+) -> Result<String, String> {
+    https_url(source)?;
+    if revision
+        .is_some_and(|r| r.is_empty() || r.starts_with('-') || r.chars().any(char::is_control))
+    {
+        return Err("无效的 Git revision".into());
+    }
+    git_command(
+        None,
+        &[
+            "clone",
+            "--depth",
+            "1",
+            "--no-checkout",
+            "--",
+            source,
+            &target.to_string_lossy(),
+        ],
+    )
+    .await?;
+    let head = if let Some(revision) = revision {
+        git_command(
+            Some(target),
+            &["fetch", "--depth", "1", "--", "origin", revision],
+        )
+        .await?;
+        "FETCH_HEAD"
+    } else {
+        "HEAD"
+    };
+    git_command(Some(target), &["checkout", "--detach", head]).await?;
+    git_command(Some(target), &["rev-parse", "HEAD"]).await
+}
 #[tauri::command]
 pub fn plugin_packages_list() -> Result<Vec<Package>, String> {
     list()
@@ -573,94 +789,76 @@ pub async fn plugin_packages_import(
     source: String,
     subdirectory: Option<String>,
 ) -> Result<Package, String> {
+    import_package(source, subdirectory, None, None).await
+}
+
+pub mod details;
+
+async fn stage_content(
+    source: &str,
+    subdirectory: Option<&str>,
+    git_revision: Option<&str>,
+    staging: &Path,
+) -> Result<Option<String>, String> {
+    let local = PathBuf::from(source.trim());
+    let mut revision = None;
+    if local.is_dir() {
+        let local = fs::canonicalize(&local).map_err(|e| e.to_string())?;
+        if fs::canonicalize(packages_root()?)
+            .map_err(|e| e.to_string())?
+            .starts_with(&local)
+        {
+            return Err("Source cannot contain Kivio's plugin storage".into());
+        }
+        let selected = match subdirectory.filter(|s| !s.trim().is_empty()) {
+            Some(relative) => contained(&local, relative)?,
+            None => local,
+        };
+        copy_tree(
+            &selected,
+            &staging.join("content"),
+            &mut (100 * 1024 * 1024),
+            0,
+        )?;
+    } else {
+        let clone = staging.join("clone");
+        revision = Some(clone_repository(source.trim(), &clone, git_revision).await?);
+        let selected = match subdirectory.filter(|s| !s.trim().is_empty()) {
+            Some(relative) => contained(&clone, relative)?,
+            None => clone.clone(),
+        };
+        copy_tree(
+            &selected,
+            &staging.join("content"),
+            &mut (100 * 1024 * 1024),
+            0,
+        )?;
+        fs::remove_dir_all(&clone).map_err(|e| e.to_string())?;
+    }
+    Ok(revision)
+}
+
+pub(super) async fn import_package(
+    source: String,
+    subdirectory: Option<String>,
+    git_revision: Option<String>,
+    marketplace: Option<(Value, PackageMarketplace)>,
+) -> Result<Package, String> {
     let root = packages_root()?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
     let staging = root.join(format!(".staging-{id}"));
     fs::create_dir(&staging).map_err(|e| e.to_string())?;
     let result = async {
-        let local = PathBuf::from(source.trim());
-        let mut revision = None;
-        if local.is_dir() {
-            let local = fs::canonicalize(&local).map_err(|e| e.to_string())?;
-            if fs::canonicalize(&root)
-                .map_err(|e| e.to_string())?
-                .starts_with(&local)
-            {
-                return Err("Source cannot contain Kivio's plugin storage".into());
-            }
-            let selected = match subdirectory.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(relative) => contained(&local, relative)?,
-                None => local,
-            };
-            copy_tree(
-                &selected,
-                &staging.join("content"),
-                &mut (100 * 1024 * 1024),
-                0,
-            )?;
-        } else {
-            let url = url::Url::parse(source.trim())
-                .map_err(|_| "Enter a local plugin directory or HTTPS Git repository URL")?;
-            if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-                return Err("Git source must be HTTPS without embedded credentials".into());
-            }
-            let clone = staging.join("clone");
-            let mut cmd = tokio::process::Command::new("git");
-            cmd.args([
-                "-c",
-                "core.hooksPath=",
-                "-c",
-                "protocol.file.allow=never",
-                "clone",
-                "--depth",
-                "1",
-                "--",
-                source.trim(),
-            ])
-            .arg(&clone)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .kill_on_drop(true);
-            #[cfg(windows)]
-            {
-                use crate::proc::NoConsoleWindow;
-                cmd.no_console_window();
-            }
-            let output = tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output())
-                .await
-                .map_err(|_| "Git clone timed out")?
-                .map_err(|e| e.to_string())?;
-            if !output.status.success() {
-                return Err(format!(
-                    "Git clone failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-            let mut rev = tokio::process::Command::new("git");
-            rev.arg("-C")
-                .arg(&clone)
-                .args(["rev-parse", "HEAD"])
-                .kill_on_drop(true);
-            #[cfg(windows)]
-            {
-                use crate::proc::NoConsoleWindow;
-                rev.no_console_window();
-            }
-            let output = rev.output().await.map_err(|e| e.to_string())?;
-            if output.status.success() {
-                revision = Some(String::from_utf8_lossy(&output.stdout).trim().into());
-            }
-            let selected = match subdirectory.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(relative) => contained(&clone, relative)?,
-                None => clone.clone(),
-            };
-            copy_tree(
-                &selected,
-                &staging.join("content"),
-                &mut (100 * 1024 * 1024),
-                0,
-            )?;
-            fs::remove_dir_all(&clone).map_err(|e| e.to_string())?;
+        let revision = stage_content(
+            &source,
+            subdirectory.as_deref(),
+            git_revision.as_deref(),
+            &staging,
+        )
+        .await?;
+        if let Some((entry, _)) = &marketplace {
+            prepare_marketplace_manifest(&staging.join("content"), entry)?;
         }
         let source = match subdirectory.as_deref().filter(|s| !s.trim().is_empty()) {
             Some(dir) => format!("{} :: {dir}", source.trim()),
@@ -677,6 +875,7 @@ pub async fn plugin_packages_import(
             enabled: false,
             components: BTreeMap::new(),
             diagnostics: vec![],
+            marketplace: marketplace.map(|(_, origin)| origin),
         };
         let resolved = resolve(&staging.join("content"), package, &staging.join("data"))?;
         write_json(&staging.join("record.json"), &resolved.package)?;
@@ -1156,6 +1355,58 @@ mod tests {
             version: None,
             components: BTreeMap::new(),
             diagnostics: vec![],
+            marketplace: None,
+        }
+    }
+    #[test]
+    fn marketplace_overlays_preserve_manifest_version_and_replace_hooks_per_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+        fs::create_dir_all(root.join("commands")).unwrap();
+        fs::create_dir_all(root.join("extra")).unwrap();
+        fs::create_dir_all(root.join("hooks")).unwrap();
+        fs::write(root.join("commands/default.md"), "Default").unwrap();
+        fs::write(root.join("extra/added.md"), "Added").unwrap();
+        write_json(&root.join("hooks/hooks.json"), &json!({"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo old"}]}]}})).unwrap();
+        write_json(
+            &root.join(".claude-plugin/plugin.json"),
+            &json!({"name":"original","version":"2"}),
+        )
+        .unwrap();
+        let entry = json!({"name":"demo","source":"./demo","version":"1","commands":"./extra","mcpServers":{"ignored":{"command":"node"}},"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo new"}]}]}});
+        prepare_marketplace_manifest(root, &entry).unwrap();
+        let resolved = resolve(root, fixture(), root).unwrap();
+        assert_eq!(resolved.package.version.as_deref(), Some("2"));
+        assert_eq!(resolved.package.name, "demo");
+        assert_eq!(resolved.package.components["commands"], 2);
+        assert_eq!(resolved.hooks.len(), 1);
+        assert!(read_json(&root.join("hooks/hooks.json"))
+            .unwrap()
+            .to_string()
+            .contains("echo new"));
+        assert!(resolved.servers.is_empty());
+    }
+    #[test]
+    fn marketplace_strict_conflicts_fail_and_missing_manifest_works_in_either_mode() {
+        for strict in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            prepare_marketplace_manifest(
+                dir.path(),
+                &json!({"name":"demo","source":".","strict":strict,"lspServers":{}}),
+            )
+            .unwrap();
+            let resolved = resolve(dir.path(), fixture(), dir.path()).unwrap();
+            assert!(resolved
+                .package
+                .diagnostics
+                .iter()
+                .any(|s| s.contains("lspServers")));
+            assert!(prepare_marketplace_manifest(
+                dir.path(),
+                &json!({"name":"demo","strict":false,"skills":[]})
+            )
+            .is_err());
         }
     }
     #[test]

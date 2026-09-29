@@ -10,6 +10,7 @@ mod catalog;
 mod install;
 mod lifecycle;
 pub mod packages;
+pub mod marketplaces;
 mod preview;
 mod state;
 

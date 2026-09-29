@@ -28,7 +28,7 @@ export function isChatSkillCenterPath(path: string): boolean {
   return chatRouteKind(path) === 'skill'
 }
 
-/** @deprecated 插件已迁入设置；保留判定用于把旧 `#chat/plugins` 重定向到设置 → 插件。 */
+/** 插件市场：`#chat/plugins`，详情页 `#chat/plugins/{id}`。 */
 export function isChatPluginCenterPath(path: string): boolean {
   return chatRouteKind(path) === 'plugins'
 }
@@ -84,10 +84,11 @@ export function setHash(next: string): void {
 }
 
 /** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
-export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'artifacts'
+export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'artifacts' | 'plugins'
 
 export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
   if (chatView === 'artifacts') return 'artifacts'
+  if (chatView === 'plugins') return 'plugins'
   if (chatView === 'assistants') return 'assistants'
   if (chatView === 'skill') return 'skill'
   if (chatView === 'mcp') return 'mcp'

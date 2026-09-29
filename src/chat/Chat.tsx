@@ -4,6 +4,9 @@ import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { ArtifactsCenter } from './ArtifactsCenter'
+import { MarketPage } from './market/MarketPage'
+import { marketUsePrompt } from './market/marketModel'
+import type { MarketPlugin } from '../api/market'
 import { useChatRouting } from './hooks/useChatRouting'
 import { useSettingsExit } from './hooks/useSettingsExit'
 import { useSidebarLayout } from './hooks/useSidebarLayout'
@@ -170,9 +173,6 @@ const SettingsShell = lazy(() => importSettingsShell().then((module) => ({
 const SessionCenter = lazy(() => import('./public/sessionCenter').then((module) => ({
   default: module.SessionCenter,
 })))
-const PluginCenter = lazy(() => import('./public/pluginCenter').then((module) => ({
-  default: module.PluginCenter,
-})))
 const ChatMarkdown = lazy(() => import('./public/markdown').then((module) => ({
   default: module.ChatMarkdown,
 })))
@@ -285,16 +285,6 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onSettingsChange={onSettingsChange}
             onReady={onReady}
             renderSessionCenter={renderSessionCenter}
-            renderPluginCenter={({ section, onSectionChange, lang, connectors }) => (
-              <Suspense fallback={null}>
-                <PluginCenter
-                  section={section}
-                  onSectionChange={onSectionChange}
-                  lang={lang}
-                  connectors={connectors}
-                />
-              </Suspense>
-            )}
             renderReleaseNotes={(markdown) => (
               <Suspense fallback={<p>{markdown}</p>}>
                 <ChatMarkdown content={markdown} />
@@ -322,6 +312,8 @@ type SendMessageOptions = {
   onPartialConversation?: (conversation: Conversation) => void
   /** 前置校验完成、消息正式进入本地发送流程；输入框可立即清空。 */
   onAccepted?: () => void
+  /** 显式指定本次发送的 Skill（插件市场“使用”）；不传则沿用当前会话的 Skill。 */
+  skillId?: string | null
 }
 
 /** 稳定空数组：没有排队消息时不要每次渲染都造一个新引用。 */
@@ -343,8 +335,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatAutomationsPath(path)) return 'automations'
     // 旧 `#chat/sessions`：对话库已迁设置
     if (isChatSessionCenterPath(path)) return 'settings'
-    // 旧 `#chat/plugins`：插件已迁设置，首屏落到设置页
-    if (isChatPluginCenterPath(path)) return 'settings'
+    if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
   // 首屏就绪只发一次。初始视图是设置页则等 SettingsShell.onReady；否则挂载后即发。
@@ -436,7 +427,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab>(() => {
     const path = hashPath()
-    if (isChatPluginCenterPath(path)) return 'plugins'
     if (isChatSessionCenterPath(path)) return 'sessions'
     return 'chat'
   })
@@ -1036,12 +1026,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setStreamErrorForConversation, warmConversationCache,
   ])
 
-  const openEmbeddedSettingsForPlugins = useCallback(() => {
-    setSettingsInitialTab('plugins')
-    setChatView('settings')
-    setHash('#chat/settings')
-  }, [])
-
   const openEmbeddedSettingsForSessions = useCallback(() => {
     setSettingsInitialTab('sessions')
     setChatView('settings')
@@ -1062,7 +1046,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onResetConversation: navigation.resetRouteConversation,
     onLeaveConversation: navigation.leaveConversation,
     currentConversationIdRef,
-    onOpenPluginsSettings: openEmbeddedSettingsForPlugins,
     onOpenSessionsSettings: openEmbeddedSettingsForSessions,
     setSettingsInitialTab,
     setExtensionsNavItem,
@@ -1844,7 +1827,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     options: SendMessageOptions = {},
   ) => {
     const attachmentSkillId = resolveSendSkillId(
-      attachments, enabledSkills, options.forceNewConversation ? null : effectiveSkillId, usesChatRuntime,
+      attachments,
+      enabledSkills,
+      options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
+      usesChatRuntime,
     )
     const result = await sendController.send({
       content,
@@ -1885,6 +1871,38 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
+  // 插件市场“使用”：新建对话并绑定插件主 Skill，再发出插件的开场消息。
+  // Skill 由会话的 activeSkillId 决定（后端每次发送都会重新扫描），不依赖本地 skills 列表是否已刷新。
+  const handleMarketUse = useCallback(async (plugin: MarketPlugin) => {
+    if (usesExternalRuntime || usesChatRuntime) {
+      throw new Error(uiLang === 'zh' ? '请先切换到内置 Agent 模式，再使用插件。' : 'Switch to the built-in agent to use plugins.')
+    }
+    await loadSkills()
+    const creation = navigation.beginConversationCreation()
+    let conversation = await chatApi.createConversation(
+      activeProviderId || undefined,
+      activeModel || undefined,
+      selectedProject?.name,
+      selectedProject?.id ?? null,
+      null,
+      selectedSet?.id ?? null,
+    )
+    conversation = await chatApi.updateConversation(conversation.id, {
+      title: plugin.manifest.name,
+      activeSkillId: plugin.manifest.mainSkillId,
+    })
+    refreshSidebar()
+    if (!navigation.commitCreatedConversation(creation, conversation)) return
+    const accepted = await handleSendMessage(marketUsePrompt(plugin), [], {
+      conversationOverride: conversation,
+      skillId: null,
+    })
+    if (!accepted) throw new Error(uiLang === 'zh' ? '开场消息未发送，请在对话中重试。' : 'The first message was not sent. Retry in the conversation.')
+  }, [
+    activeModel, activeProviderId, handleSendMessage, loadSkills, navigation, refreshSidebar,
+    selectedProject?.id, selectedProject?.name, selectedSet?.id, uiLang, usesChatRuntime, usesExternalRuntime,
+  ])
+
   const importExternalConversation = useCallback(async (
     messages: { role: string; content: string }[],
     attachmentPaths: string[],
@@ -2919,6 +2937,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             <Suspense fallback={null}>
               <NotesCenter />
             </Suspense>
+          </div>
+        ) : chatView === 'plugins' ? (
+          <div key="center" className={worksPageClass}>
+            {centerPageTopStrip}
+            <MarketPage onUse={handleMarketUse} onSkillsChanged={() => void loadSkills()} />
           </div>
         ) : chatView === 'automations' ? (
           <div key="center" className={centerPageClass}>

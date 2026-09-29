@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
+  Blocks,
   ChevronRight,
   Folder,
   FolderPlus,
@@ -1423,13 +1424,20 @@ export const Sidebar = memo(function Sidebar({
           iconMotion="group-hover:scale-110"
         />
         <NavRow
+          icon={<Blocks size={17} strokeWidth={1.75} />}
+          label={t.chatNavPlugins}
+          onClick={() => onOpenExtensionsItem('plugins')}
+          active={extensionsActive === 'plugins'}
+          iconMotion="group-hover:scale-110"
+        />
+        <NavRow
           icon={<WorksIcon size={17} strokeWidth={1.75} />}
           label={t.chatNavArtifacts}
           onClick={() => onOpenExtensionsItem('artifacts')}
           active={extensionsActive === 'artifacts'}
         />
         <ExtensionsNav
-          activeItem={extensionsActive === 'artifacts' ? null : extensionsActive}
+          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />
       </nav>

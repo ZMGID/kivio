@@ -11,9 +11,20 @@ export type PluginPackage = {
   enabled: boolean
   components: Record<string, number>
   diagnostics: string[]
+  marketplace?: { source: string; name: string; plugin: string }
+}
+
+export type PluginDetails = {
+  author: string | null
+  version: string | null
+  homepage: string | null
+  license: string | null
+  groups: { kind: 'mcp' | 'skills' | 'commands' | 'agents' | 'hooks'; items: { name: string; description: string }[] }[]
+  diagnostics: string[]
 }
 
 export const packageApi = {
+  describe: (id: string) => invoke<PluginDetails>('plugin_packages_describe', { id }),
   list: () => invoke<PluginPackage[]>('plugin_packages_list'),
   import: (source: string, subdirectory?: string) => invoke<PluginPackage>('plugin_packages_import', { source, subdirectory: subdirectory || null }),
   setEnabled: (id: string, enabled: boolean) => invoke<PluginPackage>('plugin_packages_set_enabled', { id, enabled }),

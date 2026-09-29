@@ -18,7 +18,7 @@ export type ChatRouteKind =
   | 'other'
 
 type ChatCenterRouteKind = Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>
-export type ChatView = Exclude<ChatRouteKind, 'root' | 'plugins' | 'sessions' | 'popout' | 'other'>
+export type ChatView = Exclude<ChatRouteKind, 'root' | 'sessions' | 'popout' | 'other'>
 
 /**
  * Route vocabulary is declared once in routeContract.json and consumed by both this codec and

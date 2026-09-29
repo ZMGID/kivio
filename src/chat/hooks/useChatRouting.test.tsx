@@ -15,7 +15,6 @@ import {
  *   3. 「已是当前会话则跳过重载」这条防双读逻辑
  */
 function setup(initialHash = '#chat', opts?: {
-  onOpenPluginsSettings?: () => void
   onOpenSessionsSettings?: () => void
   onLoadConversation?: (conversationId: string) => void
   onLeaveConversation?: () => void
@@ -25,7 +24,6 @@ function setup(initialHash = '#chat', opts?: {
   const onLoadConversation = vi.fn(opts?.onLoadConversation)
   const onResetConversation = vi.fn()
   const onLeaveConversation = vi.fn(opts?.onLeaveConversation)
-  const onOpenPluginsSettings = opts?.onOpenPluginsSettings ?? vi.fn()
   const onOpenSessionsSettings = opts?.onOpenSessionsSettings ?? vi.fn()
   const setSettingsInitialTab = vi.fn()
   const setExtensionsNavItem = vi.fn()
@@ -37,7 +35,6 @@ function setup(initialHash = '#chat', opts?: {
       onLoadConversation,
       onResetConversation,
       currentConversationIdRef,
-      onOpenPluginsSettings,
       onOpenSessionsSettings,
       onLeaveConversation,
       setSettingsInitialTab,
@@ -51,7 +48,6 @@ function setup(initialHash = '#chat', opts?: {
     onViewChange,
     onLoadConversation,
     onResetConversation,
-    onOpenPluginsSettings,
     onOpenSessionsSettings,
     onLeaveConversation,
     setSettingsInitialTab,
@@ -112,11 +108,25 @@ describe('useChatRouting 分支顺序', () => {
     expect(onLoadConversation).not.toHaveBeenCalled()
   })
 
-  it('#chat/plugins → 走设置插件重定向，不当作会话加载', () => {
-    const { onViewChange, onLoadConversation, onOpenPluginsSettings } = setup('#chat/plugins')
-    expect(onOpenPluginsSettings).toHaveBeenCalled()
-    expect(onViewChange).not.toHaveBeenCalled()
+  it('#chat/plugins → 插件市场页，不当作会话加载', () => {
+    const { onViewChange, onLoadConversation, onLeaveConversation } = setup('#chat/plugins')
+    expect(onViewChange).toHaveBeenCalledWith('plugins')
+    expect(onLeaveConversation).toHaveBeenCalled()
     expect(onLoadConversation).not.toHaveBeenCalled()
+  })
+
+  it('#chat/plugins/{id} → 插件详情仍属插件市场页', () => {
+    const { onViewChange, onLoadConversation } = setup('#chat/plugins/feishu-cli')
+    expect(onViewChange).toHaveBeenCalledWith('plugins')
+    expect(onLoadConversation).not.toHaveBeenCalled()
+  })
+
+  it('openExtensionsItem(plugins) → 切到插件市场并写路由', () => {
+    const { result, onViewChange, setExtensionsNavItem } = setup('#chat')
+    act(() => result.current.routing.openExtensionsItem('plugins'))
+    expect(setExtensionsNavItem).toHaveBeenCalledWith('plugins')
+    expect(onViewChange).toHaveBeenLastCalledWith('plugins')
+    expect(window.location.hash).toBe('#chat/plugins')
   })
 
   it('#chat/sessions → 走设置对话库重定向，不当作会话加载', () => {

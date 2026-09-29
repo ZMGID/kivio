@@ -1,6 +1,6 @@
 # 包格式与兼容范围
 
-清单优先级：`.kivio-plugin/plugin.json` → `.codex-plugin/plugin.json` → `.claude-plugin/plugin.json`。只选一份，选中的解析失败不会回退；不要把多个清单的组件合并执行。
+直接导入的清单优先级：`.kivio-plugin/plugin.json` → `.codex-plugin/plugin.json` → `.claude-plugin/plugin.json`。只选一份，选中的解析失败不会回退；不要把多个清单的组件合并执行。
 
 原生最小清单：
 
@@ -22,6 +22,10 @@
 - 环境变量缺失、依赖程序缺失须单独处理，导入不会自动安装 Node/Python 等依赖。
 - Hooks 支持 `SessionStart`、`UserPromptSubmit`、`SubagentStart`、`PreToolUse`、`PostToolUse` 的 command 处理器；原生包用 Kivio 工具名和参数，Claude/Codex 格式有工具名兼容转换。详见 [Hooks](hooks.md)。
 
-目前不承诺：原生 marketplace、项目范围通用插件、自动更新、依赖自动安装、安装脚本协议、LSP、output styles、平台托管 apps、专有 UI、TOML 子代理、context: fork、内嵌组件 hooks 或额外事件。用户给的是多宿主项目初始化工具时，先核对其产物；它可能不是插件包。
+插件市场 → 添加 → 添加插件市场：支持 Claude Code `.claude-plugin/marketplace.json`，可填 GitHub owner/repo、HTTPS Git（可附 #ref）、本地市场目录/文件、HTTPS JSON。官方来源为 `anthropics/claude-plugins-official`。个人页显示自定义市场插件；支持相对目录、github/url/git-subdir 来源及 ref/sha，不支持 npm/archive/command 来源或认证辅助脚本。JSON 地址没有仓库文件，不能解析相对插件路径。安装默认停用；管理市场只刷新目录或移除来源，保留已安装副本，不自动升级。
+
+目前不承诺：项目范围通用插件、自动更新、依赖自动安装、安装脚本协议、LSP、output styles/themes、userConfig/channels、平台托管 apps、专有 UI、TOML 子代理、context: fork、内嵌组件 hooks 或额外事件。用户给的是多宿主项目初始化工具时，先核对其产物；它可能不是插件包。
 
 源码：`src-tauri/src/plugins/{packages,catalog,install,lifecycle,state}.rs`；`src-tauri/src/skills/discover.rs`；仓库文档 `docs/agents/kivio-plugin-format.md` 与 `docs/agents/plugin-hooks.md`。早期 research 文档记录“尚未实现”不代表当前版本，冲突以当前代码和加载器诊断为准。
+
+从 Claude 市场安装的条目固定使用 Claude 清单；即使目录同时包含 Kivio/Codex 清单，预览、安装、重新加载都不切换格式。
