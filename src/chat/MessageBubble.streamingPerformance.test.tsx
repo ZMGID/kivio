@@ -6,6 +6,7 @@ import { MessageList } from './MessageList'
 import { createLongRunningChatFixture } from './performanceFixtures'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import type { CitationView } from './citations'
+import * as attachmentPreview from './attachmentPreview'
 import type { ChatMessage, ToolCallRecord } from './types'
 
 const markdownRender = vi.hoisted(() => vi.fn())
@@ -101,7 +102,7 @@ describe('live message Markdown render boundary', () => {
   })
 
   it('updates late citation candidates inside a cached block without changing literal or code references', () => {
-    const content = 'See [1], unknown [2], and `[1]`.'
+    const content = 'See [1], unknown [002], and `[1]`.'
     const { container, rerender } = render(<ChatMarkdown content={content} />)
     const paragraph = container.querySelector('p')
     const citations = new Map<number, CitationView>([[1, { n: 1, docName: 'Document', score: 1, text: 'First excerpt' }]])
@@ -116,7 +117,23 @@ describe('live message Markdown render boundary', () => {
     rerender(<ChatMarkdown content={content} />)
     expect(screen.queryByRole('button', { name: '来源 1' })).toBeNull()
     expect(container.querySelector('p')).toBe(paragraph)
-    expect(container).toHaveTextContent('See [1], unknown [2], and [1].')
+    expect(container).toHaveTextContent('See [1], unknown [002], and [1].')
+  })
+
+  it('does not retain old pixels when a replacement file cannot be loaded', async () => {
+    const loader = vi.spyOn(attachmentPreview, 'loadArtifactDataUrl').mockResolvedValue(null)
+    try {
+      const original = { id: 'chart', name: 'chart.png', mime_type: 'image/png', data_url: 'data:image/png;base64,AAAA' }
+      const { rerender } = render(<ChatMarkdown content="![chart](chart.png)" artifacts={[original]} />)
+      expect(screen.getByRole('img')).toHaveAttribute('src', original.data_url)
+      const replacement = { id: 'chart', name: 'chart.png', mime_type: 'image/png', path: '/new/chart.png' }
+      rerender(<ChatMarkdown content="![chart](chart.png)" artifacts={[replacement]} />)
+      await act(async () => { await Promise.resolve() })
+      expect(loader).toHaveBeenCalled()
+      expect(screen.queryByRole('img')).toBeNull()
+    } finally {
+      loader.mockRestore()
+    }
   })
 
   it('updates outline registration when its owner or callback changes', () => {

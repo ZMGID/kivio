@@ -1082,26 +1082,24 @@ function MarkdownArtifactImage({
   onImageClick?: (src: string, alt: string, name?: string) => void
 }) {
   const inline = artifact ? artifactDataUrl(artifact) : ''
-  const initial =
-    inline ||
-    (isExternalOrAbsoluteImageSrc(rawSrc) ? rawSrc : '')
-  const [src, setSrc] = useState(initial)
+  const [loadedImage, setLoadedImage] = useState<{
+    path: string
+    conversationId?: string | null
+    src: string
+  } | null>(null)
+  // Cached Markdown keeps this component mounted. A new file/conversation must
+  // never display the previous file while its read is pending or after failure.
+  const src = inline || (artifact?.path
+    ? loadedImage?.path === artifact.path && loadedImage.conversationId === conversationId ? loadedImage.src : ''
+    : isExternalOrAbsoluteImageSrc(rawSrc) ? rawSrc : '')
 
   useEffect(() => {
+    if (inline || !artifact?.path) return
     let cancelled = false
-    if (inline) {
-      setSrc(inline)
-      return
-    }
-    if (artifact?.path) {
-      void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
-        if (!cancelled && loaded) setSrc(loaded)
-      })
-      return () => {
-        cancelled = true
-      }
-    }
-    setSrc(isExternalOrAbsoluteImageSrc(rawSrc) ? rawSrc : '')
+    const path = artifact.path
+    void loadArtifactDataUrl(artifact, conversationId).then((loaded) => {
+      if (!cancelled) setLoadedImage({ path, conversationId, src: loaded ?? '' })
+    })
     return () => {
       cancelled = true
     }

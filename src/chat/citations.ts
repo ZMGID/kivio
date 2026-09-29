@@ -69,7 +69,7 @@ export function splitCitations(value: string, validNs: Set<number>): MdNode[] {
     const n = Number(m[1])
     if (!validNs.has(n)) continue
     if (m.index > last) out.push({ type: 'text', value: value.slice(last, m.index) })
-    out.push({ type: 'link', url: `#kb-cite-${n}`, children: [{ type: 'text', value: `[${n}]` }] })
+    out.push({ type: 'link', url: `#kb-cite-${n}`, children: [{ type: 'text', value: m[0] }] })
     last = m.index + m[0].length
   }
   if (last < value.length) out.push({ type: 'text', value: value.slice(last) })
