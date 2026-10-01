@@ -16,8 +16,9 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, AutomationIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, PluginIcon, PortfolioIcon, SearchNavIcon } from '../settings/public/icons'
+import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
+import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
 import { ProjectContextMenu } from './ProjectContextMenu'
 import { ProjectDialog } from './ProjectDialog'
@@ -684,6 +685,18 @@ export const Sidebar = memo(function Sidebar({
     [onWidthChange, width],
   )
   const [conversations, setConversations] = useState<ConversationListItem[]>([])
+  const { tasks: scheduledTasks } = useScheduledTasks()
+  const scheduledTaskNamesByConversation = useMemo(() => {
+    const names = new Map<string, string[]>()
+    for (const task of scheduledTasks ?? []) {
+      const id = task.conversationId
+      if (!task.enabled || task.status !== 'active') continue
+      const existing = names.get(id)
+      if (existing) existing.push(task.name)
+      else names.set(id, [task.name])
+    }
+    return names
+  }, [scheduledTasks])
   const [projects, setProjects] = useState<ChatProject[]>([])
   const [sets, setSets] = useState<ChatSet[]>([])
   // 集/项目里对话的钉住位置：group_id → 钉子表。底座仍是时间序，见 conversationPins.ts。
@@ -1430,10 +1443,10 @@ export const Sidebar = memo(function Sidebar({
           active={extensionsActive === 'plugins'}
         />
         <NavRow
-          icon={<AutomationIcon size={18} strokeWidth={1.75} />}
-          label={t.chatNavAutomations}
-          onClick={() => onOpenExtensionsItem('automations')}
-          active={extensionsActive === 'automations'}
+          icon={<TasksIcon size={18} strokeWidth={1.75} />}
+          label={t.chatNavTasks}
+          onClick={() => onOpenExtensionsItem('tasks')}
+          active={extensionsActive === 'tasks'}
         />
         <NavRow
           icon={<PortfolioIcon size={18} strokeWidth={1.75} />}
@@ -1442,7 +1455,7 @@ export const Sidebar = memo(function Sidebar({
           active={extensionsActive === 'artifacts'}
         />
         <ExtensionsNav
-          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' || extensionsActive === 'automations' ? null : extensionsActive}
+          activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' || extensionsActive === 'tasks' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />
       </nav>
@@ -1686,6 +1699,7 @@ export const Sidebar = memo(function Sidebar({
                           currentConversationId={currentConversationId}
                           generatingConversationIds={generatingConversationIds}
                           titleGeneratingConversationIds={titleGeneratingIds}
+                          scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                           projects={projects}
                           sets={sets}
                           lang={lang}
@@ -1838,6 +1852,7 @@ export const Sidebar = memo(function Sidebar({
                               currentConversationId={currentConversationId}
                               generatingConversationIds={generatingConversationIds}
                               titleGeneratingConversationIds={titleGeneratingIds}
+                              scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                               projects={projects}
                               sets={sets}
                               lang={lang}
@@ -1904,6 +1919,7 @@ export const Sidebar = memo(function Sidebar({
                       currentConversationId={currentConversationId}
                       generatingConversationIds={generatingConversationIds}
                       titleGeneratingConversationIds={titleGeneratingIds}
+                      scheduledTaskNamesByConversation={scheduledTaskNamesByConversation}
                       projects={projects}
                       sets={sets}
                       lang={lang}

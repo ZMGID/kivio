@@ -112,6 +112,7 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
     { key: 'webSearch', label: t.chatMcpNativeWebSearch },
     { key: 'webFetch', label: t.chatMcpNativeWebFetch },
     { key: 'automation', label: t.chatMcpNativeAutomation, defaultOn: true },
+    { key: 'scheduledTasks', label: t.chatMcpNativeScheduledTasks, defaultOn: true },
   ]
 
   const loadSettings = useCallback(async () => {

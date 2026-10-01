@@ -7,6 +7,7 @@
     "plugins",
     "sessions",
     "automations",
+    "schedules",
     "mcp",
     "knowledge",
     "notes",
@@ -21,6 +22,7 @@
     "plugins",
     "sessions",
     "automations",
+    "schedules",
     "mcp",
     "knowledge",
     "notes",
@@ -29,6 +31,7 @@
   ],
   "cases": [
     { "name": "media station", "raw": "#chat/media", "path": "chat/media", "kind": "media", "decodedConversationId": null, "rememberable": true, "restorable": true },
+    { "name": "scheduled tasks", "raw": "#chat/schedules", "path": "chat/schedules", "kind": "schedules", "decodedConversationId": null, "rememberable": true, "restorable": true },
     {
       "name": "works library",
       "raw": "#chat/artifacts",

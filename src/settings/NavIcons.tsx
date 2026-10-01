@@ -268,6 +268,26 @@ export function AutomationIcon(props: IconProps) {
   )
 }
 
+export function ScheduleIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 6.5 V12 L16 14.5" />
+    </svg>
+  )
+}
+
+// 任务：清单与完成标记，涵盖定时任务和自动化工作流。
+export function TasksIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <rect x="5" y="4" width="14" height="17" rx="2.5" />
+      <path d="M9 3.5 H15 V6.5 H9 Z" />
+      <path d="M8.5 12 L10 13.5 L12.5 10.5 M14.5 12 H16 M8.5 17 H16" />
+    </svg>
+  )
+}
+
 export function PortfolioIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">

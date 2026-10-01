@@ -344,6 +344,7 @@ async fn new_probe_conversation(
         project_id,
         None,
         None,
+        true,
     )
     .await?;
     conversation.title = {

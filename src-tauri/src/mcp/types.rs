@@ -869,7 +869,7 @@ pub fn native_automation_get_tool() -> ChatToolDefinition {
 pub fn native_automation_upsert_tool() -> ChatToolDefinition {
     native_automation_tool(
         "automation_upsert",
-        "Create or replace a Kivio automation graph in ONE call. Omit id to create. Omit node positions to auto-layout. Activate the `automation` skill first for node types and examples. Do not glob the repo and do not dry_run-probe types. Validation errors return allowedNodeTypes and schemaHint.",
+        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Activate the `automation` skill first for node types and examples. Do not glob the repo and do not dry_run-probe types. Validation errors return allowedNodeTypes and schemaHint.",
         serde_json::json!({
             "type": "object",
             "properties": {

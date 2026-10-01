@@ -42,6 +42,10 @@ export function isChatAutomationsPath(path: string): boolean {
   return chatRouteKind(path) === 'automations'
 }
 
+export function isChatSchedulesPath(path: string): boolean {
+  return chatRouteKind(path) === 'schedules'
+}
+
 /** `#chat/automations/{id}` 的 id；列表页返回 null。 */
 export function getRouteAutomationId(): string | null {
   const path = hashPath()
@@ -70,7 +74,7 @@ export function isChatArtifactsPath(path: string): boolean {
 
 /**
  * 从当前 hash 解析会话 id；非会话路由返回 null。
- * 中心页（settings / assistants / skill / mcp / notes / sessions / plugins / automations / …）一律排除。
+ * 中心页（settings / assistants / skill / mcp / notes / sessions / plugins / automations / schedules / …）一律排除。
  */
 export function getRouteConversationId(): string | null {
   return decodeConversationRouteId(hashPath())
@@ -88,7 +92,7 @@ export function setHash(next: string): void {
 }
 
 /** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
-export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'automations' | 'artifacts' | 'plugins' | 'media'
+export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'tasks' | 'artifacts' | 'plugins' | 'media'
 
 export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
   if (chatView === 'media') return 'media'
@@ -99,7 +103,7 @@ export function extensionsNavItemForView(chatView: string): ChatExtensionsNavIte
   if (chatView === 'mcp') return 'plugins'
   if (chatView === 'knowledge') return 'knowledge'
   if (chatView === 'notes') return 'notes'
-  if (chatView === 'automations') return 'automations'
+  if (chatView === 'automations' || chatView === 'schedules') return 'tasks'
   return null
 }
 

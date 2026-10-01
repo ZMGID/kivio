@@ -1,4 +1,4 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::chat::attachments::{
@@ -77,6 +77,83 @@ pub(crate) async fn chat_send_message(
     plan_message_id: Option<String>,
     user_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Busy 拒绝：该会话仍有任意一条 run 在跑（含多模型并发组）时不允许再发新消息。
+    // 用原子的哨兵预留替代「先 check 后 register」，关闭并发发送同时通过 busy 检查的 TOCTOU 窗口。
+    // 哨兵在本命令返回前一直存活；实际的 per-run 槽位 / generation 在 `complete_assistant_reply`
+    // 内 run_id 生成处额外注册，与哨兵按不同 run_id 共存。
+    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": CHAT_REPLY_BUSY_ERROR,
+        }));
+    };
+    send_reserved(
+        app,
+        state,
+        conversation_id,
+        content,
+        attachments,
+        text_attachments,
+        active_skill_id,
+        plan_message_id,
+        user_message_id,
+        None,
+    )
+    .await
+}
+
+/// Backend-initiated user send (scheduled tasks). Unlike the command it does
+/// not reject a busy conversation: it waits until every reply has finished,
+/// then runs the normal send transaction. `on_user_message_saved` runs once the
+/// user message is committed, before the reply starts.
+pub(crate) async fn send_user_message_when_idle(
+    app: &AppHandle,
+    conversation_id: &str,
+    content: String,
+    on_user_message_saved: &(dyn Fn() + Send + Sync),
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _send_reservation =
+        ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
+    let outcome = send_reserved(
+        app.clone(),
+        app.state::<AppState>(),
+        conversation_id.to_string(),
+        content,
+        Vec::new(),
+        None,
+        None,
+        None,
+        None,
+        Some(on_user_message_saved),
+    )
+    .await?;
+    if outcome.get("success").and_then(|value| value.as_bool()) == Some(true) {
+        Ok(())
+    } else {
+        Err(outcome
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("发送失败")
+            .to_string())
+    }
+}
+
+/// The send transaction; the caller already holds the conversation's send reservation.
+#[allow(clippy::too_many_arguments)]
+async fn send_reserved(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    content: String,
+    attachments: Vec<String>,
+    text_attachments: Option<Vec<TextAttachmentInput>>,
+    active_skill_id: Option<String>,
+    plan_message_id: Option<String>,
+    user_message_id: Option<String>,
+    on_user_message_saved: Option<&(dyn Fn() + Send + Sync)>,
+) -> Result<serde_json::Value, String> {
     let user_message_id = match user_message_id {
         Some(id)
             if id
@@ -90,17 +167,6 @@ pub(crate) async fn chat_send_message(
     };
     // 内存文本附件（粘贴长文本虚拟 txt）：前端总传；缺省为空数组以兼容旧调用。
     let mut text_attachments = text_attachments.unwrap_or_default();
-    // Busy 拒绝：该会话仍有任意一条 run 在跑（含多模型并发组）时不允许再发新消息。
-    // 用原子的哨兵预留替代「先 check 后 register」，关闭并发发送同时通过 busy 检查的 TOCTOU 窗口。
-    // 哨兵在本命令返回前一直存活；实际的 per-run 槽位 / generation 在 `complete_assistant_reply`
-    // 内 run_id 生成处额外注册，与哨兵按不同 run_id 共存。
-    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
-    else {
-        return Ok(serde_json::json!({
-            "success": false,
-            "error": CHAT_REPLY_BUSY_ERROR,
-        }));
-    };
 
     let mut conversation = load_conversation(&app, &conversation_id)?;
     if conversation
@@ -306,6 +372,9 @@ pub(crate) async fn chat_send_message(
         .map_err(crate::chat::repository::repository_error)?;
     if goal_started.is_some() || resumed_waiting_goal {
         crate::chat::goal::emit_goal_state(&app, &conversation);
+    }
+    if let Some(on_user_message_saved) = on_user_message_saved {
+        on_user_message_saved();
     }
 
     match compute_context_state(

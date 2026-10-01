@@ -28,16 +28,11 @@ function AppDialog({ request }: { request: DialogRequest }) {
     if (!dialog) return
     // 记下原焦点，关闭后还回去（原生 <dialog> 在元素被卸载时不会自动还焦点）。
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    if (!dialog.open) {
-      try {
-        dialog.showModal()
-      } catch {
-        dialog.setAttribute('open', '')
-      }
-    }
+    if (!dialog.open) dialog.showModal()
     const initialFocus = danger ? cancelRef.current : confirmRef.current
     initialFocus?.focus()
     return () => {
+      dialog.close()
       if (previous?.isConnected) previous.focus()
     }
   }, [danger])

@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleSlash,
+  Clock,
   Copy,
   Download,
   ExternalLink,
@@ -224,6 +225,11 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
     case 'automation_runs':
     case 'automation_delete':
       return Workflow
+    case 'schedule_create':
+    case 'schedule_list':
+    case 'schedule_update':
+    case 'schedule_delete':
+      return Clock
     default:
       break
   }
@@ -1449,7 +1455,7 @@ function getDuration(toolCall: ToolCallRecord): number | undefined {
   return delta > 0 && delta < 10_000 ? delta * 1000 : delta
 }
 
-function getToolName(toolCall: ToolCallRecord): string {
+function getToolName(t: I18n, toolCall: ToolCallRecord): string {
   const raw = toolRawName(toolCall) || 'Tool'
   // default 分支要回落的**原始**名（MCP 工具名大小写有意义，归一化后的名字不能拿来显示）。
   const displayName = toolRecordRawName(toolCall) || 'Tool'
@@ -1509,6 +1515,10 @@ function getToolName(toolCall: ToolCallRecord): string {
   if (raw === 'automation_set_enabled') return 'Toggle automation'
   if (raw === 'automation_runs') return 'Automation runs'
   if (raw === 'automation_delete') return 'Delete automation'
+  if (raw === 'schedule_create') return t.chatToolScheduleCreate
+  if (raw === 'schedule_list') return t.chatToolScheduleList
+  if (raw === 'schedule_update') return t.chatToolScheduleUpdate
+  if (raw === 'schedule_delete') return t.chatToolScheduleDelete
   if (raw === 'mixer_vision') return 'Vision'
   if (raw === 'mixer_video_analysis') return 'Video analysis'
   if (raw === 'mixer_generate_image') return 'Generate image'
@@ -1875,7 +1885,7 @@ function DefaultToolCallBlock({
   const status = normalizeToolCallStatus(toolCall.status)
   const [open, setOpen] = useState(defaultOpen)
 
-  const toolName = getToolName(toolCall)
+  const toolName = getToolName(t, toolCall)
   const target = useMemo(() => getToolTarget(t, toolCall), [t, toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
   const fileMutation = useMemo(() => structuredFileMutation(toolCall), [toolCall])

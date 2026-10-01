@@ -183,11 +183,18 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   return (
     <div className={`relative ${className}`}>
       <button
-        ref={triggerRef}
+        ref={node => {
+          triggerRef.current = node
+          // Recheck after each commit: portalled options bypass a disabled fieldset.
+          if (open && node?.matches(':disabled')) setOpen(false)
+        }}
         type="button"
         disabled={disabled}
-        onClick={() => setOpen(v => !v)}
+        onClick={(event) => {
+          if (!event.currentTarget.matches(':disabled')) setOpen(v => !v)
+        }}
         onKeyDown={(event) => {
+          if (event.currentTarget.matches(':disabled')) return
           if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             setOpen(true)
@@ -216,6 +223,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
         options={options}
         value={value}
         onPick={(next) => {
+          if (triggerRef.current?.matches(':disabled')) return
           onChange(next)
           setOpen(false)
           triggerRef.current?.focus()
@@ -339,14 +347,17 @@ export function TextArea({
   placeholder = '',
   rows = 2,
   mono = false,
+  className = '',
+  onContextMenu,
+  ...props
 }: {
   value: string
   onChange: (v: string) => void
   placeholder?: string
   rows?: number
   mono?: boolean
-}) {
-  const ref = useRef<HTMLTextAreaElement>(null)
+} & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
+  const ref = useRef<HTMLTextAreaElement | null>(null)
   const caretRef = useRef<{ start: number; end: number } | null>(null)
   const [menu, setMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null)
 
@@ -360,6 +371,8 @@ export function TextArea({
   }, [value])
 
   const applyEdit = (next: string, start: number, end: number) => {
+    const el = ref.current
+    if (!el || el.matches(':disabled') || el.readOnly) return
     caretRef.current = { start, end }
     onChange(next)
   }
@@ -367,14 +380,21 @@ export function TextArea({
   return (
     <>
       <textarea
-        ref={ref}
+        ref={node => {
+          ref.current = node
+          // Ancestor fieldset changes are visible only after the DOM commit.
+          if (menu && node?.matches(':disabled')) setMenu(null)
+        }}
+        {...props}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className={`kv-textarea custom-scrollbar w-full ${mono ? 'mono' : ''}`}
+        className={`kv-textarea custom-scrollbar w-full ${mono ? 'mono' : ''} ${className}`}
         data-tauri-drag-region="false"
         onContextMenu={(event) => {
+          onContextMenu?.(event)
+          if (event.defaultPrevented || event.currentTarget.matches(':disabled')) return
           event.preventDefault()
           event.stopPropagation()
           const el = event.currentTarget
@@ -389,6 +409,8 @@ export function TextArea({
       {menu && (
         <TextEditContextMenu
           anchor={{ left: menu.left, top: menu.top }}
+          portalTarget={ref.current?.closest('dialog[open]') ?? document.body}
+          readOnly={props.readOnly || ref.current?.matches(':disabled')}
           hasSelection={menu.end > menu.start}
           onCut={() => {
             const { start, end } = menu
@@ -463,16 +485,20 @@ export function FieldBlock({
   description,
   children,
   className = '',
+  htmlFor,
 }: {
   label: ReactNode
   description?: string
   children: ReactNode
   className?: string
+  htmlFor?: string
 }) {
   return (
     <div className={`py-2 ${className}`}>
       <div className="mb-2">
-        <div className="kv-row-label">{label}</div>
+        {htmlFor
+          ? <label className="kv-row-label" htmlFor={htmlFor}>{label}</label>
+          : <div className="kv-row-label">{label}</div>}
         {description && <p className="kv-row-desc">{description}</p>}
       </div>
       {children}

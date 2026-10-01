@@ -17,6 +17,9 @@ use super::agent::SteeringMessage;
 pub(crate) struct ChatRuntimeState {
     next_generation: AtomicU64,
     runs: Mutex<ChatRunIndexes>,
+    /// Signalled whenever a conversation's last reply slot is retired, so a
+    /// queued send can retry its atomic reservation instead of polling.
+    reply_idle: tokio::sync::Notify,
     popout_create_lock: tokio::sync::Mutex<()>,
     conversation_create_lock: tokio::sync::Mutex<()>,
 }
@@ -63,9 +66,14 @@ impl ChatRuntimeState {
         run_id: &str,
         generation: u64,
     ) {
-        let mut indexes = self.indexes();
-        retire_generation(&mut indexes, conversation_id, generation);
-        retire_reply(&mut indexes, conversation_id, run_id);
+        let idle = {
+            let mut indexes = self.indexes();
+            retire_generation(&mut indexes, conversation_id, generation);
+            retire_reply(&mut indexes, conversation_id, run_id)
+        };
+        if idle {
+            self.reply_idle.notify_waiters();
+        }
     }
 
     pub(crate) fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
@@ -152,13 +160,16 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn forget_conversation(&self, conversation_id: &str) {
-        let mut indexes = self.indexes();
-        indexes.active_generations.remove(conversation_id);
-        indexes.active_replies.remove(conversation_id);
-        indexes.pending_steering.remove(conversation_id);
-        indexes.pending_follow_up.remove(conversation_id);
-        indexes.pending_goal_user_queue.remove(conversation_id);
-        indexes.auto_compact_failures.remove(conversation_id);
+        {
+            let mut indexes = self.indexes();
+            indexes.active_generations.remove(conversation_id);
+            indexes.active_replies.remove(conversation_id);
+            indexes.pending_steering.remove(conversation_id);
+            indexes.pending_follow_up.remove(conversation_id);
+            indexes.pending_goal_user_queue.remove(conversation_id);
+            indexes.auto_compact_failures.remove(conversation_id);
+        }
+        self.reply_idle.notify_waiters();
     }
 
     /// Consecutive automatic compaction failures, kept for the life of the process like
@@ -212,8 +223,29 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn end_reply(&self, conversation_id: &str, run_id: &str) {
-        let mut indexes = self.indexes();
-        retire_reply(&mut indexes, conversation_id, run_id);
+        let idle = {
+            let mut indexes = self.indexes();
+            retire_reply(&mut indexes, conversation_id, run_id)
+        };
+        if idle {
+            self.reply_idle.notify_waiters();
+        }
+    }
+
+    /// Waits until the conversation has no reply at all, then takes the same
+    /// atomic send reservation as `try_reserve_send`. Waiters re-check after
+    /// every idle signal, so a user send that wins the race simply queues this
+    /// one behind it again.
+    pub(crate) async fn reserve_send_when_idle(&self, conversation_id: &str, run_id: &str) {
+        loop {
+            let notified = self.reply_idle.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.try_reserve_send(conversation_id, run_id) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) async fn lock_popout_creation(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -247,13 +279,18 @@ fn retire_generation(indexes: &mut ChatRunIndexes, conversation_id: &str, genera
     }
 }
 
-fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &str) {
+/// Returns true when this retired the conversation's last reply slot.
+fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &str) -> bool {
     if let Some(runs) = indexes.active_replies.get_mut(conversation_id) {
-        runs.remove(run_id);
+        if !runs.remove(run_id) {
+            return false;
+        }
         if runs.is_empty() {
             indexes.active_replies.remove(conversation_id);
+            return true;
         }
     }
+    false
 }
 
 #[cfg(test)]
@@ -289,6 +326,31 @@ mod tests {
         assert!(runtime.has_active_reply("a"));
         runtime.end_reply("a", "run-2");
         assert!(runtime.try_reserve_send("a", "send"));
+    }
+
+    #[tokio::test]
+    async fn queued_send_waits_for_every_reply_then_reserves() {
+        let runtime = std::sync::Arc::new(ChatRuntimeState::default());
+        assert!(runtime.try_begin_reply("a", "run-1"));
+        assert!(runtime.try_begin_reply("a", "run-2"));
+
+        let waiter = tokio::spawn({
+            let runtime = runtime.clone();
+            async move { runtime.reserve_send_when_idle("a", "queued").await }
+        });
+        tokio::task::yield_now().await;
+        runtime.end_reply("a", "run-1");
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "one reply is still running");
+
+        runtime.end_reply("a", "run-2");
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("idle signal must wake the queued send")
+            .unwrap();
+        assert!(!runtime.try_reserve_send("a", "user"), "queued send now owns the conversation");
+        runtime.end_reply("a", "queued");
+        assert!(runtime.try_reserve_send("a", "user"));
     }
 
     #[test]

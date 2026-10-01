@@ -70,6 +70,20 @@ impl<'a> ChatSendReservation<'a> {
             run_id,
         })
     }
+
+    /// Queued variant: waits while the conversation is replying, then reserves.
+    pub(super) async fn acquire_when_idle(state: &'a AppState, conversation_id: &str) -> Self {
+        let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
+        state
+            .chat_runtime()
+            .reserve_send_when_idle(conversation_id, &run_id)
+            .await;
+        Self {
+            state,
+            conversation_id: conversation_id.to_string(),
+            run_id,
+        }
+    }
 }
 
 impl Drop for ChatSendReservation<'_> {

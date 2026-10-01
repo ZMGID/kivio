@@ -21,6 +21,7 @@ export function TextEditContextMenu({
   onRedo,
   canUndo = false,
   canRedo = false,
+  portalTarget = document.body,
 }: {
   anchor: TextEditAnchor
   hasSelection: boolean
@@ -34,6 +35,7 @@ export function TextEditContextMenu({
   onRedo?: () => void
   canUndo?: boolean
   canRedo?: boolean
+  portalTarget?: Element
 }) {
   const t = useT()
   const menuRef = useRef<HTMLDivElement>(null)
@@ -57,7 +59,10 @@ export function TextEditContextMenu({
       onClose()
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
     }
     window.addEventListener('mousedown', onPointerDown)
     window.addEventListener('keydown', onKeyDown)
@@ -142,6 +147,6 @@ export function TextEditContextMenu({
         {t.editCopy}
       </button>
     </div>,
-    document.body,
+    portalTarget,
   )
 }

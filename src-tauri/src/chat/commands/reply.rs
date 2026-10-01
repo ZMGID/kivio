@@ -580,6 +580,13 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         false
     };
+    if settings.chat_tools.native_tools.scheduled_tasks
+        && !plan_mode
+        && !builder_mode
+        && arm.is_none()
+    {
+        crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
+    }
     // Resolved here (rather than further down with the other prompt context) so
     // the sub-agent role registry below can reuse the project root instead of
     // resolving the conversation's project a second time.

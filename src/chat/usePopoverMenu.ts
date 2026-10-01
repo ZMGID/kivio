@@ -28,7 +28,7 @@ function openedWithKeyboard(el: Element | null): boolean {
  * - 传了 menuRef 时：键盘打开（按钮处于 :focus-visible）直接聚焦当前选中项（没有则首项）；
  *   ↑ / ↓ / Home / End 在菜单项间移动，焦点在按钮上时 ↓ / ↑ 进入菜单。鼠标打开不抢焦点。
  * 触发按钮不用传：打开那一刻的 activeElement 就是它。
- * 不拦截 Esc 冒泡：生成中「Esc = 停止」只绑在输入框上，点开菜单后焦点在按钮，不会连带触发。
+ * Esc 的默认行为被取消，避免同时关闭承载菜单的原生 dialog。
  */
 export function usePopoverMenu(
   open: boolean,
@@ -65,6 +65,7 @@ export function usePopoverMenu(
       const menu = getMenu()
       const active = document.activeElement
       if (event.key === 'Escape') {
+        event.preventDefault()
         const focusInMenu = Boolean(menu && active && menu.contains(active))
         onCloseRef.current()
         if (focusInMenu) opener?.focus()

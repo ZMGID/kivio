@@ -18,6 +18,7 @@ import type {
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
 import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary, NodeOutput, ValidationIssue } from './automationContracts'
+import type { ScheduleRule, ScheduledTask, ScheduledTaskInput, ScheduledTaskRun, ScheduledTasksChangedEvent } from './scheduledTaskContracts'
 import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 
@@ -466,6 +467,7 @@ export type ChatNativeToolsConfig = {
   runCommand?: boolean
   knowledgeSearch?: boolean
   automation?: boolean
+  scheduledTasks?: boolean
   workingDirectory?: string
   /** Legacy settings compatibility only. */
   workspaceRoots?: string[]
@@ -1923,6 +1925,19 @@ export const api = {
     on<AutomationRunEvent>('automation-run', listener),
   onAutomationChanged: (listener: (payload: AutomationChangedEvent) => void) =>
     on<AutomationChangedEvent>('automation-changed', listener),
+
+  scheduledTasksList: () => invoke<ScheduledTask[]>('scheduled_tasks_list'),
+  scheduledTaskSave: (task: ScheduledTaskInput) =>
+    invoke<ScheduledTask>('scheduled_task_save', { task }),
+  scheduledTaskDelete: (id: string) => invoke<void>('scheduled_task_delete', { id }),
+  scheduledTaskSetEnabled: (id: string, enabled: boolean) =>
+    invoke<ScheduledTask>('scheduled_task_set_enabled', { id, enabled }),
+  scheduledTaskRunNow: (id: string) => invoke<ScheduledTaskRun>('scheduled_task_run_now', { id }),
+  scheduledTaskRuns: (id: string) => invoke<ScheduledTaskRun[]>('scheduled_task_runs', { id }),
+  scheduledTaskRunDelete: (taskId: string, runId: string) => invoke<void>('scheduled_task_run_delete', { taskId, runId }),
+  scheduledTaskPreview: (schedule: ScheduleRule) => invoke<number[]>('scheduled_task_preview', { schedule }),
+  onScheduledTasksChanged: (handler: (payload: ScheduledTasksChangedEvent) => void) =>
+    on<ScheduledTasksChangedEvent>('scheduled-tasks-changed', handler),
 
   // 窗口控制
   /** 给当前（chat）窗口上 Mica，返回材质是否真的生效。Win10 没有 Mica 时为 false —— 这条

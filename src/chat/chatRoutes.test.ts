@@ -13,6 +13,7 @@ import {
   hashPath,
   isChatAssistantCenterPath,
   isChatAutomationsPath,
+  isChatSchedulesPath,
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
@@ -38,6 +39,7 @@ describe('chatRoutes 判定', () => {
       ['chat/plugins', isChatPluginCenterPath],
       ['chat/sessions', isChatSessionCenterPath],
       ['chat/automations', isChatAutomationsPath],
+      ['chat/schedules', isChatSchedulesPath],
       ['chat/mcp', isChatMcpCenterPath],
       ['chat/knowledge', isChatKnowledgeCenterPath],
       ['chat/notes', isChatNotesPath],
@@ -63,13 +65,14 @@ describe('chatRoutes 判定', () => {
     // 'chat/settingsx' 不是 settings 的子路径
     expect(isChatSettingsPath('chat/settingsx')).toBe(false)
     expect(isChatNotesPath('chat/notesarchive')).toBe(false)
+    expect(isChatSchedulesPath('chat/schedulesarchive')).toBe(false)
   })
 
   it('会话路径不被任何中心页判定命中', () => {
     const convPath = 'chat/abc-123'
     for (const predicate of [
       isChatSettingsPath, isChatAssistantCenterPath, isChatSkillCenterPath,
-      isChatPluginCenterPath, isChatSessionCenterPath, isChatAutomationsPath, isChatMcpCenterPath,
+      isChatPluginCenterPath, isChatSessionCenterPath, isChatAutomationsPath, isChatSchedulesPath, isChatMcpCenterPath,
       isChatKnowledgeCenterPath, isChatNotesPath, isChatOnboardingRoute, isChatPopoutRoute,
     ]) {
       expect(predicate(convPath)).toBe(false)
@@ -113,7 +116,7 @@ describe('getRouteConversationId', () => {
   it('排除清单里的中心页返回 null', () => {
     for (const seg of [
       'settings', 'assistants', 'skill', 'knowledge', 'onboarding',
-      'mcp', 'notes', 'plugins', 'sessions', 'automations', 'popout',
+      'mcp', 'notes', 'plugins', 'sessions', 'automations', 'schedules', 'popout',
     ]) {
       withHash(`#chat/${seg}`)
       expect(getRouteConversationId()).toBeNull()
@@ -179,7 +182,8 @@ describe('extensionsNavItemForView', () => {
     expect(extensionsNavItemForView('mcp')).toBe('plugins')
     expect(extensionsNavItemForView('knowledge')).toBe('knowledge')
     expect(extensionsNavItemForView('notes')).toBe('notes')
-    expect(extensionsNavItemForView('automations')).toBe('automations')
+    expect(extensionsNavItemForView('automations')).toBe('tasks')
+    expect(extensionsNavItemForView('schedules')).toBe('tasks')
     expect(extensionsNavItemForView('settings')).toBeNull()
     expect(extensionsNavItemForView('conversation')).toBeNull()
     expect(extensionsNavItemForView('onboarding')).toBeNull()

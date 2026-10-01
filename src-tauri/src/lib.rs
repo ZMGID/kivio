@@ -34,6 +34,7 @@ pub mod rapidocr;
 pub mod replace_translation;
 #[cfg(target_os = "macos")]
 pub mod sck;
+pub mod scheduled_tasks;
 pub mod screenshot;
 pub mod self_config;
 pub mod settings;
@@ -376,6 +377,12 @@ pub fn run() {
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
+            app.manage(scheduled_tasks::ScheduledTasks::load(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|err| format!("app_data_dir unavailable: {err}"))?
+                    .join("scheduled_tasks"),
+            ));
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
 
@@ -416,6 +423,7 @@ pub fn run() {
                 );
             }
             crate::automation::spawn_scheduler(app.handle().clone());
+            crate::scheduled_tasks::spawn_scheduler(app.handle().clone());
             if let Err(err) = setup_tray(&app.handle()) {
                 eprintln!("Failed to setup tray: {err}");
             }
@@ -772,6 +780,14 @@ pub fn run() {
             automation::commands::automation_import,
             automation::commands::automation_runs_list,
             automation::commands::automation_run_get,
+            scheduled_tasks::commands::scheduled_tasks_list,
+            scheduled_tasks::commands::scheduled_task_save,
+            scheduled_tasks::commands::scheduled_task_delete,
+            scheduled_tasks::commands::scheduled_task_set_enabled,
+            scheduled_tasks::commands::scheduled_task_run_now,
+            scheduled_tasks::commands::scheduled_task_runs,
+            scheduled_tasks::commands::scheduled_task_preview,
+            scheduled_tasks::commands::scheduled_task_run_delete,
             skills::chat_skills_list,
             skills::chat_skills_read,
             skills::chat_skills_import,

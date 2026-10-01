@@ -12,6 +12,7 @@ React entry / Tauri commands
   ├─ Settings public interfaces   → settings implementation
   ├─ Lens                         → capture/request/history owners
   ├─ Automation                   → definition/run owners
+  ├─ Scheduled tasks              → task/run owner + scheduler
   └─ shared UI + platform adapters
 
 AppState (composition root)
@@ -56,6 +57,7 @@ Settings UI state separates the backend canonical snapshot, the acknowledged edi
 - Provider runtime owns key failover and learned endpoint capabilities. Native background commands and external CLI background tasks have separate registries with explicit completion, cancellation and exit behavior. Request Debug owns its bounded memory buffer and existing disk mirror.
 - Lens owns busy acquisition/recovery, open sequence and grace period, selection, reset payload, freeze-frame identity, captured images and request-generation validity. Image registration carries the session sequence captured before the slow OS operation, so closing and immediately reopening cannot admit a late image from the previous session.
 - Automation owns active/cancelled run indexes. Starting a run atomically enforces duplicate and concurrency limits; stale cleanup cannot remove a newer run. Cross-domain Chat/agent coordination lives in `automation::application` and reaches Chat cancellation/activity only through narrow ports; neither the runner nor the tool adapter receives `AppState`.
+- Scheduled tasks (`scheduled_tasks::ScheduledTasks`, managed beside AppState) own task definitions, run history and the scheduler loop; they share nothing with Automation. Each task is bound to one conversation, resolved at save time (`scheduled_tasks::save_task` creates it when the editor asks for a new one). A run sends its prompt through Chat's normal send transaction (`chat::commands::send::send_user_message_when_idle`), which waits on `ChatRuntimeState`'s idle signal and then takes the same atomic send reservation as a user send, so a scheduled prompt queues behind a running reply instead of failing. Fires more than five minutes late (sleep, app closed) are recorded as skipped, not sent.
 - MCP owns the session pool and persisted tool snapshots. `McpManager` receives a narrow immutable configuration and persistence interface rather than `AppState`; the outer pool lock is never held across transport handshake work.
 - Settings persistence owns the full-save permit; platform focus owns the two macOS foreground-return slots. Immutable resources and encapsulated domain handles remain in the composition root.
 

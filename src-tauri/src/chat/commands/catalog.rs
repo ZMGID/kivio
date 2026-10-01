@@ -476,6 +476,7 @@ pub(crate) async fn chat_create_conversation(
         project_id,
         set_id,
         assistant_id,
+        true,
     )
     .await?;
 
@@ -485,6 +486,10 @@ pub(crate) async fn chat_create_conversation(
     }))
 }
 
+/// `reuse_blank`: hand back a matching untouched blank conversation instead of
+/// creating another one (UI "new chat"). Background creators that must own a
+/// fresh conversation pass false.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_chat_conversation_internal(
     app: &AppHandle,
     state: &AppState,
@@ -494,6 +499,7 @@ pub(crate) async fn create_chat_conversation_internal(
     project_id: Option<String>,
     set_id: Option<String>,
     assistant_id: Option<String>,
+    reuse_blank: bool,
 ) -> Result<Conversation, String> {
     let settings = state.settings_read().clone();
     let set_id = set_id.and_then(non_empty_string);
@@ -574,19 +580,23 @@ pub(crate) async fn create_chat_conversation_internal(
 
     let conversation = {
         let _create_guard = state.chat_runtime().lock_conversation_creation().await;
-        if let Some(conversation) = crate::chat::repository::repository(app)
-            .find_reusable_blank(
-                app,
-                &provider_id,
-                &model,
-                folder.as_deref(),
-                project_id.as_deref(),
-                set_id.as_deref(),
-                assistant_id_for_reuse.as_deref(),
-            )
-            .await
-            .map_err(crate::chat::repository::repository_error)?
-        {
+        let reusable = if reuse_blank {
+            crate::chat::repository::repository(app)
+                .find_reusable_blank(
+                    app,
+                    &provider_id,
+                    &model,
+                    folder.as_deref(),
+                    project_id.as_deref(),
+                    set_id.as_deref(),
+                    assistant_id_for_reuse.as_deref(),
+                )
+                .await
+                .map_err(crate::chat::repository::repository_error)?
+        } else {
+            None
+        };
+        if let Some(conversation) = reusable {
             conversation
         } else {
             let now = chrono::Local::now().timestamp();
@@ -667,6 +677,7 @@ pub(crate) async fn chat_import_external_conversation(
         project_id,
         None,
         None,
+        true,
     )
     .await?;
     // create 可能复用了一个空白会话；这里清空以确保从干净状态写入历史。

@@ -42,6 +42,7 @@ import {
   isChatPluginCenterPath,
   isChatSessionCenterPath,
   isChatAutomationsPath,
+  isChatSchedulesPath,
   isChatSettingsPath,
   isChatSkillCenterPath,
   conversationHash,
@@ -196,8 +197,8 @@ const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
 
-const AutomationCenter = lazy(() => import('./automation/AutomationCenter').then((module) => ({
-  default: module.AutomationCenter,
+const TasksCenter = lazy(() => import('./scheduledTasks/TasksCenter').then((module) => ({
+  default: module.TasksCenter,
 })))
 
 type ChatView = import('./routeCodec').ChatView
@@ -337,11 +338,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
+    if (isChatSchedulesPath(path)) return 'schedules'
     // 旧 `#chat/sessions`：对话库已迁设置
     if (isChatSessionCenterPath(path)) return 'settings'
     if (isChatPluginCenterPath(path)) return 'plugins'
     return 'conversation'
   })
+  const tasksLeaveGuardRef = useRef<(() => Promise<boolean>) | null>(null)
+  const registerTasksLeaveGuard = useCallback((guard: (() => Promise<boolean>) | null) => {
+    tasksLeaveGuardRef.current = guard
+  }, [])
+  const requestTasksLeave = useCallback(async () => {
+    return await tasksLeaveGuardRef.current?.() ?? true
+  }, [])
   // 首屏就绪只发一次。初始视图是设置页则等 SettingsShell.onReady；否则挂载后即发。
   const contentReadyEmittedRef = useRef(false)
   const emitContentReady = useCallback(() => {
@@ -562,7 +571,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [compactingConversationIds, executionOwner, previewOwner, queueCommands])
 
   const { drainExternalSends, wakeAfterRun } = useExternalSendQueue({
-    onEnterConversationView: () => setChatView('conversation'),
+    onEnterConversationView: () => {
+      if (!tasksLeaveGuardRef.current) {
+        setChatView('conversation')
+        return true
+      }
+      return requestTasksLeave().then((allowed) => {
+        if (allowed) setChatView('conversation')
+        return allowed
+      })
+    },
     onImportConversation: (messages, attachmentPaths) =>
       importExternalConversation(messages, attachmentPaths),
     onSendMessage: (content, attachments, options) =>
@@ -1053,6 +1071,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onOpenSessionsSettings: openEmbeddedSettingsForSessions,
     setSettingsInitialTab,
     setExtensionsNavItem,
+    tasksLeaveGuardRef,
+    requestTasksLeave,
   })
   const extensionsActive = extensionsNavItemForView(chatView)
 
@@ -1150,7 +1170,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       void import('./McpCenter')
       void import('./KnowledgeCenter')
       void import('./NotesCenter')
-      void import('./automation/AutomationCenter')
+      void import('./scheduledTasks/TasksCenter')
       void import('./MessageList')
     }, 400)
   }, [])
@@ -1172,6 +1192,19 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     syncConversationRoute,
     onReturnedToConversation,
   })
+
+  const runAfterLeavingEditors = useCallback((
+    action: () => void,
+    options?: { restoreCurrentRoute?: boolean },
+  ) => {
+    if (!tasksLeaveGuardRef.current) {
+      runAfterLeavingSettings(action, options)
+      return
+    }
+    void requestTasksLeave().then((allowed) => {
+      if (allowed) runAfterLeavingSettings(action, options)
+    })
+  }, [requestTasksLeave, runAfterLeavingSettings])
 
   const handleSettingsChange = useCallback(() => {
     onSettingsChange()
@@ -1334,6 +1367,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       void reloadConversation(conversationId)
     }
   }, [reloadConversation])
+
+  useTauriEvent(api.onScheduledTasksChanged, ({ run }) => {
+    refreshSidebar()
+    if (!run) return
+    const conversationId = run.conversationId
+    if (
+      run.status === 'running'
+      && conversationId
+      && conversationId === currentConversationIdRef.current
+      && !popoutOwner.owns(conversationId)
+    ) {
+      void reloadConversation(conversationId)
+    }
+  }, [popoutOwner, refreshSidebar, reloadConversation])
 
   useTauriEvent(api.onChatStream, (payload) => {
       const popout = popoutOwner.observeRun(payload)
@@ -1544,7 +1591,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (cancelled) return
       const path = hashPath()
       if (!path.startsWith('chat')) return
-      openEmbeddedSettings()
+      runAfterLeavingEditors(() => openEmbeddedSettings())
     }).then((dispose) => {
       if (cancelled) {
         dispose()
@@ -1556,7 +1603,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       cancelled = true
       unlisten?.()
     }
-  }, [openEmbeddedSettings])
+  }, [openEmbeddedSettings, runAfterLeavingEditors])
 
 
   useEffect(() => {
@@ -1579,8 +1626,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     let cancelled = false
     let unlisten: (() => void) | undefined
 
-    api.onChatOpenConversation((payload) => {
+    api.onChatOpenConversation(async (payload) => {
       if (cancelled || !payload.conversationId) return
+      if (tasksLeaveGuardRef.current && !await requestTasksLeave() || cancelled) return
       setChatView('conversation')
       void navigation.openConversation(payload.conversationId, { reload: payload.reload })
       refreshSidebar()
@@ -1593,7 +1641,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       cancelled = true
       unlisten?.()
     }
-  }, [navigation, refreshSidebar])
+  }, [navigation, refreshSidebar, requestTasksLeave])
 
   const handleConversationFirstCommit = useCallback((conversationId: string, requestId: number) => {
     window.requestAnimationFrame(() => {
@@ -1602,8 +1650,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [])
 
   const handleNewConversation = useCallback(async () => {
+    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
     navigation.startNewConversation()
-  }, [navigation])
+  }, [navigation, requestTasksLeave])
 
   const handleClearChat = useCallback(async () => {
     await navigation.clearCurrentChat()
@@ -2337,12 +2386,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [dockWorkdir, loadSkills])
 
   const handleSidebarSelectProject = useCallback((project: ChatProject | null) => {
-    runAfterLeavingSettings(() => handleSelectProject(project))
-  }, [handleSelectProject, runAfterLeavingSettings])
+    runAfterLeavingEditors(() => handleSelectProject(project))
+  }, [handleSelectProject, runAfterLeavingEditors])
 
   const handleSidebarSelectSet = useCallback((set: ChatSet | null) => {
-    runAfterLeavingSettings(() => handleSelectSet(set))
-  }, [handleSelectSet, runAfterLeavingSettings])
+    runAfterLeavingEditors(() => handleSelectSet(set))
+  }, [handleSelectSet, runAfterLeavingEditors])
 
   const handleSidebarSelectConversation = useCallback((
     id: string,
@@ -2355,7 +2404,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         : conversation && 'matchMessageId' in conversation
           ? conversation.matchMessageId ?? undefined
           : undefined
-    runAfterLeavingSettings(() => {
+    runAfterLeavingEditors(() => {
       // 跨项目/集点击必须是一次原子导航。这里仅更新导航上下文，不调用
       // handleSelectProject/handleSelectSet（两者会清空会话并写 #chat）。
       if (scope) {
@@ -2372,11 +2421,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         focusMessageId: focusMessageId || undefined,
       })
     }, { restoreCurrentRoute: false })
-  }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingSettings])
+  }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingEditors])
 
   const handleSidebarNewConversation = useCallback(() => {
-    runAfterLeavingSettings(() => void handleNewConversation())
-  }, [handleNewConversation, runAfterLeavingSettings])
+    runAfterLeavingEditors(() => void handleNewConversation())
+  }, [handleNewConversation, runAfterLeavingEditors])
 
   const handleSidebarConversationDeleted = useCallback(() => {
     forgetRememberedChatRoute()
@@ -2421,8 +2470,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleSidebarOpenExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     // 设置页开着时点扩展项：先走退场（会 flush 自动保存），否则设置页被硬切走、动画不播。
     // 侧栏在设置页下常驻可点（见下方 collapsed 注释）后这条路径才可达。
-    runAfterLeavingSettings(() => openExtensionsItem(item))
-  }, [openExtensionsItem, runAfterLeavingSettings])
+    runAfterLeavingEditors(() => openExtensionsItem(item))
+  }, [openExtensionsItem, runAfterLeavingEditors])
 
   const handleSidebarOpenSettings = useCallback(() => {
     const settingsPanelOpen = chatView === 'settings' && extensionsNavItem === null
@@ -2434,9 +2483,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       return
     }
-    setExtensionsNavItem(null)
-    openEmbeddedSettings('chat')
-  }, [chatView, extensionsNavItem, handleSettingsClose, openEmbeddedSettings])
+    runAfterLeavingEditors(() => {
+      setExtensionsNavItem(null)
+      openEmbeddedSettings('chat')
+    })
+  }, [chatView, extensionsNavItem, handleSettingsClose, openEmbeddedSettings, runAfterLeavingEditors])
 
   // 侧栏账户菜单：语言切换 / 用量。都是全局行为，所以留在 Chat 这层，
   // 侧栏只负责触发（它拿不到 settings 也不该自己全量保存）。
@@ -2452,9 +2503,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [])
 
   const handleSidebarOpenUsage = useCallback(() => {
-    setExtensionsNavItem(null)
-    openEmbeddedSettings('usage')
-  }, [openEmbeddedSettings])
+    runAfterLeavingEditors(() => {
+      setExtensionsNavItem(null)
+      openEmbeddedSettings('usage')
+    })
+  }, [openEmbeddedSettings, runAfterLeavingEditors])
 
   const handleSidebarSearchOpenChange = useCallback((open: boolean) => {
     if (open) {
@@ -2583,8 +2636,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     else handleCollapseSidebar()
   }, [handleCollapseSidebar, setSidebarCollapsedPersisted, sidebarCollapsed])
   const handleTitlebarNewConversation = useCallback(() => {
-    runAfterLeavingSettings(() => void handleNewConversation())
-  }, [handleNewConversation, runAfterLeavingSettings])
+    runAfterLeavingEditors(() => void handleNewConversation())
+  }, [handleNewConversation, runAfterLeavingEditors])
   const handleDismissHookWarning = useCallback(() => setHookWarning(null), [])
   const handleCloseImageViewer = useCallback(() => setImageViewerItem(null), [])
 
@@ -2930,6 +2983,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               <NotesCenter />
             </Suspense>
           </div>
+        ) : chatView === 'schedules' || chatView === 'automations' ? (
+          <div key="center" className={centerPageClass}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <TasksCenter
+                tab={chatView}
+                onOpenConversation={handleSidebarSelectConversation}
+                registerLeaveGuard={registerTasksLeaveGuard}
+              />
+            </Suspense>
+          </div>
         ) : chatView === 'plugins' || chatView === 'skill' || chatView === 'mcp' ? (
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
@@ -2949,13 +3013,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   onSkillsChanged={() => void loadSkills()}
                 />
               )}
-            </Suspense>
-          </div>
-        ) : chatView === 'automations' ? (
-          <div key="center" className={centerPageClass}>
-            {centerPageTopStrip}
-            <Suspense fallback={null}>
-              <AutomationCenter />
             </Suspense>
           </div>
         ) : conversationOccupied ? (

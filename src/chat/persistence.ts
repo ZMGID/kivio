@@ -6,6 +6,7 @@ import {
   isRememberableChatRoute,
   pathFromHash,
 } from './routeCodec'
+import type { TasksTab } from './routeCodec'
 
 export { hashPath } from './browserRoute'
 export { isChatOnboardingPath, isChatPath, isChatSettingsPath } from './routeCodec'
@@ -33,6 +34,7 @@ export type ChatWindowGeometry = {
 
 const CHAT_LAST_ROUTE_KEY = 'kivio-chat-last-route'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'kivio-chat-sidebar-collapsed'
+const CHAT_TASKS_TAB_KEY = 'kivio-chat-tasks-tab'
 const CHAT_WINDOW_GEOMETRY_KEY = 'kivio-chat-window-geometry'
 /** @deprecated 旧版仅持久化尺寸；读取时自动迁移到 geometry key */
 const CHAT_WINDOW_SIZE_KEY = 'kivio-chat-window-size'
@@ -61,6 +63,14 @@ function removeLocalStorageItem(key: string) {
   } catch {
     // Ignore storage errors; persistence is best-effort only.
   }
+}
+
+export function getRememberedTasksTab(): TasksTab {
+  return getLocalStorageItem(CHAT_TASKS_TAB_KEY) === 'automations' ? 'automations' : 'schedules'
+}
+
+export function rememberTasksTab(tab: TasksTab) {
+  setLocalStorageItem(CHAT_TASKS_TAB_KEY, tab)
 }
 
 function forgetRememberedChatGeometry() {

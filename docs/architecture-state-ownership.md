@@ -32,6 +32,7 @@
 | Lens 图片/捕获/请求生命周期 | `lens::LensRuntimeState` | 图像身份、generation 和请求取消独立于 Chat；不因窗口卸载停止其他后台工作 | 前序批次，R3 保持 |
 | MCP 会话与 schema 快照 | `mcp::McpRuntimeState` | session actor 及缓存生命周期仍由 MCP 管理；现有 session 句柄是领域 Interface | 前序批次，R3 保持 |
 | 自动化执行 | `automation::AutomationRunState` | 句柄内部字段私有；运行转换与取消由 automation 管理 | 前序批次，R3 保持 |
+| 定时任务 | `scheduled_tasks::ScheduledTasks`（与 AppState 并列 manage） | 任务、运行记录、排队集合均私有；调度、手动运行、对话工具都走它的方法 | 新增 |
 | settings 值、epoch/revision、直连 HTTP OnceLock | `AppState` 私有设置/CAS 与客户端构造实现 | `settings_read` 只读 guard；写入经版本校验的行为入口；无外部裸 mutable 字段 | 已封装，保持 |
 | `macos_ocr`、`offline_models`、`rapidocr`、`sub_agents` | 既有 OCR/model manager / `SubAgentManager` | 暴露的是封装了内部状态的领域句柄；不因本次整理另建可变副本 | 保留 |
 | `usage_dir`、`http` | 应用组合资源 | 路径与 HTTP Client 依赖，非可任意写入的同步原语或领域索引 | 保留 |

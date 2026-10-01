@@ -9,8 +9,8 @@ function nextOwnerId(): string {
 }
 
 interface UseExternalSendQueueParams {
-  /** 取到消息后先切回会话视图。 */
-  onEnterConversationView: () => void
+  /** 取到消息后先切回会话视图；false 保留请求，等待下一次显式唤醒。 */
+  onEnterConversationView: () => void | boolean | Promise<void | boolean>
   /** 历史预置分支：把整段多轮历史搬成新会话，不发消息。 */
   onImportConversation: (
     messages: NonNullable<ChatExternalSendRequest['messages']>,
@@ -128,7 +128,13 @@ export function useExternalSendQueue({
           retryDelayRef.current = 100
           continue
         }
-        callbacksRef.current.onEnterConversationView()
+        const entering = callbacksRef.current.onEnterConversationView()
+        const entered = entering instanceof Promise ? await entering : entering
+        if (stale()) return
+        if (entered === false) {
+          requestedRef.current = false
+          break
+        }
         const attachmentPaths = (request.attachments ?? [])
           .map((attachment) => attachment.path)
           .filter((path): path is string => !!path)

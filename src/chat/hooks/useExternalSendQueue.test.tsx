@@ -107,6 +107,25 @@ describe('useExternalSendQueue 基本流转', () => {
     expect(onImportConversation).toHaveBeenCalledTimes(2)
     expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'history-retry')
   })
+  it('取消离开编辑器时不发送或确认请求，也不自动重弹；显式唤醒后发送原请求', async () => {
+    vi.useFakeTimers()
+    mockTake.mockResolvedValueOnce({
+      success: true, requests: [{ id: 'leave-cancelled', content: '保留外部消息', attachments: [] }],
+    } as never)
+    const { result, onEnterConversationView, onSendMessage } = setup()
+    onEnterConversationView.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    await act(async () => { await result.current.drainExternalSends() })
+    expect(onSendMessage).not.toHaveBeenCalled()
+    expect(mockAck).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(onEnterConversationView).toHaveBeenCalledTimes(1)
+    await act(async () => { await result.current.wakeAfterRun() })
+    expect(onSendMessage).toHaveBeenCalledWith(
+      '保留外部消息', [], expect.objectContaining({ forceNewConversation: true }),
+    )
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'leave-cancelled')
+  })
+
 
   it('附件映射：无 path 的被过滤，name/type 有兜底', async () => {
     mockTake.mockResolvedValueOnce({

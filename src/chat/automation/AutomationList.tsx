@@ -1,6 +1,6 @@
 import { Button, IconButton } from '../../components/Button'
 import { Toggle } from '../../settings/public/controls'
-import { Plus, Trash2, Upload } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { useT } from '../../components/i18n'
 import { catalogEntry } from './nodeCatalog'
 import type { AutomationMeta } from '../../api/automationContracts'
@@ -15,7 +15,6 @@ export function AutomationList({
   loading,
   error,
   onCreate,
-  onImport,
   onOpen,
   onToggle,
   onDelete,
@@ -24,37 +23,13 @@ export function AutomationList({
   loading: boolean
   error: string
   onCreate: () => void
-  onImport: () => void
   onOpen: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
   onDelete: (id: string) => void
 }) {
   const t = useT()
   return (
-    <div className="assistant-center-root flex h-full min-h-0 flex-col">
-      <div className="shrink-0 px-6 pb-3 pt-5">
-        <div className="mx-auto flex w-full max-w-[880px] items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-[22px] font-semibold tracking-tight text-neutral-950 dark:text-neutral-50">
-              {t.chatNavAutomations}
-            </h1>
-            <p className="mt-1 text-[13px] text-neutral-500 dark:text-neutral-400">
-              {t.chatAutomationSubtitle}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button size="sm" variant="ghost" onClick={onImport}>
-              <Upload size={14} />
-              {t.chatAutomationImport}
-            </Button>
-            <Button size="sm" onClick={onCreate}>
-              <Plus size={14} />
-              {t.chatAutomationNew}
-            </Button>
-          </div>
-        </div>
-      </div>
-      <div className="custom-scrollbar mx-auto flex min-h-0 w-full max-w-[880px] flex-1 flex-col overflow-y-auto px-6 pb-6">
+    <div className="custom-scrollbar mx-auto flex min-h-0 w-full max-w-[880px] flex-1 flex-col overflow-y-auto px-6 pb-6">
         {error ? (
           <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>
         ) : loading && items.length === 0 ? (
@@ -119,6 +94,5 @@ export function AutomationList({
           </ul>
         )}
       </div>
-    </div>
   )
 }

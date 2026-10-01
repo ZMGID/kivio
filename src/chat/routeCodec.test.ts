@@ -66,6 +66,8 @@ describe('chat route codec', () => {
       'chat/plugins',
       'chat/sessions',
       'chat/automations/a-1',
+      'chat/automations',
+      'chat/schedules',
       'chat/mcp',
       'chat/knowledge',
       'chat/notes/n-1',

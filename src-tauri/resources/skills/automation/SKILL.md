@@ -1,7 +1,7 @@
 ---
 id: automation
 name: automation
-description: 创建/编辑/运行 Kivio 自动化工作流（定时、热键、Agent、通知、HTTP、命令、产出 PDF/Word）。Create, edit, and run Kivio automations. Use when the user asks to 创建自动化, 工作流, 定时任务, gather news on a schedule, or build a graph of triggers and actions. Activate this skill BEFORE calling automation_upsert — do not probe node types with dry_run.
+description: 创建/编辑/运行 Kivio 自动化工作流（画布上的触发器 + 动作节点：热键、Agent、通知、HTTP、命令、产出 PDF/Word）。Create, edit, and run Kivio automation graphs. Use ONLY when the user explicitly asks for 自动化, 工作流 or a graph of triggers and actions. NOT for 定时任务 / reminders / "every day at 9 do X" — those are scheduled tasks: use `schedule_create`, which sends the prompt into the current conversation. Activate this skill BEFORE calling automation_upsert — do not probe node types with dry_run.
 recommended-tools:
   - automation_list
   - automation_get
@@ -15,6 +15,8 @@ recommended-tools:
 # Kivio automations
 
 Kivio automations are directed graphs: one trigger, then actions and logic, stored as JSON.
+
+**Not for scheduled tasks.** When the user wants something done on a schedule in this conversation (定时任务, 提醒, "每天早上帮我…"), call `schedule_create` instead. Build an automation only when the user explicitly asks for an automation/workflow.
 
 **Do this:** activate this skill, `automation_list` once, then `automation_upsert` with a **complete** graph in one call.
 
@@ -150,7 +152,7 @@ Empty = read-only tools + skill loader. Never include `automation_*` or memory t
 1. `automation_list` before create. Reuse an id with upsert to replace.
 2. `dry_run: true` first. Fix every `severity: "error"` (`nodeId` + `message`).
 3. Leave `enabled: false` until the user wants the schedule/hotkey live; then `automation_set_enabled`.
-4. Prefer `trigger.schedule` + `action.agent` + `action.notify` for “every morning, do X and ping me”.
+4. Only when the user explicitly wants an automation: `trigger.schedule` + `action.agent` + `action.notify` fits “every morning, do X and ping me”. A plain timed prompt is a scheduled task (`schedule_create`).
 5. For “take this problem and run my workflow”, `automation_run` with `input`; do not rebuild the graph each time.
 6. After save, tell the user the name, id, and to open the Automations page.
 

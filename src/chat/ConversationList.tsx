@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, Pin } from 'lucide-react'
+import { Archive, Clock, Pin } from 'lucide-react'
 import type { ChatProject, ChatSet, ConversationListItem } from './types'
 import { i18n, type I18n, type Lang } from '../components/i18n'
 import { chatApi, normalizeAgentRuntime } from './api'
@@ -56,6 +56,7 @@ interface ConversationListProps {
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
   titleGeneratingConversationIds?: ReadonlySet<string>
+  scheduledTaskNamesByConversation?: ReadonlyMap<string, string[]>
   projects: ChatProject[]
   sets: ChatSet[]
   lang: Lang
@@ -92,6 +93,7 @@ export const ConversationList = memo(function ConversationList({
   currentConversationId,
   generatingConversationIds = new Set(),
   titleGeneratingConversationIds = new Set(),
+  scheduledTaskNamesByConversation,
   projects,
   sets,
   lang,
@@ -278,6 +280,10 @@ export const ConversationList = memo(function ConversationList({
           const isRenaming = renamingId === conv.id
           const isExiting = exitingIds.has(conv.id)
           const folderLabel = showFolderLabel ? conversationFolderLabel(conv, projects, sets, t) : ''
+          const scheduledTaskNames = scheduledTaskNamesByConversation?.get(conv.id)
+          const scheduledTasksTitle = scheduledTaskNames
+            ? t.chatConversationScheduledTasks + scheduledTaskNames.join(lang === 'zh' ? '、' : ', ')
+            : ''
           // 分支对话：把「（分支）」后缀从可截断的标题里拆出，做成不缩的固定标签，
           // 避免侧栏窄宽时被省略号吃掉（forked_from 字段判定，不依赖标题文字）。
           const isFork = Boolean(conv.forked_from ?? conv.forkedFrom)
@@ -427,6 +433,15 @@ export const ConversationList = memo(function ConversationList({
                   </span>
                 )}
               </button>
+              {scheduledTasksTitle && (
+                <span
+                  className="mr-1 flex shrink-0 items-center text-neutral-400 dark:text-neutral-500"
+                  title={scheduledTasksTitle}
+                  aria-label={scheduledTasksTitle}
+                >
+                  <Clock size={13} strokeWidth={1.75} aria-hidden="true" />
+                </span>
+              )}
               {/* 行尾：平时短龄；悬停让给 PIN + 归档；生成中优先慢波。
                   短龄叠在槽右侧（置顶时针占左、龄占右）。慢波保持原始 chat-gen-wave。 */}
 

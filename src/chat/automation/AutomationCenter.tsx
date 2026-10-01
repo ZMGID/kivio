@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { api, isTauriRuntime } from '../../api/tauri'
 import { useT } from '../../components/i18n'
@@ -16,10 +16,14 @@ function clearTimeoutRef(ref: { current: ReturnType<typeof setTimeout> | null })
   ref.current = null
 }
 
-export function AutomationCenter() {
+export function AutomationCenter({ items, loading, listError, onReload, renderList }: {
+  items: AutomationMeta[]
+  loading: boolean
+  listError: string
+  onReload: () => Promise<void>
+  renderList: (body: ReactNode, actions: { onCreate: () => void; onImport: () => void }) => ReactNode
+}) {
   const t = useT()
-  const [items, setItems] = useState<AutomationMeta[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<Automation | null>(null)
   const [canvasEpoch, setCanvasEpoch] = useState(0)
@@ -31,24 +35,9 @@ export function AutomationCenter() {
   editingRef.current = editing
 
   const loadList = useCallback(async () => {
-    if (!isTauriRuntime()) {
-      setLoading(false)
-      setError(t.chatAutomationAppOnly)
-      return
-    }
-    setError('')
-    try {
-      setItems(await automationApi.list())
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [t])
-
-  useEffect(() => {
-    void loadList()
-  }, [loadList])
+    try { await onReload() }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)) }
+  }, [onReload])
 
   useEffect(() => {
     if (!isTauriRuntime()) return
@@ -56,7 +45,6 @@ export function AutomationCenter() {
     let unlisten: (() => void) | undefined
     void api.onAutomationChanged((event) => {
       if (cancelled) return
-      void loadList()
       const current = editingRef.current
       if (!current || event.id !== current.id) return
       if (event.kind === 'deleted') {
@@ -254,13 +242,12 @@ export function AutomationCenter() {
     )
   }
 
-  return (
+  return renderList(
     <AutomationList
       items={items}
       loading={loading}
-      error={error}
+      error={error || listError}
       onCreate={() => void create()}
-      onImport={() => void importFromFile()}
       onOpen={(id) => void openId(id)}
       onToggle={(id, enabled) => {
         void automationApi.setEnabled(id, enabled).then(loadList).catch((err) => {
@@ -273,6 +260,7 @@ export function AutomationCenter() {
           setError(err instanceof Error ? err.message : String(err))
         })
       }}
-    />
+    />,
+    { onCreate: () => void create(), onImport: () => void importFromFile() },
   )
 }

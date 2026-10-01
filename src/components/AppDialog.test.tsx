@@ -1,7 +1,16 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AppDialogHost } from './AppDialog'
 import { alertDialog, confirmDialog } from './dialogQueue'
+
+beforeAll(() => {
+  HTMLDialogElement.prototype.showModal ??= function showModal(this: HTMLDialogElement) {
+    this.setAttribute('open', '')
+  }
+  HTMLDialogElement.prototype.close ??= function close(this: HTMLDialogElement) {
+    this.removeAttribute('open')
+  }
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -82,6 +91,21 @@ describe('AppDialogHost', () => {
     })
     view.unmount()
     await expect(answer).resolves.toBe(false)
+  })
+
+  it('restores focus inside the existing editor after a queued confirmation is dismissed', async () => {
+    render(<><dialog open aria-label="Editor"><button type="button">Save editor</button></dialog><AppDialogHost /></>)
+    const save = screen.getByRole('button', { name: 'Save editor' })
+    save.focus()
+    let answer: Promise<boolean> = Promise.resolve(true)
+    act(() => { answer = confirmDialog('Discard changes?') })
+    const confirmation = screen.getByRole('alertdialog', { name: 'Discard changes?' })
+    expect(confirmation).toHaveAttribute('open')
+    expect(screen.getByRole('button', { name: '确定' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await expect(answer).resolves.toBe(false)
+    expect(save).toHaveFocus()
+    expect(screen.getByRole('dialog', { name: 'Editor' })).toHaveAttribute('open')
   })
 
   it('falls back to the native dialogs when no host is mounted', async () => {

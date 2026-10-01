@@ -1,5 +1,5 @@
 import { renderHook, act } from '@testing-library/react'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { useRef } from 'react'
 import { useChatRouting } from './useChatRouting'
 import {
@@ -7,6 +7,14 @@ import {
   invalidateConversationTransition,
   isCurrentConversationTransition,
 } from '../conversationTransitionStore'
+
+beforeEach(() => {
+  // These route scenarios dispatch their own events; discard queued native
+  // hashchange timers between cases so they cannot replay into another hook.
+  vi.useFakeTimers()
+  window.localStorage.clear()
+})
+afterEach(() => { vi.useRealTimers() })
 
 /**
  * 回归重点（搬迁时最容易破的三件事）：
@@ -18,6 +26,7 @@ function setup(initialHash = '#chat', opts?: {
   onOpenSessionsSettings?: () => void
   onLoadConversation?: (conversationId: string) => void
   onLeaveConversation?: () => void
+  requestTasksLeave?: () => Promise<boolean>
 }) {
   window.location.hash = initialHash
   const onViewChange = vi.fn()
@@ -39,6 +48,8 @@ function setup(initialHash = '#chat', opts?: {
       onLeaveConversation,
       setSettingsInitialTab,
       setExtensionsNavItem,
+      tasksLeaveGuardRef: useRef(opts?.requestTasksLeave ?? null),
+      requestTasksLeave: opts?.requestTasksLeave,
     })
     return { routing, currentConversationIdRef }
   })
@@ -91,6 +102,8 @@ describe('useChatRouting 分支顺序', () => {
     ['#chat/artifacts', 'artifacts'],
     ['#chat/media', 'media'],
     ['#chat/automations', 'automations'],
+    ['#chat/automations/a%2Fb', 'automations'],
+    ['#chat/schedules', 'schedules'],
     ['#chat/onboarding', 'onboarding'],
   ]
 
@@ -191,6 +204,74 @@ describe('useChatRouting hashchange', () => {
     expect(onLoadConversation).toHaveBeenCalledWith('conv-10')
   })
 
+  it.each(['#chat/automations', '#translate'])('取消离开 %s 保留任务路由且不通知 App 模式监听', async (target) => {
+    const appRouteListener = vi.fn()
+    window.addEventListener('hashchange', appRouteListener)
+    const requestTasksLeave = vi.fn().mockResolvedValue(false)
+    const { onViewChange, onLoadConversation, onResetConversation } = setup('#chat/schedules', { requestTasksLeave })
+    onViewChange.mockClear()
+    try {
+      await act(async () => {
+        window.history.replaceState({ previous: 'history-state' }, '', target)
+        window.dispatchEvent(new HashChangeEvent('hashchange'))
+        await Promise.resolve()
+      })
+      expect(window.location.hash).toBe('#chat/schedules')
+      expect(window.history.state).toEqual({ previous: 'history-state' })
+      expect(onViewChange).not.toHaveBeenCalled()
+      expect(onLoadConversation).not.toHaveBeenCalled()
+      expect(onResetConversation).not.toHaveBeenCalled()
+      expect(appRouteListener).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('hashchange', appRouteListener)
+    }
+  })
+
+  it('等待确认时保持任务页，确认后只加载一次目标会话并通知模式监听', async () => {
+    let finish!: (allowed: boolean) => void
+    const requestTasksLeave = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    const { onViewChange, onLoadConversation } = setup('#chat/schedules', { requestTasksLeave })
+    const appRoutes: string[] = []
+    const appRouteListener = () => appRoutes.push(window.location.hash)
+    window.addEventListener('hashchange', appRouteListener)
+    onViewChange.mockClear()
+    try {
+      act(() => {
+        window.history.replaceState(null, '', '#chat/conversation-guarded')
+        window.dispatchEvent(new HashChangeEvent('hashchange'))
+      })
+      expect(window.location.hash).toBe('#chat/schedules')
+      expect(onViewChange).not.toHaveBeenCalled()
+      expect(appRoutes).toEqual([])
+      await act(async () => { finish(true); await Promise.resolve() })
+      expect(window.location.hash).toBe('#chat/conversation-guarded')
+      expect(onViewChange.mock.calls).toEqual([['conversation']])
+      expect(onLoadConversation.mock.calls).toEqual([['conversation-guarded']])
+      expect(appRoutes).toEqual(['#chat/conversation-guarded'])
+      expect(requestTasksLeave).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('hashchange', appRouteListener)
+    }
+  })
+
+  it('确认期间又收到外部路由时只提交最新目标', async () => {
+    let finish!: (allowed: boolean) => void
+    const requestTasksLeave = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    const { onViewChange, onLoadConversation } = setup('#chat/schedules', { requestTasksLeave })
+    onViewChange.mockClear()
+    act(() => {
+      window.history.replaceState(null, '', '#chat/automations')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+      window.history.replaceState(null, '', '#chat/latest-conversation')
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    await act(async () => { finish(true); await Promise.resolve() })
+    expect(window.location.hash).toBe('#chat/latest-conversation')
+    expect(onViewChange.mock.calls).toEqual([['conversation']])
+    expect(onLoadConversation.mock.calls).toEqual([['latest-conversation']])
+    expect(requestTasksLeave).toHaveBeenCalledTimes(1)
+  })
+
   it('进入中心页时先使旧 conversation transition 失效，迟到成功不提交', async () => {
     let finish: (() => void) | undefined
     const committed = vi.fn()
@@ -261,7 +342,6 @@ describe('useChatRouting sync*Route', () => {
       [r.syncMcpCenterRoute, '#chat/mcp'],
       [r.syncKnowledgeCenterRoute, '#chat/knowledge'],
       [r.syncNotesRoute, '#chat/notes'],
-      [r.syncAutomationsRoute, '#chat/automations'],
     ]
     for (const [sync, expected] of cases) {
       act(() => { sync() })
@@ -294,11 +374,34 @@ describe('useChatRouting center openers', () => {
     expect(window.location.hash).toBe('#chat/settings')
   })
 
-  it('openExtensionsItem records the nav item and opens that center', () => {
-    const { result, onViewChange, setExtensionsNavItem } = setup('#chat')
-    act(() => { result.current.routing.openExtensionsItem('mcp') })
-    expect(setExtensionsNavItem).toHaveBeenCalledWith('mcp')
-    expect(onViewChange).toHaveBeenCalledWith('mcp')
-    expect(window.location.hash).toBe('#chat/mcp')
+  it('opens Tasks on scheduled tasks when no tab has been used', () => {
+    const { result, onLoadConversation } = setup('#chat')
+    act(() => { result.current.routing.openExtensionsItem('tasks') })
+    expect(window.location.hash).toBe('#chat/schedules')
+    expect(onLoadConversation).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['#chat/schedules', '#chat/schedules'],
+    ['#chat/automations', '#chat/automations'],
+    ['#chat/automations/a%2Fb', '#chat/automations'],
+  ])('reopens the tab from restored %s after leaving and remounting', (restored, reopened) => {
+    const first = setup(restored)
+    act(() => { first.result.current.routing.syncConversationRoute('conversation-1') })
+    first.unmount()
+    const next = setup('#chat/conversation-1')
+    act(() => { next.result.current.routing.openExtensionsItem('tasks') })
+    expect(window.location.hash).toBe(reopened)
+  })
+
+  it('remembers tab changes made through hash navigation', () => {
+    const { result } = setup('#chat/automations/editor')
+    act(() => {
+      window.location.hash = '#chat/schedules'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    act(() => { result.current.routing.syncConversationRoute('conversation-1') })
+    act(() => { result.current.routing.openExtensionsItem('tasks') })
+    expect(window.location.hash).toBe('#chat/schedules')
   })
 })
