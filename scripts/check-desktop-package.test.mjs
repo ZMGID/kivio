@@ -48,9 +48,12 @@ test('rejects lockfile version drift', t => {
 test('packaged resources reject missing licenses, changed files and stale skills', t => {
   const directory = fixture(t)
   const packaged = path.join(directory, 'packaged')
-  for (const [source, destination] of [['src-tauri/resources/skills', 'skills'], ['docs/licenses', 'licenses']]) {
-    cpSync(path.join(root, source), path.join(directory, source), { recursive: true })
-    if (destination === 'skills') cpSync(path.join(root, source), path.join(packaged, destination), { recursive: true })
+  const { bundle } = JSON.parse(readFileSync(path.join(directory, 'src-tauri/tauri.conf.json'), 'utf8'))
+  for (const [source, destination] of Object.entries(bundle.resources)) {
+    cpSync(path.resolve(root, 'src-tauri', source), path.resolve(directory, 'src-tauri', source), { recursive: true })
+    if (destination !== 'licenses') {
+      cpSync(path.resolve(root, 'src-tauri', source), path.join(packaged, destination), { recursive: true })
+    }
   }
   assert.throws(() => checkResources(directory, packaged), /ENOENT/)
   cpSync(path.join(root, 'docs/licenses'), path.join(packaged, 'licenses'), { recursive: true })

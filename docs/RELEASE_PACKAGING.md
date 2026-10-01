@@ -105,6 +105,8 @@ The final installed app must contain:
 `npm run package:check` checks all five release-version files (including the npm
 lockfile root package) and resource sources. `npm run test:packaging` covers version
 drift, old MSI overrides, missing licenses, modified resources and retired skills.
+Resource test fixtures copy every mapping from `bundle.resources`, including plugins,
+so adding a bundled resource directory does not leave the fixture incomplete.
 Release jobs also pass `--version "$RELEASE_TAG"` to reject a tag/source mismatch.
 Do not pin `bundle.windows.wix.version`: Tauri derives MSI versions from the app
 version. This follows the [Tauri WiX configuration contract](https://v2.tauri.app/reference/config/#wixconfig).
