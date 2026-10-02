@@ -1,1 +1,1 @@
-export { AgentIcon, AutomationIcon, ComposeIcon, DefaultPluginIcon, DefaultSkillIcon, ExtensionsIcon, KnowledgeIcon, McpIcon, PluginIcon, PortfolioIcon, ScheduleIcon, SearchNavIcon, SkillIcon, TasksIcon, WebSearchIcon, WorksIcon } from '../NavIcons'
+export { AgentIcon, AutomationIcon, ComposeIcon, DefaultPluginIcon, DefaultSkillIcon, ExtensionsIcon, KnowledgeIcon, McpIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, ScheduleIcon, SearchNavIcon, SkillIcon, TasksIcon, WebSearchIcon, WorksIcon } from '../NavIcons'

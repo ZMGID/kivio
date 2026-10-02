@@ -7,8 +7,6 @@ import {
   FolderPlus,
   Layers,
   MoreHorizontal,
-  NotebookPen,
-  Clapperboard,
   Plus,
   Search,
   Settings,
@@ -16,7 +14,7 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
+import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
@@ -72,12 +70,12 @@ export interface ConversationSelectionScope {
 const extensionSubItems: Array<{
   id: ExtensionsNavItem
   label: (t: I18n) => string
-  icon: (props: { size?: number; className?: string }) => React.JSX.Element
+  icon: (props: { size?: number; strokeWidth?: number; className?: string }) => React.JSX.Element
 }> = [
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
-  { id: 'media', label: (t) => t.chatNavMedia, icon: (props) => <Clapperboard size={props.size} className={props.className} strokeWidth={1.75} /> },
-  { id: 'notes', label: (t) => t.chatNavNotes, icon: (props) => <NotebookPen size={props.size} className={props.className} strokeWidth={1.75} /> },
+  { id: 'media', label: (t) => t.chatNavMedia, icon: MediaIcon },
+  { id: 'notes', label: (t) => t.chatNavNotes, icon: NotesIcon },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -329,7 +327,7 @@ function NavRow({ icon, label, onClick, disabled, active }: NavRowProps) {
       }`}
     >
       <span
-        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200`}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400 dark:group-hover:text-neutral-200`}
       >
         {icon}
       </span>
@@ -366,7 +364,7 @@ function ExtensionsNav({
         }`}
         aria-expanded={expanded}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 group-active:scale-90 dark:text-neutral-400 dark:group-hover:text-neutral-200">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400 dark:group-hover:text-neutral-200">
           <ExtensionsIcon size={18} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{t.chatNavExtensions}</span>
@@ -397,7 +395,7 @@ function ExtensionsNav({
                 <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${
                   active ? 'text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500'
                 }`}>
-                  <Icon size={15} />
+                  <Icon size={15} strokeWidth={1.75} />
                 </span>
                 <span className="min-w-0 flex-1 truncate">{item.label(t)}</span>
               </button>

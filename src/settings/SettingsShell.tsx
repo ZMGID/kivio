@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
-  X, RefreshCw, Monitor,
+  X, RefreshCw,
   Download, Upload, ArrowLeft,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -31,7 +31,7 @@ import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDr
 import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  AgentIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  CliIcon, ComputerIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
@@ -805,8 +805,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
     { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
     { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
-    { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: AgentIcon },
-    { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: Monitor },
+    { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
+    { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: ComputerIcon },
     { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
     { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },

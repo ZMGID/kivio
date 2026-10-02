@@ -24,50 +24,50 @@ function svgProps({ size = 24, strokeWidth = 2, className }: IconProps) {
   }
 }
 
-// 基础：六角螺母 + 中心孔
+// 基础：八齿齿轮 + 轴孔
 export function GeneralIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M21 12 L16.5 4.2 L7.5 4.2 L3 12 L7.5 19.8 L16.5 19.8 Z" />
-      <circle cx="12" cy="12" r="3.2" />
+      <path d="M10.4 5.08 L10.24 2.97 A9.2 9.2 0 0 1 13.76 2.97 L13.6 5.08 A7.1 7.1 0 0 1 15.76 5.98 L17.14 4.37 A9.2 9.2 0 0 1 19.63 6.86 L18.02 8.24 A7.1 7.1 0 0 1 18.92 10.4 L21.03 10.24 A9.2 9.2 0 0 1 21.03 13.76 L18.92 13.6 A7.1 7.1 0 0 1 18.02 15.76 L19.63 17.14 A9.2 9.2 0 0 1 17.14 19.63 L15.76 18.02 A7.1 7.1 0 0 1 13.6 18.92 L13.76 21.03 A9.2 9.2 0 0 1 10.24 21.03 L10.4 18.92 A7.1 7.1 0 0 1 8.24 18.02 L6.86 19.63 A9.2 9.2 0 0 1 4.37 17.14 L5.98 15.76 A7.1 7.1 0 0 1 5.08 13.6 L2.97 13.76 A9.2 9.2 0 0 1 2.97 10.24 L5.08 10.4 A7.1 7.1 0 0 1 5.98 8.24 L4.37 6.86 A9.2 9.2 0 0 1 6.86 4.37 L8.24 5.98 A7.1 7.1 0 0 1 10.4 5.08 Z" />
+      <circle cx="12" cy="12" r="2.6" />
     </svg>
   )
 }
 
-// 快捷键：键盘外框 + 按键点 + 空格条
+
+// 快捷键：⌘ 键符号
 export function HotkeysIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <rect x="2.5" y="6" width="19" height="12" rx="2" />
-      <path d="M6 9.5 h0.01 M9.5 9.5 h0.01 M13 9.5 h0.01 M16.5 9.5 h0.01 M8 15 h8" />
+      <path d="M9.25 9.25 V14.75 M14.75 9.25 V14.75 M9.25 9.25 H14.75 M9.25 14.75 H14.75" />
+      <path d="M9.25 9.25 H7 A2.25 2.25 0 1 1 9.25 7 Z M14.75 9.25 V7 A2.25 2.25 0 1 1 17 9.25 Z M14.75 14.75 H17 A2.25 2.25 0 1 1 14.75 17 Z M9.25 14.75 V17 A2.25 2.25 0 1 1 7 14.75 Z" />
     </svg>
   )
 }
 
-// 知识库：书本 + 书脊
+
+// 知识库：摊开的书（两页微弧 + 书脊）
 export function KnowledgeIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M5 4.5 H17 a2 2 0 0 1 2 2 V19 a1.5 1.5 0 0 0 -1.5 -1.5 H5 Z" />
-      <path d="M5 4.5 a1.5 1.5 0 0 0 -1.5 1.5 V18 a1.5 1.5 0 0 0 1.5 1.5" />
-      <path d="M8.5 9 H14.5" />
-      <path d="M8.5 12 H13" />
+      <path d="M12 6.75 C10 5.25 7 4.75 3.5 5.25 V18.75 C7 18.25 10 18.75 12 20.25 C14 18.75 17 18.25 20.5 18.75 V5.25 C17 4.75 14 5.25 12 6.75 Z" />
+      <path d="M12 6.75 V20.25" />
     </svg>
   )
 }
 
-// 输入翻译：A 字 + CJK 字符
+// 输入翻译：前卡 A，后卡露出一角的「文」
 export function TranslateIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M3 19 L6.5 8 L10 19" />
-      <path d="M4.2 15.5 H8.8" />
-      <path d="M13 8 H21" />
-      <path d="M17 6 V8" />
-      <path d="M14.5 18 L17 12.5 L19.5 18" />
+      <path d="M14.5 8.5 H18.5 A2 2 0 0 1 20.5 10.5 V18.5 A2 2 0 0 1 18.5 20.5 H10.5 A2 2 0 0 1 8.5 18.5 V14.5" />
+      <rect x="3.5" y="3.5" width="11" height="11" rx="2.5" />
+      <path d="M6.75 11.75 L9 6.5 L11.25 11.75 M7.6 10 H10.4" />
+      <path d="M13 14.5 H18.5 M17 14.5 Q16.5 17.5 13 18.5 M14.25 15.75 Q15.5 18 18.5 18.5" />
     </svg>
   )
 }
+
 
 // 快速翻译：闪电
 export function ScreenshotIcon(props: IconProps) {
@@ -78,18 +78,20 @@ export function ScreenshotIcon(props: IconProps) {
   )
 }
 
-// Lens：取景框 + 镜头
+// Lens：圆角取景框 + 镜头 + 对焦点
 export function LensIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <circle cx="12" cy="12" r="3.5" />
-      <path d="M5 8 V5 H8" />
-      <path d="M16 5 H19 V8" />
-      <path d="M19 16 V19 H16" />
-      <path d="M8 19 H5 V16" />
+      <path d="M3.5 8.5 V6.5 A3 3 0 0 1 6.5 3.5 H8.5" />
+      <path d="M15.5 3.5 H17.5 A3 3 0 0 1 20.5 6.5 V8.5" />
+      <path d="M20.5 15.5 V17.5 A3 3 0 0 1 17.5 20.5 H15.5" />
+      <path d="M8.5 20.5 H6.5 A3 3 0 0 1 3.5 17.5 V15.5" />
+      <circle cx="12" cy="12" r="3.75" />
+      <circle cx="12" cy="12" r="0.9" fill="currentColor" stroke="none" />
     </svg>
   )
 }
+
 
 // AI 客户端：应用 logo mark（与 RuntimePicker / 内置 Agent 一致）
 export function ChatIcon({ size = 24, className }: IconProps) {
@@ -106,54 +108,56 @@ export function ChatIcon({ size = 24, className }: IconProps) {
   )
 }
 
-// 记忆：节点图
+// 记忆：三层叠片（L1 注入 / L2 按需），顶层带标记点
 export function MemoryIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <circle cx="7" cy="8" r="2" />
-      <circle cx="17" cy="9" r="2" />
-      <circle cx="11" cy="16.5" r="2" />
-      <path d="M8.9 8.6 L15.1 8.9" />
-      <path d="M8.2 9.7 L9.9 14.8" />
-      <path d="M15.5 10.6 L12.3 14.9" />
+      <path d="M12 3.5 L20.5 8 L12 12.5 L3.5 8 Z" />
+      <path d="M3.5 12 L12 16.5 L20.5 12" />
+      <path d="M3.5 16 L12 20.5 L20.5 16" />
+      <circle cx="12" cy="8" r="1" fill="currentColor" stroke="none" />
     </svg>
   )
 }
 
-// 混音器：推子
+
+// 混音器：三条推子轨道，胶囊形推钮断开轨道
 export function MixerIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M7 4 V20" />
-      <path d="M12 4 V20" />
-      <path d="M17 4 V20" />
-      <circle cx="7" cy="9" r="1.8" />
-      <circle cx="12" cy="14" r="1.8" />
-      <circle cx="17" cy="8" r="1.8" />
+      <path d="M6 3.5 V8 M6 12 V20.5" />
+      <path d="M12 3.5 V12.5 M12 16.5 V20.5" />
+      <path d="M18 3.5 V6 M18 10 V20.5" />
+      <rect x="3.75" y="8" width="4.5" height="4" rx="1.5" />
+      <rect x="9.75" y="12.5" width="4.5" height="4" rx="1.5" />
+      <rect x="15.75" y="6" width="4.5" height="4" rx="1.5" />
     </svg>
   )
 }
 
-// Kivio Code：终端
-export function CodeIcon(props: IconProps) {
+
+// 本地 CLI：终端窗口（标题栏 + 提示符 + 光标）
+export function CliIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M5 5 H19 A2 2 0 0 1 21 7 V17 A2 2 0 0 1 19 19 H5 A2 2 0 0 1 3 17 V7 A2 2 0 0 1 5 5 Z" />
-      <path d="M7 10 L10 12.5 L7 15" />
-      <path d="M12.5 15 H16" />
+      <rect x="3" y="4" width="18" height="16" rx="3" />
+      <path d="M3 8 H21" />
+      <path d="M7 12 L9.5 14 L7 16" />
+      <path d="M12 16 H16" />
     </svg>
   )
 }
 
-// 本地 CLI Agent：机器人
+
+// 助手：圆角机器人头（天线 + 胶囊眼 + 耳侧）
 export function AgentIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M7 9 H17 A1.5 1.5 0 0 1 18.5 10.5 V16.5 A1.5 1.5 0 0 1 17 18 H7 A1.5 1.5 0 0 1 5.5 16.5 V10.5 A1.5 1.5 0 0 1 7 9 Z" />
-      <path d="M12 9 V6" />
-      <circle cx="12" cy="5" r="1" />
-      <path d="M9.5 13 V13" />
-      <path d="M14.5 13 V13" />
+      <rect x="4.5" y="7.5" width="15" height="12" rx="4" />
+      <path d="M12 7.5 V4.75" />
+      <circle cx="12" cy="3.75" r="1" fill="currentColor" stroke="none" />
+      <path d="M9.25 12.25 V14 M14.75 12.25 V14" />
+      <path d="M2.5 12 V15 M21.5 12 V15" />
     </svg>
   )
 }
@@ -170,16 +174,18 @@ export function McpIcon(props: IconProps) {
   )
 }
 
-// 连接器：两个互锁的链环（区别于 McpIcon 的插头），表达「连接外部数据源」
+// 连接器：两个斜向互扣的链环
 export function ConnectorsIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M9.5 7 H7 A4 4 0 0 0 7 15 H9.5" />
-      <path d="M14.5 7 H17 A4 4 0 0 1 17 15 H14.5" />
-      <path d="M8.5 11 H15.5" />
+      <g transform="rotate(-45 12 12)">
+        <rect x="1.25" y="8.5" width="12.5" height="7" rx="3.5" />
+        <rect x="10.25" y="8.5" width="12.5" height="7" rx="3.5" />
+      </g>
     </svg>
   )
 }
+
 
 // 作品：扁封套，口里露出折角 / 方片 / 圆片
 export function WorksIcon(props: IconProps) {
@@ -193,15 +199,17 @@ export function WorksIcon(props: IconProps) {
   )
 }
 
-// 对话库：两枚叠放的对话气泡
+// 对话库：前景气泡带尾巴，后面一枚气泡露出右上角
 export function SessionsIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M5 15.5 V8.5 A2.5 2.5 0 0 1 7.5 6 H14 A2.5 2.5 0 0 1 16.5 8.5 V12 A2.5 2.5 0 0 1 14 14.5 H9 L5 17 Z" />
-      <path d="M10 17.2 H16.5 L20 19.5 V16.8 V13.2 A2.2 2.2 0 0 0 17.8 11" />
+      <path d="M8.5 6 V5.5 A2 2 0 0 1 10.5 3.5 H18.5 A2 2 0 0 1 20.5 5.5 V11.5 A2 2 0 0 1 18.5 13.5 H18.5" />
+      <path d="M5.5 8 H14.5 A2 2 0 0 1 16.5 10 V15.5 A2 2 0 0 1 14.5 17.5 H9.5 L6 20.5 V17.5 H5.5 A2 2 0 0 1 3.5 15.5 V10 A2 2 0 0 1 5.5 8 Z" />
+      <path d="M7 12.75 H13" />
     </svg>
   )
 }
+
 
 // 插件：拼图块（与扩展中心里原 Puzzle 语义一致）
 export function PluginsIcon(props: IconProps) {
@@ -216,14 +224,16 @@ export function PluginsIcon(props: IconProps) {
   )
 }
 
-// Hooks：闪电（生命周期触发）
+// Hooks：一枚鱼钩（环眼 + 钩身 + 倒刺）
 export function HooksIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M13.5 2.5 L5 13.5 H11 L10.5 21.5 L19 10.5 H13 Z" />
+      <circle cx="16" cy="4.75" r="1.75" />
+      <path d="M16 6.5 V14 A5.75 5.75 0 0 1 4.5 14 V11 L8 13.75" />
     </svg>
   )
 }
+
 
 // 插件：主体模块右上留出接口，独立圆角模块嵌入。
 export function PluginIcon(props: IconProps) {
@@ -347,45 +357,83 @@ export function DefaultSkillIcon(props: IconProps) {
   )
 }
 
-// 网络搜索：地球仪（经线椭圆 + 赤道），填满 viewBox，小尺寸也清晰
+// 网络搜索：地球仪（经线椭圆 + 弯曲纬线），填满 viewBox，小尺寸也清晰
 export function WebSearchIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12 H21" />
-      <path d="M12 3 a 4.5 9 0 0 0 0 18 a 4.5 9 0 0 0 0 -18" />
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M12 3.25 a 4 8.75 0 0 0 0 17.5 a 4 8.75 0 0 0 0 -17.5" />
+      <path d="M4.2 8.5 Q12 10.6 19.8 8.5" />
+      <path d="M4.2 15.5 Q12 13.4 19.8 15.5" />
     </svg>
   )
 }
 
-// 用量统计：柱状图
+
+// 用量统计：三根圆角柱
 export function UsageIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M4 20 H20" />
-      <path d="M7.5 20 V13" />
-      <path d="M12 20 V7" />
-      <path d="M16.5 20 V11" />
+      <rect x="4" y="12" width="4" height="8.5" rx="1.25" />
+      <rect x="10" y="4" width="4" height="16.5" rx="1.25" />
+      <rect x="16" y="8.5" width="4" height="12" rx="1.25" />
     </svg>
   )
 }
 
-// 模型：云
+
+// 模型：等轴立方体（一个模型 = 一个封装好的块），与齿轮式的「基础」拉开轮廓
 export function ProvidersIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <path d="M6.5 18 A3.5 3.5 0 0 1 6.8 11 A5 5 0 0 1 16.5 10.5 A3.5 3.5 0 0 1 17 18 Z" />
+      <path d="M12 2.75 L20 7.25 V16.75 L12 21.25 L4 16.75 V7.25 Z" />
+      <path d="M4 7.25 L12 11.75 L20 7.25" />
+      <path d="M12 11.75 V21.25" />
     </svg>
   )
 }
 
-// 关于：信息
+
+// 关于：信息（实心点）
 export function AboutIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)}>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 11 V16.5" />
-      <path d="M12 7.8 V7.81" />
+      <circle cx="12" cy="12" r="8.75" />
+      <path d="M12 11 V16.25" />
+      <circle cx="12" cy="7.85" r="1.1" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+// 电脑操控：显示器里一枚指针
+export function ComputerIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <rect x="3" y="3.5" width="18" height="13" rx="2.5" />
+      <path d="M9 20.5 H15 M12 16.5 V20.5" />
+      <path d="M10 7 L14.8 9.4 L12.7 10.2 L11.8 12.4 Z" />
+    </svg>
+  )
+}
+
+// 媒体站：后方一张相片，前方一块带播放键的画面
+export function MediaIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M7 6.5 V5.5 A2 2 0 0 1 9 3.5 H18.5 A2 2 0 0 1 20.5 5.5 V13 A2 2 0 0 1 18.5 15 H17.5" />
+      <rect x="3.5" y="8" width="14" height="12.5" rx="2.5" />
+      <path d="M9 11.75 V16.75 L13.25 14.25 Z" />
+    </svg>
+  )
+}
+
+// 笔记：折角便签 + 两行字
+export function NotesIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)}>
+      <path d="M14.5 20.5 H6.5 A2 2 0 0 1 4.5 18.5 V5.5 A2 2 0 0 1 6.5 3.5 H17.5 A2 2 0 0 1 19.5 5.5 V15.5 Z" />
+      <path d="M14.5 20.5 V17.5 A2 2 0 0 1 16.5 15.5 H19.5" />
+      <path d="M8 8.5 H16 M8 12 H13" />
     </svg>
   )
 }
