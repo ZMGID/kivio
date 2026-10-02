@@ -627,7 +627,7 @@ button.chat-composer-status-item:hover {
 
 /* 回答标题目录：和右侧轮次导航共用主区的绝对层，不参与消息列宽度计算。
    刻度和标题是同一行：收起时只露出刻度，悬停时原地展开标题，行位置不动，也不做过渡动画。
-   行高按可用高度和标题数自适应（24–36px），放不下时列表滚动。
+   行高按可用高度和标题数自适应（14–22px），放不下时列表滚动。
    层级靠刻度长短和标题字重区分：主级刻度最长、标题最重，子级依次缩短、变淡并缩进。 */
 .chat-heading-navigator {
   --outline-tick: rgb(163 163 163);
@@ -665,7 +665,7 @@ button.chat-composer-status-item:hover {
   position: relative;
   display: flex;
   box-sizing: border-box;
-  width: 38px;
+  width: 32px;
   max-height: 100%;
   flex-direction: column;
   overflow-x: hidden;
@@ -696,7 +696,7 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-item {
   display: flex;
   width: 100%;
-  height: clamp(24px, calc((100cqh - 12px) / var(--heading-count)), 36px);
+  height: clamp(14px, calc((100cqh - 12px) / var(--heading-count)), 22px);
   flex: 0 0 auto;
   align-items: center;
   border: 0;
@@ -716,15 +716,15 @@ button.chat-composer-status-item:hover {
 
 .chat-heading-navigator-tick {
   display: flex;
-  width: 26px;
-  flex: 0 0 26px;
+  width: 20px;
+  flex: 0 0 20px;
   align-items: center;
 }
 
 .chat-heading-navigator-tick::before {
   content: '';
   display: block;
-  width: calc(14px - min(var(--heading-depth), 2) * 3.5px);
+  width: calc(10px - min(var(--heading-depth), 2) * 2.5px);
   height: 1.5px;
   border-radius: 999px;
   background: var(--outline-tick);
@@ -945,6 +945,11 @@ button.chat-composer-status-item:hover {
   .chat-message-navigator {
     display: none;
   }
+}
+
+/* 标题目录随滚动在不同回答间出现 / 消失，不能靠给正文加内边距让位，否则正文会反复重排。
+   消息列（max-w-4xl）左侧留白不够放下目录时直接隐藏。 */
+@container chat-main (max-width: 959px) {
   .chat-heading-navigator {
     display: none;
   }
@@ -956,17 +961,15 @@ button.chat-composer-status-item:hover {
   .has-message-navigator .chat-message-list-inner {
     padding-right: 3.25rem;
   }
-  .has-heading-navigator .chat-message-list-inner {
-    padding-left: 3.25rem;
-  }
 }
 
-/* 并排区域在宽屏也会延伸到边缘，为两侧导航器保留空间。 */
+/* 并排区域在宽屏也会延伸到边缘，为两侧导航器保留空间。左侧标题目录随滚动出现 / 消失，
+   固定预留，不跟着 has-heading-navigator 切换，免得正文重排。 */
 @container chat-main (min-width: 1000px) {
   .has-message-navigator .chat-message-list-inner--wide {
     padding-right: 3.25rem;
   }
-  .has-heading-navigator .chat-message-list-inner--wide {
+  .chat-message-list-inner--wide {
     padding-left: 3.25rem;
   }
 }
@@ -2414,17 +2417,4 @@ button.chat-composer-status-item:hover {
   }
 }
 
-.chat-window-shell button:focus {
-  outline: none;
-}
-
-.chat-window-shell button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
-  /* 键盘聚焦时焦点环缓入；失焦时瞬退（不拖尾），是更利落的行为。 */
-  transition: box-shadow var(--kv-dur-fast) var(--kv-ease-out);
-}
-
-.dark .chat-window-shell button:focus-visible {
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
-}
+/* 按钮焦点环见 shared-surfaces.css（与模态框共用，并只在键盘操作时出现）。 */
