@@ -2240,6 +2240,7 @@ async fn handle_cursor_extension(
         },
         requires_user_interaction: method == "cursor/ask_question"
             || method == "elicitation/create",
+        requires_manual_approval: false,
     };
     if bridge.requests.send(ask).await.is_err() {
         return write_rpc_result(stdin, id, host_request_declined_result(method)).await;

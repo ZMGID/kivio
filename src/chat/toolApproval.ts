@@ -12,6 +12,7 @@ const TOOL_APPROVAL_VERBS: Record<string, { verb: string; path?: boolean }> = {
   read_file: { verb: '读取', path: true },
   bash: { verb: '执行' },
   run_command: { verb: '执行' },
+  write_stdin: { verb: '向终端输入' },
 }
 
 /**

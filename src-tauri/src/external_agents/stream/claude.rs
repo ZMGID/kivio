@@ -456,6 +456,52 @@ fn api_retry_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
     })
 }
 
+/// 顶层 `rate_limit_event.rate_limit_info`（2.1.287 schema：`status` allowed /
+/// allowed_warning / rejected、`rateLimitType`、`resetsAt` 秒级 epoch、`overageStatus`）。
+///
+/// 订阅窗口被拒且没有超额可用时，CLI 不再出新帧、静静等窗口重置，界面只剩一个转圈
+/// （t3code 同样为此补了提示）。只对这一种状态出状态行；allowed / warning 不打扰。
+fn rate_limit_rejected_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let info = obj.get("rate_limit_info")?;
+    if info.get("status").and_then(|v| v.as_str()) != Some("rejected") {
+        return None;
+    }
+    if matches!(
+        info.get("overageStatus").and_then(|v| v.as_str()),
+        Some("allowed" | "allowed_warning")
+    ) {
+        return None;
+    }
+    let window = match info.get("rateLimitType").and_then(|v| v.as_str()) {
+        Some("five_hour") => "5-hour limit",
+        Some("seven_day") | Some("seven_day_overage_included") => "weekly limit",
+        Some("seven_day_opus") => "weekly Opus limit",
+        Some("seven_day_sonnet") => "weekly Sonnet limit",
+        Some("overage") => "extra usage limit",
+        _ => "usage limit",
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Some(match info.get("resetsAt").and_then(|v| v.as_i64()) {
+        Some(at) if at > now => {
+            format!("{window} reached · resets in {}", format_wait(at - now))
+        }
+        _ => format!("{window} reached"),
+    })
+}
+
+fn format_wait(secs: i64) -> String {
+    let mins = (secs + 59) / 60;
+    let (d, h, m) = (mins / 1440, (mins % 1440) / 60, mins % 60);
+    match (d, h) {
+        (0, 0) => format!("{m}m"),
+        (0, _) => format!("{h}h {m}m"),
+        _ => format!("{d}d {h}h"),
+    }
+}
+
 /// `system/init.mcp_server_errors`（2.1.219）：`--mcp-config` 校验失败被跳过的条目。
 /// 终端会打 stderr 警告；SDK/宿主把 stderr 吃掉时，只有这个字段能看见。
 ///
@@ -1293,6 +1339,11 @@ impl ClaudeStreamState {
                         .unwrap_or("unknown error")
                         .to_string(),
                 });
+            }
+            "rate_limit_event" => {
+                if let Some(text) = rate_limit_rejected_note(obj) {
+                    sink(UnifiedAgentEvent::StatusNote { text });
+                }
             }
             // ---- 以下顶层 type **有意不接**（不是漏了）----
             //
@@ -2407,6 +2458,45 @@ mod tests {
         ]);
         assert_eq!(notes(&events).len(), 1, "{events:?}");
         assert!(errors(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn rejected_rate_limit_window_shows_a_status_note() {
+        let note = |info: &str| {
+            let raw = format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{info},"uuid":"u","session_id":"s"}}"#
+            );
+            run(&[raw.as_str()]).into_iter().find_map(|e| match e {
+                UnifiedAgentEvent::StatusNote { text } => Some(text),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            note(r#"{"status":"allowed","rateLimitType":"five_hour"}"#),
+            None
+        );
+        assert_eq!(
+            note(r#"{"status":"rejected","rateLimitType":"five_hour","overageStatus":"allowed"}"#),
+            None
+        );
+        assert_eq!(
+            note(r#"{"status":"rejected","rateLimitType":"seven_day","resetsAt":1}"#).as_deref(),
+            Some("weekly limit reached")
+        );
+        let far = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2 * 3600;
+        let text = note(&format!(
+            r#"{{"status":"rejected","rateLimitType":"five_hour","resetsAt":{far}}}"#
+        ))
+        .unwrap();
+        assert!(
+            text.starts_with("5-hour limit reached · resets in 2h"),
+            "{text}"
+        );
+        assert_eq!(format_wait(3 * 86400 + 5 * 3600), "3d 5h");
     }
 
     #[test]

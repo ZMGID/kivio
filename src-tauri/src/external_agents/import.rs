@@ -535,6 +535,24 @@ fn codex_session_detail(path: &Path) -> (usize, Option<String>) {
                         .map(str::to_string);
                 }
             }
+            // 0.152+ paginated 线程：正文在 `item_completed` 里，同一文件不会再写 user_message。
+            (Some("event_msg"), Some("item_completed")) => {
+                if let Some((role, text)) =
+                    crate::external_agents::import_history::codex_turn_item_text(
+                        payload.and_then(|p| p.get("item")),
+                    )
+                {
+                    if role == "user" {
+                        count += 1;
+                        if first_user.is_none() {
+                            let text = text.trim();
+                            if !text.is_empty() {
+                                first_user = Some(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
             // `developer` 角色是注入的权限说明等系统文本，不是对话内容。
             (Some("response_item"), Some("message")) => {
                 let role = payload

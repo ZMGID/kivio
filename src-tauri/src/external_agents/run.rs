@@ -2364,9 +2364,12 @@ impl ApprovalHost<'_> {
         }
         // 「完全」档：通道之所以接上只为了上面那两张卡，普通工具原地放行。
         // 少了这一条，选了「全自动放行」的用户会突然开始每个工具都被问一次。
-        if self
-            .auto_allow_tools
-            .load(std::sync::atomic::Ordering::Relaxed)
+        // 例外是 CLI 标了必须人工确认的安全检查（危险 `rm` 等）：bypass 下 CLI 仍然问，
+        // 正是要等一个人，宿主替他点「允许」就把这道保护拆了。
+        if !ask.requires_manual_approval
+            && self
+                .auto_allow_tools
+                .load(std::sync::atomic::Ordering::Relaxed)
         {
             return crate::external_agents::session::live::ApprovalDecision {
                 request_id: ask.request_id,

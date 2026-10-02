@@ -674,7 +674,8 @@ pub fn parse_grok_history(raw: &str) -> Vec<ImportedMessage> {
 
 /// 解析 codex 的 `rollout-*.jsonl`。
 ///
-/// 用于显示的正文取 `event_msg` 的 `user_message` / `agent_message`——`response_item.message`
+/// 用于显示的正文取 `event_msg` 的 `user_message` / `agent_message`（0.152+ paginated 线程是
+/// `item_completed`）——`response_item.message`
 /// 里混着 `role: developer` 的权限说明等注入文本，不是对话内容。
 ///
 /// 工具有两套：`function_call` / `function_call_output`（普通工具）和 `custom_tool_call` /
@@ -711,6 +712,15 @@ pub fn parse_codex_history(raw: &str) -> Vec<ImportedMessage> {
             ("event_msg", "agent_message") => {
                 switch_role(&mut pending, &mut out, "assistant", ts);
                 pending.push_text(payload.get("message").and_then(Value::as_str).unwrap_or(""));
+            }
+            // 0.152+ 默认 paginated 线程不再写 `user_message` / `agent_message`，正文只在
+            // `item_completed` 的 TurnItem 里（本机 0.158 rollout 核实）。两种格式不会同文件混写。
+            ("event_msg", "item_completed") => {
+                let Some((role, text)) = codex_turn_item_text(payload.get("item")) else {
+                    continue;
+                };
+                switch_role(&mut pending, &mut out, role, ts);
+                pending.push_text(&text);
             }
             ("response_item", "reasoning") => {
                 switch_role(&mut pending, &mut out, "assistant", ts);
@@ -779,6 +789,31 @@ pub fn parse_codex_history(raw: &str) -> Vec<ImportedMessage> {
         out.push(done);
     }
     coalesce_adjacent(out)
+}
+
+/// paginated rollout 里 `item_completed.item` 的对话正文：`UserMessage` 的 `text` 块、
+/// `AgentMessage` 的 `Text` 块（大小写两种都见过）。其余 item（命令、推理……）返回 `None`，
+/// 它们仍由 `response_item` 那一路解析。
+pub(crate) fn codex_turn_item_text(item: Option<&Value>) -> Option<(&'static str, String)> {
+    let item = item?;
+    let role = match item.get("type").and_then(Value::as_str)? {
+        "UserMessage" | "userMessage" => "user",
+        "AgentMessage" | "agentMessage" => "assistant",
+        _ => return None,
+    };
+    let text = item
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|c| {
+            c.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.eq_ignore_ascii_case("text"))
+        })
+        .filter_map(|c| c.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    Some((role, text))
 }
 
 /// 把 ACP `session/load` 重放出来的 `session/update` 转成消息。
@@ -1052,6 +1087,26 @@ mod tests {
             assistant.tool_calls[1].result_preview.as_deref(),
             Some("Success.")
         );
+    }
+
+    #[test]
+    fn codex_paginated_rollout_reads_item_completed_messages() {
+        // 0.158 实测形状：没有 user_message / agent_message，正文只在 item_completed 里；
+        // response_item 的 user 消息混着 AGENTS.md 注入，不能拿来当正文。
+        let raw = jsonl(&[
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"AGENTS.md instructions"}]}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"修一下闪烁"}]}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"先看渲染流程。"}],"phase":"commentary"}}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"{}","call_id":"c1"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["ls"]}}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"已修复。"}],"phase":"final_answer"}}}"#,
+        ]);
+        let msgs = parse_codex_history(&raw);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].message.content, "修一下闪烁");
+        assert!(msgs[1].message.content.contains("先看渲染流程。"));
+        assert!(msgs[1].message.content.contains("已修复。"));
+        assert_eq!(msgs[1].message.tool_calls.len(), 1);
     }
 
     #[test]

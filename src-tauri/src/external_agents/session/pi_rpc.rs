@@ -886,6 +886,7 @@ where
         tool_name: tool_name.to_string(),
         input: raw.clone(),
         requires_user_interaction: true,
+        requires_manual_approval: false,
     };
     if bridge.requests.send(ask).await.is_err() {
         return reject_extension_ui(stdin, raw).await;

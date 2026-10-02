@@ -1121,8 +1121,7 @@ async fn probe_models(
         }
     }
 
-    // Codex：对齐 desktop-cc-gui curated four；runtime 只 enrich 同 id。
-    // list/debug 都失败时仍 Ok(curated)—— 下拉永不空（不再抛误导性 Err）。
+    // Codex：live model/list 为准；list/debug 都失败时仍 Ok(静态兜底)——下拉永不空。
     if matches!(def.model_probe, Some(ModelProbeStrategy::CodexAppServer)) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(20);
         let (config_model, _) = read_codex_current_config();

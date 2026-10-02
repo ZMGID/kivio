@@ -44,6 +44,10 @@ pub struct ApprovalAsk {
     /// `ApprovalDecision::set_permission_mode` 切档位。其余（CLI 将来新增的
     /// 交互工具）仍当场拒（见 `claude_stream::APPROVAL_INTERACTIVE_UNSUPPORTED`）。
     pub requires_user_interaction: bool,
+    /// CLI 声明这次询问**必须由人确认**，「完全」档也不能替用户点头。claude 2.1.281+ 的
+    /// 安全检查（危险 `rm`、敏感文件 / 工作区外符号链接写入）在 `can_use_tool` 上带
+    /// `classifier_approvable: false` 或 `default_to_no: true`；其余 codec 恒为 false。
+    pub requires_manual_approval: bool,
 }
 
 /// 用户对某条询问的答复。`request_id` 是路由键，与 `ApprovalAsk` 一一对应。

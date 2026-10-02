@@ -117,10 +117,11 @@ fn runtime_workspace_roots(cwd: &str, extra: &[String]) -> Vec<String> {
 /// when the model asks for workspace permission — echoing the grant is not enough
 /// if this list is empty.
 ///
-/// `thread/resume` sends **only** `threadId`. Extra cwd / sandbox / experimental roots
-/// made Codex reject a perfectly good rollout (Windows vs WSL path, or a capsule that
-/// did not exist when the thread was created). Model / sandbox for this turn go on
-/// `turn/start`.
+/// `thread/resume` sends **only** `threadId` + `excludeTurns`. Extra cwd / sandbox /
+/// experimental roots made Codex reject a perfectly good rollout (Windows vs WSL path, or a
+/// capsule that did not exist when the thread was created). Model / sandbox for this turn go
+/// on `turn/start`. `excludeTurns` (0.148+) skips full-history hydration — deprecated for
+/// paginated threads since 0.155 — and we only read `thread.id` back anyway.
 fn build_codex_thread_params(
     cwd: &str,
     sandbox_mode: &str,
@@ -129,7 +130,10 @@ fn build_codex_thread_params(
     resume_thread: Option<&str>,
 ) -> (&'static str, Value) {
     if let Some(tid) = resume_thread.filter(|tid| !tid.is_empty()) {
-        return ("thread/resume", json!({ "threadId": tid }));
+        return (
+            "thread/resume",
+            json!({ "threadId": tid, "excludeTurns": true }),
+        );
     }
     let cwd_abs = absolute_workspace_path(cwd);
     let mut params = json!({});
@@ -233,7 +237,7 @@ fn approval_response(method: &str, params: &Value) -> Option<Value> {
     }
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            Some(json!({ "decision": "acceptForSession" }))
+            Some(json!({ "decision": approve_decision(params) }))
         }
         // Legacy exec/apply-patch approval requests use ReviewDecision.
         "execCommandApproval" | "applyPatchApproval" => {
@@ -244,6 +248,19 @@ fn approval_response(method: &str, params: &Value) -> Option<Value> {
             "scope": "session"
         })),
         _ => None,
+    }
+}
+
+/// `acceptForSession` unless the server's ordered `availableDecisions` leaves it out —
+/// 0.158 terminal-input approvals (`kind: writeStdin`) only offer `accept` / `cancel`.
+fn approve_decision(params: &Value) -> &'static str {
+    let offered = params
+        .get("availableDecisions")
+        .and_then(|v| v.as_array())
+        .filter(|list| !list.is_empty());
+    match offered {
+        Some(list) if !list.iter().any(|d| d.as_str() == Some("acceptForSession")) => "accept",
+        _ => "acceptForSession",
     }
 }
 
@@ -285,8 +302,15 @@ fn approval_ask_from_params(method: &str, id: &Value, params: &Value) -> Approva
             let command = json_str(params, "command").unwrap_or("");
             let reason = json_str(params, "reason").unwrap_or("");
             let display = if command.is_empty() { reason } else { command };
+            // Input for an already-running terminal is its own tool: a prior 「总是允许」
+            // Bash must not cover it, and the card has to say what is being typed where.
+            let tool = if json_str(params, "kind") == Some("writeStdin") {
+                "write_stdin"
+            } else {
+                "Bash"
+            };
             (
-                "Bash",
+                tool,
                 json!({
                     "command": display,
                     "cwd": params.get("cwd").cloned().unwrap_or(Value::Null),
@@ -320,6 +344,7 @@ fn approval_ask_from_params(method: &str, id: &Value, params: &Value) -> Approva
         tool_name: tool_name.to_string(),
         input,
         requires_user_interaction: false,
+        requires_manual_approval: false,
     }
 }
 
@@ -1594,7 +1619,7 @@ impl CodexAppServerSession {
                         &mut self.stdin,
                         iid,
                         "turn/interrupt",
-                        json!({ "threadId": self.thread_id }),
+                        turn_interrupt_params(&self.thread_id, self.active_turn_id.as_deref()),
                     )
                     .await;
                     return Err("cancelled".to_string());
@@ -1689,8 +1714,17 @@ impl CodexAppServerSession {
             if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
                 // 服务端给的活跃 turn id：每条 turn 相关通知的 params 都带 turnId。
-                // `turn/steer` 的 `expectedTurnId` 只能取自这里。
-                if let Some(turn) = params.get("turnId").and_then(|v| v.as_str()) {
+                // `turn/steer` 的 `expectedTurnId` 只能取自这里。子代理线程的通知也带 turnId，
+                // 只认本线程的，否则中断 / 引导会打到子线程的轮次上。
+                let own_thread = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|t| t == self.thread_id);
+                if let Some(turn) = params
+                    .get("turnId")
+                    .and_then(|v| v.as_str())
+                    .filter(|_| own_thread)
+                {
                     self.active_turn_id = Some(turn.to_string());
                 }
                 let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
@@ -1813,6 +1847,16 @@ async fn answer_codex_server_request(
     write_rpc_result(stdin, id, unknown_server_request_result()).await
 }
 
+/// `turn/interrupt` 的 `turnId` 是必填项（0.148–0.160 schema 均如此）；缺了服务端回
+/// `-32600 missing field turnId`，中断从未生效，只能靠拆进程收场。服务端反向请求的
+/// params 都带 `turnId`，在飞轮次则取通知里记下的 `active_turn_id`。
+fn turn_interrupt_params(thread_id: &str, turn_id: Option<&str>) -> Value {
+    match turn_id {
+        Some(turn_id) => json!({ "threadId": thread_id, "turnId": turn_id }),
+        None => json!({ "threadId": thread_id }),
+    }
+}
+
 /// 未知的带 `id` 请求：回 decline 结果而不是 `-32601`，避免这一轮挂死。
 fn unknown_server_request_result() -> Value {
     json!({ "decision": "decline" })
@@ -1858,7 +1902,7 @@ async fn answer_codex_tool_approval(
                     stdin,
                     iid,
                     "turn/interrupt",
-                    json!({ "threadId": thread_id }),
+                    turn_interrupt_params(thread_id, params.get("turnId").and_then(|v| v.as_str())),
                 )
                 .await;
                 return Err("cancelled".to_string());
@@ -1937,6 +1981,7 @@ async fn answer_codex_user_interaction(
         },
         input: params.clone(),
         requires_user_interaction: true,
+        requires_manual_approval: false,
     };
     if bridge.requests.send(ask).await.is_err() {
         if elicitation {
@@ -1961,7 +2006,7 @@ async fn answer_codex_user_interaction(
                     stdin,
                     iid,
                     "turn/interrupt",
-                    json!({ "threadId": thread_id }),
+                    turn_interrupt_params(thread_id, params.get("turnId").and_then(|v| v.as_str())),
                 )
                 .await;
                 return Err("cancelled".to_string());
@@ -2311,14 +2356,11 @@ pub struct CodexModelsProbe {
     pub reasoning_options: Vec<crate::external_agents::types::RuntimeModelOption>,
 }
 
-/// **Selectable** Codex catalog — word-for-word the 4 entries in desktop-cc-gui
-/// `generatedModelCatalog.json` → `engines.codex`.
-///
-/// This is what users actually see in cc-gui when `model/list` is empty/degraded
-/// (workspace not connected): sol / terra / luna / gpt-5.5. Live `model/list` on
-/// current CLI returns a *different* short set (5.5/5.4/5.4-mini/5.3-codex/5.2) and
-/// **omits** gpt-5.6-* — so we do **not** dump that list into the picker. Runtime is
-/// only used to enrich efforts/labels for ids that already sit in this curated table.
+/// Offline fallback catalog — used only when neither `model/list` nor `codex debug models`
+/// answers, plus effort ladders for listed ids that come back without
+/// `supportedReasoningEfforts`. Live `model/list` is authoritative since 0.157: it filters
+/// legacy models server-side (`hidden`) and is the only place new families such as GPT-6
+/// (`gpt-6-astra` default in 0.158) appear.
 const CODEX_CURATED_CATALOG: &[(&str, &str, &[&str])] = &[
     (
         "gpt-5.6-sol",
@@ -2349,59 +2391,65 @@ fn effort_options(ids: &[&str]) -> Vec<crate::external_agents::types::RuntimeMod
         .collect()
 }
 
-/// Build the picker list the way desktop-cc-gui does in practice for most users:
+/// Build the picker list:
 ///
-/// 1. **Curated 4** (generated catalog) as the selectable set / order  
-/// 2. If runtime `model/list` has the **same id**, overwrite label / efforts / window  
-/// 3. If `config.toml` model is still missing, inject it after Auto  
-///
-/// Deliberately does **not** append every runtime-only id (gpt-5.4 / 5.2 / …) — that
-/// is what made Kivio show a junk list while cc-gui showed the clean 4.
+/// 1. Live `model/list` (already `hidden`-filtered, server default first) is the selectable
+///    set — same as t3code. A static table would hide every model released after it.
+/// 2. Only when the probe returned nothing, the curated fallback table.
+/// 3. If `config.toml` model is still missing, inject it after Auto.
 pub fn merge_codex_model_catalog(
     runtime: CodexModelsProbe,
     config_model: Option<&str>,
 ) -> CodexModelsProbe {
     use crate::external_agents::types::{default_model_option, RuntimeModelOption};
 
-    let runtime_by_id: std::collections::HashMap<&str, &RuntimeModelOption> = runtime
+    let curated_efforts = |id: &str| {
+        CODEX_CURATED_CATALOG
+            .iter()
+            .find(|(cid, _, _)| *cid == id)
+            .map(|(_, _, efforts)| effort_options(efforts))
+    };
+    let mut models = vec![runtime
         .models
         .iter()
-        .filter(|m| m.id != "default")
-        .map(|m| (m.id.as_str(), m))
-        .collect();
-
-    let mut models = vec![default_model_option()];
+        .find(|m| m.id == "default")
+        .cloned()
+        .unwrap_or_else(default_model_option)];
     let mut reasoning_by_model = std::collections::HashMap::new();
     let mut seen = HashSet::new();
     seen.insert("default".to_string());
 
-    for (id, label, efforts) in CODEX_CURATED_CATALOG {
-        seen.insert((*id).to_string());
-        // Runtime enrichment when the same catalog id appears in model/list.
-        if let Some(rt) = runtime_by_id.get(*id) {
-            models.push(RuntimeModelOption {
-                id: (*id).to_string(),
-                label: if rt.label.trim().is_empty() {
-                    (*label).to_string()
-                } else {
-                    rt.label.clone()
-                },
-                context_window_tokens: rt.context_window_tokens,
-            });
-            if let Some(opts) = runtime.reasoning_by_model.get(*id) {
-                if !opts.is_empty() {
-                    reasoning_by_model.insert((*id).to_string(), opts.clone());
-                    continue;
-                }
-            }
-        } else {
+    let live: Vec<&RuntimeModelOption> = runtime
+        .models
+        .iter()
+        .filter(|m| m.id != "default")
+        .collect();
+    if live.is_empty() {
+        for (id, label, efforts) in CODEX_CURATED_CATALOG {
+            seen.insert((*id).to_string());
             models.push(RuntimeModelOption {
                 id: (*id).to_string(),
                 label: (*label).to_string(),
                 context_window_tokens: None,
             });
+            reasoning_by_model.insert((*id).to_string(), effort_options(efforts));
         }
-        reasoning_by_model.insert((*id).to_string(), effort_options(efforts));
+    } else {
+        for m in live {
+            if !seen.insert(m.id.clone()) {
+                continue;
+            }
+            let efforts = runtime
+                .reasoning_by_model
+                .get(&m.id)
+                .filter(|o| !o.is_empty())
+                .cloned()
+                .or_else(|| curated_efforts(&m.id));
+            if let Some(efforts) = efforts {
+                reasoning_by_model.insert(m.id.clone(), efforts);
+            }
+            models.push(m.clone());
+        }
     }
 
     // config.toml model missing from curated set → inject (cc-gui same behavior).
@@ -2430,7 +2478,6 @@ pub fn merge_codex_model_catalog(
         .filter(|s| !s.is_empty())
         .and_then(|cfg| reasoning_by_model.get(cfg).cloned())
         .filter(|o| !o.is_empty())
-        .or_else(|| reasoning_by_model.get("gpt-5.6-sol").cloned())
         .or_else(|| {
             models
                 .iter()
@@ -2446,7 +2493,7 @@ pub fn merge_codex_model_catalog(
     }
 }
 
-/// When model/list / debug models both fail — still serve the curated 4.
+/// When model/list / debug models both fail — still serve the curated fallback.
 pub fn codex_static_fallback_probe() -> CodexModelsProbe {
     merge_codex_model_catalog(
         CodexModelsProbe {
@@ -3125,30 +3172,48 @@ mod tests {
     }
 
     #[test]
-    fn merge_uses_curated_four_like_cc_gui_not_raw_model_list() {
-        // Live model/list on this machine — 5 ids, no gpt-5.6-*. Must NOT dump these.
+    fn merge_uses_live_model_list_and_falls_back_to_curated() {
+        // Live 0.158 shape: GPT-6 family first, server default flagged.
         let runtime = parse_codex_model_list_result(&json!({
             "data": [
+                {"id": "gpt-6-sol", "displayName": "GPT-6-Sol"},
                 {
-                    "id": "gpt-5.5",
-                    "displayName": "GPT-5.5",
+                    "id": "gpt-6-astra",
+                    "displayName": "GPT-6-Astra",
                     "isDefault": true,
                     "supportedReasoningEfforts": [
                         {"reasoningEffort": "low", "description": "Fast"},
-                        {"reasoningEffort": "high", "description": "Deep"}
+                        {"reasoningEffort": "ultra", "description": "Deep"}
                     ]
                 },
-                {"id": "gpt-5.4", "displayName": "gpt-5.4"},
-                {"id": "gpt-5.4-mini", "displayName": "GPT-5.4-Mini"},
-                {"id": "gpt-5.3-codex", "displayName": "gpt-5.3-codex"},
-                {"id": "gpt-5.2", "displayName": "gpt-5.2"}
+                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol"},
+                {"id": "gpt-5.4", "displayName": "gpt-5.4", "hidden": true}
             ]
         }))
         .unwrap();
 
-        let merged = merge_codex_model_catalog(runtime, Some("gpt-5.6-sol"));
-        // curated four (+ Auto)
+        let merged = merge_codex_model_catalog(runtime, Some("gpt-6-astra"));
         let ids: Vec<&str> = merged.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["default", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"]
+        );
+        assert_eq!(
+            merged.reasoning_by_model.get("gpt-6-astra").unwrap().len(),
+            2
+        );
+        assert_eq!(merged.reasoning_options.len(), 2);
+        // Listed without efforts: curated ladder fills in when the id is known.
+        assert!(merged
+            .reasoning_by_model
+            .get("gpt-5.6-sol")
+            .unwrap()
+            .iter()
+            .any(|e| e.id == "ultra"));
+        assert!(!merged.reasoning_by_model.contains_key("gpt-6-sol"));
+
+        let fallback = codex_static_fallback_probe();
+        let ids: Vec<&str> = fallback.models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(
             ids,
             vec![
@@ -3156,30 +3221,9 @@ mod tests {
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
-                "gpt-5.5",
+                "gpt-5.5"
             ]
         );
-        // runtime-only junk must not appear
-        assert!(!merged.models.iter().any(|m| m.id == "gpt-5.4"));
-        assert!(!merged.models.iter().any(|m| m.id == "gpt-5.2"));
-        // runtime enriches gpt-5.5 label + efforts
-        assert_eq!(
-            merged
-                .models
-                .iter()
-                .find(|m| m.id == "gpt-5.5")
-                .unwrap()
-                .label,
-            "GPT-5.5"
-        );
-        assert_eq!(merged.reasoning_by_model.get("gpt-5.5").unwrap().len(), 2);
-        // sol keeps curated ultra ladder
-        assert!(merged
-            .reasoning_by_model
-            .get("gpt-5.6-sol")
-            .unwrap()
-            .iter()
-            .any(|e| e.id == "ultra"));
     }
 
     #[test]
@@ -3215,8 +3259,6 @@ mod tests {
         assert_eq!(merged.models[0].id, "default");
         assert_eq!(merged.models[1].id, "my-custom-proxy-model");
         assert!(merged.models[1].label.contains("config"));
-        // still the curated four after the config inject
-        assert!(merged.models.iter().any(|m| m.id == "gpt-5.6-sol"));
         assert!(merged.models.iter().any(|m| m.id == "gpt-5.5"));
     }
 
@@ -4094,7 +4136,7 @@ mod tests {
             Some("thr_1"),
         );
         assert_eq!(method, "thread/resume");
-        assert_eq!(params, json!({ "threadId": "thr_1" }));
+        assert_eq!(params, json!({ "threadId": "thr_1", "excludeTurns": true }));
     }
 
     #[test]
@@ -4164,6 +4206,49 @@ mod tests {
         assert_eq!(
             unknown_server_request_result(),
             json!({ "decision": "decline" })
+        );
+    }
+
+    #[test]
+    fn write_stdin_approval_is_its_own_tool_and_honors_available_decisions() {
+        let params = json!({
+            "kind": "writeStdin",
+            "command": "write_stdin --session-id 3 y",
+            "availableDecisions": ["accept", "cancel"]
+        });
+        let ask =
+            approval_ask_from_params("item/commandExecution/requestApproval", &json!(7), &params);
+        assert_eq!(ask.tool_name, "write_stdin");
+        assert_eq!(
+            approval_response("item/commandExecution/requestApproval", &params),
+            Some(json!({ "decision": "accept" }))
+        );
+        // Older servers / ordinary commands keep the session-wide grant.
+        let command = json!({ "command": "ls", "availableDecisions": ["accept", "acceptForSession", "cancel"] });
+        assert_eq!(
+            approval_ask_from_params("item/commandExecution/requestApproval", &json!(8), &command)
+                .tool_name,
+            "Bash"
+        );
+        assert_eq!(
+            approval_response("item/commandExecution/requestApproval", &command),
+            Some(json!({ "decision": "acceptForSession" }))
+        );
+        assert_eq!(
+            approval_response("item/commandExecution/requestApproval", &json!({})),
+            Some(json!({ "decision": "acceptForSession" }))
+        );
+    }
+
+    #[test]
+    fn turn_interrupt_carries_required_turn_id() {
+        assert_eq!(
+            turn_interrupt_params("th_1", Some("turn_7")),
+            json!({ "threadId": "th_1", "turnId": "turn_7" })
+        );
+        assert_eq!(
+            turn_interrupt_params("th_1", None),
+            json!({ "threadId": "th_1" })
         );
     }
 

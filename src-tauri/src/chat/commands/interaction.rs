@@ -825,7 +825,7 @@ pub(super) fn format_tool_approval_summary(record: &ToolCallRecord) -> ToolAppro
     // 的话外部 CLI 的审批卡永远落进 `_` 分支、只剩一坨截断的 JSON（与 spec 第 23 条前端
     // 工具卡踩过的是同一个坑）。字段名同理：claude 用 `file_path`，我们用 `path`。
     match record.name.to_ascii_lowercase().as_str() {
-        "bash" | "run_command" => {
+        "bash" | "run_command" | "write_stdin" => {
             if let Some(command) = field(&["command"]) {
                 target = Some(truncate_chars(
                     command.lines().next().unwrap_or(&command),

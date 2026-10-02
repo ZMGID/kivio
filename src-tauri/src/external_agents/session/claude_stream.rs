@@ -398,7 +398,21 @@ fn approval_ask_from_request(request_id: &str, request: &Value) -> ApprovalAsk {
             .get("requires_user_interaction")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        requires_manual_approval: requires_manual_approval(request),
     }
+}
+
+/// 安全检查要求人工确认（claude 2.1.281+，二进制 schema 原文）：
+/// - `classifier_approvable: false` = "at least one safety check requires manual approval
+///   (e.g. Windows path bypass, dangerous rm)"；复合 bash 的 `decision_reason_type` 是
+///   `subcommandResults`，嵌套的 safetyCheck 只能靠这个字段看出来；
+/// - `default_to_no: true` = "the ask must not be approvable by a single stray keystroke"。
+fn requires_manual_approval(request: &Value) -> bool {
+    request
+        .get("classifier_approvable")
+        .and_then(|v| v.as_bool())
+        == Some(false)
+        || request.get("default_to_no").and_then(|v| v.as_bool()) == Some(true)
 }
 
 /// 分流一帧 stdout JSON。
@@ -1631,6 +1645,28 @@ mod tests {
             InboundFrame::Ask(ask) => Some(ask),
             _ => None,
         }
+    }
+
+    /// 2.1.281+ 的安全检查必须等人确认：`classifier_approvable:false` 或 `default_to_no:true`
+    /// 任一出现即标记，「完全」档据此不再自动放行。
+    #[test]
+    fn safety_checks_require_manual_approval() {
+        let ask = |extra: &str| {
+            ask_for(&format!(
+                r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"can_use_tool",
+                    "tool_name":"Bash","input":{{"command":"rm -rf ~"}},"tool_use_id":"t"{extra}}}}}"#
+            ))
+            .expect("ask")
+            .requires_manual_approval
+        };
+        assert!(!ask(""));
+        assert!(!ask(
+            r#","decision_reason_type":"safetyCheck","classifier_approvable":true"#
+        ));
+        assert!(ask(
+            r#","decision_reason_type":"subcommandResults","classifier_approvable":false"#
+        ));
+        assert!(ask(r#","default_to_no":true"#));
     }
 
     /// **本项修复的核心断言**：喂一个我们不认识的 `control_request`，必须产生一条**带同一个

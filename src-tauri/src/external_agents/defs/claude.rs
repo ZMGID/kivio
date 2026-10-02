@@ -8,8 +8,8 @@ use super::super::types::{
 const FALLBACK_MODELS: &[(&str, &str)] = &[
     ("default", "Default"),
     ("claude-fable-5-1", "Fable 5.1"),
-    ("claude-opus-5", "Opus 5"),
-    ("claude-sonnet-5", "Sonnet 5"),
+    ("claude-opus-5-5", "Opus 5.5"),
+    ("claude-sonnet-5-5", "Sonnet 5.5"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
 ];
 
