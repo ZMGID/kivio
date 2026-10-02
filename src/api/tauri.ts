@@ -907,6 +907,7 @@ export type ModelInfo = {
     streaming?: boolean
     webSearch?: boolean
     imageGeneration?: boolean
+    videoGeneration?: boolean
     embedding?: boolean
   }
   /** 嵌入模型的向量维度（默认/原生）。 */

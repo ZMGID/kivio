@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   Plus, Minus, Trash2, RefreshCw, Eye, EyeOff, Wrench, Brain,
   ArrowLeft, ChevronRight, SlidersHorizontal, List,
-  Image as ImageIcon, Video,
+  Image as ImageIcon, Video, Clapperboard,
 } from 'lucide-react'
 import { Select, Input, SettingsGroup, FieldBlock, Toggle } from '../components'
 import { Button, IconButton } from '../../components/Button'
@@ -298,6 +298,11 @@ export function ProviderDetail({
                   {caps?.imageGeneration && (
                     <span className="kv-badge-mini kv-badge-mini--image" title={lang === 'zh' ? '生图' : 'Image generation'}>
                       <ImageIcon size={11} strokeWidth={2} />
+                    </span>
+                  )}
+                  {caps?.videoGeneration && (
+                    <span className="kv-badge-mini kv-badge-mini--video" title={lang === 'zh' ? '生视频' : 'Video generation'}>
+                      <Clapperboard size={11} strokeWidth={2} />
                     </span>
                   )}
                 </span>

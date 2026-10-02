@@ -14,6 +14,7 @@ type DbEntry = {
     streaming?: boolean
     webSearch?: boolean
     imageGeneration?: boolean
+    videoGeneration?: boolean
     embedding?: boolean
   }
   dimensions?: number
@@ -184,6 +185,7 @@ export function resolveModelInfo(
       streaming: override.capabilities?.streaming ?? defaults.capabilities?.streaming,
       webSearch: override.capabilities?.webSearch ?? defaults.capabilities?.webSearch,
       imageGeneration: override.capabilities?.imageGeneration ?? defaults.capabilities?.imageGeneration,
+      videoGeneration: override.capabilities?.videoGeneration ?? defaults.capabilities?.videoGeneration,
       videoInput: override.capabilities?.videoInput ?? defaults.capabilities?.videoInput,
       embedding: override.capabilities?.embedding ?? defaults.capabilities?.embedding,
     },
@@ -213,6 +215,7 @@ function toModelInfo(entry: DbEntry): ModelInfo {
       streaming: entry.capabilities.streaming ?? false,
       webSearch: entry.capabilities.webSearch ?? false,
       imageGeneration: entry.capabilities.imageGeneration ?? false,
+      videoGeneration: entry.capabilities.videoGeneration ?? false,
       videoInput: entry.capabilities.videoInput ?? false,
       embedding: entry.capabilities.embedding ?? false,
     },

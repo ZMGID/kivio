@@ -182,6 +182,7 @@ export function ModelDetailDrawer({
     streaming: lang === 'zh' ? '流式输出' : 'Streaming',
     webSearch: lang === 'zh' ? '网络搜索' : 'Web Search',
     imageGeneration: lang === 'zh' ? '生图' : 'Image Generation',
+    videoGeneration: lang === 'zh' ? '生视频' : 'Video Generation',
     efforts: lang === 'zh' ? '思考等级' : 'Reasoning Effort',
     effortsFollow: lang === 'zh' ? '跟随模型库' : 'Follow database',
     effortsFollowHint: lang === 'zh'
@@ -292,6 +293,7 @@ export function ModelDetailDrawer({
               <CapabilityToggle label={t.streaming} checked={form.capabilities?.streaming ?? false} onChange={(v) => updateCapability('streaming', v)} />
               <CapabilityToggle label={t.webSearch} checked={form.capabilities?.webSearch ?? false} onChange={(v) => updateCapability('webSearch', v)} />
               <CapabilityToggle label={t.imageGeneration} checked={form.capabilities?.imageGeneration ?? false} onChange={(v) => updateCapability('imageGeneration', v)} />
+              <CapabilityToggle label={t.videoGeneration} checked={form.capabilities?.videoGeneration ?? false} onChange={(v) => updateCapability('videoGeneration', v)} />
             </div>
           </div>
 

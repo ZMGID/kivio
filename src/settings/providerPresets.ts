@@ -90,6 +90,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKeyUrl: 'https://bailian.console.aliyun.com/?tab=model#/api-key',
   },
+  // 媒体站生视频走各家原生异步接口（src-tauri/src/chat/video_generation.rs 按地址识别）：
+  // Doubao → Seedance，Qwen / DashScope Intl → 万相，MiniMax → H3。
+  {
+    name: 'DashScope Intl',
+    baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    apiKeyUrl: 'https://modelstudio.console.alibabacloud.com/?tab=playground#/api-key',
+  },
+  {
+    name: 'MiniMax',
+    baseUrl: 'https://api.minimaxi.com/v1',
+    apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+  },
   {
     name: 'Doubao',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',

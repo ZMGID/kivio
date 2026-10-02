@@ -97,7 +97,13 @@
       "https://openrouter.ai/bytedance-seed",
       "https://openrouter.ai/bytedance-seed/seed-2.0-code",
       "https://ai.volcengine.com/model",
-      "https://research.doubao.com/zh/seed2_1"
+      "https://research.doubao.com/zh/seed2_1",
+      "https://platform.minimax.cn/docs/guides/video-generation.md",
+      "https://platform.minimax.cn/docs/api-reference/video-generation-v2-create.md",
+      "https://docs.volcengine.com/docs/ark/create-video-generation-task-api",
+      "https://help.aliyun.com/zh/model-studio/text-to-video-api-reference",
+      "https://help.aliyun.com/zh/model-studio/image-to-video-api-reference",
+      "https://help.aliyun.com/zh/model-studio/image-to-video-general-api-reference"
     ]
   },
 
@@ -875,6 +881,132 @@
     "contextWindow": 0,
     "maxOutput": 0,
     "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "imageGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "grok-imagine-video": {
+    "displayName": "Grok Imagine Video",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "minimax-h3": {
+    "displayName": "MiniMax H3",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "minimax-h3-max": {
+    "displayName": "MiniMax H3 Max",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "doubao-seedance-2-5": {
+    "displayName": "Doubao Seedance 2.5",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "doubao-seedance-2-0": {
+    "displayName": "Doubao Seedance 2.0",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "doubao-seedance-1-5-pro": {
+    "displayName": "Doubao Seedance 1.5 Pro",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "doubao-seedance-1-0-pro": {
+    "displayName": "Doubao Seedance 1.0 Pro",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "doubao-seedance-1-0-pro-fast": {
+    "displayName": "Doubao Seedance 1.0 Pro Fast",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.7-t2v": {
+    "displayName": "Wan 2.7 T2V",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": false, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.7-i2v": {
+    "displayName": "Wan 2.7 I2V",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.6-t2v": {
+    "displayName": "Wan 2.6 T2V",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": false, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.6-i2v": {
+    "displayName": "Wan 2.6 I2V",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.6-i2v-flash": {
+    "displayName": "Wan 2.6 I2V Flash",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.5-t2v-preview": {
+    "displayName": "Wan 2.5 T2V Preview",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": false, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.5-i2v-preview": {
+    "displayName": "Wan 2.5 I2V Preview",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.2-t2v-plus": {
+    "displayName": "Wan 2.2 T2V Plus",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": false, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.2-i2v-plus": {
+    "displayName": "Wan 2.2 I2V Plus",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
+    "pricing": { "input": 0.00, "output": 0.00 }
+  },
+  "wan2.2-i2v-flash": {
+    "displayName": "Wan 2.2 I2V Flash",
+    "contextWindow": 0,
+    "maxOutput": 0,
+    "capabilities": { "vision": true, "functionCalling": false, "reasoning": false, "streaming": false, "webSearch": false, "videoGeneration": true },
     "pricing": { "input": 0.00, "output": 0.00 }
   },
   "gpt-image-2": {

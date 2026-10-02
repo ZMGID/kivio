@@ -41,6 +41,7 @@ pub mod todo;
 pub mod types;
 pub(crate) mod video;
 mod video_analysis;
+pub(crate) mod video_generation;
 mod vision;
 pub mod workflow_hooks;
 

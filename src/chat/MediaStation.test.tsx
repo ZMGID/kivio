@@ -5,7 +5,7 @@ import { mediaStationApi, type MediaJob } from '../api/mediaStation'
 import { getSettingsCached } from '../api/settingsCache'
 import type { Settings } from '../api/tauri'
 
-vi.mock('../api/mediaStation', () => ({ mediaStationApi: { list: vi.fn(), start: vi.fn(), cancel: vi.fn(), read: vi.fn(), export: vi.fn(), reference: vi.fn() } }))
+vi.mock('../api/mediaStation', () => ({ mediaStationApi: { list: vi.fn(), start: vi.fn(), cancel: vi.fn(), resume: vi.fn(), read: vi.fn(), export: vi.fn(), reference: vi.fn() } }))
 vi.mock('../api/settingsCache', () => ({ getSettingsCached: vi.fn() }))
 vi.mock('../api/tauri', () => ({ isTauriRuntime: () => true }))
 vi.mock('../components/i18n', () => ({ useLang: () => 'zh' }))
@@ -22,7 +22,7 @@ it('submits once, observes the real task result, and keeps drafts across navigat
   let resolve!: (job: MediaJob) => void
   vi.mocked(mediaStationApi.start).mockImplementation(() => new Promise((r) => { resolve = r }))
   const view = render(<MediaStation onOpenSettings={vi.fn()} />)
-  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveValue('gpt-image-1'))
+  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveTextContent('gpt-image-1'))
   fireEvent.change(screen.getByLabelText('创作描述'), { target: { value: '晨光花瓶' } })
   const generate = screen.getByRole('button', { name: '开始生成' })
   fireEvent.click(generate); fireEvent.click(generate)
@@ -40,7 +40,7 @@ it('submits once, observes the real task result, and keeps drafts across navigat
 it('shows a failed submission and allows an explicit retry without losing the prompt', async () => {
   vi.mocked(mediaStationApi.start).mockRejectedValue(new Error('HTTP 429'))
   render(<MediaStation onOpenSettings={vi.fn()} />)
-  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveValue('gpt-image-1'))
+  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveTextContent('gpt-image-1'))
   fireEvent.change(screen.getByLabelText('创作描述'), { target: { value: 'retry prompt' } })
   fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('HTTP 429')
@@ -78,9 +78,79 @@ it('uses a saved image as the video first frame without submitting a paid task',
   fireEvent.click(await screen.findByRole('button', { name: '用作视频首帧' }))
   expect(await screen.findByText('image.png')).toBeTruthy()
   expect(screen.getByRole('button', { name: '生视频' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByLabelText('模型')).toHaveValue('')
+  expect(screen.getByLabelText('模型')).toHaveTextContent('')
+  expect(screen.getByLabelText('模型')).toBeDisabled()
   expect(mediaStationApi.start).not.toHaveBeenCalled()
   view.unmount()
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview')
   vi.unstubAllGlobals()
+})
+
+it('lists only providers and models that can generate the selected media kind', async () => {
+  vi.mocked(getSettingsCached).mockResolvedValue({
+    providers: [
+      { id: 'chat', name: 'Chat only', enabled: true, enabledModels: ['gpt-4o'] },
+      { id: 'p', name: 'Provider', enabled: true, enabledModels: ['gpt-4o', 'gpt-image-1'] },
+      { id: 'x', name: 'xAI', enabled: true, enabledModels: ['grok-imagine-video'] },
+    ],
+    defaultModels: { imageGeneration: { providerId: 'chat', model: 'gpt-4o' } },
+  } as Settings)
+  render(<MediaStation onOpenSettings={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: '生图' }))
+  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveTextContent('gpt-image-1'))
+  fireEvent.click(screen.getByLabelText('供应商'))
+  expect(screen.queryByRole('option', { name: /Chat only/ })).toBeNull()
+  expect(screen.queryByRole('option', { name: /xAI/ })).toBeNull()
+  fireEvent.click(screen.getByLabelText('模型'))
+  expect(screen.queryByRole('option', { name: /gpt-4o/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '生视频' }))
+  await waitFor(() => expect(screen.getByLabelText('供应商')).toHaveTextContent('xAI'))
+  expect(screen.getByLabelText('模型')).toHaveTextContent('grok-imagine-video')
+})
+
+it('fetches an accepted video again instead of submitting a new paid task', async () => {
+  const video = { ...job, status: 'failed' as const, error: 'HTTP 502 Bad Gateway', providerTaskId: 'remote-1', request: { ...job.request, kind: 'video' as const, model: 'grok-imagine-video' } }
+  vi.mocked(mediaStationApi.list).mockResolvedValue([video])
+  vi.mocked(mediaStationApi.resume).mockResolvedValue({ ...video, status: 'running', error: null })
+  render(<MediaStation onOpenSettings={vi.fn()} />)
+  fireEvent.click(await screen.findByRole('button', { name: /失败 晨光花瓶/ }))
+  fireEvent.click(screen.getByRole('button', { name: '继续获取结果' }))
+  await waitFor(() => expect(mediaStationApi.resume).toHaveBeenCalledWith(video.id))
+  expect(mediaStationApi.start).not.toHaveBeenCalled()
+})
+
+it('hides providers that media generation cannot use', async () => {
+  vi.mocked(getSettingsCached).mockResolvedValue({
+    providers: [
+      { id: 'oauth', name: 'OAuth', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'openai_responses', request: { oauth: { provider: 'codex' } } },
+      { id: 'claude', name: 'Claude', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'anthropic_messages', request: {} },
+      { id: 'p', name: 'Provider', enabled: true, enabledModels: ['gpt-image-1'], apiFormat: 'openai_chat', request: {} },
+    ],
+    defaultModels: { imageGeneration: { providerId: 'oauth', model: 'gpt-image-1' } },
+  } as unknown as Settings)
+  render(<MediaStation onOpenSettings={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: '生图' }))
+  await waitFor(() => expect(screen.getByLabelText('供应商')).toHaveTextContent('Provider'))
+  fireEvent.click(screen.getByLabelText('供应商'))
+  expect(screen.queryByRole('option', { name: /OAuth/ })).toBeNull()
+  expect(screen.queryByRole('option', { name: /Claude/ })).toBeNull()
+})
+
+it('offers video models from the model library and the per-model capability toggle', async () => {
+  vi.mocked(getSettingsCached).mockResolvedValue({
+    providers: [
+      { id: 'ark', name: 'Doubao', enabled: true, enabledModels: ['doubao-seed-2.0-pro', 'doubao-seedance-2-5-260628'], apiFormat: 'openai_chat', request: {} },
+      { id: 'relay', name: 'Relay', enabled: true, enabledModels: ['my-video'], apiFormat: 'openai_chat', request: {}, modelOverrides: { 'my-video': { capabilities: { videoGeneration: true } } } },
+    ],
+    defaultModels: { imageGeneration: { providerId: '', model: '' } },
+  } as unknown as Settings)
+  render(<MediaStation onOpenSettings={vi.fn()} />)
+  fireEvent.click(screen.getByRole('button', { name: '生视频' }))
+  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveTextContent('doubao-seedance-2-5-260628'))
+  fireEvent.click(screen.getByLabelText('模型'))
+  expect(screen.queryByRole('option', { name: /doubao-seed-2\.0-pro/ })).toBeNull()
+  fireEvent.click(screen.getByLabelText('模型'))
+  fireEvent.click(screen.getByLabelText('供应商'))
+  fireEvent.click(screen.getByRole('option', { name: /Relay/ }))
+  await waitFor(() => expect(screen.getByLabelText('模型')).toHaveTextContent('my-video'))
 })

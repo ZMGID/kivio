@@ -3606,10 +3606,12 @@ dialog.kv-modal::backdrop {
 .kv-badge-mini--tools { background: rgba(139,92,246,0.14); color: #7c3aed; }
 .kv-badge-mini--reasoning { background: rgba(16,185,129,0.14); color: #059669; }
 .kv-badge-mini--image { background: rgba(236,72,153,0.14); color: #db2777; }
+.kv-badge-mini--video { background: rgba(245,158,11,0.16); color: #d97706; }
 .dark .kv-badge-mini--vision { background: rgba(59,130,246,0.22); color: #93c5fd; }
 .dark .kv-badge-mini--tools { background: rgba(139,92,246,0.22); color: #c4b5fd; }
 .dark .kv-badge-mini--reasoning { background: rgba(16,185,129,0.22); color: #6ee7b7; }
 .dark .kv-badge-mini--image { background: rgba(236,72,153,0.22); color: #f9a8d4; }
+.dark .kv-badge-mini--video { background: rgba(245,158,11,0.22); color: #fcd34d; }
 
 /* Make model rows clickable */
 .kv-enabled-model-row {

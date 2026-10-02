@@ -7,4 +7,9 @@ export type MediaRequest = { kind: MediaKind, providerId: string, model: string,
 
 export type MediaOutput = { name: string, mimeType: string, preview: string, };
 
-export type MediaJob = { id: string, createdAt: number, request: MediaRequest, status: MediaStatus, error: string | null, outputs: Array<MediaOutput>, };
+export type MediaJob = { id: string, createdAt: number, request: MediaRequest, status: MediaStatus, error: string | null, outputs: Array<MediaOutput>, 
+/**
+ * Remote task ID of an asynchronous (video) generation, saved as soon as the provider
+ * accepts the paid request so an interrupted or abandoned wait can fetch the result later.
+ */
+providerTaskId?: string, };

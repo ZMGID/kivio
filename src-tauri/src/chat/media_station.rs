@@ -1,5 +1,9 @@
 //! Media creation owns its job lifetime and local files; pages only submit and observe.
-use crate::{settings::ModelProvider, state::AppState};
+use super::video_generation::{self, VideoPoll};
+use crate::{
+    settings::{ModelProvider, ProviderApiFormat},
+    state::AppState,
+};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -59,6 +63,11 @@ pub struct MediaJob {
     pub status: MediaStatus,
     pub error: Option<String>,
     pub outputs: Vec<MediaOutput>,
+    /// Remote task ID of an asynchronous (video) generation, saved as soon as the provider
+    /// accepts the paid request so an interrupted or abandoned wait can fetch the result later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider_task_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -170,19 +179,7 @@ pub fn media_station_start(
     request: MediaRequest,
 ) -> Result<MediaJob, String> {
     validate(&request)?;
-    let provider = state
-        .settings_read()
-        .get_provider(&request.provider_id)
-        .cloned()
-        .filter(|p| p.enabled)
-        .ok_or("供应商未启用或已删除。")?;
-    if !provider.has_credentials() {
-        return Err("请在设置中填写供应商 API Key。".into());
-    }
-    if request.kind == MediaKind::Video && provider.preferred_api_key().is_none() {
-        return Err("视频生成需要 API Key，不支持 OAuth 登录。".into());
-    }
-    let dir = root(&app)?;
+    let provider = media_provider(&state, &request)?;
     let job = MediaJob {
         id: uuid::Uuid::new_v4().to_string(),
         created_at: chrono::Utc::now().timestamp_millis(),
@@ -190,7 +187,71 @@ pub fn media_station_start(
         status: MediaStatus::Running,
         error: None,
         outputs: vec![],
+        provider_task_id: None,
     };
+    run_job(app, &station, job, provider)
+}
+
+/// Re-attach to a video the provider already accepted (after an app restart, a stopped wait
+/// or a lost poll). Only polls and downloads, so it never submits another paid request.
+#[tauri::command]
+pub fn media_station_resume(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    station: State<'_, MediaStation>,
+    id: String,
+) -> Result<MediaJob, String> {
+    let mut job = {
+        let mut store = station.0.lock().map_err(|e| e.to_string())?;
+        store.load(&root(&app)?)?;
+        store.jobs.get(&id).cloned().ok_or("Task not found")?
+    };
+    if job.status == MediaStatus::Running || job.status == MediaStatus::Completed {
+        return Ok(job);
+    }
+    if job.provider_task_id.is_none() {
+        return Err("该任务没有供应商任务编号，无法继续获取。".into());
+    }
+    let provider = media_provider(&state, &job.request)?;
+    job.status = MediaStatus::Running;
+    job.error = None;
+    run_job(app, &station, job, provider)
+}
+
+/// Gate shared by start and resume; the page mirrors it when listing providers.
+fn media_provider(state: &AppState, request: &MediaRequest) -> Result<ModelProvider, String> {
+    let provider = state
+        .settings_read()
+        .get_provider(&request.provider_id)
+        .cloned()
+        .filter(|p| p.enabled)
+        .ok_or("供应商未启用或已删除。")?;
+    if provider.request.oauth.is_some() || provider.preferred_api_key().is_none() {
+        return Err("媒体生成需要供应商 API Key，不支持账号 OAuth 登录。".into());
+    }
+    match (provider.api_format_kind(), &request.kind) {
+        (ProviderApiFormat::AnthropicMessages, _)
+        | (ProviderApiFormat::Gemini, MediaKind::Video) => {
+            Err("该供应商的接口格式不支持此类媒体生成。".into())
+        }
+        (_, MediaKind::Video)
+            if video_generation::resolve_video_api(&provider, &request.model).is_none() =>
+        {
+            Err("这个模型没有已知的视频接口；目前支持 Grok、MiniMax H3、Seedance 和万相。".into())
+        }
+        _ => Ok(provider),
+    }
+}
+
+/// Registers the job as running, then generates in the background until it finishes or the
+/// user stops waiting. The store is the only writer of job state; generation reports back here.
+fn run_job(
+    app: AppHandle,
+    station: &MediaStation,
+    job: MediaJob,
+    provider: ModelProvider,
+) -> Result<MediaJob, String> {
+    let dir = root(&app)?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
     {
         let mut store = station.0.lock().map_err(|e| e.to_string())?;
@@ -205,8 +266,18 @@ pub fn media_station_start(
     let running = job.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
+        let record_task = |task_id: &str| {
+            let station = app.state::<MediaStation>();
+            let mut store = station.0.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(job) = store.jobs.get_mut(&running.id) {
+                job.provider_task_id = Some(task_id.to_string());
+                if let Err(error) = persist(&dir, job) {
+                    eprintln!("[media_station] failed to save provider task id: {error}");
+                }
+            }
+        };
         let result = tokio::select! {
-            result = generate(&dir, &running, &provider, &state) => result,
+            result = generate(&dir, &running, &provider, &state, record_task) => result,
             _ = stopped => return,
         };
         let station = app.state::<MediaStation>();
@@ -318,17 +389,21 @@ pub fn media_station_reference(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Consecutive transient poll failures tolerated before giving up on a video wait.
+const POLL_RETRY_LIMIT: u32 = 6;
+
 async fn generate(
     root: &Path,
     job: &MediaJob,
     provider: &ModelProvider,
     state: &AppState,
+    record_task: impl FnOnce(&str),
 ) -> Result<Vec<MediaOutput>, String> {
     let request = &job.request;
-    let paths: Vec<_> = request.reference_paths.iter().map(PathBuf::from).collect();
-    let images = super::image_generation::load_input_images_from_paths(&paths)?;
     let dir = root.join(&job.id);
     if request.kind == MediaKind::Image {
+        let paths: Vec<_> = request.reference_paths.iter().map(PathBuf::from).collect();
+        let images = super::image_generation::load_input_images_from_paths(&paths)?;
         let result = super::image_generation::generate_image_with_provider(
             state,
             provider,
@@ -352,70 +427,87 @@ async fn generate(
             let bytes = STANDARD.decode(encoded).map_err(|e| e.to_string())?;
             let name = artifact.name;
             fs::write(dir.join(&name), &bytes).map_err(|e| e.to_string())?;
-            let mut preview = std::io::Cursor::new(Vec::new());
-            image::load_from_memory(&bytes)
-                .map_err(|e| e.to_string())?
-                .thumbnail(384, 384)
-                .write_to(&mut preview, image::ImageFormat::Png)
-                .map_err(|e| e.to_string())?;
+            // The image is paid for and saved; a thumbnail failure only costs the preview.
+            let preview = image_preview(&bytes).unwrap_or_else(|error| {
+                eprintln!("[media_station] preview failed for {name}: {error}");
+                String::new()
+            });
             outputs.push(MediaOutput {
                 name,
                 mime_type: artifact.mime_type,
-                preview: format!(
-                    "data:image/png;base64,{}",
-                    STANDARD.encode(preview.into_inner())
-                ),
+                preview,
             });
         }
         return Ok(outputs);
     }
-    let mut body = json!({"model": request.model, "prompt": request.prompt,
-        "aspect_ratio": request.aspect_ratio, "duration": request.duration, "resolution": "720p"});
-    if let Some(image) = images.first() {
-        body["image"] = json!({"url": image.data_url()});
-    }
-    // Creation is deliberately not retried: an ambiguous timeout may already have incurred a charge.
-    let base = provider.base_url.trim_end_matches('/');
+    // Asynchronous video API: create once, then poll the task until it ends.
+    let api = video_generation::resolve_video_api(provider, &request.model)
+        .ok_or("这个模型没有已知的视频接口；目前支持 Grok、MiniMax H3、Seedance 和万相。")?;
     let key = provider.preferred_api_key().ok_or("API Key missing")?;
     let send = |builder: reqwest::RequestBuilder| {
         crate::provider_request::apply(builder.bearer_auth(key), provider, None)
             .timeout(Duration::from_secs(60))
     };
-    let created = read_json(
-        send(
-            state
-                .client_for(provider)
-                .post(format!("{base}/videos/generations")),
-        )
-        .json(&body)
-        .send()
-        .await,
-    )
-    .await?;
-    let id = created
-        .get("request_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or("视频服务未返回 request_id；请确认支持 xAI 视频接口。")?;
-    let mut poll_url =
-        reqwest::Url::parse(&format!("{base}/videos/")).map_err(|e| e.to_string())?;
-    poll_url
-        .path_segments_mut()
-        .map_err(|_| "Invalid video URL")?
-        .pop_if_empty()
-        .push(id);
+    let task_id = match &job.provider_task_id {
+        Some(id) => id.clone(),
+        None => {
+            let paths: Vec<_> = request.reference_paths.iter().map(PathBuf::from).collect();
+            let images = super::image_generation::load_input_images_from_paths(&paths)?;
+            let (url, headers, body) = video_generation::create_request(
+                api,
+                &provider.base_url,
+                &video_generation::VideoRequest {
+                    model: &request.model,
+                    prompt: &request.prompt,
+                    aspect_ratio: &request.aspect_ratio,
+                    duration: request.duration,
+                    first_frame: images.first().map(|image| image.data_url()),
+                },
+            );
+            let mut builder = state.client_for(provider).post(url);
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            // Creation is deliberately not retried: an ambiguous timeout may already have incurred a charge.
+            let created = read_json(send(builder).json(&body).send().await)
+                .await
+                .map_err(|e| e.message)?;
+            let id = video_generation::task_id(api, &created)
+                .ok_or("视频服务没有返回任务编号；请确认供应商地址与模型匹配。")?;
+            record_task(&id);
+            id
+        }
+    };
+    let poll_url = video_generation::poll_url(api, &provider.base_url, &task_id)?;
     tokio::time::timeout(Duration::from_secs(900), async {
+        let mut failures = 0;
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let value = read_json(
+            // Polling is a read, so transient failures are retried; the task keeps running remotely.
+            let value = match read_json(
                 send(state.client_for(provider).get(poll_url.clone()))
                     .send()
                     .await,
             )
-            .await?;
-            match video_result(&value)? {
-                None => continue,
-                Some(url) => {
+            .await
+            {
+                Ok(value) => {
+                    failures = 0;
+                    value
+                }
+                Err(error) if error.transient && failures < POLL_RETRY_LIMIT => {
+                    failures += 1;
+                    eprintln!(
+                        "[media_station] video poll failed ({failures}): {}",
+                        error.message
+                    );
+                    continue;
+                }
+                Err(error) => return Err(format!("{}（可稍后继续获取结果）", error.message)),
+            };
+            match video_generation::parse_poll(api, &value)? {
+                VideoPoll::Pending => continue,
+                VideoPoll::Ready(url) => {
                     // Do not attach provider credentials to the returned CDN URL.
                     let url = reqwest::Url::parse(&url).map_err(|e| e.to_string())?;
                     if url.scheme() != "https" {
@@ -451,53 +543,68 @@ async fn generate(
         }
     })
     .await
-    .map_err(|_| "等待视频超时；供应商可能仍在生成，请确认后再重试。".to_string())?
+    .map_err(|_| "等待视频超时；供应商可能仍在生成，可稍后继续获取结果。".to_string())?
 }
 
-async fn read_json(response: Result<reqwest::Response, reqwest::Error>) -> Result<Value, String> {
-    let response = response.map_err(|e| format!("媒体请求失败（未自动重试）：{e}"))?;
+fn image_preview(bytes: &[u8]) -> Result<String, String> {
+    let mut preview = std::io::Cursor::new(Vec::new());
+    image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .thumbnail(384, 384)
+        .write_to(&mut preview, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(preview.into_inner())
+    ))
+}
+
+struct MediaHttpError {
+    message: String,
+    /// Network failures, 408/429 and 5xx: safe to repeat for reads, never for creation.
+    transient: bool,
+}
+
+async fn read_json(
+    response: Result<reqwest::Response, reqwest::Error>,
+) -> Result<Value, MediaHttpError> {
+    let response = response.map_err(|e| MediaHttpError {
+        message: format!("媒体请求失败：{e}"),
+        transient: true,
+    })?;
     let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Invalid media response: {e}"))?;
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP {status}: {}",
-            value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("Media request failed")
-        ));
-    }
-    Ok(value)
+    let text = response.text().await.map_err(|e| MediaHttpError {
+        message: format!("读取媒体响应失败：{e}"),
+        transient: true,
+    })?;
+    http_json(status, &text)
 }
 
-fn video_result(value: &Value) -> Result<Option<String>, String> {
-    match value.get("status").and_then(Value::as_str) {
-        Some("pending") => Ok(None),
-        Some("done") => {
-            if value
-                .pointer("/video/respect_moderation")
-                .and_then(Value::as_bool)
-                == Some(false)
-            {
-                return Err("视频未通过供应商内容审核。".into());
-            }
-            value
-                .pointer("/video/url")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(|s| Some(s.into()))
-                .ok_or("视频任务已完成但没有返回文件。".into())
-        }
-        Some("failed" | "expired") => Err(value
-            .pointer("/error/message")
-            .and_then(Value::as_str)
-            .unwrap_or("视频生成失败或已过期。请调整描述后重试。")
-            .into()),
-        _ => Err("视频服务返回未知任务状态。".into()),
+fn http_json(status: reqwest::StatusCode, text: &str) -> Result<Value, MediaHttpError> {
+    let value = serde_json::from_str::<Value>(text);
+    if status.is_success() {
+        return value.map_err(|e| MediaHttpError {
+            message: format!("Invalid media response: {e}"),
+            transient: false,
+        });
     }
+    // Gateways often answer errors with HTML or plain text; keep the status and a short excerpt.
+    let detail = value
+        .ok()
+        .and_then(|v| {
+            v.pointer("/error/message")
+                .or_else(|| v.get("error"))
+                .or_else(|| v.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| text.trim().chars().take(200).collect());
+    Err(MediaHttpError {
+        message: format!("HTTP {status}: {detail}"),
+        transient: status.is_server_error()
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::REQUEST_TIMEOUT,
+    })
 }
 
 #[cfg(test)]
@@ -528,24 +635,6 @@ mod tests {
         assert!(validate(&r).is_err());
     }
     #[test]
-    fn video_terminal_states_do_not_hide_failures() {
-        assert_eq!(video_result(&json!({"status":"pending"})).unwrap(), None);
-        assert_eq!(
-            video_result(&json!({"status":"done","video":{"url":"https://example.com/v.mp4"}}))
-                .unwrap(),
-            Some("https://example.com/v.mp4".into())
-        );
-        for value in [
-            json!({"status":"failed"}),
-            json!({"status":"expired"}),
-            json!({"status":"done"}),
-            json!({"status":"unknown"}),
-            json!({"status":"done","video":{"url":"https://example.com","respect_moderation":false}}),
-        ] {
-            assert!(video_result(&value).is_err());
-        }
-    }
-    #[test]
     fn restart_preserves_history_and_marks_inflight_interrupted() {
         let dir = tempfile::tempdir().unwrap();
         let job = MediaJob {
@@ -555,6 +644,7 @@ mod tests {
             status: MediaStatus::Running,
             error: None,
             outputs: vec![],
+            provider_task_id: Some("remote-1".into()),
         };
         persist(dir.path(), &job).unwrap();
         let mut store = MediaJobs::default();
@@ -565,6 +655,31 @@ mod tests {
                 .unwrap();
         assert_eq!(saved.status, MediaStatus::Interrupted);
         assert_eq!(saved.request.prompt, "Ocean");
+        assert_eq!(saved.provider_task_id.as_deref(), Some("remote-1"));
+    }
+
+    #[test]
+    fn http_errors_keep_status_and_classify_retryable_failures() {
+        use reqwest::StatusCode;
+        let gateway = http_json(StatusCode::BAD_GATEWAY, "<html>Bad Gateway</html>")
+            .err()
+            .unwrap();
+        assert!(gateway.transient);
+        assert!(gateway.message.contains("502") && gateway.message.contains("Bad Gateway"));
+        let limited = http_json(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"message":"slow down"}}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(limited.transient);
+        assert!(limited.message.ends_with("slow down"));
+        let denied = http_json(StatusCode::UNAUTHORIZED, r#"{"error":"bad key"}"#)
+            .err()
+            .unwrap();
+        assert!(!denied.transient);
+        assert!(denied.message.ends_with("bad key"));
+        assert!(http_json(StatusCode::OK, r#"{"status":"pending"}"#).is_ok());
     }
 
     #[tokio::test]
@@ -638,11 +753,12 @@ mod tests {
             status: MediaStatus::Running,
             error: None,
             outputs: vec![],
+            provider_task_id: None,
         };
         persist(dir.path(), &job).unwrap();
         let outputs = tokio::time::timeout(
             Duration::from_secs(10),
-            generate(dir.path(), &job, &provider, &state),
+            generate(dir.path(), &job, &provider, &state, |_| {}),
         )
         .await
         .unwrap()

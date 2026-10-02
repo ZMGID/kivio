@@ -416,6 +416,7 @@ pub struct ModelCapabilities {
     pub streaming: Option<bool>,
     pub web_search: Option<bool>,
     pub image_generation: Option<bool>,
+    pub video_generation: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
