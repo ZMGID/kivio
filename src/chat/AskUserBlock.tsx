@@ -331,7 +331,10 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
     const el = optionsScrollRef.current
     if (el) el.scrollTop = 0
     setActiveIndex(0)
-  }, [toolCall.id, visibleIndex])
+    // 换题会重建整个选项区：在自定义框里按 Enter 翻页时，输入框随之卸载、焦点掉到 body，
+    // 后面的 ↑↓ / Enter / 数字键就全失效。
+    if (docked && parsedRef.current?.phase === 'awaiting') listRef.current?.focus({ preventScroll: true })
+  }, [toolCall.id, visibleIndex, docked])
 
   // 卡片一出现就把焦点收到选项列表上：这一刻整轮生成都停在这里等答复，键盘直接能用
   // （↑↓ / Enter / 数字键）。与审批卡同一套取舍 —— 那边也是让主按钮 autoFocus，
@@ -393,7 +396,14 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         ? existing.selectedOptionIds.filter((item) => item !== optionId)
         : [...existing.selectedOptionIds, optionId]
       : [optionId]
-    return { ...current, [question.id]: { ...existing, selectedOptionIds } }
+    // 单选题的选项与自定义文字互斥：否则「先打了字、又点了选项」会把两个答案一起交上去。
+    const exclusive = !allowMultiple(question) && !(question.value_schema ?? question.valueSchema)
+    return {
+      ...current,
+      [question.id]: exclusive
+        ? { selectedOptionIds, customText: '', customTextEdited: false }
+        : { ...existing, selectedOptionIds },
+    }
   }
 
   /** 点一行选项。单题单选时**直接落答案**（把新草稿同步传下去），不用再点提交。 */
@@ -439,10 +449,16 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   }
 
   const setCustomText = (questionId: string, customText: string) => {
+    const question = parsed.questions.find((item) => item.id === questionId)
+    const exclusive = Boolean(question)
+      && !allowMultiple(question!)
+      && !(question!.value_schema ?? question!.valueSchema)
     const next = {
       ...draftRef.current,
       [questionId]: {
-        selectedOptionIds: draftRef.current[questionId]?.selectedOptionIds ?? [],
+        selectedOptionIds: exclusive && customText.trim()
+          ? []
+          : draftRef.current[questionId]?.selectedOptionIds ?? [],
         customText,
         customTextEdited: true,
       },
@@ -660,9 +676,23 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                     onFocus={() => setActiveIndex(optionCount)}
                     onChange={(event) => setCustomText(currentQuestion.id, event.target.value)}
                     onKeyDown={(event) => {
+                      // 输入框嵌在列表里：不拦住的话 ↑↓ / 数字键会被列表当成选项导航，
+                      // 输入「1」就变成直选第 1 项并提交。
+                      event.stopPropagation()
+                      // 输入法选词的 Enter 不是提交（中文拼音候选会被当成答案发出去）。
+                      if (event.nativeEvent.isComposing || event.keyCode === 229) return
+                      if (event.key === 'ArrowUp' && optionCount > 0) {
+                        event.preventDefault()
+                        setActiveIndex(optionCount - 1)
+                        listRef.current?.focus({ preventScroll: true })
+                        return
+                      }
                       if (event.key !== 'Enter' || !draftHasAnswer(currentQuestion, draftRef.current[currentQuestion.id])) return
                       event.preventDefault()
+                      // 与点选项同一套流转：单题单选直接提交；多题则翻到下一题，最后一题凑齐了再提交。
                       if (answerOnPick) void submit(false)
+                      else if (!isLastQuestion) goNext()
+                      else if (allAnswered) void submit(false)
                     }}
                     placeholder="自己写一个…"
                     className="min-w-0 flex-1 bg-transparent text-[13px] leading-5 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
@@ -676,7 +706,9 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
             <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-400 dark:text-neutral-500">
               ↑↓ 切换 · Enter 选择{optionCount > 1 ? ` · 数字键 1–${Math.min(optionCount, 9)} 直选` : ''}
             </span>
-            {(!answerOnPick || currentQuestion.required === false) && (
+            {(!answerOnPick
+              || currentQuestion.required === false
+              || (allowCustom(currentQuestion) && currentAnswer.customText.trim() !== '')) && (
               <Button
                 variant="primary"
                 size="sm"

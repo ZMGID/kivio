@@ -134,6 +134,8 @@ pub fn normalize_prompt(arguments: Value) -> Result<AskUserPromptPayload, String
 
     let mut question_ids = HashSet::new();
     for question in &mut prompt.questions {
+        // 自定义作答是卡片的固有能力，不交给模型决定：预设选项永远可能覆盖不了用户的意图。
+        question.allow_custom = true;
         question.id = truncate_clean(question.id.clone(), MAX_QUESTION_ID_CHARS);
         question.prompt = truncate_clean(question.prompt.clone(), MAX_QUESTION_PROMPT_CHARS);
         if question.id.is_empty() {
@@ -296,7 +298,7 @@ pub fn tool_result_content(response: &AskUserResponseResult) -> String {
 
 pub fn format_prompt(available: bool) -> String {
     if available {
-        "Structured clarification: use the ask_user tool when a product decision, scope choice, or user preference would block useful work in this same run. If the user asks you to wait for a choice, explicitly requests ask_user, or presents A/B/C options that block later steps, you must call ask_user instead of listing options in assistant text for the user to type back. Do not ask questions that can be answered by reading files, inspecting context, using available tools, or searching. Prefer 1-3 high-value questions with concrete actionable options; allow custom text only when realistic options may not cover the user's intent.".to_string()
+        "Structured clarification: use the ask_user tool when a product decision, scope choice, or user preference would block useful work in this same run. If the user asks you to wait for a choice, explicitly requests ask_user, or presents A/B/C options that block later steps, you must call ask_user instead of listing options in assistant text for the user to type back. Do not ask questions that can be answered by reading files, inspecting context, using available tools, or searching. Prefer 1-3 high-value questions with concrete actionable options; the user can always type a custom answer instead of picking an option.".to_string()
     } else {
         "The structured clarification tool ask_user is unavailable; if clarification is truly required, ask briefly in natural language.".to_string()
     }
@@ -440,10 +442,6 @@ fn input_schema() -> Value {
                             "type": "boolean",
                             "default": false
                         },
-                        "allow_custom": {
-                            "type": "boolean",
-                            "default": false
-                        },
                         "required": {
                             "type": "boolean",
                             "default": true
@@ -523,6 +521,19 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[test]
+    fn native_questions_always_allow_custom_text() {
+        let mut args = prompt_args();
+        args["questions"][1]["allow_custom"] = serde_json::json!(false);
+        let prompt = normalize_prompt(args).unwrap();
+        assert!(prompt.questions.iter().all(|question| question.allow_custom));
+        assert!(
+            ask_user_tool().input_schema["properties"]["questions"]["items"]["properties"]
+                .get("allow_custom")
+                .is_none()
+        );
     }
 
     #[test]
@@ -781,7 +792,9 @@ mod tests {
 
     #[test]
     fn validate_rejects_custom_when_disallowed() {
-        let prompt = normalize_prompt(prompt_args()).expect("prompt");
+        // 原生 ask_user 经 normalize_prompt 一律开启自定义；校验层仍要守住外部来源关掉的题。
+        let mut prompt = normalize_prompt(prompt_args()).expect("prompt");
+        prompt.questions[1].allow_custom = false;
         let err = validate_response(
             &prompt,
             AskUserResponseResult {

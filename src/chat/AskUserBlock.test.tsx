@@ -285,6 +285,72 @@ describe('AskUserBlock', () => {
     expect(screen.getByPlaceholderText('自己写一个…')).toBeInTheDocument()
   })
 
+  it('custom input: IME composition Enter does not submit, digits are typed instead of picking an option', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+    })} />)
+    const input = screen.getByPlaceholderText('自己写一个…')
+    fireEvent.change(input, { target: { value: 'ni' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true, keyCode: 229 })
+    fireEvent.keyDown(input, { key: '1' })
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(
+      'tool-1', { '0': { selected_option_ids: [], custom_text: 'ni' } }, false,
+    ))
+  })
+
+  it('custom input: shows a visible submit button once text is typed on a single-select question', () => {
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+    })} />)
+    expect(screen.queryByText('提交')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '别的办法' } })
+    expect(screen.getByText('提交')).toBeEnabled()
+  })
+
+  it('custom input: Enter on a multi-question card advances, and submits on the last one', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const question = (id: string) => ({ ...RETRY_QUESTION, id, prompt: `题${id}` })
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [question('1'), question('2')], answers: {},
+    })} />)
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '甲' } })
+    fireEvent.keyDown(screen.getByPlaceholderText('自己写一个…'), { key: 'Enter' })
+    expect(screen.getByText('题2')).toBeInTheDocument()
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '乙' } })
+    fireEvent.keyDown(screen.getByPlaceholderText('自己写一个…'), { key: 'Enter' })
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '1': { selected_option_ids: [], custom_text: '甲' },
+      '2': { selected_option_ids: [], custom_text: '乙' },
+    }, false))
+  })
+
+  it('single-select: option and custom text are mutually exclusive', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{ ...RETRY_QUESTION, required: false }], answers: {},
+    })} />)
+    const input = screen.getByPlaceholderText('自己写一个…')
+    fireEvent.change(input, { target: { value: '自己的想法' } })
+    fireEvent.click(screen.getByRole('option', { name: /立即重试/ }))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(
+      'tool-1', { '0': { selected_option_ids: ['1'], custom_text: null } }, false,
+    ))
+  })
+
+  it('multi-question: focus returns to the list after Enter in the custom input advances', () => {
+    const question = (id: string) => ({ ...RETRY_QUESTION, id, prompt: `题${id}` })
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [question('1'), question('2')], answers: {},
+    })} />)
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '甲' } })
+    fireEvent.keyDown(screen.getByPlaceholderText('自己写一个…'), { key: 'Enter' })
+    expect(screen.getByRole('listbox')).toHaveFocus()
+  })
+
   it('renders answers read-only once the phase is answered', () => {
     render(<AskUserBlock variant="docked" toolCall={askUserCall({
       phase: 'answered',
