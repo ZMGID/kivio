@@ -102,15 +102,36 @@ function jobMeta(job: MediaJob, statusLabel: string) {
   return [statusLabel, job.request.model, job.request.aspectRatio, job.request.kind === 'video' ? `${job.request.duration}s` : ''].filter(Boolean).join(' · ')
 }
 
+/** Running state: a canvas in the requested aspect ratio with a soft sheen, plus elapsed time and the stop action. */
+function MediaPending({ job, text, onCancel }: { job: MediaJob; text: DetailActions['text']; onCancel: () => void }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const seconds = Math.max(0, Math.floor((now - job.createdAt) / 1000))
+  const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const [w, h] = job.request.aspectRatio.split(':').map(Number)
+  const ratio = w > 0 && h > 0 ? w / h : 1
+  return <div className="kv-media-pending" style={{ '--kv-media-ratio': ratio } as CSSProperties}>
+    <div className="kv-media-pending-canvas" aria-hidden="true">
+      {job.request.kind === 'video' ? <Play size={22} strokeWidth={1.5} /> : <Images size={22} strokeWidth={1.5} />}
+      <span className="kv-media-pending-ratio">{job.request.aspectRatio}</span>
+    </div>
+    <div className="kv-media-pending-status" aria-live="polite">
+      <div>
+        <p>{text('正在生成，稍后回来也可以。', 'Generating. You can come back later.')}</p>
+        <small>{text(`已等待 ${elapsed} · 供应商可能继续生成并计费`, `${elapsed} elapsed · The provider may continue and charge`)}</small>
+      </div>
+      <Button size="sm" onClick={onCancel}>{text('停止等待', 'Stop waiting')}</Button>
+    </div>
+  </div>
+}
+
 /** Preview, status and prompt of one creation; shared by the latest result and the history dialog. */
 function MediaResultBody({ job, text, onCancel }: { job: MediaJob; text: DetailActions['text']; onCancel: () => void }) {
   return <>
-    {job.status === 'running' && <div className="kv-media-pending">
-      <LoaderCircle className="animate-spin" size={24} />
-      <p>{text('正在生成，稍后回来也可以。', 'Generating. You can come back later.')}</p>
-      <Button size="sm" onClick={onCancel}>{text('停止等待', 'Stop waiting')}</Button>
-      <small>{text('供应商可能继续生成并计费。', 'The provider may continue and charge for this task.')}</small>
-    </div>}
+    {job.status === 'running' && <MediaPending job={job} text={text} onCancel={onCancel} />}
     {job.error && <p role="status" className="kv-panel warn kv-media-job-error">{job.error}</p>}
     {job.outputs.map((output, index) => <div key={output.name} className="kv-media-preview"><OutputPreview job={job} index={index} /></div>)}
     <p className="kv-media-prompt">{job.request.prompt}</p>
