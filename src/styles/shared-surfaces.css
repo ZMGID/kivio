@@ -250,6 +250,29 @@ dialog.kv-modal {
   margin: auto;
 }
 
+/* 焦点环只在键盘操作时出现。data-focus-source 由 index.html 按最近输入来源维护：
+   鼠标/触控操作期间，脚本聚焦（确认框默认按钮、菜单关闭还焦点等）也不画环，
+   覆盖原生 outline 与各处 focus-visible:ring / outline 写法。文本输入框照常显示聚焦态。 */
+html[data-focus-source="pointer"] :focus-visible:not(input, textarea, select, [contenteditable]) {
+  outline: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+}
+
+/* 按钮统一的键盘焦点环（模态 <dialog> 在顶层、不在 .chat-window-shell 内，需单独列出）。 */
+:is(.chat-window-shell, dialog.kv-modal) button:focus {
+  outline: none;
+}
+
+html[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal) button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+  /* 键盘聚焦时焦点环缓入；失焦时瞬退（不拖尾），是更利落的行为。 */
+  transition: box-shadow var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+html.dark[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal) button:focus-visible {
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+}
+
 /* 应用内确认 / 提示框（src/components/AppDialog.tsx）。外框、配色、阴影沿用 .kv-modal，
    这里只管内部排版。原生 <dialog> 进顶层，背景遮罩走 dialog.kv-modal::backdrop。 */
 .kv-modal.kv-app-dialog {
