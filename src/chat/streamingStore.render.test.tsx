@@ -1,4 +1,4 @@
-import { StrictMode, memo, useEffect, useRef, useState } from 'react'
+import { StrictMode, memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
@@ -8,10 +8,12 @@ import {
   reset,
   setCoarse,
   setSnapshot,
+  useStreamCoarse,
 } from './streamingStore'
 import { createEmptyStreamSnapshot } from './conversationRuns'
 import type { ConversationStreamSnapshot } from './conversationRuns'
-import type { ChatMessage } from './types'
+import type { ChatMessage, Conversation } from './types'
+import { isEmptyChatPresentation } from './emptyHero'
 import * as messageNavigator from './messageNavigator'
 import { beginGroup, endGroup, resetGroups } from './groupStreamingStore'
 import { createChatExecutionOwner } from './chatExecutionOwner'
@@ -71,6 +73,82 @@ function message(id: number): ChatMessage {
 }
 
 describe('MessageList ← streamingStore 集成', () => {
+  it.each([0, 2])('preserves the transcript while a completed send waits for React history commit (prior messages: %s)', async (historyCount) => {
+    const conversationId = `empty-handoff-${historyCount}`
+    const history = Array.from({ length: historyCount }, (_, index) => message(index))
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    let commitHistory!: (messages: ChatMessage[]) => void
+    function Harness() {
+      const [stored, setStored] = useState(history)
+      commitHistory = setStored
+      useSyncExternalStore(execution.subscribe, execution.getRevision)
+      const coarse = useStreamCoarse()
+      const displayed = execution.overlayMessages(conversationId, stored)
+      useEffect(() => { preview.reconcile(conversationId, stored) }, [stored])
+      return isEmptyChatPresentation(displayed.length, coarse)
+        ? <div data-testid="empty-hero">New chat</div>
+        : <MessageList conversationId={conversationId} messages={displayed} />
+    }
+    const { container, unmount } = render(<Harness />)
+    await flush()
+    expect(Boolean(screen.queryByTestId('empty-hero'))).toBe(historyCount === 0)
+    const content = 'Stable answer\n\n```ts\nconst answer = 42\n```'
+    let lease!: NonNullable<ReturnType<typeof execution.begin>>
+    let user!: ChatMessage
+    act(() => {
+      lease = execution.begin({ conversationId, kind: 'send', startedAt: Date.now(),
+        optimistic: { content: 'Question', attachments: [] } })!
+      user = execution.overlayMessages(conversationId, history).at(-1)!
+      preview.activate(conversationId)
+      preview.begin(conversationId)
+      preview.receive({
+        protocolVersion: 1, scope: 'run', seq: 1, baseRevision: 0,
+        type: 'text_delta', conversationId, runId: 'run', messageId: 'answer', delta: content, segment: null,
+      })
+      preview.activate(conversationId)
+    })
+    await flush()
+    const viewport = container.querySelector('.chat-scroll-viewport')
+    const markdown = container.querySelector('[data-message-id="answer"] .chat-markdown')
+    const code = markdown?.querySelector('pre code')
+    expect(code?.textContent).toContain('const answer = 42')
+    const persisted = [...history, user, { id: 'answer', role: 'assistant' as const, content, timestamp: 2 }]
+    const conversation: Conversation = {
+      id: conversationId, revision: 1, title: 'Question', provider_id: 'provider', model: 'model',
+      messages: persisted, created_at: 1, updated_at: 2,
+    }
+    try {
+      // External-store updates can commit before the queued React history update.
+      // Hold that update to assert the observable state at this real boundary.
+      await act(async () => {
+        await execution.finish(lease, conversation, {
+          completeWithConversation: () => preview.complete(conversationId, { kind: 'persisted', committedMessages: history }),
+          completeTerminal: async () => {}, abandonPreview: () => {}, settleQueue: () => {},
+        })
+      })
+      expect(getCoarse().streamFrozen).toBe(true)
+      expect(screen.queryByTestId('empty-hero')).not.toBeInTheDocument()
+      expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
+      expect(container.querySelector('[data-message-id="answer"] .chat-markdown')).toBe(markdown)
+
+      act(() => commitHistory(persisted))
+      await flush()
+      expect(getCoarse().streamFrozen).toBe(false)
+      expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
+      expect(container.querySelector('[data-message-id="answer"] pre code')).toBe(code)
+
+      act(() => {
+        preview.drop(conversationId)
+        commitHistory([])
+      })
+      expect(screen.getByTestId('empty-hero')).toBeInTheDocument()
+    } finally {
+      unmount()
+      preview.dispose()
+    }
+  })
+
   it('keeps single-run deltas visible after StrictMode replays mount effects', async () => {
     const conversationId = 'strict-mode-live'
     const base = { conversationId, runId: 'run-strict', messageId: 'message-strict' }

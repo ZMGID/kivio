@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Lang } from '../components/i18n'
 import type { BlobAntic } from './kivioBlobSim'
+import type { StreamCoarse } from './streamingStore'
+
+/** 空态只在没有历史消息或实时展示内容时出现。 */
+export function isEmptyChatPresentation(messageCount: number, stream: StreamCoarse): boolean {
+  // 首轮结束会先撤掉临时用户消息；冻结预览要等 React 提交正式历史后才释放。
+  // 此时切回欢迎页会卸载整份消息列表，丢掉正文节点、测量缓存和滚动位置。
+  return messageCount === 0 && !stream.streaming && !stream.streamFrozen && !stream.streamError
+}
 
 /** 空会话标题：短、跟墨团配。换句间隔随机，大约一分钟上下。 */
 export const EMPTY_HERO_ROTATE_MIN_MS = 45_000

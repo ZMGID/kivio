@@ -94,6 +94,7 @@ import {
   settleOptimisticConversationListItems,
 } from './optimisticSidebar'
 import { additionalDirectoriesOf, isPlainBlankConversation } from './conversationFields'
+import { isEmptyChatPresentation } from './emptyHero'
 import { scheduleIdleTask } from './idleTask'
 import {
   chatTitlebarMacInsetClass,
@@ -2271,15 +2272,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     currentConversation?.messages ?? [],
   )
 
-  const hasMessages = displayMessages.length > 0
   const conversationOccupied = Boolean(
     currentConversation?.id && popoutConversationIds.has(currentConversation.id),
   )
   const showEmptyHero = chatView === 'conversation'
     && !conversationOccupied
-    && !hasMessages
-    && !streamCoarse.streaming
-    && !streamCoarse.streamError
+    && isEmptyChatPresentation(displayMessages.length, streamCoarse)
 
   // 输入栏是聊天主区里除 MessageList 外最大的常驻子树。把它的 slot 和对象值稳定下来，
   // 配合 InputBar 自身的 memo，侧栏/设置路由等无关状态变化不会再让输入栏重跑整棵树。
