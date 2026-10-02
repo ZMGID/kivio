@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Camera, Clapperboard, Download, ImagePlus, Images, LoaderCircle, Palette, Play, RefreshCw, Search, Settings2, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Download, History, ImagePlus, Images, LoaderCircle, Play, RefreshCw, Search, Settings2, Sparkles, X } from 'lucide-react'
 import { mediaStationApi, type MediaJob, type MediaKind, type MediaRequest } from '../api/mediaStation'
 import { getSettingsCached } from '../api/settingsCache'
 import { isTauriRuntime, type ModelProvider } from '../api/tauri'
@@ -8,6 +8,7 @@ import { Button, IconButton } from '../components/Button'
 import { Input, Select, TextArea } from '../settings/public/controls'
 import { useLang } from '../components/i18n'
 import { resolveModelInfo } from '../data/modelMatching'
+import { IdeaArt, type IdeaArtName } from './MediaIdeaArt'
 import './market/market.css'
 import './MediaStation.css'
 
@@ -23,14 +24,46 @@ function mediaModels(provider: ModelProvider, kind: MediaKind): string[] {
   })
 }
 
-// Unsubmitted form state survives navigation in this window; credentials remain in settings.
+// Unsubmitted form state and the latest result survive navigation in this window; credentials remain in settings.
+let lastLatestId = ''
 let draft: MediaRequest = { kind: 'image', providerId: '', model: '', prompt: '', aspectRatio: '1:1', duration: 5, referencePaths: [] }
 
-const IDEAS = [
-  { icon: Camera, title: ['产品摄影', 'Product photo'], prompt: ['晨光中的玻璃花瓶，简洁背景，柔和阴影，产品摄影。', 'A glass vase in morning light, minimal background, soft shadows, product photography.'] },
-  { icon: Clapperboard, title: ['电影感场景', 'Cinematic scene'], prompt: ['夕阳下的海岸，暖金色光线，宽阔构图，电影质感。', 'A coastline at sunset, warm golden light, wide composition, cinematic atmosphere.'] },
-  { icon: Palette, title: ['插画海报', 'Illustrated poster'], prompt: ['以森林与月亮为主题的插画海报，深蓝与银白配色，留出标题空间。', 'An illustrated forest and moon poster in midnight blue and silver, with room for a title.'] },
-] as const
+type Idea = { art: IdeaArtName; ratio: string; title: readonly [string, string]; prompt: readonly [string, string] }
+
+/** Starter prompts per media kind, each with its own line drawing and a fitting aspect ratio. */
+const IDEAS: Record<MediaKind, readonly Idea[]> = {
+  image: [
+    { art: 'vase', ratio: '1:1', title: ['产品摄影', 'Product photo'], prompt: ['晨光中的玻璃花瓶，简洁背景，柔和阴影，产品摄影。', 'A glass vase in morning light, minimal background, soft shadows, product photography.'] },
+    { art: 'coast', ratio: '16:9', title: ['电影感场景', 'Cinematic scene'], prompt: ['夕阳下的海岸，暖金色光线，宽阔构图，电影质感。', 'A coastline at sunset, warm golden light, wide composition, cinematic atmosphere.'] },
+    { art: 'poster', ratio: '3:4', title: ['插画海报', 'Illustrated poster'], prompt: ['以森林与月亮为主题的插画海报，深蓝与银白配色，留出标题空间。', 'An illustrated forest and moon poster in midnight blue and silver, with room for a title.'] },
+    { art: 'portrait', ratio: '3:4', title: ['人像写真', 'Portrait'], prompt: ['窗边自然光下的人像特写，浅景深，胶片质感，温柔色调。', 'A close-up portrait by a window in natural light, shallow depth of field, film look, soft tones.'] },
+    { art: 'coffee', ratio: '1:1', title: ['美食摄影', 'Food photo'], prompt: ['俯拍木桌上的拿铁，心形拉花，晨光斜照，温暖色调。', 'A top-down latte with heart latte art on a wooden table, slanted morning light, warm tones.'] },
+    { art: 'arches', ratio: '4:3', title: ['建筑光影', 'Architecture'], prompt: ['极简混凝土拱廊，强烈的光影，一个人走过，建筑摄影。', 'A minimal concrete arcade with strong light and shadow, a lone figure walking through, architectural photography.'] },
+    { art: 'room', ratio: '1:1', title: ['等距小屋', 'Isometric room'], prompt: ['等距视角的温馨小书房，柔和光照，3D 渲染。', 'A cozy isometric study room, soft lighting, 3D render.'] },
+    { art: 'shanshui', ratio: '16:9', title: ['水墨山水', 'Ink landscape'], prompt: ['水墨山水，远山与云雾，一叶扁舟，大面积留白。', 'An ink-wash landscape with distant mountains, mist and a small boat, generous negative space.'] },
+    { art: 'interior', ratio: '4:3', title: ['室内设计', 'Interior'], prompt: ['北欧风客厅，浅色沙发，落地灯，绿植，自然光，室内效果图。', 'A Scandinavian living room with a light sofa, floor lamp and plants in natural light, interior render.'] },
+    { art: 'cat', ratio: '1:1', title: ['宠物写真', 'Pet portrait'], prompt: ['一只蜷在毛毯上睡觉的橘猫，午后阳光，柔焦。', 'An orange cat curled up asleep on a blanket in afternoon sun, soft focus.'] },
+    { art: 'leaf', ratio: '3:4', title: ['植物图鉴', 'Botanical plate'], prompt: ['龟背竹叶片的植物图鉴，复古科学插画风格，米色纸张。', 'A botanical plate of a monstera leaf, vintage scientific illustration on cream paper.'] },
+    { art: 'street', ratio: '9:16', title: ['雨夜街头', 'Rainy street'], prompt: ['雨夜的街头，霓虹倒映在积水里，撑伞的行人，赛博朋克。', 'A rainy street at night, neon reflected in puddles, a pedestrian with an umbrella, cyberpunk.'] },
+  ],
+  video: [
+    { art: 'skyline', ratio: '16:9', title: ['航拍推进', 'Aerial push-in'], prompt: ['黄昏的城市天际线，无人机缓慢向前推进，灯光逐渐亮起。', 'A city skyline at dusk, a drone slowly pushes forward as the lights come on.'] },
+    { art: 'turntable', ratio: '1:1', title: ['产品旋转', 'Product turntable'], prompt: ['白色背景上的运动鞋缓慢 360 度旋转，柔和棚拍光。', 'A sneaker slowly rotates 360 degrees on a white background in soft studio light.'] },
+    { art: 'peaks', ratio: '16:9', title: ['自然延时', 'Nature time-lapse'], prompt: ['云海在雪山间流动的延时摄影，日出时分，金色光线。', 'A time-lapse of clouds flowing between snowy peaks at sunrise, golden light.'] },
+    { art: 'fox', ratio: '16:9', title: ['动画角色', 'Animated character'], prompt: ['一只小狐狸在森林边蹦跳，手绘动画风格，镜头跟随。', 'A small fox hops at the edge of a forest in a hand-drawn animation style, the camera follows.'] },
+    { art: 'waves', ratio: '16:9', title: ['海浪慢镜', 'Slow-mo wave'], prompt: ['巨浪卷起的慢动作，阳光穿透浪尖，水花飞溅。', 'A huge wave curling in slow motion, sunlight through the crest, spray flying.'] },
+    { art: 'road', ratio: '16:9', title: ['公路追车', 'Road chase'], prompt: ['跑车在沙漠公路上疾驰，低机位跟拍，黄昏逆光。', 'A sports car speeds down a desert highway, low tracking shot, backlit at dusk.'] },
+    { art: 'pour', ratio: '9:16', title: ['液体慢镜', 'Pour shot'], prompt: ['冰饮倒入玻璃杯的慢镜头，冰块翻滚，气泡上升。', 'Slow motion of a cold drink poured into a glass, ice tumbling, bubbles rising.'] },
+    { art: 'blossom', ratio: '9:16', title: ['花开延时', 'Blooming'], prompt: ['一朵花从花苞到盛开的延时摄影，黑色背景，微距。', 'A time-lapse of a flower opening from bud to full bloom, black background, macro.'] },
+    { art: 'walk', ratio: '9:16', title: ['人物跟拍', 'Tracking shot'], prompt: ['女孩走在秋天的林荫道上，侧面跟拍，落叶飘下。', 'A girl walks along an autumn avenue, side tracking shot, leaves falling.'] },
+    { art: 'rainwin', ratio: '16:9', title: ['雨窗氛围', 'Rainy window'], prompt: ['雨滴顺着窗玻璃滑落，窗外城市灯光虚化，浅景深。', 'Raindrops run down a window, city lights blurred outside, shallow depth of field.'] },
+    { art: 'fireworks', ratio: '16:9', title: ['烟花夜景', 'Fireworks'], prompt: ['夜空中绽放的烟花，城市剪影，镜头缓慢上摇。', 'Fireworks bursting over a city skyline at night, the camera slowly tilts up.'] },
+    { art: 'plane', ratio: '16:9', title: ['纸飞机', 'Paper plane'], prompt: ['一架纸飞机穿过云层飞行，镜头跟随，绘本风格。', 'A paper plane glides through clouds, the camera follows, storybook style.'] },
+  ],
+}
+const IDEAS_PER_PAGE = 4
+/** Rotates across visits in this window so the page doesn't open on the same four every time. */
+let ideaOffset = Math.floor(Math.random() * 3) * IDEAS_PER_PAGE
 
 function OutputPreview({ job, index }: { job: MediaJob; index: number }) {
   const [url, setUrl] = useState('')
@@ -54,6 +87,66 @@ function OutputPreview({ job, index }: { job: MediaJob; index: number }) {
     : <img src={url} alt={job.request.prompt} />
 }
 
+type DetailActions = {
+  text: (cn: string, en: string) => string
+  statusLabel: string
+  onClose: () => void
+  onCancel: () => void
+  onResume: () => void
+  onExport: (index: number) => void
+  onFirstFrame: (index: number) => void
+  onReuse: () => void
+}
+
+function jobMeta(job: MediaJob, statusLabel: string) {
+  return [statusLabel, job.request.model, job.request.aspectRatio, job.request.kind === 'video' ? `${job.request.duration}s` : ''].filter(Boolean).join(' · ')
+}
+
+/** Preview, status and prompt of one creation; shared by the latest result and the history dialog. */
+function MediaResultBody({ job, text, onCancel }: { job: MediaJob; text: DetailActions['text']; onCancel: () => void }) {
+  return <>
+    {job.status === 'running' && <div className="kv-media-pending">
+      <LoaderCircle className="animate-spin" size={24} />
+      <p>{text('正在生成，稍后回来也可以。', 'Generating. You can come back later.')}</p>
+      <Button size="sm" onClick={onCancel}>{text('停止等待', 'Stop waiting')}</Button>
+      <small>{text('供应商可能继续生成并计费。', 'The provider may continue and charge for this task.')}</small>
+    </div>}
+    {job.error && <p role="status" className="kv-panel warn kv-media-job-error">{job.error}</p>}
+    {job.outputs.map((output, index) => <div key={output.name} className="kv-media-preview"><OutputPreview job={job} index={index} /></div>)}
+    <p className="kv-media-prompt">{job.request.prompt}</p>
+  </>
+}
+
+function MediaResultActions({ job, text, onResume, onExport, onFirstFrame, onReuse }: { job: MediaJob } & Omit<DetailActions, 'statusLabel' | 'onClose' | 'onCancel'>) {
+  return <>
+    <Button size="sm" variant="ghost" onClick={onReuse}><RefreshCw size={14} />{text('复用参数', 'Reuse settings')}</Button>
+    <span className="kv-media-detail-spacer" />
+    {job.providerTaskId && job.status !== 'running' && job.status !== 'completed' && <Button size="sm" onClick={onResume}><RefreshCw size={14} />{text('继续获取结果', 'Fetch result again')}</Button>}
+    {job.request.kind === 'image' && job.outputs.map((output, index) => <Button key={`frame-${output.name}`} size="sm" onClick={() => onFirstFrame(index)}><Play size={14} />{text('用作视频首帧', 'Use as first frame')}</Button>)}
+    {job.outputs.map((output, index) => <Button key={`save-${output.name}`} size="sm" variant="primary" onClick={() => onExport(index)}><Download size={14} />{text('另存为', 'Save as')}</Button>)}
+  </>
+}
+
+/** A creation opened from the history grid, shown as a modal over the history view. */
+function MediaDetail({ job, ...actions }: { job: MediaJob } & DetailActions) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const node = dialog.current
+    if (node && !node.open) node.showModal()
+    return () => node?.close()
+  }, [])
+  const { text, statusLabel, onClose, onCancel } = actions
+  return <dialog ref={dialog} className="kv-modal kv-media-detail" aria-label={text('作品详情', 'Creation details')}
+    onCancel={(e) => { e.preventDefault(); onClose() }} onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <header className="kv-media-detail-header">
+      <span>{jobMeta(job, statusLabel)}</span>
+      <IconButton size="sm" variant="ghost" label={text('关闭', 'Close')} onClick={onClose}><X size={15} /></IconButton>
+    </header>
+    <div className="kv-media-detail-body custom-scrollbar"><MediaResultBody job={job} text={text} onCancel={onCancel} /></div>
+    <footer className="kv-media-detail-actions"><MediaResultActions job={job} {...actions} /></footer>
+  </dialog>
+}
+
 export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void }) {
   const zh = useLang() === 'zh'
   const text = (cn: string, en: string) => zh ? cn : en
@@ -62,6 +155,10 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const [jobs, setJobs] = useState<MediaJob[]>([])
   const [selectedId, setSelectedId] = useState('')
+  // 「创作」是默认视图，只展示本次生成；完整历史在单独的「创作记录」视图里。
+  const [view, setView] = useState<'create' | 'history'>('create')
+  const [latestId, setLatestId] = useState(lastLatestId)
+  const [ideaStart, setIdeaStart] = useState(() => ideaOffset)
   const [filter, setFilter] = useState('all')
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -133,7 +230,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
     try {
       const job = await mediaStationApi.start({ ...form, prompt: form.prompt.trim(), model: form.model.trim() })
       if (!mounted.current) return
-      setSelectedId(job.id); setFilter('all'); setQuery(''); setRefresh((n) => n + 1)
+      lastLatestId = job.id; setLatestId(job.id); setRefresh((n) => n + 1)
     } catch (e) { if (mounted.current) setError(String(e)) }
     finally { sending.current = false; if (mounted.current) setSubmitting(false) }
   }
@@ -167,6 +264,20 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
     } catch (e) { if (mounted.current) setError(String(e)) }
   }
 
+  const latest = jobs.find((j) => j.id === latestId)
+  const ideaPool = IDEAS[form.kind]
+  const shownIdeas = Array.from({ length: IDEAS_PER_PAGE }, (_, i) => ideaPool[(ideaStart + i) % ideaPool.length])
+  const nextIdeas = () => setIdeaStart((start) => (ideaOffset = (start + IDEAS_PER_PAGE) % ideaPool.length))
+  useEffect(() => () => { ideaOffset = (ideaOffset + IDEAS_PER_PAGE) % IDEAS.image.length }, [])
+  /** Actions on a result; reusing it brings the parameters back to the create view. */
+  const resultActions = (job: MediaJob) => ({
+    text,
+    onResume: () => void resume(job),
+    onExport: (index: number) => void exportOutput(job, index),
+    onFirstFrame: (index: number) => { setSelectedId(''); setView('create'); void handleFirstFrame(job, index) },
+    onReuse: () => { setSelectedId(''); setView('create'); update(job.request) },
+  })
+
   const canGenerate = desktop && !submitting && Boolean(provider) && Boolean(form.model.trim()) && Boolean(form.prompt.trim()) && form.prompt.length <= 8000 && running < 3
 
   return <section className="kv kv-content kv-media">
@@ -178,17 +289,48 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
             <button key={kind} type="button" className="kv-plugin-segment" aria-pressed={form.kind === kind} aria-current={form.kind === kind ? 'page' : undefined} onClick={() => changeKind(kind)}>{label}</button>)}
         </div>
       </div>
-      <Button size="sm" variant="ghost" onClick={onOpenSettings}><Settings2 size={15} />{text('模型设置', 'Model settings')}</Button>
+      <div className="kv-media-header-actions">
+        <Button size="sm" variant="ghost" aria-pressed={view === 'history'} onClick={() => setView(view === 'history' ? 'create' : 'history')}>
+          {view === 'history' ? <><ArrowLeft size={15} />{text('返回创作', 'Back to create')}</> : <><History size={15} />{text('创作记录', 'Creations')}{jobs.length > 0 && <span className="kv-media-count">{jobs.length}</span>}</>}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onOpenSettings}><Settings2 size={15} />{text('模型设置', 'Model settings')}</Button>
+      </div>
     </header>
-    <div className="kv-scroll custom-scrollbar kv-media-workspace">
+    {error && <div className="kv-panel kv-media-notice" role="alert">{error}<IconButton label={text('关闭提示', 'Dismiss')} onClick={() => setError('')}><X size={14} /></IconButton></div>}
+    {view === 'create' ? <div className="kv-scroll custom-scrollbar kv-media-workspace">
+      {latest ? <article className="kv-media-latest" aria-label={text('本次生成', 'Latest result')}>
+        <header className="kv-media-detail-header">
+          <span>{jobMeta(latest, statusLabel(latest))}</span>
+          <IconButton size="sm" variant="ghost" label={text('收起', 'Dismiss')} onClick={() => { lastLatestId = ''; setLatestId('') }}><X size={15} /></IconButton>
+        </header>
+        <div className="kv-media-detail-body"><MediaResultBody job={latest} text={text} onCancel={() => void cancel(latest)} /></div>
+        <footer className="kv-media-detail-actions"><MediaResultActions job={latest} {...resultActions(latest)} /></footer>
+      </article> : <div className="kv-media-hero">
+        <div className="kv-media-hero-head">
+          <div>
+            <h3>{form.kind === 'image' ? text('想画点什么', 'What would you like to make') : text('想让什么动起来', 'What should move')}</h3>
+            <p>{form.kind === 'image' ? text('选一个方向，会填好描述和画幅；也可以直接在下面写', 'Pick a direction to fill in the prompt and ratio, or just write below') : text('选一个镜头，会填好描述和画幅；也可以直接在下面写', 'Pick a shot to fill in the prompt and ratio, or just write below')}</p>
+          </div>
+          <Button size="sm" variant="ghost" onClick={nextIdeas}><RefreshCw size={14} />{text('换一批', 'Shuffle')}</Button>
+        </div>
+        <div className="kv-media-ideas" key={`${form.kind}-${ideaStart}`}>
+          {shownIdeas.map(({ art, ratio, title, prompt }, i) =>
+            <button key={art} type="button" className="kv-media-idea" style={{ '--kv-idea-delay': `${i * 40}ms` } as CSSProperties}
+              title={text(prompt[0], prompt[1])} onClick={() => update({ prompt: text(prompt[0], prompt[1]), aspectRatio: ratio })}>
+              <span className="kv-media-idea-art"><IdeaArt name={art} /><span className="kv-media-idea-ratio">{ratio}</span></span>
+              <strong>{text(title[0], title[1])}</strong>
+              <span className="kv-media-idea-prompt">{text(prompt[0], prompt[1])}</span>
+            </button>)}
+        </div>
+      </div>}
+    </div> : <div className="kv-scroll custom-scrollbar kv-media-workspace">
       <div className="kv-media-library">
         <div className="kv-media-library-heading">
-          <h2>{text('创作记录', 'Creations')}{jobs.length > 0 && <span className="kv-media-count">{jobs.length}</span>}</h2>
+          <div className="kv-plugin-segments" role="group" aria-label={text('筛选类型', 'Filter type')}>
+            {([['all', text('全部', 'All')], ['image', text('图片', 'Images')], ['video', text('视频', 'Videos')]] as const).map(([value, label]) =>
+              <button key={value} type="button" className="kv-plugin-segment" aria-pressed={filter === value} aria-current={filter === value ? 'page' : undefined} onClick={() => setFilter(value)}>{label}</button>)}
+          </div>
           <div className="kv-media-library-tools">
-            <div className="kv-plugin-segments" role="group" aria-label={text('筛选类型', 'Filter type')}>
-              {([['all', text('全部', 'All')], ['image', text('图片', 'Images')], ['video', text('视频', 'Videos')]] as const).map(([value, label]) =>
-                <button key={value} type="button" className="kv-plugin-segment" aria-pressed={filter === value} aria-current={filter === value ? 'page' : undefined} onClick={() => setFilter(value)}>{label}</button>)}
-            </div>
             <label className="kv-media-search">
               <Search size={14} aria-hidden="true" />
               <Input aria-label={text('搜索描述', 'Search prompts')} value={query} onChange={setQuery} placeholder={text('搜索创作描述…', 'Search prompts…')} />
@@ -196,32 +338,16 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
             <IconButton size="sm" variant="ghost" label={text('刷新记录', 'Refresh')} onClick={() => setRefresh((n) => n + 1)} disabled={!desktop}><RefreshCw size={15} /></IconButton>
           </div>
         </div>
-        {selected && <article className="kv-panel kv-media-detail">
-          <div className="kv-row-desc kv-media-detail-header"><span>{statusLabel(selected)} · {selected.request.model} · {selected.request.aspectRatio}</span><IconButton label={text('收起预览', 'Close preview')} onClick={() => setSelectedId('')}><X size={15} /></IconButton></div>
-          {selected.status === 'running' && <div className="kv-row-desc kv-media-pending"><LoaderCircle className="animate-spin" size={26} /><p>{text('正在生成，稍后回来也可以。', 'Generating. You can come back later.')}</p><Button size="sm" onClick={() => void cancel(selected)}>{text('停止等待', 'Stop waiting')}</Button><small>{text('供应商可能继续生成并计费。', 'The provider may continue and charge for this task.')}</small></div>}
-          {selected.error && <p role="status" className="kv-panel kv-media-job-error">{selected.error}</p>}
-          {selected.providerTaskId && selected.status !== 'running' && selected.status !== 'completed' && <Button size="sm" onClick={() => void resume(selected)}><RefreshCw size={14} />{text('继续获取结果', 'Fetch result again')}</Button>}
-          {selected.outputs.map((output, index) => <div key={output.name}><div className="kv-media-preview"><OutputPreview job={selected} index={index} /></div><div className="kv-media-output-actions"><Button size="sm" onClick={() => void exportOutput(selected, index)}><Download size={14} />{text('另存为', 'Save as')}</Button>{selected.request.kind === 'image' && <Button size="sm" onClick={() => void handleFirstFrame(selected, index)}><Play size={14} />{text('用作视频首帧', 'Use as first frame')}</Button>}</div></div>)}
-          <p className="kv-media-prompt">{selected.request.prompt}</p>
-          <Button size="sm" variant="ghost" onClick={() => update(selected.request)}><RefreshCw size={14} />{text('复用参数', 'Reuse settings')}</Button>
-        </article>}
         {loading ? <p role="status" className="kv-field-hint">{text('正在读取记录…', 'Loading history…')}</p> : visible.length === 0 ? <div className="kv-media-empty">
           <span className="kv-media-empty-icon"><Images size={22} strokeWidth={1.5} /></span>
-          <h3>{jobs.length ? text('没有匹配的作品', 'No matching creations') : text('作品会出现在这里', 'Your creations will appear here')}</h3>
-          <p>{jobs.length ? text('试试其他关键词或类型。', 'Try another keyword or type.') : text('在下方写下第一段描述，或试试这些灵感。', 'Write your first prompt below, or try one of these ideas.')}</p>
-          {!jobs.length && <div className="kv-media-ideas">
-            {IDEAS.map(({ icon: Icon, title, prompt }) =>
-              <button key={title[0]} type="button" className="kv-media-idea" onClick={() => update({ prompt: text(prompt[0], prompt[1]) })}>
-                <Icon size={16} strokeWidth={1.75} />
-                <strong>{text(title[0], title[1])}</strong>
-                <span>{text(prompt[0], prompt[1])}</span>
-              </button>)}
-          </div>}
-        </div> : <div className="kv-media-grid">{visible.map((job) => <button type="button" key={job.id} className="kv-media-card" aria-pressed={selectedId === job.id} onClick={() => setSelectedId(job.id)}><div className="kv-media-cover">{job.outputs[0]?.preview ? <img src={job.outputs[0].preview} alt="" loading="lazy" /> : job.status === 'running' ? <LoaderCircle className="animate-spin" size={25} /> : job.request.kind === 'image' ? <Images size={28} /> : <Play size={28} />}<span>{statusLabel(job)}</span></div><strong>{job.request.prompt}</strong><small>{job.request.aspectRatio} · {new Date(job.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></button>)}</div>}
+          <h3>{jobs.length ? text('没有匹配的作品', 'No matching creations') : text('还没有作品', 'No creations yet')}</h3>
+          <p>{jobs.length ? text('试试其他关键词或类型。', 'Try another keyword or type.') : text('回到创作页生成第一张吧。', 'Go back and create your first one.')}</p>
+        </div> : <div className="kv-media-grid">{visible.map((job) => <button type="button" key={job.id} className="kv-media-card" aria-haspopup="dialog" onClick={() => setSelectedId(job.id)}><div className="kv-media-cover">{job.outputs[0]?.preview ? <img src={job.outputs[0].preview} alt="" loading="lazy" /> : job.status === 'running' ? <LoaderCircle className="animate-spin" size={25} /> : job.request.kind === 'image' ? <Images size={28} /> : <Play size={28} />}{job.status !== 'completed' && <span className={`kv-media-badge is-${job.status}`}>{statusLabel(job)}</span>}</div><strong>{job.request.prompt}</strong><small>{job.request.aspectRatio} · {new Date(job.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small></button>)}</div>}
       </div>
-    </div>
-    <div className="kv-media-dock">
-      {error && <div className="kv-panel kv-media-notice" role="alert">{error}<IconButton label={text('关闭提示', 'Dismiss')} onClick={() => setError('')}><X size={14} /></IconButton></div>}
+    </div>}
+    {view === 'history' && selected && <MediaDetail key={selected.id} job={selected} statusLabel={statusLabel(selected)}
+      onClose={() => setSelectedId('')} onCancel={() => void cancel(selected)} {...resultActions(selected)} />}
+    {view === 'create' && <div className="kv-media-dock">
       <form className="kv-media-composer" onSubmit={(e) => { e.preventDefault(); if (canGenerate) void generate() }}>
         <label className="kv-media-prompt-field">
           <span className="sr-only">{text('创作描述', 'Prompt')}</span>
@@ -250,10 +376,10 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
       <p className="kv-field-hint kv-media-composer-caption">
         {[
           !desktop && text('预览模式 · 请在桌面端生成', 'Preview · Generate in the desktop app'),
-          form.kind === 'video' ? text('xAI 兼容视频 · 720p', 'xAI-compatible video · 720p') : text('每次生成 1 张 · 按供应商计费', 'One image per request · Provider charges apply'),
+          form.kind === 'video' ? text('每次生成 1 段 · 按供应商计费', 'One video per request · Provider charges apply') : text('每次生成 1 张 · 按供应商计费', 'One image per request · Provider charges apply'),
           text('结果自动保存在本机', 'Saved to your device'),
         ].filter(Boolean).join(' · ')}
       </p>
-    </div>
+    </div>}
   </section>
 }
