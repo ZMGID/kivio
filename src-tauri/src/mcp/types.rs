@@ -1236,10 +1236,20 @@ mod tests {
 
     #[test]
     fn image_tool_unused_sources_allow_empty_arrays() {
-        for tool in [native_read_file_tool(), native_present_artifacts_tool(), mixer_generate_image_tool()] {
+        for tool in [
+            native_read_file_tool(),
+            native_present_artifacts_tool(),
+            mixer_generate_image_tool(),
+        ] {
             for field in ["artifact_ids", "paths"] {
-                let minimum = tool.input_schema["properties"][field]["minItems"].as_u64().unwrap_or(0);
-                assert_eq!(minimum, 0, "{}.{field} must not force placeholder entries", tool.name);
+                let minimum = tool.input_schema["properties"][field]["minItems"]
+                    .as_u64()
+                    .unwrap_or(0);
+                assert_eq!(
+                    minimum, 0,
+                    "{}.{field} must not force placeholder entries",
+                    tool.name
+                );
             }
         }
     }

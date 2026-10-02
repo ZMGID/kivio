@@ -14,11 +14,11 @@ pub mod external_agents;
 pub mod fonts;
 pub mod lens;
 pub mod lens_commands;
-pub mod market;
 #[cfg(any(target_os = "macos", test))]
 mod macos_hang_watchdog;
 #[cfg(target_os = "macos")]
 pub mod macos_ocr;
+pub mod market;
 pub mod mcp;
 pub mod native_tools;
 pub mod notes;
@@ -32,9 +32,9 @@ pub mod provider_oauth;
 pub mod provider_request;
 pub mod rapidocr;
 pub mod replace_translation;
+pub mod scheduled_tasks;
 #[cfg(target_os = "macos")]
 pub mod sck;
-pub mod scheduled_tasks;
 pub mod screenshot;
 pub mod self_config;
 pub mod settings;

@@ -9,8 +9,8 @@
 mod catalog;
 mod install;
 mod lifecycle;
-pub mod packages;
 pub mod marketplaces;
+pub mod packages;
 mod preview;
 mod state;
 

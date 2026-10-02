@@ -180,7 +180,12 @@ pub fn handle_conversation_tool_call<'a>(
     Box::pin(async move { Ok(call(app, ctx, tool_name, arguments)) })
 }
 
-fn call(app: &AppHandle, ctx: &NativeToolContext, tool_name: &str, arguments: Value) -> McpToolCallResult {
+fn call(
+    app: &AppHandle,
+    ctx: &NativeToolContext,
+    tool_name: &str,
+    arguments: Value,
+) -> McpToolCallResult {
     match dispatch(app, ctx, tool_name, arguments) {
         Ok(value) => result(value, false),
         Err(message) => result(json!({ "error": message }), true),
@@ -306,10 +311,15 @@ fn rule_from_args(args: ScheduleArgs) -> Result<ScheduleRule, String> {
     match args.kind.as_str() {
         "once" => {
             let text = args.at.ok_or("once 需要 at")?;
-            let naive = ["%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]
-                .iter()
-                .find_map(|format| NaiveDateTime::parse_from_str(text.trim(), format).ok())
-                .ok_or("at 须为本地时间 YYYY-MM-DD HH:MM")?;
+            let naive = [
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+            ]
+            .iter()
+            .find_map(|format| NaiveDateTime::parse_from_str(text.trim(), format).ok())
+            .ok_or("at 须为本地时间 YYYY-MM-DD HH:MM")?;
             let at = Local
                 .from_local_datetime(&naive)
                 .earliest()

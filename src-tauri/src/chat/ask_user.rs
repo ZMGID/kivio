@@ -528,7 +528,10 @@ mod tests {
         let mut args = prompt_args();
         args["questions"][1]["allow_custom"] = serde_json::json!(false);
         let prompt = normalize_prompt(args).unwrap();
-        assert!(prompt.questions.iter().all(|question| question.allow_custom));
+        assert!(prompt
+            .questions
+            .iter()
+            .all(|question| question.allow_custom));
         assert!(
             ask_user_tool().input_schema["properties"]["questions"]["items"]["properties"]
                 .get("allow_custom")

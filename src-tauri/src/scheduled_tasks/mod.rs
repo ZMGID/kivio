@@ -125,7 +125,12 @@ impl ScheduledTasks {
         } = validate_input(&input, now)?;
 
         let mut tasks = self.lock_tasks();
-        let task = match input.id.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        let task = match input
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
             Some(id) => {
                 let existing = tasks
                     .iter_mut()
@@ -361,7 +366,9 @@ impl ScheduledTasks {
     }
 
     fn lock_queued(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
-        self.queued_tasks.lock().unwrap_or_else(|err| err.into_inner())
+        self.queued_tasks
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
     }
 }
 
@@ -531,7 +538,12 @@ pub fn spawn_scheduler(app: AppHandle) {
                 emit_changed(&app, &run.task_id, Some(run));
             }
             for fire in fires {
-                start_run(&app, fire.task, RunTrigger::Schedule, Some(fire.scheduled_at));
+                start_run(
+                    &app,
+                    fire.task,
+                    RunTrigger::Schedule,
+                    Some(fire.scheduled_at),
+                );
             }
             let wait = svc
                 .next_wake()
@@ -740,7 +752,10 @@ mod tests {
         let svc = service_in(dir.path());
         let task = svc
             .save(
-                input(ScheduleRule::Interval { minutes: 10, anchor_at: None }),
+                input(ScheduleRule::Interval {
+                    minutes: 10,
+                    anchor_at: None,
+                }),
                 TaskSource::User,
                 1_000,
             )
@@ -755,7 +770,10 @@ mod tests {
         assert_eq!(fires[0].scheduled_at, 1_600);
         assert!(missed.is_empty());
         assert_eq!(svc.get(&task.id).unwrap().next_run_at, Some(2_200));
-        assert!(svc.claim_due(1_620).0.is_empty(), "the same slot must not fire twice");
+        assert!(
+            svc.claim_due(1_620).0.is_empty(),
+            "the same slot must not fire twice"
+        );
     }
 
     #[test]
@@ -763,7 +781,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = service_in(dir.path());
         let task = svc
-            .save(input(ScheduleRule::Once { at: 5_000 }), TaskSource::User, 1_000)
+            .save(
+                input(ScheduleRule::Once { at: 5_000 }),
+                TaskSource::User,
+                1_000,
+            )
             .unwrap();
 
         let (fires, missed) = svc.claim_due(5_000 + MISFIRE_GRACE_SECS + 1);
@@ -782,7 +804,10 @@ mod tests {
         let svc = service_in(dir.path());
         let task = svc
             .save(
-                input(ScheduleRule::Interval { minutes: 10, anchor_at: Some(1_600) }),
+                input(ScheduleRule::Interval {
+                    minutes: 10,
+                    anchor_at: Some(1_600),
+                }),
                 TaskSource::User,
                 1_000,
             )
@@ -799,7 +824,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = service_in(dir.path());
         assert!(svc
-            .save(input(ScheduleRule::Once { at: 500 }), TaskSource::User, 1_000)
+            .save(
+                input(ScheduleRule::Once { at: 500 }),
+                TaskSource::User,
+                1_000
+            )
             .is_err());
     }
 
@@ -808,7 +837,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = service_in(dir.path());
         let task = svc
-            .save(input(ScheduleRule::Daily { hour: 9, minute: 0 }), TaskSource::User, 1_000)
+            .save(
+                input(ScheduleRule::Daily { hour: 9, minute: 0 }),
+                TaskSource::User,
+                1_000,
+            )
             .unwrap();
         svc.note_fired(&task.id, 1_010);
         svc.record_run(&TaskRun {
@@ -823,7 +856,10 @@ mod tests {
             started_at: Some(1_011),
             finished_at: None,
         });
-        let mut edit = input(ScheduleRule::Daily { hour: 10, minute: 0 });
+        let mut edit = input(ScheduleRule::Daily {
+            hour: 10,
+            minute: 0,
+        });
         edit.id = Some(task.id.clone());
         let edited = svc.save(edit, TaskSource::User, 1_020).unwrap();
         assert_eq!(edited.run_count, 1);
@@ -848,5 +884,4 @@ mod tests {
         assert!(svc.save(unresolved, TaskSource::User, 1_000).is_err());
         assert!(svc.list().is_empty());
     }
-
 }

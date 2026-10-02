@@ -390,9 +390,18 @@ async fn send_reserved(
             // Usage is a cache. A concurrent refresh/rename must not abort an
             // already persisted user message or overwrite a newer summary.
             conversation = persist_context_state_best_effort(
-                &app, &conversation_id, conversation, context_state,
-            ).await?;
-            emit_chat_context_state(&app, &conversation.id, conversation.revision, &conversation.context_state);
+                &app,
+                &conversation_id,
+                conversation,
+                context_state,
+            )
+            .await?;
+            emit_chat_context_state(
+                &app,
+                &conversation.id,
+                conversation.revision,
+                &conversation.context_state,
+            );
         }
         Err(err) => {
             eprintln!("Context usage estimate failed before send: {err}");

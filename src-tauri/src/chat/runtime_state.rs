@@ -348,7 +348,10 @@ mod tests {
             .await
             .expect("idle signal must wake the queued send")
             .unwrap();
-        assert!(!runtime.try_reserve_send("a", "user"), "queued send now owns the conversation");
+        assert!(
+            !runtime.try_reserve_send("a", "user"),
+            "queued send now owns the conversation"
+        );
         runtime.end_reply("a", "queued");
         assert!(runtime.try_reserve_send("a", "user"));
     }

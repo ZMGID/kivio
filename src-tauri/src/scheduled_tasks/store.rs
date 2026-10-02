@@ -65,10 +65,8 @@ fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     match serde_json::from_str(&text) {
         Ok(value) => value,
         Err(err) => {
-            let backup = path.with_extension(format!(
-                "corrupt-{}.json",
-                chrono::Local::now().timestamp()
-            ));
+            let backup =
+                path.with_extension(format!("corrupt-{}.json", chrono::Local::now().timestamp()));
             eprintln!(
                 "[scheduled-tasks] {} is unreadable ({err}); moved to {}",
                 path.display(),

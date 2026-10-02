@@ -196,7 +196,8 @@ pub(crate) async fn chat_get_conversation_window(
     let total = conversation.messages.len();
     let start = history_window_start(&conversation.messages, total);
     let directory = conversation_history_directory(&conversation);
-    let history_artifacts = crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..total);
+    let history_artifacts =
+        crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..total);
     conversation.messages = conversation.messages.split_off(start);
     Ok(serde_json::json!({
         "success": true,
@@ -383,7 +384,9 @@ pub(super) fn reconcile_conversation_orphan_tool_segments(conversation: &mut Con
 /// 所必需的（见 commit 9d247b0），**绝不剥**。仅剥已完成的 assistant 消息（至多保留最后
 /// 一条中断草稿的转录，体积有界）。
 pub(crate) fn strip_transcripts_for_frontend(conversation: &mut Conversation) {
-    if let Some(summary) = &mut conversation.context_state.summary { summary.replay = None; }
+    if let Some(summary) = &mut conversation.context_state.summary {
+        summary.replay = None;
+    }
     for message in conversation.messages.iter_mut() {
         if message.role != "assistant" {
             continue;

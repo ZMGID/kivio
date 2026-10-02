@@ -446,12 +446,17 @@ fn register(
     Ok(record)
 }
 
-fn edit_parent(root: &Path, conversation: &str, arguments: &Value) -> Result<Option<ArtifactRecord>, String> {
+fn edit_parent(
+    root: &Path,
+    conversation: &str,
+    arguments: &Value,
+) -> Result<Option<ArtifactRecord>, String> {
     let ids = input_artifact_ids(arguments)?;
     let [id] = ids.as_slice() else {
         return Ok(None);
     };
-    Ok(load(root, id).ok()
+    Ok(load(root, id)
+        .ok()
         .filter(|record| record.conversation_id == conversation))
 }
 
@@ -518,7 +523,9 @@ pub fn prepare_output<'a>(
                 return Ok(output);
             }
             let parent_record = match edit_arguments.as_ref() {
-                Some(arguments) if output.artifacts.len() == 1 => edit_parent(&root, &conversation_id, arguments)?,
+                Some(arguments) if output.artifacts.len() == 1 => {
+                    edit_parent(&root, &conversation_id, arguments)?
+                }
                 _ => None,
             };
             for artifact in &mut output.artifacts {
@@ -730,24 +737,43 @@ pub(crate) fn history_reference_artifacts(
         needed.extend(referenced_ids(&text));
         for tool in &message.tool_calls {
             if tool.source == "native" && tool.name == "present_artifacts" {
-                if let Some(value) = tool.structured_content.as_ref()
-                    .filter(|value| value["type"] == "artifact_presentation") {
-                    for id in value.get("artifactIds").or_else(|| value.get("artifact_ids"))
-                        .and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                if let Some(value) = tool
+                    .structured_content
+                    .as_ref()
+                    .filter(|value| value["type"] == "artifact_presentation")
+                {
+                    for id in value
+                        .get("artifactIds")
+                        .or_else(|| value.get("artifact_ids"))
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                    {
                         needed.insert(id.trim().to_string());
                     }
                 }
             }
         }
-        present.extend(message.artifacts.iter()
-            .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))
-            .filter_map(|artifact| artifact.id.clone()));
+        present.extend(
+            message
+                .artifacts
+                .iter()
+                .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))
+                .filter_map(|artifact| artifact.id.clone()),
+        );
     }
     needed.retain(|id| !present.contains(id));
-    if needed.is_empty() { return Vec::new(); }
+    if needed.is_empty() {
+        return Vec::new();
+    }
     let mut selected = std::collections::BTreeMap::new();
-    for artifact in messages.iter().flat_map(|message| message.artifacts.iter()
-        .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))) {
+    for artifact in messages.iter().flat_map(|message| {
+        message
+            .artifacts
+            .iter()
+            .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))
+    }) {
         if let Some(id) = artifact.id.as_ref().filter(|id| needed.contains(*id)) {
             selected.insert(id, artifact);
         }
@@ -756,12 +782,16 @@ pub(crate) fn history_reference_artifacts(
 }
 
 fn referenced_ids(text: &str) -> HashSet<String> {
-    if !text.contains("artifact:") { return HashSet::new(); }
+    if !text.contains("artifact:") {
+        return HashSet::new();
+    }
     static PATTERNS: std::sync::OnceLock<(regex::Regex, regex::Regex)> = std::sync::OnceLock::new();
-    let (fence, reference) = PATTERNS.get_or_init(|| (
-        regex::Regex::new(r"(?s)```.*?```|`[^`]*`").unwrap(),
-        regex::Regex::new(r"artifact:(?://)?(art_[A-Za-z0-9_-]+)").unwrap(),
-    ));
+    let (fence, reference) = PATTERNS.get_or_init(|| {
+        (
+            regex::Regex::new(r"(?s)```.*?```|`[^`]*`").unwrap(),
+            regex::Regex::new(r"artifact:(?://)?(art_[A-Za-z0-9_-]+)").unwrap(),
+        )
+    });
     let text = fence.replace_all(text, "");
     reference
         .captures_iter(&text)
@@ -974,11 +1004,21 @@ mod tests {
     use super::*;
     #[test]
     fn input_artifact_ids_ignore_empty_placeholders_and_deduplicate() {
-        assert!(input_artifact_ids(&serde_json::json!({"artifact_ids": ["", " "]})).unwrap().is_empty());
-        assert_eq!(input_artifact_ids(&serde_json::json!({
-            "artifact_ids": [" art_first ", "", "art_second", "art_first"]
-        })).unwrap(), vec!["art_first", "art_second"]);
-        assert!(input_artifact_ids(&serde_json::json!({})).unwrap().is_empty());
+        assert!(
+            input_artifact_ids(&serde_json::json!({"artifact_ids": ["", " "]}))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            input_artifact_ids(&serde_json::json!({
+                "artifact_ids": [" art_first ", "", "art_second", "art_first"]
+            }))
+            .unwrap(),
+            vec!["art_first", "art_second"]
+        );
+        assert!(input_artifact_ids(&serde_json::json!({}))
+            .unwrap()
+            .is_empty());
         assert!(input_artifact_ids(&serde_json::json!({"artifact_ids": "art_first"})).is_err());
     }
 
@@ -1009,14 +1049,34 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let original = record("art_original", b"image");
         save(root.path(), &original).unwrap();
-        for ids in [serde_json::json!([" art_original "]), serde_json::json!(["art_original", "", "art_original"])] {
-            let parent = edit_parent(root.path(), "conv_test", &serde_json::json!({"artifact_ids": ids}))
-                .unwrap().expect("one normalized reference must retain its work");
+        for ids in [
+            serde_json::json!([" art_original "]),
+            serde_json::json!(["art_original", "", "art_original"]),
+        ] {
+            let parent = edit_parent(
+                root.path(),
+                "conv_test",
+                &serde_json::json!({"artifact_ids": ids}),
+            )
+            .unwrap()
+            .expect("one normalized reference must retain its work");
             assert_eq!(parent.id, original.id);
             assert_eq!(parent.work_id, original.work_id);
         }
-        assert!(edit_parent(root.path(), "other_conversation", &serde_json::json!({"artifact_ids": ["art_original"]})).unwrap().is_none());
-        assert!(edit_parent(root.path(), "conv_test", &serde_json::json!({"artifact_ids": ["art_original", "art_other"]})).unwrap().is_none());
+        assert!(edit_parent(
+            root.path(),
+            "other_conversation",
+            &serde_json::json!({"artifact_ids": ["art_original"]})
+        )
+        .unwrap()
+        .is_none());
+        assert!(edit_parent(
+            root.path(),
+            "conv_test",
+            &serde_json::json!({"artifact_ids": ["art_original", "art_other"]})
+        )
+        .unwrap()
+        .is_none());
     }
     #[test]
     fn register_keeps_existing_source_path_and_does_not_copy() {

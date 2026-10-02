@@ -1,6 +1,8 @@
 use tauri::AppHandle;
 
-use super::types::{RunTrigger, ScheduleRule, ScheduledTask, ScheduledTaskInput, TaskRun, TaskSource};
+use super::types::{
+    RunTrigger, ScheduleRule, ScheduledTask, ScheduledTaskInput, TaskRun, TaskSource,
+};
 use super::{emit_changed, now_secs, service, start_run};
 
 #[tauri::command]
@@ -54,7 +56,11 @@ pub fn scheduled_task_runs(app: AppHandle, id: String) -> Vec<TaskRun> {
 }
 
 #[tauri::command]
-pub fn scheduled_task_run_delete(app: AppHandle, task_id: String, run_id: String) -> Result<(), String> {
+pub fn scheduled_task_run_delete(
+    app: AppHandle,
+    task_id: String,
+    run_id: String,
+) -> Result<(), String> {
     service(&app).delete_run(&task_id, &run_id)?;
     emit_changed(&app, &task_id, None);
     Ok(())

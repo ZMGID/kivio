@@ -786,7 +786,10 @@ fn read_non_image_paths(
         return Err(content);
     }
     if succeeded < requested.len() {
-        return Ok(format!("Read {succeeded} of {} requested entries; the remaining entries failed.\n\n{content}", requested.len()));
+        return Ok(format!(
+            "Read {succeeded} of {} requested entries; the remaining entries failed.\n\n{content}",
+            requested.len()
+        ));
     }
     Ok(content)
 }
@@ -1413,7 +1416,9 @@ fn call_present_artifacts(
         ));
     }
     if let Some(notice) = invalid_id_notice {
-        content.push_str(&format!("\n\n{notice} These IDs were ignored; the valid files listed above are unaffected."));
+        content.push_str(&format!(
+            "\n\n{notice} These IDs were ignored; the valid files listed above are unaffected."
+        ));
     }
     Ok(McpToolCallResult {
         content,
@@ -1459,7 +1464,8 @@ mod tests {
         let resolved = resolve_read_arguments(&args, |id| {
             assert_eq!(id, "art_existing");
             Ok(image.to_string_lossy().into_owned())
-        }).expect("known artifact must be readable even when an unused path is filled");
+        })
+        .expect("known artifact must be readable even when an unused path is filled");
         let (images, non_image, skipped) = resolve_requested_read_paths(
             &NativeToolWorkspace::standalone(),
             &[nonempty_path_arg(&resolved).unwrap()],
@@ -1477,12 +1483,21 @@ mod tests {
         let path = dir.path().join("local.txt");
         std::fs::write(&path, "selected local file").unwrap();
         let args = serde_json::json!({"artifact_ids": ["", " "], "path": path, "paths": []});
-        let resolved = resolve_read_arguments(&args, |_| panic!("blank IDs must not resolve")).unwrap();
-        assert!(crate::native_tools::read_file(&NativeToolWorkspace::standalone(), &resolved)
-            .unwrap().content.contains("selected local file"));
-        let error = resolve_read_arguments(&serde_json::json!({
-            "artifact_ids": ["art_missing"], "path": path, "paths": []
-        }), |_| Err("Unknown artifact".into())).unwrap_err();
+        let resolved =
+            resolve_read_arguments(&args, |_| panic!("blank IDs must not resolve")).unwrap();
+        assert!(
+            crate::native_tools::read_file(&NativeToolWorkspace::standalone(), &resolved)
+                .unwrap()
+                .content
+                .contains("selected local file")
+        );
+        let error = resolve_read_arguments(
+            &serde_json::json!({
+                "artifact_ids": ["art_missing"], "path": path, "paths": []
+            }),
+            |_| Err("Unknown artifact".into()),
+        )
+        .unwrap_err();
         assert!(error.contains("Unknown artifact"));
         assert!(error.contains("artifact_ids: []"));
     }
@@ -1490,13 +1505,23 @@ mod tests {
     #[test]
     fn read_multiple_ids_clear_both_path_fields_and_preserve_order() {
         let mut calls = Vec::new();
-        let result = resolve_read_arguments(&serde_json::json!({
-            "artifact_ids": [" art_a ", "", "art_b", "art_a"],
-            "path": "unused.png", "paths": ["dummy"], "overview": true
-        }), |id| { calls.push(id.to_string()); Ok(format!("{id}.png")) }).unwrap();
+        let result = resolve_read_arguments(
+            &serde_json::json!({
+                "artifact_ids": [" art_a ", "", "art_b", "art_a"],
+                "path": "unused.png", "paths": ["dummy"], "overview": true
+            }),
+            |id| {
+                calls.push(id.to_string());
+                Ok(format!("{id}.png"))
+            },
+        )
+        .unwrap();
         assert_eq!(calls, vec!["art_a", "art_b"]);
         assert_eq!(result["path"], "");
-        assert_eq!(result["paths"], serde_json::json!(["art_a.png", "art_b.png"]));
+        assert_eq!(
+            result["paths"],
+            serde_json::json!(["art_a.png", "art_b.png"])
+        );
         assert_eq!(result["overview"], true);
     }
 
@@ -1515,8 +1540,11 @@ mod tests {
     fn tool_contract_batch_read_reports_total_failure() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = NativeToolWorkspace::conversation(dir.path().to_path_buf());
-        let error = read_non_image_paths(&workspace, &["missing-a.png".into(), "missing-b.png".into()])
-            .expect_err("zero readable files must not become a successful read");
+        let error = read_non_image_paths(
+            &workspace,
+            &["missing-a.png".into(), "missing-b.png".into()],
+        )
+        .expect_err("zero readable files must not become a successful read");
         assert!(error.contains("missing-a.png"));
         assert!(error.contains("missing-b.png"));
     }
@@ -1550,7 +1578,10 @@ mod tests {
         .unwrap();
         assert!(with_gap.contains("alpha"), "{with_gap}");
         assert!(with_gap.contains("missing.txt"), "{with_gap}");
-        assert!(with_gap.contains("Read 1 of 2 requested entries"), "{with_gap}");
+        assert!(
+            with_gap.contains("Read 1 of 2 requested entries"),
+            "{with_gap}"
+        );
     }
 
     #[test]
@@ -1949,10 +1980,18 @@ mod tests {
             &serde_json::json!({
                 "artifact_ids": ["dummy"], "paths": [path], "mode": "prepare", "caption": ""
             }),
-        ).expect("valid local image must remain usable");
+        )
+        .expect("valid local image must remain usable");
         assert_eq!(result.artifacts.len(), 1);
-        assert_eq!(result.structured_content.as_ref().unwrap()["artifactIds"], serde_json::json!([]));
-        assert!(result.content.contains("Prepared 1 file"), "{}", result.content);
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["artifactIds"],
+            serde_json::json!([])
+        );
+        assert!(
+            result.content.contains("Prepared 1 file"),
+            "{}",
+            result.content
+        );
         assert!(result.content.contains("dummy"));
     }
 
@@ -1960,21 +1999,36 @@ mod tests {
     fn present_artifacts_reports_invalid_ids_and_retains_valid_selection() {
         let workspace = NativeToolWorkspace::standalone();
         for mode in ["prepare", "preview"] {
-            let result = call_present_artifacts(&workspace, &serde_json::json!({
-                "artifact_ids": ["dummy", "art_existing"], "paths": [], "mode": mode
-            })).unwrap();
-            assert_eq!(result.structured_content.unwrap()["artifactIds"], serde_json::json!(["art_existing"]));
+            let result = call_present_artifacts(
+                &workspace,
+                &serde_json::json!({
+                    "artifact_ids": ["dummy", "art_existing"], "paths": [], "mode": mode
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                result.structured_content.unwrap()["artifactIds"],
+                serde_json::json!(["art_existing"])
+            );
             assert!(result.content.contains("1 file"));
             assert!(result.content.contains("dummy"));
         }
-        let error = call_present_artifacts(&workspace, &serde_json::json!({
-            "artifact_ids": ["dummy"], "paths": []
-        })).unwrap_err();
+        let error = call_present_artifacts(
+            &workspace,
+            &serde_json::json!({
+                "artifact_ids": ["dummy"], "paths": []
+            }),
+        )
+        .unwrap_err();
         assert!(error.contains("artifact_ids: []"), "{error}");
         assert!(!error.contains("Prepared"));
-        assert!(call_present_artifacts(&workspace, &serde_json::json!({
-            "artifact_ids": [], "paths": []
-        })).is_err());
+        assert!(call_present_artifacts(
+            &workspace,
+            &serde_json::json!({
+                "artifact_ids": [], "paths": []
+            })
+        )
+        .is_err());
     }
 
     #[test]

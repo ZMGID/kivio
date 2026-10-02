@@ -663,10 +663,15 @@ impl Conversation {
         let Some(summary) = self.context_state.summary.as_mut() else {
             return;
         };
-        let through = summary.replay.as_ref()
+        let through = summary
+            .replay
+            .as_ref()
             .map(|replay| replay.through_message_id.as_str())
             .unwrap_or(&summary.source_until_message_id);
-        let boundary = self.messages.iter().position(|message| message.id == through);
+        let boundary = self
+            .messages
+            .iter()
+            .position(|message| message.id == through);
         if boundary.map(|index| changed_index <= index).unwrap_or(true) {
             summary.stale = true;
             self.context_state.status = "stale".to_string();

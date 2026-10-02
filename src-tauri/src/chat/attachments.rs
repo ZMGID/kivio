@@ -1863,7 +1863,11 @@ mod tests {
         let original = format!("data:image/png;base64,{payload}");
         let mut replay = vec![api_image_message(&original)];
         externalize_api_message_images_in_dir(dir.path(), &mut replay);
-        let file_name = api_image_url(&replay[0]).rsplit('/').next().unwrap().to_string();
+        let file_name = api_image_url(&replay[0])
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .to_string();
         let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
             "id":"gc-replay", "title":"test", "provider_id":"p", "model":"m", "created_at":1, "updated_at":1,
             "messages":[{"id":"u", "role":"user", "content":"image", "timestamp":1,
@@ -1876,16 +1880,34 @@ mod tests {
         })).unwrap();
         let disk = dir.path().join("conversation.json");
         fs::write(&disk, serde_json::to_vec(&conversation).unwrap()).unwrap();
-        let mut restored: crate::chat::Conversation = serde_json::from_slice(&fs::read(disk).unwrap()).unwrap();
+        let mut restored: crate::chat::Conversation =
+            serde_json::from_slice(&fs::read(disk).unwrap()).unwrap();
         let referenced = crate::chat::gc::referenced_attachment_names(&restored);
         let orphan = "msgimg-unreferenced.png".to_string();
         fs::write(dir.path().join(&orphan), b"unused").unwrap();
-        for name in crate::chat::gc::unreferenced_attachment_names(&[file_name.clone(), orphan.clone()], &referenced) {
+        for name in crate::chat::gc::unreferenced_attachment_names(
+            &[file_name.clone(), orphan.clone()],
+            &referenced,
+        ) {
             fs::remove_file(dir.path().join(name)).unwrap();
         }
-        assert!(dir.path().join(&file_name).exists(), "live replay image was deleted");
-        assert!(!dir.path().join(orphan).exists(), "unused files must still be collected");
-        let tail = &mut restored.context_state.summary.as_mut().unwrap().replay.as_mut().unwrap().messages;
+        assert!(
+            dir.path().join(&file_name).exists(),
+            "live replay image was deleted"
+        );
+        assert!(
+            !dir.path().join(orphan).exists(),
+            "unused files must still be collected"
+        );
+        let tail = &mut restored
+            .context_state
+            .summary
+            .as_mut()
+            .unwrap()
+            .replay
+            .as_mut()
+            .unwrap()
+            .messages;
         rehydrate_api_message_images_in_dir(dir.path(), tail);
         assert_eq!(api_image_url(&tail[0]), original);
     }

@@ -83,7 +83,9 @@ pub fn next_after(rule: &ScheduleRule, after: i64) -> Result<Option<i64>, String
         }),
         // Jan 31 → Mar 31 is the longest gap between two months that have a given day.
         ScheduleRule::Monthly { days, hour, minute } => {
-            next_calendar(after, *hour, *minute, 64, |date| days.contains(&(date.day() as u8)))
+            next_calendar(after, *hour, *minute, 64, |date| {
+                days.contains(&(date.day() as u8))
+            })
         }
         // Feb 29 can be eight years away across a non-leap century.
         ScheduleRule::Yearly {
@@ -238,19 +240,56 @@ mod tests {
 
     #[test]
     fn invalid_rules_are_rejected_with_reason() {
-        assert!(validate(&ScheduleRule::Cron { expr: "* * *".into() }).is_err());
-        assert!(validate(&ScheduleRule::Cron { expr: "0 0 9 * * *".into() }).is_err());
-        assert!(validate(&ScheduleRule::Cron { expr: "61 * * * *".into() }).is_err());
-        assert!(validate(&ScheduleRule::Weekly { weekdays: vec![], hour: 9, minute: 0 }).is_err());
-        assert!(validate(&ScheduleRule::Daily { hour: 24, minute: 0 }).is_err());
-        assert!(validate(&ScheduleRule::Interval { minutes: 0, anchor_at: None }).is_err());
-        assert!(validate(&ScheduleRule::Monthly { days: vec![32], hour: 9, minute: 0 }).is_err());
-        assert!(validate(&ScheduleRule::Yearly { month: 2, day: 30, hour: 9, minute: 0 }).is_err());
+        assert!(validate(&ScheduleRule::Cron {
+            expr: "* * *".into()
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Cron {
+            expr: "0 0 9 * * *".into()
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Cron {
+            expr: "61 * * * *".into()
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Weekly {
+            weekdays: vec![],
+            hour: 9,
+            minute: 0
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Daily {
+            hour: 24,
+            minute: 0
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Interval {
+            minutes: 0,
+            anchor_at: None
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Monthly {
+            days: vec![32],
+            hour: 9,
+            minute: 0
+        })
+        .is_err());
+        assert!(validate(&ScheduleRule::Yearly {
+            month: 2,
+            day: 30,
+            hour: 9,
+            minute: 0
+        })
+        .is_err());
     }
 
     #[test]
     fn monthly_skips_months_without_the_day() {
-        let rule = ScheduleRule::Monthly { days: vec![31], hour: 9, minute: 0 };
+        let rule = ScheduleRule::Monthly {
+            days: vec![31],
+            hour: 9,
+            minute: 0,
+        };
         // After Jan 31 the next 31st is March 31 (February and April have none).
         assert_eq!(
             next_after(&rule, at(2026, 1, 31, 10, 0)).unwrap(),
@@ -260,7 +299,12 @@ mod tests {
 
     #[test]
     fn yearly_leap_day_waits_for_a_leap_year() {
-        let rule = ScheduleRule::Yearly { month: 2, day: 29, hour: 8, minute: 0 };
+        let rule = ScheduleRule::Yearly {
+            month: 2,
+            day: 29,
+            hour: 8,
+            minute: 0,
+        };
         assert_eq!(
             next_after(&rule, at(2026, 3, 1, 0, 0)).unwrap(),
             Some(at(2028, 2, 29, 8, 0))

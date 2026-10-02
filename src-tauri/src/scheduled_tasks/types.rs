@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ScheduleRule {
     /// Fire once at a unix timestamp (seconds).
-    Once { at: i64 },
+    Once {
+        at: i64,
+    },
     /// Every `minutes`, counted from `anchor_at` so late dispatches never drift.
     #[serde(rename_all = "camelCase")]
     Interval {
@@ -13,7 +15,10 @@ pub enum ScheduleRule {
         #[serde(default)]
         anchor_at: Option<i64>,
     },
-    Daily { hour: u8, minute: u8 },
+    Daily {
+        hour: u8,
+        minute: u8,
+    },
     /// `weekdays`: 0 = Sunday … 6 = Saturday.
     Weekly {
         weekdays: Vec<u8>,
@@ -21,7 +26,11 @@ pub enum ScheduleRule {
         minute: u8,
     },
     /// `days`: day-of-month 1…31; months without that day are skipped.
-    Monthly { days: Vec<u8>, hour: u8, minute: u8 },
+    Monthly {
+        days: Vec<u8>,
+        hour: u8,
+        minute: u8,
+    },
     /// Feb 29 fires only in leap years.
     Yearly {
         month: u8,
@@ -30,7 +39,9 @@ pub enum ScheduleRule {
         minute: u8,
     },
     /// Five-field cron expression.
-    Cron { expr: String },
+    Cron {
+        expr: String,
+    },
 }
 
 /// Where a task's prompts go, as requested by the editor. A saved task always
