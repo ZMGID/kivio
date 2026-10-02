@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, LayoutGrid, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
 import { MARKET_CHANGED_EVENT, marketApi, marketplaceApi, type Marketplace, type MarketplacePlugin, type MarketPlugin, type MarketSnapshot } from '../../api/market'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
 import { useLang } from '../../components/i18n'
 import { Input, Toggle } from '../../settings/public/controls'
+import { DefaultPluginIcon } from '../../settings/public/icons'
 import { packageApi, type PluginPackage } from '../../api/pluginPackages'
 import { refreshSettings } from '../../api/settingsCache'
 import { DockContextMenu, type DockMenuAnchor } from '../dock/DockContextMenu'
@@ -33,7 +34,7 @@ function PluginIcon({ plugin, src, size = 'md' }: { plugin?: MarketPlugin; src?:
   return (
     <span className={`kv-market-icon is-${size}`} aria-hidden="true">
       {src && src !== failedSrc ? <img className="kv-market-logo" src={src} alt="" draggable={false} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />
-        : plugin?.manifest.icon ? <span className="kv-market-brand-mark" style={{ maskImage: `url("${plugin.manifest.icon}")` }} /> : <LayoutGrid size={18} />}
+        : plugin?.manifest.icon ? <span className="kv-market-brand-mark" style={{ maskImage: `url("${plugin.manifest.icon}")` }} /> : <DefaultPluginIcon size={size === 'lg' ? 30 : 18} strokeWidth={1.75} />}
     </span>
   )
 }
@@ -535,7 +536,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
                     </button>
                     <IconButton variant="ghost" label={text(`${plugin.name} 更多操作`, `More options for ${plugin.name}`)} onClick={() => openPackage(plugin)}><MoreHorizontal size={16} /></IconButton>
                   </article>
-                ))}</div> : <div className="kv-market-empty"><LayoutGrid size={28} />
+                ))}</div> : <div className="kv-market-empty"><DefaultPluginIcon size={28} strokeWidth={1.75} />
                   <p>{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('添加你自己的插件', 'Add your own plugins')}</p>
                   {!query.trim() && <Button size="sm" onClick={() => setMarketDialog('add')}>{text('添加插件市场', 'Add marketplace')}</Button>}
                 </div>}
@@ -545,7 +546,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
               <div className="kv-market-rows" aria-busy="true">{[0, 1, 2, 3].map((i) => <div key={i} className="kv-skeleton kv-market-skeleton" />)}</div>
             ) : !sections.length ? (
               <div className="kv-market-empty">
-                <LayoutGrid size={28} />
+                <DefaultPluginIcon size={28} strokeWidth={1.75} />
                 <p>{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('暂无插件', 'No plugins yet')}</p>
                 {query.trim() && <Button size="sm" onClick={() => setQuery('')}>{text('查看全部', 'Show all')}</Button>}
               </div>

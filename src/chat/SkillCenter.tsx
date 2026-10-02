@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
 import {
-  Box,
   ChevronDown,
   Download,
   ExternalLink,
@@ -29,7 +28,7 @@ import { Select, Toggle } from '../settings/public/controls'
 import { useT, type I18n } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { SkillStoreBrowser } from './SkillStoreBrowser'
-import { SkillIcon } from '../settings/public/icons'
+import { DefaultSkillIcon, SkillIcon } from '../settings/public/icons'
 import { confirmDialog } from '../components/dialogQueue'
 
 interface SkillCenterProps {
@@ -138,7 +137,7 @@ function SkillCard({
               : 'border-neutral-200/80 bg-neutral-100/80 text-neutral-400 group-hover:text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-600'
           }`}
         >
-          <Box size={18} />
+          <DefaultSkillIcon size={18} strokeWidth={1.75} />
         </span>
         {manageLocked ? (
           <span

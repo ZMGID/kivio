@@ -325,6 +325,28 @@ export function SkillIcon(props: IconProps) {
   )
 }
 
+// 插件 / Skill 没有自带图标时的占位图标（插件市场、Skill 卡片）。不复用导航图标，避免列表看起来像菜单入口。
+// 插件：一块乐高积木（顶面两颗凸点）
+export function DefaultPluginIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M6 8.5 V6.5 A1 1 0 0 1 7 5.5 H9 A1 1 0 0 1 10 6.5 V8.5" />
+      <path d="M14 8.5 V6.5 A1 1 0 0 1 15 5.5 H17 A1 1 0 0 1 18 6.5 V8.5" />
+      <rect x="3.5" y="8.5" width="17" height="10" rx="1.75" />
+    </svg>
+  )
+}
+
+// Skill：一大一小两颗内凹四角星
+export function DefaultSkillIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M10 3 C10.6 7 13 9.4 17 10 C13 10.6 10.6 13 10 17 C9.4 13 7 10.6 3 10 C7 9.4 9.4 7 10 3 Z" />
+      <path d="M18 14 C18.2 15.6 19.4 16.8 21 17 C19.4 17.2 18.2 18.4 18 20 C17.8 18.4 16.6 17.2 15 17 C16.6 16.8 17.8 15.6 18 14 Z" />
+    </svg>
+  )
+}
+
 // 网络搜索：地球仪（经线椭圆 + 赤道），填满 viewBox，小尺寸也清晰
 export function WebSearchIcon(props: IconProps) {
   return (
