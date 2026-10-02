@@ -266,8 +266,8 @@ export function mergeImportedHeaders(
 }
 
 export const CLI_IDENTITY_BUILTIN_VERSIONS: Record<string, string> = {
-  claude_code: '2.1.71',
-  codex: '0.72.0',
+  claude_code: '2.1.287',
+  codex: '0.160.0',
   grok: '0.2.110',
 }
 

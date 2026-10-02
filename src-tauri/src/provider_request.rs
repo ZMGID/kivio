@@ -26,8 +26,8 @@ const RESERVED_HEADER_KEYS: &[&str] = &[
 ];
 
 // 内置 CLI 版本号。手填版本为空时用它们。
-pub const CLAUDE_CODE_BUILTIN_VERSION: &str = "2.1.71";
-pub const CODEX_BUILTIN_VERSION: &str = "0.72.0";
+pub const CLAUDE_CODE_BUILTIN_VERSION: &str = "2.1.287";
+pub const CODEX_BUILTIN_VERSION: &str = "0.160.0";
 pub const GROK_BUILTIN_VERSION: &str = "0.2.110";
 
 /// RFC 7230 token 字符集。

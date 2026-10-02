@@ -246,12 +246,26 @@ fn approval_response_line(
     deny_message: &str,
     updated_input: Option<&Value>,
 ) -> String {
+    approval_response_line_with_permissions(request_id, approved, deny_message, updated_input, None)
+}
+
+fn approval_response_line_with_permissions(
+    request_id: &str,
+    approved: bool,
+    deny_message: &str,
+    updated_input: Option<&Value>,
+    updated_permissions: Option<&Value>,
+) -> String {
     let payload = if approved {
-        match updated_input {
+        let mut payload = match updated_input {
             // `AskUserQuestion` 的答复就走这里：`updatedInput` 带回 `{questions, answers}`。
             Some(input) => json!({ "behavior": "allow", "updatedInput": input }),
             None => json!({ "behavior": "allow" }),
+        };
+        if let Some(permissions) = updated_permissions {
+            payload["updatedPermissions"] = permissions.clone();
         }
+        payload
     } else {
         json!({ "behavior": "deny", "message": deny_message, "interrupt": false })
     };
@@ -406,7 +420,37 @@ fn approval_ask_from_request(request_id: &str, request: &Value) -> ApprovalAsk {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
         requires_manual_approval: requires_manual_approval(request),
+        permission_suggestions: request
+            .get("permission_suggestions")
+            .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+            .cloned(),
     }
+}
+
+/// 「总是允许」→ 回给 CLI 的 `updatedPermissions`（t3code `toSessionPermissionUpdates` 同款）：
+/// CLI 的建议原样复用但改成 `destination: "session"`——它的建议通常写 `localSettings`，照抄会
+/// 把一次会话内的选择落成 `.claude/settings.local.json` 里的永久规则。没有建议（MCP 工具常见）
+/// 时退回整个工具的 session allow 规则，免得「总是允许」静默退化成一次性放行。
+pub fn session_permission_updates(tool_name: &str, suggestions: Option<&Value>) -> Value {
+    let scoped: Vec<Value> = suggestions
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            let mut s = s.as_object()?.clone();
+            s.insert("destination".to_string(), json!("session"));
+            Some(Value::Object(s))
+        })
+        .collect();
+    if !scoped.is_empty() {
+        return Value::Array(scoped);
+    }
+    json!([{
+        "type": "addRules",
+        "rules": [{ "toolName": tool_name }],
+        "behavior": "allow",
+        "destination": "session",
+    }])
 }
 
 /// MCP 服务器经 claude 向宿主要输入（2.1.281+ `control_request{subtype:"elicitation"}`：
@@ -425,6 +469,7 @@ fn elicitation_ask_from_request(request_id: &str, request: &Value) -> ApprovalAs
         input: request.clone(),
         requires_user_interaction: true,
         requires_manual_approval: true,
+        permission_suggestions: None,
     }
 }
 
@@ -987,11 +1032,12 @@ impl ClaudeStreamJsonSession {
                         // 失败了要让用户看见，而不是留他对着一个「批准了却还在计划档」的会话。
                         pending_mode_switch = Some((request_id, mode.to_string()));
                     }
-                    let line = approval_response_line(
+                    let line = approval_response_line_with_permissions(
                         &decision.request_id,
                         decision.approved,
                         APPROVAL_DENIED_MESSAGE,
                         decision.updated_input.as_ref(),
+                        decision.updated_permissions.as_ref(),
                     );
                     let _ = self.stdin.write_all(line.as_bytes()).await;
                     let _ = self.stdin.flush().await;
@@ -1708,6 +1754,29 @@ mod tests {
             InboundFrame::Ask(ask) => Some(ask),
             _ => None,
         }
+    }
+
+    #[test]
+    fn always_allow_scopes_cli_suggestions_to_the_session() {
+        let ask = ask_for(
+            r#"{"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool",
+                "tool_name":"Bash","input":{"command":"npm test"},"tool_use_id":"t",
+                "permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test:*"}],"behavior":"allow","destination":"localSettings"}]}}"#,
+        )
+        .unwrap();
+        let updates =
+            session_permission_updates(&ask.tool_name, ask.permission_suggestions.as_ref());
+        assert_eq!(updates[0]["destination"], "session");
+        assert_eq!(updates[0]["rules"][0]["ruleContent"], "npm test:*");
+        // 没有建议：整工具 session 规则。
+        assert_eq!(
+            session_permission_updates("mcp__x__y", None),
+            json!([{"type":"addRules","rules":[{"toolName":"mcp__x__y"}],"behavior":"allow","destination":"session"}])
+        );
+        let line = approval_response_line_with_permissions("r", true, "no", None, Some(&updates));
+        let value = frame(line.trim());
+        assert_eq!(value["response"]["response"]["behavior"], "allow");
+        assert_eq!(value["response"]["response"]["updatedPermissions"], updates);
     }
 
     /// MCP elicitation（2.1.281+）有宿主时挂起成交互询问，回执是 `{action}` 形状，
@@ -2487,6 +2556,7 @@ mod live_tests {
                         approved: true,
                         updated_input,
                         set_permission_mode: None,
+                        updated_permissions: None,
                     })
                     .await;
                 if sent.is_err() {
@@ -2585,6 +2655,7 @@ text={}",
                         approved: true,
                         updated_input: None,
                         set_permission_mode,
+                        updated_permissions: None,
                     })
                     .await;
                 if sent.is_err() {
@@ -2718,6 +2789,7 @@ text={}",
                         approved: true,
                         updated_input,
                         set_permission_mode: None,
+                        updated_permissions: None,
                     })
                     .await;
                 if sent.is_err() {
@@ -3171,6 +3243,7 @@ text={}",
                         approved: approve,
                         updated_input: None,
                         set_permission_mode: None,
+                        updated_permissions: None,
                     })
                     .await;
                 if sent.is_err() {

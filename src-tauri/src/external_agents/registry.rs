@@ -239,6 +239,7 @@ mod tests {
             (
                 "codex",
                 &[
+                    ("plan", "计划 (只读)"),
                     ("read-only", "只读"),
                     ("workspace-write", "工作区写 (默认)"),
                     ("danger-full-access", "完全"),

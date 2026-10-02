@@ -1,5 +1,6 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
+import { codexAsyncReplyEnvelope } from './asyncQuestionReply'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import {
   ArrowRight,
@@ -499,13 +500,16 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         }))
       if (parsed.async) {
         if (!asyncQuestions) throw new Error('当前视图无法发送答复')
-        const text = parsed.questions.map((question) => {
+        const replies = parsed.questions.flatMap((question, index) => {
           const answer = answers[question.id]
-          if (!answer) return ''
+          if (!answer) return []
           const labels = answer.selected_option_ids.map((id) => optionLabel(question, id))
           if (answer.custom_text) labels.push(answer.custom_text)
-          return `${question.prompt}\n${labels.join('；')}`
-        }).filter(Boolean).join('\n\n')
+          return [{ index, question: question.prompt, answer: labels.join('；') }]
+        })
+        // Codex 认得出这个信封：别的客户端会收起同一张卡、历史里也记成「答复」。
+        const text = codexAsyncReplyEnvelope(toolCall.id, replies)
+          ?? replies.map((reply) => `${reply.question}\n${reply.answer}`).join('\n\n')
         await asyncQuestions.reply(toolCall.id, skipped ? null : text)
       } else {
         await api.chatSubmitUserChoice(toolCallId, answers, skipped)

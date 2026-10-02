@@ -1466,7 +1466,7 @@ mod tests {
             ),
             (
                 "codex",
-                &["read-only", "workspace-write", "danger-full-access"],
+                &["plan", "read-only", "workspace-write", "danger-full-access"],
             ),
             (
                 "dsh",

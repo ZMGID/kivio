@@ -172,6 +172,7 @@ pub(crate) fn chat_confirm_tool_call(
             permission_mode: permission_mode
                 .map(|mode| mode.trim().to_string())
                 .filter(|mode| !mode.is_empty()),
+            always: false,
         },
         always.unwrap_or(false),
     ) {
@@ -629,6 +630,7 @@ pub(crate) async fn request_tool_approval_outcome(
         return crate::chat::interaction_state::ToolApprovalOutcome {
             approved: true,
             permission_mode: None,
+            always: false,
         };
     }
     let rx =

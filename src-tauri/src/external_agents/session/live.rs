@@ -48,6 +48,9 @@ pub struct ApprovalAsk {
     /// 安全检查（危险 `rm`、敏感文件 / 工作区外符号链接写入）在 `can_use_tool` 上带
     /// `classifier_approvable: false` 或 `default_to_no: true`；其余 codec 恒为 false。
     pub requires_manual_approval: bool,
+    /// claude `can_use_tool.permission_suggestions`：CLI 建议的「以后别再问」规则。
+    /// 用户点「总是允许」时改成 session 作用域回给 CLI（见 `ApprovalDecision::updated_permissions`）。
+    pub permission_suggestions: Option<serde_json::Value>,
 }
 
 /// 用户对某条询问的答复。`request_id` 是路由键，与 `ApprovalAsk` 一一对应。
@@ -68,6 +71,9 @@ pub struct ApprovalDecision {
     /// 用户点了「批准」却什么都没发生。paseo 的做法一样（`await setPermissionMode(...)`
     /// 在 resolve 之前），顺序不能反：先切档、再放行。
     pub set_permission_mode: Option<String>,
+    /// 批准时一并回给 CLI 的权限规则（claude `PermissionResult.updatedPermissions`）。
+    /// 只在用户点「总是允许」时有值，作用域一律 `session`。
+    pub updated_permissions: Option<serde_json::Value>,
 }
 
 /// 一轮的权限审批通道。宿主持 `requests` 的接收端与 `decisions` 的发送端；会话持另一半。

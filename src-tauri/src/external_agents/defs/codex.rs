@@ -59,6 +59,9 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
     sandbox_options: &[
+        // Codex 原生计划模式（collaborationMode plan，线程只读），见
+        // `codex_app_server::CODEX_PLAN_MODE`。
+        ("plan", "计划 (只读)"),
         ("read-only", "只读"),
         ("workspace-write", "工作区写 (默认)"),
         ("danger-full-access", "完全"),

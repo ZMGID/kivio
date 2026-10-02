@@ -171,7 +171,7 @@ describe('effectiveUserAgent', () => {
     // 「实际发送的 User-Agent」显示的就是个假值。
     for (const bad of ['1.2.3\u4e2d\u6587', '1.2.3\r\n0']) {
       expect(effectiveUserAgent([], 'claude_code', bad), bad).toEqual({
-        value: 'claude-cli/2.1.71 (external, cli)',
+        value: 'claude-cli/2.1.287 (external, cli)',
         source: 'preset',
       })
     }
@@ -183,7 +183,7 @@ describe('effectiveUserAgent', () => {
 
   it('falls back to the preset when no custom UA is set', () => {
     expect(effectiveUserAgent([], 'claude_code', '')).toEqual({
-      value: 'claude-cli/2.1.71 (external, cli)',
+      value: 'claude-cli/2.1.287 (external, cli)',
       source: 'preset',
     })
     expect(effectiveUserAgent([], 'codex', '1.2.3').value).toContain('codex_cli_rs/1.2.3')

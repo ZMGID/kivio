@@ -182,6 +182,23 @@ pub(crate) fn normalize_codex_sandbox(sandbox: Option<&str>) -> &'static str {
     match sandbox.map(str::trim) {
         Some("danger-full-access") => "danger-full-access",
         Some("read-only") => "read-only",
+        Some(CODEX_PLAN_MODE) => CODEX_PLAN_MODE,
+        _ => "workspace-write",
+    }
+}
+
+/// 底栏「计划」档。Codex 自己的 collaboration mode（`collaborationMode/list` 0.158 本机实测
+/// 有 `plan` / `default` 两档），不是沙盒档：线程以只读沙盒起，每轮 `turn/start` 带
+/// `collaborationMode {mode:"plan"}`；`developer_instructions: null` = 用 Codex 内置的计划模式
+/// 提示词（schema 原文），不必像 t3code 那样自带一份长 prompt。
+pub(crate) const CODEX_PLAN_MODE: &str = "plan";
+
+/// 线程握手用的真实沙盒档：计划档只读。
+fn codex_thread_sandbox(tier: &str) -> &'static str {
+    match tier {
+        CODEX_PLAN_MODE => "read-only",
+        "danger-full-access" => "danger-full-access",
+        "read-only" => "read-only",
         _ => "workspace-write",
     }
 }
@@ -345,6 +362,7 @@ fn approval_ask_from_params(method: &str, id: &Value, params: &Value) -> Approva
         input,
         requires_user_interaction: false,
         requires_manual_approval: false,
+        permission_suggestions: None,
     }
 }
 
@@ -469,6 +487,19 @@ fn map_codex_notification(
                         usage: usage_from_parts(parts),
                     });
                 }
+            }
+        }
+        // 0.155+：Codex 对弃用行为（如 paginated 线程整段加载历史）和 config.toml 问题的提示。
+        // TUI 会显示；不接的话用户的配置错了也毫无察觉。走状态行。
+        "deprecationNotice" | "configWarning" => {
+            if let Some(summary) = json_str(params, "summary") {
+                let text = match json_str(params, "path") {
+                    Some(path) => format!("{summary} · {path}"),
+                    None => summary.to_string(),
+                };
+                sink(UnifiedAgentEvent::StatusNote {
+                    text: text.chars().take(200).collect(),
+                });
             }
         }
         "account/rateLimits/updated" => {
@@ -943,6 +974,48 @@ fn emit_thread_item(
                 });
             }
         }
+        // `/review` 进出审查模式（0.160 `enteredReviewMode` / `exitedReviewMode {review}`）。
+        // 退出那一项带的是审查结论本身，丢掉的话 `/review` 跑完界面上什么都没有。
+        Some("exitedReviewMode") if include_result => {
+            let review = map_str(item, "review").unwrap_or("").trim();
+            let Some(id) = item_id(item) else {
+                return;
+            };
+            if review.is_empty() || !emitted_tools.insert(format!("codex-review-{id}")) {
+                return;
+            }
+            sink(UnifiedAgentEvent::TextDelta {
+                delta: format!("\n\n{review}\n"),
+            });
+        }
+        Some("enteredReviewMode") if include_result => {
+            if let Some(review) = map_str(item, "review").filter(|r| !r.trim().is_empty()) {
+                sink(UnifiedAgentEvent::StatusNote {
+                    text: format!(
+                        "review · {}",
+                        review.trim().chars().take(120).collect::<String>()
+                    ),
+                });
+            }
+        }
+        // `hookPrompt`（用户自己配的 hook 往对话里注入的文本）与 `functionCallOutput`
+        // （动态工具的原始输出，已由 dynamicToolCall 卡承载）有意不接：前者与 claude 的
+        // hook_* 同理是用户侧配置的回声，后者重复。
+        // 计划模式产出的 `<proposed_plan>`（0.160 `PlanThreadItem {id, text}`）。Codex 把它从
+        // agentMessage 正文里切出来单独成项，不接的话计划本体整个消失。完成项为准、不拼
+        // `item/plan/delta`；作为回答正文（Markdown）输出——它就是这一轮要交付的东西。
+        Some("plan") if include_result => {
+            let text = map_str(item, "text").unwrap_or("").trim();
+            let Some(id) = item_id(item) else {
+                return;
+            };
+            if text.is_empty() || !emitted_tools.insert(format!("codex-plan-{id}")) {
+                return;
+            }
+            sink(UnifiedAgentEvent::TextDelta {
+                delta: format!("\n\n{text}\n"),
+            });
+        }
         Some("imageView") => {
             let path = map_str(item, "path").unwrap_or("");
             emit_named_tool(
@@ -1312,6 +1385,24 @@ fn build_codex_turn_params(
     turn_params
 }
 
+/// 每轮显式带上 collaboration mode（t3code 同款）：模式记在线程上，续接 / 换档后不显式发
+/// `default` 的话，上一次的计划模式会一直粘着。拿不到模型（必填）时不发，退回线程现状。
+fn codex_collaboration_mode(
+    plan_mode: bool,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Option<Value> {
+    let model = model.map(str::trim).filter(|m| !m.is_empty())?;
+    Some(json!({
+        "mode": if plan_mode { CODEX_PLAN_MODE } else { "default" },
+        "settings": {
+            "model": model,
+            "reasoning_effort": effort,
+            "developer_instructions": null,
+        },
+    }))
+}
+
 fn local_image_items(
     cli_bin: &Path,
     images: &[crate::external_agents::attachments::ImageBlock],
@@ -1343,6 +1434,10 @@ pub struct CodexAppServerSession {
     stderr_tail: tokio::task::JoinHandle<String>,
     /// `on-request` (workspace-write / read-only) asks the host; `never` (完全) auto-allows.
     approval_policy: &'static str,
+    /// 底栏选的是「计划」档：每轮带 `collaborationMode {mode:"plan"}`。
+    plan_mode: bool,
+    /// thread/start / resume 回报的模型，`collaborationMode.settings.model` 的兜底。
+    thread_model: Option<String>,
 }
 
 /// Handshake timeouts (缺陷 4 / R3): 30s each, up from 15/20s.
@@ -1427,7 +1522,8 @@ impl CodexAppServerSession {
             .to_string_lossy()
             .into_owned();
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
-        let sandbox_mode = normalize_codex_sandbox(sandbox);
+        let tier = normalize_codex_sandbox(sandbox);
+        let sandbox_mode = codex_thread_sandbox(tier);
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
 
         let handshake = async {
@@ -1475,12 +1571,17 @@ impl CodexAppServerSession {
                 .or_else(|| result.get("threadId").and_then(|v| v.as_str()))
                 .map(str::to_string)
                 .ok_or_else(|| format!("thread-start: invalid {method} response"))?;
-            Ok::<_, String>((thread_id, next_id))
+            // `collaborationMode.settings.model` 必填：没选模型的轮次用线程实际用的那个。
+            let thread_model = result
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            Ok::<_, String>((thread_id, next_id, thread_model))
         }
         .await;
 
         match handshake {
-            Ok((thread_id, next_id)) => Ok(Self {
+            Ok((thread_id, next_id, thread_model)) => Ok(Self {
                 child,
                 stdin,
                 reader,
@@ -1492,6 +1593,8 @@ impl CodexAppServerSession {
                 active_turn_id: None,
                 stderr_tail,
                 approval_policy,
+                plan_mode: tier == CODEX_PLAN_MODE,
+                thread_model,
             }),
             Err(msg) => {
                 let tail = join_stderr_tail(&mut child, stderr_tail).await;
@@ -1632,7 +1735,7 @@ impl CodexAppServerSession {
             // Codex reads images as `localImage` items pointing at on-disk files; copy each into a
             // private temp dir (its sandbox can't reach the conversation attachments dir).
             input.extend(local_image_items(&self.cli_bin, images));
-            let turn_params = build_codex_turn_params(
+            let mut turn_params = build_codex_turn_params(
                 &self.thread_id,
                 &self.cwd,
                 input,
@@ -1641,6 +1744,13 @@ impl CodexAppServerSession {
                 extra_writable_roots,
                 self.approval_policy,
             );
+            if let Some(mode) = codex_collaboration_mode(
+                self.plan_mode,
+                chosen_model.or(self.thread_model.as_deref()),
+                chosen_effort.as_deref(),
+            ) {
+                turn_params["collaborationMode"] = mode;
+            }
             write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
         }
 
@@ -2022,6 +2132,7 @@ async fn answer_codex_user_interaction(
         input: params.clone(),
         requires_user_interaction: true,
         requires_manual_approval: false,
+        permission_suggestions: None,
     };
     if bridge.requests.send(ask).await.is_err() {
         if elicitation {
@@ -2999,6 +3110,8 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 approval_policy: "never",
+                plan_mode: false,
+                thread_model: None,
             };
             let (events, _event_rx) = mpsc::channel(32);
             let (_control_tx, mut control) = mpsc::channel(8);
@@ -4312,6 +4425,68 @@ mod tests {
             codex_rate_limit_reached_note(&json!({"rateLimits": {"primary": {"usedPercent": 99}}})),
             None
         );
+    }
+
+    #[test]
+    fn plan_tier_runs_read_only_and_sends_collaboration_mode() {
+        assert_eq!(normalize_codex_sandbox(Some("plan")), CODEX_PLAN_MODE);
+        assert_eq!(codex_thread_sandbox(CODEX_PLAN_MODE), "read-only");
+        assert_eq!(codex_approval_policy(Some("read-only")), "on-request");
+        assert_eq!(
+            codex_collaboration_mode(true, Some("gpt-6-astra"), Some("high")),
+            Some(json!({"mode": "plan", "settings": {
+                "model": "gpt-6-astra", "reasoning_effort": "high", "developer_instructions": null
+            }}))
+        );
+        // 不在计划档也显式发 default，免得线程上的计划模式粘着不退。
+        assert_eq!(
+            codex_collaboration_mode(false, Some("gpt-6-astra"), None).unwrap()["mode"],
+            "default"
+        );
+        assert_eq!(codex_collaboration_mode(true, None, None), None);
+    }
+
+    #[test]
+    fn review_result_and_config_warnings_are_surfaced() {
+        let mut events = Vec::new();
+        let mut seen = HashSet::new();
+        map_codex_notification(
+            "item/completed",
+            &json!({"item": {"type": "exitedReviewMode", "id": "r1", "review": "No issues found."}}),
+            &mut seen,
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "configWarning",
+            &json!({"summary": "Unknown key `foo`", "path": "/h/.codex/config.toml"}),
+            &mut seen,
+            &mut |e| events.push(e),
+        );
+        match events.as_slice() {
+            [UnifiedAgentEvent::TextDelta { delta }, UnifiedAgentEvent::StatusNote { text }] => {
+                assert!(delta.contains("No issues found."));
+                assert_eq!(text, "Unknown key `foo` · /h/.codex/config.toml");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn proposed_plan_item_is_rendered_as_answer_text() {
+        let mut events = Vec::new();
+        let mut seen = HashSet::new();
+        for _ in 0..2 {
+            map_codex_notification(
+                "item/completed",
+                &json!({"item": {"type": "plan", "id": "p1", "text": "# Plan\n1. Do it"}}),
+                &mut seen,
+                &mut |e| events.push(e),
+            );
+        }
+        match events.as_slice() {
+            [UnifiedAgentEvent::TextDelta { delta }] => assert!(delta.contains("# Plan")),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

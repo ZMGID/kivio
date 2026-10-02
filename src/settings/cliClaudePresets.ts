@@ -183,10 +183,10 @@ export const CLAUDE_RELAY_PRESETS: ClaudeProviderPreset[] = [
     brand: 'openrouter',
     env: {
       ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
-      ANTHROPIC_DEFAULT_FABLE_MODEL: 'anthropic/claude-fable-5',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'anthropic/claude-fable-5.1',
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'anthropic/claude-haiku-4.5',
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'anthropic/claude-sonnet-4.5',
-      ANTHROPIC_DEFAULT_OPUS_MODEL: 'anthropic/claude-opus-4.5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'anthropic/claude-sonnet-5.5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'anthropic/claude-opus-5.5',
     },
   },
 ]

@@ -2241,6 +2241,7 @@ async fn handle_cursor_extension(
         requires_user_interaction: method == "cursor/ask_question"
             || method == "elicitation/create",
         requires_manual_approval: false,
+        permission_suggestions: None,
     };
     if bridge.requests.send(ask).await.is_err() {
         return write_rpc_result(stdin, id, host_request_declined_result(method)).await;
@@ -2557,6 +2558,7 @@ mod tests {
                         approved,
                         updated_input: None,
                         set_permission_mode: None,
+                        updated_permissions: None,
                     })
                     .await
                     .unwrap();
@@ -2737,6 +2739,7 @@ mod tests {
                     approved: true,
                     updated_input: None,
                     set_permission_mode: None,
+                    updated_permissions: None,
                 }
             ),
             json!({ "outcome": { "outcome": "accepted" } })
@@ -2756,6 +2759,7 @@ mod tests {
                         "content": { "environment": "production" }
                     })),
                     set_permission_mode: None,
+                    updated_permissions: None,
                 }
             ),
             json!({

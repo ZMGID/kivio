@@ -182,6 +182,25 @@ fn result_error_subtype_reason(subtype: &str) -> Option<&'static str> {
 /// 文案优先级 `errors[]` > `result`：前者是 error 子型独有的结构化原因列表，后者是
 /// success 子型带 `is_error` 时错误文案的落点。两者都缺才用 subtype 兜底（仍带上
 /// subtype，`<details>` 里能看出到底是哪种失败）。
+/// `result.terminal_reason` 的失败码 → 人话（2.1.287 的封闭集合，取自 t3code
+/// `terminalResultError`）。只在 CLI 没给 `errors` / `result` 文案时兜底。
+fn terminal_reason_text(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "api_error" => "claude 多次请求 API 失败后放弃了本轮。",
+        "malformed_tool_use_exhausted" => "claude 多次生成了无效的工具调用，已放弃本轮。",
+        "budget_exhausted" => "claude 已停止：本轮 token 预算用完。",
+        "structured_output_retry_exhausted" => "claude 无法生成要求的结构化输出。",
+        "tool_deferred_unavailable" => "claude 无法继续挂起的工具调用：该工具已不可用。",
+        "turn_setup_failed" => "claude 无法开始本轮。",
+        "blocking_limit" => "claude 已停止：请求被用量上限挡住。",
+        "rapid_refill_breaker" => "claude 已停止：压缩后上下文又被迅速填满。",
+        "prompt_too_long" => "claude 已停止：提示超出了模型的上下文窗口，请压缩对话或开新会话。",
+        "image_error" => "claude 已停止：对话中有一张图片无法处理。",
+        "model_error" => "claude 已停止：模型返回了错误。",
+        _ => return None,
+    })
+}
+
 fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<String> {
     let subtype = obj.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
     let is_error = obj
@@ -189,10 +208,17 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let subtype_reason = result_error_subtype_reason(subtype);
+    // 529 过载在 2.1.287 是 `subtype:"success"` + `api_error_status:529`，可能连 `is_error`
+    // 都没有、`errors` 为空（t3code `isOverloadedResult` 同一判据）——不认的话这一轮
+    // 无声地「成功」结束，没有回答也没有提示。
+    if obj.get("api_error_status").and_then(|v| v.as_u64()) == Some(529) {
+        return Some("Claude API overloaded (529)，请稍后重试。".to_string());
+    }
     if !is_error && subtype_reason.is_none() {
         return None;
     }
 
+    // `[ede_diagnostic] …` 是 CLI 的内部诊断行，不是给人看的错误（t3code 同样滤掉）。
     let joined_errors = obj
         .get("errors")
         .and_then(|v| v.as_array())
@@ -201,7 +227,7 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
                 .iter()
                 .filter_map(|item| item.as_str())
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && !s.starts_with("[ede_diagnostic]"))
                 .collect::<Vec<_>>()
                 .join("; ")
         })
@@ -217,6 +243,14 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
         .filter(|s| !s.is_empty());
     if let Some(text) = result_text {
         return Some(text.to_string());
+    }
+
+    if let Some(reason) = obj
+        .get("terminal_reason")
+        .and_then(|v| v.as_str())
+        .and_then(terminal_reason_text)
+    {
+        return Some(reason.to_string());
     }
 
     Some(match subtype_reason {
@@ -453,6 +487,23 @@ fn api_retry_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
     Some(match cause {
         Some(text) => format!("retry {attempt}{of_max} · {text}"),
         None => format!("retry {attempt}{of_max}"),
+    })
+}
+
+fn permission_denied_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let tool = obj.get("tool_name").and_then(|v| v.as_str())?.trim();
+    let reason = obj
+        .get("decision_reason")
+        .or_else(|| obj.get("decision_reason_type"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    Some(match reason {
+        Some(reason) => format!(
+            "denied {tool} · {}",
+            reason.chars().take(120).collect::<String>()
+        ),
+        None => format!("denied {tool}"),
     })
 }
 
@@ -1075,6 +1126,14 @@ impl ClaudeStreamState {
                     | Some("model_refusal_fallback")
                     | Some("model_refusal_no_fallback") => {
                         if let Some(text) = model_fallback_note(obj) {
+                            sink(UnifiedAgentEvent::StatusNote { text });
+                        }
+                    }
+                    // 工具被自动拒了、没经过审批卡（2.1.287 `system/permission_denied`：auto 档
+                    // 分类器、dontAsk、deny 规则）。tool_result 里只有给模型看的那句话，用户只看到
+                    // 工具失败却不知道是被权限挡的；状态行点明工具名和原因。
+                    Some("permission_denied") => {
+                        if let Some(text) = permission_denied_note(obj) {
                             sink(UnifiedAgentEvent::StatusNote { text });
                         }
                     }
@@ -2485,6 +2544,28 @@ mod tests {
         ]);
         assert_eq!(notes(&events).len(), 1, "{events:?}");
         assert!(errors(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn overloaded_success_and_terminal_reasons_are_reported() {
+        let errs = |raw: &str| errors(&run(&[raw]));
+        assert_eq!(
+            errs(r#"{"type":"result","subtype":"success","api_error_status":529,"result":"","usage":{"input_tokens":1,"output_tokens":0}}"#).len(),
+            1
+        );
+        let e = errs(
+            r#"{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["[ede_diagnostic] x"],"terminal_reason":"prompt_too_long"}"#,
+        );
+        assert!(e[0].contains("上下文窗口"), "{e:?}");
+        assert!(!e[0].contains("ede_diagnostic"));
+    }
+
+    #[test]
+    fn auto_denied_tool_is_named_on_the_status_line() {
+        let events = run(&[
+            r#"{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"t","decision_reason_type":"rule","decision_reason":"Bash(rm:*) is denied","message":"m","uuid":"u","session_id":"s"}"#,
+        ]);
+        assert_eq!(notes(&events), vec!["denied Bash · Bash(rm:*) is denied"]);
     }
 
     #[test]

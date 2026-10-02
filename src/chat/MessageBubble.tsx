@@ -35,6 +35,7 @@ import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
+import { asyncReplyDisplayText } from './asyncQuestionReply'
 import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
   clusterToolCallsForDisplay,
@@ -1288,7 +1289,7 @@ function MessageBubbleComponent({
           {hasText && (
             <div className="chat-user-bubble rounded-[20px] px-4 py-2.5 text-neutral-900 dark:text-neutral-100">
               <div className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[15px] leading-relaxed">
-                {message.content}
+                {asyncReplyDisplayText(message.content) ?? message.content}
               </div>
             </div>
           )}

@@ -14,6 +14,9 @@ use super::ask_user::{
 pub(crate) struct ToolApprovalOutcome {
     pub approved: bool,
     pub permission_mode: Option<String>,
+    /// 用户点的是「总是允许」。外部 CLI 据此把同一条规则也告诉 CLI 自己（claude 的
+    /// `updatedPermissions`），否则 CLI 下次照样来问、只是被 Kivio 这侧静默放行。
+    pub always: bool,
 }
 
 #[derive(Debug)]
@@ -131,7 +134,10 @@ impl ChatInteractionState {
         if outcome.approved && always {
             self.grant_tool_always_allow(&pending.conversation_id, &pending.tool_name);
         }
-        let _ = pending.sender.send(outcome);
+        let _ = pending.sender.send(ToolApprovalOutcome {
+            always: outcome.approved && always,
+            ..outcome
+        });
         true
     }
 
@@ -281,9 +287,16 @@ mod tests {
         let outcome = ToolApprovalOutcome {
             approved: true,
             permission_mode: Some("default".into()),
+            always: false,
         };
         assert!(state.respond_tool_approval("tool-1", outcome.clone(), true));
-        assert_eq!(approval.await.unwrap(), outcome);
+        assert_eq!(
+            approval.await.unwrap(),
+            ToolApprovalOutcome {
+                always: true,
+                ..outcome
+            }
+        );
         assert!(state.has_tool_always_allow("conv-1", "write"));
         assert!(!state.respond_tool_approval("tool-1", ToolApprovalOutcome::default(), false));
 

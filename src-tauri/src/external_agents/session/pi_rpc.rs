@@ -887,6 +887,7 @@ where
         input: raw.clone(),
         requires_user_interaction: true,
         requires_manual_approval: false,
+        permission_suggestions: None,
     };
     if bridge.requests.send(ask).await.is_err() {
         return reject_extension_ui(stdin, raw).await;
@@ -2868,6 +2869,7 @@ mod tests {
                     approved: true,
                     updated_input: Some(json!({ "confirmed": false })),
                     set_permission_mode: None,
+                    updated_permissions: None,
                 })
                 .await
                 .expect("decision");

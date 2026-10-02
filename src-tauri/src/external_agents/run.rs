@@ -2342,6 +2342,7 @@ impl ApprovalHost<'_> {
                     approved: opened,
                     updated_input: opened.then(|| serde_json::json!({ "action": "accept" })),
                     set_permission_mode: None,
+                    updated_permissions: None,
                 };
             }
             if matches!(
@@ -2354,6 +2355,7 @@ impl ApprovalHost<'_> {
                     approved: false,
                     updated_input: None,
                     set_permission_mode: None,
+                    updated_permissions: None,
                 };
             }
             // FallbackApproval：退回普通审批卡，别静默吞掉这次询问。
@@ -2397,6 +2399,7 @@ impl ApprovalHost<'_> {
                 approved: outcome.approved,
                 updated_input: None,
                 set_permission_mode: mode,
+                updated_permissions: None,
             };
         }
         // `EnterPlanMode` = claude 自己要求「先探索、出方案，别急着改」。**放行就够** ——
@@ -2420,6 +2423,7 @@ impl ApprovalHost<'_> {
                 approved,
                 updated_input: None,
                 set_permission_mode: None,
+                updated_permissions: None,
             };
         }
         // 「完全」档：通道之所以接上只为了上面那两张卡，普通工具原地放行。
@@ -2436,9 +2440,10 @@ impl ApprovalHost<'_> {
                 approved: true,
                 updated_input: None,
                 set_permission_mode: None,
+                updated_permissions: None,
             };
         }
-        let approved = crate::chat::commands::interaction::request_tool_approval(
+        let outcome = crate::chat::commands::interaction::request_tool_approval_outcome(
             self.app,
             self.state,
             self.conversation_id,
@@ -2447,11 +2452,21 @@ impl ApprovalHost<'_> {
             &record,
         )
         .await;
+        // 「总是允许」也告诉 claude 自己（t3code 同款），否则它在本会话里照样每次都来问，
+        // 只是被 Kivio 这侧的 always-allow 静默放行。
+        let updated_permissions = (outcome.approved && outcome.always && self.agent_id == "claude")
+            .then(|| {
+                crate::external_agents::session::claude_stream::session_permission_updates(
+                    &ask.tool_name,
+                    ask.permission_suggestions.as_ref(),
+                )
+            });
         crate::external_agents::session::live::ApprovalDecision {
             request_id: ask.request_id,
-            approved,
+            approved: outcome.approved,
             updated_input: None,
             set_permission_mode: None,
+            updated_permissions,
         }
     }
 
@@ -2508,6 +2523,7 @@ impl ApprovalHost<'_> {
             approved,
             updated_input: approved.then(|| encode(&prompt, &answered)),
             set_permission_mode: None,
+            updated_permissions: None,
         }
     }
 
@@ -4613,6 +4629,7 @@ mod tests {
             input,
             requires_user_interaction: true,
             requires_manual_approval: true,
+            permission_suggestions: None,
         };
         let url = serde_json::json!({ "mode": "url", "url": "https://login.test/x" });
         assert_eq!(
