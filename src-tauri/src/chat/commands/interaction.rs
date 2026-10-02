@@ -837,6 +837,19 @@ pub(super) fn format_tool_approval_summary(record: &ToolCallRecord) -> ToolAppro
                 lines.push(format!("Working directory: {cwd}"));
             }
         }
+        // claude 转来的 MCP URL 请求（如登录）：卡片要露出完整链接和是哪个服务器在要。
+        "open_url" => {
+            if let Some(url) = field(&["url"]) {
+                target = Some(truncate_chars(&url, 120));
+                lines.push(url);
+            }
+            if let Some(server) = field(&["server"]) {
+                lines.push(format!("MCP server: {server}"));
+            }
+            if let Some(reason) = field(&["reason"]) {
+                lines.push(truncate_chars(&reason, 400));
+            }
+        }
         "write" | "edit" | "read" | "write_file" | "edit_file" | "read_file" | "notebookedit" => {
             if let Some(path) = field(&["path", "file_path", "notebook_path"]) {
                 target = Some(path.clone());

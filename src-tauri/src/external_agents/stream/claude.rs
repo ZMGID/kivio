@@ -456,6 +456,23 @@ fn api_retry_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
     })
 }
 
+/// `model_fallback` / `model_refusal_fallback` / `model_refusal_no_fallback` → 状态行短句。
+/// 优先用 `original_model → fallback_model`（短、稳定），拒答无回退时用 CLI 的 `content`。
+fn model_fallback_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
+    let field = |key: &str| {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    if let (Some(from), Some(to)) = (field("original_model"), field("fallback_model")) {
+        return Some(format!("model fallback · {from} → {to}"));
+    }
+    field("api_refusal_explanation")
+        .or_else(|| field("content"))
+        .map(|text| text.chars().take(160).collect())
+}
+
 /// 顶层 `rate_limit_event.rate_limit_info`（2.1.287 schema：`status` allowed /
 /// allowed_warning / rejected、`rateLimitType`、`resetsAt` 秒级 epoch、`overageStatus`）。
 ///
@@ -1048,6 +1065,16 @@ impl ClaudeStreamState {
                     // （逐条 blockquote 插正文会把正在生成的回答打得支离破碎，实测被用户点名）。
                     Some("api_retry") => {
                         if let Some(text) = api_retry_note(obj) {
+                            sink(UnifiedAgentEvent::StatusNote { text });
+                        }
+                    }
+                    // 本轮被切到了别的模型（2.1.287：主模型下线 / 无权限 / 529 / 拒答后重试）。
+                    // CLI 自己带了一句 `content` 说明；不接的话用户看到的回答出自另一个模型却
+                    // 毫无察觉。走状态行，不进正文。
+                    Some("model_fallback")
+                    | Some("model_refusal_fallback")
+                    | Some("model_refusal_no_fallback") => {
+                        if let Some(text) = model_fallback_note(obj) {
                             sink(UnifiedAgentEvent::StatusNote { text });
                         }
                     }
@@ -2458,6 +2485,22 @@ mod tests {
         ]);
         assert_eq!(notes(&events).len(), 1, "{events:?}");
         assert!(errors(&events).is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn model_fallback_frames_become_status_notes() {
+        let events = run(&[
+            r#"{"type":"system","subtype":"model_fallback","trigger":"overloaded","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","content":"x","uuid":"u","session_id":"s"}"#,
+            r#"{"type":"system","subtype":"model_refusal_no_fallback","original_model":"m","request_id":null,"content":"The model declined this request.","uuid":"u","session_id":"s"}"#,
+        ]);
+        assert_eq!(
+            notes(&events),
+            vec![
+                "model fallback · claude-opus-5-5 → claude-sonnet-5-5",
+                "The model declined this request."
+            ]
+        );
+        assert!(errors(&events).is_empty());
     }
 
     #[test]

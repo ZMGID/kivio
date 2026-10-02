@@ -275,6 +275,8 @@ pub(crate) async fn run_external_cli_reply_in(
     // `skip_instructions`（内容没变就不重发）保证了**永远不会补发** ⇒ 长会话跑一阵子后
     // 用户配置的系统提示与 Memory 静默失效，没有任何可观测信号。
     // 启动 flag 每次进程启动都重新注入，与对话历史无关，压缩影响不到。
+    // （2.1.267 起 CLI 默认把首轮系统提示录下来复用；指令变了的续接轮要额外关掉快照，
+    // 见 `defs::claude::system_prompt_snapshot_off_args`。）
     let instructions_via_flag = instructions_via_launch_flag(def);
     let system_prompt_file = if instructions_via_flag && !is_slash {
         match write_system_prompt_file(&conversation.id, daemon_instructions.trim()) {
@@ -527,6 +529,15 @@ pub(crate) async fn run_external_cli_reply_in(
             let mut args = args;
             let cli_path = crate::external_agents::wsl::path_for_cli(&resolved_bin, path);
             args.extend(append_system_prompt_file_args(&cli_path));
+            // 续接的会话录下的系统提示与当前指令不同：关掉快照，否则新文件不生效。按「创建时
+            // 录的那份」判断而不是「上一轮」：快照只录首个请求，改过一次之后的每次重连都得关。
+            if resume_ctx.is_resuming && resume_ctx.recorded_prompt_stale {
+                args.extend(
+                    crate::external_agents::defs::claude::system_prompt_snapshot_off_args(
+                        crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
+                    ),
+                );
+            }
             args
         }
         None => args,
@@ -2050,6 +2061,21 @@ fn turn_asks_for_permission(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--permission-prompt-tool")
 }
 
+/// claude URL 模式 elicitation 的目标链接；只认 http(s)，别的 scheme 一律不开。
+fn claude_elicitation_url(
+    agent_id: &str,
+    ask: &crate::external_agents::session::live::ApprovalAsk,
+) -> Option<String> {
+    if agent_id != "claude"
+        || ask.tool_name != crate::external_agents::session::claude_stream::CLAUDE_ELICITATION
+        || ask.input.get("mode").and_then(|v| v.as_str()) != Some("url")
+    {
+        return None;
+    }
+    let url = ask.input.get("url")?.as_str()?.trim();
+    (url.starts_with("https://") || url.starts_with("http://")).then(|| url.to_string())
+}
+
 /// 本轮要不要建审批 / 问用户宿主。claude 看 argv 上的 `--permission-prompt-tool`；
 /// 没有这条 flag 的 CLI（dsh 的 `session/ask`）靠 `ask_user::needs_host` —— 加了
 /// codec 就会开通道。
@@ -2283,6 +2309,40 @@ impl ApprovalHost<'_> {
                         (codec.encode)(&ask.input, prompt, answered)
                     })
                     .await;
+            }
+            // claude 的 URL 模式 elicitation（2.1.287：MCP 服务器要用户去浏览器登录）。
+            // 表单卡装不下它：问一句「打开链接？」，同意就用系统浏览器打开并回 accept
+            // （MCP 规范：accept 表示用户同意前往，完成与否由服务器自己的回调确认）。
+            if let Some(url) = claude_elicitation_url(self.agent_id, &ask) {
+                let mut record = record;
+                record.name = "open_url".to_string();
+                record.arguments = serde_json::json!({
+                    "url": url,
+                    "server": ask.input.get("mcp_server_name"),
+                    "reason": ask.input.get("message"),
+                })
+                .to_string();
+                let approved = crate::chat::commands::interaction::request_tool_approval(
+                    self.app,
+                    self.state,
+                    self.conversation_id,
+                    self.run_id,
+                    self.generation,
+                    &record,
+                )
+                .await;
+                let opened = approved && {
+                    use tauri_plugin_shell::ShellExt;
+                    #[allow(deprecated)]
+                    let result = self.app.shell().open(&url, None);
+                    result.is_ok()
+                };
+                return crate::external_agents::session::live::ApprovalDecision {
+                    request_id: ask.request_id,
+                    approved: opened,
+                    updated_input: opened.then(|| serde_json::json!({ "action": "accept" })),
+                    set_permission_mode: None,
+                };
             }
             if matches!(
                 codec.unknown_shape,
@@ -4542,6 +4602,35 @@ mod tests {
         assert!(get_agent_def("cursor-agent").is_none());
         assert!(get_agent_def("cursor").is_none());
         assert!(!needs_host("claude"));
+    }
+
+    #[test]
+    fn claude_elicitation_url_only_opens_http_links() {
+        let ask = |input: serde_json::Value| crate::external_agents::session::live::ApprovalAsk {
+            request_id: "e".to_string(),
+            tool_call_id: "e".to_string(),
+            tool_name: "elicitation".to_string(),
+            input,
+            requires_user_interaction: true,
+            requires_manual_approval: true,
+        };
+        let url = serde_json::json!({ "mode": "url", "url": "https://login.test/x" });
+        assert_eq!(
+            claude_elicitation_url("claude", &ask(url.clone())).as_deref(),
+            Some("https://login.test/x")
+        );
+        assert_eq!(claude_elicitation_url("grok", &ask(url)), None);
+        assert_eq!(
+            claude_elicitation_url(
+                "claude",
+                &ask(serde_json::json!({ "mode": "url", "url": "file:///etc/passwd" }))
+            ),
+            None
+        );
+        assert_eq!(
+            claude_elicitation_url("claude", &ask(serde_json::json!({ "mode": "form" }))),
+            None
+        );
     }
 
     /// 「完全」档接上询问通道之后**用户感知不到差别**：普通工具原地放行，只有问用户卡会弹。

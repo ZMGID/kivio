@@ -623,6 +623,13 @@ pub struct ExternalAgentSession {
     pub session_id: String,
     #[serde(default)]
     pub stable_prompt_hash: Option<String>,
+    /// Hash of the instructions the native session was **created** with — never updated.
+    /// Claude 2.1.267+ records the first request's system prompt and replays it on every
+    /// resume, so whenever the current instructions differ from this one the launch needs
+    /// `--system-prompt-snapshot off`. `None` (imported / older records) = unknown ⇒ treat
+    /// as different.
+    #[serde(default)]
+    pub recorded_prompt_hash: Option<String>,
     /// Model this native session was created with. When the user's currently-selected model
     /// differs, we start a fresh session instead of resuming (some CLIs — notably Claude — bake
     /// the model into the session at create time and ignore `--model` on `--resume`). `None`

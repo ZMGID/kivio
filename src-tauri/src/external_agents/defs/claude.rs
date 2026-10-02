@@ -268,6 +268,29 @@ pub fn append_system_prompt_file_args(path: &std::path::Path) -> Vec<String> {
     ]
 }
 
+/// `--system-prompt-snapshot off`（2.1.267+）：续接时让**新的**系统提示生效。
+///
+/// 默认（on）CLI 在会话首个请求把系统提示连同 `--append-system-prompt-file` 录下来，之后
+/// 每次请求和 resume 都原样发录下的那份，直到压缩 ——`--help` 原文 "even when a later launch
+/// passes different text"。于是用户改了系统提示 / Memory 后，Kivio 换进程带新文件 `--resume`，
+/// CLI 仍发旧的。只在这种「续接且指令变了」的启动加它：平时保留快照，不白丢提示缓存。
+///
+/// 版本门控：旧 CLI 不认这个 flag 会直接拒绝启动，所以版本未知或低于 2.1.267 都不加。
+pub fn system_prompt_snapshot_off_args(cli_version: Option<&str>) -> Vec<String> {
+    let supported = cli_version
+        .and_then(crate::external_agents::installer::extract_semver)
+        .and_then(|v| {
+            let mut parts = v.split(['.', '-']).map(|p| p.parse::<u64>().ok());
+            Some((parts.next()??, parts.next()??, parts.next()??))
+        })
+        .is_some_and(|v| v >= (2, 1, 267));
+    if supported {
+        vec!["--system-prompt-snapshot".to_string(), "off".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// 把 claude 的启动参数改写成「续接 `session_id` 这个原生会话」：先摘掉已有的
 /// `--session-id <x>` / `--resume <x>`，再追加 `--resume <session_id>`。
 ///
@@ -650,6 +673,18 @@ mod tests {
             "缺 CLAUDE_CODE_ENABLE_TODO_TOOLS=1：{env:?}",
             env = CLAUDE_AGENT_DEF.env
         );
+    }
+
+    #[test]
+    fn system_prompt_snapshot_off_is_version_gated() {
+        let off = vec!["--system-prompt-snapshot".to_string(), "off".to_string()];
+        assert_eq!(
+            system_prompt_snapshot_off_args(Some("2.1.287 (Claude Code)")),
+            off
+        );
+        assert_eq!(system_prompt_snapshot_off_args(Some("2.1.267")), off);
+        assert!(system_prompt_snapshot_off_args(Some("2.1.266 (Claude Code)")).is_empty());
+        assert!(system_prompt_snapshot_off_args(None).is_empty());
     }
 
     /// `--append-system-prompt-file` 必须是「flag 后紧跟路径」的成对形式，

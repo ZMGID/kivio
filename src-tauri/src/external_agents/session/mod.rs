@@ -61,6 +61,9 @@ pub struct AgentResumeContext {
     pub is_resuming: bool,
     pub stored_stable_prompt_hash: Option<String>,
     pub skip_instructions: bool,
+    /// Resuming a native session whose recorded system prompt differs from the current
+    /// instructions (see `ExternalAgentSession::recorded_prompt_hash`).
+    pub recorded_prompt_stale: bool,
     /// Effective model at delivery time, normalized (empty / "default" → `None`). Persisted
     /// alongside the session so the stored record reflects what the CLI was last asked to use.
     pub delivered_model: Option<String>,
@@ -91,6 +94,7 @@ pub fn resolve_agent_resume_context(
             is_resuming: false,
             stored_stable_prompt_hash: None,
             skip_instructions: false,
+            recorded_prompt_stale: false,
             delivered_model,
         };
     }
@@ -117,6 +121,7 @@ pub fn resolve_agent_resume_context(
             is_resuming: true,
             stored_stable_prompt_hash: stored.stable_prompt_hash.clone(),
             skip_instructions: skip,
+            recorded_prompt_stale: stored.recorded_prompt_hash.as_deref() != Some(hash.as_str()),
             delivered_model,
         };
     }
@@ -127,6 +132,7 @@ pub fn resolve_agent_resume_context(
         is_resuming: false,
         stored_stable_prompt_hash: None,
         skip_instructions: false,
+        recorded_prompt_stale: false,
         delivered_model,
     }
 }
@@ -255,6 +261,7 @@ pub fn persist_delivered_session(
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     stable_prompt_hash: Some(stable_prompt_hash(instructions)),
+                    recorded_prompt_hash: Some(stable_prompt_hash(instructions)),
                     model: resume_ctx.delivered_model.clone(),
                 },
             )?;

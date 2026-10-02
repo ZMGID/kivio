@@ -471,6 +471,11 @@ fn map_codex_notification(
                 }
             }
         }
+        "account/rateLimits/updated" => {
+            if let Some(text) = codex_rate_limit_reached_note(params) {
+                sink(UnifiedAgentEvent::StatusNote { text });
+            }
+        }
         "turn/completed" => {
             if let Some(turn) = params.get("turn").and_then(|v| v.as_object()) {
                 if turn.get("status").and_then(|v| v.as_str()) == Some("failed") {
@@ -678,6 +683,41 @@ fn is_codex_reconnect_progress(raw: &str) -> bool {
     parse_reconnect_progress(raw).is_some()
         || raw.to_ascii_lowercase().contains("reconnecting")
         || raw.contains("正在重新连接")
+}
+
+/// `account/rateLimits/updated` (sparse snapshot): only speaks up once a limit is actually
+/// reached (`rateLimitReachedType` set), naming the window that is full and when it resets —
+/// the turn error alone says "usage limit" without telling the user how long to wait.
+fn codex_rate_limit_reached_note(params: &Value) -> Option<String> {
+    let limits = params.get("rateLimits")?;
+    let reached = limits.get("rateLimitReachedType")?.as_str()?;
+    if reached.contains("credits_depleted") {
+        return Some("credits depleted".to_string());
+    }
+    let full = ["primary", "secondary"]
+        .iter()
+        .filter_map(|key| limits.get(*key))
+        .filter(|w| w.get("usedPercent").and_then(Value::as_i64).unwrap_or(0) >= 100)
+        .max_by_key(|w| w.get("resetsAt").and_then(Value::as_i64).unwrap_or(0));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let reset = full
+        .and_then(|w| w.get("resetsAt").and_then(Value::as_i64))
+        .filter(|at| *at > now)
+        .map(|at| {
+            let mins = (at - now + 59) / 60;
+            match (mins / 1440, (mins % 1440) / 60, mins % 60) {
+                (0, 0, m) => format!("{m}m"),
+                (0, h, m) => format!("{h}h {m}m"),
+                (d, h, _) => format!("{d}d {h}h"),
+            }
+        });
+    Some(match reset {
+        Some(wait) => format!("usage limit reached · resets in {wait}"),
+        None => "usage limit reached".to_string(),
+    })
 }
 
 /// Fold `codexErrorInfo` (string variant or tagged object) into the message so retry
@@ -4237,6 +4277,40 @@ mod tests {
         assert_eq!(
             approval_response("item/commandExecution/requestApproval", &json!({})),
             Some(json!({ "decision": "acceptForSession" }))
+        );
+    }
+
+    #[test]
+    fn reached_rate_limit_names_the_reset_time() {
+        let later = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3 * 3600
+            + 600;
+        let mut events = Vec::new();
+        map_codex_notification(
+            "account/rateLimits/updated",
+            &json!({"rateLimits": {
+                "rateLimitReachedType": "rate_limit_reached",
+                "primary": {"usedPercent": 40, "resetsAt": 1},
+                "secondary": {"usedPercent": 100, "resetsAt": later}
+            }}),
+            &mut HashSet::new(),
+            &mut |e| events.push(e),
+        );
+        match events.as_slice() {
+            [UnifiedAgentEvent::StatusNote { text }] => {
+                assert!(
+                    text.starts_with("usage limit reached · resets in 3h"),
+                    "{text}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            codex_rate_limit_reached_note(&json!({"rateLimits": {"primary": {"usedPercent": 99}}})),
+            None
         );
     }
 

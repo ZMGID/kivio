@@ -189,6 +189,16 @@ pub fn classify(
                 && lower.contains("responsetoomanyfailedattempts")
             {
                 format!("{name} 多次重连仍失败，请稍后重试。")
+            } else if policy.detail == AgentErrorDetailStrategy::CodexAppServer
+                && lower.contains("toomanydenials")
+            {
+                // 0.160：auto_review strict 模式下连续拒绝过多，Codex 主动中止本轮。
+                format!("{name} 的操作连续被拒绝过多，已停止本轮。请调整权限设置或换个说法再试。")
+            } else if policy.detail == AgentErrorDetailStrategy::CodexAppServer
+                && lower.contains("flexunavailable")
+            {
+                // 0.158：flex 服务档当前没有容量。
+                format!("{name} 的 Flex 服务档暂时不可用，请稍后重试或切换服务档。")
             } else {
                 format!("{name} 通信出错，请重试；若持续失败请检查 CLI 版本与登录状态。")
             }
@@ -230,6 +240,7 @@ pub fn is_non_retryable_error(raw: &str, agent_id: &str) -> bool {
         || hay.contains("misalignmentpolicyviolation")
         || hay.contains("badrequest")
         || hay.contains("responsetoomanyfailedattempts")
+        || hay.contains("toomanydenials")
 }
 
 /// `thread/resume` 的目标 thread 在 Codex 那边已经不存在。
@@ -324,13 +335,7 @@ mod tests {
     #[test]
     fn classifies_timeout() {
         assert_eq!(
-            classify(
-                "initialize: ACP handshake timeout",
-                None,
-                "",
-                "opencode"
-            )
-            .kind,
+            classify("initialize: ACP handshake timeout", None, "", "opencode").kind,
             ExternalAgentErrorKind::Timeout
         );
         assert_eq!(
@@ -469,6 +474,13 @@ mod tests {
         assert!(classify("ResponseTooManyFailedAttempts", None, "", "codex")
             .user_message
             .contains("多次重连"));
+        assert!(is_non_retryable_error("denied [tooManyDenials]", "codex"));
+        assert!(classify("denied [tooManyDenials]", None, "", "codex")
+            .user_message
+            .contains("连续被拒绝"));
+        assert!(classify("no capacity [flexUnavailable]", None, "", "codex")
+            .user_message
+            .contains("Flex"));
     }
 
     #[test]

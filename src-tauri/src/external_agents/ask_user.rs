@@ -99,6 +99,17 @@ const CODECS: &[AskUserCodec] = &[
         opens_host: true,
     },
     AskUserCodec {
+        // claude 2.1.281+ `control_request{subtype:"elicitation"}`（claude_stream 当作
+        // 名为 `elicitation` 的交互工具挂起）。URL 模式不在这里，见 run.rs 的确认卡。
+        agent_id: "claude",
+        tools: &["elicitation"],
+        parse: parse_mcp_elicitation,
+        encode: encode_mcp_elicitation,
+        unknown_shape: UnknownAskShape::Reject,
+        auto_allow_ordinary_tools: false,
+        opens_host: false,
+    },
+    AskUserCodec {
         agent_id: "grok",
         tools: &["elicitation/create"],
         parse: parse_mcp_elicitation,
@@ -1350,6 +1361,8 @@ mod tests {
         assert_eq!(result["content"]["confirm"], true);
         assert_eq!(result["content"]["retries"], 3);
         assert!(codec_for("grok", "elicitation/create").is_some());
+        assert!(codec_for("claude", "elicitation").is_some());
+        assert!(!needs_host("claude"), "claude 仍只看 argv 上的权限 flag");
     }
 
     #[test]
