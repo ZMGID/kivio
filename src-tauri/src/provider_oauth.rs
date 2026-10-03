@@ -783,6 +783,15 @@ mod tests {
         );
         assert!(pairs.contains(&("originator".into(), "kivio".into())));
         assert!(pairs.contains(&("ChatGPT-Account-Id".into(), "account-123".into())));
+
+        // 同时选了 Codex 身份：OAuth 的 originator / UA 覆盖身份预设，配套的 version 不留。
+        p.request.cli_identity = "codex".into();
+        let pairs = crate::provider_request::header_pairs(&p, None);
+        assert!(pairs.contains(&("originator".into(), "kivio".into())));
+        assert!(!pairs.iter().any(|(k, _)| k.eq_ignore_ascii_case("version")));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v.starts_with("Kivio/")));
     }
     #[tokio::test]
     #[ignore = "Uses temporary synthetic credentials in the native OS credential store"]

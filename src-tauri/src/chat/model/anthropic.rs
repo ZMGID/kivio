@@ -220,6 +220,7 @@ impl AnthropicMessagesProvider<'_> {
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
                         &request,
+                        false,
                     ),
                     &body,
                     self.provider.compress_request_body,
@@ -264,10 +265,8 @@ impl AnthropicMessagesProvider<'_> {
             );
             ModelError::new(message)
         })?;
-        let mut output = output_from_anthropic_message(&value, &label)?;
-        for call in &mut output.tool_calls {
-            call.function_name = self.declared_tool_name(&call.function_name, &request);
-        }
+        let output =
+            output_from_anthropic_message(&self.with_declared_tool_names(value, &request), &label)?;
         self.record_usage_success(
             &request,
             &label,
@@ -314,6 +313,7 @@ impl AnthropicMessagesProvider<'_> {
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
                         &request,
+                        true,
                     ),
                     &body,
                     self.provider.compress_request_body,
@@ -622,6 +622,23 @@ impl AnthropicMessagesProvider<'_> {
         }
     }
 
+    /// 非流式响应里的 `tool_use` 名映射回原名。必须在 `output_from_anthropic_message` 之前做：
+    /// 它构造的 provider_messages 会存进历史，换到不改写工具名的供应商回放时，
+    /// 模型会看到一个没声明过的工具。
+    fn with_declared_tool_names(&self, mut response: Value, request: &GenerateRequest) -> Value {
+        if let Some(blocks) = response.get_mut("content").and_then(Value::as_array_mut) {
+            for block in blocks
+                .iter_mut()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            {
+                if let Some(Value::String(name)) = block.get_mut("name") {
+                    *name = self.declared_tool_name(name, request);
+                }
+            }
+        }
+        response
+    }
+
     /// 本次请求按功能需要声明的 beta。
     fn feature_betas(&self, request: &GenerateRequest) -> Vec<&'static str> {
         let mut betas = Vec::new();
@@ -648,12 +665,13 @@ impl AnthropicMessagesProvider<'_> {
 
     /// 供应商「请求配置」带来的附加头（CLI 身份 / 自定义头）+ 按功能声明的 beta 头。
     /// 发送路径与请求调试面板共用，杜绝「面板显示的和实际发的不一致」。
-    fn extra_header_pairs(&self, request: &GenerateRequest) -> Vec<(String, String)> {
+    fn extra_header_pairs(&self, request: &GenerateRequest, stream: bool) -> Vec<(String, String)> {
         // Anthropic 不发会话亲和头：官方与主流中转都不认，身份模式下有 X-Claude-Code-Session-Id。
         let mut pairs = crate::provider_request::model_header_pairs(
             self.provider,
             request.metadata.conversation_id.as_deref(),
             false,
+            stream,
         );
         // anthropic-beta 不是保留头（用户可能要开别的 beta），所以这里得跟用户填的那条合并成
         // 一行、去重 —— 发两行的话调试面板（BTreeMap）只显示一条，就和实际发出去的对不上了。
@@ -689,9 +707,10 @@ impl AnthropicMessagesProvider<'_> {
         &self,
         builder: reqwest::RequestBuilder,
         request: &GenerateRequest,
+        stream: bool,
     ) -> reqwest::RequestBuilder {
         let mut builder = builder;
-        for (name, value) in self.extra_header_pairs(request) {
+        for (name, value) in self.extra_header_pairs(request, stream) {
             builder = builder.header(name, value);
         }
         builder
@@ -703,6 +722,7 @@ impl AnthropicMessagesProvider<'_> {
     fn debug_request_headers(
         &self,
         request: &GenerateRequest,
+        stream: bool,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
         if let Some(key) = self.provider.preferred_api_key() {
@@ -714,7 +734,7 @@ impl AnthropicMessagesProvider<'_> {
         );
         headers.insert("content-type".to_string(), "application/json".to_string());
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
-        for (name, value) in self.extra_header_pairs(request) {
+        for (name, value) in self.extra_header_pairs(request, stream) {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
@@ -742,7 +762,7 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(request),
+                headers: self.debug_request_headers(request, stream),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
@@ -776,7 +796,7 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(request),
+                headers: self.debug_request_headers(request, stream),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(
@@ -2240,7 +2260,7 @@ mod tests {
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
         // 1h 不带 beta 头会被拒，所以头和 ttl 必须同进同出。
         let in_session = cache_test_request();
-        let headers = adapter.debug_request_headers(&in_session);
+        let headers = adapter.debug_request_headers(&in_session, false);
         assert_eq!(
             headers.get("anthropic-beta").map(String::as_str),
             Some(EXTENDED_CACHE_TTL_BETA)
@@ -2249,15 +2269,18 @@ mod tests {
         let short_provider = cache_test_provider(true, "short");
         let short_adapter = AnthropicMessagesProvider::new(&state, &short_provider, 1);
         assert!(short_adapter
-            .debug_request_headers(&in_session)
+            .debug_request_headers(&in_session, false)
             .get("anthropic-beta")
             .is_none());
         // 一次性调用（无会话 id）连断点都不打，自然也不该带 beta 头。
         assert!(adapter
-            .debug_request_headers(&GenerateRequest {
-                metadata: Default::default(),
-                ..cache_test_request()
-            })
+            .debug_request_headers(
+                &GenerateRequest {
+                    metadata: Default::default(),
+                    ..cache_test_request()
+                },
+                false,
+            )
             .get("anthropic-beta")
             .is_none());
     }
@@ -2277,7 +2300,7 @@ mod tests {
         let in_session = cache_test_request();
         assert_eq!(
             adapter
-                .debug_request_headers(&in_session)
+                .debug_request_headers(&in_session, false)
                 .get("anthropic-beta")
                 .map(String::as_str),
             Some(EXTENDED_CACHE_TTL_BETA)
@@ -2406,7 +2429,7 @@ mod tests {
         let request = cache_test_request();
         (
             adapter.request_body(&request, false),
-            adapter.debug_request_headers(&request),
+            adapter.debug_request_headers(&request, false),
         )
     }
 
@@ -2481,6 +2504,21 @@ mod tests {
         // 回包映射回本次声明的原名；未声明的名字原样。
         assert_eq!(adapter.declared_tool_name("Read", &request), "read");
         assert_eq!(adapter.declared_tool_name("Bash", &request), "Bash");
+        // 非流式：存进历史的 provider message 也必须是原名，不只是 tool_calls。
+        let response = serde_json::json!({
+            "content": [{ "type": "tool_use", "id": "toolu_2", "name": "Read", "input": {} }],
+            "stop_reason": "tool_use",
+        });
+        let output = output_from_anthropic_message(
+            &adapter.with_declared_tool_names(response, &request),
+            "test",
+        )
+        .expect("output");
+        assert_eq!(output.tool_calls[0].function_name, "read");
+        assert_eq!(
+            output.to_openai_compatible_message()["tool_calls"][0]["function"]["name"],
+            "read"
+        );
 
         // 不选身份时完全不改写。
         let plain_provider = cache_test_provider(false, "short");
@@ -2506,7 +2544,7 @@ mod tests {
             value: "text/event-stream".into(),
         }];
         let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
-        let pairs = adapter.extra_header_pairs(&cache_test_request());
+        let pairs = adapter.extra_header_pairs(&cache_test_request(), false);
         let accepts: Vec<_> = pairs
             .iter()
             .filter(|(n, _)| n.eq_ignore_ascii_case("accept"))
@@ -2537,13 +2575,15 @@ mod tests {
         );
         // 用户的 beta 在前、去重后合并成一行。
         assert_eq!(
-            adapter.debug_request_headers(&request)["anthropic-beta"],
+            adapter.debug_request_headers(&request, false)["anthropic-beta"],
             format!("foo-1,{EXTENDED_CACHE_TTL_BETA},{INTERLEAVED_THINKING_BETA}")
         );
         // adaptive 思考自带交错，不加这个 beta。
         request.model = "claude-opus-4-8".into();
-        assert!(!adapter.debug_request_headers(&request)["anthropic-beta"]
-            .contains(INTERLEAVED_THINKING_BETA));
+        assert!(
+            !adapter.debug_request_headers(&request, false)["anthropic-beta"]
+                .contains(INTERLEAVED_THINKING_BETA)
+        );
     }
 
     #[test]

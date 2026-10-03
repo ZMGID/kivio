@@ -133,6 +133,7 @@ impl OpenAiChatProvider<'_> {
                     self.with_session_headers(
                         req.header(ACCEPT_ENCODING, "identity"),
                         &request.metadata,
+                        stream,
                     ),
                     body,
                     self.provider.compress_request_body,
@@ -411,12 +412,14 @@ impl OpenAiChatProvider<'_> {
         &self,
         request: reqwest::RequestBuilder,
         metadata: &crate::chat::model::RequestMetadata,
+        stream: bool,
     ) -> reqwest::RequestBuilder {
         let mut request = request;
         for (name, value) in crate::provider_request::model_header_pairs(
             self.provider,
             metadata.conversation_id.as_deref(),
             true,
+            stream,
         ) {
             request = request.header(name, value);
         }
@@ -429,6 +432,7 @@ impl OpenAiChatProvider<'_> {
     fn debug_request_headers(
         &self,
         metadata: &crate::chat::model::RequestMetadata,
+        stream: bool,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
         if let Some(key) = self.provider.preferred_api_key() {
@@ -440,6 +444,7 @@ impl OpenAiChatProvider<'_> {
             self.provider,
             metadata.conversation_id.as_deref(),
             true,
+            stream,
         ) {
             headers.insert(name, value);
         }
@@ -468,7 +473,7 @@ impl OpenAiChatProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.chat_completions_url(),
-                headers: self.debug_request_headers(&request.metadata),
+                headers: self.debug_request_headers(&request.metadata, stream),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
@@ -502,7 +507,7 @@ impl OpenAiChatProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.chat_completions_url(),
-                headers: self.debug_request_headers(&request.metadata),
+                headers: self.debug_request_headers(&request.metadata, stream),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(

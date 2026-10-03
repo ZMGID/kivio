@@ -184,7 +184,7 @@ impl OpenAiResponsesProvider<'_> {
                     .post(self.responses_url())
                     .bearer_auth(key)
                     .header(ACCEPT_ENCODING, "identity");
-                for (name, value) in self.extra_header_pairs(&request.metadata) {
+                for (name, value) in self.extra_header_pairs(&request.metadata, body) {
                     req = req.header(name, value);
                 }
                 let req =
@@ -632,6 +632,7 @@ impl OpenAiResponsesProvider<'_> {
     fn debug_request_headers(
         &self,
         metadata: &crate::chat::model::RequestMetadata,
+        body: &Value,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
         if let Some(key) = self.provider.preferred_api_key() {
@@ -639,7 +640,7 @@ impl OpenAiResponsesProvider<'_> {
         }
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
         headers.insert("Content-Type".to_string(), "application/json".to_string());
-        for (name, value) in self.extra_header_pairs(metadata) {
+        for (name, value) in self.extra_header_pairs(metadata, body) {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
@@ -647,14 +648,19 @@ impl OpenAiResponsesProvider<'_> {
 
     /// 发送路径与请求调试面板共用的附加头：会话亲和头（与 Chat Completions 一致）+
     /// CLI 身份 / 自定义 / OAuth 头 + 缺省 UA / Accept。
+    /// Codex 身份不发亲和头：真实 Codex 不带 `x-session-id`，而且值是 `conv_*`，
+    /// 和身份头里的 UUID `session_id` 摆在一起就露馅了。
+    /// Accept 按**最终请求体**的 `stream` 取值：Codex OAuth 会把体强制改成流式。
     fn extra_header_pairs(
         &self,
         metadata: &crate::chat::model::RequestMetadata,
+        body: &Value,
     ) -> Vec<(String, String)> {
         crate::provider_request::model_header_pairs(
             self.provider,
             metadata.conversation_id.as_deref(),
-            true,
+            !crate::provider_request::is_codex_identity(self.provider),
+            body["stream"] == true,
         )
     }
 
@@ -671,6 +677,7 @@ impl OpenAiResponsesProvider<'_> {
         if !self.state.request_debug_enabled() {
             return;
         }
+        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.provider,
@@ -680,8 +687,8 @@ impl OpenAiResponsesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.responses_url(),
-                headers: self.debug_request_headers(&request.metadata),
-                body: self.request_body(request, stream),
+                headers: self.debug_request_headers(&request.metadata, &body),
+                body,
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
                     output,
@@ -705,6 +712,7 @@ impl OpenAiResponsesProvider<'_> {
         if !self.state.request_debug_enabled() {
             return;
         }
+        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.provider,
@@ -714,8 +722,8 @@ impl OpenAiResponsesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.responses_url(),
-                headers: self.debug_request_headers(&request.metadata),
-                body: self.request_body(request, stream),
+                headers: self.debug_request_headers(&request.metadata, &body),
+                body,
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(
                     error,
@@ -2054,7 +2062,8 @@ mod tests {
         let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
         (
             adapter.request_body(&request, false),
-            adapter.debug_request_headers(&request.metadata),
+            adapter
+                .debug_request_headers(&request.metadata, &adapter.request_body(&request, false)),
         )
     }
 
@@ -2071,6 +2080,41 @@ mod tests {
     }
 
     #[test]
+    fn accept_follows_final_body_stream_flag() {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let provider = ModelProvider {
+            id: "test".into(),
+            name: "Relay".into(),
+            api_keys: vec!["sk-test".into()],
+            api_key_legacy: None,
+            base_url: "https://relay.example/v1".into(),
+            available_models: vec!["gpt-5.5".into()],
+            enabled_models: vec!["gpt-5.5".into()],
+            enabled: true,
+            api_format: "openai_responses".into(),
+            model_overrides: Default::default(),
+            compress_request_body: false,
+            request: Default::default(),
+            active_key_index: 0,
+        };
+        let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
+        let metadata = Default::default();
+        // SSE 请求不能报 Accept: application/json（Codex OAuth 会把体强制改成 stream:true）。
+        let streaming = serde_json::json!({ "stream": true });
+        assert_eq!(
+            adapter.debug_request_headers(&metadata, &streaming)["Accept"],
+            "text/event-stream"
+        );
+        assert_eq!(
+            adapter.debug_request_headers(&metadata, &serde_json::json!({}))["Accept"],
+            "application/json"
+        );
+    }
+
+    #[test]
     fn codex_identity_aligns_responses_body_with_headers() {
         let (body, headers) = codex_identity_case("codex", false);
         let session = crate::provider_request::session_uuid(Some("conv_abc"));
@@ -2078,6 +2122,8 @@ mod tests {
         assert_eq!(body["prompt_cache_key"], session.as_str());
         assert_eq!(headers["session_id"], session);
         assert_eq!(headers["originator"], "codex_cli_rs");
+        assert!(!headers.contains_key("x-session-id"), "{headers:?}");
+        assert!(!headers.contains_key("x-session-affinity"), "{headers:?}");
         assert_eq!(body["store"], false);
         assert_eq!(body["parallel_tool_calls"], true);
         assert_eq!(

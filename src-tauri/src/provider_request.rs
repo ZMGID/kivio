@@ -304,7 +304,13 @@ pub fn header_pairs(
         // 应该是用户填的那个样子）。
         upsert_pair(&mut pairs, header.key.clone(), header.value.clone());
     }
-    for (name, value) in crate::provider_oauth::header_pairs(provider) {
+    let oauth = crate::provider_oauth::header_pairs(provider);
+    if crate::provider_oauth::is_codex(provider) {
+        // Codex OAuth 账号以它自己的 originator / UA 为准（走官方后端、按注册的客户端校验）；
+        // 身份预设里配套的 `version` 留着就和 `originator: kivio` 对不上了。
+        pairs.retain(|(name, _)| !name.eq_ignore_ascii_case("version"));
+    }
+    for (name, value) in oauth {
         upsert_pair(&mut pairs, name, value);
     }
     if provider.is_opencode_free() {
@@ -337,11 +343,13 @@ pub fn is_codex_identity(provider: &ModelProvider) -> bool {
 ///
 /// 缺省头只在前面都没给时才补（reqwest 的 `.header()` 是追加，同名两行会让网关困惑）：
 /// reqwest 默认不带 UA，空 UA 本身就像脚本，所以没有身份也没有自定义 UA 时如实报 Kivio；
-/// Accept 对齐官方 SDK 的默认头。
+/// Accept 按请求体是否流式取值（官方 SDK 与 Codex CLI 都是 SSE 发 `text/event-stream`），
+/// 由调用方从最终请求体读出 `stream`，体里强制流式（如 Codex OAuth）时头也跟着对。
 pub fn model_header_pairs(
     provider: &ModelProvider,
     conversation_id: Option<&str>,
     session_affinity: bool,
+    stream: bool,
 ) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     // 会话亲和头（对齐 opencode）：同一对话每轮带同一 id，会话亲和型代理据此稳定路由到同一
@@ -355,9 +363,14 @@ pub fn model_header_pairs(
     for (name, value) in header_pairs(provider, conversation_id) {
         upsert_pair(&mut pairs, name, value);
     }
+    let accept = if stream {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
     for (name, value) in [
         ("User-Agent", concat!("Kivio/", env!("CARGO_PKG_VERSION"))),
-        ("Accept", "application/json"),
+        ("Accept", accept),
     ] {
         if !pairs.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
             pairs.push((name.to_string(), value.to_string()));
@@ -599,7 +612,7 @@ mod tests {
     #[test]
     fn model_headers_default_ua_accept_and_session_affinity() {
         let plain = provider_with(ProviderRequestConfig::default());
-        let pairs = model_header_pairs(&plain, Some("conv_1"), true);
+        let pairs = model_header_pairs(&plain, Some("conv_1"), true, false);
         assert!(pairs.contains(&("x-session-id".into(), "conv_1".into())));
         assert!(pairs.contains(&("x-session-affinity".into(), "conv_1".into())));
         assert!(pairs.contains(&(
@@ -607,11 +620,13 @@ mod tests {
             concat!("Kivio/", env!("CARGO_PKG_VERSION")).into()
         )));
         assert!(pairs.contains(&("Accept".into(), "application/json".into())));
+        assert!(model_header_pairs(&plain, None, false, true)
+            .contains(&("Accept".into(), "text/event-stream".into())));
         // 不要会话亲和或没有会话：不发亲和头。
-        assert!(!model_header_pairs(&plain, Some("conv_1"), false)
+        assert!(!model_header_pairs(&plain, Some("conv_1"), false, false)
             .iter()
             .any(|(k, _)| k == "x-session-id"));
-        assert!(!model_header_pairs(&plain, None, true)
+        assert!(!model_header_pairs(&plain, None, true, false)
             .iter()
             .any(|(k, _)| k == "x-session-id"));
 
@@ -624,7 +639,7 @@ mod tests {
             ],
             ..Default::default()
         });
-        let pairs = model_header_pairs(&custom, Some("conv_1"), true);
+        let pairs = model_header_pairs(&custom, Some("conv_1"), true, true);
         for name in ["user-agent", "accept", "x-session-id"] {
             assert_eq!(
                 pairs
