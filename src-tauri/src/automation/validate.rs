@@ -1,5 +1,5 @@
-//! Graph lint for agent-authored automations. Canvas saves skip this and stay
-//! what-you-see-is-what-you-get; `automation_upsert` always runs it first.
+//! Shared graph validation for authoring, activation and execution.
+//! Disabled canvas drafts may remain incomplete; active graphs must be runnable.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -97,10 +97,28 @@ pub fn validate(automation: &Automation) -> Vec<ValidationIssue> {
     lint_incoming_edges(&mut issues, automation, &node_by_id);
 
     for node in &automation.nodes {
-        lint_node_data(&mut issues, automation, node);
+        if !super::interpolate::node_disabled(&node.data) {
+            lint_node_data(&mut issues, automation, node);
+        }
     }
 
     issues
+}
+
+/// Activation and whole-workflow execution share the same admission policy.
+pub(super) fn ensure_runnable(automation: &Automation) -> Result<(), String> {
+    if let Some(issue) = validate(automation)
+        .into_iter()
+        .find(ValidationIssue::is_error)
+    {
+        return Err(issue.message);
+    }
+    if !automation.nodes.iter().any(|node| {
+        node.node_type.starts_with("trigger.") && !super::interpolate::node_disabled(&node.data)
+    }) {
+        return Err("no enabled trigger for this run".into());
+    }
+    Ok(())
 }
 
 pub fn has_errors(issues: &[ValidationIssue]) -> bool {

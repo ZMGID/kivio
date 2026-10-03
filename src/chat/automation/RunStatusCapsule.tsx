@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
-import { useT, type I18n } from '../../components/i18n'
+import { useT, useLang, type I18n } from '../../components/i18n'
+import { Button } from '../../components/Button'
 import type { AutomationRunSummary } from '../../api/automationContracts'
 
 const RECENT_LIMIT = 8
@@ -11,14 +12,17 @@ export function RunStatusCapsule({
   error,
   liveStartedAt,
   resetKey,
+  onOpenRun,
 }: {
   running: boolean
   runs: AutomationRunSummary[]
   error: string
   liveStartedAt: string | null
   resetKey: string
+  onOpenRun?: (runId: string) => void
 }) {
   const t = useT()
+  const english = useLang() === 'en'
   const wrapRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const listId = useId()
@@ -48,10 +52,10 @@ export function RunStatusCapsule({
     [error, liveStartedAt, running, runs],
   )
   const head = recent[0]
-  const status = running ? 'running' : head?.status ?? 'idle'
+  const status = running ? 'running' : error ? 'error' : head?.status ?? 'idle'
   const origin = running ? undefined : head?.origin
   const time = running ? liveStartedAt : head?.startedAt
-  const detail = status === 'cancelled' ? '' : (head?.error || error)
+  const detail = error || (status === 'cancelled' ? '' : head?.error)
 
   return (
     <div ref={wrapRef} className="kv-automation-run-capsule-wrap">
@@ -80,6 +84,9 @@ export function RunStatusCapsule({
                       <span />
                     )}
                   </div>
+                  {onOpenRun && run.id !== '__live__' && run.status !== 'running' && <Button size="sm" variant="ghost" onClick={() => { onOpenRun(run.id); setOpen(false) }}>
+                    {english ? 'View details' : '查看详情'}
+                  </Button>}
                   {run.error ? <p className="kv-automation-run-row-error">{run.error}</p> : null}
                 </li>
               ))}

@@ -30,9 +30,8 @@ export function AutomationList({
   const t = useT()
   return (
     <div className="custom-scrollbar mx-auto flex min-h-0 w-full max-w-[880px] flex-1 flex-col overflow-y-auto px-6 pb-6">
-        {error ? (
-          <p className="text-[13px] text-red-600 dark:text-red-400">{error}</p>
-        ) : loading && items.length === 0 ? (
+        {error && <p role="alert" className="text-[13px] text-red-600 dark:text-red-400">{error}</p>}
+        {loading && items.length === 0 ? (
           <p className="text-[13px] text-neutral-400">{t.chatLoading}</p>
         ) : items.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--theme-surface-border)] px-6 py-16 text-center dark:border-white/[0.1]">

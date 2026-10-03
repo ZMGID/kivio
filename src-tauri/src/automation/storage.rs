@@ -59,6 +59,9 @@ fn validate_graph(automation: &Automation) -> Result<(), String> {
         validate_id(&edge.source)?;
         validate_id(&edge.target)?;
     }
+    if automation.enabled {
+        super::validate::ensure_runnable(automation)?;
+    }
     Ok(())
 }
 
@@ -170,7 +173,24 @@ pub(crate) fn import_from_file(app: &AppHandle, src: &str) -> Result<Automation,
 
 #[cfg(test)]
 mod tests {
-    use super::validate_id;
+    use super::{validate_graph, validate_id};
+
+    #[test]
+    fn incomplete_drafts_can_be_saved_but_cannot_be_enabled() {
+        let mut automation: super::Automation = serde_json::from_value(serde_json::json!({
+            "id": "draft", "name": "Draft", "nodes": [
+                {"id": "t", "type": "trigger.manual", "data": {}},
+                {"id": "http", "type": "action.http", "data": {"http": {"url": ""}}}
+            ], "edges": [{"id": "e", "source": "t", "target": "http"}]
+        }))
+        .unwrap();
+        assert!(validate_graph(&automation).is_ok());
+        automation.enabled = true;
+        assert!(validate_graph(&automation).is_err());
+        automation.nodes[1].data =
+            serde_json::json!({"http": {"url": "https://example.com", "method": "GET"}});
+        assert!(validate_graph(&automation).is_ok());
+    }
 
     #[test]
     fn rejects_path_ids() {

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { RunStatusCapsule } from './RunStatusCapsule'
 import type { AutomationRunSummary } from '../../api/automationContracts'
 
@@ -41,4 +41,15 @@ describe('RunStatusCapsule', () => {
     )
     expect(screen.getByRole('button')).toHaveTextContent('运行中')
   })
+})
+
+it('opens a chosen historical run and shows an admission error instead of stale success', () => {
+  const open = vi.fn()
+  render(<RunStatusCapsule running={false} runs={runs} error="Invalid workflow" liveStartedAt={null} resetKey="auto" onOpenRun={open} />)
+  expect(screen.getByRole('button')).toHaveTextContent('失败')
+  expect(screen.getByRole('button')).toHaveAttribute('title', 'Invalid workflow')
+  fireEvent.click(screen.getByRole('button'))
+  fireEvent.click(screen.getAllByRole('button', { name: '查看详情' })[1])
+  expect(open).toHaveBeenCalledWith('2')
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

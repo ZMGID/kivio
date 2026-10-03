@@ -1,4 +1,4 @@
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import type { ReactFlowProps } from '@xyflow/react'
@@ -68,4 +68,12 @@ describe('AutomationEditor spacing persistence', () => {
     expect(ensureNodeSpacing(saved.nodes)).toBe(saved.nodes)
     expect(capture.flow!.nodes![1].position).toEqual(saved.nodes[1].position)
   })
+})
+
+it('keeps an incomplete workflow disabled and tells the user how to fix it', () => {
+  render(<Host initial={createBlankAutomation()} />)
+  fireEvent.click(screen.getByRole('switch'))
+  expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+  expect(screen.getByRole('alert')).toHaveTextContent('添加并启用一个触发器')
+  expect(capture.saved).not.toHaveBeenCalled()
 })
