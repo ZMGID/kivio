@@ -1077,12 +1077,12 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
             <span className="shrink-0 w-4 text-[10.5px] font-medium tabular-nums text-indigo-500">
               [{citation.n}]
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 dark:text-neutral-200">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline dark:text-neutral-200">
               {citation.title}
             </span>
             <ExternalLink
               size={10.5}
-              className="shrink-0 text-neutral-300 transition-colors group-hover:text-neutral-500 dark:text-neutral-600 dark:group-hover:text-neutral-300"
+              className="shrink-0 text-neutral-400 transition-colors group-hover:text-[var(--accent)] dark:text-neutral-500"
             />
           </div>
           <div className="mt-0.5 truncate pl-5 text-[10.5px] leading-4 text-neutral-400 dark:text-neutral-500">

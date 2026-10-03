@@ -861,6 +861,8 @@ function LinkAnchor({
       // JS preventDefault 拦不住，会和下面的 openExternal 各开一个网页（双开）。
       href={decodedHref || undefined}
       rel="noopener noreferrer"
+      // Tailwind preflight 会抹掉 <a> 的颜色和下划线，不加样式链接与正文无法区分。
+      className="cursor-pointer text-[var(--accent)] underline decoration-[color-mix(in_srgb,var(--accent)_35%,transparent)] decoration-1 underline-offset-[3px] transition-colors hover:decoration-[var(--accent)]"
       onClick={(event) => {
         // 除了系统 scheme 和页内锚点，**一律**掐掉默认导航。<a> 的默认行为会把 Tauri
         // webview 自己导航走，整个聊天 UI（含未落盘的会话状态）随之消失——实测点一条 CLI
