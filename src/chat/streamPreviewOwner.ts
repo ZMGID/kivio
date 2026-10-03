@@ -49,8 +49,8 @@ function frameInterval(snapshot: ConversationStreamSnapshot): number {
   if (typeof document !== 'undefined' && document.hidden) {
     return Math.min(750, Math.max(160, foreground * 5))
   }
-  // Keep the existing visible-document test cadence until Chat migrates from
-  // useStreamRenderFrame. Production retains its content-size backpressure.
+  // Keep the visible-document test cadence. Production retains its
+  // content-size backpressure.
   return import.meta.env.MODE === 'test' ? 0 : foreground
 }
 

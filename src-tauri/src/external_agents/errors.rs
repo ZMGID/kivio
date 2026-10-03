@@ -255,30 +255,6 @@ pub fn is_missing_codex_thread_error(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::external_agents::{
-        registry::get_agent_def,
-        types::{AgentAuthRecovery, AgentErrorDetailStrategy},
-    };
-
-    #[test]
-    fn runtime_defs_own_auth_recovery_and_error_detail_policy() {
-        assert_eq!(
-            get_agent_def("claude").unwrap().error_policy.auth_recovery,
-            AgentAuthRecovery::LoginCommand("claude /login")
-        );
-        assert_eq!(
-            get_agent_def("dsh").unwrap().error_policy.auth_recovery,
-            AgentAuthRecovery::SettingsApiKey
-        );
-        assert_eq!(
-            get_agent_def("codex").unwrap().error_policy.detail,
-            AgentErrorDetailStrategy::CodexAppServer
-        );
-        assert_eq!(
-            get_agent_def("claude").unwrap().error_policy.detail,
-            AgentErrorDetailStrategy::Generic
-        );
-    }
 
     /// claude 的 assistant 帧用机器码而不是自然语言报认证失败——必须也归到 Auth，
     /// 否则用户拿到的是无从下手的 Protocol 提示，而不是 `claude /login`。

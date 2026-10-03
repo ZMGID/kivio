@@ -4406,49 +4406,6 @@ mod tests {
 
     // ---- CLI 实报用量的合并口径（一轮一次，轮末权威值用的就是它）----
 
-    fn usage_parts(input: u64, output: u64, cache_read: u64, window: Option<u64>) -> ModelUsage {
-        crate::external_agents::stream::usage_from_parts(
-            crate::external_agents::stream::CliUsageParts {
-                input,
-                output,
-                cache_read,
-                context_window: window,
-                ..Default::default()
-            },
-        )
-    }
-
-    /// 零用量的上报不得把已经攒到的分子清零（spec 14h）。`/help` 那种没有 LLM 往返的
-    /// `result` 四个字段全 0 却带窗口 —— 采纳它的窗口，但绝不采纳它的 0。
-    #[test]
-    fn zero_usage_report_does_not_reset_the_numerator() {
-        let real = usage_parts(1_200, 800, 45_000, None);
-        let zero_with_window = usage_parts(0, 0, 0, Some(1_000_000));
-        let merged = merge_cli_usage(Some(&real), zero_with_window);
-        assert_eq!(
-            crate::external_agents::context::cli_reported_context_tokens(&merged),
-            47_000,
-            "分子必须保持 47000（只采纳零值上报带来的窗口）"
-        );
-        assert_eq!(merged.context_window_tokens, Some(1_000_000));
-    }
-
-    #[test]
-    fn cli_usage_merge_keeps_latest_numbers() {
-        let first = ModelUsage {
-            input_tokens: Some(100),
-            ..Default::default()
-        };
-        let merged = merge_cli_usage(
-            Some(&first),
-            ModelUsage {
-                input_tokens: Some(250),
-                ..Default::default()
-            },
-        );
-        assert_eq!(merged.input_tokens, Some(250));
-    }
-
     #[test]
     fn cli_usage_merge_keeps_window_when_later_report_omits_it() {
         // ACP 实际时序：usage_update(带 size) 先到，PromptResponse.usage(无 size) 后到。

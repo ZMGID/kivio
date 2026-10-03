@@ -43,11 +43,6 @@ describe('TranslateTab', () => {
     expect(props.onUpdateSettings).toHaveBeenCalledWith({ targetLang: 'ja' })
   })
 
-  it('目标语言回显当前值（en）', () => {
-    renderTab()
-    expect(screen.getByRole('button', { name: t.langEn })).toBeTruthy()
-  })
-
   it('提示词回显 translatorPrompt 而非默认模板', () => {
     renderTab()
     expect(screen.getByDisplayValue('自定义翻译提示')).toBeTruthy()

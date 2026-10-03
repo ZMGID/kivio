@@ -1,22 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { composeAgent, explodeInlineAgents, isAgentSlotFilled, normalizeAgent, toAgentData, agentSelectedModel } from './agentModel'
+import { explodeInlineAgents, normalizeAgent, toAgentData, agentSelectedModel } from './agentModel'
 
 describe('normalizeAgent', () => {
-  it('disabled slots clear their inline fallbacks and do not grant tools or skills', () => {
-    const data = composeAgent('a', [
-      { id: 'a', type: 'action.agent', data: { label: 'a', agent: { prompt: 'legacy', toolIds: ['old-write'], skillId: 'old-skill' } } },
-      { id: 't', type: 'agent.tool', data: { label: 'tool', disabled: true, agent: { prompt: '', toolIds: ['write_file'] } } },
-      { id: 's', type: 'agent.skill', data: { label: 'skill', disabled: true, agent: { prompt: '', skillIds: ['pdf'] } } },
-      { id: 'c', type: 'agent.context', data: { label: 'context', disabled: true, agent: { prompt: 'disabled' } } },
-    ], [
-      { source: 't', target: 'a', targetHandle: 'tool' },
-      { source: 's', target: 'a', targetHandle: 'skill' },
-      { source: 'c', target: 'a', targetHandle: 'context' },
-    ])
-    expect(data.toolIds).toEqual([])
-    expect(data.skillIds).toEqual([])
-    expect(data.prompt).toBe('')
-  })
   it('defaults to builtin Kivio Agent with an empty prompt', () => {
     const agent = normalizeAgent(undefined)
     expect(agent.runtimeKind).toBe('builtin')
@@ -75,32 +60,6 @@ describe('normalizeAgent', () => {
       model: 'kivio-model',
       externalModel: 'sonnet',
     }))).toBe('kivio-model')
-  })
-
-  it('marks required slots empty until configured', () => {
-    const empty = normalizeAgent({ prompt: '' })
-    expect(isAgentSlotFilled('runtime', empty)).toBe(true)
-    expect(isAgentSlotFilled('context', empty)).toBe(false)
-    expect(isAgentSlotFilled('tool', empty)).toBe(false)
-    expect(isAgentSlotFilled('skill', empty)).toBe(false)
-    const hangingCli = normalizeAgent({ prompt: 'x', runtimeKind: 'external' })
-    expect(isAgentSlotFilled('runtime', hangingCli)).toBe(false)
-  })
-
-  it('composes plugged slot nodes over inline agent data', () => {
-    const nodes = [
-      { id: 'a', type: 'action.agent', data: { label: 'A', agent: { prompt: 'old' } } },
-      { id: 'r', type: 'agent.runtime', data: { label: 'R', agent: { prompt: '', runtimeKind: 'chat' as const } } },
-      { id: 'c', type: 'agent.context', data: { label: 'C', agent: { prompt: 'new' } } },
-    ]
-    const edges = [
-      { source: 'r', target: 'a', targetHandle: 'runtime' },
-      { source: 'c', target: 'a', targetHandle: 'context' },
-    ]
-    const agent = composeAgent('a', nodes, edges)
-    expect(agent.runtimeKind).toBe('chat')
-    expect(agent.prompt).toBe('new')
-    expect(agent.toolIds).toEqual([])
   })
 
   it('explodes inline agent config into slot nodes once', () => {

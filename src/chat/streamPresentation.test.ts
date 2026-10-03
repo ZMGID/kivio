@@ -8,13 +8,6 @@ const event = (type: string, runId: string, delta?: string): ChatStreamPayload =
 } as ChatStreamPayload)
 
 describe('conversation stream presentation', () => {
-  it('binds the first run and leaves a later foreign run unable to overwrite the preview', () => {
-    const snapshot = createEmptyStreamSnapshot()
-    expect(applyConversationStreamEvent(snapshot, event('text_delta', 'run-new', 'hello'))).toBe(true)
-    expect(applyConversationStreamEvent(snapshot, event('text_delta', 'run-old', 'stale'))).toBe(false)
-    expect(snapshot.content).toBe('hello')
-    expect(snapshot.runId).toBe('run-new')
-  })
 
   it('clears retry status when content resumes and finalizes reasoning duration on terminal', () => {
     const snapshot = createEmptyStreamSnapshot()

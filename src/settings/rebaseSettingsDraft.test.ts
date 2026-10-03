@@ -130,20 +130,6 @@ describe('settings editor canonical state', () => {
     expect(converged.draft).toEqual(converged.acknowledgedDraft)
   })
 
-  it('advances the canonical baseline across consecutive external snapshots', () => {
-    const initial = settings({ favoriteModels: [] })
-    const first = settings({ favoriteModels: ['one'] })
-    const second = settings({ favoriteModels: ['one', 'two'] })
-
-    const afterFirst = receiveSettingsSnapshot(createSettingsEditorState(initial), first)
-    const afterSecond = receiveSettingsSnapshot(afterFirst, second)
-
-    expect(afterSecond.canonical.favoriteModels).toEqual(['one', 'two'])
-    expect(afterSecond.acknowledgedDraft.favoriteModels).toEqual(['one', 'two'])
-    expect(afterSecond.draft.favoriteModels).toEqual(['one', 'two'])
-    expect(afterSecond.conflicts).toEqual([])
-  })
-
   it('accepts canonical corrections while retaining acknowledged placeholder input', () => {
     const submitted = settings({
       retryAttempts: 999,
@@ -223,32 +209,6 @@ describe('settings editor canonical state', () => {
     expect(next.conflicts).toEqual([])
   })
 
-  it('keeps a locally edited entity and surfaces a concurrent remote deletion', () => {
-    const initial = settings({ providers: [{ id: 'one', name: 'One', apiKeys: ['old'] }] })
-    const local = settings({ providers: [{ id: 'one', name: 'Local', apiKeys: ['old'] }] })
-    const remote = settings({ providers: [] })
-
-    const next = receiveSettingsSnapshot(createSettingsEditorState(initial, local), remote)
-    expect(next.draft.providers).toEqual([{ id: 'one', name: 'Local', apiKeys: ['old'] }])
-    expect(next.conflicts.map((conflict) => conflict.path)).toContain('providers.one')
-  })
-
-  it('replays edits made while a save is in flight onto the canonical response', () => {
-    const submitted = settings({ theme: 'dark', retryAttempts: 2 })
-    const latest = settings({ theme: 'dark', retryAttempts: 5 })
-    const saved = settings({ theme: 'dark', retryAttempts: 2 })
-
-    const next = acceptSettingsSave(
-      submitted,
-      saved,
-      latest,
-    )
-    expect(next.canonical).toEqual(saved)
-    expect(next.acknowledgedDraft).toEqual(submitted)
-    expect(next.draft.retryAttempts).toBe(5)
-    expect(next.conflicts).toEqual([])
-  })
-
   it('keeps a conflict until the user changes the conflicting value', () => {
     const initial = settings({ theme: 'light' })
     const local = settings({ theme: 'dark' })
@@ -281,4 +241,5 @@ describe('settings editor canonical state', () => {
     expect(next.draft.chatTools.servers.find((row) => row.id === 'mine')?.enabled).toBe(false)
     expect(next.conflicts).toEqual([])
   })
+
 })

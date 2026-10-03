@@ -160,51 +160,6 @@ export function pickAppendSource(
   return null
 }
 
-export function layoutFlow<
-  N extends { id: string, type?: string, position: { x: number, y: number }, data?: FlowNodeData },
->(
-  nodes: N[],
-  edges: { source: string, target: string, sourceHandle?: string | null, targetHandle?: string | null }[],
-): N[] {
-  if (nodes.length === 0) return nodes
-  const byId = new Map(nodes.map((node) => [node.id, node]))
-  const outgoing = new Map<string, typeof edges>()
-  for (const edge of edges) {
-    if (isSlotEdge(edge)) continue
-    const list = outgoing.get(edge.source) ?? []
-    list.push(edge)
-    outgoing.set(edge.source, list)
-  }
-  const placed = new Map<string, { x: number, y: number }>()
-  const start = nodes.find((node) => isTriggerType(node.type ?? '')) ?? nodes[0]
-  const walk = (id: string, x: number, y: number) => {
-    if (placed.has(id)) return
-    placed.set(id, { x, y })
-    const node = byId.get(id)
-    if (!node) return
-    const outs = outgoing.get(id) ?? []
-    const nextX = x + nodeCardWidth(node.type) + FLOW_NODE_GAP_X
-    const handles = branchHandles(node.type ?? '', node.data)
-    if (handles) {
-      handles.forEach((handle) => {
-        const edge = outs.find((item) => (item.sourceHandle || handles[0]) === handle)
-        if (!edge) return
-        walk(edge.target, nextX, y + branchYOffset(handles, handle))
-      })
-      return
-    }
-    for (const edge of outs) walk(edge.target, nextX, y)
-  }
-  walk(start.id, FLOW_ORIGIN.x, FLOW_ORIGIN.y)
-  let extraY = FLOW_ORIGIN.y + FLOW_NODE_GAP_Y * 2
-  for (const node of nodes) {
-    if (placed.has(node.id)) continue
-    placed.set(node.id, { x: FLOW_ORIGIN.x, y: extraY })
-    extraY += FLOW_NODE_GAP_Y
-  }
-  return ensureNodeSpacing(nodes.map((node) => ({ ...node, position: placed.get(node.id)! })))
-}
-
 export function canConnect(
   source: string,
   target: string,
@@ -330,35 +285,4 @@ export function flowEdgeFromConnection(
 
 export function triggerNode(automation: Automation): FlowNode | undefined {
   return automation.nodes.find((node) => isTriggerType(node.type))
-}
-
-export function topologicalOrder(automation: Automation): string[] {
-  const incoming = new Map<string, number>()
-  for (const node of automation.nodes) {
-    if (isAttachmentType(node.type)) continue
-    incoming.set(node.id, 0)
-  }
-  for (const edge of automation.edges) {
-    if (isSlotEdge(edge)) continue
-    incoming.set(edge.target, (incoming.get(edge.target) ?? 0) + 1)
-  }
-  const queue = [...incoming.entries()].filter(([, count]) => count === 0).map(([id]) => id)
-  const order: string[] = []
-  const outgoing = new Map<string, string[]>()
-  for (const edge of automation.edges) {
-    if (isSlotEdge(edge)) continue
-    const list = outgoing.get(edge.source) ?? []
-    list.push(edge.target)
-    outgoing.set(edge.source, list)
-  }
-  while (queue.length > 0) {
-    const id = queue.shift()!
-    order.push(id)
-    for (const next of outgoing.get(id) ?? []) {
-      const count = (incoming.get(next) ?? 1) - 1
-      incoming.set(next, count)
-      if (count === 0) queue.push(next)
-    }
-  }
-  return order
 }

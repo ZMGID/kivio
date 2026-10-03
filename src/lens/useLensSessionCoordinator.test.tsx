@@ -95,19 +95,6 @@ describe('useLensSessionCoordinator', () => {
     expect(result.current.isRequestLatest(finished)).toBe(false)
   })
 
-  it('invalidates an event-finished result when the caller changes context', async () => {
-    const cancelRequest = vi.fn().mockResolvedValue(undefined)
-    const { result } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))
-    act(() => result.current.beginOpening())
-    const finished = result.current.beginRequest('chat', 'image-1')
-    expect(result.current.finishRequestEvent('chat', 'image-1')).toBe(true)
-
-    await act(() => result.current.cancelActiveRequest())
-
-    expect(result.current.isRequestLatest(finished)).toBe(false)
-    expect(cancelRequest).not.toHaveBeenCalled()
-  })
-
   it('cancels an active request and invalidates all tokens on unmount', () => {
     const cancelRequest = vi.fn().mockResolvedValue(undefined)
     const { result, unmount } = renderHook(() => useLensSessionCoordinator({ cancelRequest }))

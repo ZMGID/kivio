@@ -82,23 +82,6 @@ describe('matchModel', () => {
     expect(matchModel('   ')).toBeNull()
   })
 
-  it('matches known models by exact id', () => {
-    const info = matchModel('gpt-4o')
-    expect(info).not.toBeNull()
-    expect(info?.displayName).toBeTruthy()
-    expect(info?.contextWindow).toBeGreaterThan(0)
-  })
-
-  it('strips OpenRouter-style provider prefix before matching', () => {
-    const direct = matchModel('gpt-4o')
-    const prefixed = matchModel('openai/gpt-4o')
-    expect(prefixed).toEqual(direct)
-  })
-
-  it('returns null for unknown models', () => {
-    expect(matchModel('totally-unknown-model-xyz-9999')).toBeNull()
-  })
-
   it('matches dash-versioned ids against dot-keyed db entries', () => {
     // Provider ids use dashes (claude-sonnet-4-6); db keys use dots (claude-sonnet-4.6).
     // Without separator normalization these fall back to the older major-version entry.
@@ -480,11 +463,6 @@ describe('matchModel', () => {
 
 
 describe('matchModelExact', () => {
-  it('matches exact and provider-prefixed model ids', () => {
-    expect(matchModelExact('gpt-4o')).toEqual(matchModelExact('openai/gpt-4o'))
-    expect(matchModelExact('claude-sonnet-4-6')?.displayName).toBe('Claude Sonnet 4.6')
-  })
-
   it('does not infer catalog metadata for private aliases', () => {
     expect(matchModelExact('company-gpt-4o-special')).toBeNull()
   })

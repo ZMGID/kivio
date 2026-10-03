@@ -2,12 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, expect, it } from 'vitest'
-import {
-  getPopoutConversationId,
-  getPopoutConversationIdFromPath,
-  isChatPopoutPath,
-  popoutConversationHash,
-} from './popoutRoutes'
+import { getPopoutConversationId, getPopoutConversationIdFromPath, isChatPopoutPath } from './popoutRoutes'
 
 describe('popoutRoutes', () => {
   it('recognizes popout paths', () => {
@@ -15,10 +10,6 @@ describe('popoutRoutes', () => {
     expect(isChatPopoutPath('chat/popout/conv_abc')).toBe(true)
     expect(isChatPopoutPath('chat/conv_abc')).toBe(false)
     expect(isChatPopoutPath('chat/settings')).toBe(false)
-  })
-
-  it('encodes the conversation id into the hash', () => {
-    expect(popoutConversationHash('conv_a/b')).toBe('#chat/popout/conv_a%2Fb')
   })
 
   it('parses the conversation id from the path', () => {

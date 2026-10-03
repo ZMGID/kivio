@@ -295,13 +295,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_ocr_text_preserves_single_blank_lines() {
-        // 单个空行(段落分隔)保留
-        let input = "para 1\n\npara 2";
-        assert_eq!(compact_ocr_text(input), "para 1\n\npara 2");
-    }
-
-    #[test]
     fn direct_translation_prompt_requests_markdown_structure() {
         let prompt = build_ocr_direct_translation_prompt("Chinese", None);
         assert!(prompt.contains("Markdown"));

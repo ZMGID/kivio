@@ -8,7 +8,6 @@ import {
   groupWorkDurationMs,
   imageReadCount,
   isImageReadToolCall,
-  isStandaloneToolCard,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
   segmentToolCallId,
@@ -125,26 +124,6 @@ describe('groupTimelineSegments', () => {
     expect(items[0].type === 'group' && items[0].segments.map(s => s.id)).toEqual(['note', 't'])
   })
 
-  it('keeps presentation cards inside the single process', () => {
-    const present = tool({
-      id: 'present-1',
-      name: 'present_artifacts',
-      source: 'native',
-      status: 'running',
-    })
-    expect(isStandaloneToolCard(present)).toBe(true)
-
-    const items = groupTimelineSegments(
-      [
-        toolSegment('read-segment', 1, 'read-1'),
-        toolSegment('present-segment', 2, 'present-1'),
-        toolSegment('write-segment', 3, 'write-1'),
-      ],
-    )
-
-    expect(items.map((item) => item.type)).toEqual(['group'])
-  })
-
   it('keeps image reads inside the process group so they do not split Worked', () => {
     const items = groupTimelineSegments([
       toolSegment('bash-segment', 1, 'bash-1'),
@@ -161,102 +140,6 @@ describe('groupTimelineSegments', () => {
     ])
   })
 
-  // 问用户那块记的是「问了什么 + 你选了什么」—— 折进「调用 N 次工具」里等于把一次
-  // 人为决定藏起来。外部 CLI 报的是自己的工具名，所以判据不能只认 native。
-  it('keeps ask-user cards outside collapsed process groups', () => {
-    expect(isStandaloneToolCard(tool({
-      id: 'ask-1',
-      name: 'ask_user',
-      source: 'native',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'ask-2',
-      name: 'AskUserQuestion',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'ask-dsh',
-      name: 'ask_user_question',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'ask-dsh-plan',
-      name: 'exit_plan_mode',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    // claude 的计划批准也是一次人为决定，但不走问用户卡。
-    expect(isStandaloneToolCard(tool({
-      id: 'plan-exit',
-      name: 'ExitPlanMode',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    // 载荷认得出来也算（工具名被改过/缺失时的兜底）。
-    expect(isStandaloneToolCard(tool({
-      id: 'ask-3',
-      name: 'whatever',
-      source: 'external_cli',
-      structured_content: { askUser: { phase: 'answered', questions: [], answers: {} } },
-    }))).toBe(true)
-  })
-
-  // 外部 CLI 的子代理（claude 新版 `Agent` / 旧版 `Task`）：一次完整的委派，
-  // 同内置 agent 独立成卡，不折进「调用 N 次工具」。
-  it('keeps external CLI sub-agent calls outside collapsed process groups', () => {
-    expect(isStandaloneToolCard(tool({
-      id: 'ext-agent-1',
-      name: 'Agent',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'ext-task-1',
-      name: 'Task',
-      source: 'external_cli',
-      status: 'completed',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'dsh-subagent',
-      name: 'subagent',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'dsh-workflow',
-      name: 'workflow',
-      source: 'external_cli',
-      status: 'running',
-    }))).toBe(true)
-    expect(isStandaloneToolCard(tool({
-      id: 'dsh-list-agents',
-      name: 'list_agents',
-      source: 'external_cli',
-    }))).toBe(false)
-    // MCP 服务器恰好有个叫 agent 的工具：不是子代理，照常折叠。
-    expect(isStandaloneToolCard(tool({
-      id: 'mcp-agent-1',
-      name: 'agent',
-      source: 'mcp',
-      status: 'completed',
-    }))).toBe(false)
-  })
-
-  it('does not let an MCP tool spoof the native presentation channel', () => {
-    expect(isStandaloneToolCard(tool({
-      id: 'present-spoof',
-      source: 'mcp',
-      name: 'present_artifacts',
-      structured_content: {
-        type: 'artifact_presentation',
-        artifactIds: ['art_a'],
-      },
-    }))).toBe(false)
-  })
-
   // 运行中插话卡渲染成「用户说过的话」，所以三条判据（native 通道 + 保留工具名 +
   // structured type）必须同时成立，任一缺失都不认——冒充它比冒充一张搜索卡严重。
   it('recognizes a user steering card and keeps it out of collapsed groups', () => {
@@ -269,7 +152,6 @@ describe('groupTimelineSegments', () => {
     expect(isUserSteerToolCall(steer)).toBe(true)
     expect(userSteerText(steer)).toBe('改用 rg')
     expect(userSteerId(steer)).toBe('s1')
-    expect(isStandaloneToolCard(steer)).toBe(true)
     expect(userSteerId(tool({
       id: 'steer_camel',
       source: 'native',
@@ -287,7 +169,6 @@ describe('groupTimelineSegments', () => {
     })
     expect(isUserFollowUpToolCall(followUp)).toBe(true)
     expect(userFollowUpId(followUp)).toBe('f1')
-    expect(isStandaloneToolCard(followUp)).toBe(true)
   })
 
   it('does not let a non-native tool spoof a user steering card', () => {
@@ -310,18 +191,6 @@ describe('groupTimelineSegments', () => {
       name: 'read',
       structured_content: { type: 'user_steer', text: 'x' },
     }))).toBe(false)
-  })
-
-  it('recognizes a completed artifact presentation by structured content', () => {
-    expect(isStandaloneToolCard(tool({
-      id: 'present-2',
-      source: 'native',
-      name: 'present_artifacts',
-      structured_content: {
-        type: 'artifact_presentation',
-        artifactIds: ['art_a'],
-      },
-    }))).toBe(true)
   })
 
   it('aggregates consecutive reasoning + tool into one group', () => {

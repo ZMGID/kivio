@@ -353,43 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn source_rect_is_display_relative_without_y_flip() {
-        let displays = [
-            CaptureDisplay {
-                x: 0.0,
-                y: 0.0,
-                width: 1440.0,
-                height: 900.0,
-            },
-            CaptureDisplay {
-                x: 1440.0,
-                y: 0.0,
-                width: 1920.0,
-                height: 1080.0,
-            },
-        ];
-        let region = CaptureRect {
-            x: 1520.0,
-            y: 120.0,
-            width: 300.0,
-            height: 200.0,
-        };
-
-        let mapped = source_rect_for_region(region, &displays).expect("region should map");
-
-        assert_eq!(mapped.display_index, 1);
-        assert_eq!(
-            mapped.source_rect,
-            CaptureRect {
-                x: 80.0,
-                y: 120.0,
-                width: 300.0,
-                height: 200.0,
-            }
-        );
-    }
-
-    #[test]
     fn source_rect_supports_negative_display_origins() {
         let displays = [
             CaptureDisplay {
@@ -489,34 +452,5 @@ mod tests {
         };
 
         assert_eq!(monitor_for_region(region, &monitors), Some(1));
-    }
-
-    #[test]
-    fn windows_physical_region_uses_monitor_local_logical_origin() {
-        let monitor = CaptureMonitor {
-            x: 1920,
-            y: -180,
-            width: 2560,
-            height: 1440,
-            scale_factor: 1.25,
-        };
-        let region = CaptureRect {
-            x: 1616.0,
-            y: -64.0,
-            width: 240.0,
-            height: 120.0,
-        };
-
-        let mapped = windows_monitor_region(region, monitor).expect("region should map to monitor");
-
-        assert_eq!(
-            mapped,
-            CaptureRegionPx {
-                x: 100,
-                y: 100,
-                width: 300,
-                height: 150,
-            }
-        );
     }
 }

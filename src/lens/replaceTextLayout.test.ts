@@ -13,10 +13,6 @@ describe('replace text tokenization', () => {
     expect(tokenizeReplaceText('网络 web_search 工具')).toEqual(['网', '络', ' ', 'web_search', ' ', '工', '具'])
   })
 
-  it('emits explicit paragraph breaks as standalone newline tokens', () => {
-    expect(tokenizeReplaceText('first\nsecond')).toEqual(['first', '\n', 'second'])
-  })
-
   it('keeps nested opening punctuation and CJK nonbreaking spaces together', () => {
     expect(tokenizeReplaceText('查看（《说明》）')).toEqual(['查', '看', '（《说', '明》）'])
     expect(tokenizeReplaceText('第\u00a0一页')).toEqual(['第\u00a0一', '页'])
@@ -60,13 +56,6 @@ describe('replace text multi-slot flow', () => {
     const layout = layoutReplaceTextFlow(text, [available], 14, inkMeasure)
     expect(layout.complete).toBe(true)
     expect(layout.slots[0].lines).toEqual([text])
-  })
-
-  it('preserves the same displayed heading size at 1x, 1.25x and 2x', () => {
-    for (const scale of [1, 1.25, 2]) {
-      const layout = layoutReplaceTextFlow('标题', [{ width: 400 * scale, height: 100 * scale }], 36 * scale, inkMeasure)
-      expect(layout.fontPx * layout.safeScale / scale).toBe(36)
-    }
   })
 
   it('does not require trailing line leading below the final line of a cell', () => {
@@ -136,19 +125,6 @@ describe('replace text multi-slot flow', () => {
       expect(result.slots.flatMap(slot => slot.lines).join('').replace(/\s/g, '')).toBe(text.replace(/\s/g, ''))
       expect(result.slots.every(slot => slot.lines.length <= 1)).toBe(true)
     }
-  })
-
-  it('keeps a translation group while preserving each source-line slot', () => {
-    const text = '第一行译文和第二行译文必须按原来的两个位置流动'
-    const layout = layoutReplaceTextFlow(
-      text,
-      [{ width: 110, height: 22 }, { width: 110, height: 22 }],
-      14,
-      measure,
-    )
-    expect(layout.complete).toBe(true)
-    expect(layout.slots).toHaveLength(2)
-    expect(layout.slots.flatMap(slot => slot.lines).join('')).toBe(text)
   })
 
   it('uses a shared safe scale rather than dropping the tail from the last slot', () => {

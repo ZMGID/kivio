@@ -78,19 +78,6 @@ export function emptyHeroPinnedLine(opts: {
   return null
 }
 
-export function emptyHeroLine(opts: {
-  lang: Lang
-  assistantName?: string | null
-  projectName?: string | null
-  setName?: string | null
-  seed?: string | null
-}): string {
-  const pinned = emptyHeroPinnedLine(opts)
-  if (pinned) return pinned
-  const list = GREETINGS[opts.lang]
-  return list[greetingIndex(opts.seed, list.length)]
-}
-
 /** 空态闲置时轮换问候；助手 / 项目 / 集名钉住不转。 */
 export function useEmptyHeroLine(opts: {
   lang: Lang

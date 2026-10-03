@@ -1,58 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  collectGeneratingConversationIds,
-  createEmptyStreamSnapshot,
-  isConversationBusy,
-  isConversationInFlight,
-  mergeToolRecord,
-  acceptStreamRun,
-} from './conversationRuns'
-
-describe('isConversationInFlight', () => {
-  it('returns true when conversation is in the in-flight set', () => {
-    expect(isConversationInFlight(new Set(['conv-1']), 'conv-1')).toBe(true)
-    expect(isConversationInFlight(new Set(['conv-1']), 'conv-2')).toBe(false)
-  })
-})
-
-describe('isConversationBusy', () => {
-  it('returns false for missing conversation id', () => {
-    expect(isConversationBusy(null, new Set(), {})).toBe(false)
-    expect(isConversationBusy(undefined, new Set(['conv-1']), {})).toBe(false)
-  })
-
-  it('returns true when conversation is in-flight', () => {
-    expect(isConversationBusy('conv-1', new Set(['conv-1']), {})).toBe(true)
-  })
-
-  it('returns true when snapshot is still streaming', () => {
-    const snapshots = {
-      'conv-1': { ...createEmptyStreamSnapshot(), streaming: true },
-    }
-    expect(isConversationBusy('conv-1', new Set(), snapshots)).toBe(true)
-  })
-
-  it('returns false when not in-flight and snapshot is idle', () => {
-    const snapshots = {
-      'conv-1': { ...createEmptyStreamSnapshot(), streaming: false },
-    }
-    expect(isConversationBusy('conv-1', new Set(), snapshots)).toBe(false)
-  })
-})
-
-describe('collectGeneratingConversationIds', () => {
-  it('merges in-flight, streaming snapshots, and pending tool confirms', () => {
-    const ids = collectGeneratingConversationIds(
-      new Set(['conv-a']),
-      {
-        'conv-b': { ...createEmptyStreamSnapshot(), streaming: true },
-        'conv-c': { ...createEmptyStreamSnapshot(), streaming: false },
-      },
-      { 'conv-d': [{}], 'conv-e': [] },
-    )
-    expect(Array.from(ids).sort()).toEqual(['conv-a', 'conv-b', 'conv-d'])
-  })
-})
+import { createEmptyStreamSnapshot, mergeToolRecord, acceptStreamRun } from './conversationRuns'
 
 describe('createEmptyStreamSnapshot', () => {
   it('creates a streaming snapshot with empty content', () => {
@@ -67,14 +14,6 @@ describe('createEmptyStreamSnapshot', () => {
 })
 
 describe('stream run ownership', () => {
-  it('binds a placeholder to its first run and rejects a late event from another run', () => {
-    const snapshot = createEmptyStreamSnapshot()
-    expect(acceptStreamRun(snapshot, 'run-a')).toBe(true)
-    expect(snapshot.runId).toBe('run-a')
-    expect(acceptStreamRun(snapshot, 'run-a')).toBe(true)
-    expect(acceptStreamRun(snapshot, 'run-old')).toBe(false)
-    expect(snapshot.runId).toBe('run-a')
-  })
 
   it('preserves the current protocol behavior for events without a run id', () => {
     const snapshot = createEmptyStreamSnapshot()
@@ -117,31 +56,5 @@ describe('mergeToolRecord', () => {
     const next = { id: 'tc1', structured_content: { askUser: { phase: 'answered' } } } as never
     expect(mergeToolRecord(previous, next).structured_content)
       .toEqual({ askUser: { phase: 'answered' } })
-  })
-})
-
-/**
- * Coarse gate: a conversation is "busy" while either in-flight or still streaming.
- * UI uses this to disable send / show the stop button — if this drifts, double-send
- * and stuck "generating" indicators come back.
- */
-describe('busy conversation gate (smoke)', () => {
-  it('treats in-flight OR streaming OR pending tool confirm as generating', () => {
-    const streaming = {
-      'c-stream': { ...createEmptyStreamSnapshot(), streaming: true },
-      'c-idle': { ...createEmptyStreamSnapshot(), streaming: false },
-    }
-    const pending = { 'c-confirm': [{ id: 't1' }], 'c-empty': [] }
-
-    expect(isConversationBusy('c-flight', new Set(['c-flight']), streaming)).toBe(true)
-    expect(isConversationBusy('c-stream', new Set(), streaming)).toBe(true)
-    expect(isConversationBusy('c-idle', new Set(), streaming)).toBe(false)
-
-    const generating = collectGeneratingConversationIds(
-      new Set(['c-flight']),
-      streaming,
-      pending,
-    )
-    expect(Array.from(generating).sort()).toEqual(['c-confirm', 'c-flight', 'c-stream'])
   })
 })

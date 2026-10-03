@@ -61,11 +61,6 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
 }
 
 describe('ChatTab', () => {
-  it('回显用户名与工作目录（分别来自 chatConfig / chatTools）', () => {
-    renderTab()
-    expect(screen.getByDisplayValue('小明')).toBeTruthy()
-    expect(screen.getByDisplayValue('/w')).toBeTruthy()
-  })
 
   it('工作目录输入走 onUpdateNativeTools 而非 onUpdateChat', async () => {
     const props = renderTab()

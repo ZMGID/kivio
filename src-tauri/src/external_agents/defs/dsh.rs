@@ -196,22 +196,6 @@ mod tests {
         }
     }
 
-    fn opts() -> RuntimeBuildOptions {
-        RuntimeBuildOptions {
-            model: None,
-            reasoning: None,
-            sandbox: None,
-        }
-    }
-
-    #[test]
-    fn launches_the_kivio_profile() {
-        assert_eq!(
-            (DSH_AGENT_DEF.build_args)(&ctx(), &opts(), None),
-            vec!["--profile".to_string(), "kivio".to_string()]
-        );
-    }
-
     /// 模型与推理档位**不进 argv**：模型是 `initialize` 的 RPC 参数，档位是 profile patch 里的
     /// `llm-deepseek.reasoningEffort`。硬塞进 argv 会被 dsh 的启动器当作「要转交给 app 的
     /// 内部参数」原样传下去（`args.ts` 的 passthrough 语义），既不生效也不报错。

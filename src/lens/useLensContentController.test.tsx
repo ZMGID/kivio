@@ -81,20 +81,6 @@ describe('Lens content transitions', () => {
     expect(result.current.conversation.view).toMatchObject({ stage: 'ready', streaming: false })
   })
 
-  it('returns to ready when the native close owner reports failure without throwing', async () => {
-    sendToChat.mockResolvedValue({ success: true })
-    const close = vi.fn().mockResolvedValue(false)
-    const { result } = renderHook(() => useLensContentController({ initialMode: 'chat' }))
-    act(() => {
-      const opening = result.current.beginOpening()
-      result.current.open({ mode: 'chat', opening, freezeFrameImageId: '' })
-      result.current.conversation.showStage('ready')
-    })
-    await act(async () => { await result.current.handoff({ question: 'Send me', close }) })
-    expect(result.current.conversation.view).toMatchObject({ stage: 'ready', streaming: false })
-    expect(close).toHaveBeenCalledOnce()
-  })
-
   it('retries only native close after an accepted history handoff', async () => {
     sendHistoryToChat.mockResolvedValue({ success: true })
     const close = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)

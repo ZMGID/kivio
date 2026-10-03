@@ -1,7 +1,6 @@
 import type { ChatMessageSegment, ToolCallRecord } from './types'
-import { foldToolName, hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
+import { foldToolName } from './askUserTools'
 import { normalizeToolCallStatus } from './toolStatus'
-import { isArtifactPresentationToolCall } from './artifactPresentation'
 import { isImageArtifact } from './artifacts'
 
 export function segmentToolCallId(segment: ChatMessageSegment): string {
@@ -217,34 +216,6 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
     || name === 'subagentfork'
     || name === 'workflow'
     || name === 'ralph'
-}
-
-/** Tool calls that render as their own dedicated, always-visible card in the
- *  timeline (never folded into the "调用 N 次工具" group): sub-agents (`agent`),
- *  advisor consultations, and ask-user prompts. Matched by structured content type
- *  first, then by the native tool name for the still-streaming case (before
- *  structured content arrives). */
-export function isStandaloneToolCard(toolCall: ToolCallRecord): boolean {
-  // 用户插话：把它折进「调用 N 次工具」等于把用户自己说的话藏起来，同 ask_user 的理由。
-  if (isUserSteerToolCall(toolCall) || isUserFollowUpToolCall(toolCall)) return true
-  const structured = toolCall.structured_content ?? toolCall.structuredContent
-  if (structured && typeof structured === 'object') {
-    const type = (structured as { type?: unknown }).type
-    if (type === 'subagent' || type === 'subagent_started' || type === 'advisor') return true
-    // 问用户：载荷里是 `askUser`（没有 `type` 字段）。它记的是「问了什么 + 你选了什么」，
-    // 折进「调用 N 次工具」里等于把一次人为决定藏起来 —— 那是这条对话里最该看见的东西。
-    if (hasAskUserStructuredContent(structured)) return true
-  }
-  const name = toolRecordRawName(toolCall)
-  // 外部 CLI 报的是自己的工具名，所以这条判据不能只认 native。
-  if (isAskUserToolName(name)) return true
-  // claude 的 `ExitPlanMode` 是计划审批，不是问用户卡，但同样是一次人为决定。
-  if (foldToolName(name) === 'exitplanmode') return true
-  // 外部 CLI 的子代理（claude 的 Agent/Task）：一次完整的委派，同内置 agent 独立成卡，
-  // 折进「调用 N 次工具」等于把派活这件事藏起来。
-  if (isExternalSubagentToolCall(toolCall)) return true
-  if (toolCall.source !== 'native') return false
-  return name === 'agent' || name === 'advisor' || isArtifactPresentationToolCall(toolCall)
 }
 
 const IMAGE_READ_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif)$/i

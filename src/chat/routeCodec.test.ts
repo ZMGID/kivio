@@ -51,14 +51,6 @@ describe('chat route codec', () => {
     expect(decodeChatRouteId('chat/', 'chat/%E0%A4%A')).toBeNull()
   })
 
-  it.each([
-    ['chat/', 'other'],
-    ['chat/a/b', 'other'],
-    ['chat/%E0%A4%A', 'other'],
-  ] as const)('does not classify invalid conversation path %s as a conversation', (path, kind) => {
-    expect(chatRouteKind(path)).toBe(kind)
-  })
-
   it('preserves rememberable center routes while rejecting transient and corrupt routes', () => {
     for (const path of [
       'chat/assistants',

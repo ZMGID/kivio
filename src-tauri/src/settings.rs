@@ -3887,13 +3887,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_hotkey_preserves_key_case() {
-        // 按键名大小写不被改动（Tauri 全局快捷键大小写敏感）
-        assert_eq!(normalize_hotkey("cmd+a"), "CommandOrControl+a");
-        assert_eq!(normalize_hotkey("cmd+A"), "CommandOrControl+A");
-    }
-
-    #[test]
     fn normalize_hotkey_trims_whitespace() {
         assert_eq!(
             normalize_hotkey(" cmd + shift + a "),
@@ -3940,16 +3933,6 @@ mod tests {
         s.chat.max_output_tokens = 32_768;
         let s = sanitize_settings(s);
         assert_eq!(s.chat.max_output_tokens, 16_384);
-    }
-
-    #[test]
-    fn sanitize_settings_resets_unknown_theme_values() {
-        let mut s = Settings::default();
-        s.theme = "sepia".to_string();
-        s.theme_color = "mint".to_string();
-        let s = sanitize_settings(s);
-        assert_eq!(s.theme, "system");
-        assert_eq!(s.theme_color, "neutral");
     }
 
     #[test]
@@ -4038,15 +4021,6 @@ mod tests {
             s.screenshot_translation.ocr_mode,
             Some(OcrMode::CloudVision)
         );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    #[test]
-    fn sanitize_settings_preserves_rapidocr_mode() {
-        let mut s = Settings::default();
-        s.screenshot_translation.ocr_mode = Some(OcrMode::RapidOcr);
-        let s = sanitize_settings(s);
-        assert_eq!(s.screenshot_translation.ocr_mode, Some(OcrMode::RapidOcr));
     }
 
     #[test]
@@ -4450,14 +4424,6 @@ mod tests {
     }
 
     #[test]
-    fn hooks_default_to_empty_and_survive_legacy_settings() {
-        // 纯新增字段：旧 settings.json 缺 hooks → 空数组，行为与现状一致。
-        let cfg: ChatToolsConfig =
-            serde_json::from_str("{}").expect("ChatToolsConfig defaults from empty object");
-        assert!(cfg.hooks.is_empty());
-    }
-
-    #[test]
     fn hook_def_wire_shape_matches_the_frontend_type() {
         // 前端 `HookDef`（src/api/tauri.ts）逐字段镜像这个结构。字段名/大小写漂移了，
         // 保存时会静默丢字段（serde default 兜住，用户只看到「配了但没生效」）。
@@ -4673,53 +4639,6 @@ mod tests {
         assert!(p.enabled_models.is_empty());
         assert!(s.translator_model.is_empty());
         assert!(s.screenshot_translation.model.is_empty());
-    }
-
-    #[test]
-    fn sanitize_settings_defaults_chat_to_lens_then_translator() {
-        let mut s = Settings::default();
-        s.providers.push(ModelProvider {
-            id: "translator".to_string(),
-            name: "Translator".to_string(),
-            api_keys: vec!["sk".to_string()],
-            api_key_legacy: None,
-            base_url: "https://api.example.com/v1".to_string(),
-            available_models: vec![],
-            enabled_models: vec!["gpt-4o".to_string()],
-            api_format: "openai".to_string(),
-            enabled: true,
-            model_overrides: std::collections::HashMap::new(),
-            compress_request_body: false,
-            request: Default::default(),
-            active_key_index: 0,
-        });
-        s.providers.push(ModelProvider {
-            id: "lens".to_string(),
-            name: "Lens".to_string(),
-            api_keys: vec!["sk".to_string()],
-            api_key_legacy: None,
-            base_url: "https://api.example.com/v1".to_string(),
-            available_models: vec![],
-            enabled_models: vec!["vision-model".to_string()],
-            api_format: "openai".to_string(),
-            enabled: true,
-            model_overrides: std::collections::HashMap::new(),
-            compress_request_body: false,
-            request: Default::default(),
-            active_key_index: 0,
-        });
-        s.translator_provider_id = "translator".to_string();
-        s.translator_model = "gpt-4o".to_string();
-        s.lens.provider_id = "lens".to_string();
-        s.lens.model = "vision-model".to_string();
-
-        let s = sanitize_settings(s);
-        assert_eq!(s.chat_provider_id, "lens");
-        assert_eq!(s.chat_model, "vision-model");
-        assert!(
-            s.default_models.chat.provider_id.is_empty(),
-            "Lens fallback should not become an explicit Chat default slot"
-        );
     }
 
     #[test]

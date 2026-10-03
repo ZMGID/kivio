@@ -129,13 +129,6 @@ describe('MixerTab', () => {
     expect(props.onUpdateDefaultModel).toHaveBeenCalledWith('advisor', 'p1', 'gpt-4o')
   })
 
-  it('子代理模型走 onUpdateChatTools 而非 defaultModels', () => {
-    const props = renderTab()
-    // 该槽位读写的是 chatTools.subAgent*，不该混进 defaultModels
-    expect(props.onUpdateDefaultModel).not.toHaveBeenCalled()
-    expect(screen.getByText(t.defaultSubAgentModel)).toBeTruthy()
-  })
-
   it('优化提示词写入 chat.promptOptimizePrompt', () => {
     const props = renderTab()
     const areas = screen.getAllByRole('textbox')

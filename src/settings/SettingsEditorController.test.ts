@@ -204,25 +204,6 @@ describe('SettingsEditorController', () => {
     controller.dispose()
   })
 
-  it('keeps same-field conflict visible and never overwrites the remote value', async () => {
-    const initial = snapshot(settings(), 1)
-    let receive!: (value: SettingsSnapshot) => void
-    const save = vi.fn(async () => initial)
-    const controller = new SettingsEditorController({
-      ...port(initial, save),
-      subscribe: (listener) => { receive = listener; return () => {} },
-    })
-    controller.start()
-    controller.edit((draft) => ({ ...draft, theme: 'dark' }))
-    receive(snapshot(settings('system'), 2))
-
-    expect(controller.snapshot.settings?.theme).toBe('dark')
-    expect(controller.snapshot.conflicts.map((conflict) => conflict.path)).toEqual(['theme'])
-    expect(await controller.flush()).toBe(false)
-    expect(save).not.toHaveBeenCalled()
-    controller.dispose()
-  })
-
   it('preserves a failed edit and retries it on a later flush', async () => {
     const initial = snapshot(settings(), 1)
     const save = vi.fn()

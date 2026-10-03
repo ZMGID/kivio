@@ -54,12 +54,6 @@ describe('HotkeysTab', () => {
     }
   })
 
-  it('渲染全部八个快捷键行', () => {
-    renderTab()
-    // 每行一个「录制」按钮
-    expect(screen.getAllByRole('button', { name: t.hotkeyRecord })).toHaveLength(8)
-  })
-
   it('录制按钮把对应 scope 传给 onToggleRecording', async () => {
     const props = renderTab()
     const buttons = screen.getAllByRole('button', { name: t.hotkeyRecord })

@@ -1,5 +1,5 @@
 // Git 面板的纯逻辑（从 useGitReview 抽出以便单测）。
-import type { GitCommitItem, GitRepoState, GitStatusEntry } from '../../api/dockContracts'
+import type { GitRepoState, GitStatusEntry } from '../../api/dockContracts'
 
 /** refresh 的响应签名：签名相同则跳过 setState，避免 10s 轮询/事件刷新打出的恒等重渲。 */
 export function gitStatusSignature(state: GitRepoState | null): string {
@@ -48,15 +48,6 @@ export function partitionStatusEntries(entries: GitStatusEntry[]): PartitionedSt
     else unstaged.push(entry)
   }
   return { conflicted, staged, unstaged }
-}
-
-/** 历史分页追加：sha 去重，保持既有顺序。 */
-export function appendHistoryPage(existing: GitCommitItem[], page: GitCommitItem[]): GitCommitItem[] {
-  if (page.length === 0) return existing
-  const seen = new Set(existing.map((commit) => commit.sha))
-  const fresh = page.filter((commit) => !seen.has(commit.sha))
-  if (fresh.length === 0) return existing
-  return [...existing, ...fresh]
 }
 
 export type StatusLetter = 'M' | 'A' | 'D' | 'R' | 'C' | 'U'

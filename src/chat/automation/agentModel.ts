@@ -6,7 +6,6 @@ import type {
   AutomationNodeType,
   FlowEdge,
   FlowNode,
-  FlowNodeData,
 } from '../../api/automationContracts'
 
 export const AGENT_SLOTS: readonly AgentSlot[] = ['runtime', 'context', 'tool', 'skill']
@@ -105,19 +104,6 @@ export function withRuntimeKind(
   }
 }
 
-export function isAgentSlotFilled(slot: AgentSlot, agent: NormalizedAgent): boolean {
-  switch (slot) {
-    case 'runtime':
-      return agent.runtimeKind !== 'external' || Boolean(agent.externalAgentId)
-    case 'context':
-      return agent.prompt.trim().length > 0
-    case 'tool':
-      return agent.toolIds.length > 0
-    case 'skill':
-      return agent.skillIds.length > 0
-  }
-}
-
 export function isAgentSlotRequired(slot: AgentSlot): boolean {
   return slot === 'runtime' || slot === 'context'
 }
@@ -210,63 +196,6 @@ export function connectSlotEdge(source: string, target: string, slot: AgentSlot)
     sourceHandle: 'slot',
     targetHandle: slot,
   }
-}
-
-function mergeIds(into: string[], extra: string[]) {
-  for (const id of extra) {
-    if (!into.includes(id)) into.push(id)
-  }
-}
-
-/** Merge inline AgentData with whatever is plugged into the four bottom slots. */
-export function composeAgent(
-  agentId: string,
-  nodes: Array<{ id: string, type?: string, data: FlowNodeData }>,
-  edges: Array<{ source: string, target: string, targetHandle?: string | null }>,
-): NormalizedAgent {
-  const agentNode = nodes.find((node) => node.id === agentId)
-  const base = normalizeAgent(agentNode?.data.agent)
-  let runtime = base
-  let prompt = base.prompt
-  let sawTools = false
-  let sawSkills = false
-  const toolIds: string[] = []
-  const skillIds: string[] = []
-  const byId = new Map(nodes.map((node) => [node.id, node]))
-  for (const edge of edges) {
-    if (edge.target !== agentId || !isSlotEdge(edge)) continue
-    const src = byId.get(edge.source)
-    if (!src) continue
-    const part = normalizeAgent(src.data.disabled ? undefined : src.data.agent)
-    switch (edge.targetHandle) {
-      case 'runtime':
-        runtime = part
-        break
-      case 'context':
-        prompt = part.prompt
-        break
-      case 'tool':
-        sawTools = true
-        mergeIds(toolIds, part.toolIds)
-        break
-      case 'skill':
-        sawSkills = true
-        mergeIds(skillIds, part.skillIds)
-        break
-      default:
-        break
-    }
-  }
-  return withRuntimeKind({
-    prompt,
-    runtimeKind: runtime.runtimeKind,
-    externalAgentId: runtime.externalAgentId,
-    externalModel: runtime.externalModel,
-    providerId: runtime.providerId,
-    model: runtime.model,
-    toolIds: sawTools ? toolIds : base.toolIds,
-    skillIds: sawSkills ? skillIds : base.skillIds,
-  }, runtime.runtimeKind)
 }
 
 function hasInlineAgentConfig(agent: NormalizedAgent): boolean {

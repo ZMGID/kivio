@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import {
-  appendHistoryPage,
-  gitStatusSignature,
-  partitionStatusEntries,
-  statusLetter,
-} from './gitReviewModel'
-import type { GitCommitItem, GitRepoState, GitStatusEntry } from '../../api/dockContracts'
+import { gitStatusSignature, partitionStatusEntries, statusLetter } from './gitReviewModel'
+import type { GitRepoState, GitStatusEntry } from '../../api/dockContracts'
 
 function statusEntry(partial: Partial<GitStatusEntry> & { path: string }): GitStatusEntry {
   return {
@@ -17,17 +12,6 @@ function statusEntry(partial: Partial<GitStatusEntry> & { path: string }): GitSt
     conflicted: false,
     untracked: false,
     ...partial,
-  }
-}
-
-function commit(sha: string): GitCommitItem {
-  return {
-    sha,
-    shortSha: sha.slice(0, 7),
-    subject: `commit ${sha}`,
-    authorName: 'dev',
-    authorDate: '2026-07-27T00:00:00Z',
-    refs: [],
   }
 }
 
@@ -43,21 +27,6 @@ describe('partitionStatusEntries', () => {
     expect(conflicted.map((e) => e.path)).toEqual(['conflict.ts'])
     expect(staged.map((e) => e.path)).toEqual(['staged.ts'])
     expect(unstaged.map((e) => e.path)).toEqual(['dirty.ts', 'new.ts'])
-  })
-})
-
-describe('appendHistoryPage', () => {
-  it('appends fresh commits and dedups by sha', () => {
-    const existing = [commit('aaa'), commit('bbb')]
-    const page = [commit('bbb'), commit('ccc')]
-    const merged = appendHistoryPage(existing, page)
-    expect(merged.map((c) => c.sha)).toEqual(['aaa', 'bbb', 'ccc'])
-  })
-
-  it('returns the same reference when nothing new', () => {
-    const existing = [commit('aaa')]
-    expect(appendHistoryPage(existing, [commit('aaa')])).toBe(existing)
-    expect(appendHistoryPage(existing, [])).toBe(existing)
   })
 })
 

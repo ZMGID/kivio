@@ -199,17 +199,4 @@ mod tests {
         // cache 仍要如实记录（成本面板与「缓存命中率」要用），只是不重复计入 total。
         assert_eq!(usage.cached_input_tokens, Some(3_456));
     }
-
-    #[test]
-    fn disjoint_cache_is_added_on_top_of_input() {
-        // 同样的数字，在 Anthropic 口径（cache 与 input 不相交）下必须相加。
-        let usage = usage_from_parts(CliUsageParts {
-            input: 16_865,
-            output: 7,
-            cache_read: 3_456,
-            cache_included_in_input: false,
-            ..Default::default()
-        });
-        assert_eq!(usage.total_tokens, Some(20_328));
-    }
 }

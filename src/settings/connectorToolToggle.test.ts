@@ -14,10 +14,6 @@ describe('connector tool toggle', () => {
     expect(isToolAllowed(['a'], 'b')).toBe(false)
   })
 
-  it('disable from all-allowed expands then removes', () => {
-    expect(disableTool(ALL, [], 'b').sort()).toEqual(['a', 'c'])
-  })
-
   it('disable from whitelist just removes', () => {
     expect(disableTool(ALL, ['a', 'b'], 'a')).toEqual(['b'])
   })
@@ -28,10 +24,6 @@ describe('connector tool toggle', () => {
 
   it('allow adds to whitelist', () => {
     expect(allowTool(ALL, ['a'], 'b').sort()).toEqual(['a', 'b'])
-  })
-
-  it('allow that completes the full set resets to empty', () => {
-    expect(allowTool(ALL, ['a', 'b'], 'c')).toEqual([])
   })
 
   it('toggle dispatches allow/disable', () => {

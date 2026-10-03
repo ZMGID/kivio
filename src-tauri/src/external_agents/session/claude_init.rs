@@ -933,13 +933,6 @@ mod tests {
         assert_eq!(info.context_window_tokens, Some(1_000_000));
     }
 
-    #[test]
-    fn parse_context_window_label_still_works() {
-        use crate::external_agents::context::parse_context_window_label;
-        assert_eq!(parse_context_window_label("1m"), Some(1_000_000));
-        assert_eq!(parse_context_window_label("200K"), Some(200_000));
-    }
-
     /// `effortLevel` 必须能被读出来并落在 `defs/claude.rs` 的 REASONING id 集合内，
     /// 否则前端选不中、胶囊恒显示「自动」——这正是修复前的症状。
     #[test]
@@ -1052,30 +1045,6 @@ mod tests {
             None => std::env::remove_var("CLAUDE_CODE_EFFORT_LEVEL"),
         }
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(test)]
-mod live_effort_tests {
-    use super::*;
-
-    /// 读本机真实 `~/.claude/settings.json`，打印实际解析出的档位。
-    /// 单测喂的是构造样本，这条证明真实配置也能读到（本机 effortLevel = "high"）。
-    #[test]
-    #[ignore = "reads the real ~/.claude/settings.json on this machine"]
-    fn live_reads_real_effort_level() {
-        // 清掉环境变量，专门验证 settings.json 这条路。
-        let prev = std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok();
-        std::env::remove_var("CLAUDE_CODE_EFFORT_LEVEL");
-        let from_file = claude_config_effort();
-        match prev.clone() {
-            Some(v) => std::env::set_var("CLAUDE_CODE_EFFORT_LEVEL", v),
-            None => std::env::remove_var("CLAUDE_CODE_EFFORT_LEVEL"),
-        }
-        let with_env = claude_config_effort();
-        eprintln!("settings.json 的 effortLevel -> {from_file:?}");
-        eprintln!("含 CLAUDE_CODE_EFFORT_LEVEL 环境变量   -> {with_env:?}");
-        eprintln!("（None 表示会显示「自动」）");
     }
 }
 

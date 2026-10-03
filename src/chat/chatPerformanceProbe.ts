@@ -28,54 +28,6 @@ export type ChatPerfReport = {
   longTasks: Array<{ durationMs: number; startTime: number }>
 }
 
-export type ChatPerfReportSummary = {
-  maxMountedRows: number
-  maxDomNodes: number
-  maxSampleDurationMs: number
-  maxLongTaskMs: number
-  totalProfilerCommits: number
-  totalProfilerActualMs: number
-}
-
-export type ChatPerfReportBudget = {
-  maxMountedRows?: number
-  maxDomNodes?: number
-  maxSampleDurationMs?: number
-  maxLongTaskMs?: number
-}
-
-export function summarizeChatPerfReport(report: ChatPerfReport): ChatPerfReportSummary {
-  return {
-    maxMountedRows: report.samples.reduce((max, sample) => Math.max(max, sample.mountedRows), 0),
-    maxDomNodes: report.samples.reduce((max, sample) => Math.max(max, sample.domNodes), 0),
-    maxSampleDurationMs: report.samples.reduce((max, sample) => Math.max(max, sample.durationMs), 0),
-    maxLongTaskMs: report.longTasks.reduce((max, task) => Math.max(max, task.durationMs), 0),
-    totalProfilerCommits: report.buckets.reduce((sum, bucket) => sum + bucket.commits, 0),
-    totalProfilerActualMs: report.buckets.reduce((sum, bucket) => sum + bucket.actualMs, 0),
-  }
-}
-
-export function evaluateChatPerfReport(
-  report: ChatPerfReport,
-  budget: ChatPerfReportBudget,
-): string[] {
-  const summary = summarizeChatPerfReport(report)
-  const violations: string[] = []
-  if (budget.maxMountedRows !== undefined && summary.maxMountedRows > budget.maxMountedRows) {
-    violations.push(`mountedRows ${summary.maxMountedRows} > ${budget.maxMountedRows}`)
-  }
-  if (budget.maxDomNodes !== undefined && summary.maxDomNodes > budget.maxDomNodes) {
-    violations.push(`domNodes ${summary.maxDomNodes} > ${budget.maxDomNodes}`)
-  }
-  if (budget.maxSampleDurationMs !== undefined && summary.maxSampleDurationMs > budget.maxSampleDurationMs) {
-    violations.push(`sampleDurationMs ${summary.maxSampleDurationMs} > ${budget.maxSampleDurationMs}`)
-  }
-  if (budget.maxLongTaskMs !== undefined && summary.maxLongTaskMs > budget.maxLongTaskMs) {
-    violations.push(`longTaskMs ${summary.maxLongTaskMs} > ${budget.maxLongTaskMs}`)
-  }
-  return violations
-}
-
 const windowSamples: ChatPerfWindowSample[] = []
 const reportSamples: ChatPerfWindowSample[] = []
 const longTaskSamples: Array<{ durationMs: number; startTime: number }> = []

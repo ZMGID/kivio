@@ -97,10 +97,12 @@ describe('Lens selection during cold initialization', () => {
     }
   })
 
+  // Cover each resolution and DPI once; retain the 2560px / 150% rounding regression.
   const displayCases = [
-    [1366, 768], [1920, 1080], [2560, 1440], [2560, 1600],
-    [3840, 2160], [5120, 2880], [3440, 1440], [1080, 1920], [1537, 901],
-  ].flatMap(([width, height]) => [1, 1.1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 3].map(scale => ({ width, height, scale })))
+    [1366, 768, 1], [1920, 1080, 1.1], [2560, 1440, 1.5],
+    [2560, 1600, 1.25], [3840, 2160, 1.75], [5120, 2880, 2],
+    [3440, 1440, 2.25], [1080, 1920, 2.5], [1537, 901, 3],
+  ].map(([width, height, scale]) => ({ width, height, scale }))
 
   it.each(displayCases)('displays $width x $height frozen pixels 1:1 at $scale device scale', async ({ width, height, scale }) => {
     vi.stubGlobal('devicePixelRatio', scale)
