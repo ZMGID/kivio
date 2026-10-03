@@ -40,7 +40,7 @@ pub(crate) fn append_draft(
     let path = storage::draft_journal_path(app, conversation_id)?;
     // 图片外置与主文件写入(storage::write_conversation_file)同一套谓词/实现:
     // 草稿的两份转录里可能有模型看过的整图 base64,不外置的话每轮追加都整份复制。
-    if super::attachments::message_has_inline_image_to_externalize(&draft)
+    if super::attachments::message_has_inline_artifact_to_externalize(&draft)
         || super::attachments::message_has_model_message_image_to_externalize(&draft)
         || super::attachments::message_has_api_message_image_to_externalize(&draft)
     {

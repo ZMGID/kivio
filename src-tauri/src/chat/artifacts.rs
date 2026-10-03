@@ -424,7 +424,7 @@ fn register(
                 record.artifact.data_url =
                     super::attachments::make_thumbnail_data_url(&bytes).unwrap_or_default();
             }
-        } else if record.artifact.data_url.len() > 64 * 1024 {
+        } else {
             record.artifact.data_url.clear();
         }
         save(root, &record)?;
@@ -1085,10 +1085,23 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         let file = project.join("report.xlsx");
         fs::write(&file, b"workbook").unwrap();
-        let original = record("art_one", b"ignored");
+        let mut original = record("art_one", b"workbook");
+        original.artifact.name = "report.xlsx".into();
+        original.artifact.mime_type =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into();
+        original.artifact.data_url = format!(
+            "data:application/octet-stream;base64,{}",
+            STANDARD.encode(b"workbook")
+        );
         for _ in 0..3 {
             let saved = register(dir.path(), original.clone(), Some(&file), None).unwrap();
             assert_eq!(PathBuf::from(saved.artifact.path.as_ref().unwrap()), file);
+            assert!(saved.artifact.data_url.is_empty());
+            assert!(load(dir.path(), "art_one")
+                .unwrap()
+                .artifact
+                .data_url
+                .is_empty());
         }
         assert!(!dir.path().join("files").exists());
         assert_eq!(fs::read_dir(dir.path().join("records")).unwrap().count(), 1);

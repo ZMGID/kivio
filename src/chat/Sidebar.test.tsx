@@ -1,9 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSettingsCached } from '../api/settingsCache'
 import { chatApi } from './api'
-import { Sidebar } from './Sidebar'
+import { Sidebar, type SidebarProps } from './Sidebar'
 import type { ChatProject, Conversation, ConversationListItem } from './types'
 
 vi.mock('../api/settingsCache', () => ({
@@ -382,5 +383,96 @@ describe('Sidebar resize handle', () => {
       />,
     )
     expect(container.querySelector('.chat-sidebar-resize')).toBeNull()
+  })
+})
+
+
+describe('Sidebar refresh lifecycle', () => {
+  function setup() {
+    const reads = vi.spyOn(chatApi, 'getConversations').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getProjects').mockResolvedValue([project1, project2])
+    vi.spyOn(chatApi, 'getSets').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
+    const noop = () => {}
+    const props: SidebarProps = {
+      lang: 'zh', currentConversationId: undefined, selectedProject: null, selectedSet: null,
+      onSelectProject: noop, onSelectSet: noop, onSelectConversation: noop,
+      onNewConversation: noop, onOpenSettings: noop, onOpenExtensionsItem: noop,
+      onSelectLang: noop, onOpenUsage: noop, collapsed: false, onToggleCollapsed: noop,
+      refreshKey: 0, searchOpen: false, onSearchOpenChange: noop,
+    }
+    return { reads, props }
+  }
+
+  it('does not reload the catalog when navigation callbacks or the selected group change', async () => {
+    const { reads, props } = setup()
+    const view = render(<Sidebar {...props} />)
+    await act(async () => {})
+    view.rerender(<Sidebar {...props} selectedProject={project1} onSelectProject={() => {}} onSelectSet={() => {}} />)
+    await act(async () => {})
+    expect(reads).toHaveBeenCalledTimes(1)
+    view.rerender(<Sidebar {...props} refreshKey={1} />)
+    await act(async () => {})
+    expect(reads).toHaveBeenCalledTimes(2)
+  })
+
+  it('finishes initial loading after a StrictMode effect restart', async () => {
+    const { reads, props } = setup()
+    const latest = { ...conversation('latest', 'Latest conversation', project1), project_id: undefined, folder: undefined }
+    reads.mockResolvedValue([latest])
+    render(<StrictMode><Sidebar {...props} /></StrictMode>)
+    expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
+    expect(screen.queryByLabelText('加载中')).not.toBeInTheDocument()
+  })
+
+  it('coalesces refreshes during a slow read and publishes the final catalog', async () => {
+    const { reads, props } = setup()
+    let resolve!: (items: ConversationListItem[]) => void
+    reads.mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const latest = { ...conversation('latest', 'Latest conversation', project1), project_id: undefined, folder: undefined }
+    reads.mockResolvedValue([latest])
+    const onConversationsLoaded = vi.fn()
+    props.onConversationsLoaded = onConversationsLoaded
+    const view = render(<Sidebar {...props} />)
+    for (let refreshKey = 1; refreshKey <= 10; refreshKey++) {
+      view.rerender(<Sidebar {...props} refreshKey={refreshKey} />)
+    }
+    expect(reads).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve([]) })
+    expect(reads).toHaveBeenCalledTimes(2)
+    expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
+    // Only the fresh result may retire optimistic rows created during the read.
+    expect(onConversationsLoaded).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not navigate from a response after the sidebar has unmounted', async () => {
+    const { props } = setup()
+    let resolve!: (items: ChatProject[]) => void
+    vi.mocked(chatApi.getProjects).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const onSelectProject = vi.fn()
+    const view = render(<Sidebar {...props} selectedProject={project1} onSelectProject={onSelectProject} />)
+    await act(async () => {})
+    view.unmount()
+    await act(async () => { resolve([]) })
+    expect(onSelectProject).not.toHaveBeenCalled()
+  })
+
+  it('waits for the remaining reads after one fails, then recovers on a queued refresh', async () => {
+    const { reads, props } = setup()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(chatApi.getProjects).mockRejectedValueOnce(new Error('temporary failure'))
+    let finish!: () => void
+    vi.mocked(chatApi.getSets).mockImplementationOnce(() => new Promise(resolve => { finish = () => resolve([]) }))
+    const view = render(<Sidebar {...props} />)
+    await act(async () => {})
+    view.rerender(<Sidebar {...props} refreshKey={1} />)
+    await act(async () => {})
+    expect(reads).toHaveBeenCalledTimes(1)
+    const latest = { ...conversation('recovered', 'Recovered conversation', project1), project_id: undefined, folder: undefined }
+    reads.mockResolvedValue([latest])
+    await act(async () => finish())
+    expect(reads).toHaveBeenCalledTimes(2)
+    expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
   })
 })

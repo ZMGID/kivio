@@ -60,7 +60,7 @@ describe('GeneratedFileArtifacts compact chips', () => {
   })
 
   it('opens a file with a path via the generated-artifact command', () => {
-    render(<GeneratedFileArtifacts artifacts={[pdf]} />)
+    render(<GeneratedFileArtifacts artifacts={[{ ...pdf, data_url: '' }]} />)
     fireEvent.click(screen.getByRole('button', { name: '打开文件 简历.pdf' }))
     expect(invoke).toHaveBeenCalledWith('chat_open_generated_artifact', { path: '/tmp/简历.pdf' })
   })

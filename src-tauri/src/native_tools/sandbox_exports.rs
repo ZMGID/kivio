@@ -353,9 +353,8 @@ pub fn guess_mime_from_name(name: &str) -> String {
 }
 
 /// Build a [`ChatToolArtifact`] from a file already written to the
-/// ordinary conversation workbench. The `data_url` (read back) is only populated for files at
-/// or under the export size cap so previews/downloads of small files work; for
-/// larger files only `path`/`size_bytes` are set (the UI can still open it).
+/// ordinary conversation workbench. File cards contain references regardless of size;
+/// only bounded image previews need bytes. Opening/downloading uses the existing path.
 ///
 /// 图片是例外：**绝不整张内联**（Kivio 铁律「会话 JSON 不含 base64 整图」——这里生出的
 /// artifact 会原样进 ToolCallRecord 并随会话落盘，曾把 10 条消息的会话撑到 54MB）。
@@ -369,16 +368,9 @@ pub fn build_delivery_artifact_for_path(path: &Path) -> Result<ChatToolArtifact,
         .unwrap_or("output")
         .to_string();
     let mime_type = guess_mime_from_name(&name);
-    let data_url = if size_bytes <= MAX_EXPORT_FILE_BYTES {
+    let data_url = if mime_type.starts_with("image/") && size_bytes <= MAX_EXPORT_FILE_BYTES {
         let bytes = fs::read(path).map_err(|err| format!("Read delivery file failed: {err}"))?;
-        if mime_type.starts_with("image/") {
-            crate::chat::attachments::make_thumbnail_data_url(&bytes)
-        } else {
-            Some(format!(
-                "data:{mime_type};base64,{}",
-                general_purpose::STANDARD.encode(&bytes)
-            ))
-        }
+        crate::chat::attachments::make_thumbnail_data_url(&bytes)
     } else {
         None
     };
@@ -566,7 +558,7 @@ mod tests {
     }
 
     /// 图片成果卡绝不整张内联：data_url 只放缩略图，原图靠 path 懒加载。
-    /// （曾因整图内联把 10 条消息的会话 JSON 撑到 54MB。）非图片小文件维持整份内联。
+    /// （曾因整图内联把 10 条消息的会话 JSON 撑到 54MB。）非图片只保留文件引用。
     #[test]
     fn delivery_artifact_inlines_thumbnail_not_full_image() {
         let dir = temp_dir("delivery_artifact");
@@ -604,18 +596,21 @@ mod tests {
             png_bytes.len()
         );
 
-        // 非图片小文件保持整份内联（预览/下载依赖它）
-        let text_path = dir.join("report.txt");
-        fs::write(&text_path, b"hello kivio").expect("write txt");
-        let artifact = build_delivery_artifact_for_path(&text_path).expect("text artifact");
-        assert_eq!(artifact.mime_type, "text/plain");
-        assert_eq!(
-            artifact.data_url,
-            format!(
-                "data:text/plain;base64,{}",
-                general_purpose::STANDARD.encode(b"hello kivio")
-            )
-        );
+        // Every file size uses a readable path; the delivery record never carries its bytes.
+        for name in ["report.txt", "report.pdf", "movie.mp4", "archive.zip"] {
+            for size in [0, 11, 100_000] {
+                let path = dir.join(name);
+                let bytes = vec![42u8; size];
+                fs::write(&path, &bytes).unwrap();
+                let artifact = build_delivery_artifact_for_path(&path).unwrap();
+                assert!(
+                    artifact.data_url.is_empty(),
+                    "{name} ({size} bytes) was inlined"
+                );
+                assert_eq!(artifact.size_bytes, Some(size as u64));
+                assert_eq!(fs::read(artifact.path.unwrap()).unwrap(), bytes);
+            }
+        }
 
         let _ = fs::remove_dir_all(dir);
     }

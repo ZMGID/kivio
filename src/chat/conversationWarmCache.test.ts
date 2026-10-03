@@ -62,6 +62,24 @@ describe('conversation warm cache', () => {
     expect(cache.stats().entries).toBe(4)
   })
 
+  it('reuses a pending snapshot on a rapid return before idle serialization', async () => {
+    vi.useFakeTimers()
+    try {
+      const cache = createConversationWarmCache()
+      const first = conversation('a')
+      cache.rememberSoon(first)
+      expect(await cache.get('a', async () => 1)).toBe(first)
+      let resolve!: (revision: number) => void
+      const pending = cache.get('a', () => new Promise(done => { resolve = done }))
+      cache.rememberSoon(conversation('a', 2))
+      resolve(1)
+      expect(await pending).toBeNull()
+      cache.clear()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('defers serialization past navigation and cancels a deleted snapshot', () => {
     vi.useFakeTimers()
     try {

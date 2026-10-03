@@ -72,17 +72,24 @@ export function createConversationWarmCache(now = Date.now) {
     },
     async get(id: string, revision: (id: string) => Promise<number | null>): Promise<Conversation | null> {
       prune()
-      const entry = entries.get(id)
-      if (!entry) return null
+      // A rapid A → B → A return may precede the idle cache bookkeeping.
+      // Reuse that already-loaded window instead of loading the full history.
+      const conversation = pending.get(id)?.conversation ?? entries.get(id)?.conversation
+      if (!conversation) return null
       const currentRevision = await revision(id)
-      if (entries.get(id) !== entry) return null
-      if (currentRevision === null || currentRevision !== entry.conversation.revision) {
+      const current = pending.get(id)?.conversation ?? entries.get(id)?.conversation
+      if (current !== conversation) return null
+      if (currentRevision === null || currentRevision !== conversation.revision) {
+        cancelPending(id)
         remove(id)
         return null
       }
-      entries.delete(id)
-      entries.set(id, entry)
-      return entry.conversation
+      const entry = entries.get(id)
+      if (entry) {
+        entries.delete(id)
+        entries.set(id, entry)
+      }
+      return conversation
     },
     forget(id: string) { cancelPending(id); remove(id) },
     clear() {

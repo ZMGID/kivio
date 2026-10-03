@@ -722,7 +722,7 @@ export const Sidebar = memo(function Sidebar({
   const [expandedSetConversationIds, setExpandedSetConversationIds] = useState<Set<string>>(
     () => new Set(),
   )
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [sectionMenuAnchor, setSectionMenuAnchor] = useState<ConversationMenuAnchor | null>(null)
   const [projectMenuState, setProjectMenuState] = useState<{
     projectId: string
@@ -740,7 +740,6 @@ export const Sidebar = memo(function Sidebar({
   const [setDialogSaving, setSetDialogSaving] = useState(false)
   const [setDialogError, setSetDialogError] = useState('')
   const sectionMenuButtonRef = useRef<HTMLButtonElement>(null)
-  const sidebarLoadedRef = useRef(false)
   const [userProfile, setUserProfile] = useState(() => resolveChatUserProfile())
   useChatPerfRenderProbe('Sidebar', {
     collapsed,
@@ -761,55 +760,93 @@ export const Sidebar = memo(function Sidebar({
     }
   }, [profileRefreshKey])
 
-  const loadSidebarData = useCallback(async (options?: { silent?: boolean; projectOverride?: ChatProject | null; setOverride?: ChatSet | null }) => {
-    const projectForLoad = options?.projectOverride === undefined ? selectedProject : options.projectOverride
-    const setForLoad = options?.setOverride === undefined ? selectedSet : options.setOverride
-    const silent = options?.silent ?? false
-    if (!silent) setLoading(true)
-    try {
-      const conversationsPromise = chatApi.getConversations(0, 80)
-      const extrasPromise = Promise.all([
-        chatApi.getProjects(),
-        chatApi.getSets(),
-        chatApi.getAssistants(),
-        chatApi.getConversationPins(),
-      ])
-      const conversationData = await conversationsPromise
-      setConversations(conversationData)
-      // 真实列表已落地：通知父组件剪掉已被接管的乐观条目。必须在 setConversations 同一批
-      // 更新里发出，两个 state 才会在同一次 commit 中切换——行实例（key=id）无缝从乐观
-      // 条目换到真实条目，SwapTitle 不重挂。
-      onConversationsLoaded?.()
-      if (!silent) setLoading(false)
-
-      const [projectData, setData, assistantData, pinData] = await extrasPromise
-      setProjects(projectData)
-      setSets(setData)
-      setConversationPins(pinData)
-      setAssistants(assistantData)
-      if (projectForLoad && !projectData.some((project) => project.id === projectForLoad.id)) {
-        onSelectProject(null)
-      }
-      if (setForLoad && !setData.some((set) => set.id === setForLoad.id)) {
-        onSelectSet(null)
-      }
-    } catch (err) {
-      console.error('Failed to load chat sidebar data:', err)
-    } finally {
-      if (!silent) setLoading(false)
+  // Selection/callbacks are navigation state, not catalog invalidations. Read the
+  // latest committed props when a request finishes without restarting it.
+  const sidebarInputsRef = useRef({ selectedProject, selectedSet, onSelectProject, onSelectSet, onConversationsLoaded })
+  useLayoutEffect(() => {
+    sidebarInputsRef.current = { selectedProject, selectedSet, onSelectProject, onSelectSet, onConversationsLoaded }
+  })
+  type LoadOptions = { silent?: boolean }
+  const sidebarRequestRef = useRef<{ promise: Promise<void>; queued?: LoadOptions } | null>(null)
+  const sidebarMountedRef = useRef(false)
+  useEffect(() => {
+    sidebarMountedRef.current = true
+    return () => {
+      sidebarMountedRef.current = false
+      sidebarRequestRef.current = null
     }
-  }, [onConversationsLoaded, onSelectProject, onSelectSet, selectedProject, selectedSet])
+  }, [])
+
+  const loadSidebarData = useCallback((options: LoadOptions = {}): Promise<void> => {
+    if (!sidebarMountedRef.current) return Promise.resolve()
+    const pending = sidebarRequestRef.current
+    if (pending) {
+      // Mutations arriving during a read need one fresh snapshot afterwards,
+      // not an unbounded number of concurrent IPC requests.
+      pending.queued = options
+      return pending.promise
+    }
+    const request: { promise: Promise<void>; queued?: LoadOptions } = { promise: Promise.resolve() }
+    sidebarRequestRef.current = request
+    const isCurrent = () => sidebarRequestRef.current === request && sidebarMountedRef.current
+    request.promise = (async () => {
+      let next: LoadOptions | undefined = options
+      while (next && isCurrent()) {
+        const silent = next.silent ?? false
+        request.queued = undefined
+        if (!silent) setLoading(true)
+        try {
+          const results = await Promise.allSettled([
+            chatApi.getConversations(0, 80).then(conversationData => {
+              if (!isCurrent() || request.queued) return
+              setConversations(conversationData)
+              // Keep optimistic-row handoff in the same React batch.
+              sidebarInputsRef.current.onConversationsLoaded?.()
+              setLoading(false)
+            }),
+            Promise.allSettled([
+              chatApi.getProjects(), chatApi.getSets(),
+              chatApi.getAssistants(), chatApi.getConversationPins(),
+            ]).then(([projectResult, setResult, assistantResult, pinResult]) => {
+              if (!isCurrent() || request.queued) return
+              // A failed read must not release the batch while its siblings
+              // are still running, or retries can pile up behind them.
+              if (projectResult.status === 'rejected') throw projectResult.reason
+              if (setResult.status === 'rejected') throw setResult.reason
+              if (assistantResult.status === 'rejected') throw assistantResult.reason
+              if (pinResult.status === 'rejected') throw pinResult.reason
+              setProjects(projectResult.value)
+              setSets(setResult.value)
+              setConversationPins(pinResult.value)
+              setAssistants(assistantResult.value)
+              // A late response must never clear the group the user has since
+              // selected using a closure from a previous navigation.
+              const inputs = sidebarInputsRef.current
+              if (inputs.selectedProject && !projectResult.value.some(project => project.id === inputs.selectedProject?.id)) {
+                inputs.onSelectProject(null)
+              }
+              if (inputs.selectedSet && !setResult.value.some(set => set.id === inputs.selectedSet?.id)) {
+                inputs.onSelectSet(null)
+              }
+            }),
+          ])
+          for (const result of results) if (result.status === 'rejected') throw result.reason
+        } catch (err) {
+          console.error('Failed to load chat sidebar data:', err)
+        } finally {
+          if (isCurrent()) setLoading(false)
+        }
+        next = request.queued
+      }
+    })().finally(() => {
+      if (sidebarRequestRef.current === request) sidebarRequestRef.current = null
+    })
+    return request.promise
+  }, [])
 
   useEffect(() => {
-    // 侧栏数据与 selectedProject 无关（loadSidebarData 始终拉全部项目+对话，仅用 selectedProject
-    // 判断项目是否被删）。切项目时拉到的是相同数据，不该进 loading 态白闪一下；首次加载非静默
-    // 显 loading，之后（含跨项目切换）一律静默后台刷新，消除切换对话时的侧栏闪烁。
-    void loadSidebarData({ silent: sidebarLoadedRef.current })
-    sidebarLoadedRef.current = true
-  }, [loadSidebarData, selectedProject?.id])
-
-  useEffect(() => {
-    if (refreshKey === 0) return
+    // Initial state already shows the skeleton. Subsequent invalidations keep
+    // the current rows visible, including after a StrictMode effect restart.
     void loadSidebarData({ silent: true })
   }, [loadSidebarData, refreshKey])
 
@@ -1025,7 +1062,7 @@ export const Sidebar = memo(function Sidebar({
         ? await chatApi.updateSet(dialogSet.id, { name, systemPrompt, defaultAssistantId, color })
         : await chatApi.createSet(name, systemPrompt, defaultAssistantId, color)
       onSelectSet(set)
-      await loadSidebarData({ silent: true, setOverride: set })
+      await loadSidebarData({ silent: true })
       setDialogSet(undefined)
     } catch (err) {
       setSetDialogError(typeof err === 'string' ? err : (err as Error).message || t.chatSetSaveFailed)
@@ -1084,7 +1121,7 @@ export const Sidebar = memo(function Sidebar({
         ? await chatApi.updateProject(dialogProject.id, { name, rootPath })
         : await chatApi.createProject(name, null, null, rootPath)
       onSelectProject(project)
-      await loadSidebarData({ silent: true, projectOverride: project })
+      await loadSidebarData({ silent: true })
       setDialogProject(undefined)
     } catch (err) {
       setProjectError(typeof err === 'string' ? err : (err as Error).message || t.chatProjectSaveFailed)

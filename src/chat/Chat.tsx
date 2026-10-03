@@ -938,6 +938,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const sendDisabledReason = effectiveSkillRecommendedTools.length > 0 ? toolStatusHint : ''
 
+  const newConversationDefaultsRef = useRef({ activeProviderId, activeModel, activeAgentRuntime })
+  useLayoutEffect(() => {
+    newConversationDefaultsRef.current = { activeProviderId, activeModel, activeAgentRuntime }
+  }, [activeProviderId, activeModel, activeAgentRuntime])
+
   // Navigation owns the route/load/popout commit lease. The page supplies only
   // its display effects and the Tauri read adapter; no hook is wired back via ref.
   const navigation = useMemo(() => createChatNavigationController({
@@ -962,6 +967,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     showHistoryPage: applyConversation,
     isConversationInFlight: (conversationId) => executionOwner.snapshot(conversationId).inFlight,
     prepareNewConversation: () => {
+      const { activeProviderId, activeModel, activeAgentRuntime } = newConversationDefaultsRef.current
       setSelectedProject(null)
       setSelectedSet(null)
       setAssistantStreamStatsByMessageId({})
@@ -1043,7 +1049,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setStreamError(error.message)
     },
   }), [
-    activeAgentRuntime, activeModel, activeProviderId, applyConversation, clearDisplayedConversation,
+    applyConversation, clearDisplayedConversation,
     dropConversationLocally, executionOwner, occupyConversationInMain, popoutOwner,
     previewOwner, refreshSidebar, resetComposerDraftContext, resetContext, restoreStreamingPreview,
     setStreamErrorForConversation, warmConversationCache,

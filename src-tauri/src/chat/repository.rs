@@ -612,7 +612,7 @@ impl ConversationRepository {
         self.persist_locked(app, latest).await
     }
 
-    /// 打开会话：一次读盘。老会话 `model_messages` 里若还躺着图片 base64，顺手外置后写回
+    /// 打开会话：一次读盘。外置旧 artifact 二进制和转录里的图片，再持锁写回
     /// （新写入天然会外置，所以只覆盖「打开过但再也没发消息」的存量）。
     ///
     /// **不 bump `updated_at`**（同 `update_context`：迁移不是用户编辑，不该顶到最近）。
@@ -627,19 +627,34 @@ impl ConversationRepository {
         let _conversation = lock.lock().await;
         let app_for_read = app.clone();
         let id_owned = id.to_string();
-        let mut latest = Self::spawn_storage(
-            move || super::storage::load_conversation(&app_for_read, &id_owned),
-            "load conversation",
+        let (mut latest, changed) = Self::spawn_storage(
+            move || {
+                let mut conversation = super::storage::load_conversation(&app_for_read, &id_owned)?;
+                let mut changed = false;
+                for message in &mut conversation.messages {
+                    if super::attachments::message_has_inline_artifact_to_externalize(message)
+                        || super::attachments::message_has_model_message_image_to_externalize(
+                            message,
+                        )
+                        || super::attachments::message_has_api_message_image_to_externalize(message)
+                    {
+                        changed |= super::attachments::externalize_message_artifacts(
+                            &app_for_read,
+                            &id_owned,
+                            message,
+                        );
+                    }
+                }
+                Ok((conversation, changed))
+            },
+            "load and externalize conversation artifacts",
         )
         .await?;
-        if !latest.messages.iter().any(|message| {
-            super::attachments::message_has_model_message_image_to_externalize(message)
-                || super::attachments::message_has_api_message_image_to_externalize(message)
-        }) {
+        if !changed {
             return Ok(latest);
         }
         increment_revision(&mut latest)?;
-        // 真正的外置发生在 write_conversation_file 里（唯一的落盘出口）。
+        // Only a real migration changes revision; already-small previews keep warm-cache validity.
         self.persist_locked(app, latest).await
     }
 

@@ -122,7 +122,7 @@ pub(crate) fn write_conversation_file(
     // 一张图存几份就是几 MB × 每轮 fsync。中断草稿同时持有两份转录，所以两个都要扫。
     // 参数取 owned（调用方本来就持有所有权），省掉此前每次落盘的整会话 clone。
     if conversation.messages.iter().any(|message| {
-        crate::chat::attachments::message_has_inline_image_to_externalize(message)
+        crate::chat::attachments::message_has_inline_artifact_to_externalize(message)
             || crate::chat::attachments::message_has_model_message_image_to_externalize(message)
             || crate::chat::attachments::message_has_api_message_image_to_externalize(message)
     }) {

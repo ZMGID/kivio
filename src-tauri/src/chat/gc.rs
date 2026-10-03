@@ -231,7 +231,7 @@ fn dir_file_stats(dir: &Path) -> (usize, u64) {
 
 /// GC 自动生成的附件文件前缀。**只清这两类**：
 /// - `msgimg-` 模型看过的图（`attachments::externalize_model_message_images`）
-/// - `artifact-` 工具产出的图（`attachments::externalize_image_artifact`）
+/// - `artifact-` 工具产出的图（`attachments::externalize_artifact`）
 ///
 /// 用户上传的附件是 `att_<uuid>-<原名>`，**永不自动删**：即使当前没有任何消息引用它
 /// （用户删了那条消息），那也是用户自己拖进来的文件，删掉是数据丢失。
