@@ -405,37 +405,27 @@ impl OpenAiChatProvider<'_> {
         )
     }
 
-    /// 会话亲和头（对齐 opencode）：同一对话每轮带同一 id。会话亲和型代理据此把请求
-    /// 稳定路由到同一上游会话（不再靠前缀指纹猜，杜绝串台/复用脏会话）；正经 provider
-    /// 忽略未知头，无副作用。发送与请求调试记录共用 `session_header_pairs`，杜绝漂移。
-    /// 供应商「请求配置」里的 CLI 身份头与自定义头也在这里叠上（同名时自定义优先）。
+    /// 会话亲和头 + 供应商「请求配置」的 CLI 身份头 / 自定义头 + 缺省 UA / Accept，
+    /// 由 `provider_request::model_header_pairs` 统一装配（同名只留一条，自定义优先）。
     fn with_session_headers(
         &self,
         request: reqwest::RequestBuilder,
         metadata: &crate::chat::model::RequestMetadata,
     ) -> reqwest::RequestBuilder {
-        // 先把会话头与请求配置的头合成一份「同名只留一条」的清单再贴：reqwest 的
-        // `.header()` 是 append，分两轮贴会让用户自定义的 x-session-id 与我们自己的并存。
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        for (name, value) in session_header_pairs(metadata) {
-            crate::provider_request::upsert_pair(&mut pairs, name.to_string(), value);
-        }
-        for (name, value) in crate::provider_request::header_pairs(
+        let mut request = request;
+        for (name, value) in crate::provider_request::model_header_pairs(
             self.provider,
             metadata.conversation_id.as_deref(),
+            true,
         ) {
-            crate::provider_request::upsert_pair(&mut pairs, name, value);
-        }
-        let mut request = request;
-        for (name, value) in pairs {
             request = request.header(name, value);
         }
         request
     }
 
     /// 重建本次请求实际会带的 headers（脱敏后）供请求调试面板展示。静态头（Authorization/
-    /// Accept-Encoding/Content-Type）与发送路径一一对应；动态会话头共用 `session_header_pairs`，
-    /// 故与真实发送零漂移。Authorization 用首个 key（正常发送用的也是它）派生脱敏预览。
+    /// Accept-Encoding/Content-Type）与发送路径一一对应；其余头与发送路径共用
+    /// `model_header_pairs`，故与真实发送零漂移。Authorization 用首个 key 派生脱敏预览。
     fn debug_request_headers(
         &self,
         metadata: &crate::chat::model::RequestMetadata,
@@ -446,20 +436,11 @@ impl OpenAiChatProvider<'_> {
         }
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
         headers.insert("Content-Type".to_string(), "application/json".to_string());
-        // 先按大小写不敏感合成一份，再折进 BTreeMap。BTreeMap 的 key 是大小写敏感的：
-        // 用户把自定义头写成 `X-Session-Id`（不在保留名单里，允许覆盖）时，发送路径会
-        // upsert 成一条，直接往 map 里塞会显示成两条——正是本模块要杜绝的那种不一致。
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        for (name, value) in session_header_pairs(metadata) {
-            crate::provider_request::upsert_pair(&mut pairs, name.to_string(), value);
-        }
-        for (name, value) in crate::provider_request::header_pairs(
+        for (name, value) in crate::provider_request::model_header_pairs(
             self.provider,
             metadata.conversation_id.as_deref(),
+            true,
         ) {
-            crate::provider_request::upsert_pair(&mut pairs, name, value);
-        }
-        for (name, value) in pairs {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
@@ -769,24 +750,6 @@ fn request_label(request: &GenerateRequest, fallback: &str) -> String {
         .is_empty()
         .then(|| fallback.to_string())
         .unwrap_or_else(|| request.metadata.label.clone())
-}
-
-/// 会话亲和头键值对。发送路径（`with_session_headers`）与请求调试记录
-/// （`debug_request_headers`）共用此单一来源，保证记录的头与真实发送零漂移。
-fn session_header_pairs(
-    metadata: &crate::chat::model::RequestMetadata,
-) -> Vec<(&'static str, String)> {
-    match metadata
-        .conversation_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-    {
-        Some(id) => vec![
-            ("x-session-id", id.to_string()),
-            ("x-session-affinity", id.to_string()),
-        ],
-        None => Vec::new(),
-    }
 }
 
 fn invalid_response(label: &str, raw: &str) -> ModelError {

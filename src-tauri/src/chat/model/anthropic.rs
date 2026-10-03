@@ -19,6 +19,81 @@ use super::{
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// 1 小时缓存的 beta 开关；不带这个头时 `ttl: "1h"` 会被拒。
 const EXTENDED_CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
+/// Claude 4 手动预算思考（`type: enabled`）要在工具调用之间继续思考，必须声明这个 beta；
+/// adaptive 思考自带交错，不需要。
+const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+/// Claude Code 客户端身份 beta，真实 Claude Code 每个请求都带。
+const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
+/// Claude Code 2.x 内置工具名（规范大小写），对齐 pi 的 claudeCodeTools。
+/// Claude Code 身份下，与之同名（大小写不敏感）的工具改用这个写法发出去，回包再映射回原名。
+const CLAUDE_CODE_TOOL_NAMES: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Grep",
+    "Glob",
+    "AskUserQuestion",
+    "EnterPlanMode",
+    "ExitPlanMode",
+    "KillShell",
+    "NotebookEdit",
+    "Skill",
+    "Task",
+    "TaskOutput",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// Kivio 工具名 → Claude Code 规范写法；不命中就原样返回。
+fn to_claude_code_tool_name(name: &str) -> &str {
+    CLAUDE_CODE_TOOL_NAMES
+        .iter()
+        .find(|cc| cc.eq_ignore_ascii_case(name))
+        .copied()
+        .unwrap_or(name)
+}
+
+/// 模型回来的工具名 → 本次请求里 Kivio 声明的原名；本次没声明同名工具就原样返回。
+fn from_claude_code_tool_name(name: &str, tools: &[ModelTool]) -> String {
+    tools
+        .iter()
+        .map(ModelTool::openai_tool_name)
+        .find(|declared| declared.eq_ignore_ascii_case(name))
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// 改写最终请求体里的工具名：工具声明、历史 `tool_use`、`tool_choice`。
+/// 只改 Kivio 自己的工具 —— `type` 字段非 custom 的服务端工具（web_search 等）名字是协议约定，不能动。
+fn rename_tools_for_claude_code(body: &mut Value) {
+    let rename = |slot: Option<&mut Value>| {
+        if let Some(Value::String(name)) = slot {
+            *name = to_claude_code_tool_name(name).to_string();
+        }
+    };
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools.iter_mut().filter(|tool| tool.get("type").is_none()) {
+            rename(tool.get_mut("name"));
+        }
+    }
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in blocks
+                .iter_mut()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            {
+                rename(block.get_mut("name"));
+            }
+        }
+    }
+    if body["tool_choice"]["type"] == "tool" {
+        rename(body.get_mut("tool_choice").and_then(|c| c.get_mut("name")));
+    }
+}
 
 /// 一次请求的 prompt 缓存设置。
 struct PromptCache {
@@ -48,7 +123,7 @@ fn apply_prompt_cache_breakpoints(body: &mut Value, cache_control: &Value) {
         }
     }
 
-    // system 平时是裸字符串，缓存要求块结构 —— 只在开缓存时改形状，关缓存的请求体保持原样。
+    // system 由 request_body 写成块数组；provider_options 覆盖成裸字符串时这里补成块结构。
     if let Some(system) = body.get("system").and_then(Value::as_str) {
         body["system"] = serde_json::json!([{
             "type": "text",
@@ -144,7 +219,7 @@ impl AnthropicMessagesProvider<'_> {
                             .post(self.messages_url())
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
-                        &request.metadata,
+                        &request,
                     ),
                     &body,
                     self.provider.compress_request_body,
@@ -189,7 +264,10 @@ impl AnthropicMessagesProvider<'_> {
             );
             ModelError::new(message)
         })?;
-        let output = output_from_anthropic_message(&value, &label)?;
+        let mut output = output_from_anthropic_message(&value, &label)?;
+        for call in &mut output.tool_calls {
+            call.function_name = self.declared_tool_name(&call.function_name, &request);
+        }
         self.record_usage_success(
             &request,
             &label,
@@ -235,7 +313,7 @@ impl AnthropicMessagesProvider<'_> {
                             .post(self.messages_url())
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
-                        &request.metadata,
+                        &request,
                     ),
                     &body,
                     self.provider.compress_request_body,
@@ -300,6 +378,7 @@ impl AnthropicMessagesProvider<'_> {
                         sink.emit(StreamPart::ReasoningDelta { delta: thinking })?;
                     }
                     Some(AnthropicSseEvent::ToolUseStart { id, name }) => {
+                        let name = self.declared_tool_name(&name, &request);
                         sink.emit(StreamPart::ToolCallStart {
                             id: id.clone(),
                             name: name.clone(),
@@ -440,9 +519,21 @@ impl AnthropicMessagesProvider<'_> {
                 body["temperature"] = serde_json::json!(temperature);
             }
         }
-        if !request.system.trim().is_empty() {
-            body["system"] = Value::String(request.system.clone());
+        // 统一用块数组（官方 SDK 与 Claude Code 的写法）；Claude Code 身份下第一块是它的固定开场。
+        let mut system = Vec::new();
+        if crate::provider_request::is_claude_code_identity(self.provider) {
+            system.push(serde_json::json!({
+                "type": "text",
+                "text": crate::provider_request::CLAUDE_CODE_SYSTEM_PREFIX,
+            }));
         }
+        if !request.system.trim().is_empty() {
+            system.push(serde_json::json!({ "type": "text", "text": request.system }));
+        }
+        if !system.is_empty() {
+            body["system"] = Value::Array(system);
+        }
+        body["metadata"] = serde_json::json!({ "user_id": self.user_id(&request.metadata) });
         if stream {
             body["stream"] = Value::Bool(true);
         }
@@ -469,6 +560,9 @@ impl AnthropicMessagesProvider<'_> {
             for (key, value) in overrides {
                 body[key] = value.clone();
             }
+        }
+        if crate::provider_request::is_claude_code_identity(self.provider) {
+            rename_tools_for_claude_code(&mut body);
         }
         // prompt caching 放在最后：断点必须打在最终 body 上，否则 provider_options
         // 覆盖掉 system/tools 时断点就落在被丢弃的旧内容上了。
@@ -503,39 +597,89 @@ impl AnthropicMessagesProvider<'_> {
         Some(PromptCache { long_ttl })
     }
 
-    /// 供应商「请求配置」带来的附加头（CLI 身份 / 自定义头）+ prompt 缓存的 beta 头。
-    /// 发送路径与请求调试面板共用，杜绝「面板显示的和实际发的不一致」。
-    fn extra_header_pairs(
-        &self,
-        metadata: &crate::chat::model::RequestMetadata,
-    ) -> Vec<(String, String)> {
-        let mut pairs = crate::provider_request::header_pairs(
-            self.provider,
-            metadata.conversation_id.as_deref(),
-        );
-        // 1 小时缓存是 beta 能力，必须显式声明才生效。anthropic-beta 不是保留头（用户可能
-        // 要开别的 beta），所以这里得跟用户填的那条合并成一行 —— 发两行的话调试面板（BTreeMap）
-        // 只显示一条，就和实际发出去的对不上了。
+    /// `metadata.user_id`：Claude Code 身份下是它自己的 JSON 形状（设备 + 会话），
+    /// 否则是本机稳定的匿名设备 id —— 官方建议的「不透明的终端用户标识」。
+    fn user_id(&self, metadata: &crate::chat::model::RequestMetadata) -> String {
+        let device_id = crate::provider_request::device_id();
+        if !crate::provider_request::is_claude_code_identity(self.provider) {
+            return device_id.to_string();
+        }
+        serde_json::json!({
+            "device_id": device_id,
+            "session_id": crate::provider_request::session_uuid(
+                metadata.conversation_id.as_deref()
+            ),
+        })
+        .to_string()
+    }
+
+    /// 回包里的工具名映射回本次请求声明的原名（只有 Claude Code 身份会改写工具名）。
+    fn declared_tool_name(&self, name: &str, request: &GenerateRequest) -> String {
+        if crate::provider_request::is_claude_code_identity(self.provider) {
+            from_claude_code_tool_name(name, &request.tools)
+        } else {
+            name.to_string()
+        }
+    }
+
+    /// 本次请求按功能需要声明的 beta。
+    fn feature_betas(&self, request: &GenerateRequest) -> Vec<&'static str> {
+        let mut betas = Vec::new();
+        let claude_code = crate::provider_request::is_claude_code_identity(self.provider);
+        if claude_code {
+            betas.push(CLAUDE_CODE_BETA);
+        }
+        // 和 request_body 共用同一条思考规则：实际发了 `type: enabled` 才需要交错思考 beta。
+        let mut thinking = serde_json::json!({});
+        let profile = crate::chat::model_metadata::claude_thinking_profile(&request.model);
+        apply_anthropic_thinking(&mut thinking, request, profile);
+        if claude_code || thinking["thinking"]["type"] == "enabled" {
+            betas.push(INTERLEAVED_THINKING_BETA);
+        }
+        // 1 小时缓存是 beta 能力，必须显式声明才生效。
         if self
-            .prompt_cache_control(metadata)
+            .prompt_cache_control(&request.metadata)
             .is_some_and(|c| c.long_ttl)
         {
-            let existing = pairs
+            betas.push(EXTENDED_CACHE_TTL_BETA);
+        }
+        betas
+    }
+
+    /// 供应商「请求配置」带来的附加头（CLI 身份 / 自定义头）+ 按功能声明的 beta 头。
+    /// 发送路径与请求调试面板共用，杜绝「面板显示的和实际发的不一致」。
+    fn extra_header_pairs(&self, request: &GenerateRequest) -> Vec<(String, String)> {
+        // Anthropic 不发会话亲和头：官方与主流中转都不认，身份模式下有 X-Claude-Code-Session-Id。
+        let mut pairs = crate::provider_request::model_header_pairs(
+            self.provider,
+            request.metadata.conversation_id.as_deref(),
+            false,
+        );
+        // anthropic-beta 不是保留头（用户可能要开别的 beta），所以这里得跟用户填的那条合并成
+        // 一行、去重 —— 发两行的话调试面板（BTreeMap）只显示一条，就和实际发出去的对不上了。
+        let betas = self.feature_betas(request);
+        if !betas.is_empty() {
+            let mut merged: Vec<String> = pairs
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
-                .map(|(_, value)| value.clone());
-            let merged = match existing {
-                Some(value)
-                    if value
-                        .split(',')
-                        .any(|v| v.trim() == EXTENDED_CACHE_TTL_BETA) =>
-                {
+                .map(|(_, value)| {
                     value
+                        .split(',')
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for beta in betas {
+                if !merged.iter().any(|v| v == beta) {
+                    merged.push(beta.to_string());
                 }
-                Some(value) => format!("{value}, {EXTENDED_CACHE_TTL_BETA}"),
-                None => EXTENDED_CACHE_TTL_BETA.to_string(),
-            };
-            crate::provider_request::upsert_pair(&mut pairs, "anthropic-beta".to_string(), merged);
+            }
+            crate::provider_request::upsert_pair(
+                &mut pairs,
+                "anthropic-beta".to_string(),
+                merged.join(","),
+            );
         }
         pairs
     }
@@ -543,14 +687,14 @@ impl AnthropicMessagesProvider<'_> {
     /// 把 `extra_header_pairs` 贴到请求上。
     fn with_extra_headers(
         &self,
-        request: reqwest::RequestBuilder,
-        metadata: &crate::chat::model::RequestMetadata,
+        builder: reqwest::RequestBuilder,
+        request: &GenerateRequest,
     ) -> reqwest::RequestBuilder {
-        let mut request = request;
-        for (name, value) in self.extra_header_pairs(metadata) {
-            request = request.header(name, value);
+        let mut builder = builder;
+        for (name, value) in self.extra_header_pairs(request) {
+            builder = builder.header(name, value);
         }
-        request
+        builder
     }
 
     /// 重建本次请求实际会带的 headers（脱敏后）供请求调试面板展示。镜像 `anthropic_headers`
@@ -558,7 +702,7 @@ impl AnthropicMessagesProvider<'_> {
     /// 与 `extra_header_pairs`。x-api-key 用首个 key（正常发送用的也是它）派生脱敏预览。
     fn debug_request_headers(
         &self,
-        metadata: &crate::chat::model::RequestMetadata,
+        request: &GenerateRequest,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
         if let Some(key) = self.provider.preferred_api_key() {
@@ -570,7 +714,7 @@ impl AnthropicMessagesProvider<'_> {
         );
         headers.insert("content-type".to_string(), "application/json".to_string());
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
-        for (name, value) in self.extra_header_pairs(metadata) {
+        for (name, value) in self.extra_header_pairs(request) {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
@@ -598,7 +742,7 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(&request.metadata),
+                headers: self.debug_request_headers(request),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
@@ -632,7 +776,7 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(&request.metadata),
+                headers: self.debug_request_headers(request),
                 body: self.request_body(request, stream),
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(
@@ -2045,8 +2189,11 @@ mod tests {
         let provider = cache_test_provider(false, "short");
         let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
         let body = adapter.request_body(&cache_test_request(), false);
-        // 关缓存时 system 仍是裸字符串、没有任何 cache_control —— 与加这个功能之前逐字节一致。
-        assert_eq!(body["system"], serde_json::json!("you are kivio"));
+        // 关缓存时 system 仍是块数组，但没有任何 cache_control。
+        assert_eq!(
+            body["system"],
+            serde_json::json!([{ "type": "text", "text": "you are kivio" }])
+        );
         assert!(!body.to_string().contains("cache_control"), "body: {body}");
     }
 
@@ -2092,10 +2239,7 @@ mod tests {
         let body = adapter.request_body(&cache_test_request(), false);
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
         // 1h 不带 beta 头会被拒，所以头和 ttl 必须同进同出。
-        let in_session = crate::chat::model::RequestMetadata {
-            conversation_id: Some("conv_abc".into()),
-            ..Default::default()
-        };
+        let in_session = cache_test_request();
         let headers = adapter.debug_request_headers(&in_session);
         assert_eq!(
             headers.get("anthropic-beta").map(String::as_str),
@@ -2110,7 +2254,10 @@ mod tests {
             .is_none());
         // 一次性调用（无会话 id）连断点都不打，自然也不该带 beta 头。
         assert!(adapter
-            .debug_request_headers(&Default::default())
+            .debug_request_headers(&GenerateRequest {
+                metadata: Default::default(),
+                ..cache_test_request()
+            })
             .get("anthropic-beta")
             .is_none());
     }
@@ -2127,10 +2274,7 @@ mod tests {
         let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
         let body = adapter.request_body(&cache_test_request(), false);
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
-        let in_session = crate::chat::model::RequestMetadata {
-            conversation_id: Some("conv_abc".into()),
-            ..Default::default()
-        };
+        let in_session = cache_test_request();
         assert_eq!(
             adapter
                 .debug_request_headers(&in_session)
@@ -2153,7 +2297,10 @@ mod tests {
         let mut request = cache_test_request();
         request.metadata.conversation_id = None;
         let body = adapter.request_body(&request, false);
-        assert_eq!(body["system"], serde_json::json!("you are kivio"));
+        assert_eq!(
+            body["system"],
+            serde_json::json!([{ "type": "text", "text": "you are kivio" }])
+        );
         assert!(!body.to_string().contains("cache_control"), "body: {body}");
         // 空串也算没有会话。
         request.metadata.conversation_id = Some(String::new());
@@ -2244,6 +2391,159 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    fn identity_adapter_request(
+        cli_identity: &str,
+    ) -> (Value, std::collections::BTreeMap<String, String>) {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = cache_test_provider(false, "short");
+        provider.request.cli_identity = cli_identity.to_string();
+        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let request = cache_test_request();
+        (
+            adapter.request_body(&request, false),
+            adapter.debug_request_headers(&request),
+        )
+    }
+
+    #[test]
+    fn plain_request_is_honest_and_stable() {
+        let (body, headers) = identity_adapter_request("");
+        // 不伪装：不带 Claude Code 开场、不带 claude-code beta，UA 如实报 Kivio。
+        assert_eq!(body["system"].as_array().map(Vec::len), Some(1));
+        assert!(!body.to_string().contains("Claude Code"), "body: {body}");
+        assert!(headers["User-Agent"].starts_with("Kivio/"));
+        assert!(headers.get("anthropic-beta").is_none());
+        // user_id 是稳定的匿名设备 id，两次请求一致。
+        let user_id = body["metadata"]["user_id"].as_str().expect("user_id");
+        assert_eq!(user_id, crate::provider_request::device_id());
+        assert_eq!(identity_adapter_request("").0["metadata"], body["metadata"]);
+    }
+
+    #[test]
+    fn claude_code_identity_aligns_body_with_headers() {
+        let (body, headers) = identity_adapter_request("claude_code");
+        let system = body["system"].as_array().expect("system blocks");
+        assert_eq!(
+            system[0]["text"],
+            crate::provider_request::CLAUDE_CODE_SYSTEM_PREFIX
+        );
+        assert_eq!(system[1]["text"], "you are kivio");
+        let user_id: Value =
+            serde_json::from_str(body["metadata"]["user_id"].as_str().expect("user_id"))
+                .expect("json user_id");
+        assert_eq!(user_id["device_id"], crate::provider_request::device_id());
+        // 会话 id 与头里的 X-Claude-Code-Session-Id 是同一个。
+        assert_eq!(user_id["session_id"], headers["X-Claude-Code-Session-Id"]);
+        let betas = &headers["anthropic-beta"];
+        assert!(betas.contains(CLAUDE_CODE_BETA), "{betas}");
+        assert!(betas.contains(INTERLEAVED_THINKING_BETA), "{betas}");
+        assert!(headers["User-Agent"].starts_with("claude-cli/"));
+    }
+
+    #[test]
+    fn claude_code_identity_renames_tools_and_maps_them_back() {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = cache_test_provider(false, "short");
+        provider.request.cli_identity = "claude_code".into();
+        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let mut request = cache_test_request();
+        request.tools.push(cache_test_tool("todo_write"));
+        request.options.builtin_web_search = true;
+        request.messages.push(ModelMessage {
+            role: ModelRole::Assistant,
+            content: vec![MessagePart::ToolCall {
+                id: "toolu_1".into(),
+                name: "read".into(),
+                arguments: serde_json::json!({}),
+                arguments_raw: "{}".into(),
+                signature: None,
+            }],
+        });
+        let body = adapter.request_body(&request, false);
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        // read/write 命中 Claude Code 内置名；todo_write 对不上（下划线）原样；服务端 web_search 不动。
+        assert_eq!(names, ["Read", "Write", "todo_write", "web_search"]);
+        assert!(body.to_string().contains(r#""name":"Read""#));
+        assert!(!body.to_string().contains(r#""name":"read""#), "{body}");
+        // 回包映射回本次声明的原名；未声明的名字原样。
+        assert_eq!(adapter.declared_tool_name("Read", &request), "read");
+        assert_eq!(adapter.declared_tool_name("Bash", &request), "Bash");
+
+        // 不选身份时完全不改写。
+        let plain_provider = cache_test_provider(false, "short");
+        let plain = AnthropicMessagesProvider::new(&state, &plain_provider, 1);
+        assert_eq!(
+            plain.request_body(&request, false)["tools"][0]["name"],
+            "read"
+        );
+        assert_eq!(plain.declared_tool_name("Read", &request), "Read");
+    }
+
+    #[test]
+    fn accept_header_defaults_but_user_value_wins() {
+        let (_, headers) = identity_adapter_request("");
+        assert_eq!(headers["Accept"], "application/json");
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = cache_test_provider(false, "short");
+        provider.request.custom_headers = vec![crate::settings::ProviderCustomHeader {
+            key: "accept".into(),
+            value: "text/event-stream".into(),
+        }];
+        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let pairs = adapter.extra_header_pairs(&cache_test_request());
+        let accepts: Vec<_> = pairs
+            .iter()
+            .filter(|(n, _)| n.eq_ignore_ascii_case("accept"))
+            .collect();
+        assert_eq!(accepts.len(), 1);
+        assert_eq!(accepts[0].1, "text/event-stream");
+    }
+
+    #[test]
+    fn manual_thinking_declares_interleaved_beta_and_merges_user_betas() {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = cache_test_provider(true, "long");
+        provider.request.custom_headers = vec![crate::settings::ProviderCustomHeader {
+            key: "anthropic-beta".into(),
+            value: "foo-1, extended-cache-ttl-2025-04-11".into(),
+        }];
+        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let mut request = cache_test_request();
+        request.model = "claude-sonnet-4-5".into();
+        request.options.thinking_enabled = true;
+        request.options.thinking_level = Some("high".into());
+        assert_eq!(
+            adapter.request_body(&request, false)["thinking"]["type"],
+            "enabled"
+        );
+        // 用户的 beta 在前、去重后合并成一行。
+        assert_eq!(
+            adapter.debug_request_headers(&request)["anthropic-beta"],
+            format!("foo-1,{EXTENDED_CACHE_TTL_BETA},{INTERLEAVED_THINKING_BETA}")
+        );
+        // adaptive 思考自带交错，不加这个 beta。
+        request.model = "claude-opus-4-8".into();
+        assert!(!adapter.debug_request_headers(&request)["anthropic-beta"]
+            .contains(INTERLEAVED_THINKING_BETA));
     }
 
     #[test]

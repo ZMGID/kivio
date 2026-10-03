@@ -34,6 +34,24 @@ use super::{
 /// 「关闭思考」不经这里：`resolve_thinking` 把 UI `off` 变成 `(enabled=false, level=None)`，
 /// 适配器在 `!thinking_enabled` 分支直接发 `reasoning.effort: "none"`。本函数只映射
 /// 真正的等级字符串（`low/medium/high/xhigh/max`，以及偶发透传的 `minimal`/`none`）。
+/// Codex CLI 身份下，请求体补齐成真实 Codex 的形状：它无条件发
+/// `include: [reasoning.encrypted_content]`、`parallel_tool_calls`，`prompt_cache_key` 是会话
+/// UUID 且与头里的 `session_id` 相同。只换 UA 不换体，网关一眼就能看出是伪装。
+/// 不改 `reasoning`（档位由用户选）、不编造会话（一次性调用没有缓存键）。
+fn apply_codex_cli_body(body: &mut Value, request: &GenerateRequest) {
+    if body.get("include").is_none() {
+        body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
+    }
+    if body.get("tools").is_some() {
+        body["parallel_tool_calls"] = Value::Bool(true);
+    }
+    if body.get("prompt_cache_key").is_some() {
+        body["prompt_cache_key"] = Value::String(crate::provider_request::session_uuid(
+            request.metadata.conversation_id.as_deref(),
+        ));
+    }
+}
+
 fn xai_reasoning_effort(effort: &str) -> Option<&'static str> {
     match effort.trim().to_ascii_lowercase().as_str() {
         "none" | "off" => Some("none"),
@@ -160,19 +178,17 @@ impl OpenAiResponsesProvider<'_> {
             &self.provider.id,
             &self.provider.api_keys,
             |key| {
-                let req = crate::api::attach_json_body(
-                    crate::provider_request::apply(
-                        self.state
-                            .client_for(self.provider)
-                            .post(self.responses_url())
-                            .bearer_auth(key)
-                            .header(ACCEPT_ENCODING, "identity"),
-                        self.provider,
-                        request.metadata.conversation_id.as_deref(),
-                    ),
-                    body,
-                    self.provider.compress_request_body,
-                );
+                let mut req = self
+                    .state
+                    .client_for(self.provider)
+                    .post(self.responses_url())
+                    .bearer_auth(key)
+                    .header(ACCEPT_ENCODING, "identity");
+                for (name, value) in self.extra_header_pairs(&request.metadata) {
+                    req = req.header(name, value);
+                }
+                let req =
+                    crate::api::attach_json_body(req, body, self.provider.compress_request_body);
                 let req = if stream {
                     req
                 } else {
@@ -593,6 +609,12 @@ impl OpenAiResponsesProvider<'_> {
                 }
             }
         }
+        // 无状态：我们每轮都自带完整 input、从不用 previous_response_id，服务端存的副本没人用
+        // （`store` 默认 true）。pi 与 Codex 官方都无条件发 false，这里不再只在思考分支里发。
+        body["store"] = Value::Bool(false);
+        if crate::provider_request::is_codex_identity(self.provider) && !is_xai {
+            apply_codex_cli_body(&mut body, request);
+        }
         if let Some(overrides) = request.options.provider_options.as_object() {
             for (key, value) in overrides {
                 body[key] = value.clone();
@@ -605,7 +627,7 @@ impl OpenAiResponsesProvider<'_> {
     }
 
     /// 重建本次请求实际会带的 headers（脱敏后）供请求调试面板展示。镜像发送路径：
-    /// bearer_auth(key) + Accept-Encoding identity + JSON content-type。
+    /// bearer_auth(key) + Accept-Encoding identity + JSON content-type + `extra_header_pairs`。
     /// Authorization 用首个 key（正常发送用的也是它）派生脱敏预览。
     fn debug_request_headers(
         &self,
@@ -617,13 +639,23 @@ impl OpenAiResponsesProvider<'_> {
         }
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
         headers.insert("Content-Type".to_string(), "application/json".to_string());
-        for (name, value) in crate::provider_request::header_pairs(
-            self.provider,
-            metadata.conversation_id.as_deref(),
-        ) {
+        for (name, value) in self.extra_header_pairs(metadata) {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
+    }
+
+    /// 发送路径与请求调试面板共用的附加头：会话亲和头（与 Chat Completions 一致）+
+    /// CLI 身份 / 自定义 / OAuth 头 + 缺省 UA / Accept。
+    fn extra_header_pairs(
+        &self,
+        metadata: &crate::chat::model::RequestMetadata,
+    ) -> Vec<(String, String)> {
+        crate::provider_request::model_header_pairs(
+            self.provider,
+            metadata.conversation_id.as_deref(),
+            true,
+        )
     }
 
     /// 记录一次成功调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -1966,6 +1998,94 @@ mod tests {
         assert_eq!(body["prompt_cache_key"], "conv_abc");
         assert!(body.get("prompt_cache_retention").is_none());
         assert_eq!(body["input"][0]["role"], "user");
+    }
+
+    fn codex_identity_case(
+        cli_identity: &str,
+        thinking: bool,
+    ) -> (Value, std::collections::BTreeMap<String, String>) {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = ModelProvider {
+            id: "test".into(),
+            name: "Relay".into(),
+            api_keys: vec!["sk-test".into()],
+            api_key_legacy: None,
+            base_url: "https://relay.example/v1".into(),
+            available_models: vec!["gpt-5.5".into()],
+            enabled_models: vec!["gpt-5.5".into()],
+            enabled: true,
+            api_format: "openai_responses".into(),
+            model_overrides: Default::default(),
+            compress_request_body: false,
+            request: Default::default(),
+            active_key_index: 0,
+        };
+        provider.request.cli_identity = cli_identity.into();
+        provider.request.prompt_caching = Some(true);
+        let request = GenerateRequest {
+            model: "gpt-5.5".into(),
+            system: "sys".into(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: vec![MessagePart::Text { text: "hi".into() }],
+            }],
+            tools: vec![crate::chat::model::ModelTool {
+                id: "read".into(),
+                name: "read".into(),
+                description: "read".into(),
+                source: "native".into(),
+                server_id: None,
+                server_name: None,
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                sensitive: false,
+            }],
+            options: GenerateOptions {
+                thinking_enabled: thinking,
+                ..Default::default()
+            },
+            metadata: crate::chat::model::RequestMetadata {
+                conversation_id: Some("conv_abc".into()),
+                ..Default::default()
+            },
+        };
+        let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
+        (
+            adapter.request_body(&request, false),
+            adapter.debug_request_headers(&request.metadata),
+        )
+    }
+
+    #[test]
+    fn plain_responses_sends_store_false_and_session_headers() {
+        // 关思考的普通调用也要无状态，不再只在思考分支里发。
+        let (body, headers) = codex_identity_case("", false);
+        assert_eq!(body["store"], false, "{body}");
+        assert!(body.get("parallel_tool_calls").is_none());
+        assert_eq!(body["prompt_cache_key"], "conv_abc");
+        assert_eq!(headers["x-session-id"], "conv_abc");
+        assert!(headers["User-Agent"].starts_with("Kivio/"));
+        assert_eq!(headers["Accept"], "application/json");
+    }
+
+    #[test]
+    fn codex_identity_aligns_responses_body_with_headers() {
+        let (body, headers) = codex_identity_case("codex", false);
+        let session = crate::provider_request::session_uuid(Some("conv_abc"));
+        // prompt_cache_key 与头里的 session_id 同值，且是 UUID。
+        assert_eq!(body["prompt_cache_key"], session.as_str());
+        assert_eq!(headers["session_id"], session);
+        assert_eq!(headers["originator"], "codex_cli_rs");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["parallel_tool_calls"], true);
+        assert_eq!(
+            body["include"],
+            serde_json::json!(["reasoning.encrypted_content"])
+        );
+        // 不擅自改用户选的思考档位。
+        assert_eq!(body["reasoning"]["effort"], "none");
     }
 
     #[test]

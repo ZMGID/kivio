@@ -7,6 +7,10 @@
 //! 校验在这里也做一遍（前端已拦过一层）：settings.json 是用户可以手改的文件，
 //! 非法头名会让 reqwest 构造失败，头值里的 CR/LF 是 header 注入。
 
+use std::sync::OnceLock;
+
+use sha2::{Digest, Sha256};
+
 use crate::settings::{ModelProvider, ProviderCustomHeader};
 
 /// 由 Kivio 自己管理、不允许用户覆盖的头。放开会让鉴权/路由错乱。
@@ -29,6 +33,133 @@ const RESERVED_HEADER_KEYS: &[&str] = &[
 pub const CLAUDE_CODE_BUILTIN_VERSION: &str = "2.1.287";
 pub const CODEX_BUILTIN_VERSION: &str = "0.160.0";
 pub const GROK_BUILTIN_VERSION: &str = "0.2.110";
+// Claude Code 2.1.x 自带的 Anthropic TS SDK 与 Node 版本（X-Stainless-* 指纹）。
+const CLAUDE_CODE_SDK_VERSION: &str = "0.112.1";
+const CLAUDE_CODE_NODE_VERSION: &str = "v26.3.0";
+
+/// Claude Code 请求的 system 第一块固定是这句；只换头不换体，网关一眼就能看出是伪装。
+pub const CLAUDE_CODE_SYSTEM_PREFIX: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
+pub fn is_claude_code_identity(provider: &ModelProvider) -> bool {
+    provider.request.cli_identity.trim() == "claude_code"
+}
+
+/// 本机稳定的匿名设备 id（64 位 hex），用于 Anthropic `metadata.user_id`。
+/// 首次生成后落盘到 app data，之后每次启动都一样 —— 每次都变的 user_id 本身就是异常信号。
+/// 落盘失败只退化成进程内稳定，不影响请求。
+pub fn device_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let fresh = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        if cfg!(test) {
+            return fresh;
+        }
+        let Some(dir) = crate::app_data::app_data_dir() else {
+            return fresh;
+        };
+        let path = dir.join("device_id");
+        if let Ok(saved) = std::fs::read_to_string(&path) {
+            let saved = saved.trim();
+            if saved.len() == 64 && saved.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return saved.to_string();
+            }
+        }
+        let _ = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &fresh));
+        fresh
+    })
+}
+
+/// 会话 UUID：同一个会话始终映射到同一个 UUID（Kivio 的会话 id 是 `conv_*`，不是 UUID 形状）；
+/// 没有会话的一次性调用共用一个进程级 UUID，对齐 Claude Code「一个进程一个会话」。
+pub fn session_uuid(conversation_id: Option<&str>) -> String {
+    static PROCESS: OnceLock<String> = OnceLock::new();
+    match conversation_id.filter(|id| !id.is_empty()) {
+        Some(id) => {
+            let digest = Sha256::digest(format!("kivio-session:{id}").as_bytes());
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            uuid::Builder::from_random_bytes(bytes)
+                .into_uuid()
+                .to_string()
+        }
+        None => PROCESS
+            .get_or_init(|| uuid::Uuid::new_v4().to_string())
+            .clone(),
+    }
+}
+
+/// Codex CLI UA 里的系统段，如 `Mac OS 15.5.0; arm64`（对齐 codex 的 os_info 写法）。
+/// 报本机真实值：写死成 Ubuntu 却在 Mac 上跑，本身就是破绽。
+fn codex_os_segment() -> String {
+    static SEGMENT: OnceLock<String> = OnceLock::new();
+    SEGMENT
+        .get_or_init(|| {
+            let (os, arch) = match std::env::consts::OS {
+                "macos" => (
+                    format!("Mac OS {}", macos_version().unwrap_or("15.5.0".into())),
+                    stainless_arch(),
+                ),
+                "windows" => ("Windows 10.0.26100".to_string(), std::env::consts::ARCH),
+                "linux" => ("Linux".to_string(), std::env::consts::ARCH),
+                other => (other.to_string(), std::env::consts::ARCH),
+            };
+            format!("{os}; {arch}")
+        })
+        .clone()
+}
+
+/// macOS 系统版本，补齐成三段（`15.5` → `15.5.0`）。读不到返回 None。
+fn macos_version() -> Option<String> {
+    let plist = std::fs::read_to_string("/System/Library/CoreServices/SystemVersion.plist").ok()?;
+    let after = plist.split("<key>ProductVersion</key>").nth(1)?;
+    let version = after
+        .split("<string>")
+        .nth(1)?
+        .split("</string>")
+        .next()?
+        .trim();
+    if version.is_empty() || !is_valid_header_value(version) {
+        return None;
+    }
+    Some(match version.matches('.').count() {
+        0 => format!("{version}.0.0"),
+        1 => format!("{version}.0"),
+        _ => version.to_string(),
+    })
+}
+
+/// Codex CLI UA 末尾的终端段：GUI 进程没有终端，取各系统自带终端的写法。
+fn codex_terminal() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "Apple_Terminal/455.1",
+        "windows" => "WindowsTerminal",
+        _ => "xterm-256color",
+    }
+}
+
+/// Stainless SDK 的 OS / 架构写法；报真实主机值，Windows 上报 MacOS 本身就是破绽。
+fn stainless_os() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "MacOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    }
+}
+
+fn stainless_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        "x86" => "x32",
+        other => other,
+    }
+}
 
 /// RFC 7230 token 字符集。
 pub fn is_valid_header_key(key: &str) -> bool {
@@ -102,31 +233,49 @@ fn identity_pairs(
                     format!("claude-cli/{version} (external, cli)"),
                 ),
                 p("x-app", "cli".to_string()),
-                p("X-Stainless-OS", "MacOS".to_string()),
-                p("X-Stainless-Arch", "arm64".to_string()),
+                p("X-Stainless-OS", stainless_os().to_string()),
+                p("X-Stainless-Arch", stainless_arch().to_string()),
                 p("X-Stainless-Lang", "js".to_string()),
                 p("X-Stainless-Runtime", "node".to_string()),
-                p("X-Stainless-Runtime-Version", "v22.19.0".to_string()),
-                p("X-Stainless-Package-Version", "0.74.0".to_string()),
+                p(
+                    "X-Stainless-Runtime-Version",
+                    CLAUDE_CODE_NODE_VERSION.to_string(),
+                ),
+                p(
+                    "X-Stainless-Package-Version",
+                    CLAUDE_CODE_SDK_VERSION.to_string(),
+                ),
                 p("X-Stainless-Timeout", "600".to_string()),
                 p("X-Stainless-Retry-Count", "0".to_string()),
                 p(
                     "anthropic-dangerous-direct-browser-access",
                     "true".to_string(),
                 ),
+                p("X-Claude-Code-Session-Id", session_uuid(conversation_id)),
             ]
         }
         "codex" => {
             let version = identity_version(provider, CODEX_BUILTIN_VERSION);
-            let mut pairs = vec![p(
-                "User-Agent",
-                format!("codex_cli_rs/{version} (Ubuntu 24.4.0; x86_64) WindowsTerminal"),
-            )];
-            // session_id / conversation_id 是 Codex CLI 链路的会话身份头；没有会话 id 就不发，
-            // 编不出来的假 id 只会让会话亲和型网关串台。
-            if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-                pairs.push(p("session_id", id.to_string()));
-                pairs.push(p("conversation_id", id.to_string()));
+            let mut pairs = vec![
+                p(
+                    "User-Agent",
+                    format!(
+                        "codex_cli_rs/{version} ({}) {}",
+                        codex_os_segment(),
+                        codex_terminal()
+                    ),
+                ),
+                // 真实 Codex CLI 每个请求都带 originator + version，只换 UA 等于没伪装。
+                p("originator", "codex_cli_rs".to_string()),
+                p("version", version),
+            ];
+            // session_id / conversation_id 是 Codex CLI 链路的会话身份头，真实值是 UUID（且与
+            // 请求体 prompt_cache_key 相同）；`conv_*` 形状一看就不是 Codex 发的。没有会话 id 就
+            // 不发，编不出来的假 id 只会让会话亲和型网关串台。
+            if conversation_id.is_some_and(|id| !id.is_empty()) {
+                let id = session_uuid(conversation_id);
+                pairs.push(p("session_id", id.clone()));
+                pairs.push(p("conversation_id", id));
             }
             pairs
         }
@@ -173,6 +322,45 @@ pub fn header_pairs(
         });
         if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
             upsert_pair(&mut pairs, "x-opencode-session".into(), id.into());
+        }
+    }
+    pairs
+}
+
+pub fn is_codex_identity(provider: &ModelProvider) -> bool {
+    provider.request.cli_identity.trim() == "codex"
+}
+
+/// 模型对话适配器（Messages / Chat Completions / Responses）要附加的全部头，发送路径与
+/// 请求调试面板共用：
+/// 会话亲和头（可选）→ CLI 身份 / 自定义 / OAuth 头（`header_pairs`，同名覆盖）→ 缺省 UA / Accept。
+///
+/// 缺省头只在前面都没给时才补（reqwest 的 `.header()` 是追加，同名两行会让网关困惑）：
+/// reqwest 默认不带 UA，空 UA 本身就像脚本，所以没有身份也没有自定义 UA 时如实报 Kivio；
+/// Accept 对齐官方 SDK 的默认头。
+pub fn model_header_pairs(
+    provider: &ModelProvider,
+    conversation_id: Option<&str>,
+    session_affinity: bool,
+) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    // 会话亲和头（对齐 opencode）：同一对话每轮带同一 id，会话亲和型代理据此稳定路由到同一
+    // 上游会话；正经 provider 忽略未知头。
+    if session_affinity {
+        if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
+            pairs.push(("x-session-id".into(), id.into()));
+            pairs.push(("x-session-affinity".into(), id.into()));
+        }
+    }
+    for (name, value) in header_pairs(provider, conversation_id) {
+        upsert_pair(&mut pairs, name, value);
+    }
+    for (name, value) in [
+        ("User-Agent", concat!("Kivio/", env!("CARGO_PKG_VERSION"))),
+        ("Accept", "application/json"),
+    ] {
+        if !pairs.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            pairs.push((name.to_string(), value.to_string()));
         }
     }
     pairs
@@ -399,12 +587,69 @@ mod tests {
             "x-stainless-timeout",
             "x-stainless-retry-count",
             "anthropic-dangerous-direct-browser-access",
+            "x-claude-code-session-id",
         ] {
             assert!(
                 names.contains(&expected.to_string()),
                 "missing {expected}: {names:?}"
             );
         }
+    }
+
+    #[test]
+    fn model_headers_default_ua_accept_and_session_affinity() {
+        let plain = provider_with(ProviderRequestConfig::default());
+        let pairs = model_header_pairs(&plain, Some("conv_1"), true);
+        assert!(pairs.contains(&("x-session-id".into(), "conv_1".into())));
+        assert!(pairs.contains(&("x-session-affinity".into(), "conv_1".into())));
+        assert!(pairs.contains(&(
+            "User-Agent".into(),
+            concat!("Kivio/", env!("CARGO_PKG_VERSION")).into()
+        )));
+        assert!(pairs.contains(&("Accept".into(), "application/json".into())));
+        // 不要会话亲和或没有会话：不发亲和头。
+        assert!(!model_header_pairs(&plain, Some("conv_1"), false)
+            .iter()
+            .any(|(k, _)| k == "x-session-id"));
+        assert!(!model_header_pairs(&plain, None, true)
+            .iter()
+            .any(|(k, _)| k == "x-session-id"));
+
+        // 身份 UA / 用户自定义头优先，且同名只留一条。
+        let custom = provider_with(ProviderRequestConfig {
+            cli_identity: "codex".into(),
+            custom_headers: vec![
+                header("accept", "text/event-stream"),
+                header("X-Session-Id", "mine"),
+            ],
+            ..Default::default()
+        });
+        let pairs = model_header_pairs(&custom, Some("conv_1"), true);
+        for name in ["user-agent", "accept", "x-session-id"] {
+            assert_eq!(
+                pairs
+                    .iter()
+                    .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .count(),
+                1,
+                "{name}: {pairs:?}"
+            );
+        }
+        assert!(pairs.contains(&("accept".into(), "text/event-stream".into())));
+        assert!(pairs.contains(&("X-Session-Id".into(), "mine".into())));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| k == "User-Agent" && v.starts_with("codex_cli_rs/")));
+    }
+
+    #[test]
+    fn session_uuid_is_stable_per_conversation() {
+        let a = session_uuid(Some("conv_a"));
+        assert_eq!(a, session_uuid(Some("conv_a")));
+        assert_ne!(a, session_uuid(Some("conv_b")));
+        assert!(uuid::Uuid::parse_str(&a).is_ok());
+        // 一次性调用共用进程级会话。
+        assert_eq!(session_uuid(None), session_uuid(Some("")));
     }
 
     #[test]
@@ -415,11 +660,21 @@ mod tests {
             ..Default::default()
         });
         let with_id = header_pairs(&provider, Some("conv-1"));
-        assert!(with_id.contains(&("session_id".to_string(), "conv-1".to_string())));
-        assert!(with_id.contains(&("conversation_id".to_string(), "conv-1".to_string())));
-        assert!(with_id
+        // 会话头是 UUID（与请求体 prompt_cache_key 同值），不是 `conv-*`。
+        let session = session_uuid(Some("conv-1"));
+        assert!(with_id.contains(&("session_id".to_string(), session.clone())));
+        assert!(with_id.contains(&("conversation_id".to_string(), session)));
+        assert!(with_id.contains(&("originator".to_string(), "codex_cli_rs".to_string())));
+        assert!(with_id.contains(&("version".to_string(), "1.2.3".to_string())));
+        let ua = &with_id
             .iter()
-            .any(|(_, v)| v.starts_with("codex_cli_rs/1.2.3")));
+            .find(|(k, _)| k == "User-Agent")
+            .expect("ua")
+            .1;
+        assert!(ua.starts_with("codex_cli_rs/1.2.3 ("), "{ua}");
+        // 报本机真实系统，不再写死 Ubuntu + WindowsTerminal。
+        assert!(!ua.contains("Ubuntu"), "{ua}");
+        assert!(is_valid_header_value(ua), "{ua}");
 
         let without_id = header_pairs(&provider, None);
         assert!(!without_id.iter().any(|(k, _)| k == "session_id"));
