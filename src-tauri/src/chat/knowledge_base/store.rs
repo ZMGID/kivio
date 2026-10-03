@@ -332,7 +332,23 @@ pub fn replace_doc_chunks(
     dim: usize,
     chunks: &[KnowledgeChunk],
 ) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    // Deletion and late embedding commits must serialize on the same SQLite
+    // write transaction. A deleted document can never regain searchable chunks.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1)",
+            [doc_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Err(format!("Document not found: {doc_id}"));
+    }
+    if chunks.iter().any(|chunk| chunk.doc_id != doc_id) {
+        return Err("Chunk belongs to a different document".into());
+    }
     if dim > 0 {
         ensure_vec_table(&tx, dim)?;
     }
@@ -799,6 +815,20 @@ mod tests {
     fn fts_special_chars_do_not_error() {
         let path = tmp_db();
         let conn = open_db(&path).unwrap();
+        insert_doc(
+            &conn,
+            &KnowledgeDocument {
+                id: "d".into(),
+                name: "d.md".into(),
+                size_bytes: 0,
+                hash: String::new(),
+                chunk_count: 0,
+                status: DocStatus::Indexing,
+                error: None,
+                created_at: 0,
+            },
+        )
+        .unwrap();
         replace_doc_chunks(
             &conn,
             "d",
@@ -821,9 +851,23 @@ mod tests {
         // the source sentence must hit the keyword lane (old phrase query → 0).
         let path = tmp_db();
         let conn = open_db(&path).unwrap();
+        insert_doc(
+            &conn,
+            &KnowledgeDocument {
+                id: "d".into(),
+                name: "d.md".into(),
+                size_bytes: 0,
+                hash: String::new(),
+                chunk_count: 0,
+                status: DocStatus::Indexing,
+                error: None,
+                created_at: 0,
+            },
+        )
+        .unwrap();
         replace_doc_chunks(
             &conn,
-            "refund",
+            "d",
             0,
             &[mk_chunk(
                 "c1",
@@ -884,6 +928,20 @@ mod tests {
     fn hybrid_fuses_vector_and_keyword_lanes() {
         let path = tmp_db();
         let conn = open_db(&path).unwrap();
+        insert_doc(
+            &conn,
+            &KnowledgeDocument {
+                id: "d".into(),
+                name: "d.md".into(),
+                size_bytes: 0,
+                hash: String::new(),
+                chunk_count: 0,
+                status: DocStatus::Indexing,
+                error: None,
+                created_at: 0,
+            },
+        )
+        .unwrap();
         replace_doc_chunks(
             &conn,
             "d",
@@ -915,5 +973,51 @@ mod tests {
 
         drop(conn);
         std::fs::remove_file(&path).ok();
+    }
+    #[test]
+    fn deleted_document_must_reject_late_index_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open_db(&dir.path().join("store.db")).unwrap();
+        insert_doc(
+            &db,
+            &KnowledgeDocument {
+                id: "doc_a".into(),
+                name: "private.md".into(),
+                size_bytes: 0,
+                hash: "hash".into(),
+                chunk_count: 0,
+                status: super::DocStatus::Indexing,
+                error: None,
+                created_at: 0,
+            },
+        )
+        .unwrap();
+        assert!(delete_doc(&db, "doc_a").unwrap());
+        // Network embedding finishes after deletion; index_one commits this chunk.
+        let result = replace_doc_chunks(
+            &db,
+            "doc_a",
+            2,
+            &[KnowledgeChunk {
+                id: "chunk_a".into(),
+                doc_id: "doc_a".into(),
+                doc_name: "private.md".into(),
+                text: "deleted secret document".into(),
+                heading_path: None,
+                page: None,
+                char_start: 0,
+                char_end: 23,
+                order_index: 0,
+                embedding: vec![1.0, 0.0],
+            }],
+        );
+        assert!(result.is_err());
+        assert!(load_docs(&db).unwrap().is_empty());
+        let hits = hybrid_search(&db, &[1.0, 0.0], "secret", 5, 0.7, 0.3).unwrap();
+        assert!(
+            hits.is_empty(),
+            "deleted document still returned by retrieval: {:?}",
+            hits
+        );
     }
 }

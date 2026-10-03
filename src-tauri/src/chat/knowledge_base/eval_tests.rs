@@ -248,6 +248,20 @@ fn build_store() -> (rusqlite::Connection, std::path::PathBuf) {
         .collect();
     // Each doc is its own single-chunk "document".
     for c in &chunks {
+        store::insert_doc(
+            &conn,
+            &super::KnowledgeDocument {
+                id: c.doc_id.clone(),
+                name: c.doc_name.clone(),
+                size_bytes: 0,
+                hash: String::new(),
+                chunk_count: 0,
+                status: super::DocStatus::Indexing,
+                error: None,
+                created_at: 0,
+            },
+        )
+        .unwrap();
         store::replace_doc_chunks(&conn, &c.doc_id, MOCK_DIM, std::slice::from_ref(c)).unwrap();
     }
     (conn, path)

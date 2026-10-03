@@ -16,7 +16,7 @@ mod store;
 pub mod tools;
 pub mod types;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
@@ -45,7 +45,7 @@ pub struct ScheduledTasks {
     runs_lock: Mutex<()>,
     wake: tokio::sync::Notify,
     /// Tasks whose bound-conversation run is still waiting in line.
-    queued_tasks: Mutex<HashSet<String>>,
+    queued_tasks: Mutex<HashMap<String, String>>,
     /// Conversations currently handling a scheduled prompt (recursion guard for chat tools).
     busy_conversations: Mutex<HashMap<String, usize>>,
 }
@@ -81,7 +81,7 @@ impl ScheduledTasks {
             tasks: Mutex::new(tasks),
             runs_lock: Mutex::new(()),
             wake: tokio::sync::Notify::new(),
-            queued_tasks: Mutex::new(HashSet::new()),
+            queued_tasks: Mutex::new(HashMap::new()),
             busy_conversations: Mutex::new(HashMap::new()),
         }
     }
@@ -98,6 +98,20 @@ impl ScheduledTasks {
             .find(|task| task.id == id)
             .cloned()
             .ok_or_else(|| "定时任务不存在".to_string())
+    }
+
+    /// Publish only after the candidate snapshot is durable. Keep the lock across
+    /// both steps so concurrent edits and the scheduler see one committed value.
+    fn mutate_tasks<T>(
+        &self,
+        mutate: impl FnOnce(&mut Vec<ScheduledTask>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut current = self.lock_tasks();
+        let mut candidate = current.clone();
+        let result = mutate(&mut candidate)?;
+        self.store.save_tasks(&candidate)?;
+        *current = candidate;
+        Ok(result)
     }
 
     /// Creates (no id) or fully replaces a task bound to an existing
@@ -124,65 +138,65 @@ impl ScheduledTasks {
             next_run_at,
         } = validate_input(&input, now)?;
 
-        let mut tasks = self.lock_tasks();
-        let task = match input
-            .id
-            .as_deref()
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        {
-            Some(id) => {
-                let existing = tasks
-                    .iter_mut()
-                    .find(|task| task.id == id)
-                    .ok_or("定时任务不存在")?;
-                existing.name = name;
-                existing.prompt = prompt;
-                existing.schedule = schedule;
-                existing.conversation_id = conversation_id;
-                existing.enabled = enabled;
-                existing.status = TaskStatus::Active;
-                existing.next_run_at = next_run_at;
-                existing.last_error = None;
-                existing.updated_at = now;
-                existing.clone()
-            }
-            None => {
-                let task = ScheduledTask {
-                    id: format!("sched_{}", Uuid::new_v4()),
-                    name,
-                    prompt,
-                    schedule,
-                    conversation_id,
-                    enabled,
-                    status: TaskStatus::Active,
-                    next_run_at,
-                    last_run_at: None,
-                    run_count: 0,
-                    last_error: None,
-                    source,
-                    created_at: now,
-                    updated_at: now,
-                };
-                tasks.push(task.clone());
-                task
-            }
-        };
-        self.store.save_tasks(&tasks)?;
-        drop(tasks);
+        let task = self.mutate_tasks(|tasks| {
+            let task = match input
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                Some(id) => {
+                    let existing = tasks
+                        .iter_mut()
+                        .find(|task| task.id == id)
+                        .ok_or("定时任务不存在")?;
+                    existing.name = name;
+                    existing.prompt = prompt;
+                    existing.schedule = schedule;
+                    existing.conversation_id = conversation_id;
+                    existing.enabled = enabled;
+                    existing.status = TaskStatus::Active;
+                    existing.next_run_at = next_run_at;
+                    existing.last_error = None;
+                    existing.updated_at = now;
+                    existing.clone()
+                }
+                None => {
+                    let task = ScheduledTask {
+                        id: format!("sched_{}", Uuid::new_v4()),
+                        name,
+                        prompt,
+                        schedule,
+                        conversation_id,
+                        enabled,
+                        status: TaskStatus::Active,
+                        next_run_at,
+                        last_run_at: None,
+                        run_count: 0,
+                        last_error: None,
+                        source,
+                        created_at: now,
+                        updated_at: now,
+                    };
+                    tasks.push(task.clone());
+                    task
+                }
+            };
+            Ok(task)
+        })?;
         self.wake.notify_one();
         Ok(task)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
-        let mut tasks = self.lock_tasks();
-        let before = tasks.len();
-        tasks.retain(|task| task.id != id);
-        if tasks.len() == before {
-            return Err("定时任务不存在".into());
-        }
-        self.store.save_tasks(&tasks)?;
-        drop(tasks);
+        self.mutate_tasks(|tasks| {
+            let before = tasks.len();
+            tasks.retain(|task| task.id != id);
+            if tasks.len() == before {
+                return Err("定时任务不存在".into());
+            }
+            Ok(())
+        })?;
         let _runs = self.lock_runs();
         self.store.delete_runs(id);
         Ok(())
@@ -190,24 +204,23 @@ impl ScheduledTasks {
 
     /// Re-enabling reschedules from now so a paused task never fires a stale slot.
     pub fn set_enabled(&self, id: &str, enabled: bool, now: i64) -> Result<ScheduledTask, String> {
-        let mut tasks = self.lock_tasks();
-        let task = tasks
-            .iter_mut()
-            .find(|task| task.id == id)
-            .ok_or("定时任务不存在")?;
-        if enabled && !task.enabled {
-            let next = rule::next_after(&task.schedule, now)?;
-            if next.is_none() {
-                return Err("计划时间已过，请编辑任务选择新的时间".into());
+        let task = self.mutate_tasks(|tasks| {
+            let task = tasks
+                .iter_mut()
+                .find(|task| task.id == id)
+                .ok_or("定时任务不存在")?;
+            if enabled && !task.enabled {
+                let next = rule::next_after(&task.schedule, now)?;
+                if next.is_none() {
+                    return Err("计划时间已过，请编辑任务选择新的时间".into());
+                }
+                task.status = TaskStatus::Active;
+                task.next_run_at = next;
             }
-            task.status = TaskStatus::Active;
-            task.next_run_at = next;
-        }
-        task.enabled = enabled;
-        task.updated_at = now;
-        let task = task.clone();
-        self.store.save_tasks(&tasks)?;
-        drop(tasks);
+            task.enabled = enabled;
+            task.updated_at = now;
+            Ok(task.clone())
+        })?;
         self.wake.notify_one();
         Ok(task)
     }
@@ -236,7 +249,9 @@ impl ScheduledTasks {
     pub(crate) fn claim_due(&self, now: i64) -> (Vec<Fire>, Vec<TaskRun>) {
         let mut fires = Vec::new();
         let mut missed = Vec::new();
-        let mut tasks = self.lock_tasks();
+        let mut current = self.lock_tasks();
+        let mut tasks = current.clone();
+        let mut changed = false;
         for task in tasks.iter_mut() {
             let Some(due) = task.next_run_at.filter(|due| *due <= now) else {
                 continue;
@@ -244,6 +259,7 @@ impl ScheduledTasks {
             if !task.enabled || task.status != TaskStatus::Active {
                 continue;
             }
+            changed = true;
             match rule::next_after(&task.schedule, now) {
                 Ok(Some(next)) => task.next_run_at = Some(next),
                 Ok(None) => {
@@ -278,12 +294,14 @@ impl ScheduledTasks {
                 });
             }
         }
-        if !fires.is_empty() || !missed.is_empty() {
+        if changed {
             if let Err(err) = self.store.save_tasks(&tasks) {
                 eprintln!("[scheduled-tasks] save after claim failed: {err}");
+                return (Vec::new(), Vec::new());
             }
         }
-        drop(tasks);
+        *current = tasks;
+        drop(current);
         for run in &missed {
             self.record_run(run);
         }
@@ -365,7 +383,23 @@ impl ScheduledTasks {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    fn lock_queued(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+    fn claim_queue(&self, task_id: &str, run_id: &str) -> bool {
+        let mut queued = self.lock_queued();
+        if queued.contains_key(task_id) {
+            return false;
+        }
+        queued.insert(task_id.to_string(), run_id.to_string());
+        true
+    }
+
+    fn release_queue(&self, task_id: &str, run_id: &str) {
+        let mut queued = self.lock_queued();
+        if queued.get(task_id).is_some_and(|owner| owner == run_id) {
+            queued.remove(task_id);
+        }
+    }
+
+    fn lock_queued(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
         self.queued_tasks
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -580,7 +614,7 @@ pub fn start_run(
     };
     // Every task sends into one conversation; while a run is still waiting
     // for it, further fires are skipped instead of piling up.
-    if !svc.lock_queued().insert(task.id.clone()) {
+    if !svc.claim_queue(&task.id, &run.id) {
         run.status = RunStatus::Skipped;
         run.error = Some(STILL_QUEUED_REASON.into());
         run.finished_at = Some(now);
@@ -598,7 +632,7 @@ pub fn start_run(
         let started_at = AtomicI64::new(0);
         let outcome = execute(&app, &task, &mut run, &started_at).await;
         let svc = service(&app);
-        svc.lock_queued().remove(&task.id);
+        svc.release_queue(&task.id, &run.id);
         run.started_at = match started_at.load(Ordering::SeqCst) {
             0 => None,
             value => Some(value),
@@ -668,7 +702,7 @@ async fn execute(
         let now = now_secs();
         started_at.store(now, Ordering::SeqCst);
         let svc = service(app);
-        svc.lock_queued().remove(&task.id);
+        svc.release_queue(&task.id, &running.id);
         let mut running = running.clone();
         running.started_at = Some(now);
         svc.record_run(&running);
@@ -883,5 +917,91 @@ mod tests {
         };
         assert!(svc.save(unresolved, TaskSource::User, 1_000).is_err());
         assert!(svc.list().is_empty());
+    }
+    #[test]
+    fn failed_schedule_save_must_not_activate_task() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory at the destination deterministically fails the atomic rename.
+        std::fs::create_dir(dir.path().join("tasks.json")).unwrap();
+        let service = ScheduledTasks::load(dir.path().to_path_buf());
+        let result = service.save(
+            ScheduledTaskInput {
+                id: None,
+                name: "failed task".into(),
+                prompt: "must not run".into(),
+                schedule: ScheduleRule::Interval {
+                    minutes: 1,
+                    anchor_at: Some(1060),
+                },
+                target: TaskTarget::Conversation {
+                    conversation_id: "conv_test".into(),
+                },
+                enabled: Some(true),
+            },
+            TaskSource::User,
+            1000,
+        );
+        assert!(result.is_err());
+        assert!(
+            service.list().is_empty(),
+            "failed save left an enabled task in memory: {:?}",
+            service.list()
+        );
+    }
+
+    #[test]
+    fn failed_task_edits_leave_committed_state_and_allow_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service_in(dir.path());
+        let task = svc
+            .save(
+                input(ScheduleRule::Once { at: 2000 }),
+                TaskSource::User,
+                1000,
+            )
+            .unwrap();
+        let before = serde_json::to_value(svc.list()).unwrap();
+        let path = dir.path().join("tasks.json");
+        let backup = dir.path().join("committed.json");
+        std::fs::rename(&path, &backup).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let mut edit = input(ScheduleRule::Once { at: 3000 });
+        edit.id = Some(task.id.clone());
+        edit.prompt = "new prompt".into();
+        assert!(svc.save(edit.clone(), TaskSource::User, 1100).is_err());
+        assert!(svc.set_enabled(&task.id, false, 1100).is_err());
+        assert!(svc.delete(&task.id).is_err());
+        assert!(svc.claim_due(2000).0.is_empty());
+        assert_eq!(serde_json::to_value(svc.list()).unwrap(), before);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&backup, &path).unwrap();
+        assert_eq!(
+            serde_json::to_value(service_in(dir.path()).list()).unwrap(),
+            before
+        );
+        svc.save(edit, TaskSource::User, 1100).unwrap();
+        assert_eq!(
+            service_in(dir.path()).get(&task.id).unwrap().prompt,
+            "new prompt"
+        );
+        svc.set_enabled(&task.id, false, 1200).unwrap();
+        assert!(!service_in(dir.path()).get(&task.id).unwrap().enabled);
+        svc.delete(&task.id).unwrap();
+        assert!(service_in(dir.path()).list().is_empty());
+    }
+
+    #[test]
+    fn old_run_completion_cannot_release_a_new_waiter() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service_in(dir.path());
+        assert!(svc.claim_queue("task", "run_a"));
+        assert!(!svc.claim_queue("task", "run_b"));
+        svc.release_queue("task", "run_a"); // A begins sending.
+        assert!(svc.claim_queue("task", "run_b"));
+        svc.release_queue("task", "run_a"); // A finishes while B still waits.
+        assert!(!svc.claim_queue("task", "run_c"));
+        assert!(svc.claim_queue("other_task", "run_c"));
+        svc.release_queue("task", "run_b");
+        assert!(svc.claim_queue("task", "run_c"));
     }
 }

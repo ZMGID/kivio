@@ -106,7 +106,7 @@ export function NotesCenter() {
   // 编辑器态：null 表示列表态
   const [editing, setEditing] = useState<Note | null>(null)
   // 目录监听回调里读它：编辑期我们自己在写文件，不该被自己的写入触发重读。
-  const editingRef = useRef(false)
+  const editingRef = useRef<Note | null>(null)
   // 标题/文件夹/正文都走 ref 非受控：受控 input 在中文 IME 合成期被 React 写回 value 会打断输入 → 吞字
   const titleRef = useRef('')
   const folderRef = useRef('')
@@ -116,7 +116,12 @@ export function NotesCenter() {
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveRequestRef = useRef<number>(0)
+  // One write at a time per open note; every caller waits for the latest draft.
+  const saveFlightRef = useRef<{ id: string; promise: Promise<boolean> } | null>(null)
+  const setCurrentNote = useCallback((note: Note | null) => {
+    editingRef.current = note
+    setEditing(note)
+  }, [])
 
   const loadNotes = useCallback(async () => {
     setError('')
@@ -153,10 +158,6 @@ export function NotesCenter() {
     }
     void loadNotes()
   }, [loadNotes, t])
-
-  useEffect(() => {
-    editingRef.current = editing !== null
-  }, [editing])
 
   /**
    * 监听笔记目录本身：用户把外部 `.md` 拖进来（或在别处编辑、删除）后自动重读，
@@ -222,36 +223,49 @@ export function NotesCenter() {
     return list
   }, [notes, tab, currentFolder, search, t])
 
-  /** 立即落盘挂起的编辑（若有变更）。 */
-  const flushSave = useCallback(async () => {
+  /** Flush serially until the current draft is durable; failed drafts stay editable. */
+  const flushSave = useCallback((): Promise<boolean> => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
     }
-    if (!editing) return
-    const title = titleRef.current
-    const content = contentRef.current
-    const folder = folderRef.current
-    if (title === editing.title && content === editing.content && folder === editing.folder) return
+    const note = editingRef.current
+    if (!note) return Promise.resolve(true)
+    if (saveFlightRef.current?.id === note.id) return saveFlightRef.current.promise
 
-    const requestId = ++saveRequestRef.current
     setSaving(true)
-    try {
-      const updated = await api.notesUpdate(editing.id, title, content, folder)
-      if (saveRequestRef.current === requestId) {
-        setEditing(updated)
-        titleRef.current = updated.title
-        contentRef.current = updated.content
-        folderRef.current = updated.folder
+    setError('')
+    const promise = (async () => {
+      try {
+        while (editingRef.current?.id === note.id) {
+          const baseline = editingRef.current
+          const title = titleRef.current
+          const content = contentRef.current
+          const folder = folderRef.current
+          if (title === baseline.title && content === baseline.content && folder === baseline.folder) return true
+          const updated = await api.notesUpdate(note.id, title, content, folder)
+          if (editingRef.current?.id !== note.id) return false
+          // Normalize only fields still equal to what was submitted. Later typing
+          // remains the draft and is persisted by the next iteration.
+          if (titleRef.current === title) titleRef.current = updated.title
+          if (contentRef.current === content) contentRef.current = updated.content
+          if (folderRef.current === folder) folderRef.current = updated.folder
+          setCurrentNote(updated)
+        }
+        return false
+      } catch (err) {
+        if (editingRef.current?.id === note.id) {
+          setError(err instanceof Error ? err.message : String(err))
+        }
+        return false
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      if (saveRequestRef.current === requestId) {
-        setSaving(false)
-      }
-    }
-  }, [editing])
+    })().finally(() => {
+      if (saveFlightRef.current?.promise === promise) saveFlightRef.current = null
+      if (editingRef.current?.id === note.id) setSaving(false)
+    })
+    saveFlightRef.current = { id: note.id, promise }
+    return promise
+  }, [setCurrentNote])
 
   const scheduleSave = useCallback(() => {
     if (saveTimerRef.current) {
@@ -280,11 +294,11 @@ export function NotesCenter() {
 
   const openNote = useCallback(
     async (id: string) => {
-      await flushSave()
+      if (!await flushSave()) return
       setError('')
       try {
         const note = await api.notesRead(id)
-        setEditing(note)
+        setCurrentNote(note)
         titleRef.current = note.title
         contentRef.current = note.content
         folderRef.current = note.folder
@@ -293,17 +307,17 @@ export function NotesCenter() {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [flushSave],
+    [flushSave, setCurrentNote],
   )
 
   const backToList = useCallback(async () => {
-    await flushSave()
-    setEditing(null)
+    if (!await flushSave()) return
+    setCurrentNote(null)
     titleRef.current = ''
     folderRef.current = ''
     contentRef.current = ''
     void loadNotes()
-  }, [flushSave, loadNotes])
+  }, [flushSave, loadNotes, setCurrentNote])
 
   const createNote = useCallback(async () => {
     setError('')
@@ -312,7 +326,7 @@ export function NotesCenter() {
     try {
       const note = await api.notesCreate('', '', folder, 'user')
       await loadNotes()
-      setEditing(note)
+      setCurrentNote(note)
       titleRef.current = note.title
       contentRef.current = note.content
       folderRef.current = note.folder
@@ -320,7 +334,7 @@ export function NotesCenter() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [loadNotes, tab, currentFolder])
+  }, [loadNotes, tab, currentFolder, setCurrentNote])
 
   const deleteNote = useCallback(
     async (id: string) => {
@@ -335,7 +349,7 @@ export function NotesCenter() {
       try {
         await api.notesDelete(id)
         if (editing?.id === id) {
-          setEditing(null)
+          setCurrentNote(null)
           titleRef.current = ''
           folderRef.current = ''
           contentRef.current = ''
@@ -345,7 +359,7 @@ export function NotesCenter() {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [editing?.id, notes, t],
+    [editing?.id, notes, t, setCurrentNote],
   )
 
   /* ===== 文件夹管理（用原生 prompt/confirm，不做自定义弹窗） ===== */

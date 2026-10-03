@@ -112,6 +112,20 @@ async fn live_retrieval_stack_e2e() {
     let db = std::env::temp_dir().join(format!("kb_e2e_{}.db", uuid::Uuid::new_v4().simple()));
     let _ = std::fs::remove_file(&db);
     let conn = super::store::open_db(&db).unwrap();
+    super::store::insert_doc(
+        &conn,
+        &super::KnowledgeDocument {
+            id: "doc1".into(),
+            name: "e2e.txt".into(),
+            size_bytes: 0,
+            hash: String::new(),
+            chunk_count: 0,
+            status: super::DocStatus::Indexing,
+            error: None,
+            created_at: 0,
+        },
+    )
+    .unwrap();
     super::store::replace_doc_chunks(&conn, "doc1", dim, &chunks).unwrap();
 
     // 3) Embed the query and run hybrid search.

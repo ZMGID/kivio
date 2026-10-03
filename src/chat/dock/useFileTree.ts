@@ -195,26 +195,30 @@ export function useFileTree({ workdir, active, showHidden, expandedPaths }: UseF
       setSearching(false)
       return
     }
+    let cancelled = false
     setSearching(true)
     const timer = window.setTimeout(() => {
       const currentWorkdir = workdirRef.current
       dockApi
         .fsSearch(currentWorkdir, query, 200, showHiddenRef.current)
         .then((result) => {
-          if (workdirRef.current !== currentWorkdir) return
+          if (cancelled || workdirRef.current !== currentWorkdir) return
           setSearchResults(result.entries)
           setSearchTruncated(result.truncated)
           setSearching(false)
         })
         .catch(() => {
-          if (workdirRef.current !== currentWorkdir) return
+          if (cancelled || workdirRef.current !== currentWorkdir) return
           setSearchResults([])
           setSearchTruncated(false)
           setSearching(false)
         })
     }, SEARCH_DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
-  }, [searchQuery, workdir])
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [searchQuery, workdir, showHidden])
 
   // showHidden 切换：整树重载（隐藏项参与排序/合并，无法局部补救）。
   const prevShowHiddenRef = useRef(showHidden)

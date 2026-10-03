@@ -4,7 +4,7 @@ import type { DockFsListResult } from '../../api/dockContracts'
 import { flattenTreeRows } from './fileTreeModel'
 import { useFileTree } from './useFileTree'
 
-const mocks = vi.hoisted(() => ({ fsList: vi.fn() }))
+const mocks = vi.hoisted(() => ({ fsList: vi.fn(), fsSearch: vi.fn() }))
 vi.mock('./api', () => ({ dockApi: mocks }))
 vi.mock('./workspaceActivity', () => ({
   workspaceActivity: { isAvailable: () => true, subscribe: () => () => {} },
@@ -119,4 +119,38 @@ describe('restored file tree expansion', () => {
     expect(result.current.nodes['samples/group-a/current.md']).toBeDefined()
     expect(result.current.nodes['samples/group-a/.stale']).toBeUndefined()
   })
+})
+
+
+describe('file search request ownership', () => {
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['clear', 'new query', 'hidden filter', 'workdir round trip'])(
+    'discards a late result after %s', async (change) => {
+      vi.useFakeTimers()
+      const pending: Array<(value: { entries: Array<{ path: string; kind: string; hidden: boolean }>; truncated: boolean }) => void> = []
+      mocks.fsSearch.mockImplementation(() => new Promise(resolve => { pending.push(resolve) }))
+      const { result, rerender } = renderHook(({ workdir, showHidden }) => useFileTree({
+        workdir, showHidden, active: true, expandedPaths: new Set<string>(),
+      }), { initialProps: { workdir: '/test', showHidden: false } })
+      act(() => result.current.setSearchQuery('old'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+      expect(pending).toHaveLength(1)
+      if (change === 'clear') act(() => result.current.setSearchQuery(''))
+      if (change === 'new query') act(() => result.current.setSearchQuery('new'))
+      if (change === 'hidden filter') rerender({ workdir: '/test', showHidden: true })
+      if (change === 'workdir round trip') {
+        rerender({ workdir: '/other', showHidden: false })
+        rerender({ workdir: '/test', showHidden: false })
+      }
+      await act(async () => pending[0]({ entries: [{ path: 'old.txt', kind: 'file', hidden: false }], truncated: false }))
+      expect(result.current.searchResults).toBeNull()
+      if (change === 'new query' || change === 'hidden filter') {
+        await act(async () => { await vi.advanceTimersByTimeAsync(180) })
+        expect(pending).toHaveLength(2)
+        await act(async () => pending[1]({ entries: [{ path: 'current.txt', kind: 'file', hidden: false }], truncated: false }))
+        expect(result.current.searchResults?.[0].path).toBe('current.txt')
+      }
+    },
+  )
 })

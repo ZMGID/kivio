@@ -784,6 +784,8 @@ mod tests {
         let root = temp_root();
         let a = create_library_at(&root, "A", "openai", "m").unwrap().id;
         let b = create_library_at(&root, "B", "openai", "m").unwrap().id;
+        insert_doc_at(&root, &a, &doc("d", "a.md", 0)).unwrap();
+        insert_doc_at(&root, &b, &doc("d", "b.md", 0)).unwrap();
         replace_doc_chunks_at(
             &root,
             &a,
@@ -816,6 +818,7 @@ mod tests {
         // Models the index_one replace step: drop a doc's old chunks, add new.
         let root = temp_root();
         let kb = create_library_at(&root, "L", "openai", "m").unwrap().id;
+        insert_doc_at(&root, &kb, &doc("doc_x", "x.md", 0)).unwrap();
         replace_doc_chunks_at(
             &root,
             &kb,
@@ -895,6 +898,7 @@ mod tests {
         let root = temp_root();
         let good = create_library_at(&root, "good", "openai", "m").unwrap().id;
         let bad = create_library_at(&root, "bad", "openai", "m").unwrap().id;
+        insert_doc_at(&root, &good, &doc("d", "g.md", 0)).unwrap();
         replace_doc_chunks_at(
             &root,
             &good,
