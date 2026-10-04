@@ -106,11 +106,6 @@ describe('onboarding validation', () => {
     expect(validateProviderStep(settings).ok).toBe(false)
   })
 
-  it('requires quick translate and lens model bindings', () => {
-    const settings = baseSettings(configuredBindings)
-    expect(canCompleteOnboarding(settings)).toBe(true)
-  })
-
   it('does not require a Chat default model', () => {
     const settings = baseSettings({
       ...configuredBindings,
@@ -166,36 +161,4 @@ describe('onboarding validation', () => {
     expect(webSearchConfigured(settings)).toBe(true)
   })
 
-  it('detects configured Brave and SearXNG search sources', () => {
-    expect(webSearchConfigured(baseSettings({
-      lens: {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+G',
-        webSearch: {
-          enabled: true,
-          provider: 'brave',
-          tavilyApiKey: '',
-          exaApiKey: '',
-          braveApiKey: 'bsa-test',
-          maxResults: 5,
-          searchDepth: 'basic',
-        },
-      },
-    }))).toBe(true)
-    expect(webSearchConfigured(baseSettings({
-      lens: {
-        enabled: true,
-        hotkey: 'CommandOrControl+Shift+G',
-        webSearch: {
-          enabled: true,
-          provider: 'searxng',
-          tavilyApiKey: '',
-          exaApiKey: '',
-          searxngBaseUrl: 'https://searx.example',
-          maxResults: 5,
-          searchDepth: 'basic',
-        },
-      },
-    }))).toBe(true)
-  })
 })

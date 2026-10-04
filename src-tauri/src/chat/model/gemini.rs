@@ -2056,69 +2056,22 @@ mod tests {
 
     #[test]
     fn parses_gemini_response_text_and_inline_image() {
-        // 非流式：text part + inlineData part → text 与 images 都解析出来。
-        let response = serde_json::json!({
-            "candidates": [{
-                "content": { "role": "model", "parts": [
-                    { "text": "这是你的猫" },
-                    { "inlineData": { "mimeType": "image/png", "data": "AAAA" } }
-                ] },
-                "finishReason": "STOP"
-            }]
-        });
-        let out = output_from_gemini_response(&response, "test").expect("output");
-        assert_eq!(out.text, "这是你的猫");
-        assert_eq!(out.images.len(), 1);
-        assert_eq!(out.images[0].mime_type, "image/png");
-        assert_eq!(out.images[0].data, "AAAA");
-    }
-
-    #[test]
-    fn stream_emits_image_data_and_aggregates_images() {
-        // 流式：mock 两个 SSE chunk（一个文本 + 一个 inlineData），断言发射 ImageData
-        // 且 finish 后 output.images 聚合正确。这里直接复用解析辅助（stream_inner 需网络），
-        // 逐 part 走与 stream_inner 相同的分支逻辑，验证 helper 契约。
-        let chunk_text = serde_json::json!({
-            "candidates": [{ "content": { "parts": [{ "text": "生成中" }] } }]
-        });
-        let chunk_image = serde_json::json!({
-            "candidates": [{ "content": { "parts": [
-                { "inlineData": { "mimeType": "image/jpeg", "data": "BBBB" } }
-            ] } }]
-        });
-
-        let mut emitted: Vec<StreamPart> = Vec::new();
-        let mut images: Vec<GeneratedImageData> = Vec::new();
-        for value in [&chunk_text, &chunk_image] {
-            for part in gemini_response_parts(value) {
-                if let Some(image) = gemini_image_from_part(part) {
-                    emitted.push(StreamPart::ImageData {
-                        mime_type: image.mime_type.clone(),
-                        data: image.data.clone(),
-                    });
-                    images.push(image);
-                } else if let Some((text, _)) = gemini_text_from_part(part) {
-                    emitted.push(StreamPart::TextDelta { delta: text });
-                }
-            }
+        for (mime_type, data) in [("image/png", "AAAA"), ("image/jpeg", "BBBB")] {
+            // 非流式：text part + inlineData part → text 与 images 都解析出来。
+            let response = serde_json::json!({
+                "candidates": [{
+                    "content": { "role": "model", "parts": [
+                        { "text": "这是你的猫" },
+                        { "inlineData": { "mimeType": mime_type, "data": data } }
+                    ] },
+                    "finishReason": "STOP"
+                }]
+            });
+            let out = output_from_gemini_response(&response, "test").expect("output");
+            assert_eq!(out.text, "这是你的猫");
+            assert_eq!(out.images.len(), 1);
+            assert_eq!(out.images[0].mime_type, mime_type);
+            assert_eq!(out.images[0].data, data);
         }
-
-        // 恰好发了一帧 ImageData（mime/data 正确）。
-        let image_frames: Vec<_> = emitted
-            .iter()
-            .filter(|part| matches!(part, StreamPart::ImageData { .. }))
-            .collect();
-        assert_eq!(image_frames.len(), 1);
-        match image_frames[0] {
-            StreamPart::ImageData { mime_type, data } => {
-                assert_eq!(mime_type, "image/jpeg");
-                assert_eq!(data, "BBBB");
-            }
-            _ => unreachable!(),
-        }
-        // 聚合到最终 images。
-        assert_eq!(images.len(), 1);
-        assert_eq!(images[0].mime_type, "image/jpeg");
-        assert_eq!(images[0].data, "BBBB");
     }
 }

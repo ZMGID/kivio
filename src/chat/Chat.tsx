@@ -16,6 +16,7 @@ import { useAssistantActions } from './hooks/useAssistantActions'
 import { createChatNavigationController } from './chatNavigationController'
 import { createConversationWarmCache } from './conversationWarmCache'
 import { EMPTY_HISTORY_DIRECTORY, isPartialConversation } from './conversationHistoryWindow'
+import { keepNewerTodoState, patchTodoState } from './agentTodoState'
 import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
@@ -136,6 +137,7 @@ import {
 import { RightDock } from './dock/RightDock'
 import { useRightDock } from './hooks/useRightDock'
 import { insertTextIntoComposer } from './composerInsert'
+import { draftKey, updateComposerDraft } from './composerDraft'
 import { requestDockMarkdownPreview } from './dock/dockPreview'
 import { isTauriRuntime } from './utils'
 import { onChatImageViewerOpen, type ChatImageViewerItem } from './imageViewer'
@@ -650,7 +652,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       && (conversation.revision < previous.revision
         || (conversation.revision === previous.revision
           && isPartialConversation(conversation) && !isPartialConversation(previous)))
-      ? previous : conversation)
+      ? previous : conversation && keepNewerTodoState(conversation, previous))
   }, [])
 
 
@@ -703,7 +705,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setCurrentConversation((prev) => {
       if (!prev || prev.id !== updated.id || updated.revision < prev.revision) return prev
       return {
-        ...updated,
+        ...keepNewerTodoState(updated, prev),
         messages: prev.messages,
         history_start: prev.history_start,
         history_total: prev.history_total,
@@ -713,10 +715,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     })
   }, [])
 
-  const patchAgentTodoState = useCallback((nextState: AgentTodoState) => {
-    setCurrentConversation((prev) => prev
-      ? { ...prev, agent_todo_state: nextState, agentTodoState: nextState }
-      : prev)
+  const patchAgentTodoState = useCallback((nextState: AgentTodoState, revision?: number) => {
+    setCurrentConversation((prev) => prev ? patchTodoState(prev, nextState, revision) : prev)
   }, [])
 
   const patchAgentPlanState = useCallback((nextState: AgentPlanState) => {
@@ -1421,7 +1421,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!currentConversationId || payload.conversationId !== currentConversationId) {
       return
     }
-    patchAgentTodoState(payload.todoState)
+    patchAgentTodoState(payload.todoState, payload.revision)
   }, [patchAgentTodoState])
 
   useTauriEvent(api.onChatPlan, (payload) => {
@@ -1659,6 +1659,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleNewConversation = useCallback(async () => {
     if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
     navigation.startNewConversation()
+  }, [navigation, requestTasksLeave])
+
+  // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule_create / automation_upsert 完成。
+  const handleCreateTaskByChat = useCallback(async (prompt: string) => {
+    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
+    navigation.startNewConversation()
+    updateComposerDraft(draftKey(null), (draft) => ({ ...draft, input: prompt }))
   }, [navigation, requestTasksLeave])
 
   const handleClearChat = useCallback(async () => {
@@ -2995,6 +3002,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 tab={chatView}
                 onOpenConversation={handleSidebarSelectConversation}
                 registerLeaveGuard={registerTasksLeaveGuard}
+                onCreateByChat={handleCreateTaskByChat}
               />
             </Suspense>
           </div>

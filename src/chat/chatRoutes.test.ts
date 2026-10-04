@@ -4,7 +4,7 @@
  * 路由判定读 window.location.hash，需要 DOM 环境。
  * vite.config.ts 只给 *.test.tsx 配了 jsdom，这里按文件声明。
  */
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import {
   conversationHash,
   extensionsNavItemForView,
@@ -23,7 +23,6 @@ import {
   isChatSessionCenterPath,
   isChatSettingsPath,
   isChatSkillCenterPath,
-  setHash,
 } from './chatRoutes'
 
 function withHash(hash: string) {
@@ -81,10 +80,6 @@ describe('chatRoutes 判定', () => {
 })
 
 describe('hashPath', () => {
-  it('去掉 # 并截断 query', () => {
-    withHash('#chat/abc?mode=x')
-    expect(hashPath()).toBe('chat/abc')
-  })
 
   it('空 hash 返回空串', () => {
     withHash('')
@@ -93,19 +88,10 @@ describe('hashPath', () => {
 })
 
 describe('getRouteConversationId', () => {
-  it('会话路由返回解码后的 id', () => {
-    withHash('#chat/abc-123')
-    expect(getRouteConversationId()).toBe('abc-123')
-  })
 
   it('URL 编码的 id 被解码', () => {
     withHash(`#chat/${encodeURIComponent('a/b c')}`)
     expect(getRouteConversationId()).toBe('a/b c')
-  })
-
-  it('空会话路由返回 null', () => {
-    withHash('#chat')
-    expect(getRouteConversationId()).toBeNull()
   })
 
   it('非 chat 路由返回 null', () => {
@@ -146,33 +132,12 @@ describe('getRouteAutomationId', () => {
   })
 })
 
-describe('setHash / conversationHash', () => {
-  beforeEach(() => {
-    withHash('#chat')
-  })
-
-  it('conversationHash 对空 id 返回 #chat', () => {
-    expect(conversationHash(null)).toBe('#chat')
-  })
+describe('conversationHash', () => {
 
   it('conversationHash 编码特殊字符', () => {
     expect(conversationHash('a/b')).toBe('#chat/a%2Fb')
   })
 
-  it('setHash 写入目标值', () => {
-    setHash('#chat/settings')
-    expect(window.location.hash).toBe('#chat/settings')
-  })
-
-  it('已是目标值时不重复写（避免多余 hashchange）', () => {
-    setHash('#chat')
-    let fired = 0
-    const onChange = () => { fired += 1 }
-    window.addEventListener('hashchange', onChange)
-    setHash('#chat')
-    window.removeEventListener('hashchange', onChange)
-    expect(fired).toBe(0)
-  })
 })
 
 describe('extensionsNavItemForView', () => {

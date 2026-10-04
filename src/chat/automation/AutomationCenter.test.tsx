@@ -40,7 +40,7 @@ beforeEach(() => {
 
 function mount() {
   return render(<AutomationCenter items={[]} loading={false} listError="" onReload={mocks.reload}
-    renderList={(body) => <div data-testid="list">{body}</div>} />)
+    onCreateByChat={() => {}} renderList={(body) => <div data-testid="list">{body}</div>} />)
 }
 
 it('keeps the draft open on save failure and allows leaving after a successful retry', async () => {

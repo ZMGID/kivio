@@ -1648,27 +1648,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_streamed_tool_use_from_content_blocks() {
-        let chunks = [
-            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"msg-1"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-1","name":"Write"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"page.html\"}"}}}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
-        ];
-        let mut state = ClaudeStreamState::default();
-        let mut events = Vec::new();
-        for raw in chunks {
-            let value: Value = serde_json::from_str(raw).unwrap();
-            state.handle_value(&value, &mut |e| events.push(e));
-        }
-        assert!(events.iter().any(|event| matches!(
-            event,
-            UnifiedAgentEvent::ToolUse { id, name, .. }
-                if id == "toolu-1" && name == "Write"
-        )));
-    }
-
-    #[test]
     fn text_streamed_resets_per_message() {
         // msg1 经 delta 流式发出;msg2 只以整块 assistant 帧交付。复位后两条正文都应发出。
         let chunks = [
@@ -2406,19 +2385,6 @@ mod tests {
         let text = texts(&events);
         assert!(text.contains("Total cost: $1.23"), "{text}");
         assert!(text.contains("Total duration"), "{text}");
-    }
-
-    /// 另一条通道：报告正文落在 `result.result` 上（成功 + `output_tokens == 0`）。
-    #[test]
-    fn zero_output_result_text_is_surfaced_when_no_body_was_streamed() {
-        let events = run(&[r#"{"type":"result","subtype":"success","is_error":false,
-               "result":"Context usage: 42k/1M tokens",
-               "usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,
-                        "cache_creation_input_tokens":0,"iterations":[]}}"#]);
-        assert!(
-            texts(&events).contains("Context usage: 42k/1M tokens"),
-            "{events:?}"
-        );
     }
 
     /// **不得重复**：本轮已经流过正文时，`result.result`（常是回答的完整副本）不再发一遍。

@@ -201,6 +201,8 @@ export type ChatTodoState = {
 export type ChatTodoPayload = {
   conversationId: string
   todoState: ChatTodoState
+  /** Conversation revision of a persisted update; absent for run-scoped replays. */
+  revision?: number
 }
 
 export type ChatPlanMode = 'act' | 'plan'
@@ -1784,17 +1786,17 @@ export const api = {
   providerOAuthAccount: (provider: ModelProvider) => invoke<ProviderOAuthAccount>('provider_oauth_account', { provider }),
   providerOAuthUsage: (provider: ModelProvider) => invoke<ProviderOAuthUsage>('provider_oauth_usage', { provider }),
   providerOAuthDisconnect: (credentialId: string) => invoke<void>('provider_oauth_disconnect', { credentialId }),
+  desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
+  desktopPetSetEnabled: (enabled: boolean) =>
+    invoke<boolean>('desktop_pet_set_enabled', { enabled }),
+  onDesktopPetEnabledChanged: (listener: (enabled: boolean) => void) =>
+    on<boolean>('desktop-pet-enabled-changed', listener),
   // 设置相关
   getSettings: async () => normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('get_settings')),
   onKivioSettingsChanged: (listener: (event: SettingsChangedEvent) => void) =>
     on<SettingsChangedEvent>('kivio-settings-changed', listener),
   // 某模型可选的思考等级列表（用户覆盖 modelOverrides → 模型库 reasoningEfforts → 家族兜底）。
   reasoningEffortsForModel: (model: string, providerId?: string) =>
-  desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
-  desktopPetSetEnabled: (enabled: boolean) =>
-    invoke<boolean>('desktop_pet_set_enabled', { enabled }),
-  onDesktopPetEnabledChanged: (listener: (enabled: boolean) => void) =>
-    on<boolean>('desktop-pet-enabled-changed', listener),
     invoke<string[]>('chat_reasoning_efforts_for_model', { model, providerId }),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),
@@ -2049,7 +2051,11 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
       if (event.type !== 'todo_updated') return
-      listener({ conversationId: event.conversationId, todoState: event.todoState as ChatTodoState })
+      listener({
+        conversationId: event.conversationId,
+        todoState: event.todoState as ChatTodoState,
+        revision: event.scope === 'conversation' ? event.revision : undefined,
+      })
     })
   },
   onChatPlan: (listener: (payload: ChatPlanPayload) => void) => {

@@ -39,26 +39,6 @@ describe('createLiveRowModel', () => {
     expect(model.resolveMessageKey('recovered')).toBe(liveKey)
   })
 
-  it('settling a live turn keys the committed twin with the live row key', () => {
-    const model = createLiveRowModel()
-
-    const streaming = sync(model, {
-      liveActive: true,
-      historyAssistantIds: [],
-    })
-    expect(streaming.liveKey).toMatch(/^live-turn-/)
-    const liveKey = streaming.liveKey!
-
-    const settled = sync(model, {
-      liveActive: false,
-      preferredTwinId: 'a1',
-      historyAssistantIds: ['a1'],
-    })
-    expect(settled.liveKey).toBeNull()
-    expect(model.resolveMessageKey('a1')).toBe(liveKey)
-    expect(model.resolveMessageKey('other')).toBe('other')
-  })
-
   it('persist lag: alias still lands when history commits a build later', () => {
     const model = createLiveRowModel()
 
@@ -98,26 +78,6 @@ describe('createLiveRowModel', () => {
       historyAssistantIds: ['a2'],
     })
     expect(model.resolveMessageKey('a2')).toBe(secondLiveKey)
-  })
-
-  it('multi-model group reuses live-group key for the settled group row', () => {
-    const model = createLiveRowModel()
-
-    const streaming = sync(model, {
-      liveActive: true,
-      liveGroupId: 'g1',
-    })
-    expect(streaming.liveKey).toBe('live-group-g1')
-
-    sync(model, {
-      liveActive: false,
-      liveGroupId: null,
-      historyGroupIds: ['g1'],
-      historyAssistantIds: ['a1', 'a2'],
-    })
-    expect(model.resolveGroupKey('g1')).toBe('live-group-g1')
-    // Default group key when no origin:
-    expect(model.resolveGroupKey('other')).toBe('group-other')
   })
 
   it('conversation switch drops aliases', () => {

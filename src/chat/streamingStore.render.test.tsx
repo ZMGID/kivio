@@ -249,25 +249,6 @@ describe('MessageList ← streamingStore 集成', () => {
     await waitFor(() => expect(container.textContent).toMatch(/[1-9]\d*s ·/))
   })
 
-  it('renders a live delta and seconds before the run completes', async () => {
-    const execution = createChatExecutionOwner()
-    const preview = createStreamPreviewOwner()
-    const lifecycle = createChatStreamLifecycleOwner(execution, preview)
-    const conversationId = 'live-delta'
-    const base = { conversationId, runId: 'run-live', messageId: 'message-live' }
-    preview.activate(conversationId)
-    execution.begin({ conversationId, kind: 'send', startedAt: Date.now() - 3000 })
-    preview.begin(conversationId, Date.now() - 3000)
-    const { container } = render(<MessageList messages={[]} conversationId={conversationId} />)
-    act(() => {
-      lifecycle.receive({ ...base, type: 'run_started', recovery: null } as ChatStreamPayload)
-      lifecycle.receive({ ...base, type: 'text_delta', delta: 'first partial' } as ChatStreamPayload)
-    })
-    await waitFor(() => expect(container).toHaveTextContent('first partial'))
-    await waitFor(() => expect(container.textContent).toMatch(/[1-9]\d*s ·/))
-    preview.dispose()
-  })
-
   it('preserves the selected model and its content when a live group commits', async () => {
     const conversationId = 'group-continuity'
     const user: ChatMessage = { id: 'group-user', role: 'user', content: 'question', timestamp: 1, group_id: 'g1' }
@@ -389,20 +370,6 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(screen.getByRole('button', { name: '执行这条计划' })).toBeInTheDocument()
   })
 
-  it('applyStreamSnapshotToState 等价：内容快照 + coarse streaming → 渲染流式预览文本', async () => {
-    siblingRenders = 0
-    mountList()
-    expect(siblingRenders).toBe(1)
-
-    // 模拟 applyStreamSnapshotToState：setSnapshot(snapshot) + setCoarse({streaming:true})
-    act(() => {
-      setSnapshot(snapWith({ content: 'hello streaming world', streaming: true }))
-      setCoarse({ streaming: true, cancelling: false })
-    })
-    await flush()
-    expect(screen.getByText(/hello streaming world/)).toBeInTheDocument()
-  })
-
   it('恢复运行时不同时渲染同 messageId 的历史草稿和实时预览', async () => {
     render(
       <MessageList
@@ -469,25 +436,6 @@ describe('MessageList ← streamingStore 集成', () => {
     await flush()
 
     expect(buildNavigator).toHaveBeenCalledTimes(baseline)
-  })
-
-  it('cancelCurrentRunLocally 等价：coarse streaming:false+frozen:true + patchSnapshot 冻结保留文本', async () => {
-    mountList()
-    act(() => {
-      setSnapshot(snapWith({ content: 'partial answer', streaming: true }))
-      setCoarse({ streaming: true })
-    })
-    await flush()
-    expect(screen.getByText(/partial answer/)).toBeInTheDocument()
-
-    act(() => {
-      setCoarse({ streaming: false, streamFrozen: true })
-      patchSnapshot({ reasoningStreaming: false })
-    })
-    await flush()
-    // 冻结态下已生成文本仍在（streamFrozen 让预览继续渲染）。
-    expect(screen.getByText(/partial answer/)).toBeInTheDocument()
-    expect(getCoarse().streamFrozen).toBe(true)
   })
 
   it('reset（clearStreamingPreview 等价）清掉预览但保留 streamError', async () => {

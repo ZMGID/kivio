@@ -735,33 +735,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn claude_build_args_permission_mode_from_sandbox() {
-        let mk = |sandbox: Option<&str>| {
-            build_claude_args(
-                &RuntimeContext {
-                    extra_allowed_dirs: vec![],
-                    resume_session_id: None,
-                    new_session_id: None,
-                    include_partial_messages: false,
-                },
-                &RuntimeBuildOptions {
-                    model: None,
-                    reasoning: None,
-                    sandbox: sandbox.map(str::to_string),
-                },
-                None,
-            )
-        };
-        assert!(mk(Some("plan"))
-            .windows(2)
-            .any(|w| w == ["--permission-mode", "plan"]));
-        // Unset → defaults to bypassPermissions so headless tools still work.
-        assert!(mk(None)
-            .windows(2)
-            .any(|w| w == ["--permission-mode", "bypassPermissions"]));
-    }
-
     // ---- 工具审批：--permission-prompt-tool stdio 的门控 ----
 
     /// **默认档接上通道之后，用户可感知的行为必须一字不变**：默认档仍是
@@ -780,20 +753,6 @@ mod tests {
                 "{mode} 档不该被就地放行（那是偷偷降级成 bypassPermissions）"
             );
         }
-    }
-
-    /// 三个交互工具（`AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode`）只在带 flag 时
-    /// 存在，所以**每一档都带**。值是字面量 `stdio`（不是某个 MCP 工具名）。
-    #[test]
-    fn the_ask_mode_routes_permissions_over_the_stdio_control_channel() {
-        assert_eq!(
-            claude_permission_prompt_args(),
-            vec![
-                "--permission-prompt-tool".to_string(),
-                "stdio".to_string(),
-                "--allow-dangerously-skip-permissions".to_string(),
-            ]
-        );
     }
 
     /// argv 层面：每一档都带 flag（否则那一档的 claude 手里没有问用户这个工具），

@@ -18,6 +18,7 @@ import { mergeClearContextState } from '../contextClearBoundary'
 import { ContextIndicator } from '../ContextIndicator'
 import { dockApi } from '../dock/api'
 import { useTauriEvent } from '../hooks/useTauriEvent'
+import { keepNewerTodoState } from '../agentTodoState'
 import type { InputBarProps } from '../InputBar'
 import {
   deriveDshPresetModes,
@@ -98,7 +99,7 @@ function applyConversationMeta(
   setConversation((prev) => {
     if (!prev || prev.id !== updated.id) return updated
     if (updated.revision < prev.revision) return prev
-    return { ...updated, messages: prev.messages }
+    return { ...keepNewerTodoState(updated, prev), messages: prev.messages }
   })
 }
 

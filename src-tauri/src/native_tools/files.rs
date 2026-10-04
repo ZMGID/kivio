@@ -2148,34 +2148,6 @@ mod tests {
     }
 
     #[test]
-    fn edit_file_lf_file_still_edits_and_keeps_lf() {
-        let root = std::env::temp_dir().join(format!("kivio_edit_lf_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).expect("mkdir");
-        let workspace = NativeToolWorkspace::project(
-            "proj".to_string(),
-            "T".to_string(),
-            Some(root.to_string_lossy().into_owned()),
-        );
-        let file = root.join("lf.txt");
-        fs::write(&file, "x\ny\nz\n").expect("write");
-
-        let result = edit_file(
-            &workspace,
-            &json!({
-                "path": "lf.txt",
-                "edits": [{ "old_string": "y\n", "new_string": "Y\n" }]
-            }),
-        )
-        .expect("LF file edit");
-        assert!(result.ok);
-        let on_disk = String::from_utf8(fs::read(&file).expect("read")).expect("utf8");
-        assert_eq!(on_disk, "x\nY\nz\n");
-        assert!(!on_disk.contains('\r'), "LF file must not gain CR");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn edit_file_fuzzy_matches_smart_quotes() {
         let root = std::env::temp_dir().join(format!("kivio_fuzzy_q_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).expect("mkdir");

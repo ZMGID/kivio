@@ -5331,3 +5331,57 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
         "the reminder is persisted with the turn so later turns see it was sent"
     );
 }
+
+/// A run that did work and is about to end with todo items still open gets one
+/// end-of-turn reminder: the first answer is absorbed, the reminder goes last in the
+/// next request, and the check does not repeat when the model still leaves items open.
+#[tokio::test]
+async fn open_todos_at_the_final_answer_get_one_closing_reminder() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"改好了。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"还剩测试没跑。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.effective_chat_tools.max_tool_rounds = Some(5);
+    config.tools.push(crate::chat::todo::todo_write_tool());
+    config.todo_state = crate::chat::types::AgentTodoState {
+        items: vec![crate::chat::types::AgentTodoItem {
+            id: "1".to_string(),
+            content: "跑测试".to_string(),
+            status: crate::chat::types::AgentTodoStatus::InProgress,
+            ..Default::default()
+        }],
+        updated_at: 1,
+    };
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("run completes");
+
+    let bodies = server.captured_bodies();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "tool step + absorbed answer + one closing step"
+    );
+    let body: serde_json::Value = serde_json::from_str(&bodies[2]).expect("json body");
+    let messages = body["messages"].as_array().expect("messages");
+    let last = messages.last().expect("last message");
+    let reminder = last["content"].as_str().unwrap_or_default();
+    assert_eq!(last["role"], "user");
+    assert!(reminder.contains("about to end your turn"), "{reminder}");
+    assert!(reminder.contains("1. [in_progress] 跑测试"), "{reminder}");
+    assert!(bodies[2].contains("改好了"), "the absorbed answer replays");
+    assert_eq!(result.content, "还剩测试没跑。");
+    assert_eq!(result.stream_outcome, "completed");
+}

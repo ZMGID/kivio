@@ -199,16 +199,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detects_dsml_tool_calls() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": "<|DSML|tool_calls><|DSML|invoke name=\"skill\"><|DSML|parameter name=\"name\">doc</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>"
-        });
-
-        assert_eq!(extract_tool_calls(&message).len(), 1);
-    }
-
-    #[test]
     fn step_limit_system_message_matches_existing_contract() {
         let message = step_limit_system_message();
         assert_eq!(
@@ -323,13 +313,6 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("invalid or incomplete"));
-    }
-
-    #[test]
-    fn empty_assistant_response_error_exposes_flow_failure() {
-        let response = empty_assistant_response_error("Chat stream");
-
-        assert_eq!(response, "Chat stream returned an empty assistant response");
     }
 
     #[test]

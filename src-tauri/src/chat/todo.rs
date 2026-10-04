@@ -273,7 +273,7 @@ fn receipt_line(outcome: &TodoToolOutcome) -> String {
         .find(|item| item.status == AgentTodoStatus::InProgress)
     {
         Some(item) => format!(
-            "Todo list updated: {completed}/{total} done. In progress: \"{}\".",
+            "Todo list updated: {completed}/{total} done. In progress: \"{}\". Mark it completed as soon as it is done, before starting the next item.",
             item.content
         ),
         None => format!(
@@ -372,6 +372,25 @@ pub(crate) fn reminder_for_next_step(
         body.push_str(&list);
     }
     Some(reminder_message(&body))
+}
+
+/// The reminder to append when the model gives its final answer while the list it
+/// wrote in this run still has pending or in_progress items, if any. The loop sends
+/// it at most once per run, so a list the model deliberately leaves open costs one
+/// extra step, not a loop.
+pub(crate) fn final_check_reminder(current: &AgentTodoState) -> Option<Value> {
+    let open = current
+        .items
+        .iter()
+        .filter(|item| !is_resolved(item))
+        .count();
+    if open == 0 {
+        return None;
+    }
+    Some(reminder_message(&format!(
+        "You are about to end your turn, but {open} todo item(s) are still pending or in_progress:\n{}\nCall todo_write now: mark finished items completed and items you will not do cancelled. Keep an item open only if work on it really remains, and say so. Then end with one short closing sentence; do not repeat your previous answer. Do not mention this reminder to the user.",
+        format_items(&current.items)
+    )))
 }
 
 fn reminder_message(body: &str) -> Value {
@@ -610,7 +629,7 @@ mod tests {
         assert!(items[1].description.is_none());
         assert_eq!(
             tool_result(&outcome).content,
-            "Todo list updated: 0/2 done. In progress: \"First\"."
+            "Todo list updated: 0/2 done. In progress: \"First\". Mark it completed as soon as it is done, before starting the next item."
         );
     }
 
@@ -753,6 +772,27 @@ mod tests {
 
         // Nothing to restate for an empty list in a short history.
         assert!(reminder_for_next_step(&history, &AgentTodoState::default()).is_none());
+    }
+
+    #[test]
+    fn final_check_lists_open_items_and_skips_a_resolved_list() {
+        let open = state(vec![
+            item("Done", AgentTodoStatus::Completed),
+            item("Ship it", AgentTodoStatus::InProgress),
+            item("Skip", AgentTodoStatus::Cancelled),
+        ]);
+        let reminder = final_check_reminder(&open).expect("open items");
+        assert!(is_reminder_message(&reminder));
+        let text = reminder["content"].as_str().unwrap();
+        assert!(text.contains("1 todo item(s)"), "{text}");
+        assert!(text.contains("2. [in_progress] Ship it"), "{text}");
+
+        let resolved = state(vec![
+            item("Done", AgentTodoStatus::Completed),
+            item("Skip", AgentTodoStatus::Cancelled),
+        ]);
+        assert!(final_check_reminder(&resolved).is_none());
+        assert!(final_check_reminder(&AgentTodoState::default()).is_none());
     }
 
     #[test]

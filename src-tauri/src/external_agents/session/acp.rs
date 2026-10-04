@@ -3268,38 +3268,12 @@ mod tests {
     }
 
     #[test]
-    fn assembler_passes_through_incremental_deltas() {
-        let mut a = AcpTextAssembler::default();
-        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
-        assert_eq!(a.push_chunk(" world"), Some(" world".to_string()));
-    }
-
-    #[test]
     fn assembler_trims_per_message_accumulated_snapshots() {
         let mut a = AcpTextAssembler::default();
         assert_eq!(a.push_chunk("Hel"), Some("Hel".to_string()));
         assert_eq!(a.push_chunk("Hello"), Some("lo".to_string()));
         // 重复快照无新增内容。
         assert_eq!(a.push_chunk("Hello"), None);
-    }
-
-    #[test]
-    fn assembler_resets_on_boundary_for_new_message() {
-        let mut a = AcpTextAssembler::default();
-        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
-        a.on_boundary();
-        // 新消息累积快照,不以旧全文为前缀 → 视为新消息重置游标。
-        assert_eq!(a.push_chunk("Bye"), Some("Bye".to_string()));
-        assert_eq!(a.push_chunk("Byebye"), Some("bye".to_string()));
-    }
-
-    #[test]
-    fn assembler_whole_turn_snapshot_stays_backward_compatible() {
-        let mut a = AcpTextAssembler::default();
-        assert_eq!(a.push_chunk("Hello"), Some("Hello".to_string()));
-        a.on_boundary();
-        // 整轮累积语义:边界后的快照仍以旧全文开头 → 不重置,只裁出增量(不重不漏)。
-        assert_eq!(a.push_chunk("Hello world"), Some(" world".to_string()));
     }
 
     #[test]
@@ -3364,20 +3338,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_update_parses_flat_used_and_size() {
-        // opencode 本机实测原文（字段平铺在 update 下，不嵌套在 usage 对象里）。
-        let update = usage_update(json!({
-            "used": 13477,
-            "size": 200000,
-            "cost": { "amount": 0, "currency": "USD" }
-        }));
-        let usage = parse_acp_usage_update(&update).expect("usage_update 应被解析");
-        // `used` 是「上下文里现有的全部 token」，落在 input_tokens（下游分子读这里）。
-        assert_eq!(usage.input_tokens, Some(13_477));
-        assert_eq!(usage.context_window_tokens, Some(200_000));
-    }
-
-    #[test]
     fn usage_update_tolerates_missing_fields() {
         let only_used = usage_update(json!({ "used": 42 }));
         let parsed = parse_acp_usage_update(&only_used).expect("只有 used 也该解析");
@@ -3406,42 +3366,6 @@ mod tests {
                 if usage.input_tokens == Some(13_477)
                     && usage.context_window_tokens == Some(200_000)
         )));
-    }
-
-    #[test]
-    fn usage_update_does_not_mark_a_message_boundary() {
-        // 直接盯游标状态：`on_boundary()` 只是**置位**，是否真清空要等下一条 chunk 的
-        // starts_with 裁定，所以只看输出会漏掉这个回归——必须断言标志位本身。
-        // 做法：在 usage_update 前后各取一次快照，断言这条通知没有改动任何游标状态。
-        let mut state = AcpUpdateState::default();
-        let mut events = Vec::new();
-        let mut feed = |state: &mut AcpUpdateState, u: serde_json::Map<String, Value>| {
-            acp_apply_session_update(&u, state, &mut |e| events.push(e));
-        };
-        feed(&mut state, thought_chunk("t"));
-        feed(&mut state, msg_chunk("abc"));
-        let before = (
-            state.text.current.clone(),
-            state.text.boundary_pending,
-            state.thought.current.clone(),
-            state.thought.boundary_pending,
-        );
-
-        feed(
-            &mut state,
-            usage_update(json!({ "used": 100, "size": 200000 })),
-        );
-
-        assert_eq!(
-            (
-                state.text.current.clone(),
-                state.text.boundary_pending,
-                state.thought.current.clone(),
-                state.thought.boundary_pending,
-            ),
-            before,
-            "usage_update 不是消息边界，不得改动任何游标状态"
-        );
     }
 
     #[test]

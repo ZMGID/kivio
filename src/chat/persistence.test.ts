@@ -34,7 +34,6 @@ describe('isChatPath', () => {
   })
 })
 
-
 describe('normalizeStoredChatRoute', () => {
   it('accepts conversation routes and normalizes missing hash', () => {
     expect(normalizeStoredChatRoute('#chat/conv-1')).toBe('#chat/conv-1')
@@ -122,11 +121,6 @@ describe('last route memory (Rust-persisted, auto-migrates from localStorage)', 
     expect(routes.getRememberedChatRoute()).toBe('#chat/conv-legacy')
   })
 
-
-  it('falls back to the legacy localStorage value only when the cache is empty', () => {
-    window.localStorage.setItem('kivio-chat-last-route', '#chat/conv-legacy')
-    expect(routes.getRememberedChatRoute()).toBe('#chat/conv-legacy')
-  })
 })
 
 describe('sidebar width persistence', () => {

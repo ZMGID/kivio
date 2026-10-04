@@ -24,20 +24,52 @@ use super::types::{AgentRunConfig, AgentRunResult};
 /// due. It goes into both histories, so it is persisted and replayed like a steer and
 /// later steps (and turns) see it was already sent.
 fn append_todo_reminder(config: &AgentRunConfig<'_>, state: &mut RunState) {
-    let todo_exposed = state.tools.iter().any(|tool| {
-        tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)
-    });
-    if !todo_exposed {
+    if !todo_exposed(state) {
         return;
     }
-    let current = crate::chat::todo::latest_recorded_state(&state.tool_records)
-        .unwrap_or_else(|| config.todo_state.clone());
+    let current = current_todo_state(config, state);
     if let Some(reminder) =
         crate::chat::todo::reminder_for_next_step(&state.runtime_messages, &current)
     {
         state.runtime_messages.push(reminder.clone());
         state.generated_api_messages.push(reminder);
     }
+}
+
+/// At the final answer: when this run did work (wrote the list or called tools) but
+/// the list still has open items, absorb the answer and append a reminder so the
+/// model closes the list out before the turn ends. Once per run. Returns whether the
+/// loop should take another step.
+fn todo_final_check_continues(config: &AgentRunConfig<'_>, state: &mut RunState) -> bool {
+    if state.todo_final_check_sent || !todo_exposed(state) || state.tool_records.is_empty() {
+        return false;
+    }
+    let Some(reminder) =
+        crate::chat::todo::final_check_reminder(&current_todo_state(config, state))
+    else {
+        return false;
+    };
+    state.todo_final_check_sent = true;
+    if let Some(message) = state.planning_final_message.take() {
+        absorb_final_answer(state, message);
+    }
+    state.runtime_messages.push(reminder.clone());
+    state.generated_api_messages.push(reminder);
+    true
+}
+
+fn todo_exposed(state: &RunState) -> bool {
+    state.tools.iter().any(|tool| {
+        tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)
+    })
+}
+
+fn current_todo_state(
+    config: &AgentRunConfig<'_>,
+    state: &RunState,
+) -> crate::chat::types::AgentTodoState {
+    crate::chat::todo::latest_recorded_state(&state.tool_records)
+        .unwrap_or_else(|| config.todo_state.clone())
 }
 
 /// Immutable per-run environment shared by every loop phase.
@@ -82,6 +114,8 @@ pub(crate) struct RunState {
     /// 第一次遇到时 planning 返回 `RetryEmptyResponse` 原地重试；已重试过则照旧走
     /// FinalAnswer → finalize 报 "empty assistant response"。
     pub(crate) planning_empty_retried: bool,
+    /// The end-of-turn todo check (`todo_final_check_continues`) already ran this run.
+    pub(crate) todo_final_check_sent: bool,
     /// 待注入的用户插话本地队列（对齐 pi `PendingMessageQueue`）：信箱一次取空后暂存在
     /// 这里，`inject_steering_messages` 每个轮次边界只弹一条（one-at-a-time），剩余的由
     /// 后续边界与 FinalAnswer 边界的 `steering_pending` 检查保证送达。
@@ -264,6 +298,7 @@ pub async fn run_agent_loop(
         planning_final_message: None,
         planning_final_streamed: false,
         planning_empty_retried: false,
+        todo_final_check_sent: false,
         pending_steering: std::collections::VecDeque::new(),
         pending_follow_up: std::collections::VecDeque::new(),
         skill_cache: skills::SkillRunCache::default(),
@@ -458,6 +493,9 @@ pub async fn run_agent_loop(
                         if follow_up_pending(&env, &mut state) {
                             inject_follow_up_messages(&env, &mut state, round).await?;
                         }
+                        continue;
+                    }
+                    if todo_final_check_continues(&config, &mut state) {
                         continue;
                     }
                     break;

@@ -52,11 +52,12 @@ function draftReadMoved(baseline: DraftReadBaseline) {
     || latest.savedEpoch !== baseline.savedEpoch
 }
 
-export function AutomationCenter({ items, loading, listError, onReload, renderList }: {
+export function AutomationCenter({ items, loading, listError, onReload, onCreateByChat, renderList }: {
   items: AutomationMeta[]
   loading: boolean
   listError: string
   onReload: () => Promise<void>
+  onCreateByChat: () => void
   renderList: (body: ReactNode, actions: { onCreate: () => void; onImport: () => void }) => ReactNode
 }) {
   const t = useT()
@@ -294,6 +295,7 @@ export function AutomationCenter({ items, loading, listError, onReload, renderLi
       loading={loading}
       error={localError || listError}
       onCreate={() => void create()}
+      onCreateByChat={onCreateByChat}
       onOpen={(id) => void openId(id)}
       onToggle={(id, enabled) => {
         void automationApi.setEnabled(id, enabled).then(loadList).catch((err) => {

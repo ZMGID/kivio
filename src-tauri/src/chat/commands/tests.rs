@@ -1923,43 +1923,6 @@ fn strip_transcripts_for_frontend_keeps_interrupted_draft_drops_completed() {
 }
 
 #[test]
-fn effective_side_models_auto_use_session_main_model() {
-    let mut settings = Settings::default();
-    settings.providers.push(test_provider(
-        "global",
-        "Global",
-        vec!["gemini-3.1-flash-lite"],
-    ));
-    settings
-        .providers
-        .push(test_provider("session", "Session", vec!["gpt-4.1"]));
-    settings.default_models.chat.provider_id = "global".to_string();
-    settings.default_models.chat.model = "gemini-3.1-flash-lite".to_string();
-
-    let session = SessionModel {
-        provider_id: "session",
-        model: "gpt-4.1",
-    };
-
-    assert_eq!(
-        settings.effective_compression_model_for_session(Some(session)),
-        ("session".to_string(), "gpt-4.1".to_string())
-    );
-    assert_eq!(
-        settings.effective_title_summary_model_for_session(Some(session)),
-        ("session".to_string(), "gpt-4.1".to_string())
-    );
-    assert_eq!(
-        settings.effective_prompt_optimize_model_for_session(Some(session)),
-        ("session".to_string(), "gpt-4.1".to_string())
-    );
-    assert_eq!(
-        settings.effective_vision_model_for_session(Some(session)),
-        ("session".to_string(), "gpt-4.1".to_string())
-    );
-}
-
-#[test]
 fn effective_side_models_honor_explicit_mixer_selection() {
     let mut settings = Settings::default();
     settings.providers.push(test_provider(

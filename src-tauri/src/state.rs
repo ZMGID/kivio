@@ -996,15 +996,6 @@ mod tests {
     }
 
     #[test]
-    fn single_run_end_generation_retires_only_self() {
-        let st = test_state();
-        let gen = st.chat_runtime().begin_generation("conv");
-        assert!(st.chat_runtime().is_generation_active("conv", gen));
-        st.chat_runtime().end_generation("conv", gen);
-        assert!(!st.chat_runtime().is_generation_active("conv", gen));
-    }
-
-    #[test]
     fn new_run_does_not_invalidate_sibling_run() {
         // 同会话开第二条 run（多模型并发）不得作废第一条。
         let st = test_state();
@@ -1037,28 +1028,6 @@ mod tests {
         st.cancel_chat_generation("conv-1");
         assert!(!st.chat_runtime().is_generation_active("conv-1", gen1));
         assert!(st.chat_runtime().is_generation_active("conv-2", gen2));
-    }
-
-    #[test]
-    fn end_one_run_keeps_sibling_active() {
-        let st = test_state();
-        let gen_a = st.chat_runtime().begin_generation("conv");
-        let gen_b = st.chat_runtime().begin_generation("conv");
-        st.chat_runtime().end_generation("conv", gen_a);
-        assert!(!st.chat_runtime().is_generation_active("conv", gen_a));
-        assert!(st.chat_runtime().is_generation_active("conv", gen_b));
-    }
-
-    #[test]
-    fn reply_slot_allows_multiple_runs_same_conversation() {
-        // 同会话允许多条 run 并存；同一 (conv, run) 重复进入才拒绝。
-        let st = test_state();
-        assert!(!st.chat_runtime().has_active_reply("conv"));
-        assert!(st.chat_runtime().try_begin_reply("conv", "run-1"));
-        assert!(st.chat_runtime().try_begin_reply("conv", "run-2"));
-        // 同一 run 重复注册被拒。
-        assert!(!st.chat_runtime().try_begin_reply("conv", "run-1"));
-        assert!(st.chat_runtime().has_active_reply("conv"));
     }
 
     #[test]

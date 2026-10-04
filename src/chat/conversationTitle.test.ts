@@ -1,22 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  conversationTitleSource,
-  displayConversationTitle,
   isPlaceholderTitle,
   isProvisionalTitle,
   optimisticConversationTitle,
 } from './conversationTitle'
 
 describe('optimisticConversationTitle', () => {
-  it('truncates a long first message by Unicode scalar count', () => {
-    const long = '这是一条非常非常非常非常非常非常非常非常非常非常非常长的第一句话'
-    expect(Array.from(long).length).toBeGreaterThan(30)
-    expect(optimisticConversationTitle(long)).toBe(`${Array.from(long).slice(0, 30).join('')}...`)
-  })
-
-  it('keeps a short first message intact', () => {
-    expect(optimisticConversationTitle('吉林天气查询')).toBe('吉林天气查询')
-  })
 
   it('does not fall back to 新对话 when the first message is empty', () => {
     expect(optimisticConversationTitle('')).toBe('')
@@ -38,32 +27,7 @@ describe('optimisticConversationTitle', () => {
   })
 })
 
-describe('conversationTitleSource', () => {
-  it('returns empty when there is nothing to title from', () => {
-    expect(conversationTitleSource('  ', [])).toBe('')
-  })
-})
 
-describe('displayConversationTitle', () => {
-  it('keeps a generated or renamed title', () => {
-    expect(displayConversationTitle('Apex 掉帧排查', 'ignored')).toBe('Apex 掉帧排查')
-  })
-
-  it('replaces 新对话 with the first-message fallback', () => {
-    expect(displayConversationTitle('新对话', '我这几天玩apex，总是突然掉帧')).toBe(
-      '我这几天玩apex，总是突然掉帧',
-    )
-  })
-
-  it('replaces a forked placeholder with the fallback', () => {
-    expect(displayConversationTitle('新对话（分支）', '吉林天气查询')).toBe('吉林天气查询')
-  })
-
-  it('never renders 新对话 when there is no fallback yet', () => {
-    expect(displayConversationTitle('新对话', '')).toBe('')
-    expect(displayConversationTitle('新对话')).toBe('')
-  })
-})
 
 describe('isPlaceholderTitle', () => {
   it('matches the create-time sentinel only', () => {

@@ -1,6 +1,6 @@
 import { Button, IconButton } from '../../components/Button'
 import { Toggle } from '../../settings/public/controls'
-import { Plus, Trash2 } from 'lucide-react'
+import { MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
 import { useT } from '../../components/i18n'
 import { catalogEntry } from './nodeCatalog'
 import type { AutomationMeta } from '../../api/automationContracts'
@@ -15,6 +15,7 @@ export function AutomationList({
   loading,
   error,
   onCreate,
+  onCreateByChat,
   onOpen,
   onToggle,
   onDelete,
@@ -23,6 +24,7 @@ export function AutomationList({
   loading: boolean
   error: string
   onCreate: () => void
+  onCreateByChat: () => void
   onOpen: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
   onDelete: (id: string) => void
@@ -41,10 +43,16 @@ export function AutomationList({
             <p className="mt-1 max-w-[28rem] text-[13px] text-neutral-500 dark:text-neutral-400">
               {t.chatAutomationEmptyHint}
             </p>
-            <Button className="mt-4" size="sm" onClick={onCreate}>
-              <Plus size={14} />
-              {t.chatAutomationNew}
-            </Button>
+            <div className="mt-4 flex items-center gap-2">
+              <Button size="sm" variant="primary" onClick={onCreateByChat}>
+                <MessageSquarePlus size={14} strokeWidth={1.75} />
+                {t.chatTasksCreateByChat}
+              </Button>
+              <Button size="sm" onClick={onCreate}>
+                <Plus size={14} />
+                {t.chatTasksCreateManually}
+              </Button>
+            </div>
           </div>
         ) : (
           <ul className="flex flex-col gap-2">

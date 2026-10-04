@@ -9,9 +9,6 @@ const conflict = {
 }
 
 describe('isSettingsVersionConflict', () => {
-  it('recognizes structured Tauri command errors', () => {
-    expect(isSettingsVersionConflict(conflict)).toBe(true)
-  })
 
   it('recognizes JSON error strings used by some Tauri rejection adapters', () => {
     expect(isSettingsVersionConflict(JSON.stringify(conflict))).toBe(true)

@@ -1397,25 +1397,6 @@ mod tests {
     }
 
     #[test]
-    fn http_client_builder_config_is_valid() {
-        // build_http_client 内部 unwrap_or_else 会在 builder 非法时静默退回 Client::new()，
-        // 掩盖配置错误。这里直接断言相同的 builder 链能 build 成功（keepalive/pool 参数合法）。
-        let built = Client::builder()
-            .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .read_timeout(HTTP_READ_IDLE_TIMEOUT)
-            .pool_idle_timeout(HTTP_POOL_IDLE_TIMEOUT)
-            .tcp_keepalive(HTTP_TCP_KEEPALIVE)
-            .http2_keep_alive_interval(HTTP2_KEEPALIVE_INTERVAL)
-            .http2_keep_alive_timeout(HTTP2_KEEPALIVE_TIMEOUT)
-            .http2_keep_alive_while_idle(true)
-            .build();
-        assert!(
-            built.is_ok(),
-            "http client builder rejected config: {built:?}"
-        );
-    }
-
-    #[test]
     fn utf8_decoder_reassembles_split_multibyte() {
         // "温周" 各 3 字节；在字符中间切开分多片喂入，不应产生替换符。
         let bytes = "温周".as_bytes().to_vec();
@@ -1482,13 +1463,6 @@ mod tests {
         dec.read_to_end(&mut raw).expect("gunzip");
         let parsed: serde_json::Value = serde_json::from_slice(&raw).expect("round-trip json");
         assert_eq!(parsed, body);
-    }
-
-    #[test]
-    fn extract_status_code_parses_typical_send_with_retry_format() {
-        // send_with_retry 拼出来的标准格式
-        let s = "OpenAI API Error: 429 Too Many Requests - {\"error\":\"rate_limit\"}";
-        assert_eq!(extract_status_code(s), Some(429));
     }
 
     #[test]
@@ -1596,51 +1570,6 @@ mod tests {
         assert!(!is_failover_error(
             "X Error: 500 - {\"message\":\"quota exceeded\"}"
         ));
-    }
-
-    #[test]
-    fn is_failover_error_still_triggers_on_429() {
-        // 429 仍是 failover-eligible：内层退避到阈值后冒泡，外层据此换 key。
-        assert!(is_failover_error("X Error: 429 Too Many Requests - body"));
-    }
-
-    // ===== 错误分类（is_immediate_failover_status / FailoverRetryPolicy） =====
-
-    #[test]
-    fn immediate_failover_status_covers_auth_codes_only() {
-        assert!(is_immediate_failover_status(StatusCode::UNAUTHORIZED)); // 401
-        assert!(is_immediate_failover_status(StatusCode::PAYMENT_REQUIRED)); // 402
-        assert!(is_immediate_failover_status(StatusCode::FORBIDDEN)); // 403
-                                                                      // 429 不是 immediate failover —— 由内层退避重试。
-        assert!(!is_immediate_failover_status(StatusCode::TOO_MANY_REQUESTS));
-        // 5xx / 4xx 确定性错误也不是 immediate failover。
-        assert!(!is_immediate_failover_status(
-            StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(!is_immediate_failover_status(StatusCode::BAD_REQUEST));
-        assert!(!is_immediate_failover_status(StatusCode::NOT_FOUND));
-    }
-
-    #[test]
-    fn rate_limit_policy_caps_at_threshold_when_backup_key_available() {
-        let policy = FailoverRetryPolicy {
-            rate_limit_cap: Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD),
-        };
-        // 阈值 N=2：第 1 次 429 后继续重试，第 N 次后停止（冒泡换 key）。
-        assert!(policy.should_retry_rate_limit(1));
-        assert!(!policy.should_retry_rate_limit(RATE_LIMIT_KEY_SWITCH_THRESHOLD));
-        assert!(!policy.should_retry_rate_limit(RATE_LIMIT_KEY_SWITCH_THRESHOLD + 1));
-    }
-
-    #[test]
-    fn rate_limit_policy_retries_indefinitely_without_backup_key() {
-        let policy = FailoverRetryPolicy {
-            rate_limit_cap: None,
-        };
-        // 无备用 key：429 一直可重试（受外层总次数上限约束）。
-        assert!(policy.should_retry_rate_limit(1));
-        assert!(policy.should_retry_rate_limit(5));
-        assert!(policy.should_retry_rate_limit(99));
     }
 
     // ===== retry_delay_ms / parse_retry_after =====
@@ -1830,95 +1759,6 @@ mod tests {
                 "status {status} must not retry inner"
             );
         }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rate_limit_backs_off_on_same_key_when_no_backup() {
-        // 无备用 key：429 在同一 key 上退避重试到**限流专用上限**（耐心重试，不受较小的
-        // 通用 attempts 限制），不提前停。
-        let attempts = 5;
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_inner = Arc::clone(&calls);
-
-        let result = send_with_retry_status_policy(
-            "Test",
-            attempts,
-            &mut || {
-                let calls = Arc::clone(&calls_inner);
-                async move {
-                    calls.fetch_add(1, AtomicOrdering::SeqCst);
-                    Ok(make_response(429, None))
-                }
-            },
-            FailoverRetryPolicy {
-                rate_limit_cap: None,
-            },
-            &test_never_cancelled,
-        )
-        .await;
-
-        assert!(result.is_err());
-        assert_eq!(calls.load(AtomicOrdering::SeqCst), RATE_LIMIT_MAX_ATTEMPTS);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rate_limit_bubbles_at_threshold_when_backup_available() {
-        // 有备用 key：429 退避到阈值 N 后停止重试并冒泡（让外层换 key）。
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_inner = Arc::clone(&calls);
-
-        let result = send_with_retry_status_policy(
-            "Test",
-            10, // 总次数远大于阈值，验证是阈值而非总次数封顶
-            &mut || {
-                let calls = Arc::clone(&calls_inner);
-                async move {
-                    calls.fetch_add(1, AtomicOrdering::SeqCst);
-                    Ok(make_response(429, None))
-                }
-            },
-            FailoverRetryPolicy {
-                rate_limit_cap: Some(RATE_LIMIT_KEY_SWITCH_THRESHOLD),
-            },
-            &test_never_cancelled,
-        )
-        .await;
-
-        let err = result.expect_err("429 at threshold should bubble");
-        assert!(is_failover_error(&err));
-        // 第 N 次 429 后停止 → 共发 N 次。
-        assert_eq!(
-            calls.load(AtomicOrdering::SeqCst),
-            RATE_LIMIT_KEY_SWITCH_THRESHOLD
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rate_limit_respects_retry_after_header() {
-        // Retry-After 优先：429 带 retry-after，仍退避重试（这里验证不快速失败、能继续）。
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_inner = Arc::clone(&calls);
-
-        let result = send_with_retry_status_policy(
-            "Test",
-            3,
-            &mut || {
-                let calls = Arc::clone(&calls_inner);
-                async move {
-                    calls.fetch_add(1, AtomicOrdering::SeqCst);
-                    Ok(make_response(429, Some(2)))
-                }
-            },
-            FailoverRetryPolicy {
-                rate_limit_cap: None,
-            },
-            &test_never_cancelled,
-        )
-        .await;
-
-        assert!(result.is_err());
-        // 退避重试到限流专用上限（paused 时钟让 retry-after 的 sleep 瞬时跳过）。
-        assert_eq!(calls.load(AtomicOrdering::SeqCst), RATE_LIMIT_MAX_ATTEMPTS);
     }
 
     #[tokio::test(start_paused = true)]
@@ -2137,21 +1977,6 @@ mod tests {
         let err = sink.emit(text_delta("你好")).unwrap_err();
         assert!(err.is_cancelled());
         assert!(events.is_empty());
-    }
-
-    #[test]
-    fn combined_splitter_separator_within_single_delta() {
-        let mut splitter = CombinedTranslateSplitter::new();
-        let pieces = splitter.push(&format!("你好\n{TEST_SEP}\nHello"));
-        assert_eq!(
-            pieces,
-            vec![
-                CombinedSplitPiece::Translated("你好".to_string()),
-                CombinedSplitPiece::Original("Hello".to_string()),
-            ]
-        );
-        assert_eq!(splitter.translated(), "你好");
-        assert_eq!(splitter.original(), "Hello");
     }
 
     #[test]

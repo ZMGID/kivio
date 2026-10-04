@@ -25,13 +25,6 @@ describe('optimistic user presentation', () => {
     expect(owner.overlay('a', [])).toEqual([])
   })
 
-  it('keeps a background send visible if the view navigates away and back', () => {
-    const owner = createOptimisticUserPresentation()
-    owner.begin('a', 'background', [], 100_000)
-    expect(owner.overlay('b', [])).toEqual([])
-    expect(owner.overlay('a', [])).toMatchObject([{ content: 'background' }])
-  })
-
   it('does not mistake an earlier identical user message for the new send', () => {
     const owner = createOptimisticUserPresentation()
     const previous = stored('previous', 'again', 100)

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { AlertCircle, ArrowUpRight, CalendarCheck, Clock, History, MoreHorizontal, Play, Plus, SquarePen, Trash2 } from 'lucide-react'
+import { AlertCircle, ArrowUpRight, CalendarCheck, Clock, History, MessageSquarePlus, MoreHorizontal, Play, Plus, SquarePen, Trash2 } from 'lucide-react'
 import { api } from '../../api/tauri'
 import type { ScheduleRule, ScheduledTask } from '../../api/scheduledTaskContracts'
 import { Button, IconButton } from '../../components/Button'
@@ -44,8 +44,9 @@ function TaskMenu({ anchor, busy, onAction, onClose }: {
   </div>, document.body)
 }
 
-export function ScheduledTasksCenter({ onOpenConversation, renderList, registerLeaveGuard }: {
+export function ScheduledTasksCenter({ onOpenConversation, onCreateByChat, renderList, registerLeaveGuard }: {
   onOpenConversation: (id: string) => void
+  onCreateByChat: () => void
   renderList: (body: ReactNode, onCreate: () => void) => ReactNode
   registerLeaveGuard?: RegisterTaskLeaveGuard
 }) {
@@ -91,7 +92,10 @@ export function ScheduledTasksCenter({ onOpenConversation, renderList, registerL
         <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--theme-surface-muted)] text-neutral-400"><Clock size={23} strokeWidth={1.5} /></span>
         <h2 className="text-[15px] font-medium text-neutral-800">{t.chatSchedulesEmpty}</h2>
         <p className="mt-2 max-w-[24rem] text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">{t.chatSchedulesEmptyHint}</p>
-        <Button className="mt-5" size="sm" variant="primary" onClick={() => setEditor({ task: null })}><Plus size={14} strokeWidth={1.75} />{t.chatSchedulesNew}</Button>
+        <div className="mt-5 flex items-center gap-2">
+          <Button size="sm" variant="primary" onClick={onCreateByChat}><MessageSquarePlus size={14} strokeWidth={1.75} />{t.chatTasksCreateByChat}</Button>
+          <Button size="sm" onClick={() => setEditor({ task: null })}><Plus size={14} strokeWidth={1.75} />{t.chatTasksCreateManually}</Button>
+        </div>
         <div className="mt-8 flex max-w-[34rem] flex-wrap justify-center gap-2">{templates.map(template => <Button key={template.name} size="sm" onClick={() => setEditor({ task: null, template })}>{template.prompt}</Button>)}</div>
       </div> : <ul className="flex flex-col gap-2">{tasks.map(task => {
         const Icon = task.status === 'completed' ? CalendarCheck : Clock

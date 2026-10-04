@@ -10,6 +10,7 @@ import {
   type AgentRuntimeConfig,
 } from '../api'
 import { useTauriEvent } from '../hooks/useTauriEvent'
+import { keepNewerTodoState, patchTodoState } from '../agentTodoState'
 import { userPromptEventToRecord } from '../streamApply'
 import { createChatExecutionOwner } from '../chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
@@ -62,7 +63,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const acceptPersistedConversation = useCallback((next: Conversation) => {
     setConversation((current) => current?.id === next.id && current.revision > next.revision
       ? current
-      : next)
+      : keepNewerTodoState(next, current))
   }, [])
 
   useEffect(() => {
@@ -212,7 +213,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     if (payload.conversationId !== conversationIdRef.current) return
     const todoState = payload.todoState as AgentTodoState
     setConversation((current) => current
-      ? { ...current, agent_todo_state: todoState, agentTodoState: todoState }
+      ? patchTodoState(current, todoState, payload.revision)
       : current)
   }, [])
 

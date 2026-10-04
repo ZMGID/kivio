@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Plus, Upload } from 'lucide-react'
+import { MessageSquarePlus, Plus, Upload } from 'lucide-react'
 import { api } from '../../api/tauri'
 import type { AutomationMeta } from '../../api/automationContracts'
 import { Button } from '../../components/Button'
@@ -13,9 +13,10 @@ import type { RegisterTaskLeaveGuard } from './ScheduledTaskEditor'
 import { useScheduledTasks } from './useScheduledTasks'
 import '../market/market.css'
 
-export function TasksCenter({ tab, onOpenConversation, registerLeaveGuard }: {
+export function TasksCenter({ tab, onOpenConversation, onCreateByChat, registerLeaveGuard }: {
   tab: 'schedules' | 'automations'
   onOpenConversation: (id: string) => void
+  onCreateByChat: (prompt: string) => void
   registerLeaveGuard?: RegisterTaskLeaveGuard
 }) {
   const t = useT()
@@ -81,12 +82,21 @@ export function TasksCenter({ tab, onOpenConversation, registerLeaveGuard }: {
     <div id="tasks-panel" role="tabpanel" aria-labelledby={`tasks-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">{body}</div>
   </section>
 
+  const createByChatPrompt = () => onCreateByChat(tab === 'schedules' ? t.chatSchedulesChatPrompt : t.chatAutomationChatPrompt)
+  const createByChat = <Button size="sm" variant="primary" onClick={createByChatPrompt}>
+    <MessageSquarePlus size={14} strokeWidth={1.75} />{t.chatTasksCreateByChat}
+  </Button>
+
   return tab === 'automations'
-    ? <AutomationCenter items={automations} loading={loading} listError={error} onReload={reloadAutomations}
+    ? <AutomationCenter items={automations} loading={loading} listError={error} onReload={reloadAutomations} onCreateByChat={createByChatPrompt}
       renderList={(body, actions) => shell(body, <>
         <Button size="sm" variant="ghost" onClick={actions.onImport}><Upload size={14} strokeWidth={1.75} />{t.chatAutomationImport}</Button>
-        <Button size="sm" variant="primary" onClick={actions.onCreate}><Plus size={14} strokeWidth={1.75} />{t.chatAutomationNew}</Button>
+        <Button size="sm" variant="ghost" onClick={actions.onCreate}><Plus size={14} strokeWidth={1.75} />{t.chatTasksCreateManually}</Button>
+        {createByChat}
       </>)} />
-    : <ScheduledTasksCenter onOpenConversation={onOpenConversation} registerLeaveGuard={registerLeaveGuard}
-      renderList={(body, onCreate) => shell(body, <Button size="sm" variant="primary" onClick={onCreate}><Plus size={14} strokeWidth={1.75} />{t.chatSchedulesNew}</Button>)} />
+    : <ScheduledTasksCenter onOpenConversation={onOpenConversation} onCreateByChat={createByChatPrompt} registerLeaveGuard={registerLeaveGuard}
+      renderList={(body, onCreate) => shell(body, <>
+        <Button size="sm" variant="ghost" onClick={onCreate}><Plus size={14} strokeWidth={1.75} />{t.chatTasksCreateManually}</Button>
+        {createByChat}
+      </>)} />
 }

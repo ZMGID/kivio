@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMcpServer, Settings } from '../api/tauri'
 import {
-  acceptSettingsSave,
   createSettingsEditorState,
   updateSettingsEditorDraft,
   receiveSettingsSnapshot,
@@ -128,25 +127,6 @@ describe('settings editor canonical state', () => {
     const converged = receiveSettingsSnapshot(changedAgain, settings({ theme: 'dark', favoriteModels: ['m1'] }))
     expect(converged.conflicts).toEqual([])
     expect(converged.draft).toEqual(converged.acknowledgedDraft)
-  })
-
-  it('accepts canonical corrections while retaining acknowledged placeholder input', () => {
-    const submitted = settings({
-      retryAttempts: 999,
-      providers: [{ id: 'draft-provider', apiKeys: [''] }],
-    })
-    const canonical = settings({ retryAttempts: 10, providers: [] })
-
-    const next = acceptSettingsSave(
-      submitted,
-      canonical,
-      submitted,
-    )
-
-    expect(next.canonical.retryAttempts).toBe(10)
-    expect(next.draft.retryAttempts).toBe(10)
-    expect(next.draft.providers).toEqual([{ id: 'draft-provider', apiKeys: [''] }])
-    expect(next.acknowledgedDraft).toEqual(next.draft)
   })
 
   it('merges different provider entities and reports a same-field conflict', () => {

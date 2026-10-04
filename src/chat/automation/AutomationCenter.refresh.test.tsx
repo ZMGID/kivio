@@ -86,7 +86,7 @@ beforeEach(() => {
 
 function mount() {
   return render(<AutomationCenter items={[]} loading={false} listError="" onReload={mocks.reload}
-    renderList={(body) => <div data-testid="list">{body}</div>} />)
+    onCreateByChat={() => {}} renderList={(body) => <div data-testid="list">{body}</div>} />)
 }
 
 const staleRemote = doc({

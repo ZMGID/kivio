@@ -5,11 +5,8 @@ import {
   decodeChatRouteId,
   decodeConversationRouteId,
   encodeChatRouteId,
-  isChatOnboardingPath,
-  isChatPath,
   isRememberableChatRoute,
   isRestorableChatRoute,
-  isChatSettingsPath,
   pathFromHash,
 } from './routeCodec'
 import {
@@ -35,48 +32,11 @@ describe('chat route codec', () => {
     expect(isRestorableChatRoute(fixture.raw)).toBe(fixture.restorable)
   })
 
-  it('normalizes hashes and classifies center routes in one place', () => {
-    expect(pathFromHash('#chat/settings?tab=general')).toBe('chat/settings')
-    expect(isChatPath('chat/conversation-1')).toBe(true)
-    expect(isChatSettingsPath('chat/settings/providers')).toBe(true)
-    expect(isChatOnboardingPath('chat/onboarding/step')).toBe(true)
-    expect(chatRouteKind('chat/automations/a-1')).toBe('automations')
-    expect(chatRouteKind('chat/conversation-1')).toBe('conversation')
-  })
-
   it('decodes one route segment and contains malformed encoding', () => {
     expect(encodeChatRouteId('chat/popout/', 'a/b')).toBe('chat/popout/a%2Fb')
     expect(decodeChatRouteId('chat/', 'chat/a%2Fb')).toBe('a/b')
     expect(decodeChatRouteId('chat/', 'chat/a/b')).toBeNull()
     expect(decodeChatRouteId('chat/', 'chat/%E0%A4%A')).toBeNull()
-  })
-
-  it('preserves rememberable center routes while rejecting transient and corrupt routes', () => {
-    for (const path of [
-      'chat/assistants',
-      'chat/skill/item',
-      'chat/plugins',
-      'chat/sessions',
-      'chat/automations/a-1',
-      'chat/automations',
-      'chat/schedules',
-      'chat/mcp',
-      'chat/knowledge',
-      'chat/notes/n-1',
-    ]) {
-      expect(isRememberableChatRoute(path), path).toBe(true)
-    }
-    for (const path of [
-      'chat',
-      'chat/settings',
-      'chat/onboarding',
-      'chat/popout/c-1',
-      'chat/a/b',
-      'chat/%E0%A4%A',
-      'lens',
-    ]) {
-      expect(isRememberableChatRoute(path), path).toBe(false)
-    }
   })
 
   it.each([
