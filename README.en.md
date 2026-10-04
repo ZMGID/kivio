@@ -78,6 +78,8 @@ Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current not
 - Three runtimes: Kivio Agent (full tools), Kivio Chat (search / fetch / knowledge base, read-only), external CLI
 - Hand a conversation to Claude Code, Codex, Cursor, OpenCode, Gemini, Kimi, Pi, Hermes, Grok, or DeepSeek Harness if they are installed
 - Import native CLI sessions (pinned to the original CLI and working directory)
+- Media studio: generate images and videos; video results and creation details load the first frame before playback, without autoplay
+- Progressive SVG previews in chat: `svg` blocks and SVG-only `html` blocks render during generation, with a source toggle and the last picture preserved for unfinished tags, attributes, or character entities, including Markdown-added trailing newlines. Ordinary HTML pages remain sandboxed previews after generation ends
 
 ### Translate & Lens
 

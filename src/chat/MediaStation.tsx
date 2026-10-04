@@ -83,7 +83,11 @@ function OutputPreview({ job, index }: { job: MediaJob; index: number }) {
   if (error) return <p role="alert">{error}</p>
   if (!url) return <LoaderCircle className="animate-spin" aria-label="Loading" />
   return output.mimeType.startsWith('video/')
-    ? <video src={url} controls preload="metadata" />
+    ? <video src={url} controls preload="auto" onLoadedMetadata={(event) => {
+      // WebKit can leave an unplayed video blank until a seek decodes its first frame.
+      const video = event.currentTarget
+      if (video.currentTime === 0 && video.duration > 0) video.currentTime = Math.min(0.001, video.duration / 2)
+    }} />
     : <img src={url} alt={job.request.prompt} />
 }
 

@@ -78,6 +78,8 @@
 - 三种运行时：Kivio Agent（完整工具）、Kivio Chat（检索 / 抓取 / 知识库等只读能力）、外部 CLI
 - 对话可交给本机已装的 Claude Code、Codex、Cursor、OpenCode、Gemini、Kimi、Pi、Hermes、Grok 或 DeepSeek Harness
 - 可从本机 CLI 导入原生会话（钉在原 CLI 与原工作目录上续聊）
+- 媒体站：生成图片与视频；视频结果和创作记录详情在播放前加载首帧画面，不自动播放
+- 聊天 SVG 渐进预览：`svg` 代码块和以 SVG 为根的纯 `html` 图形在生成中逐步显示；可切换源码，标签、属性或字符实体未完成时保留已有画面，包括 Markdown 补入末尾换行的情况。普通 HTML 页面仍在生成结束后隔离预览
 
 ### 翻译与 Lens
 

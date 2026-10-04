@@ -1,4 +1,4 @@
-import { createContext, isValidElement, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Code2, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { BlockProps, Components, UrlTransform } from 'streamdown'
@@ -36,6 +36,7 @@ import { copyToClipboard } from '../utils/clipboard'
 import { IconButton } from '../components/Button'
 import { CliCommandReport } from './CliCommandReport'
 import { normalizeLegacyCliReport, parseCliReport } from './cliCommandReportData'
+import { isSvgSource, readSvgPreview } from './svgPreview'
 
 interface ChatMarkdownProps {
   content: string
@@ -772,6 +773,145 @@ function HtmlCodePreview({ html }: { html: string }) {
   )
 }
 
+/** Decode complete SVG snapshots offscreen; an unfinished delta never clears the last picture. */
+function SvgCodePreview({ source, language }: { source: string; language: string }) {
+  const streaming = useContext(MarkdownStreamingContext)
+  const [view, setView] = useState<'preview' | 'source'>('preview')
+  const [analysis, setAnalysis] = useState(() => ({ source, result: readSvgPreview(source) }))
+  const [frame, setFrame] = useState<{ url: string; svg: string } | null>(null)
+  const [failed, setFailed] = useState(false)
+  const latest = useRef({ source, streaming })
+  const work = useRef({
+    active: false,
+    running: false,
+    timer: undefined as number | undefined,
+    runId: 0,
+    epoch: 0,
+    frame: null as { url: string; svg: string } | null,
+    ratio: analysis.result.snapshot?.aspectRatio ?? null,
+    urls: new Set<string>(),
+  })
+
+  const refresh = useCallback(async function refresh() {
+    const state = work.current
+    state.timer = undefined
+    if (!state.active || state.running) return
+    state.running = true
+    const runId = ++state.runId
+    const epoch = state.epoch
+    const request = latest.current
+    const result = readSvgPreview(request.source)
+    setAnalysis({ source: request.source, result })
+    const snapshot = result.snapshot
+    if (snapshot && state.ratio === null) state.ratio = snapshot.aspectRatio
+    try {
+      if (!snapshot) return
+      if (snapshot.svg === state.frame?.svg) {
+        setFailed(false)
+        return
+      }
+      const url = URL.createObjectURL(new Blob([snapshot.svg], { type: 'image/svg+xml' }))
+      state.urls.add(url)
+      const image = new Image()
+      image.src = url
+      try {
+        await image.decode()
+        if (!state.active || state.runId !== runId || state.epoch !== epoch) {
+          URL.revokeObjectURL(url)
+          state.urls.delete(url)
+          return
+        }
+        state.frame = { url, svg: snapshot.svg }
+        setFrame(state.frame)
+        setFailed(false)
+      } catch {
+        URL.revokeObjectURL(url)
+        state.urls.delete(url)
+        if (state.active && state.runId === runId && state.epoch === epoch) setFailed(true)
+      }
+    } finally {
+      if (state.runId === runId) {
+        state.running = false
+        if (state.active && (latest.current.source !== request.source || latest.current.streaming !== request.streaming)) {
+          // Throttle, not debounce: continuous tokens must still produce pictures.
+          state.timer = window.setTimeout(() => void refresh(), latest.current.streaming ? 120 : 0)
+        }
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const state = work.current
+    state.active = true
+    return () => {
+      state.active = false
+      state.runId++
+      state.running = false
+      clearTimeout(state.timer)
+      state.timer = undefined
+      for (const url of state.urls) URL.revokeObjectURL(url)
+      state.urls.clear()
+      state.frame = null
+    }
+  }, [])
+  useEffect(() => {
+    if (!frame) return
+    const state = work.current
+    // Revoke the old URL only after React has committed its replacement.
+    return () => {
+      URL.revokeObjectURL(frame.url)
+      state.urls.delete(frame.url)
+    }
+  }, [frame])
+  useEffect(() => {
+    const state = work.current
+    if (!source.trimEnd().startsWith(latest.current.source.trimEnd())) {
+      state.epoch++
+      state.frame = null
+      state.ratio = null
+      setFrame(null)
+      setFailed(false)
+    }
+    latest.current = { source, streaming }
+    if (!streaming) {
+      clearTimeout(state.timer)
+      state.timer = undefined
+    }
+    if (!state.running && state.timer === undefined) {
+      if (streaming) state.timer = window.setTimeout(() => void refresh(), 120)
+      else void refresh()
+    }
+  }, [source, streaming, refresh])
+
+  if (language === 'html' && analysis.source === source && analysis.result.kind === 'html') {
+    return <HtmlCodePreview html={source} />
+  }
+  const snapshot = analysis.source === source ? analysis.result.snapshot : null
+  const status = streaming ? '正在绘制 SVG…'
+    : snapshot?.complete && !failed ? frame?.svg === snapshot.svg ? 'SVG' : '正在加载 SVG…'
+      : 'SVG 未完成或无法预览，请查看源码'
+  return <>
+    {view === 'source' ? <CodeBlock code={source} language={language} /> : (
+      <div className="relative my-3 w-full overflow-hidden rounded-lg border border-[var(--border-input)] bg-white dark:bg-neutral-950"
+        style={{ aspectRatio: String(work.current.ratio ?? 16 / 9), maxHeight: 520 }}>
+        {frame ? <img src={frame.url} alt="SVG 预览" className="absolute inset-0 h-full w-full object-contain" />
+          : <div className="absolute inset-0 flex items-center justify-center text-[var(--color-muted-foreground)]"><Loader2 className={streaming ? 'animate-spin' : ''} size={20} aria-hidden="true" /></div>}
+      </div>
+    )}
+    <div className="-mt-1 mb-2 flex items-center justify-between gap-2">
+      <span role="status" className="text-xs text-[var(--color-muted-foreground)]">{status}</span>
+      <div className="flex gap-0.5">
+        <IconButton size="sm" onClick={() => setView((current) => current === 'preview' ? 'source' : 'preview')}
+          label={view === 'preview' ? '查看源码' : '查看预览'}>
+          {view === 'preview' ? <Code2 size={14} strokeWidth={2} /> : <Eye size={14} strokeWidth={2} />}
+        </IconButton>
+        <IconButton size="sm" onClick={() => void api.openHtmlPreview(source).catch((error) => console.error('Failed to open SVG preview:', error))}
+          label="在浏览器打开"><ExternalLink size={14} strokeWidth={2} /></IconButton>
+      </div>
+    </div>
+  </>
+}
+
 function MarkdownPre({ children }: { children?: ReactNode }) {
   // 流式与落库走**同一个** DeferredCodeBlock 外壳：流式下它 eager（`eager={streaming}`，
   // useState 初始化就 hydrated，没有 fallback 112px → 真身的高度跳变），但 island 的
@@ -787,6 +927,9 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
     if (language === 'kivio-cli-report') {
       const report = parseCliReport(code)
       if (report) return <CliCommandReport report={report} />
+    }
+    if (language === 'svg' || (language === 'html' && isSvgSource(code))) {
+      return <SvgCodePreview source={code} language={language} />
     }
     if (language === 'html') {
       return <HtmlCodePreview html={code} />
