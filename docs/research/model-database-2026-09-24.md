@@ -35,3 +35,40 @@ The Claude database key uses `claude-opus-5.5`, following existing separator nor
 ## Survey boundaries
 
 The checked [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing/) and [MiniMax](https://platform.minimax.io/docs/guides/pricing-paygo) core API models/prices were already represented. [Gemini's release notes](https://ai.google.dev/gemini-api/docs/changelog) mainly add voice/TTS and an Antigravity agent endpoint after this catalog's previous snapshot; those endpoints need different transports and were not added as ordinary chat models. This was a focused current-model refresh, not a re-audit of every historical entry or a paid live inference test.
+
+## Follow-up — 2026-10-04
+
+The catalog now contains 335 model entries, up from 322. Thirteen entries were added after checking official vendor pages and live OpenRouter model/endpoint metadata. Prices in the table retain the existing USD-per-million-token convention; “unspecified” does not mean free. Saved provider model selections, enabled models, and explicit user overrides are unchanged.
+
+| Catalog model ID | Stored context / output | Input / output / cached-input pricing | Source |
+| --- | --- | --- | --- |
+| `gpt-6.1-sol` | 256,000 / 128,000 | 2 / 10 / 0.10 | [OpenAI](https://developers.openai.com/api/docs/models/gpt-6.1-sol) |
+| `openai/gpt-6.1-sol-pro` | 256,000 / 128,000 | 2 / 10 / 0.10 | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/openai/gpt-6.1-sol-pro/endpoints) |
+| `claude-sonnet-5.5` | 1,000,000 / 128,000 | 2 / 10 / 0.20 | [Anthropic](https://platform.claude.com/docs/en/models/sonnet-5-5/overview) |
+| `minimax-m3.1-flash-preview` | 1,000,000 / 524,288 | unspecified | [MiniMax API](https://platform.minimax.io/docs/api-reference/text-chat-openai.md), [model limits](https://platform.minimax.io/docs/guides/models-intro) |
+| `inclusionai/ling-3.1-flash` | 262,144 / 32,768 | 0 / 0 / unspecified | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/inclusionai/ling-3.1-flash/endpoints) |
+| `apodex/apodex-1.1-mini:free` | 262,144 / 235,929 | 0 / 0 / unspecified | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/apodex/apodex-1.1-mini:free/endpoints) |
+| `unbiased/pareto-26.10-preview` | 1,048,576 / 131,072 | 0.80 / 3.20 / 0.03 | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/unbiased/pareto-26.10-preview/endpoints) |
+| `perceptron/perceptron-mk1.5` | 36,864 / 8,192 | 0.15 / 1.50 / unspecified | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/perceptron/perceptron-mk1.5/endpoints) |
+| `fireworks/ember-1` | 1,048,576 / 943,718 | 3 / 15 / 0.30 | [OpenRouter endpoint](https://openrouter.ai/api/v1/models/fireworks/ember-1/endpoints) |
+| `stepfun/step-5-preview` | 1,048,576 / 1,048,576 | unspecified in USD | [Alibaba model](https://help.aliyun.com/zh/model-studio/step-5-preview), [API](https://help.aliyun.com/zh/model-studio/stepfun) |
+| `qwen-image-2.1-pro` | unspecified / unspecified | per-image billing; no token rate stored | [Alibaba](https://help.aliyun.com/zh/model-studio/qwen-image-2-1-pro) |
+| `embed-v5.0-pro` | 128,000 / embedding | 0.12 / 0 / unspecified | [Cohere model IDs](https://docs.cohere.com/v2/docs/models), [release and pricing](https://cohere.com/blog/embed-5) |
+| `embed-v5.0-fast` | 128,000 / embedding | 0.08 / 0 / unspecified | [Cohere model IDs](https://docs.cohere.com/v2/docs/models), [release and pricing](https://cohere.com/blog/embed-5) |
+
+### Access, controls, and pricing boundaries
+
+- GPT-6.1 Sol retains the project's 256K GPT default, including the OpenRouter Pro alias. The published total context is 1,050,000 tokens, with up to 922,000 input and 128,000 output tokens. Sol requires reasoning: `none` and `minimal` are not supported; select a supported thinking level. Direct tool use requires Responses, not Chat Completions. The stored rates are short-context rates; prompts above 272K tokens have higher rates. Pro is a reasoning mode on the direct OpenAI API, not a separate direct `gpt-6.1-sol-pro` model ID. The fully namespaced catalog entry refers only to OpenRouter's advertised alias.
+- Sonnet 5.5 uses API ID `claude-sonnet-5-5`; the dotted catalog key follows existing normalization. Its Off request now sends only `thinking: {"type": "between_tools"}` and no effort override, retaining the upstream default `high`. It turns off up-front thinking, not tool progress thinking. `between_tools` rejects `display`, manual budgets, and `xhigh`/`max`; enabled requests use adaptive thinking with the selected effort. Sonnet 5 still sends `disabled`, and Opus 5.5/Fable remain always-on. Forced tool use is not supported by Sonnet 5.5. [Breaking changes](https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5).
+- MiniMax M3.1 Flash Preview is available only through M Plan / MiniMax Code, not ordinary pay-as-you-go access. The selected API ID is `MiniMax-M3.1-Flash-Preview`; matching is case-insensitive. Image/video input and low/medium/high/xhigh/max are documented. Thinking is mandatory, so Off/`none` is not supported. No unpublished pay-as-you-go token price is invented.
+- Hosted entries retain their full provider namespaces and the Apodex `:free` suffix. The checked endpoints reported status `0`; availability and free pricing can change. Ling and Apodex publish reasoning support but no named effort list, so the list is explicitly empty. Pareto exposes no reasoning control in its endpoint contract, so no reasoning knob is advertised. Perceptron stores the supported low/medium/high UI levels; the API also accepts minimal and none. Ember stores low/high/max. [Live catalog, including effort metadata](https://openrouter.ai/api/v1/models).
+- Step 5 Preview's verified endpoint is the Beijing Alibaba workspace OpenAI-compatible API. Its prices are published in CNY (7 input / 20 output / 0.35 cached input per million tokens), so no guessed USD conversion is stored. Thinking is off by default and requires the endpoint-specific `enable_thinking: true` extra request-body field; supported efforts are low/medium/high. This refresh does not add provider routing or private-parameter automation.
+- Qwen Image 2.1 Pro accepts text and reference images and produces images, not chat text. Context/output limits are unpublished and retain the existing zero sentinel. Published Beijing pricing is CNY 0.25 per image; the Singapore price is CNY 0.283404 per image. Neither is entered as USD token pricing.
+- Embed 5 Pro/Fast support multimodal, multilingual embeddings with a default 2,048 dimensions and optional 256/512/768/1024/1536/2048 dimensions. The stored input price is for text; image input is separately priced at USD 0.40 per million tokens. This adds catalog metadata, not a new Cohere-native embedding transport or a multimodal indexing workflow.
+
+### Existing limits corrected and verification
+
+- MiniMax M3: context corrected from 1,048,576 to the documented 1,000,000, maximum output from 512,000 to 524,288, and video input added. MiniMax M2.7 / Highspeed: maximum output corrected from 131,072 to 204,800. [Official model table](https://platform.minimax.io/docs/guides/models-intro).
+- Catalog matching/import tests: 65 passed. Anthropic request-body tests: 41 passed; model-metadata tests: 30 passed. TypeScript type checking passed. A Sonnet 5.5 request-body regression failed with the old `disabled` field before the fix and passed with `between_tools`; obsolete profile-field-only assertions were removed.
+- A disposable Vite harness mounted the actual model detail drawer with the application styles. All 13 selected IDs, names, context/output values, capabilities, token prices, and named effort controls were exercised; a saved GPT context override survived switching models and did not alter the Pro entry. The visible Sonnet drawer was captured. No paid inference or native desktop/provider-access smoke was performed.
+- Batch-only Claude aliases, automatic routers with sentinel prices, retired IDs, and unconfirmed release names were excluded. Existing historical entries were not mass-removed.

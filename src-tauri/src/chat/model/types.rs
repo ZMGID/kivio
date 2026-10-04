@@ -193,7 +193,8 @@ pub struct GenerateOptions {
     /// 思考开关。UI「Off」时为 false：适配器**必须显式**下发关闭信号
     /// （OpenAI Chat → `reasoning_effort:"none"`；DeepSeek/Kimi → `thinking.type=disabled`；
     /// Responses → `reasoning.effort:"none"`；Anthropic Sonnet 5 / Opus 5 →
-    /// `thinking.type:disabled`；Fable/Mythos 始终开着，Off 只省略字段），
+    /// `thinking.type:disabled`；Sonnet 5.5 → `thinking.type:between_tools`；
+    /// Fable/Mythos/Opus 5.5 始终开着，Off 只省略字段），
     /// 不能靠省略字段——多家默认 effort=high。
     pub thinking_enabled: bool,
     /// 每对话「思考等级」(`"low"|"medium"|"high"|…`)。`None` = 未设档：

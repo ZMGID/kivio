@@ -911,8 +911,8 @@ fn apply_anthropic_thinking(
     use crate::chat::model_metadata::ClaudeThinkingKind;
 
     if !request.options.thinking_enabled {
-        if profile.is_some_and(|profile| profile.send_disabled_on_off) {
-            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        if let Some(kind) = profile.and_then(|profile| profile.off_thinking_type) {
+            body["thinking"] = serde_json::json!({ "type": kind });
         }
         return;
     }
@@ -2129,6 +2129,26 @@ mod tests {
         }
         let opus5 = build_anthropic_body_with("claude-opus-5", None, false, None, None);
         assert_eq!(opus5["thinking"]["type"], "disabled");
+    }
+
+    #[test]
+    fn sonnet_55_off_uses_between_tools_and_on_uses_adaptive() {
+        for model in ["claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"] {
+            let off = build_anthropic_body_with(model, Some("max"), false, Some(0.4), None);
+            assert_eq!(
+                off["thinking"],
+                serde_json::json!({ "type": "between_tools" })
+            );
+            assert!(off.get("output_config").is_none(), "body: {off}");
+            assert!(off.get("temperature").is_none(), "body: {off}");
+            for level in ["low", "medium", "high", "xhigh", "max"] {
+                let body = build_anthropic_body_for(model, Some(level), None, None);
+                assert_eq!(body["thinking"]["type"], "adaptive");
+                assert_eq!(body["output_config"]["effort"], level);
+            }
+        }
+        let sonnet5 = build_anthropic_body_with("claude-sonnet-5", None, false, None, None);
+        assert_eq!(sonnet5["thinking"]["type"], "disabled");
     }
 
     #[test]
