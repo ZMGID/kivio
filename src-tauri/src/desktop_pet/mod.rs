@@ -1,13 +1,13 @@
 //! Momo owns only its native window and a small projection of accepted run events.
 //! Business execution and approval decisions remain with the existing chat owners.
 mod behavior;
+mod companion;
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod platform;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
 mod platform;
-mod shapes;
 mod sim;
 mod visual;
 
@@ -23,7 +23,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Position {
@@ -85,6 +85,9 @@ impl Activity {
             return;
         }
         if matches!(envelope.event, ChatRunEvent::RunStarted { .. }) {
+            if !self.runs.contains_key(&envelope.run_id) {
+                self.recent = None;
+            }
             self.runs
                 .entry(envelope.run_id.clone())
                 .or_insert_with(|| ActiveRun {
@@ -192,7 +195,9 @@ impl Activity {
         } else {
             self.recent
                 .as_ref()
-                .filter(|(_, at, _)| now.duration_since(*at) < Duration::from_secs(3))
+                .filter(|(mood, at, _)| {
+                    *mood == Mood::Error || now.duration_since(*at) < Duration::from_secs(3)
+                })
                 .map_or(Mood::Idle, |(mood, _, _)| *mood)
         };
         (mood, active, waiting)
@@ -214,7 +219,9 @@ impl Activity {
             .or_else(|| {
                 self.recent
                     .as_ref()
-                    .filter(|(_, at, _)| now.duration_since(*at) < Duration::from_secs(30))
+                    .filter(|(mood, at, _)| {
+                        *mood == Mood::Error || now.duration_since(*at) < Duration::from_secs(30)
+                    })
                     .map(|(_, _, conversation)| conversation.as_str())
             })
     }
@@ -226,6 +233,7 @@ struct Inner {
     started: Instant,
     animation: sim::BlobSim,
     behavior: behavior::DesktopBehavior,
+    companion: companion::Companion,
     desktop_active: bool,
     reduced_motion: bool,
     last_status: Option<(Mood, usize, usize, bool)>,
@@ -271,6 +279,7 @@ pub fn initialize(app: &AppHandle) -> Result<(), String> {
             started: Instant::now(),
             animation: sim::BlobSim::new(false),
             behavior: behavior::DesktopBehavior::new(),
+            companion: companion::Companion::new(Instant::now()),
             desktop_active: false,
             reduced_motion: false,
             last_status: None,
@@ -291,6 +300,30 @@ pub fn enabled(app: &AppHandle) -> bool {
     state(app).is_some_and(|state| state.inner.lock().preferences.enabled)
 }
 
+#[tauri::command]
+pub fn desktop_pet_get_enabled(app: AppHandle) -> Result<bool, String> {
+    let state = state(&app).ok_or("Desktop pet is not initialized")?;
+    let enabled = state.inner.lock().preferences.enabled;
+    Ok(enabled)
+}
+
+#[tauri::command]
+pub async fn desktop_pet_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(change_visibility(&handle, enabled).map(|()| enabled));
+    })
+    .map_err(|error| error.to_string())?;
+    rx.await.map_err(|error| error.to_string())?
+}
+
+fn notify_enabled(app: &AppHandle, enabled: bool) {
+    if let Err(error) = app.emit("desktop-pet-enabled-changed", enabled) {
+        eprintln!("Notify desktop pet visibility: {error}");
+    }
+}
+
 fn persist(state: &DesktopPet, preferences: &Preferences) -> Result<(), String> {
     let content = serde_json::to_string(preferences).map_err(|e| e.to_string())?;
     crate::chat::storage::atomic_write(&state.path, &content, "desktop-pet")
@@ -298,8 +331,17 @@ fn persist(state: &DesktopPet, preferences: &Preferences) -> Result<(), String> 
 
 /// Main UI thread only: tray actions and native callbacks share this entry.
 pub fn toggle(app: &AppHandle) -> Result<(), String> {
-    set_enabled(app, !enabled(app), true)?;
-    crate::shortcuts::setup_tray(app)
+    change_visibility(app, !enabled(app))
+}
+
+fn change_visibility(app: &AppHandle, enable: bool) -> Result<(), String> {
+    set_enabled(app, enable, true)?;
+    // The native surface and saved preference are authoritative; a tray refresh
+    // failure must not report an already-applied visibility change as rejected.
+    if let Err(error) = crate::shortcuts::setup_tray(app) {
+        eprintln!("Refresh desktop pet tray state: {error}");
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -318,6 +360,7 @@ fn set_enabled(app: &AppHandle, enable: bool, save: bool) -> Result<(), String> 
             inner.reduced_motion = platform::reduced_motion();
             inner.animation = sim::BlobSim::new(inner.reduced_motion);
             inner.behavior = behavior::DesktopBehavior::new();
+            inner.companion = companion::Companion::new(now);
             inner.desktop_active = false;
             inner.animation.set_mood(mood, 0.0);
             (inner.animation.sample(0.0), inner.preferences.position)
@@ -353,7 +396,9 @@ fn set_enabled(app: &AppHandle, enable: bool, save: bool) -> Result<(), String> 
         let mut inner = state.inner.lock();
         inner.preferences = next;
         inner.last_status = None;
+        inner.companion.dismiss(Instant::now());
     }
+    notify_enabled(app, enable);
     Ok(())
 }
 
@@ -428,6 +473,8 @@ fn draw(app: &AppHandle, state: &DesktopPet) {
     let suspended = platform::suspended();
     state.suspended.store(suspended, Ordering::Relaxed);
     if suspended {
+        state.inner.lock().companion.dismiss(Instant::now());
+        platform::set_speech(None);
         return;
     }
     let now = Instant::now();
@@ -467,17 +514,36 @@ fn draw(app: &AppHandle, state: &DesktopPet) {
     }
     let milliseconds = now.duration_since(inner.started).as_secs_f64() * 1000.0;
     inner.animation.set_mood(mood, milliseconds);
+    let environment = platform::environment();
+    if environment.pressed
+        || environment.dragging
+        || environment
+            .cursor
+            .is_some_and(|p| (p[0] - 84.0).hypot(p[1] - 54.0) < 220.0)
+    {
+        inner.animation.wake(milliseconds);
+    }
     let mut visual = inner.animation.sample(milliseconds);
+    let request_usage = inner.companion.tick(
+        now,
+        mood,
+        english,
+        environment.pressed || environment.dragging,
+    );
+    platform::set_speech(inner.companion.text());
     let reduced_motion = inner.reduced_motion;
     let motion = inner.behavior.apply(
         &mut visual,
         mood,
-        platform::environment(),
+        environment,
         milliseconds / 1000.0,
         reduced_motion,
     );
     inner.desktop_active = motion.active;
     drop(inner);
+    if request_usage {
+        request_today_usage(app);
+    }
     let result = platform::move_by(motion.delta).and_then(|()| platform::update(&visual));
     if motion.persist {
         if let Some(position) = platform::position() {
@@ -505,6 +571,34 @@ pub fn observe_protocol(app: &AppHandle, event: &ChatProtocolEvent) {
     }
 }
 
+fn request_today_usage(app: &AppHandle) {
+    let Some(state) = state(app) else {
+        return;
+    };
+    let state = Arc::clone(&state);
+    let revision = state.inner.lock().companion.revision;
+    let epoch = state.epoch.load(Ordering::Relaxed);
+    let dir = app
+        .try_state::<crate::state::AppState>()
+        .map(|state| state.usage_dir.clone());
+    tauri::async_runtime::spawn(async move {
+        let result = match dir {
+            Some(dir) => {
+                tauri::async_runtime::spawn_blocking(move || crate::usage::today_usage(&dir))
+                    .await
+                    .unwrap_or_else(|error| Err(error.to_string()))
+            }
+            None => Err("Usage state is unavailable".into()),
+        };
+        let mut inner = state.inner.lock();
+        if state.epoch.load(Ordering::Relaxed) == epoch && inner.preferences.enabled {
+            inner
+                .companion
+                .finish_usage(revision, result, Instant::now());
+        }
+    });
+}
+
 pub fn resolve_interaction(app: &AppHandle, run_id: &str, tool_call_id: Option<&str>) {
     if let Some(state) = state(app) {
         state.inner.lock().activity.resolve(run_id, tool_call_id);
@@ -520,8 +614,19 @@ pub fn native_action(app: &AppHandle, action: NativeAction) {
             let mut inner = state.inner.lock();
             let milliseconds = inner.started.elapsed().as_secs_f64() * 1000.0;
             inner.animation.poke(milliseconds, None);
+            let now = Instant::now();
+            let mood = inner.activity.summary(now).0;
+            let english = inner.last_status.is_some_and(|status| status.3);
+            let request = inner.companion.poke(now, mood, english);
+            drop(inner);
+            if request {
+                request_today_usage(app);
+            }
         }
         NativeAction::OpenChat => {
+            state.inner.lock().companion.dismiss(Instant::now());
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            platform::set_speech(None);
             let conversation = state
                 .inner
                 .lock()
@@ -537,7 +642,7 @@ pub fn native_action(app: &AppHandle, action: NativeAction) {
             }
         }
         NativeAction::Hide => {
-            if let Err(error) = toggle(app) {
+            if let Err(error) = change_visibility(app, false) {
                 eprintln!("Hide Momo: {error}");
             }
         }
@@ -564,7 +669,10 @@ pub fn shutdown(app: &AppHandle) {
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         platform::destroy();
-        state.inner.lock().preferences.enabled = false;
+        let was_enabled = std::mem::replace(&mut state.inner.lock().preferences.enabled, false);
+        if was_enabled {
+            notify_enabled(app, false);
+        }
     }
 }
 
@@ -781,8 +889,9 @@ mod tests {
     }
 
     #[test]
-    fn failed_terminal_is_temporary_and_cancellation_is_not_failure() {
+    fn failure_remains_actionable_until_a_new_run_and_completion_expires() {
         let now = Instant::now();
+        let later = now + Duration::from_secs(60);
         let mut activity = Activity::default();
         start(&mut activity, "a", now);
         activity.observe(
@@ -797,9 +906,25 @@ mod tests {
             ),
             now,
         );
-        assert_eq!(activity.summary(now), (Mood::Error, 0, 0));
+        assert_eq!(activity.summary(later), (Mood::Error, 0, 0));
+        assert_eq!(activity.conversation(later), Some("conversation-a"));
+        start(&mut activity, "retry", later);
+        assert_eq!(activity.summary(later), (Mood::Thinking, 1, 0));
+        assert_eq!(activity.conversation(later), Some("conversation-retry"));
+        activity.observe(
+            &event(
+                "retry",
+                2,
+                ChatRunEvent::RunCompleted {
+                    full: String::new(),
+                    conversation_revision: 0,
+                },
+            ),
+            later,
+        );
+        assert_eq!(activity.summary(later), (Mood::Done, 0, 0));
         assert_eq!(
-            activity.summary(now + Duration::from_secs(4)),
+            activity.summary(later + Duration::from_secs(4)),
             (Mood::Idle, 0, 0)
         );
     }

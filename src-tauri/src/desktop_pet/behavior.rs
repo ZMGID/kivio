@@ -1,9 +1,6 @@
-//! Desktop-only motion layered over a fresh sample of the original face/shape sim.
+//! Desktop-only gaze and placement over the round state animation.
 //! Native adapters own placement; this state never pulls a placed pet downward.
-use super::{
-    visual::{Visual, SIZE},
-    Mood,
-};
+use super::{visual::Visual, Mood};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Environment {
@@ -12,7 +9,6 @@ pub struct Environment {
     pub dragging: bool,
     pub floor_distance: f64,
     pub horizontal_room: [f64; 2],
-    pub drag_delta: [f64; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -24,9 +20,6 @@ pub struct Motion {
 
 pub struct DesktopBehavior {
     last: Option<f64>,
-    stretch: f64,
-    stretch_velocity: f64,
-    shear: f64,
     gaze: [f64; 2],
     next_stroll: f64,
     stroll_left: f64,
@@ -38,9 +31,6 @@ impl DesktopBehavior {
     pub fn new() -> Self {
         Self {
             last: None,
-            stretch: 1.0,
-            stretch_velocity: 0.0,
-            shear: 0.0,
             gaze: [0.0; 2],
             next_stroll: 15.0,
             stroll_left: 0.0,
@@ -68,7 +58,7 @@ impl DesktopBehavior {
             let dy = cursor[1] - center[1];
             let distance = dx.hypot(dy);
             near = distance < 220.0;
-            if near && distance > 0.5 && !reduced_motion {
+            if near && distance > 0.5 && !reduced_motion && matches!(mood, Mood::Idle) {
                 let weight = (1.0 - distance / 220.0) / distance;
                 look = [dx * weight * 5.0, dy * weight * 3.5];
             }
@@ -121,117 +111,28 @@ impl DesktopBehavior {
             }
         }
 
-        let target_stretch = if env.dragging && !reduced_motion {
-            1.06
-        } else {
-            1.0
-        };
-        let target_shear = if env.dragging && dt > 0.001 {
-            (env.drag_delta[0] / dt * 0.00018).clamp(-0.12, 0.12)
-        } else {
-            0.0
-        };
-        if reduced_motion {
-            self.stretch = 1.0;
-            self.stretch_velocity = 0.0;
-            self.shear = 0.0;
+        if reduced_motion || !matches!(mood, Mood::Idle) {
             self.gaze = [0.0; 2];
         } else {
-            // Substeps keep the gentle pickup spring stable after a slow frame.
-            let steps = (dt * 120.0).ceil().max(1.0) as usize;
-            let h = dt / steps as f64;
-            for _ in 0..steps {
-                self.stretch_velocity +=
-                    ((target_stretch - self.stretch) * 150.0 - self.stretch_velocity * 13.0) * h;
-                self.stretch += self.stretch_velocity * h;
-            }
-            approach(&mut self.shear, target_shear, dt);
             for (value, target) in self.gaze.iter_mut().zip(look) {
                 approach(value, target, dt);
             }
         }
-        let settling = (self.stretch - target_stretch).abs() > 0.002
-            || self.stretch_velocity.abs() > 0.02
-            || (self.shear - target_shear).abs() > 0.002
-            || self
-                .gaze
-                .iter()
-                .zip(look)
-                .any(|(value, target)| (value - target).abs() > 0.04);
-        if !settling {
-            self.stretch = target_stretch;
-            self.stretch_velocity = 0.0;
+        let settling = self
+            .gaze
+            .iter()
+            .zip(look)
+            .any(|(value, target)| (value - target).abs() > 0.04);
+        // Dragging moves the native panel, never stretches the circular body.
+        // Only the idle eyes follow the pointer; task poses keep facing their prop.
+        for eye in &mut visual.eyes {
+            for point in eye {
+                point[0] += self.gaze[0];
+                point[1] += self.gaze[1];
+            }
         }
-        self.pose(visual, env.dragging, reduced_motion);
         motion.active = !reduced_motion && (env.dragging || self.stroll_left > 0.0 || settling);
         motion
-    }
-
-    fn pose(&self, visual: &mut Visual, dragging: bool, reduced: bool) {
-        let c = center(&visual.body);
-        let bottom = visual
-            .body
-            .iter()
-            .map(|p| p[1])
-            .fold(f64::NEG_INFINITY, f64::max);
-        let anchor_y = if dragging { c[1] - 20.0 } else { bottom };
-        let stretch = if reduced {
-            1.0
-        } else {
-            self.stretch.clamp(0.72, 1.24)
-        };
-        let width = 1.0 / stretch.sqrt();
-        let lean = self.gaze[0] * 0.25;
-        let transform = |p: &mut [f64; 2], eye: bool| {
-            let x = p[0] - c[0];
-            let y = p[1] - anchor_y;
-            p[0] = c[0] + x * width + y * self.shear + lean + if eye { self.gaze[0] } else { 0.0 };
-            p[1] = anchor_y + y * stretch + if eye { self.gaze[1] } else { 0.0 };
-        };
-        for p in &mut visual.body {
-            transform(p, false);
-        }
-        for eye in &mut visual.eyes {
-            for p in eye {
-                transform(p, true);
-            }
-        }
-        // Preserve the silhouette as a whole if a large source shape approaches the panel edge.
-        let mut bounds = [
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ];
-        for p in visual.body.iter().chain(visual.eyes.iter().flatten()) {
-            bounds[0] = bounds[0].min(p[0]);
-            bounds[1] = bounds[1].min(p[1]);
-            bounds[2] = bounds[2].max(p[0]);
-            bounds[3] = bounds[3].max(p[1]);
-        }
-        let scale = ((SIZE - 4.0) / (bounds[2] - bounds[0]))
-            .min((SIZE - 4.0) / (bounds[3] - bounds[1]))
-            .min(1.0);
-        let offset = [2.0 - bounds[0].min(2.0), 2.0 - bounds[1].min(2.0)];
-        let overflow = [
-            (bounds[2] + offset[0] - (SIZE - 2.0)).max(0.0),
-            (bounds[3] + offset[1] - (SIZE - 2.0)).max(0.0),
-        ];
-        if scale < 1.0 || offset != [0.0; 2] || overflow != [0.0; 2] {
-            for p in visual
-                .body
-                .iter_mut()
-                .chain(visual.eyes.iter_mut().flatten())
-            {
-                for axis in 0..2 {
-                    p[axis] = if scale < 1.0 {
-                        2.0 + (p[axis] - bounds[axis]) * scale
-                    } else {
-                        p[axis] + offset[axis] - overflow[axis]
-                    };
-                }
-            }
-        }
     }
 }
 
@@ -267,6 +168,7 @@ pub(super) fn pixel_motion(delta: [f64; 2], scale: f64, remainder: &mut [f64; 2]
 
 #[cfg(test)]
 mod tests {
+    use super::super::visual::SIZE;
     use super::*;
     #[test]
     fn subpixel_stroll_preserves_distance_at_native_coordinate_boundaries() {
@@ -285,6 +187,23 @@ mod tests {
     }
     fn frame() -> Visual {
         super::super::sim::BlobSim::new(true).sample(0.0)
+    }
+    #[test]
+    fn task_pose_keeps_its_gaze_on_the_prop_after_idle_pointer_tracking() {
+        let mut behavior = DesktopBehavior::new();
+        let env = Environment {
+            cursor: Some([140.0, 70.0]),
+            ..Default::default()
+        };
+        for step in 0..120 {
+            behavior.apply(&mut frame(), Mood::Idle, env, step as f64 / 60.0, false);
+        }
+        let mut animation = super::super::sim::BlobSim::new(true);
+        animation.set_mood(Mood::Working, 0.0);
+        let mut visual = animation.sample(0.0);
+        let expected = visual;
+        behavior.apply(&mut visual, Mood::Working, env, 2.0, false);
+        assert_eq!(visual, expected);
     }
     #[test]
     fn restored_or_released_pet_keeps_its_elevated_position() {
@@ -322,7 +241,6 @@ mod tests {
         };
         for step in 0..60 {
             env.dragging = step > 20;
-            env.drag_delta = [8.0, 0.0];
             let mut visual = frame();
             let motion = behavior.apply(&mut visual, Mood::Idle, env, step as f64 / 60.0, false);
             assert_eq!(motion.delta, [0.0; 2]);
@@ -333,7 +251,10 @@ mod tests {
                 .chain(visual.eyes.iter().flatten())
                 .all(|p| p.iter().all(|v| *v >= 0.0 && *v <= SIZE)));
         }
-        assert!(behavior.stretch > 1.05);
+        let mut visual = frame();
+        let before = visual.body;
+        behavior.apply(&mut visual, Mood::Idle, env, 0.99, false);
+        assert_eq!(visual.body, before, "dragging must not deform the body");
         env.pressed = false;
         env.dragging = false;
         let motion = behavior.apply(&mut frame(), Mood::Idle, env, 1.0, true);

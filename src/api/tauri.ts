@@ -1786,6 +1786,11 @@ export const api = {
     on<SettingsChangedEvent>('kivio-settings-changed', listener),
   // 某模型可选的思考等级列表（用户覆盖 modelOverrides → 模型库 reasoningEfforts → 家族兜底）。
   reasoningEffortsForModel: (model: string, providerId?: string) =>
+  desktopPetGetEnabled: () => invoke<boolean>('desktop_pet_get_enabled'),
+  desktopPetSetEnabled: (enabled: boolean) =>
+    invoke<boolean>('desktop_pet_set_enabled', { enabled }),
+  onDesktopPetEnabledChanged: (listener: (enabled: boolean) => void) =>
+    on<boolean>('desktop-pet-enabled-changed', listener),
     invoke<string[]>('chat_reasoning_efforts_for_model', { model, providerId }),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),

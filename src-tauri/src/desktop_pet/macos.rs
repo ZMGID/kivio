@@ -39,7 +39,7 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use tauri::AppHandle;
 
-use super::visual::{contains, Visual, SIZE};
+use super::visual::{Visual, SIZE};
 use super::{native_action, NativeAction, Position};
 
 const INITIAL_STATUS: &str = "Momo · Kivio";
@@ -84,15 +84,24 @@ struct SuspendFlags {
     screen_locked: bool,
 }
 
+struct Speech {
+    panel: id,
+    label: id,
+    text: String,
+    visible: bool,
+    origin: NSPoint,
+    size: NSSize,
+}
+
 struct Pet {
     panel: id,
     view: id,
+    speech: Option<Speech>,
     pointer_monitor: id,
     local_pointer_monitor: id,
     app: AppHandle,
     visual: Visual,
     press: Option<Press>,
-    last_cursor: Option<NSPoint>,
     fractional_move: [f64; 2],
     status: String,
     flags: SuspendFlags,
@@ -182,10 +191,8 @@ pub(super) fn environment() -> super::behavior::Environment {
             let Some(pet) = slot.as_mut() else { return };
             let cursor = mouse_location();
             let frame: NSRect = unsafe { msg_send![pet.panel, frame] };
-            let previous = pet.last_cursor.replace(cursor).unwrap_or(cursor);
             environment.cursor =
                 Some([cursor.x - frame.origin.x, frame.origin.y + SIZE - cursor.y]);
-            environment.drag_delta = [cursor.x - previous.x, previous.y - cursor.y];
             environment.pressed = pet.press.is_some();
             if environment.pressed {
                 pet.fractional_move = [0.0; 2];
@@ -301,6 +308,107 @@ pub(super) fn set_status(text: &str) {
     });
 }
 
+/// A non-activating, click-through native label, owned by the pet panel.
+pub(super) fn set_speech(text: Option<&str>) {
+    if !on_main() {
+        return;
+    }
+    let result = unsafe {
+        objc_exception::r#try(|| {
+            PET.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(pet) = slot.as_mut() else { return; };
+            let Some(text) = text.filter(|_| !pet.hidden_for_suspend) else {
+                if let Some(speech) = &mut pet.speech {
+                    if speech.visible {
+                        let _: () = msg_send![speech.panel, orderOut: nil];
+                        speech.visible = false;
+                    }
+                }
+                return;
+            };
+            const MAX_TEXT_WIDTH: f64 = 208.0;
+            if pet.speech.is_none() {
+                let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 34.0));
+                let Ok(panel) = init_panel(class!(NSPanel), frame) else { return; };
+                let _: () = msg_send![panel, setCollectionBehavior: COLLECTION];
+                let _: () = msg_send![panel, setLevel: STATUS_LEVEL];
+                let _: () = msg_send![panel, setHidesOnDeactivate: NO];
+                let _: () = msg_send![panel, setOpaque: NO];
+                let clear: id = msg_send![class!(NSColor), clearColor];
+                let _: () = msg_send![panel, setBackgroundColor: clear];
+                let _: () = msg_send![panel, setHasShadow: YES];
+                let _: () = msg_send![panel, setIgnoresMouseEvents: YES];
+                let _: () = msg_send![panel, setAnimationBehavior: ANIMATION_NONE];
+                let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string("NSAppearanceNameDarkAqua")];
+                let _: () = msg_send![panel, setAppearance: appearance];
+                let content: id = msg_send![class!(NSVisualEffectView), alloc];
+                let content: id = msg_send![content, initWithFrame: frame];
+                let _: () = msg_send![content, setMaterial: 13_isize]; // HUD material
+                let _: () = msg_send![content, setBlendingMode: 0_isize];
+                let _: () = msg_send![content, setState: 1_isize];
+                let _: () = msg_send![content, setWantsLayer: YES];
+                let layer: id = msg_send![content, layer];
+                let _: () = msg_send![layer, setCornerRadius: 10.0_f64];
+                let _: () = msg_send![layer, setMasksToBounds: YES];
+                let _: () = msg_send![panel, setContentView: content];
+                let _: () = msg_send![content, release];
+                let string = ns_string("");
+                let label: id = msg_send![class!(NSTextField), wrappingLabelWithString: string];
+                let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0_f64];
+                let _: () = msg_send![label, setFont: font];
+                let _: () = msg_send![content, addSubview: label];
+                let _: () = msg_send![pet.panel, addChildWindow: panel ordered: 1_isize];
+                pet.speech = Some(Speech { panel, label, text: String::new(), visible: false,
+                    origin: NSPoint::new(f64::NAN, f64::NAN), size: NSSize::new(100.0, 34.0) });
+            }
+            let speech = pet.speech.as_mut().unwrap();
+            if speech.text != text {
+                let string = ns_string(text);
+                let _: () = msg_send![speech.label, setStringValue: string];
+                let _: () = msg_send![speech.panel, setTitle: string];
+                let font: id = msg_send![speech.label, font];
+                let attrs: id = msg_send![class!(NSDictionary), dictionaryWithObject: font forKey: ns_string("NSFont")];
+                let natural: NSSize = msg_send![string, sizeWithAttributes: attrs];
+                let width = (natural.width.ceil() + 4.0).clamp(70.0, MAX_TEXT_WIDTH);
+                let cell: id = msg_send![speech.label, cell];
+                let measured: NSSize = msg_send![cell, cellSizeForBounds:
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 1000.0))];
+                let height = measured.height.ceil().max(16.0);
+                speech.size = NSSize::new(width + 20.0, height + 16.0);
+                let _: () = msg_send![speech.panel, setContentSize: speech.size];
+                let _: () = msg_send![speech.label, setFrame:
+                    NSRect::new(NSPoint::new(10.0, 8.0), NSSize::new(width, height))];
+                speech.text.clear();
+                speech.text.push_str(text);
+            }
+            let pet_frame: NSRect = msg_send![pet.panel, frame];
+            let screen: id = msg_send![pet.panel, screen];
+            if screen == nil { return; }
+            let work: NSRect = msg_send![screen, visibleFrame];
+            let x = (pet_frame.origin.x + 84.0 - speech.size.width)
+                .clamp(work.origin.x, (work.origin.x + work.size.width - speech.size.width).max(work.origin.x));
+            let above = pet_frame.origin.y + 108.0;
+            let y = if above + speech.size.height <= work.origin.y + work.size.height {
+                above
+            } else { pet_frame.origin.y + 40.0 - speech.size.height };
+            let y = y.clamp(work.origin.y, (work.origin.y + work.size.height - speech.size.height).max(work.origin.y));
+            if speech.origin.x != x || speech.origin.y != y {
+                speech.origin = NSPoint::new(x, y);
+                let _: () = msg_send![speech.panel, setFrameOrigin: speech.origin];
+            }
+            if !speech.visible {
+                let _: () = msg_send![speech.panel, orderFrontRegardless];
+                speech.visible = true;
+            }
+        });
+        })
+    };
+    if let Err(exception) = result {
+        release_exception(exception);
+    }
+}
+
 pub(super) fn reduced_motion() -> bool {
     if !on_main() {
         return false;
@@ -335,12 +443,12 @@ fn create_panel(
         *cell.borrow_mut() = Some(Pet {
             panel,
             view: nil,
+            speech: None,
             pointer_monitor: nil,
             local_pointer_monitor: nil,
             app: app.clone(),
             visual: *visual,
             press: None,
-            last_cursor: None,
             fractional_move: [0.0; 2],
             status: String::new(),
             flags: SuspendFlags::default(),
@@ -499,6 +607,12 @@ fn destroy_panel() -> Option<Position> {
     let position = top_left(panel);
     remove_observers(panel, pet.workspace_observer, pet.distributed_observer);
     unsafe {
+        if let Some(speech) = pet.speech {
+            let _: () = msg_send![panel, removeChildWindow: speech.panel];
+            let _: () = msg_send![speech.panel, orderOut: nil];
+            let _: () = msg_send![speech.panel, close];
+            let _: () = msg_send![speech.panel, release];
+        }
         for monitor in [pet.pointer_monitor, pet.local_pointer_monitor] {
             if monitor != nil {
                 let _: () = msg_send![class!(NSEvent), removeMonitor: monitor];
@@ -945,7 +1059,7 @@ fn sync_passthrough() {
         false
     } else {
         match cursor_visual_point(panel) {
-            Some((x, y)) => !body_contains(&visual, x, y),
+            Some((x, y)) => !visual.contains(x, y),
             None => true,
         }
     };
@@ -994,10 +1108,6 @@ fn paint(view: &Object, visual: Visual) {
     ));
     super::visual::paint_macos(&ctx, &visual);
     ctx.restore();
-}
-
-fn body_contains(visual: &Visual, x: f64, y: f64) -> bool {
-    contains(&visual.body, x, y)
 }
 
 fn install_observers(panel: id) -> Result<(), String> {

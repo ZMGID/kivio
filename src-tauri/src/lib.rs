@@ -513,6 +513,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_pet::desktop_pet_get_enabled,
+            desktop_pet::desktop_pet_set_enabled,
             provider_oauth::provider_oauth_start,
             provider_oauth::provider_oauth_poll,
             provider_oauth::provider_oauth_cancel,

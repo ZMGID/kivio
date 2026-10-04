@@ -4,7 +4,7 @@
 //! parent's premultiplied BGRA. The memory DC and DIB exist once per pixel
 //! size and are released when the window is destroyed. Empty pixels return
 //! `HTTRANSPARENT`, so clicks pass through; `WS_EX_TRANSPARENT` is not used
-//! because it would disable the whole pet. The body ellipse is the hit target.
+//! because it would disable the whole pet. Only visible body and prop ink hit.
 //!
 //! Right-click hides immediately and does not open a context menu. A double-click
 //! opens Chat; its first click still pokes, because this module does not own a timer.
@@ -75,9 +75,26 @@ struct Surface {
     bits: *mut u8,
 }
 
+struct Speech {
+    hwnd: HWND,
+    text: String,
+    wide: Vec<u16>,
+    visible: bool,
+    origin: (i32, i32),
+}
+
+impl Drop for Speech {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
 struct Pet {
     hwnd: HWND,
     tooltip: HWND,
+    speech: Option<Speech>,
     app: AppHandle,
     visual: Visual,
     origin_x: i32,
@@ -90,7 +107,6 @@ struct Pet {
     swallow_up: bool,
     down_cursor: POINT,
     down_origin: (i32, i32),
-    last_cursor: Option<POINT>,
     fractional_move: [f64; 2],
     position_dirty: bool,
     power_suspended: bool,
@@ -164,15 +180,10 @@ pub(super) fn environment() -> super::behavior::Environment {
         let scale = SIZE / pet.pixel_size.max(1) as f64;
         let mut cursor = POINT::default();
         if unsafe { GetCursorPos(&mut cursor) }.is_ok() {
-            let previous = pet.last_cursor.replace(cursor).unwrap_or(cursor);
             environment.cursor = Some([
                 (cursor.x - pet.origin_x) as f64 * scale,
                 (cursor.y - pet.origin_y) as f64 * scale,
             ]);
-            environment.drag_delta = [
-                (cursor.x - previous.x) as f64 * scale,
-                (cursor.y - previous.y) as f64 * scale,
-            ];
         }
         environment.pressed = pet.captured;
         environment.dragging = pet.captured && pet.dragged;
@@ -232,6 +243,127 @@ pub(super) fn reduced_motion() -> bool {
         .is_ok()
             && !enabled.as_bool()
     }
+}
+
+/// A tracking native tooltip: it does not activate a window or intercept input.
+pub(super) fn set_speech(text: Option<&str>) {
+    with_pet(|pet| {
+        let text = text.filter(|_| !pet.is_suspended());
+        let Some(text) = text else {
+            if let Some(speech) = &mut pet.speech {
+                if speech.visible {
+                    let mut info = tool_info(pet.hwnd, speech.wide.as_ptr());
+                    unsafe {
+                        SendMessageW(
+                            speech.hwnd,
+                            WM_USER + 17,
+                            Some(WPARAM(0)),
+                            Some(LPARAM(&mut info as *mut ToolInfo as isize)),
+                        );
+                    }
+                    speech.visible = false;
+                }
+            }
+            return;
+        };
+        if pet.speech.is_none() {
+            let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            let hwnd = create_tooltip(pet.hwnd, wide.as_ptr());
+            if hwnd.is_invalid() {
+                return;
+            }
+            let mut info = tool_info(pet.hwnd, wide.as_ptr());
+            info.flags |= 0x0020 | 0x0080; // TTF_TRACK | TTF_ABSOLUTE
+            send_tool(hwnd, WM_USER + 54, &mut info); // TTM_SETTOOLINFOW
+            unsafe {
+                // Native tooltip colors are ignored while visual styles are active.
+                type SetTheme =
+                    unsafe extern "system" fn(HWND, PCWSTR, PCWSTR) -> windows::core::HRESULT;
+                if let Some(set_theme) =
+                    load_symbol::<SetTheme>(w!("uxtheme.dll"), b"SetWindowTheme\0")
+                {
+                    let _ = set_theme(hwnd, w!(""), w!(""));
+                }
+                SendMessageW(hwnd, WM_USER + 19, Some(WPARAM(0x302a28)), None);
+                SendMessageW(hwnd, WM_USER + 20, Some(WPARAM(0xebebed)), None);
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
+                    LWA_ALPHA, WS_EX_TRANSPARENT,
+                };
+                let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    style | (WS_EX_LAYERED | WS_EX_TRANSPARENT).0 as isize,
+                );
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 242, LWA_ALPHA);
+                SendMessageW(
+                    hwnd,
+                    TTM_SETMAXTIPWIDTH,
+                    None,
+                    Some(LPARAM(scale_px(208.0, pet.dpi) as isize)),
+                );
+            }
+            pet.speech = Some(Speech {
+                hwnd,
+                text: text.into(),
+                wide,
+                visible: false,
+                origin: (i32::MIN, i32::MIN),
+            });
+        }
+        let speech = pet.speech.as_mut().unwrap();
+        let changed = speech.text != text;
+        if changed {
+            let wide = text.encode_utf16().chain(Some(0)).collect();
+            let previous = mem::replace(&mut speech.wide, wide);
+            tooltip_text(speech.hwnd, pet.hwnd, speech.wide.as_ptr());
+            drop(previous); // The native tooltip now holds the replacement pointer.
+            speech.text.clear();
+            speech.text.push_str(text);
+        }
+        if !speech.visible {
+            let mut info = tool_info(pet.hwnd, speech.wide.as_ptr());
+            unsafe {
+                SendMessageW(
+                    speech.hwnd,
+                    WM_USER + 17,
+                    Some(WPARAM(1)),
+                    Some(LPARAM(&mut info as *mut ToolInfo as isize)),
+                );
+            }
+        }
+        let origin = (pet.origin_x, pet.origin_y);
+        if !speech.visible || changed || speech.origin != origin {
+            let mut rect = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(speech.hwnd, &mut rect);
+            }
+            let work = work_area(pet.origin_x, pet.origin_y);
+            let width = (rect.right - rect.left).max(1);
+            let height = (rect.bottom - rect.top).max(1);
+            let x = (pet.origin_x + scale_px(84.0, pet.dpi) - width)
+                .clamp(work.left, (work.right - width).max(work.left));
+            let above = pet.origin_y + scale_px(20.0, pet.dpi) - height;
+            let y = if above >= work.top {
+                above
+            } else {
+                pet.origin_y + scale_px(88.0, pet.dpi)
+            };
+            let y = y.clamp(work.top, (work.bottom - height).max(work.top));
+            let packed = (x as u16 as u32) | ((y as u16 as u32) << 16);
+            unsafe {
+                SendMessageW(
+                    speech.hwnd,
+                    WM_USER + 18,
+                    None,
+                    Some(LPARAM(packed as isize)),
+                );
+            }
+            speech.origin = origin;
+        }
+        speech.visible = true;
+    });
 }
 
 pub(super) fn set_status(text: &str) {
@@ -362,6 +494,7 @@ impl Pet {
         let mut pet = Self {
             hwnd,
             tooltip: HWND::default(),
+            speech: None,
             app: app.clone(),
             visual: *visual,
             origin_x: provisional_origin.0,
@@ -374,7 +507,6 @@ impl Pet {
             swallow_up: false,
             down_cursor: POINT::default(),
             down_origin: provisional_origin,
-            last_cursor: None,
             fractional_move: [0.0; 2],
             position_dirty: false,
             power_suspended: false,
@@ -549,7 +681,7 @@ impl Pet {
         }
         let logical_x = (x - self.origin_x) as f64 * SIZE / self.pixel_size as f64;
         let logical_y = (y - self.origin_y) as f64 * SIZE / self.pixel_size as f64;
-        if super::visual::contains(&self.visual.body, logical_x, logical_y) {
+        if self.visual.contains(logical_x, logical_y) {
             1 // HTCLIENT
         } else {
             HTTRANSPARENT as isize
@@ -622,6 +754,7 @@ impl Pet {
 
 impl Drop for Pet {
     fn drop(&mut self) {
+        self.speech.take();
         if mem::replace(&mut self.session_notifications, false) && !self.hwnd.is_invalid() {
             unregister_session(self.hwnd);
         }
@@ -1213,6 +1346,7 @@ fn install_tooltip(tip: HWND, owner: HWND, text: *const u16) -> bool {
 }
 
 fn close_tooltip(pet: &mut Pet) {
+    pet.speech.take();
     let tooltip = mem::replace(&mut pet.tooltip, HWND::default());
     if !tooltip.is_invalid() {
         unsafe {

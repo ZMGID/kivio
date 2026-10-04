@@ -362,6 +362,41 @@ fn usage_file_next_month_start(path: &Path) -> Option<i64> {
         .map(|date| date.timestamp())
 }
 
+/// A small read-only snapshot for the desktop companion; shares the statistics
+/// page's local-day filter, token accounting and recorded cost values.
+pub struct TodayUsage {
+    pub date: chrono::NaiveDate,
+    pub summary: UsageSummary,
+    pub missing_cost_requests: usize,
+    pub skipped_records: usize,
+}
+
+pub fn today_usage(dir: &Path) -> Result<TodayUsage, String> {
+    match fs::read_dir(dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Read usage directory: {error}")),
+    }
+    let date = Local::now().date_naive();
+    let (records, skipped_records) = read_records(dir, range_start("today"));
+    let records = filter_records(
+        records,
+        &UsageStatsQuery {
+            range: "today".into(),
+            ..UsageStatsQuery::default()
+        },
+    );
+    Ok(TodayUsage {
+        date,
+        summary: summarize(&records),
+        missing_cost_requests: records
+            .iter()
+            .filter(|record| record.cost_usd.is_none())
+            .count(),
+        skipped_records,
+    })
+}
+
 #[tauri::command]
 pub fn usage_get_stats(
     state: State<'_, AppState>,
@@ -980,6 +1015,30 @@ mod tests {
             message_id: None,
             error_kind: None,
         }
+    }
+
+    #[test]
+    fn today_companion_snapshot_matches_local_day_and_preserves_missing_costs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = base_record("openai_chat");
+        old.created_at = range_start("today").unwrap() - 1;
+        old.cost_usd = Some(900.0);
+        append_record(dir.path(), &old).unwrap();
+        let mut known = base_record("anthropic_messages");
+        known.cost_usd = Some(0.125);
+        append_record(dir.path(), &known).unwrap();
+        append_record(dir.path(), &base_record("openai_chat")).unwrap();
+        let snapshot = today_usage(dir.path()).unwrap();
+        assert_eq!(snapshot.summary.total_requests, 2);
+        assert_eq!(snapshot.summary.total_tokens, 3_050);
+        assert_eq!(snapshot.summary.total_cost_usd, 0.125);
+        assert_eq!(snapshot.missing_cost_requests, 1);
+        assert_eq!(snapshot.skipped_records, 0);
+        fs::write(dir.path().join("unreadable.jsonl"), "{broken record}\n").unwrap();
+        assert_eq!(today_usage(dir.path()).unwrap().skipped_records, 1);
+        let not_directory = dir.path().join("file");
+        fs::write(&not_directory, "").unwrap();
+        assert!(today_usage(&not_directory).is_err());
     }
 
     /// 口径对齐 context_estimate::anchor_total_tokens（85a3056）：Anthropic 的

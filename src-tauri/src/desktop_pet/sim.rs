@@ -1,1787 +1,1343 @@
-//! Native port of `src/chat/kivioBlobSim.ts` (pose, cycles, blink, wink, hop,
-//! poke heat, idle antics, springs, capped dt, reduced motion).
+//! Eight-state Momo sampled from the approved round preview.
 //!
-//! Geometry stays in the 240×240 viewBox ([`super::shapes`]). [`sample`] applies the
-//! SVG rig (squash, then rotate around [`CX`]/[`CY`], then translate) and scales by
-//! [`SIZE`]` / 240` into the top-left 128×128 frame. Full `f64` is kept; the TS paint
-//! path's `toFixed` is only SVG serialization.
+//! The body is the circle at viewBox `(158, 101)` with radius `53`. Eyes and props
+//! are filled polygons in that same 240 space, then scaled into [`SIZE`]. Props stay
+//! outside the body rig: a state may lean, breathe, lift, or shake the face without
+//! moving the keyboard, glass, bubble, or badges. Rings use one even-odd contour.
 //!
-//! # Deterministic draws
+//! Time is the desktop pet's monotonic milliseconds. Looping motion follows that
+//! clock. Done and Error store the moment the mood actually changed, so a repeated
+//! [`BlobSim::set_mood`] does not replay them. Reduced motion keeps each state's
+//! geometry and drops every transform, blink, pulse, and poke.
 //!
-//! [`BlobSim::new`] draws **one** `u64` from `rand::random` and never touches `rand`
-//! again. [`BlobSim::with_seed`] runs **SplitMix64** (Steele / Vigna) and maps each
-//! draw to `[0, 1)` with the top 53 bits:
-//!
-//! ```text
-//! state = (state + 0x9E3779B97F4A7C15) mod 2^64   // seed is the initial state
-//! z = state
-//! z = (z xor (z >> 30)) * 0xBF58476D1CE4E5B9  mod 2^64
-//! z = (z xor (z >> 27)) * 0x94D049BB133111EB  mod 2^64
-//! u = z xor (z >> 31)
-//! random() = (u >> 11) / 2^53
-//! ```
-//!
-//! JavaScript (BigInt), same sequence as `this.random()` in the TS class:
-//!
-//! ```js
-//! const MASK = (1n << 64n) - 1n;
-//! let state = BigInt(seed) & MASK;
-//! function random() {
-//!   state = (state + 0x9E3779B97F4A7C15n) & MASK;
-//!   let z = state;
-//!   z = ((z ^ (z >> 30n)) * 0xBF58476D1CE4E5B9n) & MASK;
-//!   z = ((z ^ (z >> 27n)) * 0x94D049BB133111EB) & MASK;
-//!   const u = (z ^ (z >> 31n)) & MASK;
-//!   return Number(u >> 11n) / 9007199254740992;
-//! }
-//! ```
-//!
-//! Call order matches `KivioBlobSim` for `setMood` (only when the mood actually
-//! changes — repeated `set_mood` is a no-op, unlike the TS method), `poke`, and
-//! `sample`. The first `sample` repeats initialization just like the source,
-//! including its initial mood rolls and wink deadline. `Math.sin` / `f64::sin`
-//! may differ by a few ulps; integer SplitMix draws are bit-identical.
-//!
-//! All eight source moods are represented. [`Mood::Searching`] is source `search`
-//! (wide face, ±16° sweep, hop every 4–7s), not thinking or working. Which tool
-//! names count as search stays with the parent.
-//!
-//! No per-frame heap: morph buffers, the body playlist, and the blink queue are
-//! fixed arrays. The blink queue holds 128 keys; further keys are dropped.
+//! [`BlobSim::sample`] builds one [`Visual`] from static outlines plus a few pose
+//! sines. It does not allocate. [`BlobSim::wants_high_fps`] is what the frame loop
+//! reads: continuous work stays on the 33 ms cadence, a settled Done or Error does
+//! not, and Idle wakes only for a blink or a poke.
 
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use std::sync::OnceLock;
 
-use super::shapes::{body_points, face_blinks, face_points, BodyShape, FaceName, CX, CY};
-use super::visual::{Color, Visual, SIZE};
+use super::visual::{Color, Point, Visual, SIZE};
 use super::Mood;
 
-const DT: f64 = 1.0 / 120.0;
-const BLINK_CAP: usize = 128;
-const HOP_H: [f64; 4] = [48.0, 28.0, 14.0, 6.0];
-const HOP_D: [f64; 4] = [0.5, 0.382, 0.27, 0.177];
-const HOP_DUR: f64 = 0.5 + 0.382 + 0.27 + 0.177;
+const VIEW: f64 = 240.0;
+const SCALE: f64 = SIZE / VIEW;
+const PIVOT_X: f64 = 157.0;
+const PIVOT_Y: f64 = 154.0;
+const GLASS_X: f64 = 76.0;
+const GLASS_Y: f64 = 141.0;
+const POKE_MS: f64 = 280.0;
+const DONE_MS: f64 = 750.0;
+const ERROR_MS: f64 = 400.0;
 
-const BLUE_RGB: [u8; 3] = [0x1d, 0x6b, 0xf0];
-const RED_RGB: [u8; 3] = [0xe2, 0x3b, 0x2e];
-const ERROR_RGB: [u8; 3] = [0xc4, 0x5c, 0x2a];
-const EYE_RGB: [u8; 3] = [0xf3, 0xef, 0xe6];
-
-const fn rgb(c: [u8; 3]) -> Color {
+const fn rgba(r: u8, g: u8, b: u8, a: f64) -> Color {
     Color {
-        r: c[0] as f64 / 255.0,
-        g: c[1] as f64 / 255.0,
-        b: c[2] as f64 / 255.0,
-        a: 1.0,
+        r: r as f64 / 255.0,
+        g: g as f64 / 255.0,
+        b: b as f64 / 255.0,
+        a,
     }
 }
 
-const BLUE: Color = rgb(BLUE_RGB);
-const EYE: Color = rgb(EYE_RGB);
-const ERROR: Color = rgb(ERROR_RGB);
+const BLUE: Color = rgba(0x34, 0x77, 0xeb, 1.0);
+const CREAM: Color = rgba(0xf5, 0xf3, 0xea, 1.0);
+const PROP: Color = rgba(0xb8, 0xc9, 0xdf, 1.0);
+const INK: Color = rgba(0x24, 0x30, 0x44, 1.0);
+const KEY: Color = rgba(0xbd, 0xcd, 0xe3, 1.0);
+const BOARD: Color = rgba(0x56, 0x67, 0x82, 1.0);
+const AMBER: Color = rgba(0xe9, 0xbc, 0x6c, 1.0);
+const AMBER_INK: Color = rgba(0x5a, 0x42, 0x22, 1.0);
+const GREEN: Color = rgba(0xa9, 0xcc, 0x9c, 1.0);
+const GREEN_INK: Color = rgba(0x35, 0x57, 0x31, 1.0);
+const CORAL: Color = rgba(0xe8, 0xa1, 0x99, 1.0);
+const CORAL_INK: Color = rgba(0x68, 0x36, 0x30, 1.0);
+const SHADOW: Color = rgba(0x20, 0x2e, 0x45, 0.25);
 
 #[derive(Clone, Copy)]
-struct SpringGain {
-    spin: [f64; 2],
-    x: [f64; 2],
-    y: [f64; 2],
-    squash: [f64; 2],
-    blink: [f64; 2],
-    gaze: [f64; 2],
-    morph: [f64; 2],
-    body: [f64; 2],
-    boost: [f64; 2],
+struct Curve {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
 }
 
-const ACTIVE: SpringGain = SpringGain {
-    spin: [5.0, 0.9],
-    x: [3.5, 1.0],
-    y: [4.0, 1.0],
-    squash: [10.0, 0.8],
-    blink: [26.0, 1.0],
-    gaze: [13.0, 1.0],
-    morph: [7.0, 1.0],
-    body: [6.0, 0.92],
-    boost: [9.0, 0.85],
+const EASE: Curve = Curve {
+    x1: 0.25,
+    y1: 0.1,
+    x2: 0.25,
+    y2: 1.0,
+};
+const EASE_IN_OUT: Curve = Curve {
+    x1: 0.42,
+    y1: 0.0,
+    x2: 0.58,
+    y2: 1.0,
+};
+const EASE_OUT: Curve = Curve {
+    x1: 0.0,
+    y1: 0.0,
+    x2: 0.58,
+    y2: 1.0,
 };
 
-const IDLE: SpringGain = SpringGain {
-    spin: [2.0, 1.0],
-    x: [1.6, 1.0],
-    y: [1.8, 1.0],
-    squash: [3.0, 1.0],
-    blink: [9.0, 1.0],
-    gaze: [2.6, 1.0],
-    morph: [2.2, 1.0],
-    body: [1.9, 1.0],
-    boost: [3.2, 0.9],
-};
-
-const IDLE_ANTICS: [BodyShape; 4] = [
-    BodyShape::Squircle,
-    BodyShape::Cloud,
-    BodyShape::Pebble,
-    BodyShape::Bean,
-];
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BlobMood {
-    Idle,
-    Think,
-    Search,
-    Work,
-    Speak,
-    Error,
-    Done,
-    Wait,
+fn bezier(t: f64, c1: f64, c2: f64) -> f64 {
+    let u = 1.0 - t;
+    3.0 * u * u * t * c1 + 3.0 * u * t * t * c2 + t * t * t
 }
 
-fn map_mood(mood: Mood) -> BlobMood {
-    match mood {
-        Mood::Idle => BlobMood::Idle,
-        Mood::Thinking => BlobMood::Think,
-        Mood::Searching => BlobMood::Search,
-        Mood::Working => BlobMood::Work,
-        Mood::Speaking => BlobMood::Speak,
-        Mood::Waiting => BlobMood::Wait,
-        Mood::Done => BlobMood::Done,
-        Mood::Error => BlobMood::Error,
+fn ease(u: f64, curve: Curve) -> f64 {
+    if u <= 0.0 {
+        return 0.0;
     }
-}
-
-fn face_play(mood: BlobMood) -> &'static [FaceName] {
-    use FaceName::*;
-    match mood {
-        BlobMood::Idle => &[
-            Neutral, Dots, Neutral, Smirk, Neutral, Peek, Sleepy, Neutral, Hmm,
-        ],
-        BlobMood::Think => &[LookUp, Hmm, Lines, Neutral, LookUp, Focus],
-        BlobMood::Search => &[Wide, Peek, Dots, Wide, Neutral],
-        BlobMood::Work => &[Focus, Lines, Focus, Neutral, Dots],
-        BlobMood::Speak => &[Neutral, Dots, Happy, Neutral, Hmm],
-        BlobMood::Error => &[Dizzy, Worry, Tiny, Dizzy, Lines],
-        BlobMood::Done => &[Happy, Sparkle, Happy, Content],
-        BlobMood::Wait => &[Wide, Neutral, Wide, Hmm],
+    if u >= 1.0 {
+        return 1.0;
     }
-}
-
-fn face_hold(mood: BlobMood) -> [f64; 2] {
-    match mood {
-        BlobMood::Idle => [5_000.0, 18_000.0],
-        BlobMood::Think => [2_000.0, 3_600.0],
-        BlobMood::Search => [1_000.0, 1_800.0],
-        BlobMood::Work => [1_800.0, 3_200.0],
-        BlobMood::Speak => [2_800.0, 5_000.0],
-        BlobMood::Error => [2_200.0, 3_800.0],
-        BlobMood::Done => [700.0, 1_100.0],
-        BlobMood::Wait => [2_600.0, 4_800.0],
-    }
-}
-
-fn body_play(mood: BlobMood) -> &'static [BodyShape] {
-    use BodyShape::*;
-    match mood {
-        BlobMood::Idle | BlobMood::Search | BlobMood::Done | BlobMood::Wait => &[Circle],
-        BlobMood::Think => &[Cloud, Cloud, Circle, Cloud],
-        BlobMood::Work => &[Squircle, Squircle, Circle, Squircle],
-        BlobMood::Speak => &[Bubble, Circle, Bubble, Bubble],
-        BlobMood::Error => &[Puddle],
-    }
-}
-
-fn body_chance(mood: BlobMood) -> f64 {
-    match mood {
-        BlobMood::Idle | BlobMood::Error | BlobMood::Done => 1.0,
-        BlobMood::Think => 0.35,
-        BlobMood::Search | BlobMood::Work => 0.4,
-        BlobMood::Speak => 0.25,
-        BlobMood::Wait => 0.5,
-    }
-}
-
-fn body_hold(mood: BlobMood) -> [f64; 2] {
-    match mood {
-        BlobMood::Idle | BlobMood::Error | BlobMood::Done => [1.0e9, 1.0e9],
-        BlobMood::Think => [3_500.0, 7_000.0],
-        BlobMood::Search => [2_500.0, 5_000.0],
-        BlobMood::Work => [3_000.0, 6_500.0],
-        BlobMood::Speak => [3_000.0, 6_000.0],
-        BlobMood::Wait => [4_000.0, 8_000.0],
-    }
-}
-
-fn blink_cadence(mood: BlobMood) -> Option<[f64; 2]> {
-    match mood {
-        BlobMood::Idle => Some([4_000.0, 16_000.0]),
-        BlobMood::Think => Some([3_500.0, 7_000.0]),
-        BlobMood::Search => Some([1_600.0, 4_000.0]),
-        BlobMood::Work => Some([2_800.0, 5_500.0]),
-        BlobMood::Speak => Some([3_000.0, 7_000.0]),
-        BlobMood::Error => Some([3_500.0, 7_000.0]),
-        BlobMood::Done => None,
-        BlobMood::Wait => Some([2_200.0, 4_800.0]),
-    }
-}
-
-fn hop_cadence(mood: BlobMood) -> Option<[f64; 2]> {
-    match mood {
-        BlobMood::Idle => Some([22_000.0, 56_000.0]),
-        BlobMood::Search => Some([4_000.0, 7_000.0]),
-        BlobMood::Work => Some([6_000.0, 9_000.0]),
-        BlobMood::Think => Some([8_000.0, 12_000.0]),
-        _ => None,
-    }
-}
-
-fn wink_mood(mood: BlobMood) -> bool {
-    matches!(mood, BlobMood::Idle | BlobMood::Speak | BlobMood::Done)
-}
-
-/// SplitMix64. `state` is the seed before the first gamma add.
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = self.state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^ (z >> 31)
-    }
-
-    fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Spring {
-    x: f64,
-    v: f64,
-    t: f64,
-}
-
-impl Spring {
-    fn new(x: f64) -> Self {
-        Self { x, v: 0.0, t: x }
-    }
-
-    fn step(&mut self, freq: f64, damp: f64, dt: f64) {
-        self.v += (-2.0 * damp * freq * self.v - freq * freq * (self.x - self.t)) * dt;
-        self.x += self.v * dt;
-        if !self.x.is_finite() || !self.v.is_finite() {
-            self.x = self.t;
-            self.v = 0.0;
+    let mut lo = 0.0;
+    let mut hi = 1.0;
+    for _ in 0..16 {
+        let mid = 0.5 * (lo + hi);
+        if bezier(mid, curve.x1, curve.x2) < u {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
+    bezier(0.5 * (lo + hi), curve.y1, curve.y2)
 }
 
-struct BlinkQueue {
-    at: [f64; BLINK_CAP],
-    v: [f64; BLINK_CAP],
-    head: usize,
+fn track(t: f64, stops: &[(f64, f64)], curve: Curve) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    if stops.is_empty() || t <= stops[0].0 {
+        return stops.first().map_or(0.0, |stop| stop.1);
+    }
+    let mut index = 1;
+    while index < stops.len() && t > stops[index].0 {
+        index += 1;
+    }
+    if index >= stops.len() {
+        return stops[stops.len() - 1].1;
+    }
+    let (start, from) = stops[index - 1];
+    let (end, to) = stops[index];
+    let span = end - start;
+    let u = if span <= 1.0e-9 {
+        1.0
+    } else {
+        (t - start) / span
+    };
+    from + (to - from) * ease(u, curve)
+}
+
+fn finite(now: f64) -> f64 {
+    if now.is_finite() {
+        now
+    } else {
+        0.0
+    }
+}
+
+fn phase(now: f64, delay: f64, period: f64) -> Option<f64> {
+    if period <= 0.0 || now < delay {
+        None
+    } else {
+        Some(((now - delay) / period).fract())
+    }
+}
+
+fn fade(color: Color, alpha: f64) -> Color {
+    Color {
+        a: color.a * alpha,
+        ..color
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Poly {
+    pts: [Point; 48],
     len: usize,
 }
 
-impl BlinkQueue {
-    const fn new() -> Self {
+impl Poly {
+    const EMPTY: Self = Self {
+        pts: [[0.0; 2]; 48],
+        len: 0,
+    };
+}
+
+struct Path {
+    pts: [Point; 160],
+    len: usize,
+}
+
+impl Path {
+    fn new() -> Self {
         Self {
-            at: [0.0; BLINK_CAP],
-            v: [0.0; BLINK_CAP],
-            head: 0,
+            pts: [[0.0; 2]; 160],
             len: 0,
         }
     }
 
-    fn clear(&mut self) {
-        self.head = 0;
-        self.len = 0;
-    }
-
-    fn push(&mut self, at: f64, v: f64) {
-        if self.len == BLINK_CAP {
-            return;
+    fn push(&mut self, x: f64, y: f64) {
+        if self.len > 0 {
+            let last = self.pts[self.len - 1];
+            if (last[0] - x).hypot(last[1] - y) <= 1.0e-4 {
+                return;
+            }
         }
-        let index = (self.head + self.len) % BLINK_CAP;
-        self.at[index] = at;
-        self.v[index] = v;
+        assert!(self.len < self.pts.len(), "pet geometry does not fit");
+        self.pts[self.len] = [x, y];
         self.len += 1;
     }
 
-    /// Last key with `at <= now`, removing every due key. `None` if none are due.
-    fn consume(&mut self, now: f64) -> Option<f64> {
-        let mut key = None;
-        while self.len > 0 && now >= self.at[self.head] {
-            key = Some(self.v[self.head]);
-            self.head = (self.head + 1) % BLINK_CAP;
-            self.len -= 1;
+    fn arc(&mut self, cx: f64, cy: f64, radius: f64, start: f64, sweep: f64, steps: usize) {
+        let steps = steps.max(1);
+        for step in 0..=steps {
+            let angle = start + sweep * (step as f64 / steps as f64);
+            let (sine, cosine) = angle.sin_cos();
+            self.push(cx + radius * cosine, cy + radius * sine);
         }
-        key
     }
+
+    fn quad(&mut self, from: Point, control: Point, to: Point, steps: usize) {
+        let steps = steps.max(1);
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let u = 1.0 - t;
+            self.push(
+                u * u * from[0] + 2.0 * u * t * control[0] + t * t * to[0],
+                u * u * from[1] + 2.0 * u * t * control[1] + t * t * to[1],
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Dir {
+    lx: f64,
+    ly: f64,
+    ux: f64,
+    uy: f64,
+}
+
+fn direction(dx: f64, dy: f64) -> Dir {
+    let len = dx.hypot(dy).max(1.0e-9);
+    Dir {
+        ux: dx / len,
+        uy: dy / len,
+        lx: -dy / len,
+        ly: dx / len,
+    }
+}
+
+fn wrap_pi(mut turn: f64) -> f64 {
+    while turn <= -PI {
+        turn += TAU;
+    }
+    while turn > PI {
+        turn -= TAU;
+    }
+    turn
+}
+
+fn sweep_via(start: f64, via: f64) -> f64 {
+    let mut best = PI;
+    let mut best_distance = f64::INFINITY;
+    for turn in [PI, -PI] {
+        let mid = start + turn * 0.5;
+        let delta = via - mid;
+        let distance = delta.sin().atan2(delta.cos()).abs();
+        if distance < best_distance {
+            best_distance = distance;
+            best = turn;
+        }
+    }
+    best
+}
+
+fn stroke(center: &[Point], width: f64, seg: usize) -> Poly {
+    let mut out = Path::new();
+    if center.len() < 2 || width <= 0.0 {
+        return poly_from(&out);
+    }
+    let mut dirs = [Dir {
+        lx: 0.0,
+        ly: 0.0,
+        ux: 0.0,
+        uy: 0.0,
+    }; 48];
+    let segments = center.len() - 1;
+    assert!(segments <= dirs.len(), "stroke centerline is too long");
+    for index in 0..segments {
+        dirs[index] = direction(
+            center[index + 1][0] - center[index][0],
+            center[index + 1][1] - center[index][1],
+        );
+    }
+    let radius = width * 0.5;
+    let first = dirs[0];
+    let left = first.ly.atan2(first.lx);
+    out.arc(
+        center[0][0],
+        center[0][1],
+        radius,
+        left,
+        sweep_via(left, (-first.uy).atan2(-first.ux)),
+        seg,
+    );
+    for index in 0..segments {
+        let end = center[index + 1];
+        if index + 1 < segments {
+            let a0 = (-dirs[index].ly).atan2(-dirs[index].lx);
+            let a1 = (-dirs[index + 1].ly).atan2(-dirs[index + 1].lx);
+            let sweep = wrap_pi(a1 - a0);
+            let steps = ((sweep.abs() / PI) * seg as f64).round().max(1.0) as usize;
+            out.arc(end[0], end[1], radius, a0, sweep, steps);
+        } else {
+            out.push(
+                end[0] - dirs[index].lx * radius,
+                end[1] - dirs[index].ly * radius,
+            );
+        }
+    }
+    let last = dirs[segments - 1];
+    let end = center[segments];
+    let right = (-last.ly).atan2(-last.lx);
+    out.arc(
+        end[0],
+        end[1],
+        radius,
+        right,
+        sweep_via(right, last.uy.atan2(last.ux)),
+        seg,
+    );
+    for index in (0..segments).rev() {
+        let start = center[index];
+        if index > 0 {
+            let a0 = dirs[index].ly.atan2(dirs[index].lx);
+            let a1 = dirs[index - 1].ly.atan2(dirs[index - 1].lx);
+            let sweep = wrap_pi(a1 - a0);
+            let steps = ((sweep.abs() / PI) * seg as f64).round().max(1.0) as usize;
+            out.arc(start[0], start[1], radius, a0, sweep, steps);
+        } else {
+            out.push(
+                start[0] + dirs[index].lx * radius,
+                start[1] + dirs[index].ly * radius,
+            );
+        }
+    }
+    poly_from(&out)
+}
+
+fn poly_from(path: &Path) -> Poly {
+    assert!(
+        (3..49).contains(&path.len),
+        "polygon has {} points",
+        path.len
+    );
+    let mut poly = Poly::EMPTY;
+    poly.len = path.len;
+    poly.pts[..path.len].copy_from_slice(&path.pts[..path.len]);
+    poly
+}
+
+fn curve(from: Point, control: Point, to: Point, steps: usize, width: f64, seg: usize) -> Poly {
+    let mut center = Path::new();
+    center.quad(from, control, to, steps);
+    stroke(&center.pts[..center.len], width, seg)
+}
+
+fn eye_curve(from: Point, control: Point, to: Point) -> [Point; 48] {
+    pad_eye(&curve(from, control, to, 8, 3.5, 3))
+}
+
+fn pad_eye(poly: &Poly) -> [Point; 48] {
+    let mut eye = poly.pts;
+    let last = eye[poly.len - 1];
+    for slot in eye.iter_mut().skip(poly.len) {
+        *slot = last;
+    }
+    eye
+}
+
+fn ellipse_eye(cx: f64, cy: f64, rx: f64, ry: f64, degrees: f64) -> [Point; 48] {
+    let mut eye = [[0.0; 2]; 48];
+    let (sine, cosine) = degrees.to_radians().sin_cos();
+    const N: usize = 32;
+    for index in 0..N {
+        let angle = index as f64 * TAU / N as f64;
+        let (ys, xs) = angle.sin_cos();
+        let x = rx * xs;
+        let y = ry * ys;
+        eye[index] = [cx + x * cosine - y * sine, cy + x * sine + y * cosine];
+    }
+    let last = eye[N - 1];
+    for slot in eye.iter_mut().skip(N) {
+        *slot = last;
+    }
+    eye
+}
+
+fn circle(cx: f64, cy: f64, radius: f64, count: usize) -> Poly {
+    let mut poly = Poly::EMPTY;
+    let count = count.clamp(3, 48);
+    poly.len = count;
+    for index in 0..count {
+        let angle = index as f64 * TAU / count as f64;
+        let (sine, cosine) = angle.sin_cos();
+        poly.pts[index] = [cx + radius * cosine, cy + radius * sine];
+    }
+    poly
+}
+
+fn ring(cx: f64, cy: f64, outer: f64, inner: f64, count: usize) -> Poly {
+    // Outer loop, reversed inner loop, and the same radial slit out and back.
+    // Even-odd cancels the slit, so the lens stays hollow.
+    let mut poly = Poly::EMPTY;
+    let count = count.clamp(3, 22);
+    let shift = TAU / (count as f64 * 2.0);
+    let at = |radius: f64, index: usize| {
+        let angle = shift + index as f64 * TAU / count as f64;
+        let (sine, cosine) = angle.sin_cos();
+        [cx + radius * cosine, cy + radius * sine]
+    };
+    let mut len = 0;
+    for index in 0..count {
+        poly.pts[len] = at(outer, index);
+        len += 1;
+    }
+    poly.pts[len] = at(outer, 0);
+    len += 1;
+    poly.pts[len] = at(inner, 0);
+    len += 1;
+    for index in (1..count).rev() {
+        poly.pts[len] = at(inner, index);
+        len += 1;
+    }
+    poly.pts[len] = at(inner, 0);
+    len += 1;
+    poly.len = len;
+    poly
+}
+
+fn round_rect(x: f64, y: f64, w: f64, h: f64, radius: f64, seg: usize) -> Poly {
+    let mut path = Path::new();
+    let radius = radius.min(w * 0.5).min(h * 0.5);
+    let corners = [
+        (x + radius, y + radius, PI, FRAC_PI_2),
+        (x + w - radius, y + radius, PI * 1.5, FRAC_PI_2),
+        (x + w - radius, y + h - radius, 0.0, FRAC_PI_2),
+        (x + radius, y + h - radius, FRAC_PI_2, FRAC_PI_2),
+    ];
+    for (cx, cy, start, sweep) in corners {
+        path.arc(cx, cy, radius, start, sweep, seg);
+    }
+    poly_from(&path)
+}
+
+struct Caps {
+    left: [[f64; 2]; 5],
+    right: [[f64; 2]; 5],
+}
+
+impl Caps {
+    fn build() -> Self {
+        let mut caps = Self {
+            left: [[0.0; 2]; 5],
+            right: [[0.0; 2]; 5],
+        };
+        for index in 0..5 {
+            let along = index as f64 / 4.0;
+            let (sine, cosine) = (FRAC_PI_2 + PI * along).sin_cos();
+            caps.left[index] = [cosine, sine];
+            let (sine, cosine) = (-FRAC_PI_2 + PI * along).sin_cos();
+            caps.right[index] = [cosine, sine];
+        }
+        caps
+    }
+}
+
+fn capsule(x0: f64, x1: f64, y: f64, radius: f64, caps: &Caps) -> Poly {
+    let mut poly = Poly::EMPTY;
+    poly.len = 10;
+    for index in 0..5 {
+        poly.pts[index] = [
+            x0 + caps.left[index][0] * radius,
+            y + caps.left[index][1] * radius,
+        ];
+        poly.pts[5 + index] = [
+            x1 + caps.right[index][0] * radius,
+            y + caps.right[index][1] * radius,
+        ];
+    }
+    poly
+}
+
+struct Art {
+    body: [Point; 72],
+    eyes_idle: [[Point; 48]; 2],
+    eyes_think: [[Point; 48]; 2],
+    eyes_base: [[Point; 48]; 2],
+    eyes_done: [[Point; 48]; 2],
+    eyes_error: [[Point; 48]; 2],
+    dots: [Poly; 3],
+    glass: Poly,
+    handle: Poly,
+    board: Poly,
+    shadow: Poly,
+    keys: [Poly; 14],
+    space: Poly,
+    bubble: Poly,
+    caps: Caps,
+    badge: Poly,
+    question: Poly,
+    qdot: Poly,
+    check: Poly,
+    bang: Poly,
+    edot: Poly,
+}
+
+impl Art {
+    fn build() -> Self {
+        let caps = Caps::build();
+        let mut question = Path::new();
+        question.quad([80.0, 146.0], [80.0, 139.0], [86.0, 140.0], 4);
+        question.quad([86.0, 140.0], [95.0, 142.0], [86.0, 149.0], 4);
+        question.push(86.0, 152.0);
+        let mut bubble = Path::new();
+        bubble.push(48.0, 134.0);
+        bubble.push(91.0, 134.0);
+        bubble.quad([91.0, 134.0], [98.0, 134.0], [98.0, 141.0], 3);
+        bubble.push(98.0, 158.0);
+        bubble.quad([98.0, 158.0], [98.0, 165.0], [91.0, 165.0], 3);
+        bubble.push(75.0, 165.0);
+        bubble.push(66.0, 172.0);
+        bubble.push(66.0, 165.0);
+        bubble.push(48.0, 165.0);
+        bubble.quad([48.0, 165.0], [41.0, 165.0], [41.0, 158.0], 3);
+        bubble.push(41.0, 141.0);
+        bubble.quad([41.0, 141.0], [41.0, 134.0], [48.0, 134.0], 3);
+        let mut keys = [Poly::EMPTY; 14];
+        for index in 0..14 {
+            let column = (index % 7) as f64;
+            let row = (index / 7) as f64;
+            keys[index] = round_rect(9.0 + column * 12.0, 7.0 + row * 12.0, 8.0, 7.0, 1.5, 2);
+        }
+        Self {
+            body: circle72(158.0, 101.0, 53.0),
+            eyes_idle: [
+                eye_curve([116.0, 114.0], [120.0, 119.0], [124.0, 115.0]),
+                eye_curve([132.0, 119.0], [138.0, 125.0], [144.0, 120.0]),
+            ],
+            eyes_think: [
+                ellipse_eye(120.0, 107.0, 4.0, 6.0, 0.0),
+                ellipse_eye(139.0, 111.0, 6.0, 7.0, 0.0),
+            ],
+            eyes_base: [
+                ellipse_eye(120.0, 114.0, 4.0, 7.0, 18.0),
+                ellipse_eye(139.0, 119.0, 6.0, 8.0, 18.0),
+            ],
+            eyes_done: [
+                eye_curve([116.0, 116.0], [120.0, 108.0], [124.0, 116.0]),
+                eye_curve([132.0, 121.0], [138.0, 111.0], [144.0, 121.0]),
+            ],
+            eyes_error: [
+                pad_eye(&stroke(&[[116.0, 114.0], [124.0, 117.0]], 3.5, 3)),
+                pad_eye(&stroke(&[[133.0, 119.0], [145.0, 122.0]], 3.5, 3)),
+            ],
+            dots: [
+                circle(83.0, 74.0, 4.0, 14),
+                circle(97.0, 69.0, 4.0, 14),
+                circle(111.0, 65.0, 4.0, 14),
+            ],
+            glass: ring(78.0, 144.0, 20.0, 14.0, 16),
+            handle: stroke(&[[66.0, 157.0], [54.0, 169.0]], 6.0, 3),
+            board: round_rect(0.0, 0.0, 100.0, 43.0, 4.0, 3),
+            shadow: capsule(5.0, 95.0, 39.0, 1.0, &caps),
+            keys,
+            space: round_rect(29.0, 32.0, 43.0, 5.0, 1.5, 2),
+            bubble: poly_from(&bubble),
+            caps,
+            badge: circle(85.0, 150.0, 17.0, 28),
+            question: stroke(&question.pts[..question.len], 2.7, 2),
+            qdot: circle(86.0, 158.0, 1.5, 8),
+            check: stroke(&[[77.0, 150.0], [82.0, 155.0], [93.0, 143.0]], 3.0, 3),
+            bang: stroke(&[[85.0, 141.0], [85.0, 151.0]], 3.0, 3),
+            edot: circle(85.0, 158.0, 1.5, 8),
+        }
+    }
+}
+
+fn circle72(cx: f64, cy: f64, radius: f64) -> [Point; 72] {
+    let mut body = [[0.0; 2]; 72];
+    for index in 0..72 {
+        let angle = index as f64 * TAU / 72.0;
+        let (sine, cosine) = angle.sin_cos();
+        body[index] = [cx + radius * cosine, cy + radius * sine];
+    }
+    body
+}
+
+fn art() -> &'static Art {
+    static ART: OnceLock<Art> = OnceLock::new();
+    ART.get_or_init(Art::build)
+}
+
+fn rig(src: &[Point], dst: &mut [Point], tx: f64, ty: f64, rot: f64) {
+    let (sine, cosine) = rot.sin_cos();
+    for (src, dst) in src.iter().zip(dst.iter_mut()) {
+        let x = src[0] - PIVOT_X;
+        let y = src[1] - PIVOT_Y;
+        *dst = [
+            ((x * cosine - y * sine) + PIVOT_X + tx) * SCALE,
+            ((x * sine + y * cosine) + PIVOT_Y + ty) * SCALE,
+        ];
+    }
+}
+
+fn push_poly<F>(visual: &mut Visual, poly: &Poly, color: Color, map: F)
+where
+    F: Fn(Point) -> Point,
+{
+    if poly.len < 3 || color.a <= 0.0 {
+        return;
+    }
+    let mut mapped = [[0.0; 2]; 48];
+    let len = poly.len.min(48);
+    for index in 0..len {
+        let point = map(poly.pts[index]);
+        mapped[index] = [point[0] * SCALE, point[1] * SCALE];
+    }
+    visual.push_polygon(&mapped[..len], color);
+}
+
+fn keyboard(point: Point, local_y: f64) -> Point {
+    let y = point[1] + local_y;
+    [
+        0.80 * point[0] - 0.66 * y + 78.0,
+        0.32 * point[0] + 0.48 * y + 136.0,
+    ]
+}
+
+fn glass_at(point: Point, tx: f64, ty: f64, rot: f64) -> Point {
+    let (sine, cosine) = rot.sin_cos();
+    let x = point[0] - GLASS_X;
+    let y = point[1] - GLASS_Y;
+    [
+        (x * cosine - y * sine) + GLASS_X + tx,
+        (x * sine + y * cosine) + GLASS_Y + ty,
+    ]
 }
 
 struct Pose {
-    spin: f64,
     tx: f64,
     ty: f64,
-    squash: f64,
-    lid: f64,
-    boost: f64,
-}
-
-struct PoseCtx {
-    nod_until: f64,
-    nod_end: f64,
-    impulse_at: f64,
-    shake_until: f64,
-    hop_until: f64,
-    bias_until: f64,
-    bias_spin: f64,
-    bias_tx: f64,
-    bias_ty: f64,
-    bias_squash: f64,
-    antic: Option<BodyShape>,
-    antic_until: f64,
-}
-
-struct Gaze {
-    x: f64,
-    y: f64,
-    hold: [f64; 2],
-}
-
-struct IdleBias {
-    spin: f64,
-    tx: f64,
-    ty: f64,
-    squash: f64,
-    hold: [f64; 2],
-    hop: bool,
-    antic: Option<BodyShape>,
-}
-
-fn ease(n: f64) -> f64 {
-    if n < 0.5 {
-        4.0 * n * n * n
-    } else {
-        let u = -2.0 * n + 2.0;
-        1.0 - u * u * u / 2.0
-    }
-}
-
-fn clamp(n: f64, a: f64, b: f64) -> f64 {
-    n.max(a).min(b)
-}
-
-fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f64) -> Color {
-    let u = clamp(t, 0.0, 1.0);
-    let channel = |i: usize| {
-        let av = f64::from(a[i]);
-        let bv = f64::from(b[i]);
-        (av + (bv - av) * u).round() as u8
-    };
-    rgb([channel(0), channel(1), channel(2)])
-}
-
-/// `None` when the hop has finished (caller clears `hop_at`). `Some(0)` when idle.
-fn hop_y(hop_at: f64, now: f64, scale: f64, time_scale: f64) -> Option<f64> {
-    if hop_at < 0.0 {
-        return Some(0.0);
-    }
-    let et = (now - hop_at) / 1000.0 / time_scale.max(0.01);
-    if et >= HOP_DUR {
-        return None;
-    }
-    let mut elapsed = 0.0;
-    for i in 0..HOP_D.len() {
-        let d = HOP_D[i];
-        if et < elapsed + d {
-            let bn = (et - elapsed) / d;
-            return Some(-4.0 * HOP_H[i] * bn * (1.0 - bn) * 0.5 * scale);
-        }
-        elapsed += d;
-    }
-    Some(0.0)
-}
-
-fn scale_xy(x: f64, y: f64) -> [f64; 2] {
-    let s = SIZE / 240.0;
-    [x * s, y * s]
-}
-
-/// SVG `translate(tx ty) rotate(spin CX CY)` then uniform scale into the pet.
-fn rig(x: f64, y: f64, spin_deg: f64, tx: f64, ty: f64) -> [f64; 2] {
-    let rad = spin_deg * PI / 180.0;
-    let (sn, cs) = rad.sin_cos();
-    let dx = x - CX;
-    let dy = y - CY;
-    scale_xy(CX + dx * cs - dy * sn + tx, CY + dx * sn + dy * cs + ty)
-}
-
-fn centroid(pts: &[[f64; 2]; 48]) -> [f64; 2] {
-    let mut x = 0.0;
-    let mut y = 0.0;
-    for p in pts {
-        x += p[0];
-        y += p[1];
-    }
-    [x / 48.0, y / 48.0]
-}
-
-fn lerp_body(from: &[[f64; 2]; 72], to: &[[f64; 2]; 72], k: f64, out: &mut [[f64; 2]; 72]) {
-    if k >= 1.0 {
-        *out = *to;
-        return;
-    }
-    for i in 0..72 {
-        out[i] = [
-            from[i][0] + (to[i][0] - from[i][0]) * k,
-            from[i][1] + (to[i][1] - from[i][1]) * k,
-        ];
-    }
-}
-
-fn lerp_eye(from: &[[f64; 2]; 48], to: &[[f64; 2]; 48], k: f64, out: &mut [[f64; 2]; 48]) {
-    if k >= 1.0 {
-        *out = *to;
-        return;
-    }
-    for i in 0..48 {
-        out[i] = [
-            from[i][0] + (to[i][0] - from[i][0]) * k,
-            from[i][1] + (to[i][1] - from[i][1]) * k,
-        ];
-    }
+    rot: f64,
+    blink: f64,
 }
 
 pub struct BlobSim {
     reduced: bool,
-    rng: SplitMix64,
-    mood: BlobMood,
+    mood: Mood,
     mood_applied: bool,
-    inited: bool,
-    spin: Spring,
-    tx: Spring,
-    ty: Spring,
-    squash: Spring,
-    blink: Spring,
-    gaze_x: Spring,
-    gaze_y: Spring,
-    boost: Spring,
-    face_from: [[[f64; 2]; 48]; 2],
-    face_to: [[[f64; 2]; 48]; 2],
-    face_key: FaceName,
-    face_s: Spring,
-    body_from: [[f64; 2]; 72],
-    body_to: [[f64; 2]; 72],
-    body_key: BodyShape,
-    body_s: Spring,
-    face_idx: usize,
-    body_idx: usize,
-    body_list: [BodyShape; 4],
-    body_len: usize,
-    t0: f64,
-    last: f64,
-    face_until: f64,
-    body_until: f64,
-    blink_until: f64,
-    gaze_until: f64,
-    wink_at: f64,
-    wink_eye: usize,
-    wink_until: f64,
-    wink_dur: f64,
-    hop_at: f64,
-    poke_heat: f64,
-    poke_count: u32,
-    last_poke_at: f64,
-    heat_hold_until: f64,
-    poke_shape: Option<BodyShape>,
-    poke_shape_until: f64,
-    blinks: BlinkQueue,
-    ctx: PoseCtx,
+    mood_at: f64,
+    poke_at: f64,
+    poke_until: f64,
+    pokes: u32,
+    rest_since: f64,
 }
 
 impl BlobSim {
-    /// One `rand::random::<u64>()` seed, then only SplitMix64.
     pub fn new(reduced_motion: bool) -> Self {
-        Self::with_seed(reduced_motion, rand::random::<u64>())
-    }
-
-    pub(super) fn with_seed(reduced_motion: bool, seed: u64) -> Self {
-        let neutral = *face_points(FaceName::Neutral);
-        let circle = *body_points(BodyShape::Circle);
         Self {
             reduced: reduced_motion,
-            rng: SplitMix64::new(seed),
-            mood: BlobMood::Idle,
+            mood: Mood::Idle,
             mood_applied: false,
-            inited: false,
-            spin: Spring::new(0.0),
-            tx: Spring::new(0.0),
-            ty: Spring::new(0.0),
-            squash: Spring::new(1.0),
-            blink: Spring::new(1.0),
-            gaze_x: Spring::new(0.0),
-            gaze_y: Spring::new(0.0),
-            boost: Spring::new(1.0),
-            face_from: neutral,
-            face_to: neutral,
-            face_key: FaceName::Neutral,
-            face_s: Spring::new(1.0),
-            body_from: circle,
-            body_to: circle,
-            body_key: BodyShape::Circle,
-            body_s: Spring::new(1.0),
-            face_idx: 0,
-            body_idx: 0,
-            body_list: [BodyShape::Circle; 4],
-            body_len: 1,
-            t0: 0.0,
-            last: 0.0,
-            face_until: 0.0,
-            body_until: 0.0,
-            blink_until: 0.0,
-            gaze_until: 0.0,
-            wink_at: -1.0e9,
-            wink_eye: 0,
-            wink_until: 0.0,
-            wink_dur: 320.0,
-            hop_at: -1.0,
-            poke_heat: 0.0,
-            poke_count: 0,
-            last_poke_at: -1.0e9,
-            heat_hold_until: 0.0,
-            poke_shape: None,
-            poke_shape_until: 0.0,
-            blinks: BlinkQueue::new(),
-            ctx: PoseCtx {
-                nod_until: 0.0,
-                nod_end: 0.0,
-                impulse_at: 0.0,
-                shake_until: 0.0,
-                hop_until: 0.0,
-                bias_until: 0.0,
-                bias_spin: 0.0,
-                bias_tx: 0.0,
-                bias_ty: 0.0,
-                bias_squash: 1.0,
-                antic: None,
-                antic_until: 0.0,
-            },
+            mood_at: 0.0,
+            poke_at: -1.0e9,
+            poke_until: 0.0,
+            pokes: 0,
+            rest_since: 0.0,
         }
     }
 
-    /// Resets cycles, morph targets, and the blink queue only when `mood` differs
-    /// from the mood already applied. The first call applies even for [`Mood::Idle`].
+    /// Records `now_ms` only when `mood` differs from the mood already showing.
     pub fn set_mood(&mut self, mood: Mood, now_ms: f64) {
-        let mood = map_mood(mood);
-        if self.mood_applied && mood == self.mood {
+        if self.mood_applied && self.mood == mood {
             return;
         }
-        self.apply_mood(mood, now_ms);
+        self.mood = mood;
+        self.mood_applied = true;
+        self.mood_at = finite(now_ms);
+        self.rest_since = self.mood_at;
     }
 
+    /// Short rigid lift of the face. `look_x` is ignored: gaze stays with desktop
+    /// behavior, and the active prop is left where [`BlobSim::sample`] put it.
     pub fn poke(&mut self, now_ms: f64, look_x: Option<f64>) -> u32 {
-        if now_ms - self.last_poke_at > 4200.0 {
-            self.poke_count = 0;
+        let _ = look_x;
+        let now = finite(now_ms);
+        self.rest_since = now;
+        self.pokes = self.pokes.saturating_add(1);
+        self.poke_at = now;
+        self.poke_until = now + POKE_MS;
+        self.pokes
+    }
+
+    pub(super) fn wake(&mut self, now_ms: f64) {
+        self.rest_since = finite(now_ms);
+    }
+
+    fn rest_phase(&self, now: f64) -> f64 {
+        if self.reduced || self.mood != Mood::Idle {
+            return 0.0;
         }
-        self.poke_count += 1;
-        self.last_poke_at = now_ms;
-        let add = if self.poke_count < 4 { 0.16 } else { 0.22 };
-        self.poke_heat = (self.poke_heat + add).min(1.0);
-        self.heat_hold_until = now_ms + 3200.0;
-        let stretch = if self.mood == BlobMood::Idle {
-            2.6
-        } else {
-            1.0
-        };
-        self.queue_blink(now_ms, stretch);
-        let dir = if let Some(x) = look_x {
-            if x < 0.0 {
-                -1.0
-            } else {
-                1.0
-            }
-        } else {
-            self.sign()
-        };
-        let glance = if let Some(x) = look_x {
-            clamp(x.abs(), 0.35, 1.0)
-        } else {
-            self.rand(0.45, 1.0)
-        };
-        let gaze_x = dir * self.rand(8.0, 16.0) * glance;
-        let gaze_y = self.rand(-6.0, 4.0);
-        let gaze_lo = if self.mood == BlobMood::Idle {
-            1400.0
-        } else {
-            700.0
-        };
-        let gaze_hi = if self.mood == BlobMood::Idle {
-            2800.0
-        } else {
-            1400.0
-        };
-        let gaze_for = self.rand(gaze_lo, gaze_hi);
-        self.gaze_x.t = gaze_x;
-        self.gaze_y.t = gaze_y;
-        self.gaze_until = now_ms + gaze_for;
-        self.hop_at = now_ms;
-        self.wink_at = now_ms;
-        self.wink_eye = if self.unit() < 0.5 { 0 } else { 1 };
-        self.wink_dur = if self.mood == BlobMood::Idle {
-            700.0
-        } else {
-            320.0
-        };
-        if self.poke_count >= 7 {
-            self.poke_shape = Some(BodyShape::Burst);
-            self.poke_shape_until = now_ms + 1400.0;
-        } else if self.poke_count >= 4 {
-            self.poke_shape = Some(BodyShape::Squircle);
-            self.poke_shape_until = now_ms + 1800.0;
-        } else {
-            self.poke_shape = Some(BodyShape::Puddle);
-            self.poke_shape_until = now_ms
-                + if self.mood == BlobMood::Idle {
-                    520.0
-                } else {
-                    300.0
-                };
-        }
-        let face = if self.poke_count >= 7 {
-            FaceName::Dizzy
-        } else if self.poke_count >= 4 {
-            FaceName::Lines
-        } else if self.poke_count >= 2 {
-            FaceName::Smirk
-        } else {
-            FaceName::Flat
-        };
-        self.retarget_face(face);
-        let face_for = self.rand(1400.0, 2600.0);
-        self.face_until = now_ms + face_for;
-        if self.poke_count >= 5 {
-            self.ctx.shake_until = now_ms + 420.0;
-        }
-        if self.mood == BlobMood::Idle {
-            let spin = dir * self.rand(8.0, 16.0);
-            let tx = dir * self.rand(4.0, 9.0);
-            let bias_for = self.span(2500.0, 8000.0);
-            self.ctx.bias_spin = spin;
-            self.ctx.bias_tx = tx;
-            self.ctx.bias_ty = -3.0;
-            self.ctx.bias_squash = 1.02;
-            self.ctx.bias_until = now_ms + bias_for;
-            self.ctx.antic = None;
-        }
-        self.poke_count
+        ((now - self.rest_since).max(0.0) / 1000.0).rem_euclid(90.0)
     }
 
     pub fn sample(&mut self, now_ms: f64) -> Visual {
-        self.ensure_init(now_ms);
-        let dt = self.advance_clock(now_ms);
-        let pose = self.apply_pose(now_ms);
-        self.assign_targets(&pose);
-        let blinkable = self.advance_schedule(now_ms, pose.lid);
-        self.integrate(dt);
-        if self.reduced {
-            self.snap_reduced();
+        let now = finite(now_ms);
+        let drawn = art();
+        let pose = self.pose(now);
+        let mut local_eyes = self.eyes(drawn);
+        blink_pair(&mut local_eyes, pose.blink);
+        let rest = self.rest_phase(now);
+        if (18.0..24.0).contains(&rest) {
+            for eye in &mut local_eyes {
+                for point in eye {
+                    point[0] += 2.5 * (TAU * (rest - 18.0) / 6.0).sin();
+                }
+            }
         }
-        self.cool_heat(now_ms, dt);
-        self.paint(now_ms, blinkable)
+        let mut body = [[0.0; 2]; 72];
+        let mut eyes = [[[0.0; 2]; 48]; 2];
+        rig(&drawn.body, &mut body, pose.tx, pose.ty, pose.rot);
+        for index in 0..2 {
+            rig(
+                &local_eyes[index],
+                &mut eyes[index],
+                pose.tx,
+                pose.ty,
+                pose.rot,
+            );
+        }
+        let mut visual = Visual::new(body, eyes, BLUE, CREAM);
+        self.push_props(&mut visual, drawn, now);
+        visual
     }
 
+    /// Frame-loop hint. False under reduced motion, for a quiet Idle, and after
+    /// Done or Error have finished. True while work, search, speech, thought,
+    /// or the confirmation pulse is on screen, and during a blink or poke.
     pub fn wants_high_fps(&self, now_ms: f64) -> bool {
         if self.reduced {
             return false;
         }
-        if self.blinks.len > 0 {
+        let now = finite(now_ms);
+        if now < self.poke_until || blink_moving(now) {
             return true;
         }
-        if now_ms < self.wink_at + self.wink_dur {
-            return true;
-        }
-        if self.hop_at >= 0.0 {
-            return true;
-        }
-        if now_ms < self.ctx.shake_until {
-            return true;
-        }
-        if self.poke_shape.is_some() && now_ms < self.poke_shape_until + 600.0 {
-            return true;
-        }
-        if self.mood == BlobMood::Idle {
-            return false;
-        }
-        if !(self.face_s.x > 0.97) || !(self.body_s.x > 0.97) {
-            return true;
-        }
-        if now_ms < self.ctx.nod_end {
-            return true;
-        }
-        if self.mood == BlobMood::Error {
-            return now_ms < self.ctx.shake_until;
-        }
-        true
-    }
-
-    fn ensure_init(&mut self, now: f64) {
-        if self.inited {
-            return;
-        }
-        self.t0 = now;
-        self.last = now;
-        self.apply_mood(self.mood, now);
-        let wink = if self.mood == BlobMood::Idle {
-            self.span(8_000.0, 22_000.0)
-        } else {
-            self.rand(4_000.0, 8_000.0)
-        };
-        self.wink_until = now + wink;
-        self.inited = true;
-    }
-
-    fn advance_clock(&mut self, now: f64) -> f64 {
-        let mut dt = (now - self.last) / 1000.0;
-        if dt > 0.08 {
-            dt = 0.08;
-        }
-        self.last = now;
-        dt
-    }
-
-    fn apply_mood(&mut self, mood: BlobMood, now: f64) {
-        self.mood = mood;
-        self.mood_applied = true;
-        let faces = face_play(mood);
-        self.face_idx = 0;
-        self.body_idx = 0;
-        let rolled = self.unit();
-        if rolled < body_chance(mood) {
-            self.set_body_list(body_play(mood));
-        } else {
-            self.body_list[0] = BodyShape::Circle;
-            self.body_len = 1;
-        }
-        let body_shape = self.body_list[0];
-        let face0 = faces[0];
-        self.retarget_face(face0);
-        self.retarget_body(body_shape);
-        let face_hold = face_hold(mood);
-        let face_delay = if mood == BlobMood::Idle {
-            self.span(face_hold[0], face_hold[1])
-        } else {
-            self.rand(face_hold[0], face_hold[1])
-        };
-        self.face_until = now + face_delay;
-        let body_hold = body_hold(mood);
-        let body_delay = self.rand(body_hold[0], body_hold[1]);
-        self.body_until = now + body_delay;
-        let blink_delay = if mood == BlobMood::Idle {
-            self.span(1_800.0, 6_000.0)
-        } else {
-            self.rand(900.0, 2_800.0)
-        };
-        self.blink_until = now + blink_delay;
-        let gaze_delay = if mood == BlobMood::Idle {
-            self.span(800.0, 4_200.0)
-        } else {
-            self.rand(280.0, 900.0)
-        };
-        self.gaze_until = now + gaze_delay;
-        let hop_until = if let Some(every) = hop_cadence(mood) {
-            let delay = if mood == BlobMood::Idle {
-                self.span(every[0], every[1])
-            } else {
-                self.rand(every[0], every[1])
-            };
-            now + delay
-        } else {
-            now + 1.0e12
-        };
-        let bias_until = if mood == BlobMood::Idle {
-            now + self.span(3_000.0, 10_000.0)
-        } else {
-            1.0e12
-        };
-        self.ctx = PoseCtx {
-            nod_until: now + 1_600.0,
-            nod_end: 0.0,
-            impulse_at: now + 600.0,
-            shake_until: 0.0,
-            hop_until,
-            bias_until,
-            bias_spin: 0.0,
-            bias_tx: 0.0,
-            bias_ty: 0.0,
-            bias_squash: 1.0,
-            antic: None,
-            antic_until: 0.0,
-        };
-        self.blinks.clear();
-        if mood == BlobMood::Done {
-            self.hop_at = now;
-        } else if face_blinks(face0) {
-            let stretch = if mood == BlobMood::Idle { 2.6 } else { 1.0 };
-            self.queue_blink(now, stretch);
-        }
-    }
-
-    fn apply_pose(&mut self, now: f64) -> Pose {
-        let mt = (now - self.t0) / 1000.0;
-        let mut spin;
-        let mut tx = 0.0;
-        let mut ty;
-        let mut squash = 1.0;
-        let mut lid = 1.0;
-        let mut boost = 1.0;
         match self.mood {
-            BlobMood::Idle => {
-                let br = (mt * 0.48).sin() * 0.62 + (mt * 0.91).sin() * 0.38;
-                spin = (mt * 0.13).sin() * 2.0 + self.ctx.bias_spin;
-                tx = (mt * 0.11).sin() * 1.6 + self.ctx.bias_tx;
-                ty = br * 2.2 + self.ctx.bias_ty;
-                squash = 1.0 + br * 0.016 + (self.ctx.bias_squash - 1.0);
-                if now < self.ctx.shake_until {
-                    spin += (now * 0.055).sin() * 8.0;
-                    tx += (now * 0.08).sin() * 5.0;
-                }
+            Mood::Idle => {
+                (18.0..24.0).contains(&self.rest_phase(now))
+                    || (75.0..77.0).contains(&self.rest_phase(now))
             }
-            BlobMood::Think => {
-                spin = -6.0 + (mt * 0.35).sin() * 5.0;
-                tx = (mt * 0.3).sin() * 8.0;
-                ty = -2.0 + (mt * 0.6).sin() * 4.0;
-            }
-            BlobMood::Search => {
-                let et = (mt * 1.3).sin();
-                spin = et * 16.0;
-                tx = et * 10.0;
-                ty = (mt * 1.7).sin() * 4.0;
-            }
-            BlobMood::Work => {
-                let et = (mt * PI * 2.0 * 1.6).sin();
-                spin = 5.0 + et * 3.5;
-                tx = 4.0;
-                ty = 2.0 + et.max(0.0) * 4.0;
-                squash = 1.0 - et.max(0.0) * 0.03;
-            }
-            BlobMood::Speak => {
-                spin = 10.0 + (mt * 0.5).sin() * 2.0;
-                tx = 3.0;
-                ty = -2.5 + (mt * 0.8).sin() * 1.1;
-                squash = 1.018;
-                boost = 1.05;
-                if now >= self.ctx.nod_until {
-                    let delay = self.rand(1_800.0, 3_200.0);
-                    self.ctx.nod_until = now + delay;
-                    self.ctx.nod_end = now + 380.0;
-                }
-                if now < self.ctx.nod_end {
-                    let et = 1.0 - (self.ctx.nod_end - now) / 380.0;
-                    let s = (et * PI).sin();
-                    ty += s * 6.0;
-                    spin += s * 3.0;
-                }
-            }
-            BlobMood::Done => {
-                let et = (mt * 2.4).sin();
-                spin = (mt * 1.2).sin() * 4.0;
-                tx = (mt * 1.1).sin() * 2.5;
-                ty = -et.abs() * 3.5;
-                squash = 1.0 + et * 0.025;
-                boost = 1.06;
-            }
-            BlobMood::Wait => {
-                spin = 13.0 + (mt * 0.45).sin() * 3.0;
-                tx = 3.0;
-                ty = -1.0 + (mt * 0.7).sin() * 0.8;
-                squash = 1.01;
-                boost = 1.03;
-            }
-            BlobMood::Error => {
-                if now >= self.ctx.impulse_at {
-                    let delay = self.rand(1_800.0, 3_200.0);
-                    self.ctx.shake_until = now + 420.0;
-                    self.ctx.impulse_at = now + delay;
-                }
-                spin = if now < self.ctx.shake_until {
-                    (now * 0.05).sin() * 6.0
-                } else {
-                    0.0
-                };
-                ty = 4.0;
-                squash = 0.972;
-                lid = 0.92;
-            }
-        }
-        Pose {
-            spin,
-            tx,
-            ty,
-            squash,
-            lid,
-            boost,
-        }
-    }
-
-    fn assign_targets(&mut self, pose: &Pose) {
-        self.spin.t = pose.spin;
-        self.tx.t = pose.tx;
-        self.ty.t = pose.ty;
-        self.squash.t = pose.squash;
-        self.boost.t = pose.boost;
-        if self.mood == BlobMood::Idle {
-            self.spin.t += self.gaze_x.t * 0.48;
-            self.tx.t += self.gaze_x.t * 0.3;
-            self.ty.t += self.gaze_y.t * 0.16;
-        }
-    }
-
-    fn advance_schedule(&mut self, now: f64, pose_lid: f64) -> bool {
-        if now >= self.face_until {
-            let list = face_play(self.mood);
-            self.face_idx = (self.face_idx + 1) % list.len();
-            let face = list[self.face_idx];
-            self.retarget_face(face);
-            let hold = face_hold(self.mood);
-            let delay = if self.mood == BlobMood::Idle {
-                self.span(hold[0], hold[1])
-            } else {
-                self.rand(hold[0], hold[1])
-            };
-            self.face_until = now + delay;
-        }
-        if now >= self.body_until {
-            self.body_idx = (self.body_idx + 1) % self.body_len;
-            let hold = body_hold(self.mood);
-            let delay = self.rand(hold[0], hold[1]);
-            self.body_until = now + delay;
-        }
-        if self.poke_shape.is_some() && now >= self.poke_shape_until {
-            self.poke_shape = None;
-        }
-        if self.ctx.antic.is_some() && now >= self.ctx.antic_until {
-            self.ctx.antic = None;
-        }
-        let body_shape = self.body_target(now);
-        self.retarget_body(body_shape);
-
-        let blinkable = face_blinks(self.face_key);
-        if let Some(cad) = blink_cadence(self.mood) {
-            if now >= self.blink_until {
-                if blinkable {
-                    let stretch = if self.mood == BlobMood::Idle {
-                        2.6
-                    } else {
-                        1.0
-                    };
-                    self.queue_blink(now, stretch);
-                }
-                let delay = if self.mood == BlobMood::Idle {
-                    self.span(cad[0], cad[1])
-                } else {
-                    self.rand(cad[0], cad[1])
-                };
-                self.blink_until = now + delay;
-            }
-        }
-        let key = self.blinks.consume(now);
-        if blinkable {
-            if let Some(v) = key {
-                self.blink.t = v;
-            } else if self.blinks.len == 0 {
-                self.blink.t = pose_lid;
-            }
-        } else {
-            self.blink.t = 1.0;
-        }
-
-        if now >= self.gaze_until {
-            let gz = self.next_gaze();
-            let delay = if self.mood == BlobMood::Idle {
-                self.span(gz.hold[0], gz.hold[1])
-            } else {
-                self.rand(gz.hold[0], gz.hold[1])
-            };
-            self.gaze_x.t = gz.x;
-            self.gaze_y.t = gz.y;
-            self.gaze_until = now + delay;
-        }
-        if wink_mood(self.mood) && now >= self.wink_until {
-            if blinkable {
-                self.wink_at = now;
-                self.wink_eye = if self.unit() < 0.5 { 0 } else { 1 };
-                self.wink_dur = if self.mood == BlobMood::Idle {
-                    700.0
-                } else {
-                    320.0
-                };
-            }
-            let delay = if self.mood == BlobMood::Idle {
-                self.span(8_000.0, 24_000.0)
-            } else {
-                self.rand(4_500.0, 10_000.0)
-            };
-            self.wink_until = now + delay;
-        }
-        if let Some(every) = hop_cadence(self.mood) {
-            if now >= self.ctx.hop_until && self.hop_at < 0.0 {
-                self.hop_at = now;
-                let delay = if self.mood == BlobMood::Idle {
-                    self.span(every[0], every[1])
-                } else {
-                    self.rand(every[0], every[1])
-                };
-                self.ctx.hop_until = now + delay;
-            }
-        }
-        if self.mood == BlobMood::Idle && !self.reduced && now >= self.ctx.bias_until {
-            let next = self.next_idle_bias();
-            let bias_for = self.span(next.hold[0], next.hold[1]);
-            self.ctx.bias_spin = next.spin;
-            self.ctx.bias_tx = next.tx;
-            self.ctx.bias_ty = next.ty;
-            self.ctx.bias_squash = next.squash;
-            self.ctx.bias_until = now + bias_for;
-            if next.hop && self.hop_at < 0.0 {
-                self.hop_at = now;
-            }
-            if let Some(shape) = next.antic {
-                let antic_for = self.rand(next.hold[0], next.hold[1]);
-                self.ctx.antic = Some(shape);
-                self.ctx.antic_until = now + antic_for;
-            }
-        }
-        blinkable
-    }
-
-    fn integrate(&mut self, dt: f64) {
-        let n = (dt / DT).ceil().max(1.0);
-        let n = if n.is_finite() { n as usize } else { 1 };
-        let step = dt / n as f64;
-        let spr = if self.mood == BlobMood::Idle {
-            IDLE
-        } else {
-            ACTIVE
-        };
-        let body = if self.poke_shape.is_some() {
-            ACTIVE.body
-        } else {
-            spr.body
-        };
-        for _ in 0..n {
-            self.spin.step(spr.spin[0], spr.spin[1], step);
-            self.tx.step(spr.x[0], spr.x[1], step);
-            self.ty.step(spr.y[0], spr.y[1], step);
-            self.squash.step(spr.squash[0], spr.squash[1], step);
-            self.blink.step(spr.blink[0], spr.blink[1], step);
-            self.gaze_x.step(spr.gaze[0], spr.gaze[1], step);
-            self.gaze_y.step(spr.gaze[0], spr.gaze[1], step);
-            self.face_s.step(spr.morph[0], spr.morph[1], step);
-            self.body_s.step(body[0], body[1], step);
-            self.boost.step(spr.boost[0], spr.boost[1], step);
-        }
-    }
-
-    fn snap_reduced(&mut self) {
-        self.spin.x = 0.0;
-        self.tx.x = 0.0;
-        self.ty.x = 0.0;
-        self.squash.x = 1.0;
-        self.blink.x = 1.0;
-        self.gaze_x.x = 0.0;
-        self.gaze_y.x = 0.0;
-        self.boost.x = 1.0;
-        self.hop_at = -1.0;
-        let face = face_play(self.mood)[0];
-        self.snap_face(face);
-        self.snap_body(BodyShape::Circle);
-    }
-
-    fn cool_heat(&mut self, now: f64, dt: f64) {
-        if now > self.heat_hold_until && self.poke_heat > 0.0 {
-            self.poke_heat = (self.poke_heat - dt * 0.32).max(0.0);
-            if self.poke_heat <= 0.01 {
-                self.poke_heat = 0.0;
-                self.poke_count = 0;
+            Mood::Done => now < self.mood_at + DONE_MS,
+            Mood::Error => now < self.mood_at + ERROR_MS,
+            Mood::Thinking | Mood::Searching | Mood::Working | Mood::Speaking | Mood::Waiting => {
+                true
             }
         }
     }
 
-    fn paint(&mut self, now: f64, blinkable: bool) -> Visual {
-        let scale = if self.mood == BlobMood::Idle {
-            0.36 + self.poke_heat * 0.5
-        } else if self.mood == BlobMood::Done {
-            0.7
-        } else {
-            1.0
-        };
-        let time_scale = if self.mood == BlobMood::Idle {
-            2.1
-        } else {
-            1.0
-        };
-        let hop = match hop_y(self.hop_at, now, scale, time_scale) {
-            Some(v) => v,
-            None => {
-                self.hop_at = -1.0;
-                0.0
-            }
-        };
-        let spin = self.spin.x;
-        let tx = self.tx.x;
-        let ty = self.ty.x + hop;
-        let squash = self.squash.x;
-        let face_k = ease(self.face_s.x.clamp(0.0, 1.0));
-        let body_k = ease(self.body_s.x.clamp(0.0, 1.0));
-        let pulse = 1.0
-            + (if self.mood == BlobMood::Idle {
-                0.03
-            } else {
-                0.07
-            }) * (face_k * PI).sin();
-        let boost = self.boost.x;
-        let gx = self.gaze_x.x;
-        let gy = self.gaze_y.x;
-        let amp = if self.mood == BlobMood::Idle {
-            0.28
-        } else {
-            1.0
-        };
-        let mut visual = Visual {
-            body: [[0.0; 2]; 72],
-            eyes: [[[0.0; 2]; 48]; 2],
-            body_color: self.body_color(),
-            eye_color: EYE,
-        };
-        lerp_body(&self.body_from, &self.body_to, body_k, &mut visual.body);
-        for p in &mut visual.body {
-            let y = CY + (p[1] - CY) * squash;
-            *p = rig(p[0], y, spin, tx, ty);
-        }
-        for eye in 0..2 {
-            lerp_eye(
-                &self.face_from[eye],
-                &self.face_to[eye],
-                face_k,
-                &mut visual.eyes[eye],
-            );
-            let mut lid = self.blink.x;
-            if blinkable && eye == self.wink_eye && now < self.wink_at + self.wink_dur {
-                let xr = (now - self.wink_at) / self.wink_dur;
-                let fr = if xr < 0.42 {
-                    1.0 - xr / 0.42
-                } else {
-                    (xr - 0.42) / 0.58
-                };
-                lid = lid.min(fr.max(0.04));
-            }
-            let wob_x = ((now * 42e-5 + eye as f64).sin() * 3.6
-                + (now * 0.001 + eye as f64 * 2.0).sin() * 1.3)
-                * amp;
-            let wob_y = (now * 58e-5 + eye as f64).sin() * 2.2 * amp;
-            let look_x = gx + wob_x;
-            let look_y = gy + wob_y;
-            let sx = (1.0 - gx.abs() * 0.012) * boost * pulse;
-            let sy = clamp(lid, 0.04, 1.2) * boost * pulse;
-            let c = centroid(&visual.eyes[eye]);
-            for p in &mut visual.eyes[eye] {
-                let x = c[0] + (p[0] - c[0]) * sx + look_x * 0.55;
-                let y = c[1] + (p[1] - c[1]) * sy + look_y * 0.45;
-                *p = rig(x, y, spin, tx, ty);
-            }
-        }
-        visual
-    }
-
-    fn body_color(&self) -> Color {
-        if self.mood == BlobMood::Error {
-            return ERROR;
-        }
-        if self.poke_heat <= 0.0 {
-            return BLUE;
-        }
-        mix_rgb(BLUE_RGB, RED_RGB, self.poke_heat)
-    }
-
-    fn body_target(&self, now: f64) -> BodyShape {
-        if let Some(shape) = self.poke_shape {
-            return shape;
-        }
-        if self.mood == BlobMood::Error {
-            return if now < self.ctx.shake_until {
-                BodyShape::Burst
-            } else {
-                BodyShape::Puddle
-            };
-        }
-        if self.mood == BlobMood::Idle {
-            return self.ctx.antic.unwrap_or(BodyShape::Circle);
-        }
-        self.body_list[self.body_idx % self.body_len]
-    }
-
-    fn retarget_face(&mut self, face: FaceName) {
-        if face == self.face_key {
-            return;
-        }
-        let k = ease(self.face_s.x.clamp(0.0, 1.0));
-        for eye in 0..2 {
-            for i in 0..48 {
-                let a = self.face_from[eye][i];
-                let b = self.face_to[eye][i];
-                self.face_from[eye][i] = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-            }
-        }
-        self.face_to = *face_points(face);
-        self.face_key = face;
-        self.face_s.x = 0.0;
-        self.face_s.v = 0.0;
-        self.face_s.t = 1.0;
-    }
-
-    fn retarget_body(&mut self, shape: BodyShape) {
-        if shape == self.body_key {
-            return;
-        }
-        let k = ease(self.body_s.x.clamp(0.0, 1.0));
-        for i in 0..72 {
-            let a = self.body_from[i];
-            let b = self.body_to[i];
-            self.body_from[i] = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
-        }
-        self.body_to = *body_points(shape);
-        self.body_key = shape;
-        self.body_s.x = 0.0;
-        self.body_s.v = 0.0;
-        self.body_s.t = 1.0;
-    }
-
-    fn snap_face(&mut self, face: FaceName) {
-        let pts = *face_points(face);
-        self.face_key = face;
-        self.face_from = pts;
-        self.face_to = pts;
-        self.face_s.x = 1.0;
-        self.face_s.v = 0.0;
-        self.face_s.t = 1.0;
-    }
-
-    fn snap_body(&mut self, shape: BodyShape) {
-        let pts = *body_points(shape);
-        self.body_key = shape;
-        self.body_from = pts;
-        self.body_to = pts;
-        self.body_s.x = 1.0;
-        self.body_s.v = 0.0;
-        self.body_s.t = 1.0;
-    }
-
-    fn set_body_list(&mut self, shapes: &[BodyShape]) {
-        debug_assert!(!shapes.is_empty() && shapes.len() <= 4);
-        self.body_len = shapes.len();
-        for (i, shape) in shapes.iter().enumerate() {
-            self.body_list[i] = *shape;
-        }
-    }
-
-    fn queue_blink(&mut self, now: f64, stretch: f64) {
-        let s = stretch;
-        self.blinks.push(now, 0.05);
-        self.blinks.push(now + 70.0 * s, 0.05);
-        self.blinks.push(now + 150.0 * s, 1.08);
-        self.blinks.push(now + 300.0 * s, 1.0);
-        if self.unit() < 0.14 {
-            self.blinks.push(now + 370.0 * s, 0.05);
-            self.blinks.push(now + 480.0 * s, 1.0);
-        }
-    }
-
-    fn next_gaze(&mut self) -> Gaze {
-        match self.mood {
-            BlobMood::Idle => {
-                if self.rand(0.0, 1.0) < 0.52 {
-                    let d = self.sign();
-                    Gaze {
-                        x: d * self.rand(0.22, 0.72) * 11.0,
-                        y: self.rand(-0.4, 0.32) * 7.0,
-                        hold: [2_000.0, 10_000.0],
-                    }
-                } else {
-                    Gaze {
-                        x: 0.0,
-                        y: 0.0,
-                        hold: [3_000.0, 14_000.0],
-                    }
-                }
-            }
-            BlobMood::Think => {
-                let d = self.sign();
-                Gaze {
-                    x: d * self.rand(0.5, 1.0) * 16.0,
-                    y: -self.rand(0.4, 1.0) * 10.0,
-                    hold: [1_500.0, 2_800.0],
-                }
-            }
-            BlobMood::Search => {
-                let d = self.sign();
-                Gaze {
-                    x: d * self.rand(0.7, 1.0) * 16.0,
-                    y: self.rand(-1.0, 1.0) * 10.0,
-                    hold: [550.0, 1_150.0],
-                }
-            }
-            BlobMood::Work => Gaze {
-                x: self.rand(-0.4, 0.4) * 16.0,
-                y: self.rand(0.4, 1.0) * 10.0,
-                hold: [1_200.0, 2_400.0],
-            },
-            BlobMood::Speak => Gaze {
-                x: self.rand(-0.3, 0.3) * 16.0,
-                y: self.rand(-0.25, 0.25) * 10.0,
-                hold: [2_200.0, 4_200.0],
-            },
-            BlobMood::Done => Gaze {
-                x: self.rand(-0.3, 0.3) * 16.0,
-                y: -self.rand(0.1, 0.5) * 10.0,
-                hold: [900.0, 1_600.0],
-            },
-            BlobMood::Wait => Gaze {
-                x: self.rand(-0.15, 0.15) * 16.0,
-                y: -self.rand(0.5, 0.9) * 10.0,
-                hold: [1_800.0, 3_600.0],
-            },
-            BlobMood::Error => Gaze {
-                x: self.rand(-0.2, 0.2) * 16.0,
-                y: 2.0,
-                hold: [1_800.0, 3_200.0],
-            },
-        }
-    }
-
-    fn next_idle_bias(&mut self) -> IdleBias {
-        let r = self.rand(0.0, 1.0);
-        if r < 0.38 {
-            return IdleBias {
-                spin: 0.0,
+    fn pose(&self, now: f64) -> Pose {
+        if self.reduced {
+            return Pose {
                 tx: 0.0,
                 ty: 0.0,
-                squash: 1.0,
-                hold: [4_000.0, 14_000.0],
-                hop: false,
-                antic: None,
+                rot: 0.0,
+                blink: 1.0,
             };
         }
-        if r < 0.66 {
-            let d = self.sign();
-            return IdleBias {
-                spin: d * self.rand(6.0, 14.0),
-                tx: d * self.rand(2.5, 7.0),
-                ty: self.rand(-1.5, 1.2),
-                squash: 1.0,
-                hold: [3_500.0, 12_000.0],
-                hop: false,
-                antic: None,
-            };
-        }
-        if r < 0.78 {
-            return IdleBias {
-                spin: self.rand(-3.0, 3.0),
-                tx: 0.0,
-                ty: -self.rand(1.5, 4.0),
-                squash: 1.02,
-                hold: [2_800.0, 9_000.0],
-                hop: false,
-                antic: None,
-            };
-        }
-        if r < 0.86 {
-            return IdleBias {
-                spin: 0.0,
-                tx: 0.0,
-                ty: self.rand(1.5, 4.0),
-                squash: 0.984,
-                hold: [3_500.0, 11_000.0],
-                hop: false,
-                antic: None,
-            };
-        }
-        if r < 0.94 {
-            let d = self.sign();
-            return IdleBias {
-                spin: d * self.rand(4.0, 10.0),
-                tx: d * self.rand(2.0, 5.0),
-                ty: -2.0,
-                squash: 1.0,
-                hold: [4_000.0, 13_000.0],
-                hop: true,
-                antic: None,
-            };
-        }
-        let n = IDLE_ANTICS.len();
-        let raw = self.rand(0.0, n as f64).floor();
-        let shape = IDLE_ANTICS[(raw as usize).min(n - 1)];
-        let spin = if shape == BodyShape::Cloud {
-            self.rand(-4.0, 4.0)
-        } else {
-            let d = self.sign();
-            d * self.rand(3.0, 8.0)
+        let elapsed = (now - self.mood_at).max(0.0);
+        let (tx, ty, rot) = match self.mood {
+            Mood::Idle => (0.0, breathe(now, 4_000.0), 0.0),
+            Mood::Thinking => (0.0, 0.0, think(now).to_radians()),
+            Mood::Searching | Mood::Waiting => (0.0, 0.0, 0.0),
+            Mood::Working => work(now),
+            Mood::Speaking => (0.0, breathe(now, 2_800.0), 0.0),
+            Mood::Done => (0.0, celebrate(elapsed), 0.0),
+            Mood::Error => (shake(elapsed), 0.0, 0.0),
         };
-        IdleBias {
-            spin,
-            tx: 0.0,
-            ty: if shape == BodyShape::Cloud { -3.0 } else { 0.0 },
-            squash: 1.0,
-            hold: [3_500.0, 7_500.0],
-            hop: false,
-            antic: Some(shape),
+        let rest = self.rest_phase(now);
+        let bounce = if (75.0..77.0).contains(&rest) {
+            -3.0 * (PI * (rest - 75.0)).sin().abs()
+        } else {
+            0.0
+        };
+        Pose {
+            tx,
+            ty: ty + self.poke_lift(now) + bounce,
+            rot,
+            blink: if (45.0..60.0).contains(&rest) {
+                0.12
+            } else {
+                blink_scale(now)
+            },
         }
     }
 
-    fn unit(&mut self) -> f64 {
-        self.rng.next_f64()
+    fn poke_lift(&self, now: f64) -> f64 {
+        if now < self.poke_at || now >= self.poke_until {
+            return 0.0;
+        }
+        let t = (now - self.poke_at) / POKE_MS;
+        track(t, &[(0.0, 0.0), (0.4, -3.5), (1.0, 0.0)], EASE_OUT)
     }
 
-    fn rand(&mut self, a: f64, b: f64) -> f64 {
-        a + self.unit() * (b - a)
+    fn eyes(&self, drawn: &Art) -> [[Point; 48]; 2] {
+        match self.mood {
+            Mood::Idle => drawn.eyes_idle,
+            Mood::Thinking => drawn.eyes_think,
+            Mood::Done => drawn.eyes_done,
+            Mood::Error => drawn.eyes_error,
+            Mood::Searching | Mood::Working | Mood::Speaking | Mood::Waiting => drawn.eyes_base,
+        }
     }
 
-    fn span(&mut self, a: f64, b: f64) -> f64 {
-        let u = self.unit();
-        let t = 1.0 - (1.0 - u) * (1.0 - u);
-        a + (b - a) * t
-    }
-
-    fn sign(&mut self) -> f64 {
-        if self.unit() < 0.5 {
-            -1.0
-        } else {
-            1.0
+    fn push_props(&self, visual: &mut Visual, drawn: &Art, now: f64) {
+        match self.mood {
+            Mood::Idle => {}
+            Mood::Thinking => {
+                let delays = [0.0, 250.0, 500.0];
+                for (dot, delay) in drawn.dots.iter().zip(delays) {
+                    push_poly(
+                        visual,
+                        dot,
+                        fade(PROP, dot_alpha(self.reduced, now, delay)),
+                        |p| p,
+                    );
+                }
+            }
+            Mood::Searching => {
+                let (tx, ty, rot) = search_pose(self.reduced, now);
+                push_poly(visual, &drawn.glass, PROP, |point| {
+                    glass_at(point, tx, ty, rot)
+                });
+                push_poly(visual, &drawn.handle, PROP, |point| {
+                    glass_at(point, tx, ty, rot)
+                });
+            }
+            Mood::Working => {
+                push_poly(visual, &drawn.board, BOARD, |point| keyboard(point, 0.0));
+                push_poly(visual, &drawn.shadow, SHADOW, |point| keyboard(point, 0.0));
+                for (index, key) in drawn.keys.iter().enumerate() {
+                    let amount = key_press(self.reduced, now, index);
+                    push_poly(visual, key, fade(KEY, 1.0 - 0.5 * amount), |point| {
+                        keyboard(point, 1.5 * amount)
+                    });
+                }
+                push_poly(visual, &drawn.space, KEY, |point| keyboard(point, 0.0));
+            }
+            Mood::Speaking => {
+                push_poly(visual, &drawn.bubble, PROP, |point| point);
+                push_line(visual, drawn, 51.0, 37.0, 145.0, self.reduced, now, 0.0);
+                push_line(visual, drawn, 51.0, 26.0, 155.0, self.reduced, now, 400.0);
+            }
+            Mood::Waiting => {
+                let alpha = wait_alpha(self.reduced, now);
+                push_poly(visual, &drawn.badge, fade(AMBER, alpha), |point| point);
+                push_poly(visual, &drawn.question, fade(AMBER_INK, alpha), |point| {
+                    point
+                });
+                push_poly(visual, &drawn.qdot, fade(AMBER_INK, alpha), |point| point);
+            }
+            Mood::Done => {
+                push_poly(visual, &drawn.badge, GREEN, |point| point);
+                push_poly(visual, &drawn.check, GREEN_INK, |point| point);
+            }
+            Mood::Error => {
+                push_poly(visual, &drawn.badge, CORAL, |point| point);
+                push_poly(visual, &drawn.bang, CORAL_INK, |point| point);
+                push_poly(visual, &drawn.edot, CORAL_INK, |point| point);
+            }
         }
     }
 }
 
+fn breathe(now: f64, period: f64) -> f64 {
+    let Some(t) = phase(now, 0.0, period) else {
+        return 0.0;
+    };
+    track(t, &[(0.0, 0.0), (0.5, -2.0), (1.0, 0.0)], EASE_IN_OUT)
+}
+
+fn think(now: f64) -> f64 {
+    let Some(t) = phase(now, 0.0, 2_400.0) else {
+        return 0.0;
+    };
+    track(t, &[(0.0, 0.0), (0.5, -2.0), (1.0, 0.0)], EASE_IN_OUT)
+}
+
+fn work(now: f64) -> (f64, f64, f64) {
+    let Some(t) = phase(now, 0.0, 1_200.0) else {
+        return (0.0, 0.0, 0.0);
+    };
+    let tx = track(
+        t,
+        &[(0.0, 0.0), (0.35, -1.0), (0.65, -0.5), (1.0, 0.0)],
+        EASE_IN_OUT,
+    );
+    let ty = track(
+        t,
+        &[(0.0, 0.0), (0.35, 1.0), (0.65, 0.5), (1.0, 0.0)],
+        EASE_IN_OUT,
+    );
+    let degrees = track(
+        t,
+        &[(0.0, 0.0), (0.35, -1.0), (0.65, 0.0), (1.0, 0.0)],
+        EASE_IN_OUT,
+    );
+    (tx, ty, degrees.to_radians())
+}
+
+fn search_pose(reduced: bool, now: f64) -> (f64, f64, f64) {
+    if reduced {
+        return (0.0, 0.0, 0.0);
+    }
+    let Some(t) = phase(now, 0.0, 2_200.0) else {
+        return (0.0, 0.0, 0.0);
+    };
+    let tx = track(t, &[(0.0, 0.0), (0.5, -6.0), (1.0, 0.0)], EASE_IN_OUT);
+    let ty = track(t, &[(0.0, 0.0), (0.5, 4.0), (1.0, 0.0)], EASE_IN_OUT);
+    let degrees = track(t, &[(0.0, -8.0), (0.5, 8.0), (1.0, -8.0)], EASE_IN_OUT);
+    (tx, ty, degrees.to_radians())
+}
+
+fn celebrate(elapsed: f64) -> f64 {
+    let t = (elapsed / DONE_MS).clamp(0.0, 1.0);
+    track(
+        t,
+        &[(0.0, 0.0), (0.4, -6.0), (0.7, 1.0), (1.0, 0.0)],
+        EASE_OUT,
+    )
+}
+
+fn shake(elapsed: f64) -> f64 {
+    let t = (elapsed / ERROR_MS).clamp(0.0, 1.0);
+    track(
+        t,
+        &[
+            (0.0, 0.0),
+            (0.25, -3.0),
+            (0.5, 3.0),
+            (0.75, -1.0),
+            (1.0, 0.0),
+        ],
+        EASE_OUT,
+    )
+}
+
+fn blink_scale(now: f64) -> f64 {
+    let Some(t) = phase(now, 0.0, 5_000.0) else {
+        return 1.0;
+    };
+    track(
+        t,
+        &[
+            (0.0, 1.0),
+            (0.45, 1.0),
+            (0.47, 0.1),
+            (0.49, 1.0),
+            (1.0, 1.0),
+        ],
+        EASE,
+    )
+}
+
+fn blink_moving(now: f64) -> bool {
+    phase(now, 0.0, 5_000.0).is_some_and(|t| (0.44..0.50).contains(&t))
+}
+
+fn blink_pair(eyes: &mut [[Point; 48]; 2], scale: f64) {
+    if (scale - 1.0).abs() < 1.0e-4 {
+        return;
+    }
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for eye in eyes.iter() {
+        for point in eye {
+            min_y = min_y.min(point[1]);
+            max_y = max_y.max(point[1]);
+        }
+    }
+    let center = 0.5 * (min_y + max_y);
+    for eye in eyes {
+        for point in eye {
+            point[1] = center + (point[1] - center) * scale;
+        }
+    }
+}
+
+fn dot_alpha(reduced: bool, now: f64, delay: f64) -> f64 {
+    if reduced {
+        return 1.0;
+    }
+    let Some(t) = phase(now, delay, 1_500.0) else {
+        return 1.0;
+    };
+    track(
+        t,
+        &[(0.0, 0.35), (0.35, 1.0), (0.80, 0.35), (1.0, 0.35)],
+        EASE,
+    )
+}
+
+fn key_press(reduced: bool, now: f64, index: usize) -> f64 {
+    if reduced {
+        return 0.0;
+    }
+    let delay = if index == 11 { -300.0 } else { 0.0 };
+    if index != 3 && index != 11 {
+        return 0.0;
+    }
+    let Some(t) = phase(now, delay, 600.0) else {
+        return 0.0;
+    };
+    track(t, &[(0.0, 0.0), (0.30, 1.0), (0.65, 0.0), (1.0, 0.0)], EASE)
+}
+
+fn wait_alpha(reduced: bool, now: f64) -> f64 {
+    if reduced {
+        return 1.0;
+    }
+    let Some(t) = phase(now, 0.0, 2_400.0) else {
+        return 1.0;
+    };
+    track(t, &[(0.0, 1.0), (0.5, 0.6), (1.0, 1.0)], EASE_IN_OUT)
+}
+
+fn push_line(
+    visual: &mut Visual,
+    drawn: &Art,
+    x: f64,
+    full: f64,
+    y: f64,
+    reduced: bool,
+    now: f64,
+    delay: f64,
+) {
+    let length = if reduced {
+        full
+    } else if let Some(t) = phase(now, delay, 2_400.0) {
+        let offset = track(t, &[(0.0, 48.0), (0.65, 0.0), (1.0, 0.0)], EASE_IN_OUT);
+        (48.0 - offset).clamp(0.0, full)
+    } else {
+        full
+    };
+    if length < 0.75 {
+        return;
+    }
+    let poly = capsule(x, x + length, y, 1.5, &drawn.caps);
+    push_poly(visual, &poly, INK, |point| point);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::visual::{Point, Visual, SIZE};
+    use super::super::Mood;
+    use super::{BlobSim, AMBER, BLUE, BOARD, CORAL, CREAM, GREEN, SCALE};
 
-    fn blink_key(sim: &BlobSim, index: usize) -> (f64, f64) {
-        let slot = (sim.blinks.head + index) % BLINK_CAP;
-        (sim.blinks.at[slot], sim.blinks.v[slot])
-    }
+    const MOODS: [Mood; 8] = [
+        Mood::Idle,
+        Mood::Thinking,
+        Mood::Searching,
+        Mood::Working,
+        Mood::Speaking,
+        Mood::Waiting,
+        Mood::Done,
+        Mood::Error,
+    ];
 
-    fn mean_y(pts: &[[f64; 2]; 72]) -> f64 {
-        pts.iter().map(|p| p[1]).sum::<f64>() / 72.0
-    }
-
-    #[test]
-    fn splitmix64_seed_42_matches_the_53_bit_draw() {
-        let mut rng = SplitMix64::new(42);
-        assert_eq!(rng.next_u64() >> 11, 6_679_422_623_415_661);
-        let unit = (6_679_422_623_415_661u64 as f64) / ((1u64 << 53) as f64);
-        let mut rng = SplitMix64::new(42);
-        assert_eq!(rng.next_f64(), unit);
-    }
-
-    #[test]
-    fn same_seed_replays_and_a_different_seed_changes_the_poke_gaze() {
-        fn drive(seed: u64) -> (Visual, f64) {
-            let mut sim = BlobSim::with_seed(false, seed);
-            let mut frame = sim.sample(0.0);
-            for step in 1..=40 {
-                let now = step as f64 * 16.0;
-                let mood = if step < 30 {
-                    Mood::Idle
-                } else {
-                    Mood::Thinking
-                };
-                sim.set_mood(mood, now);
-                if step == 20 {
-                    sim.poke(now, Some(-0.8));
-                }
-                frame = sim.sample(now);
-            }
-            (frame, sim.gaze_x.t)
-        }
-        let (a, gaze_a) = drive(42);
-        let (b, gaze_b) = drive(42);
-        let (c, gaze_c) = drive(99);
-        assert_eq!(a, b);
-        assert_eq!(gaze_a, gaze_b);
-        assert_ne!(gaze_a, gaze_c);
-        assert!(a.body_color.a == 1.0 && a.eye_color.a == 1.0);
+    fn pose(reduced: bool, mood: Mood, now: f64) -> Visual {
+        let mut sim = BlobSim::new(reduced);
+        sim.set_mood(mood, 0.0);
+        sim.sample(now)
     }
 
     #[test]
-    fn repeated_set_mood_does_not_restart_the_morph_spring() {
-        let mut sim = BlobSim::with_seed(false, 9);
-        sim.set_mood(Mood::Thinking, 0.0);
-        let until = sim.face_until;
-        assert_eq!(sim.face_key, FaceName::LookUp);
-        assert_eq!(sim.face_s.x, 0.0);
-        sim.set_mood(Mood::Thinking, 50.0);
-        assert_eq!(sim.face_until, until);
-        assert_eq!(sim.face_s.x, 0.0);
-        sim.sample(0.0);
-        for step in 1..=20 {
-            let now = step as f64 * 16.0;
-            sim.set_mood(Mood::Thinking, now);
-            sim.sample(now);
-        }
-        assert!(sim.face_s.x > 0.15);
-        assert!(sim.spin.x < -2.0);
-    }
-
-    #[test]
-    fn reduced_motion_is_a_scaled_circle_and_neutral_eyes_plus_wobble() {
-        let mut sim = BlobSim::with_seed(true, 1);
-        let frame = sim.sample(0.0);
-        assert_eq!(sim.spin.x, 0.0);
-        assert_eq!(sim.tx.x, 0.0);
-        assert_eq!(sim.ty.x, 0.0);
-        assert_eq!(sim.squash.x, 1.0);
-        assert_eq!(sim.blink.x, 1.0);
-        assert_eq!(sim.body_key, BodyShape::Circle);
-        assert_eq!(sim.face_key, FaceName::Neutral);
-        assert_eq!(frame.body_color, BLUE);
-        assert_eq!(frame.eye_color, EYE);
-        let scale = SIZE / 240.0;
-        let body = body_points(BodyShape::Circle);
-        for i in 0..72 {
-            assert!((frame.body[i][0] - body[i][0] * scale).abs() < 1e-9);
-            assert!((frame.body[i][1] - body[i][1] * scale).abs() < 1e-9);
-        }
-        let eyes = face_points(FaceName::Neutral);
-        for i in 0..48 {
-            assert!((frame.eyes[0][i][0] - eyes[0][i][0] * scale).abs() < 1e-9);
-            assert!((frame.eyes[0][i][1] - eyes[0][i][1] * scale).abs() < 1e-9);
-        }
-        let amp = 0.28;
-        let wob_x = (1.0_f64.sin() * 3.6 + 2.0_f64.sin() * 1.3) * amp;
-        let wob_y = 1.0_f64.sin() * 2.2 * amp;
-        let mut cx = 0.0;
-        let mut cy = 0.0;
-        for p in &eyes[1] {
-            cx += p[0];
-            cy += p[1];
-        }
-        cx /= 48.0;
-        cy /= 48.0;
-        for i in 0..48 {
-            let x = cx + (eyes[1][i][0] - cx) + wob_x * 0.55;
-            let y = cy + (eyes[1][i][1] - cy) + wob_y * 0.45;
-            assert!((frame.eyes[1][i][0] - x * scale).abs() < 1e-9);
-            assert!((frame.eyes[1][i][1] - y * scale).abs() < 1e-9);
-        }
-    }
-
-    #[test]
-    fn reduced_motion_pins_pose_and_cancels_hop() {
-        let mut sim = BlobSim::with_seed(true, 5);
-        sim.set_mood(Mood::Thinking, 0.0);
-        let frame = sim.sample(800.0);
-        assert_eq!(sim.spin.x, 0.0);
-        assert_eq!(sim.blink.x, 1.0);
-        assert_eq!(sim.face_key, FaceName::LookUp);
-        assert_eq!(sim.body_key, BodyShape::Circle);
-        assert!(!sim.wants_high_fps(800.0));
-        let scale = SIZE / 240.0;
-        let body = body_points(BodyShape::Circle);
-        assert!((frame.body[0][0] - body[0][0] * scale).abs() < 1e-9);
-
-        let mut sim = BlobSim::with_seed(true, 5);
-        sim.set_mood(Mood::Done, 0.0);
-        let a = sim.sample(0.0);
-        let b = sim.sample(250.0);
-        assert_eq!(a.body, b.body);
-        assert_eq!(sim.hop_at, -1.0);
-        assert_eq!(sim.face_key, FaceName::Happy);
-        assert_eq!(sim.blink.x, 1.0);
-    }
-
-    #[test]
-    fn poke_heat_shape_and_gap_follow_the_source_thresholds() {
-        let mut sim = BlobSim::with_seed(false, 4);
-        sim.sample(0.0);
-        assert_eq!(sim.sample(10.0).body_color, BLUE);
-        assert_eq!(sim.poke(100.0, None), 1);
-        assert!(sim.poke_heat > 0.0);
-        assert_ne!(sim.sample(120.0).body_color, BLUE);
-        assert!(sim.wants_high_fps(120.0));
-        for i in 1..6 {
-            sim.poke(100.0 + i as f64 * 80.0, None);
-        }
-        assert_eq!(sim.poke_count, 6);
-        assert_eq!(sim.poke_heat, 1.0);
-        assert_eq!(sim.sample(600.0).body_color, rgb(RED_RGB));
-        assert_eq!(sim.poke(6000.0, None), 1);
-
-        let mut sim = BlobSim::with_seed(false, 4);
+    fn idle_nap_wakes_on_interaction_without_deforming_the_body() {
+        let mut sim = BlobSim::new(false);
         sim.set_mood(Mood::Idle, 0.0);
-        sim.sample(0.0);
-        sim.poke(100.0, Some(-0.8));
-        assert!(sim.gaze_x.t < 0.0);
-        assert_eq!(sim.face_key, FaceName::Flat);
-        sim.sample(116.0);
-        assert_eq!(sim.body_key, BodyShape::Puddle);
-        for i in 1..4 {
-            sim.poke(100.0 + i as f64 * 80.0, Some(-0.8));
-        }
-        sim.sample(400.0);
-        assert_eq!(sim.body_key, BodyShape::Squircle);
-        assert_eq!(sim.face_key, FaceName::Lines);
-        for i in 4..7 {
-            sim.poke(100.0 + i as f64 * 80.0, Some(0.4));
-        }
-        assert!(sim.gaze_x.t > 0.0);
-        sim.sample(700.0);
-        assert_eq!(sim.body_key, BodyShape::Burst);
-        assert_eq!(sim.face_key, FaceName::Dizzy);
-        let mut t = 716.0;
-        while t <= 3000.0 {
-            sim.sample(t);
-            t += 16.0;
-        }
-        assert_eq!(sim.body_key, BodyShape::Circle);
-    }
-
-    #[test]
-    fn capped_dt_limits_heat_decay_and_keeps_the_spring_finite() {
-        let mut sim = BlobSim::with_seed(false, 3);
-        sim.sample(0.0);
-        sim.poke(100.0, Some(0.0));
-        assert!(sim.gaze_x.t > 0.0);
-        sim.sample(10_100.0);
-        assert_eq!(sim.poke_heat, 0.16 - 0.08 * 0.32);
-
-        let mut sim = BlobSim::with_seed(false, 3);
-        sim.set_mood(Mood::Thinking, 0.0);
-        sim.sample(0.0);
-        sim.sample(5_000.0);
-        assert!(sim.spin.x.is_finite());
-        assert!(sim.spin.x.abs() < 30.0);
-    }
-
-    #[test]
-    fn mood_entry_faces_error_burst_and_work_retarget() {
-        let face = |mood| {
-            let mut sim = BlobSim::with_seed(false, 1);
+        let asleep = sim.sample(50_000.0);
+        sim.wake(50_000.0);
+        let awake = sim.sample(50_000.0);
+        assert_eq!(asleep.body, awake.body);
+        assert_ne!(asleep.eyes, awake.eyes);
+        for mood in [Mood::Working, Mood::Waiting] {
             sim.set_mood(mood, 0.0);
-            sim.face_key
+            let before = sim.sample(50_000.0);
+            sim.wake(50_000.0);
+            assert_eq!(before, sim.sample(50_000.0));
+        }
+        let mut reduced = BlobSim::new(true);
+        assert_eq!(reduced.sample(0.0), reduced.sample(50_000.0));
+    }
+
+    fn centroid(body: &[[f64; 2]; 72]) -> [f64; 2] {
+        let mut center = [0.0; 2];
+        for point in body {
+            center[0] += point[0];
+            center[1] += point[1];
+        }
+        [center[0] / 72.0, center[1] / 72.0]
+    }
+
+    fn radius(body: &[[f64; 2]; 72]) -> f64 {
+        let center = centroid(body);
+        (body[0][0] - center[0]).hypot(body[0][1] - center[1])
+    }
+
+    fn assert_round(body: &[[f64; 2]; 72], mood: Mood, now: f64) {
+        let center = centroid(body);
+        let expected = 53.0 * SCALE;
+        let got = radius(body);
+        assert!(
+            (got - expected).abs() < 1.0e-5,
+            "{mood:?} @{now} radius {got}"
+        );
+        for point in body {
+            let gap = (point[0] - center[0]).hypot(point[1] - center[1]) - got;
+            assert!(gap.abs() < 1.0e-5, "{mood:?} @{now} off-round {gap}");
+        }
+    }
+
+    fn assert_inside(visual: &Visual, mood: Mood, now: f64) {
+        let mut check = |point: Point| {
+            assert!(
+                (0.0..=SIZE).contains(&point[0]) && (0.0..=SIZE).contains(&point[1]),
+                "{mood:?} @{now} leaves the frame at {point:?}"
+            );
         };
-        assert_eq!(face(Mood::Thinking), FaceName::LookUp);
-        assert_eq!(face(Mood::Searching), FaceName::Wide);
-        assert_eq!(face(Mood::Working), FaceName::Focus);
-        assert_eq!(face(Mood::Speaking), FaceName::Neutral);
-        assert_eq!(face(Mood::Waiting), FaceName::Wide);
-        assert_eq!(face(Mood::Done), FaceName::Happy);
-        assert_eq!(face(Mood::Error), FaceName::Dizzy);
-
-        let mut sim = BlobSim::with_seed(false, 1);
-        sim.set_mood(Mood::Error, 0.0);
-        assert_eq!(sim.body_key, BodyShape::Puddle);
-        sim.sample(0.0);
-        assert_eq!(sim.sample(600.0).body_color, ERROR);
-        assert_eq!(sim.body_key, BodyShape::Burst);
-
-        let mut rolled = None;
-        for seed in 0..64 {
-            let mut sim = BlobSim::with_seed(false, seed);
-            sim.set_mood(Mood::Working, 0.0);
-            if sim.body_key == BodyShape::Squircle {
-                rolled = Some(seed);
-                break;
+        for point in visual.body {
+            check(point);
+        }
+        for eye in visual.eyes {
+            for point in eye {
+                check(point);
             }
         }
-        let seed = rolled.expect("work body chance");
-        let mut sim = BlobSim::with_seed(false, seed);
-        sim.set_mood(Mood::Working, 0.0);
-        assert_eq!(sim.body_s.x, 0.0);
-        assert_eq!(sim.body_from, *body_points(BodyShape::Circle));
-        assert_eq!(sim.body_to, *body_points(BodyShape::Squircle));
-        sim.sample(0.0);
-        sim.sample(32.0);
-        assert!(sim.body_s.x > 0.0 && sim.body_s.x < 0.97);
-    }
-
-    #[test]
-    fn blink_keys_match_the_source_schedule_and_idle_fps_drops() {
-        let mut saw_short = false;
-        let mut saw_long = false;
-        for seed in 0..80 {
-            let mut sim = BlobSim::with_seed(false, seed);
-            sim.set_mood(Mood::Speaking, 1_000.0);
-            assert_eq!(blink_key(&sim, 0), (1_000.0, 0.05));
-            assert_eq!(blink_key(&sim, 1), (1_070.0, 0.05));
-            assert_eq!(blink_key(&sim, 2), (1_150.0, 1.08));
-            assert_eq!(blink_key(&sim, 3), (1_300.0, 1.0));
-            match sim.blinks.len {
-                4 => saw_short = true,
-                6 => {
-                    saw_long = true;
-                    assert_eq!(blink_key(&sim, 4), (1_370.0, 0.05));
-                    assert_eq!(blink_key(&sim, 5), (1_480.0, 1.0));
-                }
-                other => panic!("blink len {other}"),
+        for prop in &visual.props[..visual.prop_count] {
+            for point in &prop.points[..prop.len] {
+                check(*point);
             }
         }
-        assert!(saw_short && saw_long);
+    }
 
-        let mut sim = BlobSim::with_seed(false, 2);
-        sim.set_mood(Mood::Idle, 0.0);
-        assert_eq!(blink_key(&sim, 2).0, 150.0 * 2.6);
-
-        let mut sim = BlobSim::with_seed(false, 2);
-        for t in (0..=1696).step_by(16) {
-            sim.sample(t as f64);
-        }
-        assert!(!sim.wants_high_fps(1700.0));
-        sim.set_mood(Mood::Thinking, 1700.0);
-        assert!(sim.wants_high_fps(1700.0));
+    fn prop_points(visual: &Visual, index: usize) -> &[Point] {
+        let prop = &visual.props[index];
+        &prop.points[..prop.len]
     }
 
     #[test]
-    fn done_hops_up_and_closed_eyes_stay_open_scale() {
-        let mut sim = BlobSim::with_seed(false, 6);
-        sim.sample(0.0);
-        sim.set_mood(Mood::Done, 1_000.0);
-        assert_eq!(sim.hop_at, 1_000.0);
-        assert!(sim.wants_high_fps(1_000.0));
-        let y0 = mean_y(&sim.sample(1_000.0).body);
-        let y1 = mean_y(&sim.sample(1_250.0).body);
-        assert!(y1 < y0 - 1.0);
-        assert_eq!(sim.blink.t, 1.0);
-        for t in (1_266..=1_600).step_by(16) {
-            sim.sample(t as f64);
+    fn body_stays_circular_and_inside_the_frame() {
+        let times = [
+            0.0, 90.0, 180.0, 300.0, 420.0, 600.0, 750.0, 1_100.0, 1_400.0, 1_600.0, 2_200.0,
+            4_000.0,
+        ];
+        for mood in MOODS {
+            for now in times {
+                let frame = pose(false, mood, now);
+                assert_round(&frame.body, mood, now);
+                assert_inside(&frame, mood, now);
+            }
+            let mut sim = BlobSim::new(false);
+            sim.set_mood(mood, 0.0);
+            sim.poke(1_000.0, None);
+            let nudged = sim.sample(1_120.0);
+            assert_round(&nudged.body, mood, 1_120.0);
+            assert_inside(&nudged, mood, 1_120.0);
         }
-        assert!((sim.blink.x - 1.0).abs() < 1e-6);
+
+        let idle_rest = pose(false, Mood::Idle, 0.0);
+        let idle_high = pose(false, Mood::Idle, 2_000.0);
+        assert!(centroid(&idle_high.body)[1] < centroid(&idle_rest.body)[1] - 0.5);
+        assert_eq!(idle_rest.prop_count, 0);
+
+        let think_rest = pose(false, Mood::Thinking, 0.0);
+        let think_tilt = pose(false, Mood::Thinking, 1_200.0);
+        assert_ne!(think_rest.body, think_tilt.body);
+        assert_eq!(think_rest.prop_count, think_tilt.prop_count);
+        for index in 0..think_rest.prop_count {
+            assert_eq!(
+                prop_points(&think_rest, index),
+                prop_points(&think_tilt, index)
+            );
+        }
+
+        let search_rest = pose(false, Mood::Searching, 0.0);
+        let search_sweep = pose(false, Mood::Searching, 1_100.0);
+        assert_eq!(search_rest.body, search_sweep.body);
+        assert_ne!(search_rest.props, search_sweep.props);
+
+        let work_rest = pose(false, Mood::Working, 0.0);
+        let work_lean = pose(false, Mood::Working, 420.0);
+        assert_ne!(work_rest.body, work_lean.body);
+        assert_eq!(prop_points(&work_rest, 0), prop_points(&work_lean, 0));
+        assert_eq!(work_rest.prop_count, 17);
+
+        let speak_rest = pose(false, Mood::Speaking, 0.0);
+        let speak_high = pose(false, Mood::Speaking, 1_400.0);
+        assert_ne!(speak_rest.body, speak_high.body);
+        assert_eq!(prop_points(&speak_rest, 0), prop_points(&speak_high, 0));
+
+        let mut held = BlobSim::new(false);
+        held.set_mood(Mood::Working, 0.0);
+        let mut poked = BlobSim::new(false);
+        poked.set_mood(Mood::Working, 0.0);
+        poked.poke(1_000.0, Some(0.4));
+        let still = held.sample(1_120.0);
+        let moved = poked.sample(1_120.0);
+        assert_eq!(still.props, moved.props);
+        assert_eq!(still.prop_count, moved.prop_count);
+        assert_ne!(still.body, moved.body);
+        assert_round(&moved.body, Mood::Working, 1_120.0);
+
+        let mut working = BlobSim::new(false);
+        working.set_mood(Mood::Working, 0.0);
+        assert!(working.wants_high_fps(20_000.0));
+        for mood in [
+            Mood::Thinking,
+            Mood::Searching,
+            Mood::Speaking,
+            Mood::Waiting,
+        ] {
+            let mut sim = BlobSim::new(false);
+            sim.set_mood(mood, 0.0);
+            assert!(sim.wants_high_fps(20_000.0), "{mood:?}");
+        }
     }
 
     #[test]
-    fn searching_is_the_source_search_sweep_not_thinking() {
-        let mut search = BlobSim::with_seed(false, 11);
-        let mut think = BlobSim::with_seed(false, 11);
-        search.set_mood(Mood::Searching, 0.0);
-        think.set_mood(Mood::Thinking, 0.0);
-        assert_eq!(search.face_key, FaceName::Wide);
-        assert_eq!(think.face_key, FaceName::LookUp);
-        assert_eq!(search.body_len, 1);
-        assert_eq!(search.body_list[0], BodyShape::Circle);
-        assert!((4_000.0..7_000.0).contains(&search.ctx.hop_until));
-        assert!((8_000.0..12_000.0).contains(&think.ctx.hop_until));
-        for step in 0..=80 {
-            let now = f64::from(step) * 16.0;
-            search.sample(now);
-            think.sample(now);
+    fn reduced_motion_freezes_each_distinct_state() {
+        let mut frozen = [Visual::new([[0.0; 2]; 72], [[[0.0; 2]; 48]; 2], BLUE, CREAM); 8];
+        for (index, mood) in MOODS.into_iter().enumerate() {
+            let mut sim = BlobSim::new(true);
+            sim.set_mood(mood, 0.0);
+            let first = sim.sample(0.0);
+            let later = sim.sample(9_000.0);
+            assert_eq!(first, later, "{mood:?}");
+            assert!(!sim.wants_high_fps(2_350.0), "{mood:?}");
+            assert_round(&first.body, mood, 0.0);
+            assert_inside(&first, mood, 0.0);
+            sim.poke(0.0, Some(-1.0));
+            assert_eq!(first, sim.sample(100.0), "{mood:?}");
+            frozen[index] = first;
         }
-        // mt = 1.28s: search target is sin(1.28*1.3)*16 ≈ 15.9; think stays negative.
-        assert!(search.spin.t > 14.0, "search spin {}", search.spin.t);
-        assert!(think.spin.t < -2.0, "think spin {}", think.spin.t);
+
+        let idle = &frozen[0];
+        let thinking = &frozen[1];
+        let searching = &frozen[2];
+        let working = &frozen[3];
+        let speaking = &frozen[4];
+        let waiting = &frozen[5];
+        let done = &frozen[6];
+        let error = &frozen[7];
+        assert_eq!(idle.prop_count, 0);
+        assert_eq!(thinking.prop_count, 3);
+        assert_eq!(searching.prop_count, 2);
+        assert_eq!(working.prop_count, 17);
+        assert_eq!(speaking.prop_count, 3);
+        assert_eq!(waiting.prop_count, 3);
+        assert_eq!(done.prop_count, 2);
+        assert_eq!(error.prop_count, 3);
+        assert_eq!(working.props[0].color, BOARD);
+        assert_eq!(waiting.props[0].color, AMBER);
+        assert_eq!(done.props[0].color, GREEN);
+        assert_eq!(error.props[0].color, CORAL);
+        assert_ne!(idle.eyes, thinking.eyes);
+        assert_ne!(idle.eyes, done.eyes);
+        assert_ne!(idle.eyes, error.eyes);
+        assert_ne!(thinking.eyes, searching.eyes);
+        assert_eq!(searching.eyes, working.eyes);
+        assert_eq!(working.eyes, speaking.eyes);
+        assert_eq!(speaking.eyes, waiting.eyes);
+        for index in 0..frozen.len() {
+            for other in index + 1..frozen.len() {
+                assert_ne!(frozen[index], frozen[other]);
+            }
+        }
+
+        let center = centroid(&idle.body);
+        assert!((center[0] - 158.0 * SCALE).abs() < 1.0e-5);
+        assert!((center[1] - 101.0 * SCALE).abs() < 1.0e-5);
+
+        let angle = 20.0_f64.to_radians();
+        let rim = [
+            (78.0 + 17.0 * angle.cos()) * SCALE,
+            (144.0 + 17.0 * angle.sin()) * SCALE,
+        ];
+        let hole = [78.0 * SCALE, 144.0 * SCALE];
+        assert!(searching.contains(rim[0], rim[1]));
+        assert!(!searching.contains(hole[0], hole[1]));
+        assert!(!idle.contains(rim[0], rim[1]));
+        assert!(!idle.contains(hole[0], hole[1]));
+        let key = [
+            (0.80 * 13.0 - 0.66 * 10.5 + 78.0) * SCALE,
+            (0.32 * 13.0 + 0.48 * 10.5 + 136.0) * SCALE,
+        ];
+        assert!(working.contains(key[0], key[1]));
+        assert!(!idle.contains(key[0], key[1]));
+        assert!(!searching.contains(key[0], key[1]));
+    }
+
+    #[test]
+    fn done_and_error_finish_once_and_a_repeat_does_not_restart() {
+        let rest = pose(false, Mood::Done, 0.0);
+        let mut done = BlobSim::new(false);
+        done.set_mood(Mood::Done, 0.0);
+        let peak = done.sample(300.0);
+        assert!(centroid(&peak.body)[1] < centroid(&rest.body)[1] - 0.5);
+        assert_round(&peak.body, Mood::Done, 300.0);
+        assert!(done.wants_high_fps(300.0));
+        let settled = done.sample(800.0);
+        assert_eq!(settled.body, rest.body);
+        assert!(!done.wants_high_fps(800.0));
+        done.set_mood(Mood::Done, 800.0);
+        let held = done.sample(1_100.0);
+        assert_eq!(held.body, rest.body);
+        assert!(!done.wants_high_fps(1_100.0));
+        let mut restarted = BlobSim::new(false);
+        restarted.set_mood(Mood::Done, 800.0);
+        assert_ne!(held.body, restarted.sample(1_100.0).body);
+        assert!(restarted.wants_high_fps(1_100.0));
+
+        let error_rest = pose(false, Mood::Error, 0.0);
+        let mut error = BlobSim::new(false);
+        error.set_mood(Mood::Error, 0.0);
+        let shaken = error.sample(100.0);
+        assert!(centroid(&shaken.body)[0] < centroid(&error_rest.body)[0] - 0.4);
+        assert_round(&shaken.body, Mood::Error, 100.0);
+        assert!(error.wants_high_fps(100.0));
+        let still = error.sample(500.0);
+        assert_eq!(still.body, error_rest.body);
+        assert!(!error.wants_high_fps(500.0));
+        error.set_mood(Mood::Error, 500.0);
+        let held = error.sample(600.0);
+        assert_eq!(held.body, error_rest.body);
+        assert!(!error.wants_high_fps(600.0));
+        let mut restarted = BlobSim::new(false);
+        restarted.set_mood(Mood::Error, 500.0);
+        assert_ne!(held.body, restarted.sample(600.0).body);
+
+        let mut idle = BlobSim::new(false);
+        idle.set_mood(Mood::Idle, 0.0);
+        assert!(!idle.wants_high_fps(0.0));
+        assert!(idle.wants_high_fps(2_350.0));
+        assert!(!idle.wants_high_fps(3_000.0));
+        idle.poke(10_000.0, None);
+        assert!(idle.wants_high_fps(10_100.0));
+        assert!(!idle.wants_high_fps(10_400.0));
+        assert_eq!(idle.poke(10_000.0, None), 2);
     }
 }
