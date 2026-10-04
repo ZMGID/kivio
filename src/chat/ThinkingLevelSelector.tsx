@@ -113,7 +113,7 @@ function ThinkingLevelSelectorBase({
         aria-label={t.chatThinkingLevel.replace('{level}', labelFor(effective))}
       >
         <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
-        <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+        <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800">
           {labelFor(effective)}
         </span>
         <ChevronDown
@@ -140,8 +140,8 @@ function ThinkingLevelSelectorBase({
                   }}
                   className={`kv-menu-row justify-between transition-colors ${
                     active
-                      ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                      : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
+                      ? 'bg-neutral-100 font-medium text-neutral-900'
+                      : 'text-neutral-700 hover:bg-neutral-50'
                   }`}
                 >
                   <span className="min-w-0 truncate">{opt.label}</span>

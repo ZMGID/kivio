@@ -37,7 +37,7 @@ const CodeLine = memo(function CodeLine({
       >
         {lineNo}
       </span>
-      <span className="whitespace-pre pr-4 text-neutral-800 dark:text-neutral-200">
+      <span className="whitespace-pre pr-4 text-neutral-800">
         {line ? highlightCode(line, language) : ' '}
       </span>
     </div>
@@ -108,10 +108,10 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
   const gutterCh = String(Math.max(lines.length, 1)).length
 
   return (
-    <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)] dark:bg-[#262629]">
+    <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
       {/* 头部：文件名 + 路径 + 操作 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
-        <span className="shrink-0 text-[12.5px] font-medium text-neutral-800 dark:text-neutral-100">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
+        <span className="shrink-0 text-[12.5px] font-medium text-neutral-800">
           {basenameOf(path)}
         </span>
         {path !== basenameOf(path) ? (
@@ -156,9 +156,9 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             spellCheck={false}
-            className="custom-scrollbar min-h-0 flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[11.5px] leading-5 text-neutral-800 outline-none dark:text-neutral-200"
+            className="custom-scrollbar min-h-0 flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[11.5px] leading-5 text-neutral-800 outline-none"
           />
-          <div className="flex shrink-0 items-center gap-1.5 border-t border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
+          <div className="flex shrink-0 items-center gap-1.5 border-t border-neutral-200/70 px-2 py-1.5">
             {saveError && (
               <span className="min-w-0 flex-1 truncate text-[11px] text-red-500 dark:text-red-400" title={saveError}>
                 {saveError}

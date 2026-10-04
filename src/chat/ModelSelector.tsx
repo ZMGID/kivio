@@ -123,8 +123,8 @@ function ModelSelectorBase({
         key={`${providerId}:${model}:${keySuffix}`}
         className={`group flex w-full items-center gap-1 rounded-lg pr-1 transition-colors ${
           selected
-            ? 'bg-neutral-100 dark:bg-neutral-800'
-            : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/80'
+            ? 'bg-neutral-100'
+            : 'hover:bg-neutral-50'
         }`}
       >
         <button
@@ -135,8 +135,8 @@ function ModelSelectorBase({
           }}
           className={`kv-menu-row min-w-0 flex-1 ${
             selected
-              ? 'font-medium text-neutral-900 dark:text-neutral-100'
-              : 'text-neutral-700 dark:text-neutral-300'
+              ? 'font-medium text-neutral-900'
+              : 'text-neutral-700'
           }`}
         >
           <ModelIcon model={model} size={16} />
@@ -174,7 +174,7 @@ function ModelSelectorBase({
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
       >
         {currentModel && <ModelIcon model={currentModel} size={16} />}
-        <span className="chat-model-selector-label max-w-[200px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+        <span className="chat-model-selector-label max-w-[200px] truncate font-medium text-neutral-800">
           {displayName}
         </span>
         <ChevronDown

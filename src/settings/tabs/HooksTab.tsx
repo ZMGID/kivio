@@ -121,7 +121,7 @@ export function HooksTab({ lang, hooks, onChange }: {
                 <div className="kv-row-text">
                   <span className="kv-row-label flex items-center gap-1.5">
                     {hook.name}
-                    <span className="inline-flex items-center gap-1 rounded bg-black/[0.05] px-1.5 py-px text-[10.5px] font-normal text-neutral-500 dark:bg-white/10 dark:text-neutral-400">
+                    <span className="inline-flex items-center gap-1 rounded bg-neutral-900/[0.05] px-1.5 py-px text-[10.5px] font-normal text-neutral-500 dark:text-neutral-400">
                       <Icon size={10} strokeWidth={2} />
                       {eventLabel(t, event)}
                     </span>
@@ -191,7 +191,7 @@ export function HooksTab({ lang, hooks, onChange }: {
                       setPicking(false)
                       setModal({ editing: null, event })
                     }}
-                    className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/5"
+                    className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left transition-colors hover:bg-neutral-900/[0.04]"
                     data-tauri-drag-region="false"
                   >
                     <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
@@ -201,7 +201,7 @@ export function HooksTab({ lang, hooks, onChange }: {
                       <span className="flex items-center gap-1.5 text-[13px]">
                         {eventLabel(t, event)}
                         {count > 0 && (
-                          <span className="rounded bg-black/[0.05] px-1.5 text-[10.5px] text-neutral-500 dark:bg-white/10 dark:text-neutral-400">
+                          <span className="rounded bg-neutral-900/[0.05] px-1.5 text-[10.5px] text-neutral-500 dark:text-neutral-400">
                             {count}
                           </span>
                         )}

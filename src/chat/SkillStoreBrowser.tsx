@@ -129,7 +129,7 @@ export function SkillStoreBrowser() {
         {loading ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }, (_, i) => (
-              <div key={i} className="flex flex-col rounded-xl border border-neutral-200/80 p-3.5 dark:border-neutral-800/70">
+              <div key={i} className="flex flex-col rounded-xl border border-neutral-200/80 p-3.5">
                 <div className="kv-skeleton h-4 w-2/5 rounded" />
                 <div className="kv-skeleton mt-2.5 h-3 w-full rounded" />
                 <div className="kv-skeleton mt-1.5 h-3 w-3/4 rounded" />
@@ -148,12 +148,12 @@ export function SkillStoreBrowser() {
                 <div
                   key={`${card.slug}-${idx}`}
                   style={{ '--chat-motion-delay': `${Math.min(idx % PAGE_LIMIT, 8) * 24}ms` } as CSSProperties}
-                  className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                  className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950 dark:text-neutral-50">{card.displayName}</span>
+                    <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
                     {card.latestVersion && (
-                      <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                      <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:text-neutral-400">
                         v{card.latestVersion}
                       </span>
                     )}
@@ -161,7 +161,7 @@ export function SkillStoreBrowser() {
                   <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
                     {card.summary || t.chatSkillNoSummary}
                   </p>
-                  <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-neutral-100 pt-2.5 dark:border-neutral-800/70">
+                  <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-neutral-100 pt-2.5">
                     <div className="flex items-center gap-3 text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
                       <span className="inline-flex items-center gap-1"><Download size={11} />{card.downloads.toLocaleString()}</span>
                       <span className="inline-flex items-center gap-1"><Star size={11} />{card.stars.toLocaleString()}</span>

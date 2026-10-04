@@ -420,7 +420,7 @@ export function NotesCenter() {
   if (editing) {
     const isChat = editing.origin === 'chat'
     return (
-      <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
+      <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
         <div className="mx-auto flex h-full w-full min-h-0 max-w-[820px] flex-col px-9 pb-4 pt-6">
           <div className="flex shrink-0 items-center justify-between gap-3">
             <Button variant="ghost" size="sm" onClick={() => void backToList()}>
@@ -450,7 +450,7 @@ export function NotesCenter() {
               editNoteDraft({ title: e.target.value })
             }}
             placeholder={t.chatNotesUntitled}
-            className="mt-5 w-full shrink-0 bg-transparent text-[26px] font-semibold tracking-normal text-neutral-950 placeholder:text-neutral-300 focus:outline-none dark:text-neutral-50 dark:placeholder:text-neutral-600"
+            className="mt-5 w-full shrink-0 bg-transparent text-[26px] font-semibold tracking-normal text-neutral-950 placeholder:text-neutral-300 focus:outline-none dark:placeholder:text-neutral-600"
           />
           <p className="mt-1.5 shrink-0 text-[12px] text-neutral-400 dark:text-neutral-500">
             {t.chatNotesUpdatedInfo
@@ -460,7 +460,7 @@ export function NotesCenter() {
 
           {isChat && (
             <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-neutral-100/70 px-2 py-0.5 text-[12.5px] text-neutral-500 dark:bg-neutral-800/60 dark:text-neutral-400">
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-neutral-100/70 px-2 py-0.5 text-[12.5px] text-neutral-500 dark:text-neutral-400">
                 <MessageSquare size={13} />
                 {t.chatNotesFromChat}
               </span>
@@ -501,12 +501,12 @@ export function NotesCenter() {
         : t.chatNotesEmptyRecent
 
   return (
-    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
+    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
           {/* 头部：标题 + 副标题 */}
-          <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-            <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+          <div className="border-b border-neutral-200 pb-5">
+            <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950">
               <NotebookPen size={24} className="text-neutral-500" />
               {t.chatNavNotes}
             </h1>
@@ -517,7 +517,7 @@ export function NotesCenter() {
 
           {/* 一行：tab（左） + 搜索（中） + 操作（右） */}
           <div className="mt-5 flex items-center gap-3">
-            <div className="flex shrink-0 items-center gap-1 rounded-lg bg-neutral-100 p-0.5 dark:bg-neutral-800/80">
+            <div className="flex shrink-0 items-center gap-1 rounded-lg bg-neutral-100 p-0.5">
               {(
                 [
                   ['recent', t.chatTabRecent],
@@ -531,8 +531,8 @@ export function NotesCenter() {
                   onClick={() => changeTab(id)}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] transition-colors ${
                     tab === id
-                      ? 'bg-white font-medium text-neutral-900 shadow-sm dark:bg-neutral-900 dark:text-neutral-50'
-                      : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                      ? 'bg-neutral-50 font-medium text-neutral-900 shadow-sm'
+                      : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
                   }`}
                 >
                   {label}
@@ -547,7 +547,7 @@ export function NotesCenter() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t.chatNotesSearchPlaceholder}
-                className="w-full rounded-lg border border-neutral-200 bg-white py-1.5 pl-8 pr-3 text-[13px] text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                className="w-full rounded-lg border border-neutral-200 bg-neutral-50 py-1.5 pl-8 pr-3 text-[13px] text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none"
               />
             </div>
             {visibleNotes.length > 0 && (
@@ -581,12 +581,12 @@ export function NotesCenter() {
             <button
               type="button"
               onClick={() => setCurrentFolder(null)}
-              className="mt-4 inline-flex items-center gap-1 text-[13px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+              className="mt-4 inline-flex items-center gap-1 text-[13px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400"
             >
               <ChevronLeft size={15} />
               {t.chatNotesTabLibrary}
               <span className="text-neutral-300 dark:text-neutral-600">/</span>
-              <span className="font-medium text-neutral-700 dark:text-neutral-200">{currentFolder}</span>
+              <span className="font-medium text-neutral-700">{currentFolder}</span>
             </button>
           )}
 
@@ -599,7 +599,7 @@ export function NotesCenter() {
           {loading && notes.length === 0 ? (
             <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {Array.from({ length: 3 }, (_, i) => (
-                <div key={i} className="rounded-xl border border-neutral-200/80 p-4 dark:border-neutral-800/70">
+                <div key={i} className="rounded-xl border border-neutral-200/80 p-4">
                   <div className="kv-skeleton h-4 w-1/3 rounded" />
                   <div className="kv-skeleton mt-2.5 h-3 w-full rounded" />
                   <div className="kv-skeleton mt-1.5 h-3 w-2/3 rounded" />
@@ -624,11 +624,11 @@ export function NotesCenter() {
                           setCurrentFolder(name)
                         }
                       }}
-                      className="group flex cursor-pointer items-center gap-3 rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                      className="group flex cursor-pointer items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow"
                     >
                       <Folder size={20} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-[14px] font-medium text-neutral-900 dark:text-neutral-50">
+                        <div className="truncate text-[14px] font-medium text-neutral-900">
                           {name}
                         </div>
                         <div className="text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
@@ -667,14 +667,14 @@ export function NotesCenter() {
               {/* 空状态 */}
               {emptyEverything ? (
                 <div className="mt-16 flex flex-col items-center justify-center text-center">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-md bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-md bg-neutral-100 text-neutral-400 dark:text-neutral-500">
                     {tab === 'chat' ? (
                       <MessageSquare size={28} strokeWidth={1.5} />
                     ) : (
                       <NotebookPen size={28} strokeWidth={1.5} />
                     )}
                   </div>
-                  <p className="mt-4 text-[15px] font-medium text-neutral-700 dark:text-neutral-200">
+                  <p className="mt-4 text-[15px] font-medium text-neutral-700">
                     {search.trim() ? t.chatNotesNoMatch : emptyText}
                   </p>
                   {!search.trim() && tab === 'chat' && (
@@ -712,10 +712,10 @@ export function NotesCenter() {
                             void openNote(note.id)
                           }
                         }}
-                        className="chat-motion-fade-up group flex min-h-[132px] min-w-0 cursor-pointer flex-col gap-2 rounded-xl border border-neutral-200 bg-white p-4 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                        className="chat-motion-fade-up group flex min-h-[132px] min-w-0 cursor-pointer flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-4 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow"
                       >
                         <div className="flex min-w-0 items-start justify-between gap-2">
-                          <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-50">
+                          <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-neutral-900">
                             {displayTitle(note.title, t.chatNotesUntitled)}
                           </h3>
                           <div className="flex shrink-0 items-center gap-0.5">
@@ -764,7 +764,7 @@ export function NotesCenter() {
                                         <span className={`truncate ${note.folder.trim() === f ? '' : 'ml-[18px]'}`}>{f}</span>
                                       </button>
                                     ))}
-                                    <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
+                                    <div className="my-1 border-t border-neutral-100" />
                                     <button
                                       type="button"
                                       className="kv-menu-item"
@@ -831,10 +831,10 @@ export function NotesCenter() {
           onMouseDown={() => setFolderDialog(null)}
         >
           <div
-            className="w-full max-w-xs rounded-xl border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            className="w-full max-w-xs rounded-xl border border-neutral-200 bg-neutral-50 p-4 shadow-xl"
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <h3 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+            <h3 className="text-[14px] font-semibold text-neutral-900">
               {folderDialog.mode === 'create' ? t.dockNewFolder : t.chatRename}
             </h3>
             <input

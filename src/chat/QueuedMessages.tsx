@@ -74,7 +74,7 @@ export function QueuedMessages({
                 className={`min-w-0 flex-1 truncate text-left text-[12px] ${
                   submitted
                     ? 'cursor-default text-neutral-400 dark:text-neutral-500'
-                    : `text-neutral-700 dark:text-neutral-200 ${restorable ? '' : 'cursor-default'}`
+                    : `text-neutral-700 ${restorable ? '' : 'cursor-default'}`
                 }`}
               >
                 {message.content || t.chatQueuedAttachmentOnly}

@@ -126,7 +126,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               label={i18n[uiLang].dockToggle}
               size="sm"
               variant="ghost"
-              className={dockOpen ? 'bg-black/5 text-neutral-800 dark:bg-white/10 dark:text-neutral-100' : ''}
+              className={dockOpen ? 'bg-neutral-900/5 text-neutral-800' : ''}
               onClick={onToggleDock}
             >
               <PanelRight size={15} />

@@ -528,7 +528,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   submitRef.current = (skipped, draftOverride) => { void submit(skipped, draftOverride) }
 
   return (
-    <div className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-white/95 text-[12px] leading-5 text-neutral-700 dark:border-neutral-700/70 dark:bg-neutral-900/85 dark:text-neutral-200 ${
+    <div className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-[var(--theme-surface)]/95 text-[12px] leading-5 text-neutral-700 ${
       // 只有吊在输入框上方那张才有投影（它是浮在对话之上的层）。消息流里的那块是**内容**，
       // 带投影会在浅灰底上糊出一条脏影子 —— 与旁边其它工具卡（无投影）也不是一套。
       docked
@@ -538,7 +538,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       {/* 标题行：问题本身当标题（原来是「需要确认」当标题、问题降到正文，主次颠倒）。
           右侧是翻页 + 跳过，同参考图的 `‹ 1 of 4 ›  ×`。 */}
       <div className="flex items-start gap-3 px-3.5 pt-3 pb-2">
-        <div className="min-w-0 flex-1 text-[14px] font-semibold leading-6 text-neutral-950 dark:text-neutral-50">
+        <div className="min-w-0 flex-1 text-[14px] font-semibold leading-6 text-neutral-950">
           {awaiting && currentQuestion ? currentQuestion.prompt : compactText(parsed.title, 96)}
           {awaiting && currentQuestion?.required === false && (
             <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">可选</span>
@@ -624,21 +624,21 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                       // 冗余的边界。也别改回「非当前行才加 border-t」—— 那会让行高随 hover 在
                       // 1px 之间变，整张面板（吊在输入框上方）跟着上下跳。尺寸绝不能随 hover 变。
                       active
-                        ? 'bg-neutral-100 dark:bg-neutral-800'
-                        : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/50'
+                        ? 'bg-neutral-100'
+                        : 'hover:bg-neutral-50'
                     }`}
                   >
                     <span
                       className={`grid size-6 shrink-0 place-items-center rounded-md text-[11.5px] font-medium tabular-nums transition-colors ${
                         selected
-                          ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                          : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+                          ? 'bg-neutral-900 text-neutral-50'
+                          : 'bg-neutral-100 text-neutral-500 dark:text-neutral-400'
                       }`}
                     >
                       {selected && multiSelect ? <Check size={13} strokeWidth={2.4} /> : index + 1}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block break-words text-[13px] font-medium leading-5 text-neutral-900 dark:text-neutral-100">
+                      <span className="block break-words text-[13px] font-medium leading-5 text-neutral-900">
                         {option.label}
                       </span>
                       {option.description && (
@@ -664,10 +664,10 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                 <div
                   className={`flex items-center gap-3 rounded-xl px-1.5 py-1.5 ${
                     // 同上：不画分隔线。
-                    activeIndex === optionCount ? 'bg-neutral-100 dark:bg-neutral-800' : ''
+                    activeIndex === optionCount ? 'bg-neutral-100' : ''
                   }`}
                 >
-                  <span className="grid size-6 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+                  <span className="grid size-6 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-400 dark:text-neutral-500">
                     <Pencil size={12} strokeWidth={2} />
                   </span>
                   <input
@@ -734,7 +734,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
           <div className="space-y-2">
             {parsed.questions.map((question) => (
               <div key={question.id}>
-                <div className="break-words text-[12.5px] font-medium leading-5 text-neutral-800 dark:text-neutral-100">
+                <div className="break-words text-[12.5px] font-medium leading-5 text-neutral-800">
                   {question.prompt}
                 </div>
                 <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">

@@ -132,7 +132,7 @@ function MultiModelSelectorBase({ value, onChange, placement = 'up' }: MultiMode
                 .replace('{model}', ref.model)
                 .replace('{provider}', providerName(ref.provider_id))}
             >
-              <span className="grid size-6 place-items-center rounded-full border border-neutral-200 bg-white dark:border-neutral-600 dark:bg-neutral-800">
+              <span className="grid size-6 place-items-center rounded-full border border-neutral-200 bg-neutral-50 dark:border-neutral-600">
                 <ModelIcon model={ref.model} size={14} />
               </span>
             </button>
@@ -169,10 +169,10 @@ function MultiModelSelectorBase({ value, onChange, placement = 'up' }: MultiMode
                     onClick={() => toggle(provider.id, model)}
                     className={`kv-menu-row transition-colors ${
                       checked
-                        ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
+                        ? 'bg-neutral-100 font-medium text-neutral-900'
                         : disabled
                           ? 'cursor-default text-neutral-300 dark:text-neutral-600'
-                          : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
+                          : 'text-neutral-700 hover:bg-neutral-50'
                     }`}
                   >
                     <span

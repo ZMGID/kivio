@@ -298,7 +298,7 @@ export function ProvidersTab({
                     onClick={() => setIconPickerOpen((v) => !v)}
                     title={lang === 'zh' ? '选择图标' : 'Choose icon'}
                     data-tauri-drag-region="false"
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white ring-1 ring-black/[0.06] transition hover:ring-black/20 dark:bg-neutral-900 dark:ring-white/[0.08] dark:hover:ring-white/25"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-50 ring-1 ring-neutral-900/[0.06] transition hover:ring-neutral-900/20"
                   >
                     <ProviderIcon
                       name={selectedProvider.name}
@@ -315,7 +315,7 @@ export function ProvidersTab({
                   />
                 </div>
                 {iconPickerOpen && (
-                  <div className="rounded-lg bg-black/[0.02] p-2 ring-1 ring-black/[0.06] dark:bg-white/[0.03] dark:ring-white/[0.08]">
+                  <div className="rounded-lg bg-neutral-900/[0.02] p-2 ring-1 ring-neutral-900/[0.06]">
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(2rem,1fr))] gap-1">
                       <button
                         type="button"
@@ -325,8 +325,8 @@ export function ProvidersTab({
                           setIconPickerOpen(false)
                         }}
                         data-tauri-drag-region="false"
-                        className={`flex h-8 items-center justify-center rounded-md text-[10px] text-neutral-500 hover:bg-black/[0.06] dark:text-neutral-400 dark:hover:bg-white/[0.08] ${
-                          settings.providerIcons?.[selectedProvider.id] ? '' : 'bg-black/[0.07] dark:bg-white/[0.1]'
+                        className={`flex h-8 items-center justify-center rounded-md text-[10px] text-neutral-500 hover:bg-neutral-900/[0.06] dark:text-neutral-400 ${
+                          settings.providerIcons?.[selectedProvider.id] ? '' : 'bg-neutral-900/[0.07]'
                         }`}
                       >
                         {lang === 'zh' ? '自动' : 'Auto'}
@@ -341,8 +341,8 @@ export function ProvidersTab({
                             setIconPickerOpen(false)
                           }}
                           data-tauri-drag-region="false"
-                          className={`flex h-8 items-center justify-center rounded-md hover:bg-black/[0.06] dark:hover:bg-white/[0.08] ${
-                            settings.providerIcons?.[selectedProvider.id] === key ? 'bg-black/[0.07] dark:bg-white/[0.1]' : ''
+                          className={`flex h-8 items-center justify-center rounded-md hover:bg-neutral-900/[0.06] ${
+                            settings.providerIcons?.[selectedProvider.id] === key ? 'bg-neutral-900/[0.07]' : ''
                           }`}
                         >
                           <ProviderIcon name={key} iconKey={key} size={18} />

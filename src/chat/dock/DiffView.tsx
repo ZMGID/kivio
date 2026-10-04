@@ -36,10 +36,10 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
   const displayPath = file.newPath || file.oldPath
 
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-200/80 dark:border-neutral-700/60">
+    <div className="overflow-hidden rounded-md border border-neutral-200/80">
       <button
         type="button"
-        className="flex w-full items-center gap-1.5 bg-neutral-100/60 px-2 py-1.5 text-left transition-colors hover:bg-neutral-100 dark:bg-neutral-800/40 dark:hover:bg-neutral-800/70"
+        className="flex w-full items-center gap-1.5 bg-neutral-100/60 px-2 py-1.5 text-left transition-colors hover:bg-neutral-100"
         onClick={() => setOpen((prev) => !prev)}
       >
         {open ? (
@@ -48,7 +48,7 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
           <ChevronRight size={13} strokeWidth={2} className="shrink-0 text-neutral-400" />
         )}
         <FileCode size={13} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-700 dark:text-neutral-200">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-700">
           {file.isDeleted ? file.oldPath : displayPath}
         </span>
         {file.isNew && (

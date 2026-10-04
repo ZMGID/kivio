@@ -18,7 +18,7 @@
   -webkit-backdrop-filter: saturate(160%) blur(28px);
   backdrop-filter: saturate(160%) blur(28px);
   border-radius: 18px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--theme-surface-border);
   box-shadow:
     0 0 0 0.5px rgba(15, 23, 42, 0.06),
     0 2px 8px rgba(15, 23, 42, 0.10),
@@ -26,8 +26,6 @@
 }
 
 .dark .window-frosted {
-  background: linear-gradient(180deg, rgba(28, 28, 30, 0.92) 0%, rgba(22, 22, 24, 0.88) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.10);
   box-shadow:
     0 0 0 0.5px rgba(255, 255, 255, 0.07),
     0 2px 10px rgba(0, 0, 0, 0.45),
@@ -53,13 +51,10 @@
    上会退化成文字后面的矩形色块，暗色模式尤其明显。直接动画 opacity 是跨 WebView
    最稳定的实现，文字始终由自己的前景色绘制。 */
 .reasoning-shimmer-text {
-  color: rgb(115, 115, 115);
+  color: var(--text-muted);
   animation: chat-motion-text-pulse 2.4s ease-in-out infinite;
 }
 
-.dark .reasoning-shimmer-text {
-  color: rgb(205, 205, 205);
-}
 
 .reasoning-scroll-box {
   box-sizing: border-box;
@@ -90,12 +85,9 @@
   overflow-wrap: anywhere;
   font-size: 0.875rem;
   line-height: 1.65;
-  color: rgb(82, 82, 91);
+  color: var(--text-muted);
 }
 
-.dark .reasoning-plain-text {
-  color: rgb(161, 161, 170);
-}
 
 /* 代码块工具条：语言标签用伪元素画，复制图标用伪元素画。
    伪元素不进 DOM 树 —— 一个大对话里有两百多个代码块，每块省下的
@@ -109,12 +101,9 @@
   white-space: nowrap;
   font-size: 12px;
   line-height: 1;
-  color: rgb(163 163 163);
+  color: var(--text-faint);
 }
 
-.dark .kv-code-toolbar::before {
-  color: rgb(115 115 115);
-}
 
 /* 复制图标：两个错开的圆角方块；已复制态换成一个勾。 */
 .kv-copy-glyph {
@@ -183,7 +172,7 @@
 .custom-scrollbar::-webkit-scrollbar-thumb,
 .chat-model-selector-menu::-webkit-scrollbar-thumb,
 .chat-popover-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.15);
+  background-color: color-mix(in srgb, var(--text) 15%, transparent);
   border-radius: 9999px;
   border: 3px solid transparent;
   background-clip: padding-box;
@@ -193,34 +182,17 @@
 .custom-scrollbar:hover::-webkit-scrollbar-thumb,
 .chat-model-selector-menu:hover::-webkit-scrollbar-thumb,
 .chat-popover-scroll:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.18);
+  background-color: color-mix(in srgb, var(--text) 18%, transparent);
   border-width: 2.5px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover,
 .chat-model-selector-menu::-webkit-scrollbar-thumb:hover,
 .chat-popover-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(0, 0, 0, 0.32);
+  background-color: color-mix(in srgb, var(--text) 32%, transparent);
   border-width: 2px;
 }
 
-.dark .custom-scrollbar::-webkit-scrollbar-thumb,
-.dark .chat-model-selector-menu::-webkit-scrollbar-thumb,
-.dark .chat-popover-scroll::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.15);
-}
-
-.dark .custom-scrollbar:hover::-webkit-scrollbar-thumb,
-.dark .chat-model-selector-menu:hover::-webkit-scrollbar-thumb,
-.dark .chat-popover-scroll:hover::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.18);
-}
-
-.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover,
-.dark .chat-model-selector-menu::-webkit-scrollbar-thumb:hover,
-.dark .chat-popover-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.32);
-}
 
 /* 滚动时才出现的滚动条（同样是上面的细胶囊，只切换透明度）：默认全透明（8px 槽仍占位，
    出现时无布局抖动），JS 在 scroll 事件期间给容器挂 .is-scrolling（停止后延时摘除）。
@@ -237,12 +209,9 @@
 }
 
 .kv-scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.25);
+  background-color: color-mix(in srgb, var(--text) 25%, transparent);
 }
 
-.dark .kv-scrollbar-autohide.is-scrolling::-webkit-scrollbar-thumb {
-  background-color: rgba(255, 255, 255, 0.25);
-}
 
 /* Tailwind preflight 把所有元素 margin 清零，原生模态 <dialog> 失去 margin:auto 居中，
    会贴在窗口左上角。所有 <dialog class="kv-modal">（确认框、作品重命名等）在这里补回。 */
@@ -264,13 +233,13 @@ html[data-focus-source="pointer"] :focus-visible:not(input, textarea, select, [c
 }
 
 html[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal) button:focus-visible {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
   /* 键盘聚焦时焦点环缓入；失焦时瞬退（不拖尾），是更利落的行为。 */
   transition: box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 html.dark[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal) button:focus-visible {
-  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.18);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 /* 应用内确认 / 提示框（src/components/AppDialog.tsx）。外框、配色、阴影沿用 .kv-modal，

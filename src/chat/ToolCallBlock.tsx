@@ -545,7 +545,7 @@ function ConsultCard({
   const hasBody = Boolean(children)
   const running = status === 'running'
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:border-white/10 dark:bg-white/[0.02] dark:text-neutral-400 dark:hover:bg-white/[0.045]">
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:text-neutral-400">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}
@@ -555,7 +555,7 @@ function ConsultCard({
         data-tauri-drag-region="false"
       >
         <CardEyebrow running={running} />
-        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800 dark:text-neutral-100">
+        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800">
           {label}
         </span>
         {identityChips}
@@ -578,7 +578,7 @@ function ConsultCard({
 
       {hasBody && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px] dark:border-white/10">
+          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px]">
             {children}
           </div>
         </ChatDisclosureBody>
@@ -645,7 +645,7 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
             </CardSection>
           )}
           {status === 'running' && (steps.length > 0 || preview) && (
-            <div className="border-l border-neutral-300 pl-2.5 dark:border-white/15">
+            <div className="border-l border-neutral-300 pl-2.5">
               {steps.length > 0 && (
                 <div className="space-y-0.5 font-mono text-[10.5px] text-neutral-500 dark:text-neutral-400">
                   {steps.map((step, index) => (
@@ -911,7 +911,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
       {automationId ? (
         <button
           type="button"
-          className="text-[12px] text-neutral-600 underline-offset-2 hover:underline dark:text-neutral-300"
+          className="text-[12px] text-neutral-600 underline-offset-2 hover:underline"
           data-tauri-drag-region="false"
           onClick={() => setHash(automationHash(automationId))}
         >
@@ -972,10 +972,10 @@ function KnowledgeHits({ hits }: { hits: KbHitView[] }) {
       {hits.map((hit, idx) => (
         <div
           key={`${hit.n}-${idx}`}
-          className="rounded-md border border-black/[0.08] bg-black/[0.02] p-2 dark:border-white/[0.1] dark:bg-white/[0.03]"
+          className="rounded-md border border-neutral-900/[0.08] bg-neutral-900/[0.02] p-2"
         >
           <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-neutral-500 dark:text-neutral-400">
-            <span className="shrink-0 rounded bg-indigo-500/15 px-1 text-indigo-500">[{hit.n}]</span>
+            <span className="shrink-0 rounded bg-[var(--accent)]/15 px-1 text-accent">[{hit.n}]</span>
             <span className="min-w-0 truncate">
               {hit.docName}
               {hit.headingPath ? ` · ${hit.headingPath}` : ''}
@@ -1070,14 +1070,14 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
           onClick={() => {
             void api.openExternal(citation.url).catch((err) => console.error('openExternal failed', err))
           }}
-          className="group block w-full min-w-0 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+          className="group block w-full min-w-0 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-neutral-900/[0.03]"
           title={citation.url}
         >
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="shrink-0 w-4 text-[10.5px] font-medium tabular-nums text-indigo-500">
+            <span className="shrink-0 w-4 text-[10.5px] font-medium tabular-nums text-accent">
               [{citation.n}]
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline dark:text-neutral-200">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline">
               {citation.title}
             </span>
             <ExternalLink
@@ -1807,7 +1807,7 @@ function StatusIcon({ status }: { status: ToolCallStatus }) {
   if (isDone) {
     return (
       <CheckCircle2
-        className={`shrink-0 text-[#2f6ff0] dark:text-[#5c8df7]${justCompleted ? ' chat-motion-pop' : ''}`}
+        className={`shrink-0 text-accent${justCompleted ? ' chat-motion-pop' : ''}`}
         size={14}
         strokeWidth={1.9}
       />
@@ -1936,13 +1936,13 @@ function DefaultToolCallBlock({
         data-chat-disclosure={hasDetails || undefined}
         className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] transition-colors ${
           hasDetails
-            ? 'hover:text-neutral-700 dark:hover:text-neutral-200'
+            ? 'hover:text-neutral-700'
             : 'cursor-default'
         }`}
       >
         <ToolTypeIcon toolCall={toolCall} status={status} />
         <span
-          className={`shrink-0 font-medium text-neutral-700 dark:text-neutral-200${
+          className={`shrink-0 font-medium text-neutral-700${
             status === 'running' ? ' chat-motion-tool-shimmer' : ''
           }`}
         >
@@ -1952,7 +1952,7 @@ function DefaultToolCallBlock({
           <span
             className={`min-w-0 truncate ${
               previewPath || diffPatch
-                ? 'cursor-pointer text-neutral-400 underline-offset-2 hover:text-neutral-700 hover:underline dark:text-neutral-500 dark:hover:text-neutral-200'
+                ? 'cursor-pointer text-neutral-400 underline-offset-2 hover:text-neutral-700 hover:underline dark:text-neutral-500'
                 : 'text-neutral-400 dark:text-neutral-500'
             }`}
             onClick={
@@ -1988,7 +1988,7 @@ function DefaultToolCallBlock({
 
       {hasDetails && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-1.5 ml-1.5 space-y-1.5 border-l border-black/[0.08] pl-2.5 dark:border-white/[0.1]">
+          <div className="mt-1.5 ml-1.5 space-y-1.5 border-l border-neutral-900/[0.08] pl-2.5">
             {argumentPreview && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
@@ -2014,7 +2014,7 @@ function DefaultToolCallBlock({
               <FileMutationDetails mutation={fileMutation} />
             )}
             {argDiff && (
-              <div className="custom-scrollbar max-h-72 overflow-auto rounded-md border border-neutral-200/80 dark:border-neutral-700/60">
+              <div className="custom-scrollbar max-h-72 overflow-auto rounded-md border border-neutral-200/80">
                 <pre className="font-mono text-[11px] leading-[1.5]">
                   {argDiff.split('\n').map((line, index) => (
                     <div
@@ -2090,7 +2090,7 @@ function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; convers
   if (failed) {
     return (
       <div
-        className="flex h-16 w-16 items-center justify-center rounded-lg bg-neutral-100 text-neutral-400 dark:bg-neutral-800"
+        className="flex h-16 w-16 items-center justify-center rounded-lg bg-neutral-100 text-neutral-400"
         title={item.name}
       >
         <ImageOff size={16} strokeWidth={1.8} />
@@ -2106,7 +2106,7 @@ function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; convers
   return (
     <button
       type="button"
-      className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-neutral-100 p-0 dark:bg-neutral-800"
+      className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-neutral-100 p-0"
       title={item.name}
       aria-label={t.chatPreviewImage}
       onClick={() => openChatImageViewer({
@@ -2143,7 +2143,7 @@ export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: Too
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-chat-disclosure
-        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
+        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
       >
         <Eye
           className="shrink-0 text-neutral-400 dark:text-neutral-500"
@@ -2151,7 +2151,7 @@ export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: Too
           strokeWidth={1.9}
         />
         <span
-          className={`shrink-0 font-medium text-neutral-700 dark:text-neutral-200${
+          className={`shrink-0 font-medium text-neutral-700${
             running ? ' chat-motion-tool-shimmer' : ''
           }`}
         >

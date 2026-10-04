@@ -160,7 +160,7 @@ export function OnboardingShell({ onComplete, onSkip, onSettingsChange }: Onboar
   if (loading) {
     return (
       <div className="onboarding-shell onboarding-shell--loading settings-embedded kv">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-t-neutral-200" />
       </div>
     )
   }

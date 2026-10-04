@@ -61,7 +61,7 @@ function ImagePreview({
   }, [attachment, conversationId])
 
   return (
-    <div className="relative h-16 w-16 overflow-hidden rounded-lg bg-neutral-100 dark:bg-neutral-800">
+    <div className="relative h-16 w-16 overflow-hidden rounded-lg bg-neutral-100">
       {loading && <div className="kv-skeleton h-16 w-16 rounded-lg" aria-hidden="true" />}
       {!loading && src && (
         <button
@@ -154,7 +154,7 @@ function RemoveButton({
     <button
       type="button"
       onClick={onClick}
-      className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-neutral-950/90 text-white opacity-0 shadow-sm transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] hover:bg-neutral-800 focus-visible:opacity-100 group-hover:opacity-100"
+      className="absolute right-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-black/90 text-white opacity-0 shadow-sm transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] hover:bg-neutral-800 focus-visible:opacity-100 group-hover:opacity-100"
       title={label}
       aria-label={label}
     >

@@ -135,7 +135,7 @@ export function ReplyWithModelButton({ occupied, onSelect }: ReplyWithModelButto
       <div
         key={`${providerId}:${model}:${keySuffix}`}
         className={`group flex w-full items-center gap-1 rounded-lg pr-1 ${
-          disabled ? '' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/80'
+          disabled ? '' : 'hover:bg-neutral-50'
         }`}
       >
         <button
@@ -146,7 +146,7 @@ export function ReplyWithModelButton({ occupied, onSelect }: ReplyWithModelButto
           className={`kv-menu-row min-w-0 flex-1 ${
             disabled
               ? 'cursor-default text-neutral-300 dark:text-neutral-600'
-              : 'text-neutral-700 dark:text-neutral-300'
+              : 'text-neutral-700'
           }`}
         >
           <ModelIcon model={model} size={16} />

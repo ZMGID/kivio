@@ -20,12 +20,6 @@
   --border-strong: var(--theme-surface-border-strong);
   --border-input: var(--theme-surface-border-strong);
   --divider: var(--theme-surface-titlebar);
-  --text: #171717;
-  --text-muted: #737373;
-  --text-faint: #a3a3a3;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eff6ff;
   --radius-card: 12px;
   color: var(--text);
   background: var(--bg);
@@ -33,26 +27,6 @@
   font-size: 13px;
 }
 
-.dark .chat-window-shell .settings-embedded {
-  --bg: #1a1a1a;
-  --bg-sidebar: #1c1c1e;
-  --bg-savebar: #1a1a1a;
-  --bg-input: #2a2a2a;
-  --bg-input-subtle: #2a2a2a;
-  --bg-hover: rgba(255, 255, 255, 0.06);
-  --bg-active: rgba(255, 255, 255, 0.1);
-  --bg-pill: #333333;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: #525252;
-  --border-input: #404040;
-  --divider: rgba(255, 255, 255, 0.06);
-  --text: #f5f5f5;
-  --text-muted: #a3a3a3;
-  --text-faint: #737373;
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-soft: rgba(59, 130, 246, 0.15);
-}
 
 .settings-embedded-nav {
   width: 200px;
@@ -72,10 +46,6 @@
   padding-top: 60px;
 }
 
-.dark .chat-window-shell .settings-embedded-nav {
-  border-right-color: rgba(255, 255, 255, 0.08);
-  background: #1c1c1e;
-}
 
 .settings-embedded-nav-title {
   margin: 0 12px 12px;
@@ -101,24 +71,19 @@
   text-align: left;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-faint, #737373);
+  color: var(--text-faint, var(--text-muted));
   cursor: default;
   transition: background 0.12s ease, color 0.12s ease, transform var(--kv-dur-instant) var(--kv-ease-out);
 }
 .settings-embedded-back:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
   color: var(--text);
 }
 .settings-embedded-back:active {
   transform: scale(0.97);
 }
-.dark .chat-window-shell .settings-embedded-back {
-  color: #a3a3a3;
-}
-.dark .chat-window-shell .settings-embedded-back:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #f5f5f5;
-}
+
+
 .settings-embedded-back .settings-embedded-nav-icon {
   color: inherit;
 }
@@ -145,9 +110,7 @@
   padding: 0 calc(var(--nav-pad-x) + 4px);
   border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
 }
-.dark .chat-window-shell .settings-embedded-nav-list--footer {
-  border-top-color: rgba(255, 255, 255, 0.08);
-}
+
 
 .settings-embedded-nav-item {
   display: flex;
@@ -161,32 +124,22 @@
   text-align: left;
   font-size: 13px;
   font-weight: 500;
-  color: #404040;
+  color: var(--text);
   cursor: default;
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.dark .chat-window-shell .settings-embedded-nav-item {
-  color: #d4d4d4;
-}
 
 .settings-embedded-nav-item:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 
-.dark .chat-window-shell .settings-embedded-nav-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
 
 .settings-embedded-nav-item.active {
-  background: rgba(0, 0, 0, 0.06);
-  color: #171717;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
 }
 
-.dark .chat-window-shell .settings-embedded-nav-item.active {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fafafa;
-}
 
 .settings-embedded-nav-icon {
   display: flex;
@@ -195,20 +148,14 @@
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  color: #737373;
+  color: var(--text-muted);
 }
 
-.dark .chat-window-shell .settings-embedded-nav-icon {
-  color: #a3a3a3;
-}
 
 .settings-embedded-nav-item.active .settings-embedded-nav-icon {
-  color: #525252;
+  color: var(--text-muted);
 }
 
-.dark .chat-window-shell .settings-embedded-nav-item.active .settings-embedded-nav-icon {
-  color: #e5e5e5;
-}
 
 .settings-embedded-main {
   flex: 1;
@@ -282,7 +229,6 @@
 }
 
 .dark .chat-window-shell .settings-embedded .kv-group {
-  background: #262626;
   box-shadow: none;
 }
 
@@ -327,9 +273,6 @@
   gap: 0;
 }
 
-.dark .chat-window-shell .settings-embedded .kv-provider-list {
-  background: #262626;
-}
 
 .settings-embedded .kv-provider-item,
 .settings-embedded .kv-provider-add {
@@ -464,7 +407,7 @@
 }
 .kv-provider-preset-tile.is-custom {
   background: var(--accent);
-  color: #fff;
+  color: var(--text-onaccent);
 }
 .kv-provider-preset-tile.is-custom:hover {
   background: var(--accent);
@@ -472,7 +415,7 @@
   box-shadow: none;
 }
 .kv-provider-preset-tile.is-custom svg {
-  color: #fff;
+  color: var(--text-onaccent);
   width: 16px;
   height: 16px;
 }

@@ -20,7 +20,7 @@ export function SubAgentIndicator({ conversationId, onOpen, lang = 'zh' }: { con
       {running.map(child => {
         const label = `${child.name} · ${subAgentStatusLabel(child.runs.at(-1), lang)}`
         return <button key={child.id} type="button" aria-label={label} title={label} onClick={() => { onOpen(); requestDockSubAgent({ conversationId, agentId: child.id }) }}
-          className="relative flex size-5 shrink-0 items-center justify-center rounded-full first:ml-0 -ml-2.5 hover:z-20 focus-visible:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500">
+          className="relative flex size-5 shrink-0 items-center justify-center rounded-full first:ml-0 -ml-2.5 hover:z-20 focus-visible:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[var(--accent)]">
           <SubAgentAvatar id={child.id} status={child.runs.at(-1)?.status} size={18} />
         </button>
       })}
@@ -67,7 +67,7 @@ export function SubAgentPanel({ conversationId, lang = 'zh', revealAgent, listFo
       {groups.map(group => (group.items.length > 0 || group.empty) && <div key={group.label} className="mb-7">
         <h3 className="mb-2 px-2 text-xs font-normal text-neutral-400">{group.label} · {group.items.length}</h3>
         {!group.items.length && <p className="px-2 py-1 text-xs text-neutral-400">{group.empty}</p>}
-        {group.items.map(child => <button key={child.id} type="button" onClick={() => { setError(''); setSelected(null); setSelectedId(child.id) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition-colors hover:bg-neutral-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+        {group.items.map(child => <button key={child.id} type="button" onClick={() => { setError(''); setSelected(null); setSelectedId(child.id) }} className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition-colors hover:bg-neutral-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]">
           <SubAgentAvatar id={child.id} status={child.runs.at(-1)?.status} />
           <span className="min-w-0 flex-1 truncate" title={child.name}>{child.name}</span>
           <SubAgentElapsed run={child.runs.at(-1)} lang={lang} />
@@ -75,7 +75,7 @@ export function SubAgentPanel({ conversationId, lang = 'zh', revealAgent, listFo
         </button>)}
       </div>)}
     </div> : <div className="min-w-0">
-      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-200 bg-white/95 px-2 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95">
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-neutral-200 bg-[var(--theme-surface)]/95 px-2 py-3 backdrop-blur">
         <IconButton label={t('返回任务列表', 'Back to tasks')} size="sm" variant="ghost" onClick={() => { setSelectedId(null); setSelected(null) }}><ChevronLeft size={15} /></IconButton>
         <SubAgentAvatar id={selectedId} size={24} />
         <span className="min-w-0 flex-1 truncate font-medium">{selected?.name ?? children.find(child => child.id === selectedId)?.name}</span>

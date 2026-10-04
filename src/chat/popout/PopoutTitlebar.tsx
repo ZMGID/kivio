@@ -88,7 +88,7 @@ function TitlebarPills({
       <div
         data-popout-title
         data-tauri-drag-region
-        className="min-w-0 max-w-[42%] shrink truncate px-2 text-right text-[13px] font-medium text-neutral-700 dark:text-neutral-200"
+        className="min-w-0 max-w-[42%] shrink truncate px-2 text-right text-[13px] font-medium text-neutral-700"
         title={title}
       >
         {title}

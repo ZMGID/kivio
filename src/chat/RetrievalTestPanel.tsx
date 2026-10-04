@@ -15,8 +15,8 @@ import {
 const DECISION_CLASS: Record<RetrievalDecision, string> = {
   kept: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
   duplicate: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
-  below_threshold: 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
-  truncated: 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
+  below_threshold: 'bg-neutral-200 text-neutral-600 dark:text-neutral-400',
+  truncated: 'bg-neutral-200 text-neutral-600 dark:text-neutral-400',
 }
 
 function num(n: number | undefined, digits = 4): string {
@@ -41,7 +41,7 @@ function SnippetCell({ text }: { text: string }) {
         <button
           type="button"
           onClick={handleCopy}
-          className="shrink-0 rounded p-1 text-neutral-400 opacity-0 transition-opacity hover:bg-black/[0.05] hover:text-neutral-600 focus-visible:opacity-100 group-hover/snip:opacity-100 dark:hover:bg-white/[0.08] dark:hover:text-neutral-200"
+          className="shrink-0 rounded p-1 text-neutral-400 opacity-0 transition-opacity hover:bg-neutral-900/[0.05] hover:text-neutral-600 focus-visible:opacity-100 group-hover/snip:opacity-100"
           title={copied ? t.lensCopied : t.chatRetrievalCopySnippet}
           aria-label={copied ? t.lensCopied : t.chatRetrievalCopySnippet}
         >
@@ -106,8 +106,8 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                 data-tauri-drag-region="false"
                 className={`rounded-full border px-3 py-1 text-[12px] transition-colors ${
                   selected.includes(l.id)
-                    ? 'border-[#2f6ff0] bg-[#2f6ff0]/10 text-[#2f6ff0] dark:border-[#5c8df7] dark:text-[#5c8df7]'
-                    : 'border-neutral-200 text-neutral-600 hover:border-neutral-300 dark:border-neutral-700 dark:text-neutral-300'
+                    ? 'border-accent bg-[var(--accent-soft)] text-accent'
+                    : 'border-neutral-200 text-neutral-600 hover:border-neutral-300'
                 }`}
               >
                 {l.name}
@@ -127,14 +127,14 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
               placeholder={t.chatRetrievalQueryPlaceholder}
               rows={2}
               data-tauri-drag-region="false"
-              className="min-w-0 flex-1 resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-[#2f6ff0] dark:border-neutral-700 dark:bg-neutral-900"
+              className="min-w-0 flex-1 resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-accent"
             />
             <button
               type="button"
               onClick={run}
               disabled={busy || !query.trim() || selected.length === 0}
               data-tauri-drag-region="false"
-              className="flex shrink-0 items-center gap-1.5 self-stretch rounded-lg bg-[#2f6ff0] px-4 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="flex shrink-0 items-center gap-1.5 self-stretch rounded-lg bg-accent px-4 text-[13px] font-medium text-[var(--text-onaccent)] transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               <Search size={14} />
               {busy ? t.chatRetrievalRunning : t.chatRetrievalRun}
@@ -174,9 +174,9 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
               {cands.length === 0 ? (
                 <p className="text-[13px] text-neutral-500 dark:text-neutral-400">{t.chatRetrievalNoCandidates}</p>
               ) : (
-                <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
+                <div className="overflow-x-auto rounded-lg border border-neutral-200">
                   <table className="w-full min-w-[760px] text-left text-[11.5px]">
-                    <thead className="bg-neutral-50 text-neutral-500 dark:bg-neutral-900/50 dark:text-neutral-400">
+                    <thead className="bg-neutral-50 text-neutral-500 dark:text-neutral-400">
                       <tr className="whitespace-nowrap">
                         <th className="px-2.5 py-2 font-medium">{t.chatRetrievalColStatus}</th>
                         <th className="px-2.5 py-2 font-medium">{t.chatRetrievalColSource}</th>
@@ -192,7 +192,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                       {cands.map((c: RetrievalCandidate) => (
                         <tr
                           key={`${c.kbId}:${c.chunkId}`}
-                          className="border-t border-neutral-100 align-top dark:border-neutral-800/70"
+                          className="border-t border-neutral-100 align-top"
                         >
                           <td className="whitespace-nowrap px-2.5 py-2">
                             <span className={`inline-block rounded px-1.5 py-0.5 text-[10.5px] ${DECISION_CLASS[c.decision]}`}>
@@ -200,7 +200,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                               {decisionLabel[c.decision]}
                             </span>
                           </td>
-                          <td className="px-2.5 py-2 text-neutral-700 dark:text-neutral-300">
+                          <td className="px-2.5 py-2 text-neutral-700">
                             <div
                               className="max-w-[9rem] truncate"
                               title={c.docName + (c.headingPath ? ` — ${c.headingPath}` : '')}

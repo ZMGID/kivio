@@ -507,7 +507,7 @@ function ExternalModelSelectorBase({
         >
           {/* ponytail: 探测中复用已有的 shimmer 文字动画，不再转圈；chevron 常驻避免宽度跳动 */}
           <span
-            className={`${agentRuntime.externalAgentId === 'antigravity' ? 'max-w-[240px]' : 'max-w-[140px]'} truncate font-medium ${loading ? 'reasoning-shimmer-text' : 'text-neutral-800 dark:text-neutral-200'}`}
+            className={`${agentRuntime.externalAgentId === 'antigravity' ? 'max-w-[240px]' : 'max-w-[140px]'} truncate font-medium ${loading ? 'reasoning-shimmer-text' : 'text-neutral-800'}`}
           >
             {displayName}
           </span>
@@ -572,7 +572,7 @@ function ExternalModelSelectorBase({
                       onModelChange(model.id, nextReasoning)
                       setOpen(false)
                     }}
-                    className={`kv-menu-row text-neutral-700 hover:bg-black/[0.05] dark:text-neutral-200 dark:hover:bg-white/[0.07] ${
+                    className={`kv-menu-row text-neutral-700 hover:bg-neutral-900/[0.05] ${
                       agentRuntime.externalModel === model.id ? 'font-semibold' : ''
                     }`}
                   >
@@ -598,7 +598,7 @@ function ExternalModelSelectorBase({
             aria-label={t.chatThinkingLevel.replace('{level}', currentReasoningLabel)}
           >
             <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
-            <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800 dark:text-neutral-200">
+            <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800">
               {currentReasoningLabel}
             </span>
             <ChevronDown
@@ -628,8 +628,8 @@ function ExternalModelSelectorBase({
                       }}
                       className={`kv-menu-row justify-between transition-colors ${
                         active
-                          ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                          : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
+                          ? 'bg-neutral-100 font-medium text-neutral-900'
+                          : 'text-neutral-700 hover:bg-neutral-50'
                       }`}
                     >
                       <span className="min-w-0 truncate">

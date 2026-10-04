@@ -236,7 +236,7 @@ export function TerminalPanel({ workdir, active, lang }: TerminalPanelProps) {
   return (
     <>
       {/* 工具行：重启会话 / 关闭会话 */}
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-neutral-200/70 px-2 py-1 dark:border-neutral-700/50">
+      <div className="flex shrink-0 items-center gap-0.5 border-b border-neutral-200/70 px-2 py-1">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-400 dark:text-neutral-500">
           {workdir}
         </span>

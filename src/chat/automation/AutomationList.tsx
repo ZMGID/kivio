@@ -35,7 +35,7 @@ export function AutomationList({
           <p className="text-[13px] text-neutral-400">{t.chatLoading}</p>
         ) : items.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--theme-surface-border)] px-6 py-16 text-center dark:border-white/[0.1]">
-            <p className="text-[15px] font-medium text-neutral-800 dark:text-neutral-100">
+            <p className="text-[15px] font-medium text-neutral-800">
               {t.chatAutomationEmpty}
             </p>
             <p className="mt-1 max-w-[28rem] text-[13px] text-neutral-500 dark:text-neutral-400">
@@ -52,19 +52,19 @@ export function AutomationList({
               const Icon = catalogEntry(item.triggerType ?? '')?.icon
               return (
                 <li key={item.id}>
-                  <div className="flex items-center gap-3 rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-4 py-3 dark:border-white/[0.08] dark:bg-[#2a2a2d]">
+                  <div className="flex items-center gap-3 rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-4 py-3 dark:border-white/[0.08]">
                     <button
                       type="button"
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                       onClick={() => onOpen(item.id)}
                     >
                       {Icon ? (
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-surface-muted)] text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-300">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-surface-muted)] text-neutral-600 dark:bg-white/[0.06]">
                           <Icon size={16} strokeWidth={1.75} />
                         </span>
                       ) : null}
                       <span className="min-w-0">
-                        <span className="block truncate text-[14px] font-medium text-neutral-900 dark:text-neutral-50">
+                        <span className="block truncate text-[14px] font-medium text-neutral-900">
                           {item.name.trim() || t.chatAutomationUntitled}
                         </span>
                         <span className="mt-0.5 block text-[12px] text-neutral-500 dark:text-neutral-400">

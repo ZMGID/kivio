@@ -183,7 +183,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
     const collapsed = collapsedSections[key] ?? false
     return (
       <div key={key}>
-        <div className="sticky top-0 z-10 flex items-center gap-1 bg-[var(--theme-surface-soft)] px-2 py-1 dark:bg-[#262629]">
+        <div className="sticky top-0 z-10 flex items-center gap-1 bg-[var(--theme-surface-soft)] px-2 py-1">
           <button
             type="button"
             className="flex min-w-0 flex-1 items-center gap-1 text-left"
@@ -230,7 +230,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
                 }}
               >
                 <StatusBadge letter={letter} />
-                <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700 dark:text-neutral-200">
+                <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700">
                   {entryDisplayPath(entry)}
                 </span>
                 {stat && (stat.additions > 0 || stat.deletions > 0) && (
@@ -318,7 +318,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 顶栏：分支选择 + 视图切换 + 刷新 */}
-      <div className="relative flex items-center gap-1 border-b border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
+      <div className="relative flex items-center gap-1 border-b border-neutral-200/70 px-2 py-1.5">
         <button
           type="button"
           className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-neutral-500/10"
@@ -326,7 +326,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
           disabled={!status || status.status !== 'ready'}
         >
           <GitBranch size={13} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
-          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 dark:text-neutral-200">
+          <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700">
             {status?.head || '—'}
           </span>
           {status && (status.ahead > 0 || status.behind > 0) && (
@@ -344,8 +344,8 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
               type="button"
               className={`rounded px-2 py-0.5 text-[11px] transition-colors ${
                 view === item
-                  ? 'bg-white font-medium text-neutral-800 shadow-sm dark:bg-neutral-700 dark:text-neutral-100'
-                  : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
+                  ? 'bg-neutral-50 font-medium text-neutral-800 shadow-sm'
+                  : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400'
               }`}
               onClick={() => setView(item)}
             >
@@ -360,13 +360,13 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
         {branchOpen && (
           <>
             <div className="fixed inset-0 z-[150]" onClick={() => setBranchOpen(false)} />
-            <div className="absolute left-1 right-1 top-full z-[160] mt-1 max-h-64 overflow-auto rounded-lg border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+            <div className="absolute left-1 right-1 top-full z-[160] mt-1 max-h-64 overflow-auto rounded-lg border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
               <div className="flex items-center gap-1 px-2 py-1">
                 <input
                   value={newBranch}
                   onChange={(e) => setNewBranch(e.target.value)}
                   placeholder={t.dockGitNewBranchPlaceholder}
-                  className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-transparent px-1.5 py-1 text-[12px] outline-none focus:border-neutral-400 dark:border-neutral-700 dark:focus:border-neutral-500"
+                  className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-transparent px-1.5 py-1 text-[12px] outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && newBranch.trim()) {
                       mutate(() => dockApi.gitCreateBranch(workdir, newBranch.trim()))
@@ -389,7 +389,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
                   <Plus size={12} />
                 </IconButton>
               </div>
-              <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+              <div className="my-1 border-t border-neutral-200/80" />
               {(branches ?? []).length === 0 ? (
                 <div className="px-3 py-2 text-[11px] text-neutral-400">{t.dockGitBranchesEmpty}</div>
               ) : (
@@ -399,8 +399,8 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
                     type="button"
                     className={`flex w-full items-center gap-1.5 px-3 py-1 text-left text-[12px] transition-colors hover:bg-neutral-500/10 ${
                       branch.current
-                        ? 'font-medium text-neutral-900 dark:text-neutral-50'
-                        : 'text-neutral-600 dark:text-neutral-300'
+                        ? 'font-medium text-neutral-900'
+                        : 'text-neutral-600'
                     }`}
                     disabled={branch.current || busy}
                     onClick={() => {
@@ -495,7 +495,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
 
           {/* 选中文件 diff */}
           {selectedPath && (
-            <div className="custom-scrollbar max-h-[40%] shrink-0 overflow-y-auto border-t border-neutral-200/70 p-2 dark:border-neutral-700/50">
+            <div className="custom-scrollbar max-h-[40%] shrink-0 overflow-y-auto border-t border-neutral-200/70 p-2">
               {review.fileDiffLoading ? (
                 <div className="flex items-center justify-center gap-2 py-4 text-[11px] text-neutral-400">
                   <Loader2 size={12} className="animate-spin" />
@@ -513,20 +513,20 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
           )}
 
           {/* 提交框 */}
-          <div className="shrink-0 border-t border-neutral-200/70 p-2 dark:border-neutral-700/50">
+          <div className="shrink-0 border-t border-neutral-200/70 p-2">
             <textarea
               value={commitMessage}
               onChange={(e) => setCommitMessage(e.target.value)}
               placeholder={t.dockGitCommitPlaceholder}
               rows={2}
-              className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-transparent px-2 py-1.5 text-[12px] outline-none focus:border-neutral-400 dark:border-neutral-700 dark:focus:border-neutral-500"
+              className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-transparent px-2 py-1.5 text-[12px] outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCommit()
               }}
             />
             <button
               type="button"
-              className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200"
+              className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-[12px] font-medium text-neutral-50 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
               disabled={partitioned.staged.length === 0 || !commitMessage.trim() || busy}
               onClick={handleCommit}
             >

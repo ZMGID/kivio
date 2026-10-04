@@ -52,7 +52,7 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
           <span>{label(window.label)}</span>
           <span className="tabular-nums">{remaining === null ? (zh ? '暂无比例' : 'Unavailable') : `${zh ? '剩余 ' : ''}${remaining.toFixed(0)}%${zh ? '' : ' remaining'}`}</span>
         </div>
-        {remaining !== null && <div role="progressbar" aria-label={label(window.label)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} className="h-1.5 overflow-hidden rounded-full bg-black/5 dark:bg-white/10">
+        {remaining !== null && <div role="progressbar" aria-label={label(window.label)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} className="h-1.5 overflow-hidden rounded-full bg-neutral-900/5">
           <div className={`h-full rounded-full ${remaining <= 10 ? 'bg-amber-500' : 'bg-indigo-500'}`} style={{ width: `${remaining}%` }} />
         </div>}
         <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] opacity-60">

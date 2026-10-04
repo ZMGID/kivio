@@ -1,8 +1,24 @@
 /* ===== 笔记编辑器 (Milkdown Crepe) =====
    融入页面：透明背景、去掉 frame 自带卡片/内边距、字体跟随系统，
-   与标题左对齐。深色变量特异性高于 frame.css 的 .milkdown，自动生效。 */
+   与标题左对齐。色板跟语义 token，不再单独写一套暗色。行内代码红是语法色，不跟主题走。 */
 .kv-note-editor .milkdown {
   --crepe-color-background: transparent;
+  --crepe-color-on-background: var(--text);
+  --crepe-color-surface: var(--theme-surface-soft);
+  --crepe-color-surface-low: var(--theme-surface-muted);
+  --crepe-color-on-surface: var(--text);
+  --crepe-color-on-surface-variant: var(--text-muted);
+  --crepe-color-outline: var(--theme-surface-border-strong);
+  --crepe-color-primary: var(--text-muted);
+  --crepe-color-secondary: var(--theme-surface-active);
+  --crepe-color-on-secondary: var(--text);
+  --crepe-color-inverse: var(--text);
+  --crepe-color-on-inverse: var(--theme-surface);
+  --crepe-color-inline-code: #ff6666;
+  --crepe-color-error: var(--danger);
+  --crepe-color-hover: var(--theme-surface-hover);
+  --crepe-color-selected: var(--theme-surface-active);
+  --crepe-color-inline-area: var(--theme-surface-muted);
   --crepe-font-default: inherit;
   --crepe-font-title: inherit;
   background: transparent;
@@ -14,24 +30,4 @@
 
 .kv-note-editor .milkdown .ProseMirror:focus {
   outline: none;
-}
-
-.dark .kv-note-editor .milkdown {
-  --crepe-color-background: transparent;
-  --crepe-color-on-background: #e6e6e6;
-  --crepe-color-surface: #121212;
-  --crepe-color-surface-low: #1c1c1c;
-  --crepe-color-on-surface: #d1d1d1;
-  --crepe-color-on-surface-variant: #a9a9a9;
-  --crepe-color-outline: #757575;
-  --crepe-color-primary: #b5b5b5;
-  --crepe-color-secondary: #4d4d4d;
-  --crepe-color-on-secondary: #d6d6d6;
-  --crepe-color-inverse: #e5e5e5;
-  --crepe-color-on-inverse: #2a2a2a;
-  --crepe-color-inline-code: #ff6666;
-  --crepe-color-error: #ff6666;
-  --crepe-color-hover: #232323;
-  --crepe-color-selected: #2f2f2f;
-  --crepe-color-inline-area: #2b2b2b;
 }

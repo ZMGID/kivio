@@ -157,7 +157,7 @@ export function ChatTab({
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[15px] font-medium text-neutral-900 dark:text-neutral-50">
+                <span className="text-[15px] font-medium text-neutral-900">
                   {formatTokenCount(effectiveChatMaxOutput.maxOutput)}
                 </span>
                 <span className={`kv-tag ${effectiveChatMaxOutput.source === 'fallback' ? 'warn' : 'ok'}`}>
@@ -173,7 +173,7 @@ export function ChatTab({
               <span className="kv-row-desc whitespace-nowrap">
                 {lang === 'zh' ? '兜底' : 'Fallback'}
               </span>
-              <span className="text-[13px] tabular-nums text-neutral-800 dark:text-neutral-200">
+              <span className="text-[13px] tabular-nums text-neutral-800">
                 {formatTokenCount(CHAT_FALLBACK_MAX_OUTPUT_TOKENS)}
               </span>
             </div>

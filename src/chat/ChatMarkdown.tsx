@@ -74,11 +74,11 @@ function markdownShellClass(variant: ChatMarkdownProps['variant']): string {
     case 'reasoning':
       return 'chat-markdown chat-reasoning-markdown max-w-none break-words text-sm leading-relaxed text-neutral-400 dark:text-neutral-500'
     case 'lens':
-      return 'chat-markdown max-w-none break-words text-[13.5px] leading-7 text-neutral-800 dark:text-neutral-200'
+      return 'chat-markdown max-w-none break-words text-[13.5px] leading-7 text-neutral-800'
     case 'lens-muted':
       return 'chat-markdown max-w-none break-words text-[12.5px] leading-6 text-neutral-500 dark:text-neutral-400'
     default:
-      return 'chat-markdown max-w-none break-words text-[15px] leading-[1.7] text-neutral-900 dark:text-neutral-100'
+      return 'chat-markdown max-w-none break-words text-[15px] leading-[1.7] text-neutral-900'
   }
 }
 
@@ -386,45 +386,93 @@ function ErrorDetails({ detail }: { detail: string }) {
   )
 }
 
-function readDocumentDark(): boolean {
-  return typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+function readThemeToken(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
 }
 
-function useDocumentDark(): boolean {
-  const [dark, setDark] = useState(readDocumentDark)
+// 图框跟文档根上的语义色板走。主题运行时改的是 html 的 style / class / data-theme-color，
+// 同一明暗模式换色板时 class 不一定变，所以不能只盯 .dark。
+const MERMAID_THEME_TOKENS = [
+  '--theme-surface',
+  '--theme-surface-soft',
+  '--theme-surface-muted',
+  '--theme-surface-border',
+  '--theme-surface-border-strong',
+  '--text',
+  '--text-muted',
+  '--accent',
+  '--accent-soft',
+] as const
+
+function mermaidThemeKey(): string {
+  if (typeof document === 'undefined') return ''
+  const style = getComputedStyle(document.documentElement)
+  return MERMAID_THEME_TOKENS.map((name) => style.getPropertyValue(name).trim()).join('|')
+}
+
+function useMermaidThemeKey(): string {
+  const [key, setKey] = useState(mermaidThemeKey)
 
   useEffect(() => {
     const root = document.documentElement
-    const sync = () => setDark(root.classList.contains('dark'))
+    const sync = () => {
+      const next = mermaidThemeKey()
+      setKey((current) => (current === next ? current : next))
+    }
+    sync()
     const observer = new MutationObserver(sync)
-    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
+    observer.observe(root, { attributes: true, attributeFilter: ['class', 'style', 'data-theme-color'] })
     return () => observer.disconnect()
   }, [])
 
-  return dark
+  return key
 }
 
-function mermaidThemeVariables(dark: boolean) {
-  if (dark) {
-    return {
-      background: 'transparent',
-      primaryColor: '#334155',
-      primaryBorderColor: '#64748b',
-      primaryTextColor: '#f1f5f9',
-      lineColor: '#94a3b8',
-      secondaryColor: '#1e293b',
-      tertiaryColor: '#0f172a',
-      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-    }
-  }
+function mermaidThemeVariables() {
+  const surface = readThemeToken('--theme-surface', '#fdfcfa')
+  const surfaceSoft = readThemeToken('--theme-surface-soft', '#f9f8f6')
+  const surfaceMuted = readThemeToken('--theme-surface-muted', '#f4f3f1')
+  const border = readThemeToken('--theme-surface-border', '#e2e1df')
+  const borderStrong = readThemeToken('--theme-surface-border-strong', '#d2d1cf')
+  const text = readThemeToken('--text', '#1d1d1f')
+  const muted = readThemeToken('--text-muted', '#6b6b73')
+  const accent = readThemeToken('--accent', '#2f6ff0')
+  const accentSoft = readThemeToken('--accent-soft', '#e6efff')
   return {
+    // 画布透明，卡片底色由外层 bg-[var(--bg-input)] 提供，不另铺一层白底。
     background: 'transparent',
-    primaryColor: '#f8fafc',
-    primaryBorderColor: '#94a3b8',
-    primaryTextColor: '#111827',
-    lineColor: '#64748b',
-    secondaryColor: '#f1f5f9',
-    tertiaryColor: '#ffffff',
+    primaryColor: surfaceMuted,
+    primaryBorderColor: borderStrong,
+    primaryTextColor: text,
+    secondaryColor: surfaceSoft,
+    secondaryBorderColor: border,
+    secondaryTextColor: text,
+    tertiaryColor: surface,
+    tertiaryBorderColor: border,
+    tertiaryTextColor: text,
+    lineColor: muted,
+    textColor: text,
+    mainBkg: surface,
+    secondBkg: surfaceSoft,
+    nodeBkg: surfaceMuted,
+    nodeBorder: borderStrong,
+    clusterBkg: surfaceSoft,
+    clusterBorder: borderStrong,
+    titleColor: text,
+    edgeLabelBackground: surface,
+    actorBkg: surfaceMuted,
+    actorBorder: borderStrong,
+    actorTextColor: text,
+    actorLineColor: muted,
+    signalColor: muted,
+    signalTextColor: text,
+    labelBoxBkgColor: surface,
+    labelTextColor: text,
+    noteBkgColor: accentSoft,
+    noteTextColor: text,
+    noteBorderColor: accent,
     fontFamily: 'ui-sans-serif, system-ui, sans-serif',
   }
 }
@@ -456,7 +504,7 @@ function CodeBlock({ code, language, actions }: { code: string; language: string
   // + lucide svg + svg 内的 rect/path + pre + code = 9 个节点，现在 6 个。
   // 每块省 3 个节点，231 块省约 700 个。
   return (
-    <figure className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm dark:text-neutral-100">
+    <figure className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm">
       <div
         className="kv-code-toolbar absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-[var(--bg-input)] pl-2"
         data-code-lang={codeLanguageLabel(language)}
@@ -470,7 +518,7 @@ function CodeBlock({ code, language, actions }: { code: string; language: string
           <span className={copied ? 'kv-copy-glyph is-copied' : 'kv-copy-glyph'} aria-hidden="true" />
         </IconButton>
       </div>
-      <pre className="custom-scrollbar m-0 max-w-full overflow-x-auto bg-transparent px-4 pb-4 pt-10 text-[13px] leading-6 text-neutral-900 dark:text-neutral-100">
+      <pre className="custom-scrollbar m-0 max-w-full overflow-x-auto bg-transparent px-4 pb-4 pt-10 text-[13px] leading-6 text-neutral-900">
         <code className="font-mono">{highlighted ?? normalizedCode}</code>
       </pre>
     </figure>
@@ -496,8 +544,8 @@ function DeferredCodeBlock({ code, language }: { code: string; language: string 
       delayMs={180}
       eager={conversationOpening || streaming}
       fallback={(
-        <figure className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm dark:text-neutral-100">
-          <pre className="custom-scrollbar m-0 max-w-full overflow-x-auto bg-transparent px-4 pb-4 pt-10 text-[13px] leading-6 text-neutral-900 dark:text-neutral-100">
+        <figure className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm">
+          <pre className="custom-scrollbar m-0 max-w-full overflow-x-auto bg-transparent px-4 pb-4 pt-10 text-[13px] leading-6 text-neutral-900">
             <code className="font-mono">{normalizeCodeBlockText(code)}</code>
           </pre>
         </figure>
@@ -511,7 +559,7 @@ function DeferredCodeBlock({ code, language }: { code: string; language: string 
 
 let mermaidRenderCounter = 0
 
-// 已渲染 mermaid SVG 的缓存：键 = 主题 + 源码。虚拟列表会卸载屏外的消息气泡，
+// 已渲染 mermaid SVG 的缓存：键 = 语义色板 + 源码。虚拟列表会卸载屏外的消息气泡，
 // 往回翻时图会重新挂载；若每次都重新 import+parse+render，会出现 spinner(小)→大SVG 的高度
 // 突变，导致 virtualizer 纠正滚动 → 抽搐/闪烁。缓存后命中即同步拿到完整 SVG，挂载时高度即确定，
 // 消除回滚 jank。用外部 Map 而非 useMemo（React 可能在内存压力下丢弃 useMemo 缓存）。
@@ -528,13 +576,15 @@ function cacheMermaidSvg(key: string, svg: string) {
 
 function MermaidBlock({ code }: { code: string }) {
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
-  const isDark = useDocumentDark()
-  const cacheKey = `${isDark ? 'd' : 'l'}\n${normalizedCode}`
+  const themeKey = useMermaidThemeKey()
+  const cacheKey = `${themeKey}\n${normalizedCode}`
   const renderBaseId = useRef('')
   const renderSeq = useRef(0)
+  const themeKeyRef = useRef(themeKey)
   const [view, setView] = useState<'diagram' | 'source'>('diagram')
   // 初始即读缓存：命中则首帧就有完整 SVG（高度确定、无 spinner、无闪烁）。
   const [svg, setSvg] = useState(() => mermaidSvgCache.get(cacheKey) ?? '')
+  const [paintedKey, setPaintedKey] = useState(() => (mermaidSvgCache.has(cacheKey) ? themeKey : ''))
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(() => !mermaidSvgCache.has(cacheKey))
   // hooks 必须在 early return 之前：源码/错误分支也会走到下面的 eager 语义。
@@ -546,13 +596,22 @@ function MermaidBlock({ code }: { code: string }) {
   }
 
   useEffect(() => {
+    const themeChanged = themeKeyRef.current !== themeKey
+    themeKeyRef.current = themeKey
     // 命中缓存：同步设回（处理主题/源码切换时的更新；首帧已由 useState 初始值覆盖）。无异步、无闪烁。
     const cached = mermaidSvgCache.get(cacheKey)
     if (cached) {
       setSvg(cached)
+      setPaintedKey(themeKey)
       setError('')
       setLoading(false)
       return
+    }
+    // 色板变了先撤掉上一张 SVG。渲染期也会用 paintedKey 挡住旧图，避免提交前仍画出浅色图框。
+    if (themeChanged) {
+      setSvg('')
+      setPaintedKey('')
+      setLoading(true)
     }
     let cancelled = false
     let errorTimer: ReturnType<typeof setTimeout> | undefined
@@ -570,15 +629,16 @@ function MermaidBlock({ code }: { code: string }) {
           startOnLoad: false,
           securityLevel: 'strict',
           theme: 'base',
-          themeVariables: mermaidThemeVariables(isDark),
+          themeVariables: mermaidThemeVariables(),
         })
         const valid = await mermaid.parse(normalizedCode, { suppressErrors: true })
         if (cancelled) return
         if (valid) {
           const { svg: rendered } = await mermaid.render(renderId, normalizedCode)
-          if (cancelled) return
+          if (cancelled || mermaidThemeKey() !== themeKey) return
           cacheMermaidSvg(cacheKey, rendered)
           setSvg(rendered)
+          setPaintedKey(themeKey)
           setError('')
           setLoading(false)
         } else {
@@ -608,7 +668,7 @@ function MermaidBlock({ code }: { code: string }) {
       cancelled = true
       if (errorTimer) clearTimeout(errorTimer)
     }
-  }, [cacheKey, isDark, normalizedCode])
+  }, [cacheKey, themeKey, normalizedCode])
 
   // 与 CodeBlock 同风格：无独立头栏，"Mermaid" 标签 + 切换按钮悬浮在右上角。
   const toggle = (
@@ -638,6 +698,8 @@ function MermaidBlock({ code }: { code: string }) {
     )
   }
 
+  const diagramReady = !loading && paintedKey === themeKey && svg !== ''
+
   return (
 
     <ChatHeavyIsland
@@ -646,23 +708,23 @@ function MermaidBlock({ code }: { code: string }) {
       fallback={<CodeBlock code={normalizedCode} language="mermaid" actions={toggle} />}
     >
       <figure
-        data-chat-async-pending={loading ? 'true' : undefined}
-        className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm dark:text-neutral-100"
+        data-chat-async-pending={diagramReady ? undefined : 'true'}
+        className="not-prose relative my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-950 shadow-sm"
       >
       <div className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-[var(--bg-input)] pl-2">
         <span className="text-[12px] leading-none text-neutral-400 dark:text-neutral-500">Mermaid</span>
         {toggle}
       </div>
-      {loading ? (
+      {diagramReady ? (
+        <div
+          className="custom-scrollbar max-w-full overflow-x-auto overflow-y-hidden [contain:content] bg-[var(--theme-surface)] px-4 pb-4 pt-10 [&>svg]:mx-auto [&>svg]:max-w-none"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      ) : (
         <div className="flex min-h-28 items-center justify-center gap-2 px-4 py-8 text-[13px] text-neutral-400 dark:text-neutral-500">
           <Loader2 size={15} className="animate-spin" />
           正在渲染图表
         </div>
-      ) : (
-        <div
-          className="custom-scrollbar max-w-full overflow-x-auto overflow-y-hidden [contain:content] bg-white px-4 pb-4 pt-10 dark:bg-neutral-950 [&>svg]:mx-auto [&>svg]:max-w-none"
-          dangerouslySetInnerHTML={{ __html: svg }}
-        />
       )}
       </figure>
     </ChatHeavyIsland>
@@ -739,7 +801,7 @@ function HtmlCodePreview({ html }: { html: string }) {
           fallback={<CodeBlock code={html} language="html" />}
           eager
         >
-          <div className="my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-white dark:bg-neutral-950">
+          <div className="my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-neutral-50">
             <iframe
               title="HTML 预览"
               srcDoc={previewHtml}
@@ -747,7 +809,7 @@ function HtmlCodePreview({ html }: { html: string }) {
               // 否则 srcDoc 可直接访问父聊天页及 Tauri 注入的 IPC 全局。
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
-              className="h-[520px] w-full border-0 bg-white dark:bg-neutral-950"
+              className="h-[520px] w-full border-0 bg-neutral-50"
             />
           </div>
         </ChatHeavyIsland>
@@ -891,7 +953,7 @@ function SvgCodePreview({ source, language }: { source: string; language: string
       : 'SVG 未完成或无法预览，请查看源码'
   return <>
     {view === 'source' ? <CodeBlock code={source} language={language} /> : (
-      <div className="relative my-3 w-full overflow-hidden rounded-lg border border-[var(--border-input)] bg-white dark:bg-neutral-950"
+      <div className="relative my-3 w-full overflow-hidden rounded-lg border border-[var(--border-input)] bg-neutral-50"
         style={{ aspectRatio: String(work.current.ratio ?? 16 / 9), maxHeight: 520 }}>
         {frame ? <img src={frame.url} alt="SVG 预览" className="absolute inset-0 h-full w-full object-contain" />
           : <div className="absolute inset-0 flex items-center justify-center text-[var(--color-muted-foreground)]"><Loader2 className={streaming ? 'animate-spin' : ''} size={20} aria-hidden="true" /></div>}
@@ -965,7 +1027,7 @@ const markdownComponents = {
   th: ({ children, style }) => (
     <th
       style={style}
-      className="rounded-md bg-[var(--bg-hover)] px-3 py-2 text-left font-semibold text-neutral-800 dark:text-neutral-100"
+      className="rounded-md bg-[var(--bg-hover)] px-3 py-2 text-left font-semibold text-neutral-800"
     >
       {children}
     </th>
@@ -973,7 +1035,7 @@ const markdownComponents = {
   td: ({ children, style }) => (
     <td
       style={style}
-      className="rounded-md bg-neutral-500/[0.09] px-3 py-2 align-top text-neutral-700 dark:bg-neutral-400/[0.1] dark:text-neutral-300"
+      className="rounded-md bg-neutral-500/[0.09] px-3 py-2 align-top text-neutral-700 dark:bg-neutral-400/[0.1]"
     >
       {children}
     </td>
@@ -1088,7 +1150,7 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
-          className="mx-0.5 rounded bg-indigo-500/15 px-1 align-baseline text-[0.82em] font-medium text-indigo-500 transition hover:bg-indigo-500/25"
+          className="mx-0.5 rounded bg-[var(--accent)]/15 px-1 align-baseline text-[0.82em] font-medium text-accent transition hover:bg-[var(--accent)]/25"
           aria-label={`来源 ${n}`}
           aria-expanded={open}
         >
@@ -1115,10 +1177,10 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
                 onClick={() => {
                   void api.openExternal(web.url).catch((err) => console.error('openExternal failed', err))
                 }}
-                className="mb-1 flex w-full items-center gap-1 font-medium text-neutral-700 hover:underline dark:text-neutral-200"
+                className="mb-1 flex w-full items-center gap-1 font-medium text-neutral-700 hover:underline"
                 title={web.url}
               >
-                <span className="shrink-0 rounded bg-indigo-500/15 px-1 text-indigo-500">[{n}]</span>
+                <span className="shrink-0 rounded bg-[var(--accent)]/15 px-1 text-accent">[{n}]</span>
                 <span className="min-w-0 flex-1 truncate text-left">{web.title}</span>
                 <ExternalLink size={10.5} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
               </button>
@@ -1127,21 +1189,21 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
                 {web.publishedDate ? ` · ${web.publishedDate}` : ''}
               </span>
               {web.snippet && (
-                <span className="custom-scrollbar block max-h-48 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-neutral-600 dark:text-neutral-300">
+                <span className="custom-scrollbar block max-h-48 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-neutral-600">
                   {web.snippet}
                 </span>
               )}
             </>
           ) : hit && !isWebCitation(hit) ? (
             <>
-              <span className="mb-1 flex items-center gap-1 font-medium text-neutral-700 dark:text-neutral-200">
-                <span className="shrink-0 rounded bg-indigo-500/15 px-1 text-indigo-500">[{n}]</span>
+              <span className="mb-1 flex items-center gap-1 font-medium text-neutral-700">
+                <span className="shrink-0 rounded bg-[var(--accent)]/15 px-1 text-accent">[{n}]</span>
                 <span className="truncate">
                   {hit.docName}
                   {hit.headingPath ? ` · ${hit.headingPath}` : ''}
                 </span>
               </span>
-              <span className="custom-scrollbar block max-h-48 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-neutral-600 dark:text-neutral-300">
+              <span className="custom-scrollbar block max-h-48 overflow-auto whitespace-pre-wrap break-words leading-relaxed text-neutral-600">
                 {hit.text}
               </span>
             </>

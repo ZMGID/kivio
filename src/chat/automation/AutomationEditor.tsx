@@ -27,6 +27,7 @@ import { isTauriRuntime } from '../../api/tauri'
 import { Button } from '../../components/Button'
 import { Toggle } from '../../settings/public/controls'
 import { useT, useLang } from '../../components/i18n'
+import { useDocumentDark } from '../../theme/useDocumentDark'
 import { WorkflowWorkbench } from './WorkflowWorkbench'
 import { localizeValidationIssue, workflowIssues } from './workflowData'
 import { ValidationContext } from './nodes/chrome'
@@ -181,6 +182,7 @@ function EditorInner({
   onFlushSave: () => Promise<void>
 }) {
   const t = useT()
+  const dark = useDocumentDark()
   const [nodes, setNodes] = useNodesState<AutomationRfNode>(toRfNodes(automation.nodes))
   const [edges, setEdges, onEdgesChange] = useEdgesState(toRfEdges(automation))
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -706,7 +708,7 @@ function EditorInner({
               edgesReconnectable={false}
               reconnectRadius={0}
               proOptions={{ hideAttribution: true }}
-              colorMode={document.documentElement.classList.contains('dark') ? 'dark' : 'light'}
+              colorMode={dark ? 'dark' : 'light'}
             >
               <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
               <Controls showInteractive={false} />

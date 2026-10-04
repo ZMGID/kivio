@@ -19,22 +19,88 @@
      缺了这段会掉进浏览器默认的宋体（衬线），代码/diff 里的中文很难看。 */
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", monospace;
 
-  /* Streamdown / shadcn 设计 token → 接到 Kivio 主题色（只映射，不改 Streamdown 组件 class） */
-  --color-background: var(--theme-surface, #fdfcfa);
-  --color-foreground: var(--text, #171717);
-  --color-card: var(--theme-surface, #fdfcfa);
-  --color-card-foreground: var(--text, #171717);
-  --color-muted: var(--theme-surface-muted, #f4f3f1);
-  --color-muted-foreground: #737373;
-  --color-border: var(--theme-surface-border, #e2e1df);
-  --color-input: var(--theme-surface-border-strong, #d2d1cf);
-  --color-primary: #171717;
-  --color-primary-foreground: #fafafa;
-  --color-sidebar: var(--theme-surface-soft, #f9f8f6);
-  --color-ring: #a3a3a3;
+  /* Streamdown / shadcn 设计 token → 语义色。主题运行时写入完整明/暗色板，这里只做映射。 */
+  --color-background: var(--theme-surface);
+  --color-foreground: var(--text);
+  --color-card: var(--theme-surface);
+  --color-card-foreground: var(--text);
+  --color-muted: var(--theme-surface-muted);
+  --color-muted-foreground: var(--text-muted);
+  --color-border: var(--theme-surface-border);
+  --color-input: var(--theme-surface-border-strong);
+  /* primary 跟随前景/纸面，不是 accent：Streamdown 的 bg-primary 是高对比按钮。 */
+  --color-primary: var(--text);
+  --color-primary-foreground: var(--theme-surface);
+  --color-sidebar: var(--theme-surface-soft);
+  --color-ring: var(--accent);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  /* 中性色阶只定义一次，不在 .dark 里再翻转。
+     50–300 走纸面/边框，400 仍是弱文字、500 仍是次要文字，900 是主文字。
+     明暗由主题运行时替换底层 token，text-neutral-400 不会被翻成深色块。
+     zinc/gray/slate/stone 与 neutral 同阶，避免同一层级出现两套灰。 */
+  --color-neutral-50: var(--theme-surface);
+  --color-neutral-100: var(--theme-surface-soft);
+  --color-neutral-200: var(--theme-surface-border);
+  --color-neutral-300: var(--theme-surface-border-strong);
+  --color-neutral-400: var(--text-faint);
+  --color-neutral-500: var(--text-muted);
+  --color-neutral-600: color-mix(in srgb, var(--text) 62%, var(--text-muted));
+  --color-neutral-700: color-mix(in srgb, var(--text) 82%, var(--theme-surface));
+  --color-neutral-800: color-mix(in srgb, var(--text) 92%, var(--theme-surface));
+  --color-neutral-900: var(--text);
+  --color-neutral-950: var(--text);
+  --color-zinc-50: var(--theme-surface);
+  --color-zinc-100: var(--theme-surface-soft);
+  --color-zinc-200: var(--theme-surface-border);
+  --color-zinc-300: var(--theme-surface-border-strong);
+  --color-zinc-400: var(--text-faint);
+  --color-zinc-500: var(--text-muted);
+  --color-zinc-600: color-mix(in srgb, var(--text) 62%, var(--text-muted));
+  --color-zinc-700: color-mix(in srgb, var(--text) 82%, var(--theme-surface));
+  --color-zinc-800: color-mix(in srgb, var(--text) 92%, var(--theme-surface));
+  --color-zinc-900: var(--text);
+  --color-zinc-950: var(--text);
+  --color-gray-50: var(--theme-surface);
+  --color-gray-100: var(--theme-surface-soft);
+  --color-gray-200: var(--theme-surface-border);
+  --color-gray-300: var(--theme-surface-border-strong);
+  --color-gray-400: var(--text-faint);
+  --color-gray-500: var(--text-muted);
+  --color-gray-600: color-mix(in srgb, var(--text) 62%, var(--text-muted));
+  --color-gray-700: color-mix(in srgb, var(--text) 82%, var(--theme-surface));
+  --color-gray-800: color-mix(in srgb, var(--text) 92%, var(--theme-surface));
+  --color-gray-900: var(--text);
+  --color-gray-950: var(--text);
+  --color-slate-50: var(--theme-surface);
+  --color-slate-100: var(--theme-surface-soft);
+  --color-slate-200: var(--theme-surface-border);
+  --color-slate-300: var(--theme-surface-border-strong);
+  --color-slate-400: var(--text-faint);
+  --color-slate-500: var(--text-muted);
+  --color-slate-600: color-mix(in srgb, var(--text) 62%, var(--text-muted));
+  --color-slate-700: color-mix(in srgb, var(--text) 82%, var(--theme-surface));
+  --color-slate-800: color-mix(in srgb, var(--text) 92%, var(--theme-surface));
+  --color-slate-900: var(--text);
+  --color-slate-950: var(--text);
+  --color-stone-50: var(--theme-surface);
+  --color-stone-100: var(--theme-surface-soft);
+  --color-stone-200: var(--theme-surface-border);
+  --color-stone-300: var(--theme-surface-border-strong);
+  --color-stone-400: var(--text-faint);
+  --color-stone-500: var(--text-muted);
+  --color-stone-600: color-mix(in srgb, var(--text) 62%, var(--text-muted));
+  --color-stone-700: color-mix(in srgb, var(--text) 82%, var(--theme-surface));
+  --color-stone-800: color-mix(in srgb, var(--text) 92%, var(--theme-surface));
+  --color-stone-900: var(--text);
+  --color-stone-950: var(--text);
 }
 
-/* 自定义 dark 变体：通过 .dark 类启用深色模式 */
+/* 自定义 dark 变体：通过 .dark 类启用深色模式。色值不在这里翻转。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
 html,
@@ -63,12 +129,8 @@ html.windows body {
   text-rendering: auto;
 }
 
+/* 启动前兜底。主题运行时会把当前明/暗色板的全部语义 token 写到 html 上，覆盖这里。 */
 :root {
-  /* neutral = 象牙白 / 蛋壳白（off-white，极淡奶油调）。
-     暖偏移固定为 (R, R−1, R−3)：顶层 253 → #fdfcfa。
-     亮度台阶沿用原冷灰坡道的差值（−4 / −9 / −15 / −22 / −19 / −27 / −43），
-     所以对比关系一个没变，只是色相从偏蓝转成偏黄 —— 半路改色相会让悬停底色
-     在大面积相邻时读出色相翻转，坡道必须整条同向。 */
   --theme-surface: #fdfcfa;
   --theme-surface-soft: #f9f8f6;
   --theme-surface-muted: #f4f3f1;
@@ -77,19 +139,8 @@ html.windows body {
   --theme-surface-titlebar: #eae9e7;
   --theme-surface-border: #e2e1df;
   --theme-surface-border-strong: #d2d1cf;
-}
-
-/* ===== 全局按钮/组件语义 token（kv-btn / kv-icon-btn 依赖）=====
-   这些原本只定义在 .kv / .settings-embedded / .onboarding-shell 作用域。共享按钮组件
-   <Button>/<IconButton>（src/components/Button.tsx）在聊天窗口(.chat-window-shell)、Lens
-   (.lens-floating-surface) 等非设置作用域也要用，故在此提供全局默认，让组件到处可用。
-   设置/onboarding 作用域（.kv 等，位于本文件更靠后 + 更高特异性）会覆盖这些值，观感不变。
-   亮色映射 --theme-surface 以随暖/冷主题着色；暗色由下方 .dark 显式覆盖（--theme-surface 无暗色态）。 */
-:root {
-  --bg-input: var(--theme-surface);
-  --bg-hover: var(--theme-surface-hover);
-  --border-input: var(--theme-surface-border-strong);
   --text: #1d1d1f;
+  --text-muted: #6b6b73;
   --text-faint: #9c9ca3;
   --accent: #2f6ff0;
   --accent-hover: #2960d8;
@@ -97,36 +148,11 @@ html.windows body {
   --text-onaccent: #ffffff;
   --danger: #c4341c;
   --danger-soft: #fdecea;
-  --shadow-sm: 0 1px 1px rgba(15, 15, 20, 0.04);
-  color: var(--text);
-}
-
-.dark {
-  --bg-input: #2a2a2d;
-  --bg-hover: #2c2c30;
-  --border-input: #3a3a40;
-  --text: #f0f0f3;
-  --text-faint: #6e6e76;
-  --accent: #5c8df7;
-  --accent-hover: #6f9bf8;
-  --accent-soft: rgba(92, 141, 247, 0.16);
-  --text-onaccent: #ffffff;
-  /* Streamdown token 暗色态（@theme 里的 --color-* 读这些） */
-  --color-background: #212121;
-  --color-foreground: #f0f0f3;
-  --color-card: #2a2a2d;
-  --color-card-foreground: #f0f0f3;
-  --color-muted: #2c2c30;
-  --color-muted-foreground: #a1a1aa;
-  --color-border: #3a3a40;
-  --color-input: #3a3a40;
-  --color-primary: #f0f0f3;
-  --color-primary-foreground: #171717;
-  --color-sidebar: #262629;
-  --color-ring: #52525b;
-  --danger: #ef6a5a;
-  --danger-soft: rgba(239, 106, 90, 0.14);
-  --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.4);
+  --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
+  --bg-input: var(--theme-surface);
+  --bg-hover: var(--theme-surface-hover);
+  --border-input: var(--theme-surface-border-strong);
+  --shadow-sm: 0 1px 1px color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
 }
 
@@ -170,28 +196,6 @@ html.windows body {
     opacity var(--kv-dur-normal) var(--kv-ease-out),
     background-color var(--kv-dur-normal) var(--kv-ease-out),
     border-color var(--kv-dur-normal) var(--kv-ease-out);
-}
-
-:root[data-theme-color="warm"] {
-  --theme-surface: #f7f3ea;
-  --theme-surface-soft: #f2ece0;
-  --theme-surface-muted: #ece5d4;
-  --theme-surface-hover: #e4dbc8;
-  --theme-surface-active: #dbd0ba;
-  --theme-surface-titlebar: #e9e1d1;
-  --theme-surface-border: #ddd3c0;
-  --theme-surface-border-strong: #cbbda4;
-}
-
-:root[data-theme-color="cool"] {
-  --theme-surface: #eef3fa;
-  --theme-surface-soft: #e7eef7;
-  --theme-surface-muted: #dee8f2;
-  --theme-surface-hover: #d4e0ee;
-  --theme-surface-active: #c8d7e8;
-  --theme-surface-titlebar: #e0e9f4;
-  --theme-surface-border: #d2def0;
-  --theme-surface-border-strong: #bccfe6;
 }
 
 #root {

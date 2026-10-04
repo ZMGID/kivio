@@ -534,7 +534,7 @@ export function SliderField({ label, value, min, max, step = 1, onChange, hint, 
     <div className="kv-row-stack">
       <div className="flex items-center justify-between gap-3">
         <span className="kv-row-label">{label}</span>
-        <span className="rounded-md border border-zinc-200 bg-white px-2 py-0.5 font-mono text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+        <span className="rounded-md border border-zinc-200 bg-neutral-50 px-2 py-0.5 font-mono text-xs text-zinc-700">
           {value}{suffix}
         </span>
       </div>

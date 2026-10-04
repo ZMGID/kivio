@@ -156,7 +156,7 @@ export function ComposerAddMenu({
           aria-haspopup="menu"
           className={`shrink-0 disabled:opacity-40 ${
             active || openMenu
-              ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
+              ? 'bg-neutral-200 text-neutral-700'
               : ''
           }`}
         >
@@ -242,7 +242,7 @@ export function ComposerAddMenu({
                             </span>
                             <button
                               type="button"
-                              className="grid size-6 shrink-0 place-items-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+                              className="grid size-6 shrink-0 place-items-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
                               aria-label={t.chatRemoveAdditionalDirectory.replace('{name}', displayName(entry))}
                               onClick={() =>
                                 commit(directories.filter((item) => normalizeDirPath(item.path) !== normalizeDirPath(entry.path)))

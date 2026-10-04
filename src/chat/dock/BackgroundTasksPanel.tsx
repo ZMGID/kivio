@@ -90,12 +90,12 @@ export function BackgroundTasksPanel({ active, lang, conversationId, hideEmpty =
       {running.map((task) => (
         <div
           key={task.id}
-          className="flex items-start gap-2 rounded-xl px-2 py-2 hover:bg-neutral-100/70 dark:hover:bg-neutral-800/60"
+          className="flex items-start gap-2 rounded-xl px-2 py-2 hover:bg-neutral-100/70"
         >
           <TaskGlyph kind={task.kind} />
           <div className="min-w-0 flex-1">
             <div
-              className="truncate font-mono text-[12.5px] text-neutral-800 dark:text-neutral-100"
+              className="truncate font-mono text-[12.5px] text-neutral-800"
               title={task.title}
             >
               {task.title}
@@ -126,7 +126,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId, hideEmpty =
           <button
             type="button"
             onClick={() => void clearFinished()}
-            className="rounded-md px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+            className="rounded-md px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600"
           >
             {t.chatBgClear}
           </button>
@@ -138,7 +138,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId, hideEmpty =
             <TaskGlyph kind={task.kind} />
             <div className="min-w-0 flex-1">
               <div
-                className="truncate font-mono text-[12.5px] text-neutral-600 dark:text-neutral-300"
+                className="truncate font-mono text-[12.5px] text-neutral-600"
                 title={task.title}
               >
                 {task.title}

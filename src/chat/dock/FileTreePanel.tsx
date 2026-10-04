@@ -695,7 +695,7 @@ export function FileTreePanel({
           <span
             key={level}
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-0 top-0 w-px bg-black/[0.08] dark:bg-white/[0.1]"
+            className="pointer-events-none absolute bottom-0 top-0 w-px bg-neutral-900/[0.08]"
             style={{ left: 2 + level * 14 + 6 }}
           />
         ))}
@@ -723,7 +723,7 @@ export function FileTreePanel({
             className={`shrink-0 ${fileVisual.className}`}
           />
         ) : null}
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700 dark:text-neutral-200">
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700">
           {node.name}
         </span>
       </div>
@@ -776,7 +776,7 @@ export function FileTreePanel({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center gap-1 border-b border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
+      <div className="flex items-center gap-1 border-b border-neutral-200/70 px-2 py-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md bg-neutral-500/10 px-1.5">
           <Search size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
           <input
@@ -791,7 +791,7 @@ export function FileTreePanel({
           {tree.searchQuery && (
             <button
               type="button"
-              className="shrink-0 rounded p-0.5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+              className="shrink-0 rounded p-0.5 text-neutral-400 hover:text-neutral-600"
               onClick={() => tree.setSearchQuery('')}
             >
               <X size={11} />
@@ -816,7 +816,7 @@ export function FileTreePanel({
           label={t.dockToggleHidden}
           size="sm"
           variant="ghost"
-          className={showHidden ? 'text-neutral-800 dark:text-neutral-100' : ''}
+          className={showHidden ? 'text-neutral-800' : ''}
           onClick={() => setShowHidden((prev) => !prev)}
         >
           {showHidden ? <Eye size={13} /> : <EyeOff size={13} />}
@@ -886,7 +886,7 @@ export function FileTreePanel({
                   }}
                 >
                   <visual.Icon size={13} strokeWidth={1.75} className={`shrink-0 ${visual.className}`} />
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700 dark:text-neutral-200">
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700">
                     {basenameOf(entry.path)}
                     {dir && (
                       <span className="ml-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">{dir}</span>
@@ -935,7 +935,7 @@ export function FileTreePanel({
 
       {dragGhost && (
         <div
-          className="pointer-events-none fixed z-50 rounded-md border border-neutral-300 bg-[var(--theme-surface-soft)] px-2 py-0.5 text-[11px] text-neutral-700 shadow-sm dark:border-neutral-600 dark:bg-[#262629] dark:text-neutral-200"
+          className="pointer-events-none fixed z-50 rounded-md border border-neutral-300 bg-[var(--theme-surface-soft)] px-2 py-0.5 text-[11px] text-neutral-700 shadow-sm dark:border-neutral-600"
           style={{ left: dragGhost.x + 10, top: dragGhost.y + 12 }}
         >
           {dragGhost.label}
@@ -954,9 +954,9 @@ export function FileTreePanel({
         />
       )}
       {viewer?.kind === 'diff' && (
-        <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)] dark:bg-[#262629]">
-          <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800 dark:text-neutral-100">
+        <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
+          <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800">
               {viewer.title}
             </span>
             <IconButton label={t.dockViewerClose} size="sm" variant="ghost" onClick={() => setViewer(null)}>
@@ -969,9 +969,9 @@ export function FileTreePanel({
         </div>
       )}
       {viewer?.kind === 'markdown' && (
-        <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)] dark:bg-[#262629]">
-          <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5 dark:border-neutral-700/50">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800 dark:text-neutral-100">
+        <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
+          <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800">
               {viewer.title}
             </span>
             <IconButton label={t.dockViewerClose} size="sm" variant="ghost" onClick={() => setViewer(null)}>

@@ -43,4 +43,4 @@ export const chatTitlebarIconButtonClass = [
 
 /** 复合控件内的次级图标按钮（如侧栏操作组里的切栏 / 新建）。 */
 export const chatTitlebarPillIconClass =
-  'chat-titlebar-pill-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-600 transition duration-[var(--kv-dur-instant)] hover:bg-black/[0.05] hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.08] dark:hover:text-neutral-100'
+  'chat-titlebar-pill-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-600 transition duration-[var(--kv-dur-instant)] hover:bg-black/[0.05] hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.08]'

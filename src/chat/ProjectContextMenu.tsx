@@ -99,7 +99,7 @@ export function ProjectContextMenu({
         <Download strokeWidth={1.75} />
         {t.chatImportFromCli}
       </button>
-      <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+      <div className="my-1 border-t border-neutral-200/80" />
       <button
         type="button"
         role="menuitem"

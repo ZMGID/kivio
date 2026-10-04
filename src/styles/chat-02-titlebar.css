@@ -177,7 +177,7 @@
   padding: 0;
   border: none;
   background: transparent;
-  color: #525252;
+  color: var(--text-muted);
   border-radius: 0;
   line-height: 1;
   cursor: default;
@@ -187,12 +187,12 @@
 }
 
 .chat-win-btn:hover {
-  background: rgba(0, 0, 0, 0.055);
-  color: #171717;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
 }
 
 .chat-win-btn:active {
-  background: rgba(0, 0, 0, 0.09);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
 }
 
 .chat-win-btn--close:hover {
@@ -205,18 +205,6 @@
   color: #fff;
 }
 
-.dark .chat-win-btn {
-  color: #a3a3a3;
-}
-
-.dark .chat-win-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #f5f5f5;
-}
-
-.dark .chat-win-btn:active {
-  background: rgba(255, 255, 255, 0.13);
-}
 
 .dark .chat-win-btn--close:hover {
   background: #e81123;

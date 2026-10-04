@@ -285,7 +285,7 @@ function ProviderMark({ name, icon, size = 20 }: { name: string; icon?: string; 
   }
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-[6px] bg-zinc-100 font-semibold uppercase text-zinc-500 dark:bg-zinc-800 dark:text-zinc-300"
+      className="grid shrink-0 place-items-center rounded-[6px] bg-zinc-100 font-semibold uppercase text-zinc-500"
       style={{ width: size, height: size, fontSize: size * 0.46, lineHeight: 1 }}
     >
       {name.slice(0, 1)}
@@ -320,7 +320,7 @@ function ApiKeyField({
       <button
         type="button"
         onClick={() => setReveal((v) => !v)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
         data-tauri-drag-region="false"
         aria-label={reveal ? 'Hide' : 'Show'}
       >
@@ -481,7 +481,7 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
           type="button"
           onClick={() => void run()}
           disabled={!query.trim() || state.status === 'running'}
-          className="grid size-9 shrink-0 place-items-center rounded-lg border border-zinc-200 text-zinc-500 transition hover:bg-zinc-100 hover:text-indigo-600 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          className="grid size-9 shrink-0 place-items-center rounded-lg border border-zinc-200 text-zinc-500 transition hover:bg-zinc-100 hover:text-accent disabled:opacity-40"
           data-tauri-drag-region="false"
           aria-label={t.webSearchTestSection}
         >
@@ -510,9 +510,9 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
               : t.webSearchTestEmpty}
           </p>
           {state.results.length > 0 && (
-            <ul className="space-y-1 rounded-lg border border-zinc-200 bg-zinc-50/60 p-2 dark:border-zinc-800 dark:bg-zinc-800/30">
+            <ul className="space-y-1 rounded-lg border border-zinc-200 bg-zinc-50/60 p-2">
               {state.results.map((r, i) => (
-                <li key={`${r.url}-${i}`} className="min-w-0 truncate text-[12px] text-zinc-600 dark:text-zinc-300">
+                <li key={`${r.url}-${i}`} className="min-w-0 truncate text-[12px] text-zinc-600">
                   <span className="text-zinc-400">{i + 1}.</span> {r.title || r.url}
                 </li>
               ))}
@@ -529,9 +529,9 @@ const FETCH_FOLLOW = 'follow'
 const NAV_ITEM =
   'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition'
 const NAV_ITEM_ACTIVE =
-  'bg-indigo-50 font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+  'bg-accent-soft font-medium text-accent'
 const NAV_ITEM_IDLE =
-  'text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800'
+  'text-zinc-700 hover:bg-zinc-100'
 
 function ConfigureLink({
   t,
@@ -544,7 +544,7 @@ function ConfigureLink({
     <button
       type="button"
       onClick={onClick}
-      className="px-1 text-[12px] text-indigo-500 hover:underline dark:text-indigo-300"
+      className="px-1 text-[12px] text-accent hover:underline"
       data-tauri-drag-region="false"
     >
       {t.webSearchConfigureProvider} →
@@ -589,8 +589,8 @@ function DefaultsPage({
 
   return (
     <>
-      <div className="mb-5 border-b border-zinc-200/70 pb-4 dark:border-zinc-800">
-        <div className="text-[16px] font-semibold text-zinc-800 dark:text-zinc-100">
+      <div className="mb-5 border-b border-zinc-200/70 pb-4">
+        <div className="text-[16px] font-semibold text-zinc-800">
           {t.webSearchDefaultsTitle}
         </div>
         <p className="mt-1 text-xs text-zinc-400">{t.webSearchRolesHint}</p>
@@ -687,7 +687,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
     <div className="websearch-panel-root flex min-h-full items-stretch gap-0">
       <nav className="relative flex h-full min-h-full w-44 shrink-0 flex-col self-stretch pr-3">
         <div
-          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-zinc-200/80 dark:bg-zinc-800"
+          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-zinc-200/80"
           aria-hidden
         />
         <div className="space-y-0.5">
@@ -734,17 +734,17 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
           />
         ) : (
           <>
-            <div className="mb-5 flex items-center gap-3 border-b border-zinc-200/70 pb-4 dark:border-zinc-800">
+            <div className="mb-5 flex items-center gap-3 border-b border-zinc-200/70 pb-4">
               <ProviderMark name={selected.name} icon={selected.icon} size={32} />
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[16px] font-semibold text-zinc-800 dark:text-zinc-100">
+                  <span className="text-[16px] font-semibold text-zinc-800">
                     {selected.name}
                   </span>
                   <button
                     type="button"
                     onClick={() => void api.openExternal(selected.site)}
-                    className="text-zinc-400 hover:text-indigo-500"
+                    className="text-zinc-400 hover:text-accent"
                     data-tauri-drag-region="false"
                     aria-label="Open site"
                   >
@@ -769,7 +769,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                     <button
                       type="button"
                       onClick={() => void api.openExternal(selected.apiKeyUrl!)}
-                      className="inline-flex items-center text-[12px] text-indigo-500 hover:underline dark:text-indigo-300"
+                      className="inline-flex items-center text-[12px] text-accent hover:underline"
                       data-tauri-drag-region="false"
                     >
                       {t.webSearchGetKey} ↗

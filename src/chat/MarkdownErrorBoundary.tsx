@@ -22,7 +22,7 @@ export class MarkdownErrorBoundary extends Component<
   render() {
     if (this.state.failed) {
       return (
-        <pre className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-neutral-900 dark:text-neutral-100">
+        <pre className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-neutral-900">
           {this.props.fallbackText}
         </pre>
       )

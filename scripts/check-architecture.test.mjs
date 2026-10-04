@@ -229,14 +229,14 @@ test('CLI diagnostic prints every exact witness edge instead of undefined endpoi
 test('allows only an explicitly registered composition root to mount feature implementations', () => {
   const root = fixture({
     'src/App.tsx': "import './chat/Chat'",
-    'src/themeColors.ts': "import './settings/internal'",
+    'src/theme/theme.ts': "import '../settings/internal'",
     'src/chat/Chat.tsx': 'export const Chat = 1',
     'src/settings/internal.ts': 'export const settings = 1',
   })
 
   assert.deepEqual(newViolations(root, { existingViolations: [] }), [{
     kind: 'shared_to_feature',
-    source: 'src/themeColors.ts',
+    source: 'src/theme/theme.ts',
     target: 'src/settings/internal.ts',
   }])
 })

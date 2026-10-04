@@ -10,7 +10,7 @@ export function WorkflowHooksPanel({ lang }: { lang: Lang }) {
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
   useEffect(() => { void packageApi.getHooks().then(config => setText(JSON.stringify(config, null, 2))).catch(e => setError(String(e))) }, [])
-  return <section className="mb-5 space-y-3 rounded-xl border border-neutral-200 p-4 dark:border-neutral-700">
+  return <section className="mb-5 space-y-3 rounded-xl border border-neutral-200 p-4">
     <h3 className="text-sm font-semibold">{zh ? '工作流 Hooks' : 'Workflow hooks'}</h3>
     <p className="text-xs text-neutral-500">{zh
       ? '这些钩子在执行边界等待结果，可注入上下文、拒绝工具或改写参数。下方原有生命周期钩子继续作为通知使用。配置单独保存，新一轮对话生效，仅用于内置 Agent。'

@@ -174,7 +174,7 @@ export function ModelIcon({ model, size = 18, className }: ModelIconProps) {
   // Fallback placeholder — mirrors AgentIcon's initial chip.
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-md bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300 ${className ?? ''}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-600 ${className ?? ''}`}
       style={{ width: size, height: size }}
       aria-hidden="true"
     >
@@ -385,7 +385,7 @@ export function ProviderIcon({ name, baseUrl, iconKey, size = 16, className }: P
   }
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-md bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300 ${className ?? ''}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md bg-neutral-200 text-[9px] font-semibold uppercase text-neutral-600 ${className ?? ''}`}
       style={{ width: size, height: size }}
       aria-hidden="true"
     >

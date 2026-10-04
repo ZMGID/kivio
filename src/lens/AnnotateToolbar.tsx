@@ -76,7 +76,7 @@ export function AnnotateToolbar({
       onMouseUp={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
     >
-      <div className="flex items-center gap-1 px-1.5 py-1.5 rounded-[14px] bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface">
+      <div className="flex items-center gap-1 px-1.5 py-1.5 rounded-[14px] bg-neutral-50 border border-neutral-900/[0.07] lens-floating-surface">
         {tools.map(({ kind, icon: Icon, label }) => {
           const active = tool === kind
           return (
@@ -87,8 +87,8 @@ export function AnnotateToolbar({
               onClick={() => onToolChange(kind)}
               className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-all duration-150 ${
                 active
-                  ? 'bg-neutral-900 text-white dark:bg-white dark:text-neutral-900 scale-100 shadow-sm'
-                  : 'text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] active:scale-90'
+                  ? 'bg-neutral-900 text-neutral-50 scale-100 shadow-sm'
+                  : 'text-neutral-600 hover:bg-neutral-900/[0.05] active:scale-90'
               }`}
             >
               <Icon size={16} strokeWidth={1.75} />
@@ -96,7 +96,7 @@ export function AnnotateToolbar({
           )
         })}
 
-        <div className="w-px h-5 mx-0.5 bg-black/[0.08] dark:bg-white/[0.1]" />
+        <div className="w-px h-5 mx-0.5 bg-neutral-900/[0.08]" />
 
         <button
           type="button"
@@ -105,21 +105,21 @@ export function AnnotateToolbar({
           disabled={!canUndo}
           className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-all duration-150 ${
             canUndo
-              ? 'text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] active:scale-90'
+              ? 'text-neutral-600 hover:bg-neutral-900/[0.05] active:scale-90'
               : 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
           }`}
         >
           <Undo2 size={16} strokeWidth={1.75} />
         </button>
 
-        <div className="w-px h-5 mx-0.5 bg-black/[0.08] dark:bg-white/[0.1]" />
+        <div className="w-px h-5 mx-0.5 bg-neutral-900/[0.08]" />
 
         <button
           type="button"
           title={labels.save}
           onClick={onSave}
           disabled={saving}
-          className="h-9 px-3 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium text-neutral-700 dark:text-neutral-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] active:scale-95 transition-all duration-150 disabled:opacity-50"
+          className="h-9 px-3 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium text-neutral-700 hover:bg-neutral-900/[0.05] active:scale-95 transition-all duration-150 disabled:opacity-50"
         >
           {saving ? <Loader2 size={15} strokeWidth={1.75} className="animate-spin" /> : <Save size={15} strokeWidth={1.75} />}
           <span>{saving ? labels.saving : labels.save}</span>
@@ -132,7 +132,7 @@ export function AnnotateToolbar({
           className={`h-9 px-3.5 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium transition-all duration-150 active:scale-95 ${
             copied
               ? 'bg-green-500 text-white'
-              : 'bg-neutral-900 text-white hover:bg-neutral-700 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200'
+              : 'bg-neutral-900 text-neutral-50 hover:bg-neutral-700'
           }`}
         >
           {copied ? <Check size={15} strokeWidth={2} /> : <Copy size={15} strokeWidth={1.75} />}

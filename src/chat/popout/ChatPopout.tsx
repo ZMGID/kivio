@@ -33,7 +33,7 @@ const MessageList = lazy(() => import('../MessageList').then((module) => ({
 function MessageListLoading() {
   return (
     <div className="chat-themed-surface flex flex-1 items-center justify-center">
-      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-t-neutral-200" />
     </div>
   )
 }

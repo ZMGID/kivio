@@ -9,7 +9,7 @@ import { fileLocationAction } from './fileLocation'
 export const CHAT_IMAGE_TILE_MAX_PX = 128
 
 const IMAGE_CLASS =
-  'rounded-md border border-neutral-200/90 bg-white object-contain dark:border-neutral-700 dark:bg-neutral-900'
+  'rounded-md border border-neutral-200/90 bg-neutral-50 object-contain'
 
 /**
  * 已知宽高比缓存。虚拟列表会卸载滚出视口的行，组件 state 随之丢失——若不缓存，滚回来

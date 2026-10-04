@@ -13,20 +13,11 @@
   --border-strong: var(--theme-surface-border-strong);
   --border-input: var(--theme-surface-border-strong);
   --divider: var(--theme-surface-titlebar);
-  --text: #1d1d1f;
-  --text-muted: #6b6b73;
-  --text-faint: #9c9ca3;
-  --text-onaccent: #ffffff;
-  --accent: #2f6ff0;
-  --accent-hover: #2960d8;
-  --accent-soft: #e6efff;
-  --accent-ring: rgba(47, 111, 240, 0.32);
-  --danger: #c4341c;
-  --danger-soft: #fdecea;
+  --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
   --warn: #b86200;
-  --warn-soft: #fff4e0;
+  --warn-soft: color-mix(in srgb, var(--warn) 12%, var(--theme-surface));
   --success: #1f7a4d;
-  --success-soft: #e2f3ea;
+  --success-soft: color-mix(in srgb, var(--success) 12%, var(--theme-surface));
   --shadow-sm: 0 1px 1px rgba(15, 15, 20, 0.04);
   --shadow-md: 0 6px 18px rgba(15, 15, 20, 0.08), 0 1px 1px rgba(15, 15, 20, 0.04);
   --radius-sm: 5px;
@@ -37,40 +28,13 @@
   line-height: 1.4;
 }
 
-/* 主题色令牌不在此重复定义：--theme-surface* 是自定义属性，会从 :root 继承进本作用域，
-   而 .kv 的 data-theme-color 与 documentElement 同源（都来自 settings.themeColor，
-   见 App.tsx applyTheme 与 SettingsShell）。
-   早先这里抄了 neutral/warm/cool 三份完全相同的值，是纯复制品；且没有暗色限定，
-   一旦给 --theme-surface* 加暗色态就会被它盖回亮色。删掉，靠继承。 */
+/* 主题模块统一应用完整明暗色板；设置控件只继承语义 token，不维护自己的主题色。 */
 
 .dark .kv,
 .kv[data-theme="dark"] {
-  --bg: #1d1d1f;
-  --bg-sidebar: #232326;
-  --bg-savebar: #1a1a1c;
-  --bg-input: #2a2a2d;
-  --bg-input-subtle: #232326;
-  --bg-hover: #2c2c30;
-  --bg-active: #36363b;
-  --bg-pill: #2e2e33;
-  --bg-titlebar: #2a2a2d;
-  --border: #34343a;
-  --border-strong: #44444a;
-  --border-input: #3a3a40;
-  --divider: #2b2b30;
-  --text: #f0f0f3;
-  --text-muted: #a1a1a8;
-  --text-faint: #6e6e76;
-  --accent: #5c8df7;
-  --accent-hover: #6f9bf8;
-  --accent-soft: rgba(92, 141, 247, 0.16);
-  --accent-ring: rgba(92, 141, 247, 0.36);
-  --danger: #ef6a5a;
-  --danger-soft: rgba(239, 106, 90, 0.14);
+  --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
   --warn: #e6a04a;
-  --warn-soft: rgba(230, 160, 74, 0.14);
   --success: #58c08a;
-  --success-soft: rgba(88, 192, 138, 0.14);
   --shadow-sm: 0 1px 1px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.3);
 }
@@ -497,38 +461,31 @@
   align-items: center;
   justify-content: center;
   border-radius: 10px;
+  background: color-mix(in srgb, currentColor 12%, var(--theme-surface));
 }
 .computer-control-icon--cua {
   color: #2563eb;
-  background: #eaf2ff;
 }
 .computer-control-icon--playwright {
   color: #15803d;
-  background: #eaf8ef;
 }
 .computer-control-icon--ego-lite {
   color: #7c3aed;
-  background: #f2edff;
 }
 .computer-control-icon--officecli {
   color: #0f766e;
-  background: #e7f7f5;
 }
 .dark .computer-control-icon--cua {
   color: #8eb7ff;
-  background: rgba(37, 99, 235, 0.18);
 }
 .dark .computer-control-icon--playwright {
   color: #7bd69a;
-  background: rgba(21, 128, 61, 0.18);
 }
 .dark .computer-control-icon--ego-lite {
   color: #b8a0ff;
-  background: rgba(124, 58, 237, 0.18);
 }
 .dark .computer-control-icon--officecli {
   color: #7dd3c7;
-  background: rgba(15, 118, 110, 0.18);
 }
 .computer-control-copy {
   min-width: 0;
@@ -635,8 +592,7 @@
   width: 30px;
   height: 18px;
   border-radius: 999px;
-  /* ponytail: off 态用固定中灰，别用 --border-strong(#d4d4d8 在白卡上几乎不可见) */
-  background: #a1a1aa;
+  background: var(--theme-surface-active);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   flex-shrink: 0;
@@ -644,7 +600,9 @@
   border: none;
   padding: 0;
 }
-.dark .kv-toggle { background: #52525b; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
+.dark .kv-toggle {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
 .kv-toggle::after {
   content: "";
   position: absolute;
@@ -653,7 +611,7 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--theme-surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   transition: transform 0.15s;
 }
@@ -728,8 +686,6 @@
     0 12px 28px -12px rgba(24, 24, 27, 0.18);
 }
 .dark .kv-select-menu {
-  border-color: rgba(255, 255, 255, 0.09);
-  background: #2a2a2c;
   box-shadow:
     0 0 0 0.5px rgba(255, 255, 255, 0.05),
     0 4px 14px -4px rgba(0, 0, 0, 0.5),
@@ -754,22 +710,16 @@
 }
 
 .kv-select-option:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-.dark .kv-select-option:hover {
-  background: rgba(255, 255, 255, 0.07);
-}
 
 /* 选中态：macOS 原生下拉是「勾 + 轻底」，不是实心蓝条（那是 Win98 观感）。 */
 .kv-select-option.is-active {
   font-weight: 500;
-  background: rgba(0, 0, 0, 0.05);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-.dark .kv-select-option.is-active {
-  background: rgba(255, 255, 255, 0.08);
-}
 
 .kv-select-option-check {
   width: 13px;
@@ -1202,16 +1152,13 @@ input[type="password"]::-ms-clear {
   padding: 4px 10px;
   border-radius: 8px;
   font-size: 13px;
-  color: rgb(38 38 38);
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: var(--text);
+  background: color-mix(in srgb, var(--theme-surface) 96%, transparent);
+  border: 1px solid var(--theme-surface-border);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
   pointer-events: none;
 }
 .dark .kv-reorder-ghost {
-  color: rgb(229 229 229);
-  background: rgba(38, 38, 38, 0.96);
-  border-color: rgba(255, 255, 255, 0.12);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 }
 .kv-reorder-line {
@@ -1220,7 +1167,7 @@ input[type="password"]::-ms-clear {
   right: 12px;
   height: 2px;
   border-radius: 1px;
-  background: rgb(59 130 246);
+  background: var(--accent);
   z-index: 30;
   pointer-events: none;
 }
@@ -1232,12 +1179,10 @@ input[type="password"]::-ms-clear {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 2px solid rgb(59 130 246);
-  background: var(--kv-surface, #fff);
+  border: 2px solid var(--accent);
+  background: var(--kv-surface, var(--theme-surface-soft));
 }
-.dark .kv-reorder-line::before {
-  background: #1c1c1c;
-}
+
 
 .kv-provider-item-select {
   flex: 1;
@@ -1435,17 +1380,19 @@ input[type="password"]::-ms-clear {
   flex: 1;
   min-width: 0;
   font-size: 11.5px;
-  color: #dc2626;
+  color: var(--danger);
 }
-.dark .kv-form-error { color: #f87171; }
+
 .kv-form-error-inline {
   margin: 4px 0 0;
   font-size: 11.5px;
-  color: #dc2626;
+  color: var(--danger);
 }
-.dark .kv-form-error-inline { color: #f87171; }
-.kv-req { color: #dc2626; }
-.dark .kv-req { color: #f87171; }
+
+.kv-req {
+  color: var(--danger);
+}
+
 
 .kv-form-block { min-width: 0; }
 /* 字段标题和它右边的小按钮（「获取模型」）同一行。 */
@@ -2607,8 +2554,8 @@ input[type="password"]::-ms-clear {
   line-height: 16px;
   padding: 1px 6px;
   border-radius: 999px;
-  color: var(--accent, #2563eb);
-  background: color-mix(in srgb, var(--accent, #2563eb) 10%, transparent);
+  color: var(--accent, var(--accent));
+  background: color-mix(in srgb, var(--accent, var(--accent)) 10%, transparent);
 }
 .kv-dsh-field-error {
   color: var(--danger);
@@ -2754,11 +2701,11 @@ input[type="password"]::-ms-clear {
 }
 .dark .settings-autosave-toast.error,
 .dark .chat-window-shell .settings-autosave-toast.error {
-  background: color-mix(in srgb, var(--danger) 18%, #1a1a1a);
+  background: color-mix(in srgb, var(--danger) 18%, var(--theme-surface-soft));
 }
 .dark .settings-autosave-toast.warn,
 .dark .chat-window-shell .settings-autosave-toast.warn {
-  background: color-mix(in srgb, var(--warning, #b45309) 18%, #1a1a1a);
+  background: color-mix(in srgb, var(--warning, #b45309) 18%, var(--theme-surface-soft));
 }
 
 .kv-tag {
@@ -2811,7 +2758,7 @@ input[type="password"]::-ms-clear {
 
 .kv-modal-backdrop,
 dialog.kv-modal::backdrop {
-  background: rgba(0, 0, 0, 0.3);
+  background: color-mix(in srgb, var(--text) 30%, transparent);
   -webkit-backdrop-filter: blur(1px);
   backdrop-filter: blur(1px);
 }
@@ -2825,14 +2772,14 @@ dialog.kv-modal::backdrop {
 .kv-modal-backdrop--portal > .kv-modal {
   background: var(--bg, var(--theme-surface));
   border-color: var(--border, var(--theme-surface-border));
-  color: var(--text, #1d1d1f);
+  color: var(--text, var(--text));
   box-shadow: var(--shadow-md, 0 6px 18px rgba(15, 15, 20, 0.08), 0 1px 1px rgba(15, 15, 20, 0.04));
 }
 
 .dark .kv-modal-backdrop--portal > .kv-modal {
-  background: var(--bg, #212121);
-  border-color: var(--border, rgba(255, 255, 255, 0.08));
-  color: var(--text, #f5f5f5);
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .kv-modal-backdrop--portal > .kv-modal .kv-model-picker-body {
@@ -2982,7 +2929,7 @@ dialog.kv-modal::backdrop {
   outline: none;
 }
 .kv-pasted-text-editor-textarea:focus {
-  border-color: var(--ring, rgba(59, 130, 246, 0.45));
+  border-color: var(--ring, color-mix(in srgb, var(--accent) 45%, transparent));
 }
 .kv-connector-detail-header {
   display: flex;
@@ -3398,14 +3345,14 @@ dialog.kv-modal::backdrop {
 .kv-drawer-label {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-secondary, #888);
+  color: var(--text-secondary, var(--text-muted));
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .kv-drawer-sublabel {
   font-size: 11px;
-  color: var(--text-secondary, #888);
+  color: var(--text-secondary, var(--text-muted));
 }
 
 .kv-drawer-row {
@@ -3440,7 +3387,7 @@ dialog.kv-modal::backdrop {
 
 .kv-drawer-hint {
   font-size: 11px;
-  color: var(--text-secondary, #888);
+  color: var(--text-secondary, var(--text-muted));
   background: var(--card-bg, var(--bg));
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -3619,7 +3566,7 @@ dialog.kv-modal::backdrop {
 }
 
 .kv-enabled-model-row:hover {
-  background: var(--hover-bg, rgba(0,0,0,0.03));
+  background: var(--hover-bg, var(--theme-surface-soft));
 }
 
 .onboarding-shell {
@@ -3636,7 +3583,7 @@ dialog.kv-modal::backdrop {
      不渲染聊天侧栏，四边缝自己补。 */
   margin: var(--chat-card-top) 8px 8px;
   border-radius: 12px;
-  border: 1px solid rgba(24, 24, 27, 0.07);
+  border: 1px solid var(--theme-surface-border);
   box-shadow:
     0 1px 2px rgba(24, 24, 27, 0.04),
     0 5px 14px -8px rgba(24, 24, 27, 0.10);
@@ -3652,40 +3599,15 @@ dialog.kv-modal::backdrop {
   --border-strong: var(--theme-surface-border-strong);
   --border-input: var(--theme-surface-border-strong);
   --divider: var(--theme-surface-titlebar);
-  --text: #171717;
-  --text-muted: #737373;
-  --text-faint: #a3a3a3;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: #eff6ff;
   --radius-card: 12px;
   background: var(--bg);
   font-size: 13px;
 }
 
 .dark .chat-window-shell .onboarding-shell.settings-embedded {
-  border-color: rgba(255, 255, 255, 0.08);
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.2),
     0 5px 14px -8px rgba(0, 0, 0, 0.35);
-  --bg: #212121;
-  --bg-sidebar: #1c1c1e;
-  --bg-savebar: #212121;
-  --bg-input: #2a2a2a;
-  --bg-input-subtle: #2a2a2a;
-  --bg-hover: rgba(255, 255, 255, 0.06);
-  --bg-active: rgba(255, 255, 255, 0.1);
-  --bg-pill: #333333;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: #525252;
-  --border-input: #404040;
-  --divider: rgba(255, 255, 255, 0.06);
-  --text: #f5f5f5;
-  --text-muted: #a3a3a3;
-  --text-faint: #737373;
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-soft: rgba(59, 130, 246, 0.15);
 }
 
 .onboarding-shell--loading {
@@ -4153,12 +4075,9 @@ dialog.kv-modal::backdrop {
   gap: 2px;
   font-size: 12px;
   line-height: 1.4;
-  color: #dc2626;
+  color: var(--danger);
 }
 
-.dark .onboarding-footer-error {
-  color: #f87171;
-}
 
 .onboarding-footer-error-detail {
   opacity: 0.75;
@@ -4363,4 +4282,73 @@ dialog.kv-modal::backdrop {
     padding: 0;
     width: 34px;
   }
+}
+
+/* Theme page: layout and theme-library content only; controls keep their shared styles. */
+.theme-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; container: theme-page / inline-size; }
+.theme-section-heading, .theme-workspace-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.theme-page h3, .theme-json-dialog h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.theme-page h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.theme-section-heading p, .theme-workspace-header p, .theme-live-preview > p, .theme-json-dialog > p {
+  margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6;
+}
+.theme-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin-top: 12px; }
+.theme-card {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px; text-align: left;
+  border: 1px solid var(--theme-surface-border); border-radius: 10px;
+  background: var(--theme-surface); color: var(--text); cursor: pointer;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.theme-card:hover:not(:disabled) { border-color: var(--theme-surface-border-strong); background: var(--theme-surface-soft); }
+.theme-card.is-selected { border-color: var(--accent); }
+.theme-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.theme-card:disabled { opacity: 0.55; cursor: not-allowed; }
+.theme-card-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.theme-card-mini { display: flex; height: 56px; overflow: hidden; border: 1px solid; border-radius: 6px; }
+.theme-card-mini-sidebar { flex: 0 0 18%; }
+.theme-card-mini-content { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; padding: 8px; }
+.theme-card-mini-line { height: 3px; width: 64%; border-radius: 2px; opacity: 0.85; }
+.theme-card-mini-line.short { width: 45%; height: 2px; }
+.theme-card-mini-message { align-self: flex-end; width: 52%; height: 10px; border-radius: 3px; }
+.theme-card-mini-accent { align-self: flex-end; width: 9px; height: 5px; border-radius: 2px; }
+.theme-card-name { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 600; }
+.theme-card-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.theme-card-name > svg { flex-shrink: 0; color: var(--accent); }
+.theme-card-meta { color: var(--text-muted); font-size: 11px; }
+.theme-workspace { min-width: 0; border-top: 1px solid var(--theme-surface-border); scroll-margin-top: 12px; }
+.theme-workspace-header { position: sticky; top: 0; z-index: 2; padding: 14px 0; background: var(--theme-surface); }
+.theme-workspace-header > .min-w-0 { flex: 1 1 170px; }
+.theme-workspace-actions, .theme-share-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.theme-share-actions { justify-content: space-between; margin-top: 12px; }
+.theme-workspace-body, .theme-preview-pair { min-width: 0; }
+.theme-preview-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.theme-preview-pair h4, .theme-live-preview h4 { margin-bottom: 8px; }
+.theme-preview { min-width: 0; overflow-wrap: anywhere; }
+.theme-workspace-body.is-editing { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.theme-editor { min-width: 0; }
+.theme-field-name { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 500; }
+.theme-palette-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 18px 0 12px; }
+.theme-color-group { min-width: 0; margin: 0 0 16px; padding: 0; border: none; }
+.theme-color-group legend { margin-bottom: 10px; padding: 0; color: var(--text-muted); font-size: 11px; font-weight: 600; }
+.theme-color-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 12px 16px; }
+.theme-color-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.theme-color-field > label { font-size: 12px; line-height: 1.4; }
+.theme-color-inputs { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.theme-color-picker { flex: 0 0 38px; }
+.theme-field-error { margin: 4px 0 0; color: var(--danger); font-size: 11px; line-height: 1.5; }
+.theme-feedback { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--theme-surface-muted); color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.theme-feedback.error { background: var(--danger-soft); color: var(--danger); }
+.kv-modal.theme-json-dialog { width: calc(100vw - 32px); max-width: 640px; max-height: calc(100vh - 48px); }
+.theme-json-dialog[open] { display: flex; flex-direction: column; gap: 12px; }
+.theme-json-body { min-height: 0; overflow-y: auto; }
+.theme-json-body .theme-feedback { margin: 10px 0 0; }
+.theme-json-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+@container theme-page (min-width: 760px) {
+  .theme-workspace-body.is-editing { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px; }
+  .theme-live-preview { position: sticky; top: 100px; }
+}
+@container theme-page (max-width: 560px) {
+  .theme-preview-pair { grid-template-columns: minmax(0, 1fr); }
+  .theme-live-preview { grid-row: 1; }
+  .theme-workspace-header { align-items: flex-start; }
 }

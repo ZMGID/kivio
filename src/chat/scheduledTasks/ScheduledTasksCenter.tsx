@@ -89,7 +89,7 @@ export function ScheduledTasksCenter({ onOpenConversation, renderList, registerL
       {(error || loadError) && <p className="mb-3 text-[13px] text-red-600 dark:text-red-400" role="alert">{error || loadError}</p>}
       {!tasks ? <p className="text-[13px] text-neutral-500">{t.chatSchedulesLoading}</p> : tasks.length === 0 ? <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--theme-surface-border)] px-6 py-14 text-center dark:border-white/[0.1]">
         <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--theme-surface-muted)] text-neutral-400"><Clock size={23} strokeWidth={1.5} /></span>
-        <h2 className="text-[15px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSchedulesEmpty}</h2>
+        <h2 className="text-[15px] font-medium text-neutral-800">{t.chatSchedulesEmpty}</h2>
         <p className="mt-2 max-w-[24rem] text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">{t.chatSchedulesEmptyHint}</p>
         <Button className="mt-5" size="sm" variant="primary" onClick={() => setEditor({ task: null })}><Plus size={14} strokeWidth={1.75} />{t.chatSchedulesNew}</Button>
         <div className="mt-8 flex max-w-[34rem] flex-wrap justify-center gap-2">{templates.map(template => <Button key={template.name} size="sm" onClick={() => setEditor({ task: null, template })}>{template.prompt}</Button>)}</div>
@@ -98,10 +98,10 @@ export function ScheduledTasksCenter({ onOpenConversation, renderList, registerL
         const live = liveRuns.get(task.id)
         const running = live?.status === 'running' || live?.status === 'queued' ? live.status : null
         const target = t.chatSchedulesSendTo.replace('{title}', titles[task.conversationId] === null ? t.chatSchedulesDeletedConversation : titles[task.conversationId] ?? t.chatSchedulesLoading)
-        return <li key={task.id} className="flex items-center gap-3 rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-4 py-3 dark:border-white/[0.08] dark:bg-[#2a2a2d]">
+        return <li key={task.id} className="flex items-center gap-3 rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] px-4 py-3 dark:border-white/[0.08]">
           <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => setEditor({ task })}>
-            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-surface-muted)] dark:bg-white/[0.06] ${!task.enabled ? 'text-neutral-400 dark:text-neutral-500' : 'text-neutral-600 dark:text-neutral-300'}`}><Icon size={16} strokeWidth={1.75} /></span>
-            <span className="min-w-0"><span className={`block truncate text-[14px] font-medium ${!task.enabled ? 'text-neutral-500 dark:text-neutral-400' : 'text-neutral-900 dark:text-neutral-50'}`}>{task.name}</span>
+            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-surface-muted)] dark:bg-white/[0.06] ${!task.enabled ? 'text-neutral-400 dark:text-neutral-500' : 'text-neutral-600'}`}><Icon size={16} strokeWidth={1.75} /></span>
+            <span className="min-w-0"><span className={`block truncate text-[14px] font-medium ${!task.enabled ? 'text-neutral-500 dark:text-neutral-400' : 'text-neutral-900'}`}>{task.name}</span>
               <span className="mt-0.5 block truncate text-[12px] text-neutral-500 dark:text-neutral-400" title={`${scheduleSummary(task.schedule, t, lang)} · ${target}`}>{scheduleSummary(task.schedule, t, lang)} · {target}</span>
             </span>
           </button>

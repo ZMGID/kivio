@@ -215,16 +215,16 @@ export function CliImportDialog({
       }}
     >
       <div
-        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} flex max-h-[80vh] w-full max-w-[560px] flex-col rounded-[10px] border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-[#252527]`}
+        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} flex max-h-[80vh] w-full max-w-[560px] flex-col rounded-[10px] border border-neutral-200 bg-neutral-50 shadow-xl`}
         role="dialog"
         aria-modal="true"
         aria-busy={importing}
         aria-label={t.chatImportFromCli}
         onAnimationEnd={onAnimationEnd}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+        <div className="flex items-start justify-between gap-3 border-b border-neutral-200 px-4 py-3">
           <div className="min-w-0">
-            <h3 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-50">
+            <h3 className="text-[14px] font-semibold text-neutral-900">
               {t.chatImportFromCli}
             </h3>
             <p className="mt-0.5 truncate text-[11px] text-neutral-500 dark:text-neutral-400">
@@ -251,7 +251,7 @@ export function CliImportDialog({
             grouped.map(([agentId, list]) => (
               <div key={agentId} className="mb-4 last:mb-0">
                 <div className="mb-1.5 flex items-baseline gap-2">
-                  <span className="text-[12px] font-medium text-neutral-700 dark:text-neutral-200">
+                  <span className="text-[12px] font-medium text-neutral-700">
                     {AGENT_LABELS[agentId] ?? agentId}
                   </span>
                   <span className="text-[11px] text-neutral-400">{t.chatSkillCliCount.replace('{n}', String(list.length))}</span>
@@ -277,15 +277,15 @@ export function CliImportDialog({
                           title={bound ? t.chatSkillCliOpenBound : undefined}
                           className={`flex w-full items-start gap-2 rounded-[6px] px-2 py-1.5 text-left transition-colors ${
                             bound ? 'opacity-55' : ''
-                          } hover:bg-neutral-100 dark:hover:bg-neutral-800`}
+                          } hover:bg-neutral-100`}
                         >
                           <span
                             className={`mt-0.5 flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[3px] ${
                               bound
                                 ? 'text-neutral-400'
                                 : checked
-                                  ? 'rounded-[3px] border border-blue-500 bg-blue-500 text-white'
-                                  : 'border border-neutral-300 dark:border-neutral-600'
+                                  ? 'rounded-[3px] border border-[var(--accent)] bg-[var(--accent)] text-[var(--text-onaccent)]'
+                                  : 'border border-neutral-300'
                             }`}
                           >
                             {bound ? (
@@ -295,7 +295,7 @@ export function CliImportDialog({
                             )}
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[12px] text-neutral-800 dark:text-neutral-100">
+                            <span className="block truncate text-[12px] text-neutral-800">
                               {session.title || t.chatSkillCliUntitled}
                             </span>
                             <span className="mt-0.5 block text-[11px] text-neutral-400">
@@ -317,12 +317,12 @@ export function CliImportDialog({
         </div>
 
         {error && (
-          <p className="border-t border-neutral-200 px-4 py-2 text-[11px] text-red-600 dark:border-neutral-700 dark:text-red-400">
+          <p className="border-t border-neutral-200 px-4 py-2 text-[11px] text-red-600 dark:text-red-400">
             {error}
           </p>
         )}
 
-        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3 dark:border-neutral-700">
+        <div className="flex items-center justify-end gap-2 border-t border-neutral-200 px-4 py-3">
           <Button variant="ghost" size="sm" onClick={startClose} disabled={importing}>
             {t.cancel}
           </Button>

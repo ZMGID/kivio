@@ -94,10 +94,10 @@ export function AssistantPicker({
         onClick={() => setOpen((value) => !value)}
         className={`focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
           open
-            ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
+            ? 'bg-neutral-200 text-neutral-700'
             : currentAssistant
-              ? 'text-indigo-500! hover:bg-neutral-100 dark:text-indigo-300! dark:hover:bg-neutral-800'
-              : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
+              ? 'text-accent! hover:bg-neutral-100'
+              : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
         }`}
         aria-expanded={open}
         aria-haspopup="menu"
@@ -140,20 +140,20 @@ export function AssistantPicker({
                   onClick={() => pick(assistant)}
                   className={`kv-menu-row transition-colors ${
                     active
-                      ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                      : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                      ? 'bg-neutral-100 font-medium text-neutral-900'
+                      : 'text-neutral-700 hover:bg-neutral-100'
                   }`}
                 >
-                  <span className="grid size-4 shrink-0 place-items-center text-indigo-500 dark:text-indigo-300">
+                  <span className="grid size-4 shrink-0 place-items-center text-accent">
                     {builtinAssistantGlyph(assistant.id, 14) ?? <Award size={13} strokeWidth={1.75} />}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{assistant.name}</span>
-                  {active && <Check size={12} strokeWidth={2.5} className="shrink-0 text-indigo-500 dark:text-indigo-300" />}
+                  {active && <Check size={12} strokeWidth={2.5} className="shrink-0 text-accent" />}
                 </button>
               )
             })
           )}
-          <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-800" />
+          <div className="my-1 border-t border-neutral-200/80" />
           <button
             type="button"
             onClick={() => {

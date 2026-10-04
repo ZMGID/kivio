@@ -53,11 +53,11 @@ export function ThinkingBlock({
   const tokens = useMemo(() => formatTokens(estimateTokens(reasoning)), [reasoning])
 
   return (
-    <div className="not-prose mb-2 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.025] dark:bg-white/[0.03]">
+    <div className="not-prose mb-2 rounded-lg border border-neutral-900/[0.06] bg-neutral-900/[0.025]">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 transition-colors"
       >
         {active
           ? <Loader2 className="animate-spin" size={11} />

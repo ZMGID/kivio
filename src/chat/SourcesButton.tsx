@@ -21,7 +21,7 @@ function Switch({ checked }: { checked: boolean }) {
       }`}
     >
       <span
-        className={`absolute left-0.5 size-[14px] rounded-full bg-white shadow-sm transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-spring)] ${
+        className={`absolute left-0.5 size-[14px] rounded-full bg-neutral-50 shadow-sm transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-spring)] ${
           checked ? 'translate-x-3' : ''
         }`}
       />
@@ -122,7 +122,7 @@ export function SourcesButton({
 
   return (
     <>
-      <div className="flex items-center gap-2 px-2 py-1 text-[12px] text-neutral-700 dark:text-neutral-200">
+      <div className="flex items-center gap-2 px-2 py-1 text-[12px] text-neutral-700">
         <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
           <Globe size={13} strokeWidth={1.75} />
         </span>
@@ -143,7 +143,7 @@ export function SourcesButton({
                     ? 'bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300'
                     : dim
                       ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-600'
-                      : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                      : 'text-neutral-600 hover:bg-neutral-100'
                 }`}
               >
                 {opt.label}
@@ -182,7 +182,7 @@ export function SourcesButton({
 
       {onOpenSettings && (
         <>
-          <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-800" />
+          <div className="my-1 border-t border-neutral-200/80" />
           <button
             type="button"
             onClick={() => {

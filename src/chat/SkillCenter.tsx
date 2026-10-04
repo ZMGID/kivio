@@ -150,18 +150,18 @@ function SkillCard({
       data-tauri-drag-region="false"
       title={t.chatSkillViewFull}
       style={{ '--chat-motion-delay': `${Math.min(index, 8) * 24}ms` } as CSSProperties}
-      className={`chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border p-3.5 text-left transition-[border-color,box-shadow,transform,background-color] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 dark:focus-visible:ring-white/20 ${
+      className={`chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border p-3.5 text-left transition-[border-color,box-shadow,transform,background-color] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 ${
         enabled
-          ? 'border-neutral-200 bg-white shadow-sm hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700'
-          : 'border-neutral-200/80 bg-neutral-50/60 hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-white hover:shadow-md dark:border-neutral-800/70 dark:bg-neutral-900/30 dark:hover:border-neutral-700 dark:hover:bg-neutral-950/40'
+          ? 'border-neutral-200 bg-neutral-50 shadow-sm hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md'
+          : 'border-neutral-200/80 bg-neutral-50/60 hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-neutral-50 hover:shadow-md'
       }`}
     >
       <div className="flex items-start justify-between gap-2">
         <span
           className={`grid size-10 shrink-0 place-items-center rounded-lg border transition-colors duration-[var(--kv-dur-fast)] ${
             enabled
-              ? 'border-neutral-200 bg-white text-neutral-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-300'
-              : 'border-neutral-200/80 bg-neutral-100/80 text-neutral-400 group-hover:text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-600'
+              ? 'border-neutral-200 bg-neutral-50 text-neutral-600'
+              : 'border-neutral-200/80 bg-neutral-100/80 text-neutral-400 group-hover:text-neutral-500 dark:text-neutral-600'
           }`}
         >
           <DefaultSkillIcon size={18} strokeWidth={1.75} />
@@ -185,7 +185,7 @@ function SkillCard({
       </div>
       <div className="mt-2.5 min-w-0 flex-1">
         <div className={`truncate text-[13.5px] font-semibold leading-tight ${
-          enabled ? 'text-neutral-950 dark:text-neutral-50' : 'text-neutral-600 dark:text-neutral-400'
+          enabled ? 'text-neutral-950' : 'text-neutral-600 dark:text-neutral-400'
         }`}>
           {skill.name}
         </div>
@@ -193,7 +193,7 @@ function SkillCard({
           {skill.description || t.chatSkillNoDescription}
         </p>
       </div>
-      <div className="mt-2.5 flex min-h-6 items-center gap-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-400 dark:border-neutral-800/70 dark:text-neutral-500">
+      <div className="mt-2.5 flex min-h-6 items-center gap-1 border-t border-neutral-100 pt-2 text-[11px] text-neutral-400 dark:text-neutral-500">
         <span className="truncate">{skillSourceLabel(skill, t)}</span>
         {onDelete && canDeleteSkill(skill) && !manageLocked ? (
           <span
@@ -266,7 +266,7 @@ function SkillSection({
             className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${collapsed ? '-rotate-90' : ''}`}
           />
         )}
-        <h3 className="text-[15px] font-semibold text-neutral-700 dark:text-neutral-200">{title}</h3>
+        <h3 className="text-[15px] font-semibold text-neutral-700">{title}</h3>
         <span className="text-[14px] font-medium text-neutral-400">{skills.length}</span>
         {collapsed && skills.length > 0 && (
           <span className="text-[12.5px] text-neutral-400">{t.chatSkillsEnabledCount.replace('{n}', String(enabledCount))}</span>
@@ -274,7 +274,7 @@ function SkillSection({
         {note && <span className="ml-auto truncate text-[12.5px] text-neutral-400">{note}</span>}
       </div>
       {collapsed ? null : skills.length === 0 ? (
-        <div className="grid min-h-[72px] place-items-center rounded-md border border-dashed border-neutral-200 text-[13px] text-neutral-400 dark:border-neutral-800">
+        <div className="grid min-h-[72px] place-items-center rounded-md border border-dashed border-neutral-200 text-[13px] text-neutral-400">
           {emptyText}
         </div>
       ) : (
@@ -311,8 +311,8 @@ function SkillUrlImport() {
     void installSkillFromUrl({ failed: t.chatSkillInstallFailed, installed: t.chatSkillInstalled })
   }, [t])
   return (
-    <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-      <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSkillInstallFromUrl}</div>
+    <div className="rounded-md border border-neutral-200 p-3">
+      <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatSkillInstallFromUrl}</div>
       <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">
         {t.chatSkillUrlImportHint}
       </p>
@@ -322,7 +322,7 @@ function SkillUrlImport() {
           value={ops.urlDraft}
           onChange={(e) => setSkillUrlDraft(e.target.value)}
           placeholder="https://github.com/owner/repo"
-          className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className="h-9 w-full rounded-md border border-neutral-200 bg-neutral-50 px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300"
           data-tauri-drag-region="false"
         />
         <Button onClick={install} disabled={busy || !ops.urlDraft.trim()} data-tauri-drag-region="false">
@@ -582,15 +582,15 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
   )
 
   return (
-    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
+    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
       {/* 顶栏：与聊天主区同底色、无分隔；可拖拽，右侧避开窗口按钮 */}
 
       {/* 内容区：直接坐在白底上，与聊天主区无缝 */}
       <main className={heading ? "kv-market-scroll custom-scrollbar" : "custom-scrollbar min-h-0 flex-1 overflow-y-auto"}>
           <div className={heading ? "w-full pb-4" : "mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7"}>
             {/* 头部：标题 + 副标题 + 图标动作 */}
-            <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-              {heading ?? (<h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+            <div className="border-b border-neutral-200 pb-5">
+              {heading ?? (<h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950">
                 <SkillIcon size={24} className="text-neutral-500" />
                 Skill
               </h1>)}
@@ -639,7 +639,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
           </div>
 
           {/* Tab 行 */}
-          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200">
             {([['installed', t.chatSkillTabInstalled], ['store', t.chatSkillTabStore], ['import', t.chatSkillTabImport], ['advanced', t.chatSkillTabAdvanced]] as const).map(([id, label]) => (
               <button
                 key={id}
@@ -648,8 +648,8 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                 data-tauri-drag-region="false"
                 className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
                   view === id
-                    ? 'text-neutral-900 dark:text-neutral-100'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                    ? 'text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
                 }`}
               >
                 {label}
@@ -684,10 +684,10 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                 </Button>
               </div>
               <SkillUrlImport />
-              <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
+              <div className="rounded-md border border-neutral-200 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSkillImportFromCli}</div>
+                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatSkillImportFromCli}</div>
                     <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
                       {t.chatSkillCliImportHint}
                     </p>
@@ -703,7 +703,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   return (
                     <div className="mt-3 space-y-3">
                       {total === 0 ? (
-                        <div className="rounded-md border border-dashed border-neutral-200 px-3 py-2 text-[11.5px] text-neutral-400 dark:border-neutral-800">
+                        <div className="rounded-md border border-dashed border-neutral-200 px-3 py-2 text-[11.5px] text-neutral-400">
                           {t.chatSkillCliNoSkillsFound}
                         </div>
                       ) : (
@@ -713,8 +713,8 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                             if (group.length === 0) return null
                             return (
                               <div key={source.key}>
-                                <div className="mb-1.5 text-[12px] font-medium text-neutral-600 dark:text-neutral-300">{source.label}</div>
-                                <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
+                                <div className="mb-1.5 text-[12px] font-medium text-neutral-600">{source.label}</div>
+                                <div className="overflow-hidden rounded-md border border-neutral-200 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
                                   {group.map((skill) => (
                                     <label
                                       key={skill.id}
@@ -725,10 +725,10 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                                         type="checkbox"
                                         checked={ops.cliSelectedIds.includes(skill.id)}
                                         onChange={() => toggleCliSkillSelected(skill.id)}
-                                        className="size-3.5 shrink-0 accent-[#2f6ff0]"
+                                        className="size-3.5 shrink-0 accent-[var(--accent)]"
                                       />
                                       <div className="min-w-0 flex-1">
-                                        <div className="truncate text-[12.5px] font-medium text-neutral-800 dark:text-neutral-100">{skill.name}</div>
+                                        <div className="truncate text-[12.5px] font-medium text-neutral-800">{skill.name}</div>
                                         <div className="truncate text-[11px] text-neutral-400">{skill.description || t.chatSkillNoDescription}</div>
                                       </div>
                                     </label>
@@ -764,17 +764,17 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
               )}
             </div>
           ) : view === 'advanced' ? (
-          <section key="advanced" className="chat-motion-tab-in mt-5 overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+          <section key="advanced" className="chat-motion-tab-in mt-5 overflow-hidden rounded-md border border-neutral-200">
             <div className="flex w-full items-center gap-2 px-4 py-3">
               <Sliders size={15} className="shrink-0 text-neutral-400" />
-              <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">{t.chatSkillTabAdvanced}</span>
+              <span className="text-[13px] font-semibold text-neutral-800">{t.chatSkillTabAdvanced}</span>
               <span className="text-[12px] text-neutral-400">{t.chatSkillAdvancedSubtitle}</span>
             </div>
             <div>
-              <div className="space-y-5 border-t border-neutral-200 px-4 py-4 dark:border-neutral-800">
+              <div className="space-y-5 border-t border-neutral-200 px-4 py-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="text-[13px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSkillAutoMatch}</div>
+                    <div className="text-[13px] font-medium text-neutral-800">{t.chatSkillAutoMatch}</div>
                     <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">
                       {t.chatSkillAutoMatchHint}
                     </p>
@@ -788,7 +788,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
 
                 <div className="min-w-0">
                   <div className="min-w-0">
-                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">
+                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800">
                       {t.chatSkillFallbackMode}
                     </div>
                     <Select
@@ -804,7 +804,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                 </div>
 
                 <div className="min-w-0">
-                  <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSkillExtraScanPaths}</div>
+                  <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatSkillExtraScanPaths}</div>
                   <div className="space-y-1.5">
                     {skillScanPaths.map((path, index) => (
                       <div key={`${path}-${index}`} className="flex items-center gap-1.5">
@@ -817,7 +817,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                             persistChatTools({ skillScanPaths: next }, true)
                           }}
                           placeholder="/path/to/skills"
-                          className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                          className="h-9 w-full rounded-md border border-neutral-200 bg-neutral-50 px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300"
                           data-tauri-drag-region="false"
                         />
                         <IconButton
@@ -962,13 +962,13 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
             role="dialog"
             aria-modal="true"
             aria-labelledby="skill-preview-title"
-            className="chat-motion-modal-in flex max-h-[80vh] w-full max-w-[640px] flex-col gap-3 overflow-hidden rounded-2xl border border-neutral-200 bg-white p-5 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900"
+            className="chat-motion-modal-in flex max-h-[80vh] w-full max-w-[640px] flex-col gap-3 overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50 p-5 shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start gap-2">
               <Sparkles size={16} className="mt-0.5 shrink-0 text-accent" />
               <div className="min-w-0 flex-1">
-                <h3 id="skill-preview-title" className="truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-100">
+                <h3 id="skill-preview-title" className="truncate text-[15px] font-semibold text-neutral-900">
                   {selectedSkillPreview.name}
                 </h3>
                 <p className="mt-0.5 text-[12.5px] text-neutral-500 dark:text-neutral-400">
@@ -989,14 +989,14 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                 {selectedSkillPreview.recommendedTools.map((tool) => (
                   <span
                     key={tool}
-                    className="rounded-md bg-neutral-100 px-2 py-0.5 text-[11.5px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                    className="rounded-md bg-neutral-100 px-2 py-0.5 text-[11.5px] text-neutral-600"
                   >
                     {tool}
                   </span>
                 ))}
               </div>
             )}
-            <div className="custom-scrollbar max-h-[52vh] overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-800 dark:bg-neutral-950/50">
+            <div className="custom-scrollbar max-h-[52vh] overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-3">
               <ChatMarkdown content={selectedSkillPreview.body} />
             </div>
           </div>

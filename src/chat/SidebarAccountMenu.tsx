@@ -154,7 +154,7 @@ export function SidebarAccountMenu({
       <div className="kv-menu-item" style={{ cursor: 'default' }}>
         <Globe strokeWidth={1.75} />
         {t.language}
-        <div className="ml-auto flex shrink-0 items-center gap-px rounded-[5px] bg-black/[0.05] p-px dark:bg-white/[0.07]">
+        <div className="ml-auto flex shrink-0 items-center gap-px rounded-[5px] bg-neutral-900/[0.05] p-px">
           {(
             [
               ['zh', '中'],
@@ -169,8 +169,8 @@ export function SidebarAccountMenu({
               onClick={() => onSelectLang(value)}
               className={`rounded-[4px] px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors ${
                 lang === value
-                  ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-600 dark:text-neutral-50'
-                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                  ? 'bg-[var(--theme-surface-active)] text-neutral-900 shadow-sm'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
               }`}
             >
               {label}

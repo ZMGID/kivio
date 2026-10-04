@@ -1712,6 +1712,188 @@ impl Default for ScreenshotAnnotateConfig {
     }
 }
 
+const BUILTIN_THEME_IDS: &[&str] = &[
+    "neutral", "warm", "cool", "graphite", "blossom", "grove", "ocean", "ember", "iris",
+    "white", "nord", "solarized",
+];
+/// `crypto.randomUUID()` is 36 ASCII characters: 8-4-4-4-12 hex.
+const CUSTOM_THEME_ID_LEN: usize = 36;
+/// Trimmed name length, counted in UTF-16 code units to match the UI
+/// `name.trim().length` / `<input maxLength={80}>` check of 1..=80.
+const CUSTOM_THEME_NAME_MAX_UTF16: usize = 80;
+
+/// 自定义主题的一套语义色。十七个字段都只能是 `#rrggbb`。
+/// 短色、函数、空白或任何能逃出 CSS 声明的片段都会让整条主题被丢弃。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ThemePalette {
+    pub surface: String,
+    pub surface_soft: String,
+    pub surface_muted: String,
+    pub surface_hover: String,
+    pub surface_active: String,
+    pub surface_titlebar: String,
+    pub border: String,
+    pub border_strong: String,
+    pub text: String,
+    pub text_muted: String,
+    pub text_faint: String,
+    pub accent: String,
+    pub accent_hover: String,
+    pub accent_soft: String,
+    pub on_accent: String,
+    pub danger: String,
+    pub danger_soft: String,
+}
+
+/// 用户保存的主题。`id` 是 `themeColor` 可以指向的选择值，不能占用内置 id。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ThemeDefinition {
+    pub id: String,
+    pub name: String,
+    pub light: ThemePalette,
+    pub dark: ThemePalette,
+}
+
+fn canonical_hex_color(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() != 7 || bytes[0] != b'#' {
+        return None;
+    }
+    if !bytes[1..].iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+fn canonical_palette(palette: &ThemePalette) -> Option<ThemePalette> {
+    Some(ThemePalette {
+        surface: canonical_hex_color(&palette.surface)?,
+        surface_soft: canonical_hex_color(&palette.surface_soft)?,
+        surface_muted: canonical_hex_color(&palette.surface_muted)?,
+        surface_hover: canonical_hex_color(&palette.surface_hover)?,
+        surface_active: canonical_hex_color(&palette.surface_active)?,
+        surface_titlebar: canonical_hex_color(&palette.surface_titlebar)?,
+        border: canonical_hex_color(&palette.border)?,
+        border_strong: canonical_hex_color(&palette.border_strong)?,
+        text: canonical_hex_color(&palette.text)?,
+        text_muted: canonical_hex_color(&palette.text_muted)?,
+        text_faint: canonical_hex_color(&palette.text_faint)?,
+        accent: canonical_hex_color(&palette.accent)?,
+        accent_hover: canonical_hex_color(&palette.accent_hover)?,
+        accent_soft: canonical_hex_color(&palette.accent_soft)?,
+        on_accent: canonical_hex_color(&palette.on_accent)?,
+        danger: canonical_hex_color(&palette.danger)?,
+        danger_soft: canonical_hex_color(&palette.danger_soft)?,
+    })
+}
+
+/// 自定义 id 只接受 `crypto.randomUUID()` 的原始 36 字符。
+/// trim 后大小写不敏感，落盘为小写；长度不是 36 或不是 8-4-4-4-12 十六进制的一律拒绝。
+/// 内置 id 不是 UUID，因此不可能被自定义主题占用。
+fn canonical_custom_theme_id(raw: &str) -> Option<String> {
+    let id = raw.trim().to_ascii_lowercase();
+    let bytes = id.as_bytes();
+    if bytes.len() != CUSTOM_THEME_ID_LEN {
+        return None;
+    }
+    let hex = |range: std::ops::Range<usize>| bytes[range].iter().all(u8::is_ascii_hexdigit);
+    if bytes[8] == b'-'
+        && bytes[13] == b'-'
+        && bytes[18] == b'-'
+        && bytes[23] == b'-'
+        && hex(0..8)
+        && hex(9..13)
+        && hex(14..18)
+        && hex(19..23)
+        && hex(24..36)
+    {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+/// 名称只按 UI 规则：trim 后 UTF-16 长度 1..=80。不再额外拒绝控制字符，
+/// 否则一次合法保存会在规范化里被丢掉，调用方仍收到成功。
+fn canonical_theme_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    let len = name.encode_utf16().count();
+    if (1..=CUSTOM_THEME_NAME_MAX_UTF16).contains(&len) {
+        Some(name.to_string())
+    } else {
+        None
+    }
+}
+
+/// 缺键走 `default`；显式 `null`、非数组、或单条无法反序列化的元素都变成跳过，
+/// 避免一条坏主题让整个 settings.json 解析失败从而丢掉其它设置。
+fn deserialize_custom_themes<'de, D>(deserializer: D) -> Result<Vec<ThemeDefinition>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    let serde_json::Value::Array(items) = value else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value(item).ok())
+        .collect())
+}
+
+fn sanitize_custom_themes(themes: &mut Vec<ThemeDefinition>) {
+    // 没有条数上限。重复 id 保留最后一条：设置页保存时把正在编辑的主题追加在末尾，
+    // 丢掉后者会让这次保存看起来成功，实际写回的仍是旧主题。
+    let mut accepted: Vec<ThemeDefinition> = Vec::with_capacity(themes.len());
+    for theme in themes.drain(..) {
+        let Some(id) = canonical_custom_theme_id(&theme.id) else {
+            continue;
+        };
+        let Some(name) = canonical_theme_name(&theme.name) else {
+            continue;
+        };
+        let Some(light) = canonical_palette(&theme.light) else {
+            continue;
+        };
+        let Some(dark) = canonical_palette(&theme.dark) else {
+            continue;
+        };
+        if let Some(index) = accepted.iter().position(|item| item.id == id) {
+            accepted.remove(index);
+        }
+        accepted.push(ThemeDefinition {
+            id,
+            name,
+            light,
+            dark,
+        });
+    }
+    *themes = accepted;
+}
+
+fn canonicalize_theme_color(raw: &str, themes: &[ThemeDefinition]) -> String {
+    let trimmed = raw.trim();
+    if let Some(builtin) = BUILTIN_THEME_IDS
+        .iter()
+        .copied()
+        .find(|id| trimmed.eq_ignore_ascii_case(id))
+    {
+        return builtin.to_string();
+    }
+    if let Some(theme) = themes
+        .iter()
+        .find(|theme| theme.id.eq_ignore_ascii_case(trimmed))
+    {
+        return theme.id.clone();
+    }
+    default_theme_color()
+}
+
 /**
  * 应用完整设置
  */
@@ -1730,6 +1912,10 @@ pub struct Settings {
     pub theme: String,
     #[serde(default = "default_theme_color")]
     pub theme_color: String,
+    /// 用户自定义主题。缺键或 null 都是空数组，旧 settings 的其它字段不受影响。
+    /// 保存时总是写出完整数组。非法条目在 `sanitize_settings` 里整条丢弃。
+    #[serde(default, deserialize_with = "deserialize_custom_themes")]
+    pub custom_themes: Vec<ThemeDefinition>,
     #[serde(default = "default_false")]
     pub translucent_sidebar: bool,
     /// UI 整体缩放（作用于聊天窗口根元素 zoom），范围 0.8–1.4，1.0 为默认。
@@ -1963,6 +2149,7 @@ impl Default for Settings {
             close_chat_hotkey: default_close_chat_hotkey(),
             theme: "system".to_string(),
             theme_color: default_theme_color(),
+            custom_themes: Vec::new(),
             translucent_sidebar: false,
             ui_font_scale: default_ui_font_scale(),
             ui_font_family: String::new(),
@@ -2510,13 +2697,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.screenshot_translation.card_width =
         settings.screenshot_translation.card_width.clamp(360, 720);
 
-    // 5. 其他字段验证
+    // 5. 其他字段验证。自定义主题先规范化，themeColor 才能指向仍然存在的 id。
     if !matches!(settings.theme.as_str(), "system" | "light" | "dark") {
         settings.theme = default_theme();
     }
-    if !matches!(settings.theme_color.as_str(), "neutral" | "warm" | "cool") {
-        settings.theme_color = default_theme_color();
-    }
+    sanitize_custom_themes(&mut settings.custom_themes);
+    settings.theme_color =
+        canonicalize_theme_color(&settings.theme_color, &settings.custom_themes);
     settings.ui_font_scale = if settings.ui_font_scale.is_finite() {
         settings.ui_font_scale.clamp(0.8, 1.4)
     } else {
@@ -5558,5 +5745,454 @@ mod external_cli_materialize_gate_tests {
         let next = with_provider("relay");
         assert!(external_cli_agents_changed(&previous, &next));
         assert!(external_cli_agents_changed(&next, &previous));
+    }
+}
+
+#[cfg(test)]
+mod custom_theme_tests {
+    use super::*;
+
+    fn filled_palette(hex: &str) -> ThemePalette {
+        let hex = hex.to_string();
+        ThemePalette {
+            surface: hex.clone(),
+            surface_soft: hex.clone(),
+            surface_muted: hex.clone(),
+            surface_hover: hex.clone(),
+            surface_active: hex.clone(),
+            surface_titlebar: hex.clone(),
+            border: hex.clone(),
+            border_strong: hex.clone(),
+            text: hex.clone(),
+            text_muted: hex.clone(),
+            text_faint: hex.clone(),
+            accent: hex.clone(),
+            accent_hover: hex.clone(),
+            accent_soft: hex.clone(),
+            on_accent: hex.clone(),
+            danger: hex.clone(),
+            danger_soft: hex,
+        }
+    }
+
+    fn numbered_palette(start: u8) -> ThemePalette {
+        let mut n = start;
+        let mut next = || {
+            let color = format!("#{n:02x}{n:02x}{n:02x}");
+            n += 1;
+            color
+        };
+        ThemePalette {
+            surface: next(),
+            surface_soft: next(),
+            surface_muted: next(),
+            surface_hover: next(),
+            surface_active: next(),
+            surface_titlebar: next(),
+            border: next(),
+            border_strong: next(),
+            text: next(),
+            text_muted: next(),
+            text_faint: next(),
+            accent: next(),
+            accent_hover: next(),
+            accent_soft: next(),
+            on_accent: next(),
+            danger: next(),
+            danger_soft: next(),
+        }
+    }
+
+    /// 36-char UUID, the only id shape the UI generates via `crypto.randomUUID()`.
+    fn uid(n: u32) -> String {
+        format!("00000000-0000-4000-8000-{n:012x}")
+    }
+
+    fn theme(id: &str, name: &str) -> ThemeDefinition {
+        ThemeDefinition {
+            id: id.to_string(),
+            name: name.to_string(),
+            light: filled_palette("#112233"),
+            dark: filled_palette("#445566"),
+        }
+    }
+
+    fn legacy_body() -> serde_json::Value {
+        serde_json::json!({
+            "hotkey": "Alt+T",
+            "theme": "dark",
+            "themeColor": "cool",
+            "translucentSidebar": true,
+            "favoriteModels": ["prov:model"],
+            "retryAttempts": 6,
+            "providers": [{
+                "id": "keep-me",
+                "name": "Keep",
+                "baseUrl": "https://example.test/v1",
+                "apiKeys": ["sk-test"]
+            }]
+        })
+    }
+
+    fn assert_legacy_fields(settings: &Settings) {
+        assert_eq!(settings.hotkey, "Alt+T");
+        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.theme_color, "cool");
+        assert!(settings.translucent_sidebar);
+        assert_eq!(settings.favorite_models, vec!["prov:model".to_string()]);
+        assert_eq!(settings.retry_attempts, 6);
+        assert_eq!(settings.providers.len(), 1);
+        assert_eq!(settings.providers[0].id, "keep-me");
+        assert_eq!(settings.providers[0].api_keys, vec!["sk-test".to_string()]);
+        assert!(settings.custom_themes.is_empty());
+    }
+
+    #[test]
+    fn legacy_settings_without_custom_themes_keep_other_fields() {
+        let missing: Settings = serde_json::from_value(legacy_body()).expect("old settings parse");
+        assert_legacy_fields(&sanitize_settings(missing));
+
+        let empty: Settings = serde_json::from_str("{}").expect("empty settings parse");
+        let empty = sanitize_settings(empty);
+        assert!(empty.custom_themes.is_empty());
+        assert_eq!(empty.theme, "system");
+        assert_eq!(empty.theme_color, "neutral");
+
+        let stored = serde_json::to_value(Settings::default()).expect("default serializes");
+        assert_eq!(stored["customThemes"], serde_json::json!([]));
+        assert!(stored.get("custom_themes").is_none());
+        assert_eq!(stored["themeColor"], "neutral");
+
+        for broken in [serde_json::Value::Null, serde_json::json!("nope"), serde_json::json!({})]
+        {
+            let mut body = legacy_body();
+            body["customThemes"] = broken;
+            let settings: Settings =
+                serde_json::from_value(body).expect("broken customThemes must not reject settings");
+            assert_legacy_fields(&sanitize_settings(settings));
+        }
+    }
+
+    #[test]
+    fn valid_custom_theme_survives_save_and_load() {
+        let mut light = numbered_palette(1);
+        light.accent = light.accent.to_ascii_uppercase();
+        let ocean = uid(1);
+        let grove = uid(2);
+        let max_name = "名".repeat(80);
+        let mut settings = Settings::default();
+        settings.theme = "dark".to_string();
+        settings.theme_color = format!("  {} ", ocean.to_ascii_uppercase());
+        settings.custom_themes = vec![
+            ThemeDefinition {
+                id: ocean.to_ascii_uppercase(),
+                name: format!("  {max_name}  "),
+                light,
+                dark: numbered_palette(40),
+            },
+            theme(&grove, "Grove"),
+        ];
+        settings.favorite_models = vec!["prov:model".to_string()];
+
+        let (canonical, persisted) = settings_for_persistence(&settings);
+        assert_eq!(canonical.theme, "dark");
+        assert_eq!(canonical.theme_color, ocean);
+        assert_eq!(persisted.theme_color, ocean);
+        assert_eq!(canonical.custom_themes, persisted.custom_themes);
+        assert_eq!(canonical.custom_themes.len(), 2);
+        assert_eq!(canonical.custom_themes[0].id, ocean);
+        assert_eq!(canonical.custom_themes[0].id.len(), 36);
+        assert_eq!(canonical.custom_themes[0].name, max_name);
+        assert_eq!(canonical.custom_themes[0].name.encode_utf16().count(), 80);
+        assert_eq!(canonical.custom_themes[0].light, numbered_palette(1));
+        assert_eq!(canonical.custom_themes[0].dark, numbered_palette(40));
+        assert_eq!(canonical.custom_themes[1].id, grove);
+        assert_eq!(canonical.favorite_models, vec!["prov:model".to_string()]);
+
+        let value = serde_json::to_value(&persisted).expect("persisted settings serialize");
+        assert!(value.get("custom_themes").is_none());
+        assert_eq!(value["customThemes"][0]["light"]["surface"], "#010101");
+        assert_eq!(value["customThemes"][0]["light"]["surfaceSoft"], "#020202");
+        assert_eq!(value["customThemes"][0]["light"]["onAccent"], "#0f0f0f");
+        assert_eq!(value["customThemes"][0]["light"]["dangerSoft"], "#111111");
+        assert!(value["customThemes"][0]["light"].get("surface_soft").is_none());
+        assert!(value["customThemes"][0].get("css").is_none());
+
+        let reloaded: Settings =
+            serde_json::from_value(value).expect("saved settings should load");
+        let reloaded = sanitize_settings(reloaded);
+        assert_eq!(reloaded.custom_themes, canonical.custom_themes);
+        assert_eq!(reloaded.theme_color, ocean);
+        assert_eq!(reloaded.theme, "dark");
+        assert_eq!(reloaded.favorite_models, vec!["prov:model".to_string()]);
+    }
+
+    #[test]
+    fn save_keeps_every_valid_theme_with_no_count_cap() {
+        let mut settings = Settings::default();
+        settings.custom_themes = (1..=100)
+            .map(|n| theme(&uid(n), &format!("Theme {n}")))
+            .collect();
+        settings.theme_color = uid(100);
+        settings.favorite_models = vec!["prov:model".to_string()];
+
+        let (canonical, persisted) = settings_for_persistence(&settings);
+        assert_eq!(canonical.custom_themes.len(), 100);
+        assert_eq!(persisted.custom_themes.len(), 100);
+        assert_eq!(canonical.custom_themes, persisted.custom_themes);
+        assert_eq!(canonical.theme_color, uid(100));
+        assert_eq!(canonical.custom_themes[99].id, uid(100));
+        assert_eq!(canonical.custom_themes[99].name, "Theme 100");
+        assert_eq!(canonical.favorite_models, vec!["prov:model".to_string()]);
+
+        let reloaded = sanitize_settings(
+            serde_json::from_value(serde_json::to_value(&persisted).expect("serialize"))
+                .expect("reload"),
+        );
+        assert_eq!(reloaded.custom_themes.len(), 100);
+        assert_eq!(reloaded.theme_color, uid(100));
+    }
+
+    #[test]
+    fn duplicate_save_keeps_the_requested_theme() {
+        let id = uid(7);
+        let mut older = theme(&id, "Older");
+        older.light = filled_palette("#111111");
+        older.dark = filled_palette("#222222");
+        let mut requested = theme(&id.to_ascii_uppercase(), "Requested");
+        requested.light = filled_palette("#abcdef");
+        requested.dark = filled_palette("#fedcba");
+        let mut settings = Settings::default();
+        settings.theme_color = id.clone();
+        settings.custom_themes = vec![older, theme(&uid(8), "Other"), requested];
+
+        let (canonical, persisted) = settings_for_persistence(&settings);
+        assert_eq!(canonical.custom_themes.len(), 2);
+        assert_eq!(canonical.custom_themes[0].id, uid(8));
+        assert_eq!(canonical.custom_themes[1].id, id);
+        assert_eq!(canonical.custom_themes[1].name, "Requested");
+        assert_eq!(canonical.custom_themes[1].light, filled_palette("#abcdef"));
+        assert_eq!(canonical.custom_themes[1].dark, filled_palette("#fedcba"));
+        assert_eq!(canonical.theme_color, id);
+        assert_eq!(canonical.custom_themes, persisted.custom_themes);
+        let stored = serde_json::to_string(&persisted.custom_themes).expect("serialize");
+        assert!(!stored.contains("111111"));
+        assert!(stored.contains("abcdef"));
+    }
+
+    #[test]
+    fn invalid_colors_cannot_enter_the_active_palette() {
+        let attacks = [
+            "#ffffff;background:url(https://evil.test/x)",
+            "#fff",
+            "rgb(0,0,0)",
+            "expression(alert(1))",
+            "#aabbccdd",
+            "url(#112233)",
+            "#aa bbcc",
+        ];
+        for bad in attacks {
+            let mut light = filled_palette("#112233");
+            light.danger_soft = bad.to_string();
+            let mut settings = Settings::default();
+            settings.theme_color = uid(2);
+            settings.custom_themes = vec![
+                theme(&uid(1), "Grove"),
+                ThemeDefinition {
+                    id: uid(2),
+                    name: "Ocean".to_string(),
+                    light,
+                    dark: filled_palette("#112233"),
+                },
+            ];
+            let settings = sanitize_settings(settings);
+            assert_eq!(settings.custom_themes.len(), 1, "{bad}");
+            assert_eq!(settings.custom_themes[0].id, uid(1), "{bad}");
+            assert_eq!(settings.theme_color, "neutral", "{bad}");
+            let stored = serde_json::to_string(&settings.custom_themes).expect("serialize");
+            assert!(!stored.contains(bad), "{bad}");
+            assert!(!stored.contains("url("), "{bad}");
+            assert!(!stored.contains("expression"), "{bad}");
+        }
+
+        let mut light = serde_json::to_value(filled_palette("#112233")).expect("palette");
+        light.as_object_mut().expect("object").remove("dangerSoft");
+        light.as_object_mut().expect("object").insert(
+            "css".to_string(),
+            serde_json::json!("body{background:url(https://evil.test)}"),
+        );
+        let raw = serde_json::json!({
+            "themeColor": uid(2),
+            "customThemes": [{
+                "id": uid(2),
+                "name": "Ocean",
+                "light": light,
+                "dark": filled_palette("#445566")
+            }]
+        });
+        let settings: Settings = serde_json::from_value(raw).expect("partial palette still parses");
+        let settings = sanitize_settings(settings);
+        assert!(settings.custom_themes.is_empty());
+        assert_eq!(settings.theme_color, "neutral");
+
+        let mut light = serde_json::to_value(filled_palette("  #AABBCC ")).expect("palette");
+        light.as_object_mut().expect("object").insert(
+            "css".to_string(),
+            serde_json::json!("body{background:url(https://evil.test)}"),
+        );
+        let raw = serde_json::json!({
+            "themeColor": uid(2),
+            "customThemes": [{
+                "id": uid(2),
+                "name": "Ocean",
+                "light": light,
+                "dark": filled_palette("#445566")
+            }]
+        });
+        let settings = sanitize_settings(
+            serde_json::from_value::<Settings>(raw).expect("extra css key still parses"),
+        );
+        assert_eq!(settings.custom_themes.len(), 1);
+        assert_eq!(settings.custom_themes[0].light, filled_palette("#aabbcc"));
+        assert_eq!(settings.custom_themes[0].dark, filled_palette("#445566"));
+        assert_eq!(settings.theme_color, uid(2));
+        let stored = serde_json::to_value(&settings.custom_themes[0]).expect("theme");
+        assert!(stored["light"].get("css").is_none());
+        assert!(!stored.to_string().contains("url("));
+    }
+
+    #[test]
+    fn reserved_and_non_uuid_ids_do_not_override_builtins() {
+        let max_name = "m".repeat(80);
+        let over_name = "n".repeat(81);
+        let mut hijack = theme("neutral", "Hijack");
+        hijack.light = filled_palette("#ff00ff");
+        hijack.dark = filled_palette("#ff00ff");
+        let mut warm = theme("warm", "Hijack");
+        warm.light = filled_palette("#ff00ff");
+        warm.dark = filled_palette("#ff00ff");
+        let mut cool = theme("cool", "Hijack");
+        cool.light = filled_palette("#ff00ff");
+        cool.dark = filled_palette("#ff00ff");
+
+        let mut settings = Settings::default();
+        settings.theme_color = "Neutral".to_string();
+        settings.custom_themes = vec![
+            hijack,
+            warm,
+            cool,
+            theme("grove", "Slug"),
+            theme(&"c".repeat(36), "Not a uuid"),
+            theme(&format!("{}0", uid(1)), "Too long"),
+            theme("00000000-0000-4000-8000-00000000000", "Too short"),
+            theme(&uid(3), "   "),
+            theme(&uid(4), &over_name),
+            theme(&uid(5), &max_name),
+            theme(&format!("  {}  ", uid(6)), "  海湾  "),
+        ];
+
+        let settings = sanitize_settings(settings);
+        let ids: Vec<String> = settings
+            .custom_themes
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        assert_eq!(ids, vec![uid(5), uid(6)]);
+        assert_eq!(settings.custom_themes[0].name, max_name);
+        assert_eq!(settings.custom_themes[0].name.encode_utf16().count(), 80);
+        assert_eq!(settings.custom_themes[1].name, "海湾");
+        assert_eq!(settings.theme_color, "neutral");
+        let stored = serde_json::to_string(&settings.custom_themes).expect("serialize");
+        assert!(!stored.contains("ff00ff"));
+        assert!(!settings
+            .custom_themes
+            .iter()
+            .any(|item| BUILTIN_THEME_IDS.contains(&item.id.as_str())));
+    }
+
+    #[test]
+    fn builtin_selections_survive_settings_roundtrip_without_custom_overrides() {
+        for id in BUILTIN_THEME_IDS {
+            let mut settings = Settings::default();
+            settings.theme_color = format!("  {}  ", id.to_ascii_uppercase());
+            settings.custom_themes = vec![theme(id, "Override"), theme(&uid(1), "User")];
+            let settings = sanitize_settings(settings);
+            assert_eq!(settings.theme_color, *id);
+            assert_eq!(settings.custom_themes.len(), 1);
+            assert_eq!(settings.custom_themes[0].id, uid(1));
+
+            let body = serde_json::to_string(&settings).expect("serialize settings");
+            let restored = sanitize_settings(
+                serde_json::from_str::<Settings>(&body).expect("reload settings"),
+            );
+            assert_eq!(restored.theme_color, *id);
+            assert_eq!(restored.custom_themes, settings.custom_themes);
+        }
+    }
+
+    #[test]
+    fn invalid_theme_color_resolves_neutral_and_custom_id_is_kept() {
+        let mut settings = Settings::default();
+        settings.theme_color = "mint".to_string();
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.theme_color, "neutral");
+
+        let mut settings = Settings::default();
+        settings.theme_color = "  WARM ".to_string();
+        settings.custom_themes = vec![theme(&uid(1), "海湾")];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.theme_color, "warm");
+        assert_eq!(settings.custom_themes[0].id, uid(1));
+
+        let mut settings = Settings::default();
+        settings.theme_color = format!("  {} ", uid(1).to_ascii_uppercase());
+        settings.custom_themes = vec![theme(&uid(1), "海湾")];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.theme_color, uid(1));
+        assert_eq!(settings.custom_themes.len(), 1);
+
+        let mut poison = theme(&uid(9), "Poison");
+        poison.light.surface = "#112233;background:url(https://evil.test)".to_string();
+        let mut settings = Settings::default();
+        settings.theme_color = uid(9);
+        settings.favorite_models = vec!["prov:model".to_string()];
+        settings.custom_themes = vec![poison, theme(&uid(1), "Grove")];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.theme_color, "neutral");
+        assert_eq!(settings.custom_themes.len(), 1);
+        assert_eq!(settings.custom_themes[0].id, uid(1));
+        assert_eq!(settings.favorite_models, vec!["prov:model".to_string()]);
+    }
+
+    #[test]
+    fn malformed_custom_theme_items_do_not_discard_other_settings() {
+        let ocean = uid(2);
+        let mut body = legacy_body();
+        body["themeColor"] = serde_json::json!(ocean);
+        body["customThemes"] = serde_json::json!([
+            "not-a-theme",
+            { "id": 12, "name": "nope" },
+            { "id": "bad", "name": "Bad", "light": "red", "dark": {} },
+            null,
+            {
+                "id": ocean,
+                "name": " Ocean ",
+                "light": filled_palette("#112233"),
+                "dark": filled_palette("#445566")
+            }
+        ]);
+        let settings: Settings = serde_json::from_value(body).expect("mixed array still parses");
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.hotkey, "Alt+T");
+        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.theme_color, ocean);
+        assert_eq!(settings.providers[0].id, "keep-me");
+        assert_eq!(settings.providers[0].api_keys, vec!["sk-test".to_string()]);
+        assert_eq!(settings.favorite_models, vec!["prov:model".to_string()]);
+        assert_eq!(settings.custom_themes.len(), 1);
+        assert_eq!(settings.custom_themes[0].id, ocean);
+        assert_eq!(settings.custom_themes[0].name, "Ocean");
+        assert_eq!(settings.custom_themes[0].light, filled_palette("#112233"));
+        assert_eq!(settings.custom_themes[0].dark, filled_palette("#445566"));
     }
 }

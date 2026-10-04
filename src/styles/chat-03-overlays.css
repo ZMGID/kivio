@@ -6,9 +6,9 @@
   padding: 5px 10px;
   font-size: 12px;
   font-weight: 500;
-  color: #1f1f22;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  color: var(--text);
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-surface-border);
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
   cursor: default;
@@ -16,12 +16,11 @@
   animation: kv-add-to-chat-in 90ms ease-out;
 }
 .dark .kv-add-to-chat {
-  color: #f0f0f0;
-  background: #2a2a2d;
-  border-color: rgba(255, 255, 255, 0.14);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
 }
-.kv-add-to-chat:hover { border-color: color-mix(in srgb, var(--accent, #2f6ff0) 55%, currentColor); }
+.kv-add-to-chat:hover {
+  border-color: color-mix(in srgb, var(--accent, var(--accent)) 55%, currentColor);
+}
 @keyframes kv-add-to-chat-in {
   from { opacity: 0; transform: translateY(3px); }
   to { opacity: 1; transform: translateY(0); }
@@ -119,9 +118,4 @@
 
 .chat-conversation-loading {
   background: var(--theme-surface-soft);
-}
-/* --theme-surface-soft 没有暗色态，必须跟 .chat-main-pane 一样写死 #262629，
-   否则切换会话时覆盖层在暗色里铺一层奶白。 */
-.dark .chat-conversation-loading {
-  background: #262629;
 }

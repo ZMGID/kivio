@@ -61,7 +61,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
         onMouseDown={(event) => event.preventDefault()}
         disabled={disabled}
         className={`chat-composer-status-item text-[12px] font-medium ${
-          open ? 'bg-black/[0.05] dark:bg-white/[0.07]' : ''
+          open ? 'bg-neutral-900/[0.05]' : ''
         } disabled:cursor-default disabled:opacity-50`}
         aria-expanded={open}
         aria-haspopup="dialog"
@@ -79,14 +79,14 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
             role="dialog"
             data-tauri-drag-region="false"
           >
-            <div className="flex items-center gap-1.5 border-b border-neutral-200/70 px-3 py-2 dark:border-neutral-700/60">
+            <div className="flex items-center gap-1.5 border-b border-neutral-200/70 px-3 py-2">
               <GitBranch size={13} strokeWidth={1.9} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
-              <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">Git</span>
+              <span className="text-[12px] font-semibold text-neutral-800">Git</span>
               <button
                 type="button"
                 onClick={() => void handleRefresh()}
                 disabled={loading}
-                className="ml-auto rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-200/70 hover:text-neutral-600 disabled:opacity-50 dark:hover:bg-neutral-700/70 dark:hover:text-neutral-300"
+                className="ml-auto rounded-md p-1 text-neutral-400 transition-colors hover:bg-neutral-200/70 hover:text-neutral-600 disabled:opacity-50"
                 title={t.dockRefresh}
                 aria-label={t.dockRefresh}
               >
@@ -99,7 +99,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
             </div>
 
             {actionError && (
-              <div className="border-b border-neutral-200/70 px-3 py-2 text-[11px] leading-4 text-red-600 dark:border-neutral-700/60 dark:text-red-400">
+              <div className="border-b border-neutral-200/70 px-3 py-2 text-[11px] leading-4 text-red-600 dark:text-red-400">
                 {actionError}
               </div>
             )}
@@ -113,7 +113,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
                   type="button"
                   onClick={() => void handleInit()}
                   disabled={initBusy || !workdir}
-                  className="kv-menu-row text-neutral-800 transition-colors hover:bg-neutral-100 disabled:opacity-50 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  className="kv-menu-row text-neutral-800 transition-colors hover:bg-neutral-100 disabled:opacity-50"
                 >
                   {initBusy ? (
                     <Loader2 size={14} strokeWidth={1.8} className="shrink-0 animate-spin" />
@@ -125,10 +125,10 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
               </div>
             ) : (
               <div className="p-1.5">
-                <div className="space-y-1 px-1.5 py-1.5 text-[12px] text-neutral-600 dark:text-neutral-300">
+                <div className="space-y-1 px-1.5 py-1.5 text-[12px] text-neutral-600">
                   <div className="flex items-center gap-1.5">
                     <span className="shrink-0 text-neutral-400 dark:text-neutral-500">{t.dockGitBranchLabel}</span>
-                    <span className="min-w-0 truncate font-medium text-neutral-800 dark:text-neutral-100">
+                    <span className="min-w-0 truncate font-medium text-neutral-800">
                       {state.head || 'HEAD'}
                     </span>
                     {state.upstream && (state.ahead > 0 || state.behind > 0) && (
@@ -153,7 +153,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
                     setOpen(false)
                     onOpenGitPanel()
                   }}
-                  className="kv-menu-row text-neutral-800 transition-colors hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800"
+                  className="kv-menu-row text-neutral-800 transition-colors hover:bg-neutral-100"
                 >
                   <PanelRight size={14} strokeWidth={1.8} className="shrink-0" />
                   <span className="min-w-0 flex-1">{t.dockGitOpenPanel}</span>

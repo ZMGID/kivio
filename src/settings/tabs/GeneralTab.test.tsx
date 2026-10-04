@@ -20,7 +20,6 @@ describe('AppearanceGroup', () => {
       settings: makeSettings({ theme: 'dark', uiFontFamily: 'Inter', uiFontMono: 'Menlo' }),
       t,
       lang: 'zh' as const,
-      themeColor: 'neutral',
       systemFonts: ['Inter', 'Menlo', 'Arial'],
       uiFontPxInput: '14',
       onUpdateSettings: vi.fn(),
@@ -32,23 +31,6 @@ describe('AppearanceGroup', () => {
     return props
   }
 
-  it('主题分段按当前 theme 高亮', () => {
-    renderGroup()
-    expect(screen.getByRole('button', { name: t.themeDark }).className).toContain('active')
-    expect(screen.getByRole('button', { name: t.themeLight }).className).not.toContain('active')
-  })
-
-  it('主题切换写 theme', async () => {
-    const props = renderGroup()
-    await userEvent.click(screen.getByRole('button', { name: t.themeLight }))
-    expect(props.onUpdateSettings).toHaveBeenCalledWith({ theme: 'light' })
-  })
-
-  it('半透明侧边栏开关写 translucentSidebar', async () => {
-    const props = renderGroup()
-    await userEvent.click(screen.getByRole('switch', { name: '半透明侧边栏' }))
-    expect(props.onUpdateSettings).toHaveBeenCalledWith({ translucentSidebar: false })
-  })
 
   it('字号输入时 commit=false（边打字不 clamp）', async () => {
     const props = renderGroup()

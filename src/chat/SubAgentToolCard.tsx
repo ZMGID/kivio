@@ -93,7 +93,7 @@ export function SubAgentToolCard({ toolCall }: { toolCall: ToolCallRecord }) {
       <span className={`max-w-[50%] truncate text-xs ${operationError ? 'text-red-600' : ''}`} title={status}>{status}</span>
       <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
     </button>
-    {expanded && <div className="ml-5 space-y-2 border-l border-neutral-200 py-2 pl-3 dark:border-neutral-700">
+    {expanded && <div className="ml-5 space-y-2 border-l border-neutral-200 py-2 pl-3">
       {rows.map((item, index) => <button key={string(item.id) || index} type="button" disabled={!conversationId || !item.id}
         onClick={() => requestDockSubAgent({ conversationId, agentId: string(item.id) })}
         className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left enabled:hover:bg-neutral-500/5 disabled:cursor-default">

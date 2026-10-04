@@ -146,8 +146,8 @@ export function ConversationContextMenu({
                   type="button"
                   className={`kv-menu-item ${
                     active
-                      ? 'font-medium text-neutral-900 dark:text-neutral-50'
-                      : 'text-neutral-800 dark:text-neutral-100'
+                      ? 'font-medium text-neutral-900'
+                      : 'text-neutral-800'
                   }`}
                   onClick={() => {
                     onMoveToProject(project.id)
@@ -161,7 +161,7 @@ export function ConversationContextMenu({
             )}
             {(conversationProjectId || conversationFolder) && (
               <>
-                <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+                <div className="my-1 border-t border-neutral-200/80" />
                 <button
                   type="button"
                   className="kv-menu-item"
@@ -202,8 +202,8 @@ export function ConversationContextMenu({
                     type="button"
                     className={`kv-menu-item ${
                       active
-                        ? 'font-medium text-neutral-900 dark:text-neutral-50'
-                        : 'text-neutral-800 dark:text-neutral-100'
+                        ? 'font-medium text-neutral-900'
+                        : 'text-neutral-800'
                     }`}
                     onClick={() => {
                       onMoveToSet(set.id)
@@ -217,7 +217,7 @@ export function ConversationContextMenu({
             )}
             {conversationSetId && (
               <>
-                <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+                <div className="my-1 border-t border-neutral-200/80" />
                 <button
                   type="button"
                   className="kv-menu-item"
@@ -247,7 +247,7 @@ export function ConversationContextMenu({
         {t.chatExport}
       </button>
 
-      <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+      <div className="my-1 border-t border-neutral-200/80" />
 
       <button
         type="button"
@@ -264,7 +264,7 @@ export function ConversationContextMenu({
 
       {showNativeSession && (
         <>
-          <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+          <div className="my-1 border-t border-neutral-200/80" />
           <button
             type="button"
             role="menuitem"

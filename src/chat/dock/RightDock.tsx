@@ -140,7 +140,7 @@ export const RightDock = memo(function RightDock({
       />
 
       {/* tab 条 */}
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-neutral-200/70 py-1.5 pl-3 pr-1.5 dark:border-neutral-700/50">
+      <div className="flex shrink-0 items-center gap-0.5 border-b border-neutral-200/70 py-1.5 pl-3 pr-1.5">
         {(
           [
             { tab: 'files' as DockTab, label: t.dockTabFiles, icon: FolderTree },
@@ -154,8 +154,8 @@ export const RightDock = memo(function RightDock({
             type="button"
             className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] transition-colors ${
               activeTab === tab
-                ? 'bg-neutral-500/10 font-medium text-neutral-800 dark:bg-neutral-400/10 dark:text-neutral-100'
-                : 'text-neutral-500 hover:bg-neutral-500/5 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
+                ? 'bg-neutral-500/10 font-medium text-neutral-800 dark:bg-neutral-400/10'
+                : 'text-neutral-500 hover:bg-neutral-500/5 hover:text-neutral-700 dark:text-neutral-400'
             }`}
             onClick={() => onToggleTab(tab)}
           >

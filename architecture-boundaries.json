@@ -11,7 +11,7 @@
     { "name": "generated", "role": "foundation", "purpose": "Generated transport contracts", "paths": ["src/generated/**"] },
     { "name": "utils", "role": "foundation", "purpose": "Domain-neutral utilities", "paths": ["src/utils/**"] },
     { "name": "test", "role": "foundation", "purpose": "Shared test setup", "paths": ["src/test/**"] },
-    { "name": "theme", "role": "foundation", "purpose": "Shared theme colors", "paths": ["src/themeColors.ts"] },
+    { "name": "theme", "role": "foundation", "purpose": "Theme definitions, semantic palettes, and application lifecycle", "paths": ["src/theme/**"] },
     { "name": "vite-types", "role": "foundation", "purpose": "Build-time Vite ambient types", "paths": ["src/vite-env.d.ts"] }
   ],
   "existingViolations": []

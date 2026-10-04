@@ -219,9 +219,9 @@ function RapidOcrWidget({
   const available = tier === 'high' ? status?.highAvailable : status?.standardAvailable
 
   return (
-    <div className="mx-1 mb-2 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5 dark:border-zinc-700 dark:bg-zinc-900/40">
+    <div className="mx-1 mb-2 rounded-lg border border-zinc-200 bg-zinc-50/80 px-3 py-2.5">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+        <span className="text-sm font-medium text-zinc-700">
           {t('模型档位', 'Model tier')}
         </span>
         <Select
@@ -244,7 +244,7 @@ function RapidOcrWidget({
         <div className="flex items-start gap-2">
           <span className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+            <div className="text-sm font-medium text-zinc-700">
               {t('RapidOCR 已就绪', 'RapidOCR ready')}
             </div>
             {status?.modelDir && (
@@ -259,7 +259,7 @@ function RapidOcrWidget({
         <div className="space-y-2">
           <div className="flex items-start gap-2">
             <span className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
-            <div className="flex-1 text-sm font-medium text-zinc-700 dark:text-zinc-200">
+            <div className="flex-1 text-sm font-medium text-zinc-700">
               {t('RapidOCR 模型未下载', 'RapidOCR models not downloaded')}
             </div>
             <IconButton

@@ -112,7 +112,7 @@ function EmbeddingModelPicker({
       </div>
       {showBadges && isEmbedding && (
         <div className="flex flex-wrap items-center gap-1">
-          <span className="rounded-md border border-indigo-300 bg-indigo-50 px-1.5 py-0.5 text-[11px] font-medium text-indigo-600 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300">
+          <span className="rounded-md border border-[var(--accent)]/35 bg-[var(--accent-soft)] px-1.5 py-0.5 text-[11px] font-medium text-accent">
             {t.chatKnowledgeEmbeddingBadge}
           </span>
           {info?.multilingual && <InfoPill>{t.chatKnowledgeMultilingual}</InfoPill>}
@@ -127,7 +127,7 @@ function EmbeddingModelPicker({
 
 function InfoPill({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-md bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+    <span className="rounded-md bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
       {children}
     </span>
   )
@@ -157,7 +157,7 @@ function DocRow({
           {doc.name}
         </span>
         {indexing && (
-          <span className="flex items-center gap-1 text-xs text-indigo-500">
+          <span className="flex items-center gap-1 text-xs text-accent">
             <Loader2 size={12} className="animate-spin" />
             {determinate ? `${progress!.indexed}/${progress!.total}` : t.chatKnowledgeProcessing}
           </span>
@@ -177,15 +177,15 @@ function DocRow({
         </IconButton>
       </div>
       {indexing && (
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
+        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-neutral-100">
           {determinate ? (
             <div
-              className="h-full rounded-full bg-indigo-500 transition-[width] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)]"
+              className="h-full rounded-full bg-accent transition-[width] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)]"
               style={{ width: `${pct}%` }}
             />
           ) : (
             // 解析/OCR 阶段无逐步进度：用脉动条表示「进行中但无确定百分比」。
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-indigo-400/70" />
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-[var(--accent)]/70" />
           )}
         </div>
       )}
@@ -210,25 +210,25 @@ function LibraryCard({
       onClick={onOpen}
       data-tauri-drag-region="false"
       style={{ '--chat-motion-delay': `${Math.min(index, 8) * 24}ms` } as CSSProperties}
-      className="chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border border-neutral-200 bg-white p-3.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700 dark:focus-visible:ring-white/20"
+      className="chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-neutral-200 bg-white text-neutral-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-300">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-600">
           <Library size={18} />
         </span>
-        <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+        <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:text-neutral-400">
           {t.chatKnowledgeDocCount.replace('{n}', String(lib.docCount))}
         </span>
       </div>
       <div className="mt-2.5 min-w-0 flex-1">
-        <div className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950 dark:text-neutral-50">
+        <div className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">
           {lib.name}
         </div>
         <p className="mt-1 truncate text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
           {lib.embeddingModel || t.chatKnowledgeNoEmbeddingModel}
         </p>
       </div>
-      <div className="mt-2.5 flex min-h-6 items-center gap-2 border-t border-neutral-100 pt-2 text-[11px] tabular-nums text-neutral-400 dark:border-neutral-800/70 dark:text-neutral-500">
+      <div className="mt-2.5 flex min-h-6 items-center gap-2 border-t border-neutral-100 pt-2 text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
         <span>{t.chatKnowledgeChunks.replace('{n}', String(lib.chunkCount))}</span>
         {lib.embeddingDim > 0 && <span>{t.chatKnowledgeDimensions.replace('{n}', String(lib.embeddingDim))}</span>}
       </div>
@@ -571,12 +571,12 @@ export function KnowledgeCenter() {
   }
 
   return (
-    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100">
+    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
           {/* 头部：标题 + 副标题 + 刷新 */}
-          <div className="border-b border-neutral-200 pb-5 dark:border-neutral-800">
-            <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950 dark:text-neutral-50">
+          <div className="border-b border-neutral-200 pb-5">
+            <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950">
               <KnowledgeIcon size={24} className="text-neutral-500" />
               {t.contextSegmentKnowledgeBase}
             </h1>
@@ -591,7 +591,7 @@ export function KnowledgeCenter() {
           </div>
 
           {/* Tab 行 */}
-          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200 dark:border-neutral-800">
+          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200">
             {(
               [
                 ['libraries', t.contextSegmentKnowledgeBase],
@@ -606,15 +606,15 @@ export function KnowledgeCenter() {
                 data-tauri-drag-region="false"
                 className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
                   view === id
-                    ? 'text-neutral-900 dark:text-neutral-100'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                    ? 'text-neutral-900'
+                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
                 }`}
               >
                 {label}
                 {id === 'libraries' && libraries.length > 0 && (
                   <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{libraries.length}</span>
                 )}
-                {view === id && <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#2f6ff0] dark:bg-[#5c8df7]" />}
+                {view === id && <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
               </button>
             ))}
           </div>
@@ -666,7 +666,7 @@ export function KnowledgeCenter() {
                       </Button>
                     </div>
                   ) : (
-                    <h2 className="mt-2 truncate text-[20px] font-semibold text-neutral-950 dark:text-neutral-50">{selected.name}</h2>
+                    <h2 className="mt-2 truncate text-[20px] font-semibold text-neutral-950">{selected.name}</h2>
                   )}
                   <p className="mt-1 text-[12.5px] text-neutral-500 dark:text-neutral-400">
                     {t.chatKnowledgeStatsDocs.replace('{n}', String(selected.docCount))} · {t.chatKnowledgeChunks.replace('{n}', String(selected.chunkCount))}
@@ -694,8 +694,8 @@ export function KnowledgeCenter() {
               </div>
 
               {/* Embedding 模型 */}
-              <section className="rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
-                <div className="mb-3 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">{t.chatKnowledgeEmbeddingModelSection}</div>
+              <section className="rounded-xl border border-neutral-200 p-4">
+                <div className="mb-3 text-[13px] font-semibold text-neutral-800">{t.chatKnowledgeEmbeddingModelSection}</div>
                 <div className="space-y-3">
                   <EmbeddingModelPicker
                     providers={providers}
@@ -718,10 +718,10 @@ export function KnowledgeCenter() {
                     </button>
                   )}
 
-                  <div className="border-t border-neutral-100 pt-3 dark:border-neutral-800">
+                  <div className="border-t border-neutral-100 pt-3">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-[13px] text-neutral-700 dark:text-neutral-200">{t.chatKnowledgeRequestChunks}</span>
-                      <span className="rounded-md border border-neutral-200 bg-white px-2 py-0.5 font-mono text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+                      <span className="text-[13px] text-neutral-700">{t.chatKnowledgeRequestChunks}</span>
+                      <span className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-0.5 font-mono text-xs text-neutral-700">
                         {batchDraft}
                       </span>
                     </div>
@@ -750,8 +750,8 @@ export function KnowledgeCenter() {
               </section>
 
               {/* 文档 */}
-              <section className="rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
-                <div className="mb-3 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">{t.chatKnowledgeDocsSection}</div>
+              <section className="rounded-xl border border-neutral-200 p-4">
+                <div className="mb-3 text-[13px] font-semibold text-neutral-800">{t.chatKnowledgeDocsSection}</div>
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Button disabled={busy} onClick={() => void handleUpload()} data-tauri-drag-region="false">
@@ -780,12 +780,12 @@ export function KnowledgeCenter() {
                     data-tauri-drag-region="false"
                     className={`flex w-full flex-col items-center gap-2 rounded-xl border border-dashed px-4 py-8 text-center transition-colors duration-[var(--kv-dur-fast)] disabled:opacity-50 ${
                       dragActive
-                        ? 'border-indigo-400 bg-indigo-50/70 dark:border-indigo-500 dark:bg-indigo-950/40'
-                        : 'border-neutral-300 bg-neutral-50/50 hover:border-indigo-300 hover:bg-indigo-50/40 dark:border-neutral-700 dark:bg-neutral-900/30 dark:hover:border-indigo-800 dark:hover:bg-indigo-950/20'
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                        : 'border-neutral-300 bg-neutral-50/50 hover:border-[var(--accent)] hover:bg-[var(--accent-soft)]'
                     }`}
                   >
-                    <Upload size={20} className={dragActive ? 'text-indigo-500' : 'text-neutral-400'} />
-                    <span className={`text-sm font-medium ${dragActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-neutral-600 dark:text-neutral-300'}`}>
+                    <Upload size={20} className={dragActive ? 'text-accent' : 'text-neutral-400'} />
+                    <span className={`text-sm font-medium ${dragActive ? 'text-accent' : 'text-neutral-600'}`}>
                       {dragActive ? t.chatKnowledgeDropRelease : t.chatKnowledgeClickToImport}
                     </span>
                     <span className="max-w-md text-xs leading-relaxed text-neutral-400">
@@ -794,7 +794,7 @@ export function KnowledgeCenter() {
                   </button>
 
                   {docs.length > 0 && (
-                    <div className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-700">
+                    <div className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200">
                       {docs.map((doc) => (
                         <DocRow key={doc.id} doc={doc} progress={progress[doc.id]} onDelete={() => void handleDeleteDoc(doc.id)} />
                       ))}
@@ -807,8 +807,8 @@ export function KnowledgeCenter() {
             /* ===== 库列表 ===== */
             <div key="libraries" className="chat-motion-tab-in mt-5 space-y-4">
               {creating && (
-                <div className="chat-motion-search-reveal rounded-xl border border-neutral-200 p-4 dark:border-neutral-800">
-                  <div className="mb-3 text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">{t.chatKnowledgeNewLibrary}</div>
+                <div className="chat-motion-search-reveal rounded-xl border border-neutral-200 p-4">
+                  <div className="mb-3 text-[13px] font-semibold text-neutral-800">{t.chatKnowledgeNewLibrary}</div>
                   <div className="flex flex-wrap items-center gap-2">
                     <Input value={newName} onChange={setNewName} placeholder={t.chatKnowledgeNamePlaceholder} className="w-44" />
                     <EmbeddingModelPicker
@@ -837,7 +837,7 @@ export function KnowledgeCenter() {
               {loading ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                   {Array.from({ length: 3 }, (_, i) => (
-                    <div key={i} className="rounded-xl border border-neutral-200/80 p-3.5 dark:border-neutral-800/70">
+                    <div key={i} className="rounded-xl border border-neutral-200/80 p-3.5">
                       <div className="kv-skeleton size-10 rounded-lg" />
                       <div className="kv-skeleton mt-2.5 h-4 w-2/5 rounded" />
                       <div className="kv-skeleton mt-2 h-3 w-3/4 rounded" />
@@ -849,12 +849,12 @@ export function KnowledgeCenter() {
                   type="button"
                   onClick={() => setCreating(true)}
                   data-tauri-drag-region="false"
-                  className="flex w-full flex-col items-center gap-3 rounded-xl border border-dashed border-neutral-200 px-6 py-14 text-center transition-colors duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:bg-neutral-50/60 dark:border-neutral-800 dark:hover:border-neutral-700 dark:hover:bg-neutral-900/30"
+                  className="flex w-full flex-col items-center gap-3 rounded-xl border border-dashed border-neutral-200 px-6 py-14 text-center transition-colors duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:bg-neutral-50/60"
                 >
-                  <span className="grid size-12 place-items-center rounded-full bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500">
+                  <span className="grid size-12 place-items-center rounded-full bg-neutral-100 text-neutral-400 dark:text-neutral-500">
                     <Library size={22} />
                   </span>
-                  <span className="text-[14px] font-medium text-neutral-700 dark:text-neutral-200">{t.chatKnowledgeEmptyTitle}</span>
+                  <span className="text-[14px] font-medium text-neutral-700">{t.chatKnowledgeEmptyTitle}</span>
                   <span className="text-[12.5px] text-neutral-400">{t.chatKnowledgeEmptyHint}</span>
                 </button>
               ) : (
@@ -868,7 +868,7 @@ export function KnowledgeCenter() {
                       onClick={() => setCreating(true)}
                       data-tauri-drag-region="false"
                       style={{ '--chat-motion-delay': `${Math.min(libraries.length, 8) * 24}ms` } as CSSProperties}
-                      className="chat-motion-fade-up flex min-h-[132px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-neutral-200 text-neutral-400 transition-colors duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:bg-neutral-50/60 hover:text-neutral-600 dark:border-neutral-800 dark:hover:border-neutral-700 dark:hover:bg-neutral-900/30 dark:hover:text-neutral-300"
+                      className="chat-motion-fade-up flex min-h-[132px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-neutral-200 text-neutral-400 transition-colors duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:bg-neutral-50/60 hover:text-neutral-600"
                     >
                       <Plus size={20} />
                       <span className="text-[13px] font-medium">{t.chatKnowledgeNewLibrary}</span>

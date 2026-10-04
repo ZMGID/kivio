@@ -67,14 +67,14 @@ export function ProjectDialog({
 
   return createPortal(
     <div
-      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-black/30 px-4 backdrop-blur-[1px]`}
+      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-neutral-900/30 px-4 backdrop-blur-[1px]`}
       data-tauri-drag-region="false"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) startClose()
       }}
     >
       <form
-        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[340px] rounded-[10px] border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-[#252527]`}
+        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[340px] rounded-[10px] border border-neutral-200 bg-neutral-50 p-4 shadow-xl`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -84,7 +84,7 @@ export function ProjectDialog({
           submit()
         }}
       >
-        <h3 className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-50">{title}</h3>
+        <h3 className="text-[14px] font-semibold text-neutral-900">{title}</h3>
         <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
           项目名称
         </label>
@@ -94,7 +94,7 @@ export function ProjectDialog({
           value={name}
           maxLength={80}
           onChange={(e) => setName(e.target.value)}
-          className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400"
           placeholder="例如：产品发布计划"
         />
         <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
@@ -105,7 +105,7 @@ export function ProjectDialog({
             type="button"
             onClick={pickFolder}
             disabled={saving}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-left text-[13px] text-neutral-700 outline-none transition-colors hover:border-neutral-300 disabled:cursor-default disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:border-neutral-600"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-left text-[13px] text-neutral-700 outline-none transition-colors hover:border-neutral-300 disabled:cursor-default disabled:opacity-50 dark:hover:border-neutral-600"
           >
             <FolderOpen size={15} strokeWidth={1.75} className="shrink-0 text-neutral-500" />
             <span className={`min-w-0 flex-1 truncate ${rootPath ? '' : 'text-neutral-400'}`}>
@@ -117,7 +117,7 @@ export function ProjectDialog({
               type="button"
               onClick={() => setRootPath('')}
               disabled={saving}
-              className="shrink-0 rounded-lg border border-neutral-200 bg-white p-2 text-neutral-400 transition-colors hover:border-neutral-300 hover:text-neutral-700 disabled:cursor-default disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:hover:border-neutral-600 dark:hover:text-neutral-200"
+              className="shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 p-2 text-neutral-400 transition-colors hover:border-neutral-300 hover:text-neutral-700 disabled:cursor-default disabled:opacity-50 dark:hover:border-neutral-600"
               aria-label="清除项目文件夹"
               title="清除项目文件夹"
             >
@@ -130,14 +130,14 @@ export function ProjectDialog({
           <button
             type="button"
             onClick={startClose}
-            className="rounded-lg px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-black/[0.04] dark:text-neutral-300 dark:hover:bg-white/[0.06]"
+            className="rounded-lg px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-neutral-900/[0.04]"
           >
             取消
           </button>
           <button
             type="submit"
             disabled={!name.trim() || saving}
-            className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-neutral-800 disabled:cursor-default disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-950 dark:hover:bg-white"
+            className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] font-medium text-neutral-50 transition-colors hover:bg-neutral-800 disabled:cursor-default disabled:opacity-50"
           >
             {saving ? '保存中…' : project ? '保存' : '创建'}
           </button>

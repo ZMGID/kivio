@@ -111,7 +111,7 @@ export function ReasoningBlock({ reasoning, streaming = false, previewActive = s
   }, [open])
 
   const titleClass =
-    'mb-1 flex h-6 w-full min-w-0 items-center gap-2 text-left text-[11.5px] font-medium text-neutral-700 transition-colors dark:text-neutral-200'
+    'mb-1 flex h-6 w-full min-w-0 items-center gap-2 text-left text-[11.5px] font-medium text-neutral-700 transition-colors'
   const thinkingDuration = formatThinkingDuration(durationMs ?? liveDurationMs)
   const titleText = streaming ? 'Thinking…' : 'Thought'
   const label = <span className="inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
@@ -131,7 +131,7 @@ export function ReasoningBlock({ reasoning, streaming = false, previewActive = s
             setExpanded(!open)
             if (!open) onExpand?.()
           }}
-          className={`${titleClass} hover:text-neutral-900 dark:hover:text-neutral-50`}
+          className={`${titleClass} hover:text-neutral-900`}
           aria-expanded={open}
           title={open ? '收起完整思考' : '展开完整思考'}
           data-chat-disclosure

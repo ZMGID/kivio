@@ -80,9 +80,9 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
   }, [onClose])
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-[#f6f6f4] dark:bg-[#181818]" aria-label="图片查看">
+    <section className="flex min-h-0 flex-1 flex-col bg-neutral-50" aria-label="图片查看">
       <div
-        className="flex h-[52px] shrink-0 items-center gap-2 border-b border-neutral-200/80 bg-white/90 px-4 backdrop-blur dark:border-neutral-800 dark:bg-[#202020]/92"
+        className="flex h-[52px] shrink-0 items-center gap-2 border-b border-neutral-200/80 bg-[var(--theme-surface-titlebar)]/92 px-4 backdrop-blur"
         data-tauri-drag-region
       >
         <IconButton
@@ -93,11 +93,11 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
         >
           <ArrowLeft size={18} strokeWidth={1.9} />
         </IconButton>
-        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500 dark:text-neutral-400">
           <ImageIcon size={16} strokeWidth={1.8} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-medium text-neutral-800 dark:text-neutral-100">
+          <div className="truncate text-[13px] font-medium text-neutral-800">
             {title}
           </div>
           <div className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
@@ -121,7 +121,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           </IconButton>
         </div>
         <div
-          className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-700 dark:bg-neutral-900"
+          className="flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 p-1"
           data-tauri-drag-region="false"
         >
           <IconButton
@@ -158,7 +158,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           <img
             src={fullSrc ?? item.src}
             alt={item.alt ?? ''}
-            className="block rounded-lg bg-white shadow-sm ring-1 ring-black/10 dark:bg-neutral-950 dark:ring-white/10"
+            className="block rounded-lg bg-neutral-50 shadow-sm ring-1 ring-neutral-900/10"
             style={{
               width: zoom <= 1 ? 'auto' : `${zoom * 100}%`,
               maxWidth: zoom <= 1 ? '100%' : 'none',

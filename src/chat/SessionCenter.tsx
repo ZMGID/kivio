@@ -720,8 +720,8 @@ export function SessionCenter({
               onClick={() => pickShelf(id)}
               className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
                 active
-                  ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-white/[0.08] dark:text-neutral-50'
-                  : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-white/[0.05]'
+                  ? 'bg-neutral-100 font-medium text-neutral-900'
+                  : 'text-neutral-600 hover:bg-neutral-50'
               }`}
             >
               <Icon size={14} className="shrink-0 opacity-70" />
@@ -745,8 +745,8 @@ export function SessionCenter({
                 onClick={() => pickSet(active ? null : s.id)}
                 className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
                   active
-                    ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-white/[0.08] dark:text-neutral-50'
-                    : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-white/[0.05]'
+                    ? 'bg-neutral-100 font-medium text-neutral-900'
+                    : 'text-neutral-600 hover:bg-neutral-50'
                 }`}
               >
                 {s.name}
@@ -770,8 +770,8 @@ export function SessionCenter({
                 onClick={() => pickProject(active ? null : p.id)}
                 className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
                   active
-                    ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-white/[0.08] dark:text-neutral-50'
-                    : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-white/[0.05]'
+                    ? 'bg-neutral-100 font-medium text-neutral-900'
+                    : 'text-neutral-600 hover:bg-neutral-50'
                 }`}
               >
                 {p.name}
@@ -787,13 +787,13 @@ export function SessionCenter({
     `shrink-0 rounded-full px-2.5 py-1 text-[12px] transition-colors ${
       active
         ? 'bg-neutral-900 font-medium text-neutral-50'
-        : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-white/[0.06] dark:text-neutral-300 dark:hover:bg-white/[0.1]'
+        : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
     }`
 
   return (
     <div
       ref={rootRef}
-      className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900 dark:text-neutral-100"
+      className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900"
     >
       <div className={`shrink-0 ${compactPad ? 'px-3 pb-2.5 pt-4' : 'px-6 pb-3 pt-5'} ${embedded ? '!pt-1' : ''}`}>
         <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-3">
@@ -805,7 +805,7 @@ export function SessionCenter({
             </span>
           ) : (
             <h1
-              className={`flex min-w-0 items-center gap-2 font-semibold tracking-tight text-neutral-950 dark:text-neutral-50 ${
+              className={`flex min-w-0 items-center gap-2 font-semibold tracking-tight text-neutral-950 ${
                 compactPad ? 'text-[18px]' : 'gap-2.5 text-[22px]'
               }`}
             >
@@ -851,7 +851,7 @@ export function SessionCenter({
               ))}
               {sets.length > 0 && (
                 <>
-                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200 dark:bg-white/[0.1]" />
+                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200" />
                   {sets.map((s) => (
                     <button
                       key={s.id}
@@ -866,7 +866,7 @@ export function SessionCenter({
               )}
               {projects.length > 0 && (
                 <>
-                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200 dark:bg-white/[0.1]" />
+                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200" />
                   {projects.map((p) => (
                     <button
                       key={p.id}
@@ -883,10 +883,10 @@ export function SessionCenter({
           </div>
         ) : null}
 
-        <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-white/[0.08] dark:bg-[var(--bg-input)]">
+        <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:bg-[var(--bg-input)]">
         {!shelfAsChips && (
           <aside
-            className={`custom-scrollbar flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-neutral-200/80 bg-neutral-50/70 px-2 py-3 dark:border-white/[0.07] dark:bg-white/[0.02] ${
+            className={`custom-scrollbar flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-neutral-200/80 bg-neutral-50/70 px-2 py-3 ${
               layout.page < 900 ? 'w-[152px]' : 'w-[176px]'
             }`}
           >
@@ -899,7 +899,7 @@ export function SessionCenter({
           ref={tableHostRef}
           className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2 dark:border-white/[0.06]">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2">
             <div className="relative min-w-[200px] flex-1">
               <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 z-[1] -translate-y-1/2 text-neutral-400" />
               <input
@@ -937,14 +937,14 @@ export function SessionCenter({
             />
             <label className="flex h-[30px] shrink-0 items-center gap-2">
               <Toggle checked={fullText} onChange={setFullText} ariaLabel={t.chatLibFullText} />
-              <span className="whitespace-nowrap text-[12.5px] text-neutral-600 dark:text-neutral-300">
+              <span className="whitespace-nowrap text-[12.5px] text-neutral-600">
                 {t.chatLibFullText}
               </span>
             </label>
           </div>
           {selected.size > 0 && (
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-neutral-100 bg-neutral-50/90 px-3 py-1.5 dark:border-white/[0.06] dark:bg-white/[0.03]" aria-busy={batch.phase === 'running'}>
-              <span className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-200">
+            <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-neutral-100 bg-neutral-50/90 px-3 py-1.5" aria-busy={batch.phase === 'running'}>
+              <span className="text-[12.5px] font-medium text-neutral-700">
                 {t.chatLibSelected.replace('{n}', String(selected.size))}
               </span>
               {batch.phase === 'error' && batch.error && (
@@ -964,12 +964,12 @@ export function SessionCenter({
                   {!compactPad && <span>{t.chatLibMoveToSet}</span>}
                 </Button>
                 {moveOpen === 'set' && (
-                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-white/[0.09] dark:bg-[#2a2a2c]">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50 dark:hover:bg-white/[0.06]" onClick={() => bulkMoveSet(null)}>
+                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
+                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveSet(null)}>
                       {t.chatLibClearOwner}
                     </button>
                     {sets.map((s) => (
-                      <button key={s.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50 dark:hover:bg-white/[0.06]" onClick={() => bulkMoveSet(s.id)}>
+                      <button key={s.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveSet(s.id)}>
                         {s.name}
                       </button>
                     ))}
@@ -982,12 +982,12 @@ export function SessionCenter({
                   {!compactPad && <span>{t.chatLibMoveToProject}</span>}
                 </Button>
                 {moveOpen === 'project' && (
-                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-white/[0.09] dark:bg-[#2a2a2c]">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50 dark:hover:bg-white/[0.06]" onClick={() => bulkMoveProject(null)}>
+                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
+                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveProject(null)}>
                       {t.chatLibClearOwner}
                     </button>
                     {projects.map((p) => (
-                      <button key={p.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50 dark:hover:bg-white/[0.06]" onClick={() => bulkMoveProject(p.id)}>
+                      <button key={p.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveProject(p.id)}>
                         {p.name}
                       </button>
                     ))}
@@ -1008,11 +1008,11 @@ export function SessionCenter({
               <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibExport} onClick={bulkExport}>
                 {t.chatLibExport}
               </Button>
-              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibDelete} onClick={() => void bulkDelete()} className='text-red-600 dark:text-red-400'>
+              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibDelete} onClick={() => void bulkDelete()} className="text-red-600">
                 <Trash2 size={12} />
                 {!compactPad && <span>{t.chatLibDelete}</span>}
               </Button>
-              <button type="button" className="ml-auto text-[12px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200" onClick={clearSelection}>
+              <button type="button" className="ml-auto text-[12px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400" onClick={clearSelection}>
                 {t.chatLibClearSelection}
               </button>
             </div>
@@ -1024,13 +1024,13 @@ export function SessionCenter({
             </div>
           )}
 
-          <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-neutral-400">
+          <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
             <label className="flex w-7 shrink-0 items-center justify-center">
               <input
                 type="checkbox"
                 checked={state.items.length > 0 && selected.size === state.items.length}
                 onChange={(e) => (e.target.checked ? selectAllVisible() : clearSelection())}
-                className="rounded"
+                className="rounded accent-[var(--accent)]"
               />
             </label>
             <span className="min-w-0 flex-1 truncate">{t.chatLibColTitle}</span>
@@ -1070,7 +1070,7 @@ export function SessionCenter({
               grouped.map((group) => (
                 <div key={group.key}>
                   {group.label && (
-                    <div className="sticky top-0 z-[5] border-b border-neutral-100 bg-white/95 px-3 py-1.5 text-[12px] font-medium text-neutral-500 backdrop-blur dark:border-white/[0.06] dark:bg-[var(--bg-input)]/95">
+                    <div className="sticky top-0 z-[5] border-b border-neutral-100 bg-[var(--theme-surface)]/95 px-3 py-1.5 text-[12px] font-medium text-neutral-500 backdrop-blur">
                       {group.label}
                       <span className="ml-1.5 tabular-nums text-neutral-400">{group.items.length}</span>
                     </div>
@@ -1092,16 +1092,16 @@ export function SessionCenter({
                         onKeyDown={(e: ReactKeyboardEvent) => {
                           if (e.key === 'Enter') onSelectConversation(c.id, c, selectionScope(c))
                         }}
-                        className={`group flex cursor-pointer items-center gap-2 border-b border-neutral-50 px-3 ${rowPad} transition-colors hover:bg-neutral-50 dark:border-white/[0.04] dark:hover:bg-white/[0.04] ${
-                          isSel ? 'bg-sky-50/80 dark:bg-[var(--accent-soft)]' : ''
-                        } ${isCurrent ? 'ring-1 ring-inset ring-sky-200 dark:ring-white/15' : ''}`}
+                        className={`group flex cursor-pointer items-center gap-2 border-b border-[var(--theme-surface-border)] px-3 ${rowPad} transition-colors hover:bg-[var(--theme-surface-hover)] ${
+                          isSel ? 'bg-[var(--accent-soft)]' : ''
+                        } ${isCurrent ? 'ring-1 ring-inset ring-[var(--accent)]/35' : ''}`}
                       >
                         <label data-row-chrome className="flex w-7 shrink-0 items-center justify-center" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={isSel}
                             onChange={(e) => toggleSelect(c.id, (e.nativeEvent as MouseEvent).shiftKey)}
-                            className="rounded"
+                            className="rounded accent-[var(--accent)]"
                           />
                         </label>
                         <div className="min-w-0 flex-1 overflow-hidden">
@@ -1124,10 +1124,10 @@ export function SessionCenter({
                                     void patchOne(c.id, { title: renameDraft.trim() })
                                   } else setRenameId(null)
                                 }}
-                                className="min-w-0 flex-1 rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-[13px] dark:border-[var(--border-input)] dark:bg-[var(--bg-hover)]"
+                                className="min-w-0 flex-1 rounded border border-neutral-300 bg-neutral-50 px-1.5 py-0.5 text-[13px] dark:border-[var(--border-input)] dark:bg-[var(--bg-hover)]"
                               />
                             ) : (
-                              <span className="min-w-0 truncate text-[13.5px] font-medium text-neutral-900 dark:text-neutral-50">
+                              <span className="min-w-0 truncate text-[13.5px] font-medium text-neutral-900">
                                 {debouncedQ
                                   ? <HighlightText text={c.title || t.chatLibUntitled} query={debouncedQ} />
                                   : (c.title || t.chatLibUntitled)}
@@ -1172,7 +1172,7 @@ export function SessionCenter({
                         <button
                           data-row-chrome
                           type="button"
-                          className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-400 opacity-60 hover:bg-neutral-100 hover:text-neutral-700 group-hover:opacity-100 dark:text-neutral-500 dark:hover:bg-white/[0.08] dark:hover:text-neutral-200"
+                          className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-400 opacity-60 hover:bg-neutral-100 hover:text-neutral-700 group-hover:opacity-100 dark:text-neutral-500"
                           onClick={(e) => {
                             e.stopPropagation()
                             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -1198,7 +1198,7 @@ export function SessionCenter({
             {!state.loading && !state.loadingMore && hasMore && (
               <button
                 type="button"
-                className="w-full py-2.5 text-center text-[12.5px] text-neutral-500 hover:bg-neutral-50 dark:hover:bg-white/[0.04]"
+                className="w-full py-2.5 text-center text-[12.5px] text-neutral-500 hover:bg-neutral-50"
                 onClick={() => void loadPage({ append: true })}
               >
                 {t.chatLibLoadMore}
@@ -1255,7 +1255,7 @@ export function SessionCenter({
                 })
               }}
             />
-            <div className="my-1 border-t border-neutral-100 dark:border-white/[0.07]" />
+            <div className="my-1 border-t border-neutral-100" />
             <MenuItem
               label={t.chatLibDelete}
               danger
@@ -1287,7 +1287,7 @@ function PortaledRowMenu({
       <div
         ref={menuRef}
         role="menu"
-        className="fixed z-[200] w-[180px] rounded-lg border border-neutral-200 bg-white py-1 shadow-xl dark:border-white/[0.09] dark:bg-[#2a2a2c]"
+        className="fixed z-[200] w-[180px] rounded-lg border border-neutral-200 bg-neutral-50 py-1 shadow-xl"
         style={{ left: pos.left, top: pos.top }}
       >
         {children}
@@ -1317,8 +1317,8 @@ function MenuItem({
       role="menuitem"
       onClick={onClick}
       disabled={disabled}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-neutral-50 disabled:cursor-default disabled:opacity-40 dark:hover:bg-white/[0.06] ${
-        danger ? 'text-red-600 dark:text-red-400' : 'text-neutral-700 dark:text-neutral-200'
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-neutral-50 disabled:cursor-default disabled:opacity-40 ${
+        danger ? 'text-red-600 dark:text-red-400' : 'text-neutral-700'
       }`}
     >
       {icon}

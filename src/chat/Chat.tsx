@@ -3100,7 +3100,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         )}
       </div>
       {popoutNotice && (
-        <div className="pointer-events-none absolute bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-neutral-900/90 px-3 py-1.5 text-[12px] text-white shadow-lg dark:bg-neutral-100/90 dark:text-neutral-900">
+        <div className="pointer-events-none absolute bottom-5 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-neutral-900/90 px-3 py-1.5 text-[12px] text-neutral-50 shadow-lg">
           {popoutNotice}
         </div>
       )}

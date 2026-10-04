@@ -58,7 +58,7 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
           </p>
 
           {detail && (
-            <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-neutral-600 dark:bg-white/[0.06] dark:text-neutral-400">
+            <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-neutral-900/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-neutral-600 dark:text-neutral-400">
               {detail}
             </pre>
           )}

@@ -51,7 +51,7 @@ export function AvatarField({
         onClick={() => inputRef.current?.click()}
         title={zh ? '点击上传头像' : 'Click to upload avatar'}
         data-tauri-drag-region="false"
-        className="group relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-white ring-1 ring-black/[0.05] transition dark:bg-neutral-900 dark:ring-white/[0.08]"
+        className="group relative flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-neutral-50 ring-1 ring-neutral-900/[0.05] transition"
       >
         {value ? (
           <img src={value} alt="" className="h-full w-full object-cover" />
@@ -68,7 +68,7 @@ export function AvatarField({
           onClick={() => onChange('')}
           title={zh ? '移除头像' : 'Remove avatar'}
           data-tauri-drag-region="false"
-          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-neutral-700 text-white ring-2 ring-white hover:bg-neutral-900 dark:bg-neutral-500 dark:ring-neutral-900"
+          className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-neutral-700 text-white ring-2 ring-white hover:bg-neutral-900 dark:bg-neutral-500"
         >
           <X size={10} />
         </button>

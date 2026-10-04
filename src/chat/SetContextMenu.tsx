@@ -57,7 +57,7 @@ export function SetContextMenu({ anchor, onRename, onDelete, onClose: onClosePro
         <Pencil strokeWidth={1.75} />
         {t.chatRenameSetSettings}
       </button>
-      <div className="my-1 border-t border-neutral-200/80 dark:border-neutral-700" />
+      <div className="my-1 border-t border-neutral-200/80" />
       <button
         type="button"
         role="menuitem"

@@ -21,6 +21,7 @@ import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun,
 import type { ScheduleRule, ScheduledTask, ScheduledTaskInput, ScheduledTaskRun, ScheduledTasksChangedEvent } from './scheduledTaskContracts'
 import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
+import type { ThemeDefinition } from '../theme/types'
 
 // ========== 类型定义 ==========
 
@@ -1137,7 +1138,10 @@ export type Settings = {
   /** 关闭 AI 客户端（chat 窗口）的全局热键。 */
   closeChatHotkey: string
   theme: 'system' | 'light' | 'dark'
-  themeColor: 'neutral' | 'warm' | 'cool'
+  /** 主题 id：内置主题或 customThemes 中的自定义 id。非法选择由后端收成 neutral。 */
+  themeColor: string
+  /** 自定义主题。旧快照可省略；后端 canonical 响应总是返回完整数组。 */
+  customThemes?: ThemeDefinition[]
   translucentSidebar: boolean
   uiFontScale?: number
   uiFontFamily?: string

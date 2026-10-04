@@ -3,7 +3,8 @@ import { Settings as SettingsIcon, Cpu } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api, isTauriRuntime } from './api/tauri'
-import { getSettingsCached } from './api/settingsCache'
+import { getSettingsCached, subscribeSettings } from './api/settingsCache'
+import { applyThemeSettings, disposeTheme } from './theme/theme'
 import { i18n, type Lang } from './components/i18n'
 import { useWindowInteractionFocus } from './api/windowFocus'
 import { ChatWindowHost } from './chat/ChatWindowHost'
@@ -141,7 +142,7 @@ function Translator({
         {/* 设置按钮（悬浮右上角） */}
         <button
           onClick={onOpenSettings}
-          className="absolute top-1.5 right-2 z-20 p-1 text-neutral-400 hover:text-neutral-700 dark:text-neutral-500 dark:hover:text-neutral-200 rounded-md hover:bg-black/5 dark:hover:bg-white/10 opacity-60 hover:opacity-100 transition-all duration-150"
+          className="absolute top-1.5 right-2 z-20 p-1 text-[var(--text-faint)] hover:text-[var(--text)] rounded-md hover:bg-[var(--theme-surface-hover)] opacity-60 hover:opacity-100 transition-all duration-150"
           title={t.translatorSettings}
         >
           <SettingsIcon size={13} strokeWidth={1.75} />
@@ -153,19 +154,19 @@ function Translator({
         {(result || loading) && (
           <div
             ref={resultRef}
-            className="mb-2 px-3 py-2 rounded-xl max-h-14 overflow-y-auto custom-scrollbar bg-gradient-to-br from-neutral-100/90 to-neutral-50/80 dark:from-neutral-800/70 dark:to-neutral-800/40 ring-1 ring-black/[0.04] dark:ring-white/[0.06] shadow-sm"
+            className="mb-2 px-3 py-2 rounded-xl max-h-14 overflow-y-auto custom-scrollbar bg-[var(--theme-surface-soft)] ring-1 ring-[var(--theme-surface-border)] shadow-sm"
           >
             {loading ? (
-              <div className="flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
+              <div className="flex items-center gap-2 text-[var(--text-muted)]">
                 <span className="flex gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-neutral-400 dark:bg-neutral-500 animate-pulse" />
-                  <span className="w-1 h-1 rounded-full bg-neutral-400 dark:bg-neutral-500 animate-pulse [animation-delay:0.2s]" />
-                  <span className="w-1 h-1 rounded-full bg-neutral-400 dark:bg-neutral-500 animate-pulse [animation-delay:0.4s]" />
+                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse" />
+                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse [animation-delay:0.2s]" />
+                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse [animation-delay:0.4s]" />
                 </span>
                 <span className="text-[11px]">{t.translatorTranslating}</span>
               </div>
             ) : (
-              <p className="text-neutral-800 dark:text-neutral-100 text-[14.5px] font-normal select-text leading-[1.5]">
+              <p className="text-[var(--text)] text-[14.5px] font-normal select-text leading-[1.5]">
                 {result}
               </p>
             )}
@@ -180,7 +181,7 @@ function Translator({
           autoCorrect="off"
           autoComplete="off"
           spellCheck={false}
-          className="w-full px-3.5 py-2 bg-white/70 dark:bg-neutral-800/40 ring-1 ring-black/[0.05] dark:ring-white/[0.06] rounded-xl text-[14.5px] text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-black/[0.12] dark:focus:ring-white/[0.18] focus:bg-white dark:focus:bg-neutral-800/70 transition-all"
+          className="w-full px-3.5 py-2 bg-[var(--theme-surface)] ring-1 ring-[var(--theme-surface-border)] rounded-xl text-[14.5px] text-[var(--text)] placeholder-[var(--text-faint)] focus:outline-none focus:ring-[var(--accent)] transition-all"
           placeholder={t.translatorPlaceholder}
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -188,7 +189,7 @@ function Translator({
         />
 
         {/* 底部提示 */}
-        <div className="mt-1.5 flex justify-between items-center text-[10px] text-neutral-400 dark:text-neutral-500">
+        <div className="mt-1.5 flex justify-between items-center text-[10px] text-[var(--text-faint)]">
           <div className="flex items-center gap-2">
             <span>{t.translatorHintEnter}</span>
             <span>{t.translatorHintEsc}</span>
@@ -236,10 +237,17 @@ function App() {
   }
 
   const [mode, setMode] = useState(getMode)
-  const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system')
   const [translucentSidebar, setTranslucentSidebar] = useState(false)
   const [translateSource, setTranslateSource] = useState<string>('')
   const [lang, setLang] = useState<Lang>('zh')
+
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    if (root.dataset.themeBooting !== 'true') return
+    // The themed Suspense surface now covers loading; restore native transparency.
+    root.style.removeProperty('background-color')
+    delete root.dataset.themeBooting
+  }, [])
 
   useEffect(() => {
     const path = hashPath()
@@ -260,19 +268,17 @@ function App() {
     }
   }, [])
 
-  // 应用主题设置
+  // 迟到的 getSettingsCached 不能盖住更新的设置。主题色由 theme 模块负责。
+  const applyGeneration = useRef(0)
+  const applyThemeRef = useRef<() => Promise<void>>(async () => {})
+
+  // 字体、半透明和语言仍在这里应用。明暗色板与系统监听归 theme 模块。
   const applyTheme = async () => {
+    const generation = ++applyGeneration.current
     const settings = await getSettingsCached()
-    const nextMode = settings.theme
-    setThemeMode(nextMode)
+    if (generation !== applyGeneration.current) return
+    applyThemeSettings(settings)
     setTranslucentSidebar(settings.translucentSidebar)
-    const isDark = nextMode === 'dark' || (nextMode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-    if (isDark) {
-      document.documentElement.classList.add('dark')
-    } else {
-      document.documentElement.classList.remove('dark')
-    }
-    document.documentElement.dataset.themeColor = settings.themeColor
     // UI 字号（整体缩放）+ 自定义字体：仅作用于聊天窗口，翻译窗/Lens 保持原始几何与布局。
     // 直接读 hash（稳定的 import）而非 mode state，避免让 applyTheme 变成不稳定依赖。
     const root = document.documentElement
@@ -302,20 +308,24 @@ function App() {
     // 首次应用主题后（下一帧）再开启主题色过渡，避免初始 light↔dark 闪烁；
     // 之后用户切换主题/系统主题变化时才平滑过渡。classList.add 幂等。
     requestAnimationFrame(() => {
+      if (generation !== applyGeneration.current) return
       document.documentElement.classList.add('theme-transitions-ready')
     })
   }
+  applyThemeRef.current = applyTheme
 
-  // 初始化主题并监听系统主题变化
+  // 设置缓存更新（含其它窗口）重新应用。冷启动不会通知订阅者，所以这里先读一次。
   useEffect(() => {
-    applyTheme()
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const changeHandler = () => {
-      if (themeMode === 'system') applyTheme()
+    void applyThemeRef.current()
+    const unsubscribe = subscribeSettings(() => {
+      void applyThemeRef.current()
+    })
+    return () => {
+      applyGeneration.current += 1
+      unsubscribe()
+      disposeTheme()
     }
-    mq.addEventListener('change', changeHandler)
-    return () => mq.removeEventListener('change', changeHandler)
-  }, [themeMode])
+  }, [])
 
   // 监听 hash 变化切换模式
   useEffect(() => {
@@ -518,8 +528,8 @@ function App() {
     )
   }
   const chatSuspenseFallback = (
-    <div className="flex h-full w-full items-center justify-center bg-transparent">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
+    <div className="flex h-full w-full items-center justify-center bg-[var(--theme-surface)]">
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--theme-surface-border)] border-t-[var(--text)]" />
     </div>
   )
   if (mode === 'chat-popout') {

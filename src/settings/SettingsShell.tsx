@@ -1,7 +1,7 @@
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  Download, Upload, ArrowLeft,
+  Download, Upload, ArrowLeft, Palette,
 } from 'lucide-react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
@@ -60,6 +60,9 @@ import { useSettingsOnboardingController } from './useSettingsOnboardingControll
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
 import { Button } from '../components/Button'
+import { confirmDialog } from '../components/dialogQueue'
+import { ThemeTab } from './tabs/ThemeTab'
+import type { ThemeDefinition } from '../theme/types'
 import { resolveModelInfo } from '../data/modelMatching'
 import { loadLastModel, resolvePreferredChatModel } from '../data/chatModelPreference'
 import { useWindowInteractionFocus } from '../api/windowFocus'
@@ -72,7 +75,7 @@ import {
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -162,6 +165,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
+  const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
   useEffect(() => {
@@ -417,8 +421,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
    */
   const handleCloseRequest = useCallback((options?: SettingsCloseOptions) => {
     if (recordingTarget) return
-    void editorController.requestClose(onClose, options)
-  }, [editorController, onClose, recordingTarget])
+    void (async () => {
+      if (themeDraft && !await confirmDialog({
+        message: lang === 'zh' ? '自定义主题尚未保存。放弃编辑并关闭？' : 'The custom theme is not saved. Discard edits and close?',
+        danger: true,
+      })) return
+      setThemeDraft(null)
+      await editorController.requestClose(onClose, options)
+    })()
+  }, [editorController, onClose, recordingTarget, themeDraft, lang])
 
   useImperativeHandle(ref, () => ({ requestClose: handleCloseRequest }), [handleCloseRequest])
 
@@ -516,6 +527,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       return { ...prev, ...updates }
     })
   }, [setSettings])
+
+  const commitThemeSettings = useCallback(async (update: (current: SettingsData) => SettingsData) => {
+    const before = editorController.snapshot.settings
+    if (!before) throw new Error('Settings are not loaded')
+    const submitted = update(before)
+    editorController.edit(submitted)
+    if (!await editorController.flush()) {
+      const message = editorController.snapshot.saveError || 'Theme settings could not be saved'
+      // Keep the theme editor draft for retry, but never advertise an unconfirmed
+      // selection as active. Do not roll back edits made while the save was pending.
+      editorController.edit(current => {
+        let restored = current
+        for (const field of ['theme', 'themeColor', 'customThemes', 'translucentSidebar'] as const) {
+          if (JSON.stringify(current[field]) === JSON.stringify(submitted[field])) {
+            restored = { ...restored, [field]: before[field] }
+          }
+        }
+        return restored
+      })
+      throw new Error(message)
+    }
+  }, [editorController])
 
   // 哪些 API Key 输入框处于明文显示（按 `${providerId}-${idx}` 记），默认全部隐藏。
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
@@ -730,13 +763,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const loadingShellClass =
     variant === 'embedded'
-      ? 'flex min-h-0 min-w-0 flex-1 items-center justify-center bg-white dark:bg-[#212121]'
-      : 'flex items-center justify-center h-full bg-neutral-200 dark:bg-black'
+      ? 'flex min-h-0 min-w-0 flex-1 items-center justify-center bg-[var(--theme-surface)]'
+      : 'flex items-center justify-center h-full bg-[var(--theme-surface-soft)]'
 
   if (loading) {
     return (
       <div className={loadingShellClass}>
-        <div className="w-6 h-6 border-2 border-neutral-300 dark:border-neutral-700 border-t-neutral-800 dark:border-t-neutral-200 rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-[var(--theme-surface-border)] border-t-[var(--text)] rounded-full animate-spin" />
       </div>
     )
   }
@@ -745,31 +778,28 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     // 加载失败：显示错误 + 重试按钮，禁止用户在不知情的情况下用合成默认值 Save 覆盖磁盘
     return (
       <div className={`${loadingShellClass} p-6`}>
-        <div className="max-w-sm w-full bg-white dark:bg-[#1C1C1E] rounded-xl shadow-sm border border-black/5 dark:border-white/5 p-5 text-center">
-          <div className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100 mb-1">
+        <div className="max-w-sm w-full bg-[var(--theme-surface)] rounded-xl shadow-sm border border-[var(--theme-surface-border)] p-5 text-center">
+          <div className="text-[14px] font-semibold text-[var(--text)] mb-1">
             {lang === 'zh' ? '加载设置失败' : 'Failed to load settings'}
           </div>
-          <div className="text-[11px] text-rose-600 dark:text-rose-400 mb-4 break-all" title={loadError}>
+          <div className="text-[11px] text-[var(--danger)] mb-4 break-all" title={loadError}>
             {loadError}
           </div>
           <div className="flex gap-2 justify-center">
-            <button
-              type="button"
+            <Button variant="primary" size="sm"
               onClick={() => setReloadKey((k) => k + 1)}
-              className="flex items-center gap-1.5 text-[12px] font-medium px-3 py-1.5 rounded-md bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-100 transition-colors duration-[var(--kv-dur-fast)]"
+              className="flex items-center gap-1.5"
               data-tauri-drag-region="false"
             >
               <RefreshCw size={12} />
               {lang === 'zh' ? '重试' : 'Retry'}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button size="sm" variant="ghost"
               onClick={onClose}
-              className="text-[12px] font-medium px-3 py-1.5 rounded-md text-neutral-600 dark:text-neutral-400 hover:bg-black/5 dark:hover:bg-white/5 transition-colors duration-[var(--kv-dur-fast)]"
               data-tauri-drag-region="false"
             >
               {t.cancel}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -783,7 +813,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const chatDefaults = defaultPrompts?.chatPrompts?.[chatLangKey]
   const chatRuntimeDefaults = defaultPrompts?.chatRuntimePrompt
   const chatConfig = settings.chat
-  const themeColor = settings.themeColor
   const chatMemory = settings.chatMemory
   const effectiveChatMaxOutput = resolveEffectiveChatMaxOutput(settings, chatConfig.maxOutputTokens)
   const chatMaxOutputSourceLabel = effectiveChatMaxOutput.source === 'override'
@@ -799,6 +828,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
   const navItems = [
     { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
+    { id: 'themes' as const, label: lang === 'zh' ? '主题' : 'Themes', icon: Palette },
     { id: 'providers' as const, label: t.tabModels, icon: ProvidersIcon },
     { id: 'hotkeys' as const, label: t.tabHotkeys, icon: HotkeysIcon },
     { id: 'translate' as const, label: t.tabTranslation, icon: TranslateIcon },
@@ -820,6 +850,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     general: {
       title: t.tabGeneral,
       subtitle: lang === 'zh' ? '外观、行为、归档和权限。' : 'Appearance, behavior, archive, and permissions.',
+    },
+    themes: {
+      title: lang === 'zh' ? '主题' : 'Themes',
+      subtitle: lang === 'zh' ? '管理明暗色板，预览、编辑与分享自定义主题。' : 'Manage light and dark palettes. Preview, edit, and share custom themes.',
     },
     translate: {
       title: t.tabTranslation,
@@ -1003,6 +1037,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             key={activeTab}
             className={`kv-scroll custom-scrollbar settings-section-enter ${variant === 'embedded' ? 'settings-embedded-scroll' : ''}${activeTab === 'sessions' ? ' kv-scroll--fill' : ''}`}
           >
+            {activeTab === 'themes' && (
+              <ThemeTab settings={settings} lang={lang} draft={themeDraft}
+                onDraftChange={setThemeDraft} onCommit={commitThemeSettings} />
+            )}
             {/* ===== 基础设置标签页 ===== */}
             {activeTab === 'general' && (
               <>
@@ -1010,7 +1048,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   settings={settings}
                   t={t}
                   lang={lang}
-                  themeColor={themeColor}
                   systemFonts={systemFonts}
                   uiFontPxInput={uiFontPxInput}
                   onUpdateSettings={updateSettings}
@@ -1457,7 +1494,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
           reserveTrafficLightSpace ? 'settings-embedded--traffic-safe' : ''
         }`}
-        data-theme-color={themeColor}
       >
         {!hideNav && (
           <aside className="settings-embedded-nav">
@@ -1474,7 +1510,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }
 
   return (
-    <div className="kv kv-window" data-theme-color={themeColor} {...focusHandlers}>
+    <div className="kv kv-window" {...focusHandlers}>
       <div className="kv-titlebar" onMouseDown={handleSettingsDragMouseDown}>
         <div className="kv-titlebar-spacer" aria-hidden="true" />
         <div className="kv-title">{t.settings}</div>

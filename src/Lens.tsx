@@ -1838,13 +1838,13 @@ export default function Lens() {
       {capturedFrame && stage !== 'select' && keepFullscreen && (
         <>
           <div
-            className="absolute z-[25] box-border border-[2px] border-[#2f6ff0] rounded-md pointer-events-none"
+            className="absolute z-[25] box-border border-[2px] border-accent rounded-md pointer-events-none"
             style={{
               left: capturedFrame.x,
               top: capturedFrame.y,
               width: capturedFrame.width,
               height: capturedFrame.height,
-              boxShadow: '0 0 16px 2px rgba(47,111,240,0.45)',
+              boxShadow: '0 0 16px 2px color-mix(in srgb, var(--accent) 45%, transparent)',
             }}
           />
         </>
@@ -2017,7 +2017,7 @@ export default function Lens() {
         <>
           {showCaptureHint && (
             <div className="absolute top-[calc(env(safe-area-inset-top,0px)+36px)] left-0 right-0 flex justify-center pointer-events-none z-30">
-              <div className="px-3 py-1.5 rounded-full bg-neutral-950/80 text-white text-[12px] font-medium shadow-[0_8px_24px_rgba(0,0,0,0.24)] ring-1 ring-white/10 backdrop-blur-md">
+              <div className="px-3 py-1.5 rounded-full bg-black/80 text-white text-[12px] font-medium shadow-[0_8px_24px_rgba(0,0,0,0.24)] ring-1 ring-white/10 backdrop-blur-md">
                 {captureHintText}
               </div>
             </div>
@@ -2025,26 +2025,26 @@ export default function Lens() {
           {hoverRect && (
             <>
               <div
-                className="absolute border-[2px] border-[#2f6ff0] rounded-md pointer-events-none"
+                className="absolute border-[2px] border-accent rounded-md pointer-events-none"
                 style={{
                   left: hoverRect.x,
                   top: hoverRect.y,
                   width: hoverRect.width,
                   height: hoverRect.height,
-                  boxShadow: '0 0 16px 2px rgba(47,111,240,0.45)',
+                  boxShadow: '0 0 16px 2px color-mix(in srgb, var(--accent) 45%, transparent)',
                 }}
               />
             </>
           )}
           {dragRect && dragging && (
             <div
-              className="absolute border-[2px] border-[#2f6ff0] rounded-sm pointer-events-none"
+              className="absolute border-[2px] border-accent rounded-sm pointer-events-none"
               style={{
                 left: dragRect.x,
                 top: dragRect.y,
                 width: dragRect.width,
                 height: dragRect.height,
-                boxShadow: '0 0 16px 2px rgba(47,111,240,0.45)',
+                boxShadow: '0 0 16px 2px color-mix(in srgb, var(--accent) 45%, transparent)',
               }}
             />
           )}
@@ -2077,13 +2077,13 @@ export default function Lens() {
         >
           {/* 输入栏卡片 */}
           <div
-            className="flex w-full min-w-0 items-center gap-2.5 pl-4 pr-2 py-2 rounded-[18px] bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface cursor-default overflow-visible"
+            className="flex w-full min-w-0 items-center gap-2.5 pl-4 pr-2 py-2 rounded-[18px] bg-neutral-50 border border-neutral-900/[0.07] lens-floating-surface cursor-default overflow-visible"
             data-tauri-drag-region="false"
           >
             <div className="flex min-w-0 shrink items-center gap-2">
               {showThumb ? (
                 <div className="flex items-center gap-2.5">
-                  <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center shadow-sm">
+                  <div className="w-10 h-10 rounded-xl overflow-hidden ring-1 ring-neutral-900/[0.06] bg-neutral-100 flex items-center justify-center shadow-sm">
                     {imagePreview ? (
                       <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
                     ) : (
@@ -2091,7 +2091,7 @@ export default function Lens() {
                     )}
                   </div>
                   {appLabel && (
-                    <span className="text-[13px] font-medium text-neutral-800 dark:text-neutral-200 max-w-[72px] truncate">{appLabel}</span>
+                    <span className="text-[13px] font-medium text-neutral-800 max-w-[72px] truncate">{appLabel}</span>
                   )}
                 </div>
               ) : (
@@ -2105,7 +2105,7 @@ export default function Lens() {
               {selectionLineCount > 0 && (
                 <span
                   title={lang === 'zh' ? `已选中 ${selectionLineCount} 行` : `${selectionLineCount} lines selected`}
-                  className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 dark:bg-neutral-800 text-[11px] font-medium tabular-nums text-neutral-600 dark:text-neutral-400 ring-1 ring-black/[0.04] dark:ring-white/[0.06]"
+                  className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 text-[11px] font-medium tabular-nums text-neutral-600 dark:text-neutral-400 ring-1 ring-neutral-900/[0.04]"
                 >
                   {selectionLineCount}
                 </span>
@@ -2120,8 +2120,8 @@ export default function Lens() {
                     : t.lensArrowDisabledHint}
                   className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
                     drawMode
-                      ? 'bg-blue-500 text-white hover:bg-blue-600'
-                      : 'text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06]'
+                      ? 'bg-accent text-[var(--text-onaccent)] hover:bg-accent-hover'
+                      : 'text-neutral-600 hover:bg-neutral-900/[0.05]'
                   } ${!imagePreview ? 'opacity-40 cursor-not-allowed' : ''}`}
                 >
                   <MousePointer2 size={15} strokeWidth={1.75} />
@@ -2147,7 +2147,7 @@ export default function Lens() {
               readOnly={streaming}
               aria-disabled={streaming}
               placeholder={t.lensAskPlaceholder}
-              className={`min-w-0 flex-1 bg-transparent text-[16px] text-neutral-900 dark:text-white placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none ${streaming ? 'opacity-60' : ''}`}
+              className={`min-w-0 flex-1 bg-transparent text-[16px] text-neutral-900 placeholder-neutral-500 dark:placeholder-neutral-400 focus:outline-none ${streaming ? 'opacity-60' : ''}`}
             />
             {/* ponytail: 网络搜索按钮已隐藏；webSearchEnabled 仍由 line ~312 在可用时自动开启，功能不变 */}
             {/* History dropdown：按钮 + 弹出面板（容器作为 ref，点击外部关闭） */}
@@ -2155,7 +2155,7 @@ export default function Lens() {
               <button
                 type="button"
                 onClick={() => setHistoryOpen(o => !o)}
-                className="flex items-center gap-1 h-9 px-2.5 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-black/[0.05] dark:hover:bg-white/[0.06] transition-colors"
+                className="flex items-center gap-1 h-9 px-2.5 rounded-lg text-neutral-600 hover:bg-neutral-900/[0.05] transition-colors"
                 title={t.lensHistory}
               >
                 <HistoryIcon size={15} strokeWidth={1.75} />
@@ -2167,7 +2167,7 @@ export default function Lens() {
               {historyOpen && (
                 <div
                   ref={historyContentRef}
-                  className={`absolute right-0 w-[240px] rounded-xl bg-white dark:bg-neutral-900 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-black/[0.06] dark:ring-white/[0.08] overflow-hidden z-50 ${
+                  className={`absolute right-0 w-[240px] rounded-xl bg-neutral-50 shadow-[0_18px_44px_-12px_rgba(0,0,0,0.4)] ring-1 ring-neutral-900/[0.06] overflow-hidden z-50 ${
                     isFloatingLayout ? '' : 'bottom-full mb-2'
                   }`}
                   style={isFloatingLayout
@@ -2201,9 +2201,9 @@ export default function Lens() {
                             key={`${item.id}-${item.timestamp}`}
                             type="button"
                             onClick={() => restoreHistory(item)}
-                            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+                            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-neutral-900/[0.04] transition-colors"
                           >
-                            <div className="shrink-0 w-6 h-6 rounded overflow-hidden bg-neutral-100 dark:bg-neutral-800 ring-1 ring-black/[0.05] dark:ring-white/[0.06] flex items-center justify-center">
+                            <div className="shrink-0 w-6 h-6 rounded overflow-hidden bg-neutral-100 ring-1 ring-neutral-900/[0.05] flex items-center justify-center">
                               {item.imagePreview ? (
                                 <img src={item.imagePreview} alt="" className="w-full h-full object-cover" />
                               ) : (
@@ -2212,7 +2212,7 @@ export default function Lens() {
                             </div>
                             <div className="min-w-0 flex-1">
                               {firstUserQ && (
-                                <div className="text-[11.5px] truncate leading-tight text-neutral-800 dark:text-neutral-200">
+                                <div className="text-[11.5px] truncate leading-tight text-neutral-800">
                                   {firstUserQ}
                                 </div>
                               )}
@@ -2234,14 +2234,14 @@ export default function Lens() {
               disabled={sendDisabled}
               className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 active:scale-95 ${
                 !sendDisabled
-                  ? 'bg-[#2f6ff0] hover:bg-[#2f6ff0] hover:scale-105'
-                  : 'bg-neutral-200 dark:bg-neutral-700 cursor-not-allowed'
+                  ? 'bg-accent hover:bg-accent-hover hover:scale-105'
+                  : 'bg-neutral-200 cursor-not-allowed'
               }`}
             >
               <ArrowUp
                 size={18}
                 strokeWidth={2.25}
-                className={!sendDisabled ? 'text-white' : 'text-neutral-400 dark:text-neutral-500'}
+                className={!sendDisabled ? 'text-[var(--text-onaccent)]' : 'text-neutral-400 dark:text-neutral-500'}
               />
             </button>
           </div>
@@ -2332,7 +2332,7 @@ export default function Lens() {
                   return (
                     <div key={origIdx} className={`mb-3 ${isUser ? 'flex justify-end' : ''}`}>
                       {isUser ? (
-                        <div className="px-3 py-2 rounded-2xl bg-[#2f6ff0]/15 dark:bg-[#2f6ff0]/20 text-[13.5px] text-neutral-800 dark:text-neutral-100 max-w-[88%] whitespace-pre-wrap break-words">
+                        <div className="px-3 py-2 rounded-2xl bg-accent-soft text-[13.5px] text-neutral-800 max-w-[88%] whitespace-pre-wrap break-words">
                           {m.content}
                         </div>
                       ) : (
@@ -2361,7 +2361,7 @@ export default function Lens() {
                           )}
                           {m.content ? (
                             sourceMode ? (
-                              <pre className="not-prose whitespace-pre-wrap break-words text-[12.5px] leading-6 font-mono bg-neutral-100 dark:bg-neutral-800/60 rounded-lg p-3">
+                              <pre className="not-prose whitespace-pre-wrap break-words text-[12.5px] leading-6 font-mono bg-neutral-100 rounded-lg p-3">
                                 {m.content}
                               </pre>
                             ) : (
@@ -2391,7 +2391,7 @@ export default function Lens() {
           外层 select-none 用 select-text 覆盖，让用户可选中复制部分文本。 */}
       {showTranslateCard && (
         <div
-          className="absolute ease-out rounded-2xl bg-white dark:bg-neutral-900 border border-black/[0.07] dark:border-white/[0.08] lens-floating-surface overflow-hidden select-text"
+          className="absolute ease-out rounded-2xl bg-neutral-50 border border-neutral-900/[0.07] lens-floating-surface overflow-hidden select-text"
           onMouseDown={(e) => e.stopPropagation()}
           onMouseMove={(e) => e.stopPropagation()}
           onMouseUp={(e) => e.stopPropagation()}
@@ -2411,7 +2411,7 @@ export default function Lens() {
         >
           {/* 顶部缩略图 + 应用名 + 状态徽章（耗时 / token 估算） */}
           <div
-            className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-black/[0.05] dark:border-white/[0.06] cursor-move select-none"
+            className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-neutral-900/[0.05] cursor-move select-none"
             onPointerDown={handleTranslateCardDragStart}
             onPointerMove={handleTranslateCardDragMove}
             onPointerUp={handleTranslateCardDragEnd}
@@ -2419,7 +2419,7 @@ export default function Lens() {
             onLostPointerCapture={handleTranslateCardLostCapture}
           >
             {mode !== 'translateText' && (
-              <div className="shrink-0 w-8 h-8 rounded-lg overflow-hidden ring-1 ring-black/[0.06] dark:ring-white/[0.06] bg-neutral-100 dark:bg-neutral-800 flex items-center justify-center">
+              <div className="shrink-0 w-8 h-8 rounded-lg overflow-hidden ring-1 ring-neutral-900/[0.06] bg-neutral-100 flex items-center justify-center">
                 {imagePreview ? (
                   <img src={imagePreview} alt="snap" className="w-full h-full object-cover" />
                 ) : (
@@ -2427,7 +2427,7 @@ export default function Lens() {
                 )}
               </div>
             )}
-            <span className="text-[12.5px] font-medium text-neutral-700 dark:text-neutral-300 truncate flex-1">
+            <span className="text-[12.5px] font-medium text-neutral-700 truncate flex-1">
               {mode === 'translateText' ? t.selectedText : (appLabel || t.lensScreenshotOf.replace('：', '').replace(':', ''))}
             </span>
             {(() => {
@@ -2463,15 +2463,15 @@ export default function Lens() {
                   <ChatMarkdown content={translateText} variant="lens" />
                 ) : (
                   <div className="space-y-2">
-                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite]" />
-                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[88%]" />
-                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 dark:from-neutral-800 dark:via-neutral-700 dark:to-neutral-800 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite]" />
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[88%]" />
+                    <div className="h-3.5 rounded bg-gradient-to-r from-neutral-200 via-neutral-100 to-neutral-200 bg-[length:200%_100%] animate-[shimmer_1.4s_linear_infinite] w-[72%]" />
                   </div>
                 )}
                 {/* 原文区（参考）：分隔符之后的 delta 才到这里，置于译文下方小字灰色 */}
                 {translateOriginal && mode !== 'translateText' && (
                   <>
-                    <div className="border-t border-black/[0.05] dark:border-white/[0.06] -mx-3.5 my-3" />
+                    <div className="border-t border-neutral-900/[0.05] -mx-3.5 my-3" />
                     <ChatMarkdown content={translateOriginal} variant="lens-muted" />
                   </>
                 )}
@@ -2481,7 +2481,7 @@ export default function Lens() {
 
           {/* 底部操作栏：复制译文 */}
           {stage === 'translated' && translateText && !translateError && (
-            <div className="flex items-center gap-1 px-3 py-1.5 border-t border-black/[0.05] dark:border-white/[0.06]">
+            <div className="flex items-center gap-1 px-3 py-1.5 border-t border-neutral-900/[0.05]">
               <Button
                 variant="ghost"
                 size="sm"

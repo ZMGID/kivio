@@ -56,8 +56,8 @@ function PermissionPickerBase({
         aria-expanded={open}
         className={`${chatTitlebarIconButtonClass} ${
           open
-            ? 'bg-black/[0.06] text-neutral-800 dark:bg-white/[0.09] dark:text-neutral-100'
-            : 'hover:text-neutral-800 dark:hover:text-neutral-100'
+            ? 'bg-neutral-900/[0.06] text-neutral-800'
+            : 'hover:text-neutral-800'
         }`}
         title={t.chatApprovalPolicy.replace('{name}', currentLabel)}
         aria-label={t.chatApprovalPolicy.replace('{name}', currentLabel)}
@@ -79,8 +79,8 @@ function PermissionPickerBase({
                   onClick={() => pick(option.value)}
                   className={`kv-menu-row justify-between transition-colors ${
                     active
-                      ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                      : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800/80'
+                      ? 'bg-neutral-100 font-medium text-neutral-900'
+                      : 'text-neutral-700 hover:bg-neutral-50'
                   }`}
                 >
                   <span>{option.label}</span>

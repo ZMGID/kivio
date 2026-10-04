@@ -46,7 +46,7 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
   })
   return (
     <div className="min-w-0 flex-1" data-chat-goal-card>
-      <div className="flex w-full items-start gap-2 rounded-md px-1 py-0.5 text-[12px] text-neutral-700 dark:text-neutral-200">
+      <div className="flex w-full items-start gap-2 rounded-md px-1 py-0.5 text-[12px] text-neutral-700">
         <Target size={15} className="mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => setExpandedGoal(expanded ? null : goalKey)}
@@ -73,11 +73,11 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
                   event.preventDefault(); save()
                 }
               }}
-              className="w-full resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-[13px] leading-5 outline-none focus:border-violet-500 dark:border-neutral-600 dark:bg-neutral-900" />
+              className="w-full resize-y rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-[13px] leading-5 outline-none focus:border-violet-500 dark:border-neutral-600" />
             <div className="mt-2 flex items-center justify-between gap-2">
               <span className="text-[11px] text-neutral-500">{goal.status === 'paused' ? '保存后保持暂停' : '保存后按新目标继续'} · Ctrl+Enter 保存</span>
               <div className="flex gap-2">
-                <button type="button" disabled={busy} onClick={() => setEditing(null)} className="rounded px-3 py-1 hover:bg-neutral-200 dark:hover:bg-neutral-700">取消</button>
+                <button type="button" disabled={busy} onClick={() => setEditing(null)} className="rounded px-3 py-1 hover:bg-neutral-200">取消</button>
                 <button type="button" disabled={busy || !editing.text.trim() || editing.text.trim() === goal.objective}
                   onClick={save} className="rounded bg-violet-600 px-3 py-1 text-white disabled:opacity-40">{busy ? '保存中…' : '保存目标'}</button>
               </div>

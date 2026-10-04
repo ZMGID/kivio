@@ -202,7 +202,7 @@ export function ProviderRequestPanel({
       </SettingRow>
 
       {ua.value && (
-        <div className="mt-1 rounded-lg bg-black/[0.03] px-3 py-2 dark:bg-white/[0.04]">
+        <div className="mt-1 rounded-lg bg-neutral-900/[0.03] px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <span className="kv-row-desc">{t.cliIdentityEffective}</span>
             <span className="kv-row-desc">
@@ -372,7 +372,7 @@ export function ProviderRequestPanel({
                       <div
                         id={listboxId}
                         role="listbox"
-                        className="absolute left-0 right-0 top-full z-10 mt-1 overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-black/10 dark:bg-neutral-800 dark:ring-white/10"
+                        className="absolute left-0 right-0 top-full z-10 mt-1 overflow-hidden rounded-lg bg-neutral-50 shadow-lg ring-1 ring-neutral-900/10"
                       >
                         {suggestions.map((suggestion, i) => (
                           <button
@@ -380,8 +380,8 @@ export function ProviderRequestPanel({
                             type="button"
                             role="option"
                             aria-selected={i === suggestActive}
-                            className={`block w-full px-2.5 py-1.5 text-left font-mono text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${
-                              i === suggestActive ? 'bg-black/[0.05] dark:bg-white/[0.07]' : ''
+                            className={`block w-full px-2.5 py-1.5 text-left font-mono text-[12px] hover:bg-neutral-900/[0.05] ${
+                              i === suggestActive ? 'bg-neutral-900/[0.05]' : ''
                             }`}
                             // onBlur 先于 onClick，鼠标要用 mousedown 才点得中。
                             onMouseDown={(e) => {

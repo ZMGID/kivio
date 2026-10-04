@@ -24,7 +24,7 @@ const MessageList = lazy(() => import('./MessageList').then((module) => ({
 function MessageListLoading() {
   return (
     <div className="chat-themed-surface flex flex-1 items-center justify-center">
-      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-neutral-700 dark:border-t-neutral-200" />
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-t-neutral-200" />
     </div>
   )
 }
@@ -226,7 +226,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                 <button
                   type="button"
                   onClick={() => onSelectConversation(forkOrigin.sourceId)}
-                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-400"
                   title={`分叉自「${forkOrigin.title}」，点击回到源对话`}
                 >
                   <GitBranch size={12} strokeWidth={2} className="shrink-0" />

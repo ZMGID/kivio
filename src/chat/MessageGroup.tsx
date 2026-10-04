@@ -130,7 +130,7 @@ function GroupColumnView({
     ? `chat-message-group-col flex max-h-[min(560px,70vh)] min-w-[280px] flex-1 flex-col rounded-2xl border px-3 py-2 ${
         isSelected
           ? 'border-emerald-400/70 bg-emerald-50/40 dark:border-emerald-500/50 dark:bg-emerald-950/20'
-          : 'border-neutral-200/70 bg-neutral-50/40 dark:border-neutral-700/60 dark:bg-neutral-900/30'
+          : 'border-neutral-200/70 bg-neutral-50/40'
       }`
     : 'chat-message-group-tab flex w-full flex-col'
   return (
@@ -158,7 +158,7 @@ function GroupColumnView({
               className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                 isSelected
                   ? 'bg-emerald-500/90 text-white'
-                  : 'border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800'
+                  : 'border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
               }`}
             >
               <Check size={11} strokeWidth={2.5} />
@@ -237,9 +237,9 @@ function GroupFooter({
   onSelectChip: (messageId: string) => void
 }) {
   return (
-    <div className="chat-message-group-footer mt-2 flex flex-wrap items-center gap-2 border-t border-neutral-200/60 pt-2.5 dark:border-neutral-700/50">
+    <div className="chat-message-group-footer mt-2 flex flex-wrap items-center gap-2 border-t border-neutral-200/60 pt-2.5">
       {/* 视图切换：iOS 风分段控件，激活项白底浮起，克制不抢眼 */}
-      <div className="inline-flex shrink-0 items-center rounded-lg bg-neutral-100 p-0.5 dark:bg-neutral-800/60">
+      <div className="inline-flex shrink-0 items-center rounded-lg bg-neutral-100 p-0.5">
         {([
           ['tabs', Square, '切换', '切换显示（一次一条）'],
           ['columns', Columns2, '并排', '并排显示（多列）'],
@@ -252,8 +252,8 @@ function GroupFooter({
             title={hint}
             className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
               viewMode === mode
-                ? 'bg-white text-neutral-800 shadow-sm dark:bg-neutral-700 dark:text-neutral-100'
-                : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
+                ? 'bg-neutral-50 text-neutral-800 shadow-sm'
+                : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500'
             }`}
           >
             <Icon size={12} strokeWidth={2} />
@@ -276,7 +276,7 @@ function GroupFooter({
               className={`inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
                 isActive
                   ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                  : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
+                  : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
               }`}
             >
               {message.model && <ModelIcon model={message.model} size={13} />}

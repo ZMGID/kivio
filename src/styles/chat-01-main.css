@@ -12,7 +12,7 @@
   flex-direction: column;
   overflow: hidden;
   border-radius: 14px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--theme-surface-border);
   background: var(--theme-surface);
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.55),
@@ -21,8 +21,6 @@
 }
 
 .dark .chat-window-shell {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: #212121;
   box-shadow:
     inset 0 0 0 0.5px rgba(255, 255, 255, 0.04),
     0 0 0 0.5px rgba(255, 255, 255, 0.05),
@@ -91,7 +89,7 @@
 .chat-dock-shell {
   border-radius: var(--chat-card-radius);
   background: var(--theme-surface-soft);
-  border: 1px solid rgba(24, 24, 27, 0.07);
+  border: 1px solid var(--theme-surface-border);
   box-shadow:
     0 1px 2px rgba(24, 24, 27, 0.04),
     0 5px 14px -8px rgba(24, 24, 27, 0.10);
@@ -174,10 +172,6 @@
   background: var(--theme-surface-hover);
 }
 
-/* 暗色里「浮起」= 更亮（压深读作凹陷），与三张卡片同一套判断。 */
-.dark .chat-user-bubble {
-  background: #313134;
-}
 
 /* Markdown 纯图片段落拆掉 <p> 盒，磁贴在正文流里并排换行。 */
 .chat-markdown p:has(> [data-chat-md-image]):not(:has(> :not([data-chat-md-image]):not(br))) {
@@ -237,13 +231,9 @@
 
 .chat-sidebar-resize:hover::after,
 .chat-window-shell.is-sidebar-resizing .chat-sidebar-resize::after {
-  background: rgba(24, 24, 27, 0.22);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
-.dark .chat-sidebar-resize:hover::after,
-.dark .chat-window-shell.is-sidebar-resizing .chat-sidebar-resize::after {
-  background: rgba(255, 255, 255, 0.28);
-}
 
 .chat-window-shell.is-sidebar-resizing,
 .chat-window-shell.is-sidebar-resizing * {
@@ -460,9 +450,6 @@
   display: none;
 }
 
-.dark .chat-composer-status {
-  background: rgba(255, 255, 255, 0.035);
-}
 
 /* 无项目且无改动时状态条内容为空（diff 徽标自隐藏），空条直接不显示。 */
 .chat-composer-status:empty {
@@ -480,9 +467,6 @@
   color: var(--text-faint);
 }
 
-.dark .chat-composer-queue {
-  background: rgba(255, 255, 255, 0.035);
-}
 
 /* 输入框功能栏右侧的用量小字（缓存命中/↑输入/↓输出）：主区容器过窄时直接隐藏，
    避免和模式胶囊、上下文指示器挤在一行。容器查询挂在 .chat-main-pane 的
@@ -496,12 +480,9 @@
 /* 一条排队消息。动作键平时透明（不占注意力也不跳版：仍然挂载、只是不可见），
    指针悬停或键盘聚焦到行内任意控件时才现出来。 */
 .chat-composer-queue-row:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
 }
 
-.dark .chat-composer-queue-row:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
 
 .chat-composer-queue-actions {
   opacity: 0;
@@ -534,12 +515,9 @@
 }
 
 button.chat-composer-status-item:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-.dark button.chat-composer-status-item:hover {
-  background: rgba(255, 255, 255, 0.07);
-}
 
 .chat-composer-status-item > svg {
   width: 13px;
@@ -564,21 +542,17 @@ button.chat-composer-status-item:hover {
 /* 裸露工具栏上的图标钮：原来是极浅的细线图标，飘在点阵背景上立不住。
    加深到 --text-faint 之上一档，并让 hover 有明确的底，读作「可按」。 */
 .chat-composer-tools .kv-icon-btn {
-  color: #71717a;
+  color: var(--text-muted);
 }
 
-.dark .chat-composer-tools .kv-icon-btn {
-  color: #a1a1aa;
-}
 
 .chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
   color: var(--text);
-  background: rgba(0, 0, 0, 0.06);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .dark .chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.09);
 }
 
 /* 图标统一 16px：各调用点传的是 18（原来在高盒子里合适），裸栏里偏大。
@@ -596,24 +570,17 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-composer-send.is-ready {
-  color: #2f6ff0;
+  color: var(--accent);
 }
 
 .chat-composer-send.is-ready:hover {
-  color: #2960d8;
+  color: var(--accent-hover);
 }
 
 .chat-composer-send.is-ready:active {
   transform: scale(0.9);
 }
 
-.dark .chat-composer-send.is-ready {
-  color: #5c8df7;
-}
-
-.dark .chat-composer-send.is-ready:hover {
-  color: #6f9bf8;
-}
 
 .chat-message-navigator {
   position: absolute;
@@ -630,13 +597,13 @@ button.chat-composer-status-item:hover {
    行高按可用高度和标题数自适应（14–22px），放不下时列表滚动。
    层级靠刻度长短和标题字重区分：主级刻度最长、标题最重，子级依次缩短、变淡并缩进。 */
 .chat-heading-navigator {
-  --outline-tick: rgb(163 163 163);
-  --outline-strong: rgb(23 23 23);
-  --outline-text: rgb(64 64 64);
-  --outline-sub: rgb(115 115 115);
-  --outline-hover: rgb(23 23 23 / 0.06);
+  --outline-tick: var(--text-faint);
+  --outline-strong: var(--text);
+  --outline-text: var(--text);
+  --outline-sub: var(--text-muted);
+  --outline-hover: color-mix(in srgb, var(--text) 8%, transparent);
   --outline-panel: var(--theme-surface-soft);
-  --outline-edge: rgb(229 229 229 / 0.95);
+  --outline-edge: var(--theme-surface-border);
   position: absolute;
   z-index: 13;
   top: 16px;
@@ -651,15 +618,6 @@ button.chat-composer-status-item:hover {
   pointer-events: none;
 }
 
-.dark .chat-heading-navigator {
-  --outline-tick: rgb(115 115 115);
-  --outline-strong: rgb(245 245 245);
-  --outline-text: rgb(212 212 212);
-  --outline-sub: rgb(150 150 150);
-  --outline-hover: rgb(245 245 245 / 0.08);
-  --outline-panel: #262629;
-  --outline-edge: rgb(64 64 64 / 0.95);
-}
 
 .chat-heading-navigator-list {
   position: relative;
@@ -810,7 +768,7 @@ button.chat-composer-status-item:hover {
   border: 0;
   padding: 0;
   background: transparent;
-  color: rgb(163 163 163);
+  color: var(--text-faint);
   cursor: pointer;
 }
 
@@ -827,7 +785,7 @@ button.chat-composer-status-item:hover {
 
 .chat-message-navigator-node:hover,
 .chat-message-navigator-node:focus-visible {
-  color: rgb(82 82 82);
+  color: var(--text-muted);
   outline: none;
 }
 
@@ -837,7 +795,7 @@ button.chat-composer-status-item:hover {
 
 .chat-message-navigator-node.is-visible,
 .chat-message-navigator-node.is-active {
-  color: rgb(23 23 23);
+  color: var(--text);
 }
 
 .chat-message-navigator-node.is-active .chat-message-navigator-tick {
@@ -873,11 +831,11 @@ button.chat-composer-status-item:hover {
   z-index: 1000;
   width: min(320px, calc(100vw - 32px));
   transform: translateY(-50%);
-  border: 1px solid rgb(229 229 229 / 0.95);
+  border: 1px solid var(--theme-surface-border-strong);
   border-radius: 16px;
-  background: rgb(255 255 255 / 0.96);
+  background: color-mix(in srgb, var(--theme-surface) 96%, transparent);
   padding: 14px 16px;
-  color: rgb(38 38 38);
+  color: var(--text);
   box-shadow: 0 14px 38px rgb(0 0 0 / 0.12);
   backdrop-filter: blur(18px);
   pointer-events: none;
@@ -903,7 +861,7 @@ button.chat-composer-status-item:hover {
   display: -webkit-box;
   overflow: hidden;
   margin: 9px 0 0;
-  color: rgb(115 115 115);
+  color: var(--text-muted);
   font-size: 13px;
   line-height: 1.55;
   -webkit-box-orient: vertical;
@@ -912,34 +870,15 @@ button.chat-composer-status-item:hover {
 
 .chat-message-navigator-preview-model {
   margin-top: 11px;
-  color: rgb(163 163 163);
+  color: var(--text-faint);
   font-size: 12px;
 }
 
-.dark .chat-message-navigator-node {
-  color: rgb(115 115 115);
-}
-
-.dark .chat-message-navigator-node:hover,
-.dark .chat-message-navigator-node:focus-visible {
-  color: rgb(190 190 190);
-}
-
-.dark .chat-message-navigator-node.is-visible,
-.dark .chat-message-navigator-node.is-active {
-  color: rgb(245 245 245);
-}
 
 .dark .chat-message-navigator-preview {
-  border-color: rgb(64 64 64 / 0.95);
-  background: rgb(38 38 38 / 0.96);
-  color: rgb(245 245 245);
   box-shadow: 0 16px 42px rgb(0 0 0 / 0.4);
 }
 
-.dark .chat-message-navigator-preview-answer {
-  color: rgb(180 180 180);
-}
 
 @container chat-main (max-width: 719px) {
   .chat-message-navigator {
@@ -980,22 +919,11 @@ button.chat-composer-status-item:hover {
   }
 }
 
-/* 暗色同理：外壳 #212121，三张卡片只比它亮一点点（不是压深 —— 暗色里「浮起」= 更亮，
-   压深读作凹陷）。 */
-.dark .chat-sidebar-shell,
-.dark .chat-main-pane,
-.dark .chat-center-page,
-.dark .chat-dock-shell,
-.dark .chat-themed-surface,
-.dark .chat-conversation-loading {
-  background: #262629;
-}
 
 .dark .chat-sidebar-shell,
 .dark .chat-main-pane,
 .dark .chat-center-page,
 .dark .chat-dock-shell {
-  border-color: rgba(255, 255, 255, 0.07);
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.35),
     0 5px 16px -8px rgba(0, 0, 0, 0.45);
@@ -1019,7 +947,7 @@ button.chat-composer-status-item:hover {
 /* 暗色 scrim 更薄：深底 Mica 本身偏暗，66% 实色会把壁纸取色吃没，读成「没开半透明」。 */
 .dark .chat-window-host--native-effect .chat-sidebar-shell,
 .dark .chat-window-host--native-effect .chat-dock-shell {
-  background: color-mix(in srgb, #262629 48%, transparent);
+  background: color-mix(in srgb, var(--theme-surface-soft) 48%, transparent);
 }
 
 /* 原生控件的暗色方案只挂在不透明阅读面上，绝不挂 html：
@@ -1040,9 +968,6 @@ button.chat-composer-status-item:hover {
   color-scheme: dark;
 }
 
-.dark .chat-composer-shell {
-  background: rgb(23, 23, 23);
-}
 
 /* —— 主内容区：宽度 —— */
 @container chat-main (max-width: 560px) {
@@ -1210,9 +1135,6 @@ button.chat-composer-status-item:hover {
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   }
 
-  .dark .assistant-center-sidebar {
-    border-bottom-color: rgba(255, 255, 255, 0.08);
-  }
 }
 
 /* 空对话页 */
@@ -1222,9 +1144,6 @@ button.chat-composer-status-item:hover {
   background-color: var(--theme-surface-soft);
 }
 
-.dark .chat-empty-hero {
-  background-color: #262629;
-}
 
 .chat-empty-hero-dot-canvas {
   position: absolute;
@@ -1256,24 +1175,18 @@ button.chat-composer-status-item:hover {
   font-weight: 500;
   letter-spacing: -0.02em;
   line-height: 1.2;
-  color: #171717;
+  color: var(--text);
 }
 
-.dark .chat-empty-hero-title {
-  color: #fafafa;
-}
 
 .chat-typewriter-cursor {
   display: inline-block;
   margin-left: 0.02em;
   font-weight: 400;
-  color: var(--tw-prose-body, #a3a3a3);
+  color: var(--tw-prose-body, var(--text-faint));
   animation: chat-typewriter-blink 1s step-end infinite;
 }
 
-.dark .chat-typewriter-cursor {
-  color: #737373;
-}
 
 @keyframes chat-typewriter-blink {
   0%, 100% { opacity: 1; }
@@ -1294,13 +1207,11 @@ button.chat-composer-status-item:hover {
   width: 2px;
   height: 100%;
   border-radius: 1px;
-  background: #71717a;
+  background: var(--theme-surface-active);
   transform-origin: center;
   animation: chat-gen-wave 1.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
 }
-.dark .chat-gen-wave > span {
-  background: #a1a1aa;
-}
+
 .chat-gen-wave > span:nth-child(1) { animation-delay: 0s; }
 .chat-gen-wave > span:nth-child(2) { animation-delay: 0.2s; }
 .chat-gen-wave > span:nth-child(3) { animation-delay: 0.4s; }
@@ -1371,7 +1282,6 @@ button.chat-composer-status-item:hover {
   min-height: 0;
   overflow: hidden;
 }
-
 
 
 .chat-motion-fade-up {
@@ -1501,8 +1411,6 @@ button.chat-composer-status-item:hover {
 }
 
 .dark .kv-menu {
-  border-color: rgba(255, 255, 255, 0.09);
-  background: #2a2a2c;
   box-shadow:
     0 0 0 0.5px rgba(255, 255, 255, 0.05),
     0 4px 14px -4px rgba(0, 0, 0, 0.5),
@@ -1524,12 +1432,9 @@ button.chat-composer-status-item:hover {
 }
 
 .kv-menu-item:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.05);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-.dark .kv-menu-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.07);
-}
 
 .kv-menu-item:disabled {
   opacity: 0.4;
@@ -1584,9 +1489,6 @@ button.chat-composer-status-item:hover {
   background: var(--theme-surface-border);
 }
 
-.dark .kv-menu-sep {
-  background: rgba(255, 255, 255, 0.08);
-}
 
 /* 分组小标题 */
 .kv-menu-label {
@@ -1656,7 +1558,7 @@ button.chat-composer-status-item:hover {
   aspect-ratio: 4 / 3;
   overflow: hidden;
   border-radius: 12px;
-  background: #f3f4f5;
+  background: var(--theme-surface-soft);
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, 0.075),
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
@@ -1664,7 +1566,6 @@ button.chat-composer-status-item:hover {
 }
 
 .dark .image-generation-pending-frame {
-  background: #252527;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.075),
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
@@ -1681,23 +1582,17 @@ button.chat-composer-status-item:hover {
     linear-gradient(180deg, rgba(243, 244, 245, 0.24), transparent 42%, rgba(243, 244, 245, 0.34));
 }
 
-.dark .image-generation-pending-frame::after {
-  background:
-    radial-gradient(circle at 50% 46%, transparent 0 46%, rgba(37, 37, 39, 0.48) 76%),
-    linear-gradient(180deg, rgba(37, 37, 39, 0.28), transparent 42%, rgba(37, 37, 39, 0.38));
-}
 
 .image-generation-pending-indicator {
   width: 6px;
   height: 6px;
   border-radius: 999px;
-  background: #a3a3a3;
+  background: var(--theme-surface-active);
   box-shadow: 0 0 0 0 rgba(163, 163, 163, 0.3);
   animation: image-generation-indicator-pulse 1.8s ease-in-out infinite;
 }
 
 .dark .image-generation-pending-indicator {
-  background: #8a8a8a;
   box-shadow: 0 0 0 0 rgba(138, 138, 138, 0.24);
 }
 
@@ -1835,7 +1730,7 @@ button.chat-composer-status-item:hover {
 }
 
 .kv-skeleton {
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: color-mix(in srgb, var(--text) 4%, transparent);
   background-image: linear-gradient(
     100deg,
     rgba(0, 0, 0, 0) 30%,
@@ -1848,7 +1743,6 @@ button.chat-composer-status-item:hover {
 }
 
 .dark .kv-skeleton {
-  background-color: rgba(255, 255, 255, 0.05);
   background-image: linear-gradient(
     100deg,
     rgba(255, 255, 255, 0) 30%,
@@ -2091,23 +1985,19 @@ button.chat-composer-status-item:hover {
   color: rgb(196, 181, 253);
 }
 
-/* 普通工具「运行中」状态：accent blue 工具名亮度呼吸，整行不缩放/发光。
-   颜色与已完成 ✓ 的 #2f6ff0 / dark #5c8df7 同源。 */
+/* 普通工具「运行中」状态：主题强调色亮度呼吸，整行不缩放/发光。 */
 .chat-motion-tool-shimmer {
-  color: #2f6ff0;
+  color: var(--accent);
   animation: chat-motion-text-pulse 2s ease-in-out infinite;
 }
 
-.dark .chat-motion-tool-shimmer {
-  color: #5c8df7;
-}
 
 .chat-compaction-divider {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 0 4px;
-  color: var(--color-neutral-500, #737373);
+  color: var(--color-neutral-500, var(--text-muted));
   font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   user-select: none;
@@ -2134,7 +2024,7 @@ button.chat-composer-status-item:hover {
 .chat-compaction-divider-line {
   flex: 1;
   height: 1px;
-  background: rgba(120, 120, 120, 0.28);
+  background: color-mix(in srgb, var(--text) 28%, transparent);
   transform-origin: center;
 }
 
@@ -2158,15 +2048,15 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-compaction-divider-arrow {
-  color: rgba(120, 120, 120, 0.72);
+  color: var(--text-muted);
 }
 
 .chat-context-clear-badge {
-  border: 1px solid rgba(120, 120, 120, 0.28);
+  border: 1px solid var(--theme-surface-border-strong);
   border-radius: 999px;
   padding: 2px 10px;
   line-height: 1.4;
-  color: var(--color-neutral-500, #737373);
+  color: var(--color-neutral-500, var(--text-muted));
   background: var(--bg-primary, transparent);
 }
 
@@ -2195,16 +2085,16 @@ button.chat-composer-status-item:hover {
   background: transparent;
   padding: 2px 0 6px;
   font-size: 11px;
-  color: var(--color-neutral-500, #737373);
+  color: var(--color-neutral-500, var(--text-muted));
   cursor: pointer;
 }
 
 .chat-compaction-summary-toggle:hover {
-  color: var(--color-neutral-700, #404040);
+  color: var(--color-neutral-700, var(--text));
 }
 
 .dark .chat-compaction-summary-toggle:hover {
-  color: var(--color-neutral-300, #d4d4d4);
+  color: var(--color-neutral-300);
 }
 
 .chat-compaction-summary-body {
@@ -2212,11 +2102,11 @@ button.chat-composer-status-item:hover {
   margin-left: 0;
   padding-bottom: 8px;
   font-size: 12px;
-  color: var(--color-neutral-600, #525252);
+  color: var(--color-neutral-600, var(--text-muted));
 }
 
 .dark .chat-compaction-summary-body {
-  color: var(--color-neutral-300, #d4d4d4);
+  color: var(--color-neutral-300);
 }
 
 @keyframes chat-compaction-line-in {

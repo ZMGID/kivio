@@ -24,19 +24,19 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const t = i18n[lang]
   return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/20 px-4">
-      <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-4 shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+    <div className="fixed inset-0 z-[300] flex items-center justify-center bg-neutral-900/20 px-4">
+      <div className="w-full max-w-sm rounded-lg border border-neutral-200 bg-neutral-50 p-4 shadow-xl">
         <div className="mb-3 flex items-start gap-2">
-          <TriangleAlert size={17} className="mt-0.5 shrink-0 text-[#2f6ff0] dark:text-[#5c8df7]" />
+          <TriangleAlert size={17} className="mt-0.5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">{title}</div>
+            <div className="text-[14px] font-semibold text-neutral-900">{title}</div>
             <div className="mt-1 break-all text-[12px] text-neutral-500 dark:text-neutral-400">{message}</div>
           </div>
         </div>
         <div className="flex justify-end gap-2">
           <button
             type="button"
-            className="rounded-md px-3 py-1.5 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded-md px-3 py-1.5 text-[12px] font-medium text-neutral-600 hover:bg-neutral-100"
             onClick={onCancel}
             disabled={busy}
           >

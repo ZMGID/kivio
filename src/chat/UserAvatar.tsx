@@ -11,7 +11,7 @@ type UserAvatarProps = {
 function AppLogoAvatar({ size, className }: { size: number; className?: string }) {
   return (
     <div
-      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white ring-1 ring-black/[0.05] dark:bg-neutral-900 dark:ring-white/[0.08] ${className ?? ''}`}
+      className={`flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-neutral-50 ring-1 ring-neutral-900/[0.05] ${className ?? ''}`}
       style={{ width: size, height: size }}
       aria-hidden
     >
@@ -33,7 +33,7 @@ export function UserAvatar({ profile, size = 28, className }: UserAvatarProps) {
         alt=""
         width={size}
         height={size}
-        className={`shrink-0 rounded-full object-cover ring-1 ring-black/[0.05] dark:ring-white/[0.08] ${className ?? ''}`}
+        className={`shrink-0 rounded-full object-cover ring-1 ring-neutral-900/[0.05] ${className ?? ''}`}
       />
     )
   }

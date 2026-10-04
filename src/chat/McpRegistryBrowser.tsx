@@ -152,11 +152,11 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
             placeholder={t.chatMcpSearchPlaceholder}
-            className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
             data-tauri-drag-region="false"
           />
         </div>
-        <div className="inline-flex h-10 shrink-0 items-center rounded-md border border-neutral-200 p-1 dark:border-neutral-700">
+        <div className="inline-flex h-10 shrink-0 items-center rounded-md border border-neutral-200 p-1">
           {MCP_REGISTRY_SOURCE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
@@ -165,8 +165,8 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
               data-tauri-drag-region="false"
               className={`rounded px-3 py-1 text-[12.5px] font-medium transition-colors duration-[var(--kv-dur-fast)] ${
                 source === opt.value
-                  ? 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100'
-                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
+                  ? 'bg-neutral-100 text-neutral-900'
+                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
               }`}
             >
               {opt.label}
@@ -185,7 +185,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
         {loading ? (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {Array.from({ length: 6 }, (_, i) => (
-              <div key={i} className="rounded-xl border border-neutral-200/80 p-3.5 dark:border-neutral-800/70">
+              <div key={i} className="rounded-xl border border-neutral-200/80 p-3.5">
                 <div className="kv-skeleton h-4 w-2/5 rounded" />
                 <div className="kv-skeleton mt-2.5 h-3 w-full rounded" />
                 <div className="kv-skeleton mt-1.5 h-3 w-3/5 rounded" />
@@ -203,15 +203,15 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                 <div
                   key={card.id}
                   style={{ '--chat-motion-delay': `${Math.min(idx % PAGE_LIMIT, 8) * 24}ms` } as CSSProperties}
-                  className="chat-motion-fade-up group rounded-xl border border-neutral-200 bg-white p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md dark:border-neutral-800 dark:bg-neutral-950/40 dark:hover:border-neutral-700"
+                  className="chat-motion-fade-up group rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950 dark:text-neutral-50">{card.displayName}</span>
+                        <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
                         {card.verified && <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">{t.chatMcpVerified}</span>}
                         {card.transportHints.map((hint) => (
-                          <span key={hint} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">{hint}</span>
+                          <span key={hint} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">{hint}</span>
                         ))}
                       </div>
                       <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
@@ -238,12 +238,12 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                   </div>
 
                   {configuring && config && (
-                    <div className="chat-motion-search-reveal mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800/70">
+                    <div className="chat-motion-search-reveal mt-3 space-y-2 border-t border-neutral-100 pt-3">
                       {config.draft.requiredConfig.map((input) => {
                         const key = mcpRegistryConfigInputKey(input)
                         return (
                           <div key={key}>
-                            <label className="mb-1 block text-[11.5px] font-medium text-neutral-600 dark:text-neutral-300">
+                            <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">
                               {input.label ?? input.name}
                               {input.required && <span className="ml-1 text-red-500">*</span>}
                               <span className="ml-1.5 text-[10px] font-normal text-neutral-400 dark:text-neutral-500">{input.target}</span>

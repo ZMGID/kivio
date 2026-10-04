@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { Toggle, Select, Input, SettingRow, SettingsGroup, PermissionItem } from '../components'
 import { Button } from '../../components/Button'
-import { THEME_COLOR_PRESETS } from '../../themeColors'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from '../uiFont'
 import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData, PermissionStatus } from '../../api/tauri'
@@ -41,7 +40,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
         <div className="absolute right-0 z-50 mt-1 max-h-64 w-full overflow-auto kv-menu">
           <button
             type="button"
-            className={`kv-menu-row truncate hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${value === '' ? 'font-semibold text-neutral-900 dark:text-neutral-100' : 'text-neutral-700 dark:text-neutral-300'}`}
+            className={`kv-menu-row truncate hover:bg-[var(--theme-surface-hover)] ${value === '' ? 'font-semibold text-[var(--text)]' : 'text-[var(--text-muted)]'}`}
             onMouseDown={(e) => { e.preventDefault(); select('') }}
           >
             {defaultLabel}
@@ -50,7 +49,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
             <button
               key={f}
               type="button"
-              className={`kv-menu-row truncate hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${value === f ? 'bg-black/[0.04] font-semibold text-neutral-900 dark:bg-white/[0.06] dark:text-neutral-100' : 'text-neutral-700 dark:text-neutral-300'}`}
+              className={`kv-menu-row truncate hover:bg-[var(--theme-surface-hover)] ${value === f ? 'bg-[var(--theme-surface-active)] font-semibold text-[var(--text)]' : 'text-[var(--text-muted)]'}`}
               style={{ fontFamily: `"${f}"` }}
               onMouseDown={(e) => { e.preventDefault(); select(f) }}
             >
@@ -75,12 +74,11 @@ function AppearanceSubsection({ title, children }: { title: string; children: Re
   )
 }
 
-/** 外观：语言 / 主题 / 侧边栏材质 / 主题色 / 界面字号 / 界面字体 / 代码字体。 */
+/** 通用外观：语言、界面字号、界面字体、代码字体。主题与材质由独立主题页管理。 */
 export function AppearanceGroup({
   settings,
   t,
   lang,
-  themeColor,
   systemFonts,
   uiFontPxInput,
   onUpdateSettings,
@@ -90,7 +88,6 @@ export function AppearanceGroup({
   settings: SettingsData
   t: I18n
   lang: Lang
-  themeColor: string
   systemFonts: string[]
   uiFontPxInput: string
   onUpdateSettings: (updates: Partial<SettingsData>) => void
@@ -111,59 +108,8 @@ export function AppearanceGroup({
             ]}
           />
         </SettingRow>
-        <SettingRow label={t.theme}>
-          <div className="kv-seg">
-            {[
-              { value: 'system', label: t.themeSystem },
-              { value: 'light', label: t.themeLight },
-              { value: 'dark', label: t.themeDark },
-            ].map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={settings.theme === option.value ? 'active' : ''}
-                onClick={() => onUpdateSettings({ theme: option.value as SettingsData['theme'] })}
-                data-tauri-drag-region="false"
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </SettingRow>
       </AppearanceSubsection>
 
-      <AppearanceSubsection title={lang === 'zh' ? '材质与颜色' : 'Material & color'}>
-        <SettingRow
-          label={lang === 'zh' ? '半透明侧边栏' : 'Translucent sidebar'}
-          className="settings-appearance-toggle-row"
-        >
-          <Toggle
-            checked={settings.translucentSidebar}
-            onChange={(value) => onUpdateSettings({ translucentSidebar: value })}
-            ariaLabel={lang === 'zh' ? '半透明侧边栏' : 'Translucent sidebar'}
-          />
-        </SettingRow>
-        <SettingRow label={t.themeColor}>
-          <div className="kv-seg" role="radiogroup" aria-label={t.themeColor}>
-            {THEME_COLOR_PRESETS.map((preset) => {
-              const active = themeColor === preset.id
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  className={active ? 'active' : ''}
-                  onClick={() => onUpdateSettings({ themeColor: preset.id })}
-                  role="radio"
-                  aria-checked={active}
-                  data-tauri-drag-region="false"
-                >
-                  {preset.labels[lang]}
-                </button>
-              )
-            })}
-          </div>
-        </SettingRow>
-      </AppearanceSubsection>
 
       <AppearanceSubsection title={lang === 'zh' ? '字体' : 'Typography'}>
         <SettingRow
@@ -179,7 +125,7 @@ export function AppearanceGroup({
               max={UI_FONT_PX_MAX}
               className="!w-16 text-center"
             />
-            <span className="text-[13px] text-neutral-400 dark:text-neutral-500">px</span>
+            <span className="text-[13px] text-[var(--text-faint)]">px</span>
           </div>
         </SettingRow>
         <SettingRow

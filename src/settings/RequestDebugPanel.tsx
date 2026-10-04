@@ -301,7 +301,7 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
+    <div className="overflow-hidden rounded-md border border-neutral-200">
       <div className="flex items-center justify-between gap-2 px-3 py-2">
         <button
           type="button"
@@ -315,12 +315,12 @@ function Section({
             className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-90' : ''}`}
             strokeWidth={2.25}
           />
-          <span className="truncate text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">{title}</span>
+          <span className="truncate text-[12px] font-semibold text-neutral-800">{title}</span>
           {badge && <span className="kv-chip shrink-0">{badge}</span>}
         </button>
         {copyText != null && <CopyButton text={copyText} lang={lang} />}
       </div>
-      {open && <div className="border-t border-neutral-200 dark:border-neutral-800">{children}</div>}
+      {open && <div className="border-t border-neutral-200">{children}</div>}
     </div>
   )
 }
@@ -336,10 +336,10 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
   const required = new Set(Array.isArray(schema.required) ? schema.required : [])
   const paramKeys = Object.keys(props)
   return (
-    <div className="border-b border-neutral-100 last:border-b-0 dark:border-neutral-900">
+    <div className="border-b border-neutral-100 last:border-b-0">
       <button
         type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900/40"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-neutral-50"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         data-tauri-drag-region="false"
@@ -355,7 +355,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
       {open && (
         <div className="px-3 pb-3 pl-8">
           {desc && (
-            <div className="mb-2 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-neutral-600 dark:text-neutral-300">
+            <div className="mb-2 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-neutral-600">
               {desc}
             </div>
           )}
@@ -374,7 +374,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-mono text-[12px] font-semibold text-sky-600 dark:text-sky-400">{key}</span>
                         {type && (
-                          <span className="rounded bg-neutral-100 px-1 py-0.5 font-mono text-[10px] text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                          <span className="rounded bg-neutral-100 px-1 py-0.5 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
                             {type}
                           </span>
                         )}
@@ -402,7 +402,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
 function JsonBody({ value }: { value: unknown }) {
   const text = typeof value === 'string' ? value : prettyJson(value)
   return (
-    <pre className="max-h-[360px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-all font-mono">
+    <pre className="max-h-[360px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 whitespace-pre-wrap break-all font-mono">
       {text}
     </pre>
   )
@@ -474,25 +474,25 @@ function normalizeMessage(msg: unknown): { role: string; blocks: MsgBlock[] } {
 const MSG_ROLE_STYLE: Record<string, { badge: string; card: string }> = {
   user: {
     badge: 'bg-sky-500 text-white',
-    card: 'border-sky-200 bg-sky-50/60 dark:border-sky-900/40 dark:bg-sky-950/20',
+    card: 'border-sky-200 bg-[color-mix(in_srgb,var(--color-sky-500)_10%,var(--theme-surface))] dark:border-sky-900/40',
   },
   assistant: {
     badge: 'bg-emerald-500 text-white',
-    card: 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/40 dark:bg-emerald-950/20',
+    card: 'border-emerald-200 bg-[color-mix(in_srgb,var(--color-emerald-500)_10%,var(--theme-surface))] dark:border-emerald-900/40',
   },
   tool: {
     badge: 'bg-violet-500 text-white',
-    card: 'border-violet-200 bg-violet-50/40 dark:border-violet-900/40 dark:bg-violet-950/20',
+    card: 'border-violet-200 bg-[color-mix(in_srgb,var(--color-violet-500)_10%,var(--theme-surface))] dark:border-violet-900/40',
   },
   system: {
-    badge: 'bg-neutral-500 text-white',
-    card: 'border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/40',
+    badge: 'bg-[var(--theme-surface-active)] text-[var(--text-muted)]',
+    card: 'border-neutral-200 bg-neutral-50',
   },
 }
 
 function InlinePre({ text }: { text: string }) {
   return (
-    <pre className="mt-1 max-h-[280px] overflow-auto rounded-md border border-neutral-200 bg-white/70 px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap break-all font-mono text-neutral-700 dark:border-neutral-800 dark:bg-neutral-950/40 dark:text-neutral-300">
+    <pre className="mt-1 max-h-[280px] overflow-auto rounded-md border border-neutral-200 bg-[var(--theme-surface)]/70 px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap break-all font-mono text-neutral-700">
       {text}
     </pre>
   )
@@ -503,7 +503,7 @@ function MessageBlock({ block }: { block: MsgBlock }) {
   if (type === 'text' || type === 'input_text' || type === 'output_text') {
     const txt = String(block.text ?? '')
     if (!txt.trim()) return null
-    return <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-neutral-700 dark:text-neutral-200">{txt}</div>
+    return <div className="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-neutral-700">{txt}</div>
   }
   if (type === 'thinking') {
     const txt = String(block.thinking ?? '')
@@ -608,7 +608,7 @@ function UsageBar({ record, lang }: { record: RequestDebugRecord; lang: string }
         <span key={item.key} className="inline-flex items-center gap-1.5">
           <span className={`size-1.5 rounded-full ${item.dot}`} />
           <span className="text-neutral-500 dark:text-neutral-400">{lang === 'zh' ? item.zh : item.en}</span>
-          <span className="tabular-nums font-medium text-neutral-700 dark:text-neutral-200">
+          <span className="tabular-nums font-medium text-neutral-700">
             {(item.value as number).toLocaleString()}
           </span>
         </span>
@@ -734,15 +734,15 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(240px,340px)_1fr]">
         {/* 左列：搜索 + 请求列表。lg 下吸顶 + 撑到接近视口高，避免右列详情很长时左侧留大片空白。 */}
-        <div className="flex max-h-[560px] flex-col overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800 lg:sticky lg:top-2 lg:max-h-[calc(100vh-140px)] lg:self-start">
-          <div className="flex items-center gap-1.5 border-b border-neutral-200 px-2.5 py-1.5 dark:border-neutral-800">
+        <div className="flex max-h-[560px] flex-col overflow-hidden rounded-md border border-neutral-200 lg:sticky lg:top-2 lg:max-h-[calc(100vh-140px)] lg:self-start">
+          <div className="flex items-center gap-1.5 border-b border-neutral-200 px-2.5 py-1.5">
             <Search size={12} className="shrink-0 text-neutral-400" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={zh ? '搜索 operation / 模型 / URL…' : 'Search operation / model / URL…'}
-              className="w-full bg-transparent text-[12px] text-neutral-700 outline-none placeholder:text-neutral-400 dark:text-neutral-200"
+              className="w-full bg-transparent text-[12px] text-neutral-700 outline-none placeholder:text-neutral-400"
               data-tauri-drag-region="false"
               spellCheck={false}
             />
@@ -775,21 +775,21 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
                   <div key={record.id}>
                     {showGap && (
                       <div className="flex items-center gap-2 px-3 py-1">
-                        <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+                        <span className="h-px flex-1 bg-neutral-200" />
                         <span className="text-[10px] text-neutral-400">{formatGap(gapSeconds, lang)}</span>
-                        <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+                        <span className="h-px flex-1 bg-neutral-200" />
                       </div>
                     )}
                     <button
                       type="button"
                       onClick={() => setSelectedId(record.id)}
                       data-tauri-drag-region="false"
-                      className={`flex w-full flex-col gap-1 border-b border-l-[3px] border-neutral-100 px-3 py-2.5 text-left last:border-b-0 dark:border-neutral-900 ${
+                      className={`flex w-full flex-col gap-1 border-b border-l-[3px] border-neutral-100 px-3 py-2.5 text-left last:border-b-0 ${
                         ok ? sourceAccent(record.source) : 'border-l-red-500'
                       } ${
                         active
-                          ? 'bg-sky-50 dark:bg-sky-950/30'
-                          : 'hover:bg-neutral-50 dark:hover:bg-neutral-900/40'
+                          ? 'bg-[var(--accent-soft)]'
+                          : 'hover:bg-neutral-50'
                       }`}
                     >
                       <div className="flex items-center gap-1.5">
@@ -798,7 +798,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
                         >
                           {sourceBadge(record.source, lang).label}
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-neutral-800 dark:text-neutral-100">
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-neutral-800">
                           {record.operation}
                         </span>
                         {!ok && (
@@ -839,7 +839,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
           {selected ? (
             <DetailView selected={selected} lang={lang} />
           ) : (
-            <div className="rounded-md border border-dashed border-neutral-200 px-3 py-10 text-center text-[11px] text-neutral-400 dark:border-neutral-800">
+            <div className="rounded-md border border-dashed border-neutral-200 px-3 py-10 text-center text-[11px] text-neutral-400">
               {zh ? '选择左侧一条记录查看详情。' : 'Select a record on the left to view details.'}
             </div>
           )}
@@ -886,7 +886,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
       </div>
 
       {/* 元信息 */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border border-neutral-200 px-3 py-2 text-[11px] dark:border-neutral-800 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 rounded-md border border-neutral-200 px-3 py-2 text-[11px] sm:grid-cols-3">
         <Meta label={zh ? '供应商' : 'Provider'} value={`${selected.providerName} (${selected.providerId})`} />
         <Meta label={zh ? '模型' : 'Model'} value={selected.model} />
         <Meta label={zh ? '格式' : 'Format'} value={selected.apiFormat} />
@@ -939,7 +939,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
           )}
           {system && (
             <Section title={zh ? '系统提示词' : 'System prompt'} copyText={system} lang={lang}>
-              <pre className="max-h-[360px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-words font-mono">
+              <pre className="max-h-[360px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 whitespace-pre-wrap break-words font-mono">
                 {system}
               </pre>
             </Section>
@@ -988,15 +988,15 @@ function TraceBlock({
 }) {
   const text = useMemo(() => formatPayload(payload, mode), [payload, mode])
   return (
-    <div className="overflow-hidden rounded-md border border-neutral-200 dark:border-neutral-800">
-      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+    <div className="overflow-hidden rounded-md border border-neutral-200">
+      <div className="flex items-center justify-between gap-2 border-b border-neutral-200 px-3 py-2">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">{title}</span>
+          <span className="truncate text-[12px] font-semibold text-neutral-800">{title}</span>
           {badge && <span className="kv-chip shrink-0">{badge}</span>}
         </div>
         <CopyButton text={text} lang={lang} />
       </div>
-      <pre className="max-h-[420px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-all font-mono">
+      <pre className="max-h-[420px] overflow-auto px-3 py-2 text-[11px] leading-relaxed text-neutral-700 whitespace-pre-wrap break-all font-mono">
         {text}
       </pre>
     </div>
@@ -1155,7 +1155,7 @@ function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col">
       <span className="text-[10px] text-neutral-400">{label}</span>
-      <span className="truncate text-neutral-700 dark:text-neutral-200" title={value}>
+      <span className="truncate text-neutral-700" title={value}>
         {value}
       </span>
     </div>

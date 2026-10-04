@@ -31,7 +31,7 @@ function dotClass(status: AgentTodoItem['status']): string {
     case 'in_progress':
       return 'bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.16)]'
     case 'cancelled':
-      return 'bg-neutral-300 ring-1 ring-inset ring-neutral-400 dark:bg-neutral-700'
+      return 'bg-neutral-300 ring-1 ring-inset ring-neutral-400'
     default:
       return 'bg-neutral-300 dark:bg-neutral-600'
   }
@@ -42,11 +42,11 @@ function textClass(status: AgentTodoItem['status']): string {
     case 'completed':
       return 'text-neutral-400 line-through decoration-neutral-300 dark:text-neutral-500 dark:decoration-neutral-600'
     case 'in_progress':
-      return 'font-medium text-neutral-900 dark:text-neutral-100'
+      return 'font-medium text-neutral-900'
     case 'cancelled':
       return 'text-neutral-400 line-through decoration-neutral-300 dark:text-neutral-500 dark:decoration-neutral-600'
     default:
-      return 'text-neutral-600 dark:text-neutral-300'
+      return 'text-neutral-600'
   }
 }
 
@@ -87,11 +87,11 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
         type="button"
         className={
           inStatusBar
-            ? 'flex h-[22px] shrink-0 items-center gap-1.5 rounded-[5px] px-1.5 text-[12px] font-medium text-neutral-700 transition-colors duration-[var(--kv-dur-instant)] hover:bg-black/[0.05] dark:text-neutral-200 dark:hover:bg-white/[0.07]'
+            ? 'flex h-[22px] shrink-0 items-center gap-1.5 rounded-[5px] px-1.5 text-[12px] font-medium text-neutral-700 transition-colors duration-[var(--kv-dur-instant)] hover:bg-neutral-900/[0.05]'
             : `flex h-8 min-w-0 max-w-[18rem] shrink items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition duration-[var(--kv-dur-instant)] active:scale-[0.97] ${
                 allDone
-                  ? 'text-neutral-500 hover:bg-black/[0.05] hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-white/[0.07] dark:hover:text-neutral-100'
-                  : 'text-neutral-700 hover:bg-black/[0.05] hover:text-neutral-950 dark:text-neutral-200 dark:hover:bg-white/[0.07] dark:hover:text-neutral-50'
+                  ? 'text-neutral-500 hover:bg-neutral-900/[0.05] hover:text-neutral-800 dark:text-neutral-400'
+                  : 'text-neutral-700 hover:bg-neutral-900/[0.05] hover:text-neutral-950'
               }`
         }
         aria-label={t.agentTodoTitle}
@@ -119,17 +119,17 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
 
       {open && (
         <div
-          className={`chat-motion-popover absolute z-40 w-[21rem] max-w-[calc(100vw-2rem)] rounded-xl border border-neutral-200/90 bg-white p-3 shadow-xl dark:border-neutral-700 dark:bg-neutral-900 ${
+          className={`chat-motion-popover absolute z-40 w-[21rem] max-w-[calc(100vw-2rem)] rounded-xl border border-neutral-200/90 bg-neutral-50 p-3 shadow-xl ${
             inStatusBar ? 'bottom-8 left-0' : 'right-0 top-9'
           }`}
         >
           <div className="mb-3 flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="text-[13px] font-semibold leading-none text-neutral-900 dark:text-neutral-50">
+                <span className="text-[13px] font-semibold leading-none text-neutral-900">
                   {t.agentTodoTitle}
                 </span>
-                <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+                <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500 dark:text-neutral-400">
                   {completedCount}/{countedTotal}
                 </span>
               </div>
@@ -141,7 +141,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
             </div>
             <button
               type="button"
-              className="-mr-1 -mt-1 rounded-md p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+              className="-mr-1 -mt-1 rounded-md p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700"
               aria-label={t.agentTodoClose}
               onClick={() => setOpen(false)}
             >

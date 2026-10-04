@@ -255,15 +255,15 @@ function SidebarUserFooter({
 
   return (
     <div
-      className="shrink-0 border-t border-neutral-200/60 p-1.5 dark:border-neutral-800/80"
+      className="shrink-0 border-t border-neutral-200/60 p-1.5"
       data-tauri-drag-region="false"
     >
       <div
         ref={rowRef}
         className={`flex w-full items-center gap-1 rounded-lg px-1.5 py-1 transition-colors ${
           menuRect || settingsActive
-            ? 'bg-black/[0.06] dark:bg-white/[0.1]'
-            : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+            ? 'bg-neutral-900/[0.06]'
+            : 'hover:bg-neutral-900/[0.04]'
         }`}
       >
         <button
@@ -275,7 +275,7 @@ function SidebarUserFooter({
         >
           <UserAvatar profile={profile} size={22} />
           <span
-            className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700 dark:text-neutral-300"
+            className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700"
             title={profile.displayName || undefined}
           >
             {profile.displayName || 'Kivio'}
@@ -322,12 +322,12 @@ function NavRow({ icon, label, onClick, disabled, active }: NavRowProps) {
       disabled={disabled}
       className={`kv-nav-motion group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default disabled:opacity-40 ${
         active
-          ? 'bg-black/[0.06] font-medium text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-50'
-          : 'text-neutral-800 hover:bg-black/[0.04] dark:text-neutral-200 dark:hover:bg-white/[0.06]'
+          ? 'bg-neutral-900/[0.06] font-medium text-neutral-900'
+          : 'text-neutral-800 hover:bg-neutral-900/[0.04]'
       }`}
     >
       <span
-        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400 dark:group-hover:text-neutral-200`}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400`}
       >
         {icon}
       </span>
@@ -359,12 +359,12 @@ function ExtensionsNav({
         onClick={() => setExpanded((open) => !open)}
         className={`kv-nav-motion group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] font-medium transition-colors ${
           highlighted
-            ? 'bg-black/[0.06] text-neutral-900 dark:bg-white/[0.1] dark:text-neutral-50'
-            : 'text-neutral-800 hover:bg-black/[0.04] dark:text-neutral-200 dark:hover:bg-white/[0.06]'
+            ? 'bg-neutral-900/[0.06] text-neutral-900'
+            : 'text-neutral-800 hover:bg-neutral-900/[0.04]'
         }`}
         aria-expanded={expanded}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400 dark:group-hover:text-neutral-200">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400">
           <ExtensionsIcon size={18} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{t.chatNavExtensions}</span>
@@ -388,12 +388,12 @@ function ExtensionsNav({
                 onClick={() => onSelectItem(item.id)}
                 className={`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
-                    ? 'font-medium text-neutral-900 dark:text-neutral-100'
-                    : 'text-neutral-700 hover:bg-black/[0.04] hover:text-neutral-900 dark:text-neutral-300 dark:hover:bg-white/[0.06] dark:hover:text-neutral-100'
+                    ? 'font-medium text-neutral-900'
+                    : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'
                 }`}
               >
                 <span className={`flex h-4 w-4 shrink-0 items-center justify-center ${
-                  active ? 'text-neutral-700 dark:text-neutral-200' : 'text-neutral-400 dark:text-neutral-500'
+                  active ? 'text-neutral-700' : 'text-neutral-400 dark:text-neutral-500'
                 }`}>
                   <Icon size={15} strokeWidth={1.75} />
                 </span>
@@ -456,12 +456,12 @@ function SearchDialog({
     >
       <div
         ref={dialogRef}
-        className="chat-motion-popover flex max-h-[62vh] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-2xl shadow-black/25 dark:border-neutral-700 dark:bg-[#242426]"
+        className="chat-motion-popover flex max-h-[62vh] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 shadow-2xl shadow-black/25"
         role="dialog"
         aria-modal="true"
         aria-label={t.chatSearchConversations}
       >
-        <div className="flex items-center gap-2 border-b border-neutral-200/80 px-3 py-2 dark:border-neutral-700/80">
+        <div className="flex items-center gap-2 border-b border-neutral-200/80 px-3 py-2">
           <Search size={15} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
           <input
             ref={inputRef}
@@ -480,7 +480,7 @@ function SearchDialog({
               }
             }}
             placeholder={t.chatSearchConversations}
-            className="min-w-0 flex-1 bg-transparent text-[14px] font-medium text-neutral-900 outline-none placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+            className="min-w-0 flex-1 bg-transparent text-[14px] font-medium text-neutral-900 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
           />
         </div>
 
@@ -515,8 +515,8 @@ function SearchDialog({
                   }}
                   className={`chat-motion-row group/search-result flex w-full min-w-0 items-start gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
                     active
-                      ? 'bg-black/[0.07] dark:bg-white/[0.1]'
-                      : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.07]'
+                      ? 'bg-neutral-900/[0.07]'
+                      : 'hover:bg-neutral-900/[0.04]'
                   }`}
                 >
                   <div className="min-w-0 flex-1">
@@ -527,8 +527,8 @@ function SearchDialog({
                           query={normalizedQuery}
                           className={`min-w-0 flex-1 truncate text-[13px] font-medium ${
                             active
-                              ? 'text-neutral-950 dark:text-neutral-50'
-                              : 'text-neutral-800 dark:text-neutral-200'
+                              ? 'text-neutral-950'
+                              : 'text-neutral-800'
                           }${
                             generatingConversationIds.has(conversation.id)
                             && isProvisionalTitle(listedTitle, conversation.preview)
@@ -542,8 +542,8 @@ function SearchDialog({
                           title={listedTitle}
                           className={`min-w-0 flex-1 truncate text-[13px] font-medium ${
                             active
-                              ? 'text-neutral-950 dark:text-neutral-50'
-                              : 'text-neutral-800 dark:text-neutral-200'
+                              ? 'text-neutral-950'
+                              : 'text-neutral-800'
                           }${
                             generatingConversationIds.has(conversation.id)
                             && isProvisionalTitle(listedTitle, conversation.preview)
@@ -1495,7 +1495,7 @@ export const Sidebar = memo(function Sidebar({
         />
       </nav>
 
-      <div className="mx-2 border-t border-neutral-200/90 dark:border-neutral-800" />
+      <div className="mx-2 border-t border-neutral-200/90" />
 
       <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
         {loading ? (
@@ -1520,8 +1520,8 @@ export const Sidebar = memo(function Sidebar({
                       onClick={() => setActiveTab(tab)}
                       className={`rounded-md px-1.5 py-0.5 transition-colors ${
                         activeTab === tab
-                          ? 'text-neutral-900 dark:text-neutral-100'
-                          : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
+                          ? 'text-neutral-900'
+                          : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500'
                       }`}
                       aria-current={activeTab === tab}
                     >
@@ -1544,7 +1544,7 @@ export const Sidebar = memo(function Sidebar({
                     ref={sectionMenuButtonRef}
                     size="sm"
                     onClick={openSectionMenu}
-                    className={sectionMenuAnchor ? 'bg-black/[0.06] text-neutral-600 dark:bg-white/[0.1] dark:text-neutral-200' : ''}
+                    className={sectionMenuAnchor ? 'bg-neutral-900/[0.06] text-neutral-600' : ''}
                     label={t.chatConversationListActions}
                     aria-haspopup="menu"
                     aria-expanded={sectionMenuAnchor !== null}
@@ -1657,8 +1657,8 @@ export const Sidebar = memo(function Sidebar({
                         <div
                           className={`kv-sidebar-group-row group flex min-w-0 items-center rounded-lg ${
                             active
-                              ? 'bg-black/[0.04] dark:bg-white/[0.08]'
-                              : 'hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'
+                              ? 'bg-neutral-900/[0.04]'
+                              : 'hover:bg-neutral-900/[0.035]'
                           }`}
                         >
                           <button
@@ -1673,8 +1673,8 @@ export const Sidebar = memo(function Sidebar({
                             }}
                             className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[13px] ${
                               active
-                                ? 'font-semibold text-neutral-900 dark:text-neutral-100'
-                                : 'font-medium text-neutral-600 dark:text-neutral-300'
+                                ? 'font-semibold text-neutral-900'
+                                : 'font-medium text-neutral-600'
                             }`}
                             title={(collapsedProject ? t.chatExpandNamed : t.chatCollapseNamed).replace('{name}', project.name)}
                             aria-expanded={!collapsedProject}
@@ -1767,7 +1767,7 @@ export const Sidebar = memo(function Sidebar({
                               return next
                             })
                           }}
-                          className="ml-8 rounded-md px-2.5 py-0.5 text-left text-[13px] font-medium text-neutral-400 transition-colors hover:bg-black/[0.035] hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-white/[0.06] dark:hover:text-neutral-300"
+                          className="ml-8 rounded-md px-2.5 py-0.5 text-left text-[13px] font-medium text-neutral-400 transition-colors hover:bg-neutral-900/[0.035] hover:text-neutral-600 dark:text-neutral-500"
                         >
                           {expanded ? t.chatShowLess : t.chatShowMore}
                         </button>
@@ -1786,7 +1786,7 @@ export const Sidebar = memo(function Sidebar({
                     <button
                       type="button"
                       onClick={openCreateSetDialog}
-                      className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[13px] text-neutral-400 transition-colors hover:bg-black/[0.035] hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-white/[0.06] dark:hover:text-neutral-300"
+                      className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[13px] text-neutral-400 transition-colors hover:bg-neutral-900/[0.035] hover:text-neutral-600 dark:text-neutral-500"
                     >
                       <Plus size={14} strokeWidth={2} className="shrink-0" />
                       {t.chatNewSetHint}
@@ -1811,8 +1811,8 @@ export const Sidebar = memo(function Sidebar({
                           <div
                             className={`kv-sidebar-group-row group flex min-w-0 items-center rounded-lg ${
                               active
-                                ? 'bg-black/[0.04] dark:bg-white/[0.08]'
-                                : 'hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'
+                                ? 'bg-neutral-900/[0.04]'
+                                : 'hover:bg-neutral-900/[0.035]'
                             }`}
                           >
                             <button
@@ -1827,8 +1827,8 @@ export const Sidebar = memo(function Sidebar({
                               }}
                               className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[13px] ${
                                 active
-                                  ? 'font-semibold text-neutral-900 dark:text-neutral-100'
-                                  : 'font-medium text-neutral-600 dark:text-neutral-300'
+                                  ? 'font-semibold text-neutral-900'
+                                  : 'font-medium text-neutral-600'
                               }`}
                               title={(collapsedSet ? t.chatExpandNamed : t.chatCollapseNamed).replace('{name}', set.name)}
                               aria-expanded={!collapsedSet}
@@ -1920,7 +1920,7 @@ export const Sidebar = memo(function Sidebar({
                                   return next
                                 })
                               }}
-                              className="ml-8 rounded-md px-2.5 py-0.5 text-left text-[13px] font-medium text-neutral-400 transition-colors hover:bg-black/[0.035] hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-white/[0.06] dark:hover:text-neutral-300"
+                              className="ml-8 rounded-md px-2.5 py-0.5 text-left text-[13px] font-medium text-neutral-400 transition-colors hover:bg-neutral-900/[0.035] hover:text-neutral-600 dark:text-neutral-500"
                             >
                               {expanded ? t.chatShowLess : t.chatShowMore}
                             </button>

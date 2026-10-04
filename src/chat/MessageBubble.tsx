@@ -330,7 +330,7 @@ function ArtifactPresentationBlock({
   return (
     <section aria-label="展示文件" className="not-prose my-2">
       {presentation.caption ? (
-        <div className="mb-2 text-[13px] leading-5 text-neutral-600 dark:text-neutral-300">
+        <div className="mb-2 text-[13px] leading-5 text-neutral-600">
           {presentation.caption}
         </div>
       ) : null}
@@ -350,7 +350,7 @@ function ImageGenerationPending() {
   return (
     <section aria-label="图片生成中" className="image-generation-pending">
       <div className="mb-3">
-        <div className="flex items-center gap-2 text-[14px] font-medium leading-5 text-neutral-700 dark:text-neutral-300">
+        <div className="flex items-center gap-2 text-[14px] font-medium leading-5 text-neutral-700">
           <span className="image-generation-pending-indicator" aria-hidden="true" />
           <span>正在生成图片</span>
         </div>
@@ -424,7 +424,7 @@ function UserSteerSegment({ toolCall }: { toolCall: ToolCallRecord }) {
   if (!text.trim()) return null
   return (
     <div className="not-prose flex justify-end">
-      <div className="flex max-w-[85%] items-start gap-1.5 rounded-md bg-neutral-100 px-2.5 py-1.5 text-[12.5px] leading-5 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-200">
+      <div className="flex max-w-[85%] items-start gap-1.5 rounded-md bg-neutral-100 px-2.5 py-1.5 text-[12.5px] leading-5 text-neutral-700">
         <CornerDownRight
           size={13}
           strokeWidth={1.9}
@@ -544,7 +544,7 @@ function TimelineTextSegment({
   const text = segmentText(segment).trim()
   if (!text) return null
   return (
-    <div className={process ? 'text-neutral-600 dark:text-neutral-300' : undefined}>
+    <div className={process ? 'text-neutral-600' : undefined}>
       <ChatMarkdown
         content={text}
         artifacts={artifacts}
@@ -808,7 +808,7 @@ function TimelineGroupBlock({
         aria-expanded={renderDetails}
         data-chat-disclosure
         data-tauri-drag-region="false"
-        className="mb-1 flex w-full items-center gap-1.5 text-left text-[12px] leading-relaxed font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"
+        className="mb-1 flex w-full items-center gap-1.5 text-left text-[12px] leading-relaxed font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
       >
         {generating ? (
           <TimelineSpinner size={16} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
@@ -1392,7 +1392,7 @@ function MessageBubbleComponent({
             />
           )}
           {hasText && (
-            <div className="chat-user-bubble rounded-[20px] px-4 py-2.5 text-neutral-900 dark:text-neutral-100">
+            <div className="chat-user-bubble rounded-[20px] px-4 py-2.5 text-neutral-900">
               <div className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[15px] leading-relaxed">
                 {asyncReplyDisplayText(message.content) ?? message.content}
               </div>
@@ -1453,7 +1453,7 @@ function MessageBubbleComponent({
               <button
                 type="button"
                 onClick={() => setToolsExpanded((value) => !value)}
-                className="mb-1 flex w-full items-center gap-1 text-left text-[11px] font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300"
+                className="mb-1 flex w-full items-center gap-1 text-left text-[11px] font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
                 aria-expanded={toolsExpanded}
                 data-chat-disclosure
                 data-tauri-drag-region="false"

@@ -101,10 +101,10 @@ export function GitHistory({ workdir, lang, active, refreshKey }: { workdir: str
 
   const rows = useMemo(() => layoutGitGraph(commits), [commits])
   const columns = Math.max(2, ...rows.map((row) => row.width))
-  return <div className="flex min-h-0 flex-1 flex-col bg-[var(--theme-surface-soft)] text-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
-    <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 px-2 py-1 dark:border-neutral-700/50">
+  return <div className="flex min-h-0 flex-1 flex-col bg-[var(--theme-surface-soft)] text-neutral-700 bg-neutral-50">
+    <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 px-2 py-1">
       <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><GitBranch size={12} /> Graph {loading && <Loader2 size={11} className="animate-spin" />}</span>
-      <select aria-label={zh ? '历史范围' : 'History scope'} value={allBranches ? 'all' : 'current'} onChange={(event) => setAllBranches(event.target.value === 'all')} className="max-w-40 rounded border-0 bg-transparent text-[11px] text-neutral-500 dark:bg-neutral-900">
+      <select aria-label={zh ? '历史范围' : 'History scope'} value={allBranches ? 'all' : 'current'} onChange={(event) => setAllBranches(event.target.value === 'all')} className="max-w-40 rounded border-0 bg-transparent text-[11px] text-neutral-500 bg-neutral-50">
         <option value="all">{zh ? '所有分支' : 'All branches'}</option>
         <option value="current">{zh ? '当前分支' : 'Current branch'}</option>
       </select>
@@ -119,13 +119,13 @@ export function GitHistory({ workdir, lang, active, refreshKey }: { workdir: str
             className={`flex h-7 w-full items-center gap-1 pr-2 text-left text-[12px] ${selected?.sha === commit.sha ? 'bg-violet-500/10' : 'hover:bg-neutral-500/5'}`}>
             <GraphCell row={rows[index]} columns={columns} />
             {commit.refs.length > 0 && <span title={commit.refs.join(', ')} className="max-w-[35%] shrink-0 truncate rounded bg-violet-500/10 px-1 text-[10px] text-violet-700 dark:text-violet-300">{commit.refs.map((ref) => ref.replace('HEAD -> ', '● ')).join(', ')}</span>}
-            <span className="min-w-0 flex-1 truncate text-neutral-700 dark:text-neutral-200">{commit.subject}</span>
+            <span className="min-w-0 flex-1 truncate text-neutral-700">{commit.subject}</span>
           </button>)}
           {hasMore && <button disabled={loading} onClick={() => setLimit((value) => value + 50)} className="w-full py-2 text-[11px] text-neutral-500 disabled:opacity-50">{t.dockGitLoadMore}</button>}
         </VList>}
     </div>
-    {selected && <div className="custom-scrollbar max-h-[45%] shrink-0 overflow-auto border-t border-neutral-200 dark:border-neutral-700">
-      <div className="sticky top-0 z-10 flex items-start gap-2 bg-[var(--theme-surface-soft)] px-2 py-2 dark:bg-neutral-900">
+    {selected && <div className="custom-scrollbar max-h-[45%] shrink-0 overflow-auto border-t border-neutral-200">
+      <div className="sticky top-0 z-10 flex items-start gap-2 bg-[var(--theme-surface-soft)] px-2 py-2 bg-neutral-50">
         <div className="min-w-0 flex-1"><div className="truncate text-[12px] font-medium" title={selected.subject}>{selected.subject}</div><div className="mt-0.5 truncate text-[10px] text-neutral-500">{selected.shortSha} · {selected.authorName} · {relativeTime(selected.authorDate, lang)}</div>
           {(selected.parents?.length ?? 0) > 1 && <div className="mt-1 text-[10px] text-neutral-500">{zh ? '合并提交 · 相对第一父提交' : 'Merge commit · compared to first parent'}</div>}
         </div>

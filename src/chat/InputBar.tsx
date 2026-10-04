@@ -258,8 +258,8 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
 
 const MODE_PILL_CLASS: Record<ModeTone, { idle: string; iconColor: string }> = {
   neutral: {
-    idle: 'text-neutral-600 hover:bg-neutral-200/60 dark:text-neutral-300 dark:hover:bg-neutral-700/55',
-    iconColor: 'text-neutral-500 dark:text-neutral-300',
+    idle: 'text-neutral-600 hover:bg-neutral-200/60',
+    iconColor: 'text-neutral-500',
   },
   emerald: {
     idle: 'text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400 dark:hover:bg-emerald-400/10',
@@ -1787,7 +1787,7 @@ export const InputBar = memo(function InputBar({
           value={projectSearchQuery}
           onChange={(event) => setProjectSearchQuery(event.target.value)}
           placeholder={t.chatSearchProjects}
-          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] font-semibold text-neutral-800 outline-none placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
+          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] font-semibold text-neutral-800 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
         />
       </div>
 
@@ -1812,8 +1812,8 @@ export const InputBar = memo(function InputBar({
                   onClick={() => void selectProject(project)}
                   className={`flex min-h-[34px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
                     active
-                      ? 'bg-neutral-100 text-neutral-950 dark:bg-neutral-800 dark:text-neutral-50'
-                      : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                      ? 'bg-neutral-100 text-neutral-950'
+                      : 'text-neutral-800 hover:bg-neutral-100'
                   }`}
                 >
                   <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
@@ -1825,7 +1825,7 @@ export const InputBar = memo(function InputBar({
                       </span>
                     )}
                   </span>
-                  {active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-300" />}
+                  {active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
                 </button>
               )
             })}
@@ -1837,12 +1837,12 @@ export const InputBar = memo(function InputBar({
         )}
       </div>
 
-      <div className="mt-0.5 border-t border-neutral-200/80 pt-0.5 dark:border-neutral-800">
+      <div className="mt-0.5 border-t border-neutral-200/80 pt-0.5">
         {selectedProject && (
           <button
             type="button"
             onClick={() => void selectProject(null)}
-            className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+            className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400"
           >
             <Folder size={14} strokeWidth={1.75} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">{t.chatLeaveProject}</span>
@@ -1852,9 +1852,9 @@ export const InputBar = memo(function InputBar({
           type="button"
           onClick={() => void createBlankProject()}
           disabled={projectCreating}
-          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50"
         >
-          <Plus size={14} strokeWidth={1.8} className="shrink-0 text-neutral-600 dark:text-neutral-300" />
+          <Plus size={14} strokeWidth={1.8} className="shrink-0 text-neutral-600" />
           <span className="min-w-0 flex-1 truncate">
             {projectCreating ? t.chatAddingProject : t.chatNewBlankProject}
           </span>
@@ -1863,9 +1863,9 @@ export const InputBar = memo(function InputBar({
           type="button"
           onClick={() => void createProjectFromFolder()}
           disabled={projectCreating}
-          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50 dark:text-neutral-100 dark:hover:bg-neutral-800"
+          className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50"
         >
-          <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-600 dark:text-neutral-300" />
+          <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-600" />
           <span className="min-w-0 flex-1 truncate">{t.chatUseExistingFolder}</span>
         </button>
       </div>
@@ -1886,7 +1886,7 @@ export const InputBar = memo(function InputBar({
             >
               <div className="space-y-1.5 px-3 py-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold text-neutral-800 dark:text-neutral-100">Skill</span>
+                  <span className="text-[12px] font-semibold text-neutral-800">Skill</span>
                   {onOpenSkillSettings && (
                     <Button
                       variant="ghost"
@@ -1900,14 +1900,14 @@ export const InputBar = memo(function InputBar({
                     </Button>
                   )}
                 </div>
-                <div className="text-[11px] leading-4 text-neutral-600 dark:text-neutral-300">
+                <div className="text-[11px] leading-4 text-neutral-600">
                   <span className="text-neutral-500 dark:text-neutral-400">
                     {t.chatSkillsEnabledCount.replace('{n}', String(enabledSkills.length))}
                   </span>
                   {enabledSkills.length > 0 && (
                     <>
                       <span className="text-neutral-300 dark:text-neutral-600"> · </span>
-                      <span className="text-neutral-700 dark:text-neutral-200">
+                      <span className="text-neutral-700">
                         {enabledSkills.map((skill) => skill.name).join('、')}
                       </span>
                     </>
@@ -1915,7 +1915,7 @@ export const InputBar = memo(function InputBar({
                 </div>
 
                 {showMcpSection && mcpStatusLine && (
-                  <div className="border-t border-neutral-200/80 pt-1.5 text-[11px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                  <div className="border-t border-neutral-200/80 pt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
                     {mcpStatusLine}
                   </div>
                 )}
@@ -1955,14 +1955,14 @@ export const InputBar = memo(function InputBar({
                       onClick={() => completeActiveSlashToken(command)}
                       className={`flex h-[26px] w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left transition-colors ${
                         selected
-                          ? 'bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
-                          : 'text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800/70'
+                          ? 'bg-neutral-100 text-neutral-900'
+                          : 'text-neutral-700 hover:bg-neutral-50'
                       }`}
                     >
                       <SlashCommandIcon
                         command={command}
                         size={13}
-                        className="shrink-0 text-neutral-600 dark:text-neutral-300"
+                        className="shrink-0 text-neutral-600"
                       />
                       <span className="min-w-0 flex-1 truncate text-[12px] leading-none">
                         <span className="font-semibold">{command.title}</span>
@@ -2060,16 +2060,16 @@ export const InputBar = memo(function InputBar({
           data-chat-composer="true"
           className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-xl border px-3 py-2 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
             dragActive
-              ? 'border-[#5c8df7] shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[#5c8df7]/25 dark:border-[#5c8df7] dark:shadow-none'
+              ? 'border-accent shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[var(--accent)]/25 dark:shadow-none'
               : agentPlanActive
                 ? 'border-emerald-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-emerald-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(16,185,129,0.22)] dark:border-emerald-400 dark:shadow-none dark:focus-within:border-emerald-400'
                 : agentOrchestrateActive
                   ? 'border-violet-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-violet-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(139,92,246,0.22)] dark:border-violet-400 dark:shadow-none dark:focus-within:border-violet-400'
-                  : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:border-neutral-700 dark:shadow-none dark:focus-within:border-neutral-600'
+                  : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:shadow-none dark:focus-within:border-neutral-600'
           }`}
         >
           {dragActive && (
-            <div className="chat-motion-fade-up mb-2 rounded-2xl border border-dashed border-[#5c8df7]/70 bg-[#5c8df7]/10 px-3 py-2 text-center text-[13px] font-medium text-[#2960d8] dark:text-[#9bb8fa]">
+            <div className="chat-motion-fade-up mb-2 rounded-2xl border border-dashed border-[var(--accent)]/70 bg-[var(--accent)]/10 px-3 py-2 text-center text-[13px] font-medium text-accent-hover">
               {t.chatDropToAttach}
             </div>
           )}
@@ -2178,7 +2178,7 @@ export const InputBar = memo(function InputBar({
                   disabled={cancelling}
                   tabIndex={stopOwnsSendSlot ? undefined : -1}
                   aria-hidden={!stopOwnsSendSlot}
-                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-white transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-200 dark:disabled:bg-neutral-700 dark:disabled:text-neutral-500 ${
+                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-neutral-50 transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:text-neutral-500 ${
                     stopOwnsSendSlot ? 'opacity-100' : 'pointer-events-none scale-90 opacity-0'
                   }`}
                   title={cancelling ? t.chatStopping : t.chatStopGenerating}
@@ -2250,7 +2250,7 @@ export const InputBar = memo(function InputBar({
                   aria-haspopup="menu"
                   className={`shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 disabled:opacity-50 dark:focus-visible:ring-neutral-600 ${
                     projectMenuOpen
-                      ? 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-100'
+                      ? 'bg-neutral-200 text-neutral-700'
                       : ''
                   }`}
                 >
@@ -2333,7 +2333,7 @@ export const InputBar = memo(function InputBar({
                   disabled={disabled}
                   className={`inline-flex h-[26px] max-w-full items-center gap-0.5 rounded-full px-1.5 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
                     presetMenuOpen
-                      ? 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100'
+                      ? 'bg-neutral-200 text-neutral-800'
                       : activePresetPillClass.idle
                   } disabled:cursor-default disabled:opacity-50`}
                   aria-expanded={presetMenuOpen}
@@ -2370,8 +2370,8 @@ export const InputBar = memo(function InputBar({
                             onClick={() => void pickPreset(option.value)}
                             className={`kv-menu-row transition-colors ${
                               active
-                                ? 'bg-neutral-100 text-neutral-950 dark:bg-neutral-800 dark:text-neutral-50'
-                                : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                                ? 'bg-neutral-100 text-neutral-950'
+                                : 'text-neutral-800 hover:bg-neutral-100'
                             } disabled:cursor-default disabled:opacity-50`}
                           >
                             <span className="min-w-0 flex-1 leading-tight">
@@ -2383,7 +2383,7 @@ export const InputBar = memo(function InputBar({
                               )}
                             </span>
                             {active && (
-                              <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                              <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />
                             )}
                           </button>
                         )
@@ -2402,7 +2402,7 @@ export const InputBar = memo(function InputBar({
                   disabled={disabled}
                   className={`inline-flex h-[26px] max-w-full items-center gap-0.5 rounded-full px-1.5 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
                     modeMenuOpen
-                      ? 'bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100'
+                      ? 'bg-neutral-200 text-neutral-800'
                       : activeModePillClass.idle
                   } disabled:cursor-default disabled:opacity-50`}
                   aria-expanded={modeMenuOpen}
@@ -2445,8 +2445,8 @@ export const InputBar = memo(function InputBar({
                             onClick={() => void pickMode(option.value)}
                             className={`kv-menu-row transition-colors ${
                               active
-                                ? 'bg-neutral-100 text-neutral-950 dark:bg-neutral-800 dark:text-neutral-50'
-                                : 'text-neutral-800 hover:bg-neutral-100 dark:text-neutral-200 dark:hover:bg-neutral-800'
+                                ? 'bg-neutral-100 text-neutral-950'
+                                : 'text-neutral-800 hover:bg-neutral-100'
                             }`}
                           >
                             <Icon
@@ -2463,7 +2463,7 @@ export const InputBar = memo(function InputBar({
                               )}
                             </span>
                             {active && (
-                              <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-300" />
+                              <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />
                             )}
                           </button>
                         )

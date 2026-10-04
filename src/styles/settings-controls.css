@@ -3,7 +3,7 @@
    也让 light/dark 切换的视觉层级一致。 */
 .settings-card {
   background: var(--theme-surface);
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--theme-surface-border);
   border-radius: 12px;
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.04),
@@ -11,8 +11,6 @@
 }
 
 .dark .settings-card {
-  background: #1c1c1e;
-  border-color: rgba(255, 255, 255, 0.06);
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.3),
     0 6px 18px -6px rgba(0, 0, 0, 0.5);
@@ -20,32 +18,28 @@
 
 /* Settings 内的 input/select/textarea 统一"凹陷"底色，让控件从卡片里浮出 */
 .settings-control {
-  background: rgba(0, 0, 0, 0.03);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  color: rgb(15, 23, 42);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  border: 1px solid var(--theme-surface-border);
+  color: var(--text);
   border-radius: 6px;
   transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
 }
-.settings-control::placeholder { color: rgb(163, 163, 163); }
-.settings-control:hover { background: rgba(0, 0, 0, 0.04); }
+.settings-control::placeholder {
+  color: var(--text-faint);
+}
+.settings-control:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
 .settings-control:focus,
 .settings-control:focus-visible {
   outline: none;
-  background: #ffffff;
-  border-color: rgba(37, 99, 235, 0.45);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+  background: var(--theme-surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.dark .settings-control {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.07);
-  color: rgb(245, 245, 245);
-}
-.dark .settings-control::placeholder { color: rgb(115, 115, 115); }
-.dark .settings-control:hover { background: rgba(255, 255, 255, 0.06); }
+
 .dark .settings-control:focus,
 .dark .settings-control:focus-visible {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(96, 165, 250, 0.55);
-  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }

@@ -53,8 +53,8 @@ export function KnowledgeRagPanel({
       {/* 页头：标题 + 启用开关 */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <FileSearch size={18} className="text-indigo-500" />
-          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+          <FileSearch size={18} className="text-accent" />
+          <h2 className="text-base font-semibold text-zinc-900">
             {t('知识库（RAG）', 'Knowledge base (RAG)')}
           </h2>
         </div>
@@ -67,9 +67,9 @@ export function KnowledgeRagPanel({
       </div>
 
       {/* 说明横幅 */}
-      <div className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/70 px-4 py-3 dark:border-indigo-900/50 dark:bg-indigo-950/30">
-        <Zap size={16} className="mt-0.5 shrink-0 text-indigo-500" />
-        <p className="min-w-0 text-xs leading-relaxed text-indigo-700/90 dark:text-indigo-300/85">
+      <div className="flex items-start gap-3 rounded-xl border border-accent/25 bg-accent-soft px-4 py-3">
+        <Zap size={16} className="mt-0.5 shrink-0 text-accent" />
+        <p className="min-w-0 text-xs leading-relaxed text-accent">
           {t(
             'RAG 允许 AI 检索你导入的私有文档以提供更准确的回复。Kivio 在本机解析、分块并建立索引，数据不出本机。',
             'RAG lets the AI search your own documents for grounded answers. Kivio parses, chunks and indexes everything locally — data never leaves your machine.',

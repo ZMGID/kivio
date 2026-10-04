@@ -353,7 +353,7 @@ function ReplaceTranslationPackPanel({
             <span className="truncate">{stateLabel}: {progress?.fileName || ''}</span>
             <span className="tabular-nums shrink-0">{percent}%</span>
           </div>
-          <div className="h-1.5 rounded-full overflow-hidden bg-black/10 dark:bg-white/10">
+          <div className="h-1.5 rounded-full overflow-hidden bg-neutral-900/10">
             <div className="h-full bg-blue-500 transition-[width]" style={{ width: `${percent}%` }} />
           </div>
           <div className="kv-panel-body flex justify-between gap-3">
@@ -367,7 +367,7 @@ function ReplaceTranslationPackPanel({
       )}
 
       {status?.files?.length ? (
-        <div className="space-y-1 border-t border-black/[0.06] dark:border-white/[0.07] pt-2">
+        <div className="space-y-1 border-t border-neutral-900/[0.06] pt-2">
           {status.files.map(file => (
             <div key={`${file.componentId}:${file.fileName}`} className="flex items-center gap-2 kv-panel-body">
               <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${file.ready ? 'bg-emerald-500' : file.state === 'invalid' ? 'bg-red-500' : 'bg-amber-500'}`} />

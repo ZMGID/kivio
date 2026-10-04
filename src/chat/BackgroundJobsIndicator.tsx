@@ -36,7 +36,7 @@ export function BackgroundJobsIndicator({
       className={`relative ${chatTitlebarIconButtonClass} ${
         running.length > 0
           ? 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-500 dark:hover:text-emerald-400'
-          : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
+          : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500'
       }`}
       title={label}
       aria-label={label}

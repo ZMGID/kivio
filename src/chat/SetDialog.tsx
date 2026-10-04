@@ -87,14 +87,14 @@ export function SetDialog({
 
   return createPortal(
     <div
-      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-black/35 px-4 backdrop-blur-[2px]`}
+      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-neutral-900/35 px-4 backdrop-blur-[2px]`}
       data-tauri-drag-region="false"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) startClose()
       }}
     >
       <form
-        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[520px] overflow-hidden rounded-2xl bg-[#f6f5f2] text-neutral-900 shadow-[0_24px_64px_-20px_rgba(0,0,0,0.35)] dark:bg-[#1c1c1e] dark:text-neutral-100`}
+        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[520px] overflow-hidden rounded-2xl bg-neutral-50 text-neutral-900 shadow-[0_24px_64px_-20px_rgba(0,0,0,0.35)]`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -117,7 +117,7 @@ export function SetDialog({
           <div className="flex items-start gap-3.5">
             <div
               className={`grid size-12 shrink-0 place-items-center rounded-2xl transition-colors duration-200 ${
-                color ? '' : 'bg-black/[0.05] text-neutral-400 dark:bg-white/[0.07] dark:text-neutral-500'
+                color ? '' : 'bg-neutral-900/[0.05] text-neutral-400 dark:text-neutral-500'
               }`}
               style={color ? { backgroundColor: `${color}24`, color: accent } : undefined}
             >
@@ -130,7 +130,7 @@ export function SetDialog({
                 value={name}
                 maxLength={80}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-transparent text-[22px] font-semibold leading-tight tracking-tight text-neutral-900 outline-none placeholder:font-medium placeholder:text-neutral-300 dark:text-neutral-50 dark:placeholder:text-neutral-600"
+                className="w-full bg-transparent text-[22px] font-semibold leading-tight tracking-tight text-neutral-900 outline-none placeholder:font-medium placeholder:text-neutral-300 dark:placeholder:text-neutral-600"
                 placeholder={t.chatSetNamePlaceholder}
                 aria-label={t.chatSetName}
               />
@@ -140,8 +140,8 @@ export function SetDialog({
                   onClick={() => setColor(null)}
                   className={`grid size-[18px] place-items-center rounded-full border transition-transform ${
                     color === null
-                      ? 'scale-110 border-neutral-800 dark:border-neutral-200'
-                      : 'border-neutral-300 hover:scale-110 dark:border-neutral-600'
+                      ? 'scale-110 border-neutral-800'
+                      : 'border-neutral-300 hover:scale-110'
                   }`}
                   aria-label={t.chatSetNoColor}
                   title={t.chatSetNoColor}
@@ -154,7 +154,7 @@ export function SetDialog({
                     type="button"
                     onClick={() => setColor(c)}
                     className={`size-[18px] rounded-full transition-transform ${
-                      color === c ? 'scale-110 ring-2 ring-neutral-900 ring-offset-2 ring-offset-[#f6f5f2] dark:ring-white dark:ring-offset-[#1c1c1e]' : 'hover:scale-110'
+                      color === c ? 'scale-110 ring-2 ring-neutral-900 ring-offset-2 ring-offset-[var(--theme-surface)]' : 'hover:scale-110'
                     }`}
                     style={{ backgroundColor: c }}
                     aria-label={t.chatAssistantSelectColorNamed.replace('{name}', c)}
@@ -165,7 +165,7 @@ export function SetDialog({
           </div>
         </div>
 
-        <div className="mx-5 overflow-hidden rounded-xl bg-white dark:bg-[#2a2a2c]">
+        <div className="mx-5 overflow-hidden rounded-xl bg-neutral-50">
           <div className="flex items-center justify-between px-3.5 pt-3">
             <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
               {t.chatSystemPrompt}
@@ -178,7 +178,7 @@ export function SetDialog({
             value={systemPrompt}
             onChange={(e) => setSystemPrompt(e.target.value)}
             rows={6}
-            className="min-h-[148px] w-full resize-none bg-transparent px-3.5 pt-2 pb-3.5 text-[13.5px] leading-relaxed text-neutral-800 outline-none placeholder:text-neutral-300 dark:text-neutral-200 dark:placeholder:text-neutral-600"
+            className="min-h-[148px] w-full resize-none bg-transparent px-3.5 pt-2 pb-3.5 text-[13.5px] leading-relaxed text-neutral-800 outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-600"
             placeholder={t.chatSetSystemPromptPlaceholder}
             aria-label={t.chatSystemPrompt}
           />
@@ -191,7 +191,7 @@ export function SetDialog({
             <button
               type="button"
               onClick={() => setAssistantOpen((open) => !open)}
-              className="flex max-w-[220px] items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-[12px] text-neutral-600 transition-colors hover:bg-white/80 dark:bg-[#2a2a2c] dark:text-neutral-300 dark:hover:bg-[#323234]"
+              className="flex max-w-[220px] items-center gap-1.5 rounded-full bg-neutral-50 px-2.5 py-1 text-[12px] text-neutral-600 transition-colors hover:bg-[var(--theme-surface-hover)]"
               aria-haspopup="listbox"
               aria-expanded={assistantOpen}
               title={t.chatSetDefaultAssistantHint}
