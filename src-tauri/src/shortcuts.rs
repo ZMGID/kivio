@@ -1180,6 +1180,16 @@ pub(crate) fn destroy_hidden_chat_window(app: &AppHandle) {
 
 /// 打开独立 AI 客户端窗口。
 pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
+    open_chat_route(app, None)
+}
+
+/// Open a specific conversation, including the cold-window case.
+pub(crate) fn open_chat_conversation(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    let encoded: String = url::form_urlencoded::byte_serialize(conversation_id.as_bytes()).collect();
+    open_chat_route(app, Some(&format!("chat/{}", encoded.replace('+', "%20"))))
+}
+
+fn open_chat_route(app: &AppHandle, route: Option<&str>) -> Result<(), String> {
     // 故意打开 Chat：清掉浮窗的"前台交还"快照（两个槽都清），避免随后浮窗关闭把前台从 Chat
     // 又交还回旧 App（例如 lens「在客户端继续」会先 open_chat_window 再关 lens）。
     #[cfg(target_os = "macos")]
@@ -1189,12 +1199,19 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
         forget_frontmost_app(st.frontmost_apps().translator());
     }
     let existing_window = app.get_webview_window("chat");
-    let window = ensure_chat_window(app)?;
+    let window = match route {
+        Some(route) => crate::windows::ensure_chat_window_with_hash(app, route)?,
+        None => ensure_chat_window(app)?,
+    };
     apply_chat_window_chrome(&window);
     crate::windows::apply_chat_window_min_size(&window, false);
     normalize_chat_window_behavior(&window);
 
     if existing_window.is_some() {
+        if let Some(route) = route {
+            let hash = serde_json::to_string(&format!("#{route}")).map_err(|error| error.to_string())?;
+            window.eval(&format!("window.location.hash = {hash};")).map_err(|error| error.to_string())?;
+        }
         let _ = window.eval(
             "const path = window.location.hash.replace('#', '').split('?')[0]; \
              const isChatSettings = path === 'chat/settings' || path.startsWith('chat/settings/'); \
@@ -1334,6 +1351,15 @@ fn tray_labels(lang: &str) -> (&'static str, &'static str, &'static str, &'stati
     }
 }
 
+/// macOS / Windows 托盘里的桌宠开关文案。
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn tray_desktop_pet_label(lang: &str) -> &'static str {
+    match lang {
+        "en" => "Show Momo desktop pet",
+        _ => "显示墨墨桌宠",
+    }
+}
+
 /// 构建托盘菜单
 fn build_tray_menu(app: &AppHandle, lang: &str) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     use tauri::menu::{Menu, MenuItem};
@@ -1346,6 +1372,25 @@ fn build_tray_menu(app: &AppHandle, lang: &str) -> Result<tauri::menu::Menu<taur
         .map_err(|e| e.to_string())?;
     let quit = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)
         .map_err(|e| e.to_string())?;
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let pet = {
+        use tauri::menu::CheckMenuItem;
+        CheckMenuItem::with_id(
+            app,
+            "desktop-pet",
+            tray_desktop_pet_label(lang),
+            true,
+            crate::desktop_pet::enabled(app),
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())?
+    };
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        return Menu::with_items(app, &[&chat, &show, &settings, &pet, &quit])
+            .map_err(|e| e.to_string());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     Menu::with_items(app, &[&chat, &show, &settings, &quit]).map_err(|e| e.to_string())
 }
 
@@ -1423,6 +1468,11 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
             }
             "quit" => {
                 app.exit(0);
+            }
+            "desktop-pet" => {
+                if let Err(err) = crate::desktop_pet::toggle(app) {
+                    eprintln!("Failed to toggle desktop pet: {err}");
+                }
             }
             _ => {}
         })

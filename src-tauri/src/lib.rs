@@ -9,6 +9,7 @@ pub mod chat;
 pub mod commands;
 mod computer_control;
 pub mod connectors;
+pub mod desktop_pet;
 pub mod dock;
 pub mod external_agents;
 pub mod fonts;
@@ -421,6 +422,9 @@ pub fn run() {
                     "Failed to register hotkeys: {}",
                     display_hotkey_errors(&err)
                 );
+            }
+            if let Err(err) = desktop_pet::initialize(&app.handle()) {
+                eprintln!("Failed to initialize desktop pet: {err}");
             }
             crate::automation::spawn_scheduler(app.handle().clone());
             crate::scheduled_tasks::spawn_scheduler(app.handle().clone());
@@ -930,6 +934,11 @@ pub fn run() {
                     // OfficeCLI live preview (`officecli watch`) 等插件附属进程
                     crate::plugins::stop_all_previews();
                 }
+            }
+            // 桌宠只在最终退出时拆掉。ExitRequested 在用户关窗（code 为空）
+            // 和子进程清理未完成时都会 prevent_exit，那种路径进程还活着。
+            tauri::RunEvent::Exit => {
+                desktop_pet::shutdown(app_handle);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
