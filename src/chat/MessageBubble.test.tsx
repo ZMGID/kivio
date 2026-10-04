@@ -5,25 +5,102 @@ import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
 describe('assistant body visibility', () => {
-  it('keeps already visible live steps mounted through growth and completion', () => {
-    const make = (count: number): ChatMessage => ({
-      id: 'growing-process', role: 'assistant', timestamp: 1, content: '',
+  it('pins revealed live steps when newer steps append and does not expand them on settle', () => {
+    const make = (count: number, answer?: string): ChatMessage => ({
+      id: 'growing-process', role: 'assistant', timestamp: 1, content: answer ?? '',
+      stream_outcome: answer ? 'completed' : undefined,
       tool_calls: Array.from({ length: count }, (_, i) => ({
         id: `tool-${i}`, name: `live_step_${i}`, source: 'native', status: 'completed',
+      })),
+      segments: [
+        ...Array.from({ length: count }, (_, i) => ({
+          id: `segment-${i}`, kind: 'tool' as const, phase: 'tool_loop' as const, order: i, tool_call_id: `tool-${i}`,
+        })),
+        ...(answer ? [{ id: 'answer', kind: 'text' as const, phase: 'synthesis' as const, order: count, text: answer }] : []),
+      ],
+    })
+    const { rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
+    rerender(<MessageBubble message={make(21)} messageStreaming />)
+    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
+    expect(screen.getByText('live_step_20')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（1）' }))
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    rerender(<MessageBubble message={make(22)} messageStreaming />)
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
+    expect(screen.getByText('live_step_21')).toBeVisible()
+    rerender(<MessageBubble message={make(22, 'Settled answer')} />)
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('live_step_0')).toBeVisible()
+    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
+    expect(screen.getByText('Settled answer')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
+    expect(screen.getByText('live_step_21')).toBeVisible()
+    expect(screen.getByText('Settled answer')).toBeVisible()
+  })
+
+  it.each(['pointer', 'focus'])('retains the inspected live page after a %s interaction', (interaction) => {
+    const make = (count: number): ChatMessage => ({
+      id: 'reading-live-page', role: 'assistant', timestamp: 1, content: '',
+      tool_calls: Array.from({ length: count }, (_, i) => ({
+        id: `tool-${i}`, name: `inspect_${i}`, status: 'completed',
       })),
       segments: Array.from({ length: count }, (_, i) => ({
         id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
       })),
     })
-    const { rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    rerender(<MessageBubble message={make(21)} messageStreaming />)
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    // Explicitly open keeps the user's reading intent through settle.
-    fireEvent.click(screen.getByRole('button', { name: /^Working/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Working/ }))
-    rerender(<MessageBubble message={make(21)} />)
-    expect(screen.getByText('live_step_0')).toBeVisible()
+    const { rerender } = render(<MessageBubble message={make(21)} messageStreaming />)
+    const inspected = screen.getByText('inspect_1')
+    if (interaction === 'pointer') fireEvent.pointerDown(inspected)
+    else fireEvent.focus(inspected)
+    rerender(<MessageBubble message={make(25)} messageStreaming />)
+    expect(screen.getByText('inspect_1')).toBe(inspected)
+    expect(inspected).toBeVisible()
+    expect(screen.getByText('inspect_24')).toBeVisible()
+    expect(screen.queryByText('inspect_0')).not.toBeInTheDocument()
+  })
+
+  it('keeps a pending question, permission prompt, and live thought outside the recent page', () => {
+    const later = Array.from({ length: 24 }, (_, index) => index)
+    const message: ChatMessage = {
+      id: 'blocked-process', role: 'assistant', timestamp: 1, content: '窗口外的最终答复',
+      segments: [
+        { id: 'reason', kind: 'reasoning', phase: 'tool_loop', order: 0, text: 'Need a decision before continuing' },
+        { id: 'ask', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'ask' },
+        { id: 'permit', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'permit' },
+        ...later.map((index) => ({
+          id: `segment-${index}`, kind: 'tool' as const, phase: 'tool_loop' as const,
+          order: index + 3, tool_call_id: `tool-${index}`,
+        })),
+        { id: 'answer', kind: 'text', phase: 'synthesis', order: 40, text: '窗口外的最终答复' },
+      ],
+      tool_calls: [
+        {
+          id: 'ask', name: 'AskUserQuestion', source: 'native', status: 'running',
+          structured_content: {
+            askUser: {
+              phase: 'awaiting',
+              questions: [{ id: 'q', prompt: '继续吗？', options: [{ id: 'yes', label: '继续' }, { id: 'no', label: '停止' }] }],
+            },
+          },
+        },
+        { id: 'permit', name: 'approve_deploy', source: 'native', status: 'pending', requires_confirmation: true },
+        ...later.map((index) => ({
+          id: `tool-${index}`, name: `live_step_${index}`, source: 'native' as const, status: 'completed' as const,
+        })),
+      ],
+    }
+    render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
+    expect(screen.getByText('等待你回答（在下方面板里选）')).toBeVisible()
+    expect(screen.getByText('approve_deploy')).toBeVisible()
+    expect(screen.getByLabelText('Thinking')).toBeVisible()
+    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
+    expect(screen.getByText('live_step_23')).toBeVisible()
+    expect(screen.getByText('窗口外的最终答复')).toBeVisible()
   })
 
   it('bounds a large tool process and lets the reader reveal earlier steps without hiding the answer', () => {
@@ -254,11 +331,9 @@ describe('MessageBubble mount motion', () => {
     const liveCodes = [...container.querySelectorAll('figure pre code')]
     expect(liveCodes).toHaveLength(2)
     const liveSpanCount = liveCodes.reduce((n, code) => n + code.querySelectorAll('span').length, 0)
-    expect(liveSpanCount).toBeGreaterThan(0)
-
     rerender(<MessageBubble message={message} messageStreaming={false} markdownStreaming />)
     await act(async () => { await Promise.resolve() })
-    // 没退回 fallback：island 仍是 hydrated，高亮 span 原样保留，代码块 DOM 节点也没换。
+    // 没退回 fallback：island 仍是 hydrated，代码块 DOM 节点没换，冻结帧也不改 token 结构。
     expect(container.querySelector('[data-chat-heavy-hydrated="false"]')).toBeNull()
     const frozenCodes = [...container.querySelectorAll('figure pre code')]
     expect(frozenCodes).toEqual(liveCodes)

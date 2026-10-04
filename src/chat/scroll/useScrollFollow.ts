@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 
 import {
@@ -10,6 +10,11 @@ import {
   reduceFollowEvent,
 } from './scrollFollowCore'
 
+// Share the viewport authority with nested timelines, including multi-answer columns.
+export const ScrollFollowingContext = createContext({
+  following: true,
+  isFollowing: (): boolean => true,
+})
 
 // 低于此高度元素无法有效滚动；其上的 wheel/touch 不应改变跟随状态。
 const SCROLLABLE_OVERFLOW_MIN_PX = 4
@@ -284,6 +289,14 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
         && previousScrollTop !== null
         && scrollTop > previousScrollTop + 1
       const selfInduced = scrollTop === token || contentGrewBeforeScroll || (layoutCompensation && !userReturnedDuringLayout)
+      // Native scrollbar movement may have no wheel/pointer event. A backwards
+      // move with unchanged geometry and no compensation token takes ownership.
+      if (!selfInduced && previousScrollTop !== null &&
+        scrollTop < previousScrollTop - 1 &&
+        previousScrollHeight === viewport.scrollHeight &&
+        gap > configRef.current.attachThresholdPx) {
+        dispatch({ type: 'release' })
+      }
       dispatch({
         type: 'scroll',
         gap,

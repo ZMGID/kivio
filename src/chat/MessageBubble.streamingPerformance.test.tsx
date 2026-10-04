@@ -53,7 +53,7 @@ describe('live message Markdown render boundary', () => {
   it('keeps settled reasoning out of unrelated text and tool updates while retaining live state changes', () => {
     const tool: ToolCallRecord = { id: 'read', name: 'read', status: 'running', result_preview: 'before' }
     const message: ChatMessage = { ...longRun(), tool_calls: [tool], segments: [
-      { id: 'thought', kind: 'reasoning', order: -1, phase: 'tool_loop', text: 'Completed thought' },
+      { id: 'thought', kind: 'reasoning', order: 29, phase: 'tool_loop', text: 'Completed thought' },
       ...longRun().segments!,
     ] }
     const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningDurationMs={2000} />)
@@ -127,7 +127,7 @@ describe('live message Markdown render boundary', () => {
       ...(withCitations ? [{ ...source }] : []), { ...tool, result_preview: 'after', status: 'completed' },
     ] }} messageStreaming />)
     expect(markdownRender).not.toHaveBeenCalled()
-    expect(screen.getByText('Completed step 0.')).toBeVisible()
+    expect(screen.getByText('Completed step 20.')).toBeVisible()
   })
 
   it('refreshes old text when a citation arrives and when its source is replaced', () => {

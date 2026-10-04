@@ -173,17 +173,9 @@ export function reduceFollowEvent(
       }
 
       if (state.following) {
-        // LiveAgent corrector: while following, ANY scroll that leaves a gap
-        // re-pins. Detach is ONLY via explicit user input (wheel-up / touch /
-        // historyKey / release) — never via scroll source classification.
-        //
-        // Kivio previously detached on source==='user' so native scrollbar
-        // drags could win. That mis-classifies TanStack end-anchor / focus /
-        // layout echoes as "user" during streaming, sets userDetached, and
-        // permanently kills stick-to-bottom (screenshot: content stuck mid-
-        // viewport with empty reserve below). Prefer LiveAgent: a false
-        // re-pin is one frame; a false detach ruins the whole stream.
-        // Scrollbar users still detach with wheel/trackpad (wheel handler).
+        // Correct layout/focus echoes while following. Explicit input and the
+        // hook's verified backwards native-scroll movement dispatch release
+        // before reaching this branch; raw scroll gaps alone do not detach.
         //
         // pointerHeld 豁免：按住指针拖选文本时，选区自动滚动会连续产生 gap 越来越大的
         // scroll 事件；若照钉，每一下都把视口拽回底部，流式中根本没法向上选字。

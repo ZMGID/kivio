@@ -31,7 +31,7 @@ const imageArtifact: ChatToolArtifact = {
   id: 'fixture-image',
   name: 'fixture.png',
   mime_type: 'image/png',
-  data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+  data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=',
 }
 
 const toolCall: ToolCallRecord = {

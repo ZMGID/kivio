@@ -1,5 +1,5 @@
-import { act, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ChatMarkdown } from './ChatMarkdown'
 import { MarkdownStreamingContext } from './markdownStreaming'
 import {
@@ -86,6 +86,56 @@ describe('ChatMarkdown streaming stability', () => {
       await Promise.resolve()
     })
     expect(container.querySelector('[data-streamdown="strong"]')?.textContent).toBe('加粗文字')
+  })
+
+  it('定稿与历史不把未闭合加粗交给 remend 补全', async () => {
+    const { container } = render(<ChatMarkdown content={'前缀 **加粗'} />)
+    await act(async () => { await Promise.resolve() })
+    expect(container.querySelector('[data-streamdown="strong"]')).toBeNull()
+    expect(container.textContent).toContain('前缀')
+    expect(container.textContent).toContain('**加粗')
+  })
+
+  it('未写完的图片在流式中仍被收起，落库历史保留地址', async () => {
+    // remend 1.3 对未闭合图片的处理是整段删掉（`说明` 之后的 `![趋势图](url` 消失）。
+    // 定稿必须留下用户还能看见的地址，不能把截断的历史修成少了一段。
+    const content = '说明\n\n![趋势图](https://cdn.example/trend.png'
+    const view = (streaming: boolean) => (
+      <MarkdownStreamingContext.Provider value={streaming}>
+        <ChatMarkdown content={content} />
+      </MarkdownStreamingContext.Provider>
+    )
+    const { container, rerender } = render(view(true))
+    await act(async () => { await Promise.resolve() })
+    expect(container.textContent).toContain('说明')
+    expect(container.textContent).not.toContain('https://cdn.example/trend.png')
+
+    rerender(view(false))
+    await act(async () => { await Promise.resolve() })
+    expect(container.textContent).toContain('https://cdn.example/trend.png')
+    expect(container.textContent).toContain('趋势图')
+  })
+
+  it('定稿恢复未闭合语法的原文，仅修正受影响的块，不重挂旁边代码', async () => {
+    const content = '前缀 **加粗\n\n```ts\nconst stable = 1\n```\n\n```ts\nconst pending = 1'
+    const view = (streaming: boolean) => (
+      <MarkdownStreamingContext.Provider value={streaming}>
+        <ChatMarkdown content={content} />
+      </MarkdownStreamingContext.Provider>
+    )
+    const { container, rerender } = render(view(true))
+    await act(async () => { await Promise.resolve() })
+    const codes = () => [...container.querySelectorAll('figure pre code')]
+    expect(codes()[0]?.textContent).toBe('const stable = 1')
+    const stable = codes()[0]
+
+    rerender(view(false))
+    await act(async () => { await Promise.resolve() })
+    const settled = codes()
+    expect(settled.map((node) => node.textContent)).toEqual(['const stable = 1', 'const pending = 1'])
+    expect(settled[0]).toBe(stable)
+    expect(container.querySelector('[data-streamdown="strong"]')).toBeNull()
+    expect(container.textContent).toContain('**加粗')
   })
 
   it('流式代码块不走 ChatHeavyIsland 延迟 hydrate', async () => {
@@ -189,5 +239,56 @@ describe('ChatMarkdown streaming stability', () => {
     expect(island?.getAttribute('data-chat-heavy-hydrated')).toBe('true')
     expect(container.querySelector('figure pre code')?.textContent).toContain('const after = 1')
     unmount()
+  })
+
+  it('流式代码保持转义全文和复制，定稿后同一 code 恢复高亮', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const previousClipboard = navigator.clipboard
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    try {
+      const source = 'const label = "<b>hi</b>" & ok'
+      const longer = `${source}\nconst next = 2`
+      const view = (streaming: boolean, body: string) => (
+        <MarkdownStreamingContext.Provider value={streaming}>
+          <ChatMarkdown content={`\`\`\`ts\n${body}\n\`\`\``} />
+        </MarkdownStreamingContext.Provider>
+      )
+      const { container, rerender } = render(view(true, source))
+      await act(async () => { await Promise.resolve() })
+
+      const code = container.querySelector('figure pre code') as HTMLElement
+      expect(code.textContent).toBe(source)
+      expect(code.querySelector('span, b')).toBeNull()
+      expect(code.innerHTML).toContain('&lt;b&gt;')
+      expect(code.innerHTML).toContain('&amp;')
+
+      rerender(view(true, longer))
+      await act(async () => { await Promise.resolve() })
+      const grown = container.querySelector('figure pre code')
+      expect(grown?.textContent).toBe(longer)
+      expect(grown?.querySelector('span')).toBeNull()
+
+      const copyButton = screen.getByRole('button', { name: '复制代码' })
+      await act(async () => {
+        fireEvent.click(copyButton)
+      })
+      expect(writeText).toHaveBeenCalledWith(longer)
+
+      rerender(view(false, longer))
+      await act(async () => { await Promise.resolve() })
+      const settled = container.querySelector('figure pre code')
+      expect(settled).toBe(grown)
+      expect(settled?.textContent).toBe(longer)
+      const keyword = settled?.querySelector('span')
+      expect(keyword?.textContent).toBe('const')
+
+      writeText.mockClear()
+      await act(async () => {
+        fireEvent.click(copyButton)
+      })
+      expect(writeText).toHaveBeenCalledWith(longer)
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: previousClipboard })
+    }
   })
 })

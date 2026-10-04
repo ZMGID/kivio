@@ -29,6 +29,7 @@ function Harness() {
   const [id, setId] = React.useState('F1');
   const [narrow, setNarrow] = React.useState(false);
   const [mount, setMount] = React.useState(0);
+  const [, refresh] = React.useReducer(value => value + 1, 0);
   window.chatAcceptance = {
     show(next) { owner.drop(id); owner.activate(next); flushSync(() => setId(next)); },
     resize() { flushSync(() => setNarrow(value => !value)); },
@@ -90,6 +91,17 @@ function Harness() {
       }
       owner.receive({type: 'run_completed', conversationId: 'F4', runId: 'fixture', messageId: 'f4-assistant'});
       owner.complete('F4', {kind: 'error'}); // Freeze for inspection; no backend/model.
+    },
+    settleStream() {
+      const committedMessages = [fixtures.F4.messages[0], {
+        id: 'f4-assistant', role: 'assistant', timestamp: 101,
+        content: fixtures.F4.streamingContent,
+      }];
+      flushSync(() => {
+        fixtures.F4.messages = committedMessages;
+        owner.complete('F4', {kind: 'persisted', committedMessages});
+        refresh();
+      });
     },
   };
   return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'calc(100% - 260px)':'100%', display:'flex', flexDirection:'column'}},

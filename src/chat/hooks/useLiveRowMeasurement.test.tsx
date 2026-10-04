@@ -2,7 +2,7 @@ import { StrictMode, useCallback } from 'react'
 import { act, render, renderHook } from '@testing-library/react'
 import { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { layoutScopedVirtualKey, measureChatVirtualRow } from '../messageListVirtualization'
+import { layoutScopedVirtualKey, measureChatVirtualRow, shouldAdjustChatItemSizeChange } from '../messageListVirtualization'
 import { useLiveRowMeasurement } from './useLiveRowMeasurement'
 
 const layoutKey = 'conversation:848'
@@ -67,6 +67,42 @@ describe('useLiveRowMeasurement', () => {
     expect(instance.elementsCache.get(layoutScopedVirtualKey(layoutKey, rowKey))).toBe(element)
     expect(result.current.getLiveRowSize(rowKey)).toBeUndefined()
     expect(disconnect).toHaveBeenCalledOnce()
+  })
+
+  it.each([724, 1000])('keeps the reader inside a live row when completion changes its height to %i', (settledHeight) => {
+    const rowKey = 'live-reading'
+    const { result } = renderHook(() => useLiveRowMeasurement(layoutKey, rowKey))
+    const element = document.createElement('div')
+    element.dataset.index = '0'
+    let height = 761
+    Object.defineProperty(element, 'offsetHeight', { get: () => height })
+    act(() => result.current.liveRowRef(element))
+    let scrollTop = 300
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 1,
+      getScrollElement: () => null,
+      getItemKey: () => layoutScopedVirtualKey(layoutKey, rowKey),
+      estimateSize: () => result.current.getLiveRowSize(rowKey) ?? 96,
+      initialOffset: scrollTop,
+      initialRect: { width: 848, height: 200 },
+      observeElementRect: () => undefined,
+      observeElementOffset: () => undefined,
+      scrollToFn: (offset, { adjustments = 0 }) => { scrollTop = offset + adjustments },
+      measureElement: (node, entry) => measureChatVirtualRow(node, entry),
+    })
+    instance.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, current) => shouldAdjustChatItemSizeChange(item, {
+      scrollOffset: current.scrollOffset ?? 0,
+      scrollAdjustments: current.scrollAdjustments,
+      itemSizeCache: current.itemSizeCache,
+    })
+    instance.getTotalSize()
+    height = settledHeight
+    act(() => {
+      result.current.liveRowRef(null)
+      result.current.measureRow(element, instance)
+    })
+    expect(instance.getTotalSize()).toBe(settledHeight)
+    expect(scrollTop).toBe(300)
   })
 
   it('keeps observing through StrictMode replay and cleans up on ref detach', () => {

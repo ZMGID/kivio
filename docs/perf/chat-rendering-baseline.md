@@ -74,11 +74,154 @@ and rebuild compositing layers on each offscreen status animation.
 
 For the current build, `playwright-cli run-code --filename=scripts/probe-chat-long-run.playwright.js`
 runs all four F5 combinations on the already-open production fixture, checks
-segment visibility, released transform and bottom anchoring after a width change,
-and stores the full results in `window.chatLongRunReport`.
+the default DOM budget, access to earlier steps, released transform and bottom
+anchoring after a width change, and stores results in `window.chatLongRunReport`.
 It restores full width after each resize assertion so all timing cases use the
 same width. Serial before/after repetitions and remount measurements for the
 segment memo follow-up are in [the follow-up report](chat-streaming-followup-2026-09-30.json).
+
+### Bounded live work and deferred syntax highlighting (2026-10-04)
+
+Live Work defaults to the latest 20 **process segments**, not 20 tool rounds.
+Earlier steps remain in the transcript and can be revealed in pages of 20.
+Revealed pages and pages inspected by pointer/focus remain mounted as new steps
+arrive. Viewport-level reading intent also pins the last committed page, including
+gutter wheel, history keys, touch and backwards native-scroll movement. Pending
+questions, pending tool permissions, and the current reasoning segment are retained
+outside this default window. Explicitly revealing earlier steps keeps Work open
+after completion; detaching once does not pin every subsequently appended step.
+Final answer text and artifact presentations are not truncated. Closing and
+reopening finished Work resets the inspection pins.
+
+This is bounded default mounting, not sub-step virtualization or a hard DOM cap:
+explicit inspection, many simultaneous pending interactions, and large individual
+segments can still grow the mounted tree. Streaming data processing still scans
+the full timeline.
+
+Streaming code renders escaped full text without syntax-token spans. Settled
+code uses the existing highlighter/cache; copy text, code geometry and Streamdown
+mode remain unchanged. The fixture's `settleStream()` applies a persisted-message
+handoff after `stream()` freezes the live output, without invoking a backend.
+
+Same-machine production fixture observations, Chromium 150, 1280×900, DPR 1.25:
+
+| Scenario / metric | Before | After |
+|---|---:|---:|
+| F5 1,000 steps, default DOM nodes | 36,095 | 456 |
+| F5 1,000 steps, mounted Markdown blocks | 1,001 | 11 |
+| F5 text run, mount commit | 952.9 ms | 51.9 ms |
+| F5 text updates, median / p95 | 16.3 / 28.1 ms | 16.2 / 20.0 ms |
+| F5 tool run, mount commit | 932.1 ms | 33.5 ms |
+| F5 tool updates, median / p95 | 23.3 / 125.1 ms | 11.5 / 17.2 ms |
+| F4 stream, renderer TaskDuration delta | 3,181.7 ms | 1,093.4 ms |
+| F4 stream, elapsed wall time | 4,932.1 ms | 3,999.5 ms |
+
+These are individual before/after runs, not statistical guarantees or native
+model/backend measurements. Both F5 sizes (300 and 1,000) mounted 456 DOM nodes
+afterward. Earlier-page interaction revealed step 980 while preserving step 990
+and current output. Narrow/wide resize bottom gaps were zero. F4 preserved all
+19,954 code-body characters, had zero live token spans, then restored 2,418 spans
+on the same code node at the persisted handoff; pre height stayed 14,576 px.
+The unchanged F5 text-update median is a remaining full-timeline processing cost,
+not evidence that all streaming work is now constant-time.
+
+Verification: production fixture build; real-browser paging/resize/code handoff;
+24 relevant Vitest files / 255 tests; `tsc --noEmit`; targeted ESLint. The link
+tests still emit jsdom's unsupported-navigation diagnostic while passing.
+
+Reader-state repair: follows ZCode's viewport-owned reading intent rather than
+bubble-local wheel detection, without adopting full live-process mounting.
+Real-browser development-fixture smoke retained the same step DOM node after
+gutter scrolling and 101 appended steps, without mounting skipped intermediate
+steps; explicitly revealed history stayed expanded at persisted completion.
+A scroll-only move from 241 to 91 px retained both its offset and inspected step
+after append. This exercises browser scroll events, not an OS-native scrollbar
+drag or a Tauri/WebKit run. Regression coverage includes input and stream updates
+batched together; the viewport authority is read before rendering the new page.
+
+### Math, fixture images and idle scheduling repair (2026-10-05)
+
+`ChatMarkdown` imports KaTeX's dependency stylesheet directly, alongside the math
+renderer, so Vite bundles its relative font assets. Importing it through the
+Tailwind aggregate left unresolved `fonts/KaTeX_*.woff2` URLs in the build.
+KaTeX's accessible MathML remains in the DOM but is visually clipped; only the
+HTML formula occupies layout. The F3 PNG is now a complete, decodable 1×1 image,
+not an image-load failure fixture or a representative large-image benchmark.
+
+Settled/history Markdown disables incomplete-syntax repair. The parser stays in
+Streamdown's keyed-block mode instead of switching to its whole-document static
+tree: unchanged code and loaded images survive completion. Incomplete text is
+restored from the source, and only corrected blocks may remount. This does not
+replace or fix upstream remend's live cross-block repair behavior.
+
+Idle `KivioBlob` has no autonomous breathing, blink, gaze or shape cadence. Poke,
+keyboard and explicit pulse reactions settle, then stop scheduling. Running
+moods keep animation; hidden, offscreen, paused and reduced-motion gates remain.
+Expired interaction holds are processed on resume. The obsolete automatic-antic
+caption callback/hook was removed; rotating greetings no longer nudge the avatar,
+while explicit poke captions remain.
+
+Real Chromium production-fixture verification at 1280×900, DPR 1.25:
+
+- F1 idle, 6 seconds: **0 layouts**, 2.6 ms renderer TaskDuration, compared with
+  the prior 97 layouts / 185.8 ms sample. This is a single renderer sample,
+  not whole-app CPU, native Tauri/WebKit, or a leak/longevity measurement.
+- KaTeX Main/Math fonts loaded; MathML boxes measured 1×1 px. All five mounted F3
+  images decoded as 1×1, without error placeholders.
+- Active avatar animated; paused and settled states had zero SVG mutations.
+  Pointer and keyboard input animated; reduced-motion mode produced zero mutations.
+- F4 retained the same code node and all 19,954 characters at completion, restoring
+  2,418 highlight spans; pre height stayed 14,576 px and reading offset 13,250 px.
+  Actual clipboard text matched all 19,954 characters.
+- F5 1,000-step text/tool updates: p95 10.3 / 9.1 ms, 467 DOM nodes, no recorded
+  long tasks in these runs. The previously observed 223 ms peak remains unassigned;
+  these samples do not establish its elimination.
+
+Verification: production fixture build, browser scenarios above, 28 Vitest files /
+308 tests, `tsc --noEmit`, targeted ESLint. The passing link suite still emits
+jsdom's unsupported-navigation diagnostic. Local measurements:
+`node_modules/.cache/chat-repair-results.json`.
+
+### Native/WebKit completion and resource check (2026-10-05)
+
+The real debug Tauri window exposed a completion-position change that Chromium
+alone did not catch. Isolated WebKit reproduced a 216 px adjustment: the
+virtualizer treated the already-measured live row as unmeasured history.
+Transferring its measured size removes that incorrect compensation. WebKit can
+also reset `scrollTop` while React moves the row from normal flow to absolute
+positioning; `MessageList` captures detached reading intent before the DOM commit
+and restores it through the existing scroll owner after measurement.
+
+- Production WebKit F4: completion retained the same code node and all 19,954
+  characters; `scrollTop` remained **5073**, code Y remained **-4866.155 px**.
+  A separate following run ended with **0 px** bottom gap.
+- Real Tauri: formulas rendered once, an 80-line code response highlighted after
+  completion, and the native copy action matched all 80 lines.
+- Instrumented real Tauri run: after scrolling into a live 300-line code response,
+  14 successive samples through completion kept code Y at **-1560 screenshot
+  pixels**. The recorded follow transition was the upward wheel; completion did
+  not force follow. A separate 300-line run preserved the visible older code
+  landmarks while the new response grew and completed.
+- An earlier, uninstrumented 500-line run returned to the bottom during streaming.
+  Its cause is unassigned; the two instrumented runs did not reproduce it.
+  These checks do not establish that every native scroll anomaly is eliminated.
+
+Two-process `top` samples (Kivio PID 56888 and its identified WebContent PID 56907),
+11 snapshots at one-second intervals, excluding the initial CPU sample:
+
+| Phase | Combined CPU range | Combined resident memory |
+| --- | --- | --- |
+| During a 500-line response | 0.3–0.7% | 756.2 → 720.4 MiB |
+| Settled idle | 0.0–0.4% | 584.3 → 546.0 MiB |
+
+These are short debug/HMR-session observations, not release-package benchmarks.
+GPU/network helpers and external CLI processes are excluded; resident-memory
+totals do not establish unique physical footprint or absence of a long-term leak.
+
+Final verification: 29 Vitest files / 318 tests, TypeScript, targeted ESLint,
+production fixture build, real Tauri and WebKit scenarios above. Temporary
+follow-state/title diagnostics were removed and the native title restored.
+Local detailed evidence: `node_modules/.cache/chat-native-repair-results.json`.
 
 ## Acceptance measurements
 

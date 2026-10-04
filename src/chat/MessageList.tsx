@@ -38,7 +38,7 @@ import {
 import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
-import { useScrollFollow } from './scroll/useScrollFollow'
+import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
 import {
   chatMessageLayoutRevision,
   estimateMessageRenderHeight,
@@ -552,6 +552,10 @@ function MessageListBase({
     trackKeys: true,
     growthSignal: streamGrowthSignal,
   })
+  const followContext = useMemo(() => ({
+    following,
+    isFollowing: followHandle.isFollowing,
+  }), [following, followHandle])
   const { contentWidth, widthReady, anchorRef: widthAnchorRef, prepareWidthChange, restoreAnchor: restoreWidthAnchor } = useChatWidthLayout(
     contentEl, viewportEl, followHandle, navigationLockRef,
   )
@@ -2045,11 +2049,16 @@ function MessageListBase({
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
   const liveScrollHandoffRef = useRef(liveRowActive)
+  // WebKit can reset scrollTop when the live row leaves normal flow, before
+  // layout effects run. Snapshot the detached reader before that DOM commit.
+  const handoffReadingOffset = liveScrollHandoffRef.current && !liveRowActive
+    && !followHandle.isFollowing() ? viewportEl?.scrollTop ?? null : null
   useLayoutEffect(() => {
     const wasLive = liveScrollHandoffRef.current
     liveScrollHandoffRef.current = liveRowActive
     if (!wasLive || liveRowActive) return
     if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
+      if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
       beginStreamSettleEagerHydrate()
       return
     }
@@ -2079,6 +2088,7 @@ function MessageListBase({
     cancelNavigatorSettle,
     followHandle,
     historyItems.length,
+    handoffReadingOffset,
     liveRowActive,
     setNavigationLock,
   ])
@@ -2399,6 +2409,7 @@ function MessageListBase({
 
 
       >
+        <ScrollFollowingContext.Provider value={followContext}>
         <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
           <div data-chat-rows-root className="relative w-full">
             <div aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
@@ -2407,6 +2418,7 @@ function MessageListBase({
             </div>
           </div>
         </div>
+        </ScrollFollowingContext.Provider>
       </div>
       {/* 上下边界渐变遮罩，纯覆盖层。颜色必须跟 .chat-main-pane 的底色走（浅色 --theme-surface-soft，暗色 #262629）——
           别用 var(--bg)，那个只在 .kv / .settings-embedded 作用域里定义，在聊天区是未定义值，整条 linear-gradient

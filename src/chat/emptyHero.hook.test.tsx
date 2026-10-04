@@ -2,14 +2,11 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_HERO_JAB_MS,
-  EMPTY_HERO_MUTTER_MS,
   EMPTY_HERO_ROTATE_MAX_MS,
   EMPTY_HERO_ROTATE_MIN_MS,
   emptyHeroGreetings,
-  emptyHeroMutter,
   useEmptyHeroJab,
   useEmptyHeroLine,
-  useEmptyHeroMutter,
 } from './emptyHero'
 
 describe('useEmptyHeroLine', () => {
@@ -87,41 +84,3 @@ describe('useEmptyHeroJab', () => {
   })
 })
 
-describe('useEmptyHeroMutter', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-    vi.spyOn(Math, 'random').mockReturnValue(0)
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-    vi.useRealTimers()
-  })
-
-  it('变形态时嘟囔一句，过一会收回；圆没有词', () => {
-    const { result } = renderHook(() => useEmptyHeroMutter('zh'))
-    expect(result.current.mutter).toBeNull()
-    act(() => {
-      result.current.onAntic('cloud')
-    })
-    expect(result.current.mutter).toBe('走神了')
-    act(() => {
-      vi.advanceTimersByTime(EMPTY_HERO_MUTTER_MS)
-    })
-    expect(result.current.mutter).toBeNull()
-    act(() => {
-      result.current.onAntic('circle')
-    })
-    expect(result.current.mutter).toBeNull()
-  })
-
-  it('多数时候不说：变形态不到一半会念，蹦几乎不配词', () => {
-    expect(emptyHeroMutter('zh', 'cloud', () => 0.3)).not.toBeNull()
-    expect(emptyHeroMutter('zh', 'cloud', () => 0.5)).toBeNull()
-    expect(emptyHeroMutter('zh', 'pebble', () => 0)).toBe('稳一会')
-    expect(emptyHeroMutter('en', 'bean', () => 0)).toBe('Going sideways.')
-    expect(emptyHeroMutter('zh', 'hop', () => 0.3)).toBeNull()
-    expect(emptyHeroMutter('en', 'hop', () => 0.1)).toBe('Stretching.')
-    expect(emptyHeroMutter('en', 'squircle', () => 0.9)).toBeNull()
-  })
-})

@@ -53,8 +53,15 @@ export function useLiveRowMeasurement(layoutKey: string, liveRowKey: string | nu
     if (previous && previous.key !== key && instance.elementsCache.get(previous.key) === element) {
       instance.elementsCache.delete(previous.key)
     }
-    const settling = pending.current?.key === key
-    if (settling) pending.current = null
+    const measurement = pending.current
+    const settling = measurement?.key === key
+    if (settling) {
+      // This is a measured live row, not an unmeasured historical estimate.
+      // Transfer that fact before resizeItem decides whether a changed footer
+      // or final delta should compensate the reader's scroll position.
+      if (measurement.height > 0) instance.itemSizeCache.set(key, measurement.height)
+      pending.current = null
+    }
     if (settling || layoutChanged) {
       // React keeps the DOM across both live→history and width changes. The
       // new layout key has different estimates, but unchanged line breaks mean

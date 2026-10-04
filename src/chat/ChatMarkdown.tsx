@@ -7,6 +7,7 @@ import type { PluggableList } from 'unified'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
 import { createMathPlugin } from '@streamdown/math'
+import 'katex/dist/katex.min.css'
 import { mermaid } from '@streamdown/mermaid'
 import remarkBreaks from 'remark-breaks'
 import { normalizeMarkdownForRender, preserveLocalMarkdownLinks } from './markdownUtils'
@@ -325,11 +326,10 @@ const highlightCache = new Map<string, ReactNode[]>()
 const HIGHLIGHT_CACHE_MAX = 400
 
 // 导出给 dock 文件查看器复用（逐行调用，块注释跨行会降级——查看器场景可接受）。
-// cache=false（流式中的增长块）只读不写：增长块每个 token 全文都变、键永 miss，
-// 若照写会把每个前缀版本都灌进 LRU —— 一个长代码块流完能把几百条已定稿条目全部
-// 挤光，回翻历史时整批重扫。
+// 流式增长块不走这里：每个 delta 全文都变，扫描和 span 会在主线程上反复重建，
+// 前缀写进 LRU 还会把已定稿条目挤掉。定稿后才扫描并按语言+源码缓存。
 // eslint-disable-next-line react-refresh/only-export-components -- 纯函数 helper，热更新损失可接受
-export function highlightCode(code: string, language: string, options?: { cache?: boolean }) {
+export function highlightCode(code: string, language: string) {
   const key = `${language}\n${code}`
   const cached = highlightCache.get(key)
   if (cached) {
@@ -343,12 +343,10 @@ export function highlightCode(code: string, language: string, options?: { cache?
       ? <span key={index} className={token.className}>{token.text}</span>
       : token.text
   ))
-  if (options?.cache !== false) {
-    highlightCache.set(key, rendered)
-    if (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
-      const oldest = highlightCache.keys().next().value
-      if (oldest !== undefined) highlightCache.delete(oldest)
-    }
+  highlightCache.set(key, rendered)
+  if (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
+    const oldest = highlightCache.keys().next().value
+    if (oldest !== undefined) highlightCache.delete(oldest)
   }
   return rendered
 }
@@ -433,10 +431,11 @@ function mermaidThemeVariables(dark: boolean) {
 
 function CodeBlock({ code, language, actions }: { code: string; language: string; actions?: ReactNode }) {
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
-  // 流式中的增长块只读缓存不写（见 highlightCode 注释），定稿后首次渲染才入缓存。
+  // 上下文为 true 时只放转义后的全文，不调用 highlightCode。Block memo 不订阅这个上下文，
+  // 所以这里自己读：定稿变 false 后仍会重渲，再走缓存高亮。岛一旦 hydrate 不拆这块，<pre>/<code> 仍在。
   const streaming = useContext(MarkdownStreamingContext)
   const highlighted = useMemo(
-    () => highlightCode(normalizedCode, language, { cache: !streaming }),
+    () => (streaming ? null : highlightCode(normalizedCode, language)),
     [normalizedCode, language, streaming],
   )
   const [copied, setCopied] = useState(false)
@@ -472,7 +471,7 @@ function CodeBlock({ code, language, actions }: { code: string; language: string
         </IconButton>
       </div>
       <pre className="custom-scrollbar m-0 max-w-full overflow-x-auto bg-transparent px-4 pb-4 pt-10 text-[13px] leading-6 text-neutral-900 dark:text-neutral-100">
-        <code className="font-mono">{highlighted}</code>
+        <code className="font-mono">{highlighted ?? normalizedCode}</code>
       </pre>
     </figure>
   )
@@ -1439,16 +1438,16 @@ const MarkdownDocument = memo(function MarkdownDocument({
     streaming,
   ])
 
-  // Keep one parser mode and document identity through completion. Static mode
-  // parses the whole document differently from streaming's memoized blocks,
-  // changing cross-block syntax and spacing. Only corrected blocks remount.
+  // Static mode replaces the keyed block tree and remounts code at completion.
+  // Keep that tree stable, but repair incomplete syntax only while generating:
+  // settled/history text must not lose unfinished links, images or delimiters.
   return (
     <Streamdown
       mode="streaming"
       BlockComponent={ChatMarkdownBlock}
       // The outer shell owns dir="auto". Streamdown's dir wrappers use
       // display:contents, which breaks the block spacing selectors.
-      parseIncompleteMarkdown
+      parseIncompleteMarkdown={streaming}
       normalizeHtmlIndentation
       plugins={streamdownPlugins}
       remarkPlugins={remarkPlugins}

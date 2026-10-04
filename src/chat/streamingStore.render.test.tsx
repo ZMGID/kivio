@@ -73,6 +73,54 @@ function message(id: number): ChatMessage {
 }
 
 describe('MessageList ← streamingStore 集成', () => {
+  it.each(['wheel', 'scrollbar', 'keyboard', 'touch'])('pins the live page after viewport %s input without mounting every later step', async (input) => {
+    const snapshot = (count: number) => snapWith({
+      messageId: 'reading-process', streaming: true,
+      toolCalls: Array.from({ length: count }, (_, i) => ({
+        id: `tool-${i}`, name: `viewport_step_${i}`, status: 'completed',
+      })),
+      segments: Array.from({ length: count }, (_, i) => ({
+        id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
+      })),
+    })
+    act(() => {
+      setSnapshot(snapshot(60))
+      setCoarse({ streaming: true, streamFrozen: false })
+    })
+    const { container } = mountList()
+    await flush()
+    const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+    Object.defineProperties(viewport, {
+      scrollHeight: { configurable: true, value: 3000 },
+      clientHeight: { configurable: true, value: 600 },
+    })
+    // Deliver the initial bottom/layout scroll before the reader moves the thumb.
+    act(() => {
+      viewport.scrollTop = 2400
+      fireEvent.scroll(viewport)
+    })
+    const inspected = screen.getByText('viewport_step_40')
+    act(() => {
+      if (input === 'wheel') fireEvent.wheel(viewport, { deltaY: -100 })
+      if (input === 'scrollbar') {
+        viewport.scrollTop = 1200
+        fireEvent.scroll(viewport)
+      }
+      if (input === 'keyboard') fireEvent.keyDown(viewport, { key: 'PageUp' })
+      if (input === 'touch') {
+        fireEvent.touchStart(viewport, { touches: [{ clientY: 100 }] })
+        fireEvent.touchMove(viewport, { touches: [{ clientY: 200 }] })
+      }
+      setSnapshot(snapshot(61))
+    })
+    expect(screen.getByText('viewport_step_40')).toBe(inspected)
+    act(() => setSnapshot(snapshot(160)))
+    expect(screen.getByText('viewport_step_40')).toBe(inspected)
+    expect(screen.getByText('viewport_step_159')).toBeVisible()
+    expect(screen.queryByText('viewport_step_100')).not.toBeInTheDocument()
+    expect(screen.queryByText('viewport_step_39')).not.toBeInTheDocument()
+  })
+
   it.each([0, 2])('preserves the transcript while a completed send waits for React history commit (prior messages: %s)', async (historyCount) => {
     const conversationId = `empty-handoff-${historyCount}`
     const history = Array.from({ length: historyCount }, (_, index) => message(index))
@@ -109,7 +157,7 @@ describe('MessageList ← streamingStore 集成', () => {
       preview.activate(conversationId)
     })
     await flush()
-    const viewport = container.querySelector('.chat-scroll-viewport')
+    const viewport = container.querySelector<HTMLDivElement>('.chat-scroll-viewport')!
     const markdown = container.querySelector('[data-message-id="answer"] .chat-markdown')
     const code = markdown?.querySelector('pre code')
     expect(code?.textContent).toContain('const answer = 42')
@@ -132,11 +180,32 @@ describe('MessageList ← streamingStore 集成', () => {
       expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
       expect(container.querySelector('[data-message-id="answer"] .chat-markdown')).toBe(markdown)
 
+      Object.defineProperties(viewport, {
+        scrollHeight: { configurable: true, value: 4000 },
+        clientHeight: { configurable: true, value: 600 },
+      })
+      viewport.scrollTop = 2000
+      fireEvent.wheel(viewport, { deltaY: -40 })
+      fireEvent.scroll(viewport)
+      // WebKit may clamp the viewport during the flow→absolute DOM mutation,
+      // before MessageList's layout effect can restore the reader.
+      const setAttribute = Element.prototype.setAttribute
+      let nativeClamp = false
+      vi.spyOn(Element.prototype, 'setAttribute').mockImplementation(function (this: Element, name, value) {
+        setAttribute.call(this, name, value)
+        if (name === 'class' && value.includes('absolute')
+          && this.getAttribute('data-message-id') === 'answer') {
+          viewport.scrollTop = 0
+          nativeClamp = true
+        }
+      })
       act(() => commitHistory(persisted))
       await flush()
       expect(getCoarse().streamFrozen).toBe(false)
       expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
       expect(container.querySelector('[data-message-id="answer"] pre code')).toBe(code)
+      expect(nativeClamp).toBe(true)
+      expect(viewport.scrollTop).toBe(2000)
 
       act(() => {
         preview.drop(conversationId)

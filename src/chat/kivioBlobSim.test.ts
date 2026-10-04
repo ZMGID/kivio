@@ -3,7 +3,6 @@ import {
   blobScheduleMs,
   BLOB_BLUE,
   BLOB_IDLE_WAKE_MIN_MS,
-  BLOB_IDLE_BREATHE_MS,
   BLOB_POKE_RED,
   BODY_R,
   consumeBlink,
@@ -16,6 +15,26 @@ import {
   resolveBlobMood,
 } from './kivioBlobSim'
 import { BODY_POINTS } from './kivioBlobShapes'
+
+function visibleSchedule(sim: KivioBlobSim, now: number) {
+  return blobScheduleMs({
+    reducedMotion: false,
+    hidden: false,
+    onScreen: true,
+    highFps: sim.wantsHighFps(now),
+    idleWakeMs: sim.nextIdleWakeMs(now),
+  })
+}
+
+/** 按真实帧步进，直到闲置不再要 rAF、也不再有醒来时刻。 */
+function driveUntilStill(sim: KivioBlobSim, start: number, limit: number) {
+  const end = start + limit
+  for (let t = start; t <= end; t += 16) {
+    sim.sample(t)
+    if (visibleSchedule(sim, t) == null) return t
+  }
+  return end + 1
+}
 
 describe('kivioBlobSim', () => {
   it('queueBlink 走 70ms 眯 → 150ms 过冲 → 300ms 睁开', () => {
@@ -77,14 +96,25 @@ describe('kivioBlobSim', () => {
     expect(paint.rig.startsWith('translate(0.00 0.00)')).toBe(true)
   })
 
-  it('闲置眨眼结束后不钉满帧，改走呼吸节拍', () => {
-    const sim = new KivioBlobSim({ random: () => 0.5 })
+  it('闲置落定后停表，生成中才持续要帧', () => {
+    const sim = new KivioBlobSim({ random: () => 0.97 })
     sim.setMood('idle', 0)
-    for (let t = 0; t <= 1200; t += 16) sim.sample(t)
-    expect(sim.wantsHighFps(1200)).toBe(false)
-    expect(sim.nextIdleWakeMs(1200)).toBe(BLOB_IDLE_BREATHE_MS)
-    sim.setMood('think', 1200)
-    expect(sim.wantsHighFps(1200)).toBe(true)
+    const first = sim.sample(0)
+    expect(visibleSchedule(sim, 0)).toBeNull()
+    for (let t = 16; t <= 8000; t += 16) {
+      expect(sim.sample(t)).toEqual(first)
+      expect(visibleSchedule(sim, t)).toBeNull()
+    }
+    expect(sim.debug().body).toBe('circle')
+    expect(first.rig.startsWith('translate(0.00 0.00)')).toBe(true)
+    expect(first.body).toContain('scale(1 1.000)')
+
+    sim.setMood('think', 8000)
+    expect(sim.wantsHighFps(8000)).toBe(true)
+    for (let t = 8016; t <= 9000; t += 16) {
+      sim.sample(t)
+      expect(sim.wantsHighFps(t)).toBe(true)
+    }
   })
 
   it('出错间隙不钉满帧', () => {
@@ -95,12 +125,25 @@ describe('kivioBlobSim', () => {
     expect(sim.nextIdleWakeMs(2500)).toBeGreaterThan(100)
   })
 
-  it('blobScheduleMs：隐藏/屏外/失焦/覆盖停表，闲置走呼吸节拍，忙碌跟 vsync', () => {
+  it('blobScheduleMs：隐藏/屏外/失焦/覆盖/静稳停表，有限醒来可睡，忙碌跟 vsync', () => {
     expect(blobScheduleMs({ reducedMotion: true, hidden: false, onScreen: true, highFps: true })).toBeNull()
     expect(blobScheduleMs({ reducedMotion: false, hidden: true, onScreen: true, highFps: true })).toBeNull()
     expect(blobScheduleMs({ reducedMotion: false, hidden: false, onScreen: false, highFps: true })).toBeNull()
     expect(blobScheduleMs({ reducedMotion: false, hidden: false, onScreen: true, unfocused: true, highFps: true })).toBeNull()
     expect(blobScheduleMs({ reducedMotion: false, hidden: false, onScreen: true, covered: true, highFps: true })).toBeNull()
+    expect(blobScheduleMs({
+      reducedMotion: false,
+      hidden: false,
+      onScreen: true,
+      highFps: false,
+    })).toBeNull()
+    expect(blobScheduleMs({
+      reducedMotion: false,
+      hidden: false,
+      onScreen: true,
+      highFps: false,
+      idleWakeMs: Number.POSITIVE_INFINITY,
+    })).toBeNull()
     expect(blobScheduleMs({
       reducedMotion: false,
       hidden: false,
@@ -118,23 +161,7 @@ describe('kivioBlobSim', () => {
     expect(blobScheduleMs({ reducedMotion: false, hidden: false, onScreen: true, highFps: true })).toBe(0)
   })
 
-  it('闲置有呼吸起伏', () => {
-    const sim = new KivioBlobSim({ random: () => 0.5 })
-    sim.setMood('idle', 0)
-    let paint = sim.sample(0)
-    for (let t = 16; t <= 900; t += 16) paint = sim.sample(t)
-    expect(paint.body.includes('scale(1 1.000)')).toBe(false)
-    expect(paint.rig.startsWith('translate(0.00 0.00)')).toBe(false)
-  })
-
-  it('闲置会把重心慢慢挪过去', () => {
-    const sim = new KivioBlobSim({ random: () => 0.5 })
-    sim.setMood('idle', 0)
-    for (let t = 0; t <= 10000; t += 16) sim.sample(t)
-    expect(Math.abs(sim.debug().spin)).toBeGreaterThan(3)
-  })
-
-  it('poke 会眨眼并跳一下', () => {
+  it('poke 会眨眼并跳一下，然后回到不再排程的静稳', () => {
     const sim = new KivioBlobSim({ random: () => 0.5 })
     sim.setMood('idle', 0)
     sim.sample(0)
@@ -142,6 +169,57 @@ describe('kivioBlobSim', () => {
     expect(sim.wantsHighFps(200)).toBe(true)
     const paint = sim.sample(280)
     expect(paint.rig.startsWith('translate(0.00 0.00)')).toBe(false)
+    const settledAt = driveUntilStill(sim, 296, 20000)
+    expect(settledAt).toBeLessThanOrEqual(296 + 20000)
+    const settled = sim.sample(settledAt)
+    expect(sim.sample(settledAt + 6000)).toEqual(settled)
+    expect(settled.rig.startsWith('translate(0.00 0.00)')).toBe(true)
+    expect(sim.debug().body).toBe('circle')
+    expect(visibleSchedule(sim, settledAt + 6000)).toBeNull()
+  })
+
+  it('nudge 会动一下，然后回到不再排程的静稳', () => {
+    const sim = new KivioBlobSim({ random: () => 0.5 })
+    sim.setMood('idle', 0)
+    sim.sample(0)
+    sim.nudge(100)
+    expect(sim.wantsHighFps(100)).toBe(true)
+    const settledAt = driveUntilStill(sim, 116, 8000)
+    expect(settledAt).toBeLessThanOrEqual(116 + 8000)
+    const settled = sim.sample(settledAt)
+    expect(sim.sample(settledAt + 4000)).toEqual(settled)
+    expect(visibleSchedule(sim, settledAt + 4000)).toBeNull()
+  })
+
+  it('paused idle holds expire on resume instead of stranding the pose', () => {
+    const sim = new KivioBlobSim({ random: () => 0.5 })
+    const rest = sim.sample(0)
+    sim.poke(200)
+    for (let t = 216; t <= 1800; t += 16) sim.sample(t)
+    // No samples while hidden. A late wake must still release the old holds.
+    expect(visibleSchedule(sim, 30_000)).not.toBeNull()
+    const settledAt = driveUntilStill(sim, 30_000, 20_000)
+    expect(settledAt).toBeLessThanOrEqual(50_000)
+    expect(sim.sample(settledAt)).toEqual(rest)
+    expect(visibleSchedule(sim, settledAt)).toBeNull()
+  })
+
+  it('生成结束回到闲置后有限步落定，不再排程', () => {
+    const sim = new KivioBlobSim({ random: () => 0.5 })
+    sim.setMood('work', 0)
+    for (let t = 0; t <= 800; t += 16) {
+      sim.sample(t)
+      expect(sim.wantsHighFps(t)).toBe(true)
+    }
+    sim.setMood('idle', 800)
+    expect(sim.wantsHighFps(800)).toBe(true)
+    const settledAt = driveUntilStill(sim, 816, 12000)
+    expect(settledAt).toBeLessThanOrEqual(816 + 12000)
+    const settled = sim.sample(settledAt)
+    expect(sim.sample(settledAt + 8000)).toEqual(settled)
+    expect(sim.debug().body).toBe('circle')
+    expect(sim.debug().face).toBe('neutral')
+    expect(visibleSchedule(sim, settledAt + 8000)).toBeNull()
   })
 
   it('连点升温变红，换文案 nudge 不脸红', () => {
@@ -283,18 +361,6 @@ describe('kivioBlobSim', () => {
     expect(sim.debug().face).toBe('dizzy')
     for (let t = 716; t <= 3200; t += 16) sim.sample(t)
     expect(sim.debug().body).toBe('circle')
-  })
-
-  it('闲置随机小动作会通知 onAntic（变形态 / 蹦）', () => {
-    // random 钉在 0.97：nextIdleBias 落进「变形态」档，形状取列表末位。
-    const sim = new KivioBlobSim({ random: () => 0.97 })
-    const seen: string[] = []
-    sim.onAntic = (kind) => seen.push(kind)
-    sim.setMood('idle', 0)
-    for (let t = 0; t <= 30000; t += 50) sim.sample(t)
-    expect(seen.length).toBeGreaterThan(0)
-    expect(seen.every((k) => k === 'bean' || k === 'hop')).toBe(true)
-    expect(seen).toContain('bean')
   })
 
   it('reduced motion 下身体永远是圆、脸不变形', () => {

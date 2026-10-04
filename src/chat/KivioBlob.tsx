@@ -5,12 +5,11 @@ import {
   BLOB_REST,
   KivioBlobSim,
   blobScheduleMs,
-  type BlobAntic,
   type BlobMood,
 } from './kivioBlobSim'
 import { prefersReducedMotion } from './utils'
 
-export type { BlobAntic, BlobMood }
+export type { BlobMood }
 
 export interface KivioBlobHandle {
   pokeAt: (clientX?: number) => void
@@ -24,8 +23,6 @@ interface KivioBlobProps {
   /** 变化时眨一眼 + 瞟一下（空态换文案）。连点升温不走这条。 */
   pulse?: string | number | null
   onPoke?: (streak: number) => void
-  /** 闲置小动作（变成云 / 方块 / 蛋、蹦一下）：空态标题借此接一句嘴。 */
-  onAntic?: (kind: BlobAntic) => void
 }
 
 function writeAttr(el: Element, name: string, value: string, prev: string): string {
@@ -35,7 +32,7 @@ function writeAttr(el: Element, name: string, value: string, prev: string): stri
 }
 
 export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(function KivioBlob(
-  { size = 28, mood = 'idle', paused = false, pulse, onPoke, onAntic }: KivioBlobProps,
+  { size = 28, mood = 'idle', paused = false, pulse, onPoke }: KivioBlobProps,
   ref,
 ) {
   const hostRef = useRef<HTMLSpanElement>(null)
@@ -48,13 +45,10 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   const pausedRef = useRef(paused)
   const pulseSkipRef = useRef(true)
   const onPokeRef = useRef(onPoke)
-  const onAnticRef = useRef(onAntic)
   onPokeRef.current = onPoke
-  onAnticRef.current = onAntic
   pausedRef.current = paused
   if (!simRef.current) {
     simRef.current = new KivioBlobSim({ reducedMotion: prefersReducedMotion() })
-    simRef.current.onAntic = (kind) => onAnticRef.current?.(kind)
   }
 
   const pokeAt = (clientX?: number) => {

@@ -53,7 +53,7 @@ const SPR: SpringTable = {
   boost: [9, 0.85],
 }
 
-/** 闲置约 20fps，弹簧放慢，避免三帧切完看起来像跳。 */
+/** 闲置回稳放慢，避免从生成态切回来时几帧跳完。落定后不再靠它续上呼吸。 */
 const SPR_IDLE: SpringTable = {
   spin: [2.0, 1],
   x: [1.6, 1],
@@ -68,7 +68,7 @@ const SPR_IDLE: SpringTable = {
 
 /** 每个心情轮播的脸。第 0 张是进入该心情时先摆的那张。 */
 const FACE_PLAY: Record<BlobMood, FaceName[]> = {
-  idle: ['neutral', 'dots', 'neutral', 'smirk', 'neutral', 'peek', 'sleepy', 'neutral', 'hmm'],
+  idle: ['neutral'],
   think: ['lookUp', 'hmm', 'lines', 'neutral', 'lookUp', 'focus'],
   search: ['wide', 'peek', 'dots', 'wide', 'neutral'],
   work: ['focus', 'lines', 'focus', 'neutral', 'dots'],
@@ -122,12 +122,8 @@ const BODY_HOLD: Record<BlobMood, [number, number]> = {
   done: [1e9, 1e9],
   wait: [4000, 8000],
 }
-/** 闲置偶尔随机变一下形态玩（连同 hop 一起对外汇报，让空态标题能接一句嘴）。 */
-const IDLE_ANTIC_SHAPES: BodyShape[] = ['squircle', 'cloud', 'pebble', 'bean']
-export type BlobAntic = BodyShape | 'hop'
-
 const BLINK: Record<BlobMood, [number, number] | null> = {
-  idle: [4000, 16000],
+  idle: null,
   think: [3500, 7000],
   search: [1600, 4000],
   work: [2800, 5500],
@@ -136,7 +132,7 @@ const BLINK: Record<BlobMood, [number, number] | null> = {
   done: null,
   wait: [2200, 4800],
 }
-const WINK = new Set<BlobMood>(['idle', 'speak', 'done'])
+const WINK = new Set<BlobMood>(['speak', 'done'])
 const HOP_SEGS = [
   { h: 48, d: 0.5 },
   { h: 28, d: 0.382 },
@@ -161,6 +157,20 @@ function stepSpring(s: Spring, freq: number, damp: number, dt: number) {
     s.x = s.t
     s.v = 0
   }
+}
+
+const SPRING_AT = 0.05
+const SPRING_V = 0.08
+const SPRING_UNIT_AT = 0.001
+const SPRING_UNIT_V = 0.02
+
+function springAtTarget(s: Spring, at = SPRING_AT, vel = SPRING_V): boolean {
+  return Math.abs(s.x - s.t) <= at && Math.abs(s.v) <= vel
+}
+
+function snapSpring(s: Spring) {
+  s.x = s.t
+  s.v = 0
 }
 
 /**
@@ -305,61 +315,6 @@ interface PoseCtx {
   hopUntil: number
   biasUntil: number
   bias: IdleBias
-  /** 闲置随机变的形态；null = 圆。 */
-  antic: BodyShape | null
-  anticUntil: number
-}
-
-function nextIdleBias(
-  rand: (a: number, b: number) => number,
-  sign: () => number,
-): IdleBias & { hold: [number, number]; hop: boolean; antic: BodyShape | null } {
-  // 档位：38% 原地不动、28% 歪一点、12% 上浮、8% 下沉、8% 蹦一下、6% 变形态。
-  const r = rand(0, 1)
-  if (r < 0.38) {
-    return { spin: 0, tx: 0, ty: 0, squash: 1, hold: [4000, 14000], hop: false, antic: null }
-  }
-  if (r < 0.66) {
-    const d = sign()
-    return {
-      spin: d * rand(6, 14),
-      tx: d * rand(2.5, 7),
-      ty: rand(-1.5, 1.2),
-      squash: 1,
-      hold: [3500, 12000],
-      hop: false,
-      antic: null,
-    }
-  }
-  if (r < 0.78) {
-    return { spin: rand(-3, 3), tx: 0, ty: -rand(1.5, 4), squash: 1.02, hold: [2800, 9000], hop: false, antic: null }
-  }
-  if (r < 0.86) {
-    return { spin: 0, tx: 0, ty: rand(1.5, 4), squash: 0.984, hold: [3500, 11000], hop: false, antic: null }
-  }
-  if (r < 0.94) {
-    const d = sign()
-    return {
-      spin: d * rand(4, 10),
-      tx: d * rand(2, 5),
-      ty: -2,
-      squash: 1,
-      hold: [4000, 13000],
-      hop: true,
-      antic: null,
-    }
-  }
-  // 变个形态玩一会，再慢慢变回圆（每次挑档 6%，档位 3–10 秒一换 ⇒ 大约两分钟一回）。
-  const shape = IDLE_ANTIC_SHAPES[Math.min(IDLE_ANTIC_SHAPES.length - 1, Math.floor(rand(0, IDLE_ANTIC_SHAPES.length)))]
-  return {
-    spin: shape === 'cloud' ? rand(-4, 4) : sign() * rand(3, 8),
-    tx: 0,
-    ty: shape === 'cloud' ? -3 : 0,
-    squash: 1,
-    hold: [3500, 7500],
-    hop: false,
-    antic: shape,
-  }
 }
 
 function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: (a: number, b: number) => number): Pose {
@@ -370,11 +325,10 @@ function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: 
   let lid = 1
   let boost = 1
   if (mood === 'idle') {
-    const br = Math.sin(mt * 0.48) * 0.62 + Math.sin(mt * 0.91) * 0.38
-    spin = Math.sin(mt * 0.13) * 2 + ctx.bias.spin
-    tx = Math.sin(mt * 0.11) * 1.6 + ctx.bias.tx
-    ty = br * 2.2 + ctx.bias.ty
-    squash = 1 + br * 0.016 + (ctx.bias.squash - 1)
+    spin = ctx.bias.spin
+    tx = ctx.bias.tx
+    ty = ctx.bias.ty
+    squash = ctx.bias.squash
     if (now < ctx.shakeUntil) {
       spin += Math.sin(now * 0.055) * 8
       tx += Math.sin(now * 0.08) * 5
@@ -439,12 +393,6 @@ function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: 
 }
 
 function nextGaze(mood: BlobMood, rand: (a: number, b: number) => number, sign: () => number) {
-  if (mood === 'idle') {
-    if (rand(0, 1) < 0.52) {
-      return { x: sign() * rand(0.22, 0.72) * 11, y: rand(-0.4, 0.32) * 7, hold: [2000, 10000] as [number, number] }
-    }
-    return { x: 0, y: 0, hold: [3000, 14000] as [number, number] }
-  }
   if (mood === 'think') return { x: sign() * rand(0.5, 1) * 16, y: -rand(0.4, 1) * 10, hold: [1500, 2800] as [number, number] }
   if (mood === 'search') return { x: sign() * rand(0.7, 1) * 16, y: rand(-1, 1) * 10, hold: [550, 1150] as [number, number] }
   if (mood === 'work') return { x: rand(-0.4, 0.4) * 16, y: rand(0.4, 1) * 10, hold: [1200, 2400] as [number, number] }
@@ -455,7 +403,6 @@ function nextGaze(mood: BlobMood, rand: (a: number, b: number) => number, sign: 
 }
 
 function hopCadence(mood: BlobMood): [number, number] | null {
-  if (mood === 'idle') return [22000, 56000]
   if (mood === 'search') return [4000, 7000]
   if (mood === 'work') return [6000, 9000]
   if (mood === 'think') return [8000, 12000]
@@ -470,12 +417,11 @@ export interface BlobPaint {
   eyes: [{ d: string; transform: string }, { d: string; transform: string }]
 }
 
-/** 闲置用呼吸节拍（约 20fps）；忙碌跟 vsync。 */
+/** 有限醒来的夹紧范围。闲置静稳后不再用节拍续帧。 */
 export const BLOB_IDLE_WAKE_MIN_MS = 48
 export const BLOB_IDLE_WAKE_MAX_MS = 16_000
-export const BLOB_IDLE_BREATHE_MS = 48
 
-/** `null` = 不排下一帧（隐藏 / 屏外 / 失焦 / 被覆盖 / 减弱动态）。`0` = rAF。`>0` = 睡到下一次节拍。 */
+/** `null` = 不排下一帧（隐藏 / 屏外 / 失焦 / 被覆盖 / 减弱动态 / 已经静稳）。`0` = rAF。`>0` = 睡到下一次有限醒来。 */
 export function blobScheduleMs(opts: {
   reducedMotion: boolean
   hidden: boolean
@@ -487,7 +433,8 @@ export function blobScheduleMs(opts: {
 }): number | null {
   if (opts.reducedMotion || opts.hidden || !opts.onScreen || opts.unfocused || opts.covered) return null
   if (opts.highFps) return 0
-  const wake = opts.idleWakeMs ?? 8000
+  const wake = opts.idleWakeMs
+  if (wake == null || !Number.isFinite(wake)) return null
   return Math.min(BLOB_IDLE_WAKE_MAX_MS, Math.max(BLOB_IDLE_WAKE_MIN_MS, wake))
 }
 
@@ -503,8 +450,6 @@ export interface BlobSimDebug {
 
 export class KivioBlobSim {
   mood: BlobMood = 'idle'
-  /** 闲置小动作（变形态 / 蹦一下）的通知口，空态标题拿它接一句嘴。 */
-  onAntic: ((kind: BlobAntic) => void) | null = null
   private random: () => number
   private reduced: boolean
   private spin = spring(0)
@@ -546,11 +491,9 @@ export class KivioBlobSim {
     nodEnd: 0,
     impulseAt: 0,
     shakeUntil: 0,
-    hopUntil: 0,
-    biasUntil: 0,
+    hopUntil: Infinity,
+    biasUntil: Infinity,
     bias: { spin: 0, tx: 0, ty: 0, squash: 1 },
-    antic: null,
-    anticUntil: 0,
   }
 
   constructor(opts: { random?: () => number; reducedMotion?: boolean } = {}) {
@@ -569,28 +512,34 @@ export class KivioBlobSim {
       this.face.retarget(faces[0], facePoints(faces[0]))
       this.body.retarget(this.bodyList[0], [bodyPoints(this.bodyList[0])])
     }
-    this.faceUntil = now + (mood === 'idle' ? this.span(...FACE_HOLD[mood]) : this.rand(...FACE_HOLD[mood]))
-    this.bodyUntil = now + this.rand(...BODY_HOLD[mood])
-    this.blinkUntil = now + (mood === 'idle' ? this.span(1800, 6000) : this.rand(900, 2800))
-    this.gazeUntil = now + (mood === 'idle' ? this.span(800, 4200) : this.rand(280, 900))
+    const idle = mood === 'idle'
+    this.faceUntil = idle ? Infinity : now + this.rand(...FACE_HOLD[mood])
+    this.bodyUntil = idle ? Infinity : now + this.rand(...BODY_HOLD[mood])
+    this.blinkUntil = idle ? Infinity : now + this.rand(900, 2800)
+    this.gazeUntil = idle ? Infinity : now + this.rand(280, 900)
+    if (idle) {
+      this.gazeX.t = 0
+      this.gazeY.t = 0
+      this.winkUntil = Infinity
+    } else if (WINK.has(mood) && (!Number.isFinite(this.winkUntil) || this.winkUntil <= now)) {
+      this.winkUntil = now + this.rand(4000, 8000)
+    }
     const hopEvery = hopCadence(mood)
     this.ctx = {
       nodUntil: now + 1600,
       nodEnd: 0,
       impulseAt: now + 600,
       shakeUntil: 0,
-      hopUntil: now + (hopEvery ? (mood === 'idle' ? this.span(...hopEvery) : this.rand(...hopEvery)) : 1e12),
-      biasUntil: mood === 'idle' ? now + this.span(3000, 10000) : 1e12,
+      hopUntil: hopEvery ? now + this.rand(...hopEvery) : Infinity,
+      biasUntil: Infinity,
       bias: { spin: 0, tx: 0, ty: 0, squash: 1 },
-      antic: null,
-      anticUntil: 0,
     }
     this.blinkQ = []
     if (mood === 'done' && changed) {
       // 收工先蹦一下。
       this.hopAt = now
-    } else if (faceBlinks(faces[0])) {
-      queueBlink(this.blinkQ, now, this.random, mood === 'idle' ? 2.6 : 1)
+    } else if (!idle && faceBlinks(faces[0])) {
+      queueBlink(this.blinkQ, now, this.random)
     }
   }
 
@@ -635,8 +584,6 @@ export class KivioBlobSim {
         squash: 1.02,
       }
       this.ctx.biasUntil = now + this.span(2500, 8000)
-      // 被戳就别继续装云了。
-      this.ctx.antic = null
     }
     return this.pokeCount
   }
@@ -660,7 +607,7 @@ export class KivioBlobSim {
     }
   }
 
-  /** 闲置眨眼可短时拉满帧；跳和换脸走 20fps，弹簧已经按这个节拍放慢。 */
+  /** 眨眼、跳跃、形变还没结束时跟帧。闲置只在回稳或热度消退时跟帧。 */
   wantsHighFps(now: number): boolean {
     if (this.reduced) return false
     if (this.blinkQ.length > 0) return true
@@ -668,16 +615,20 @@ export class KivioBlobSim {
     if (this.hopAt >= 0) return true
     if (now < this.ctx.shakeUntil) return true
     if (this.pokeShape && now < this.pokeShapeUntil + 600) return true
-    if (this.mood === 'idle') return false
+    if (this.mood === 'idle') return (this.pokeHeat > 0 && now >= this.heatHoldUntil) || !this.springsAtTarget()
     if (!this.face.settled() || !this.body.settled()) return true
     if (now < this.ctx.nodEnd) return true
     if (this.mood === 'error') return now < this.ctx.shakeUntil
     return true
   }
 
-  /** 闲置按呼吸节拍醒；出错只睡到下一次抖动。 */
+  /** 距离下一次必须醒来的毫秒。闲置没有待办时为 Infinity，调用方应停表。 */
   nextIdleWakeMs(now: number): number {
-    if (this.mood === 'idle') return BLOB_IDLE_BREATHE_MS
+    if (this.mood === 'idle') {
+      // Expired holds still need one frame after a hidden/paused interval.
+      return Math.min(this.ctx.biasUntil, this.gazeUntil, this.faceUntil,
+        this.pokeHeat > 0 ? this.heatHoldUntil : Infinity) - now
+    }
     const wakes = [this.blinkUntil, this.faceUntil, this.bodyUntil]
     if (WINK.has(this.mood)) wakes.push(this.winkUntil)
     if (this.mood === 'error') wakes.push(this.ctx.impulseAt)
@@ -689,9 +640,9 @@ export class KivioBlobSim {
       this.t0 = now
       this.last = now
       this.setMood(this.mood, now)
-      this.winkUntil = now + (this.mood === 'idle' ? this.span(8000, 22000) : this.rand(4000, 8000))
       this.inited = true
     }
+    this.releaseIdleHolds(now)
     const dt = Math.min((now - this.last) / 1000, 0.08)
     this.last = now
     const mt = (now - this.t0) / 1000
@@ -707,18 +658,17 @@ export class KivioBlobSim {
       this.ty.t += this.gazeY.t * 0.16
     }
 
-    if (now >= this.faceUntil) {
+    if (this.mood !== 'idle' && now >= this.faceUntil) {
       const list = FACE_PLAY[this.mood]
       this.faceIdx = (this.faceIdx + 1) % list.length
       this.face.retarget(list[this.faceIdx], facePoints(list[this.faceIdx]))
-      this.faceUntil = now + (this.mood === 'idle' ? this.span(...FACE_HOLD[this.mood]) : this.rand(...FACE_HOLD[this.mood]))
+      this.faceUntil = now + this.rand(...FACE_HOLD[this.mood])
     }
-    if (now >= this.bodyUntil) {
+    if (this.mood !== 'idle' && now >= this.bodyUntil) {
       this.bodyIdx = (this.bodyIdx + 1) % this.bodyList.length
       this.bodyUntil = now + this.rand(...BODY_HOLD[this.mood])
     }
     if (this.pokeShape && now >= this.pokeShapeUntil) this.pokeShape = null
-    if (this.ctx.antic && now >= this.ctx.anticUntil) this.ctx.antic = null
     const bodyShape = this.bodyTarget(now)
     this.body.retarget(bodyShape, [bodyPoints(bodyShape)])
 
@@ -726,45 +676,30 @@ export class KivioBlobSim {
     const blinkable = faceBlinks(this.face.key as FaceName)
     const cad = BLINK[this.mood]
     if (cad && now >= this.blinkUntil) {
-      if (blinkable) queueBlink(this.blinkQ, now, this.random, this.mood === 'idle' ? 2.6 : 1)
-      this.blinkUntil = now + (this.mood === 'idle' ? this.span(...cad) : this.rand(...cad))
+      if (blinkable) queueBlink(this.blinkQ, now, this.random)
+      this.blinkUntil = now + this.rand(...cad)
     }
     const key = consumeBlink(this.blinkQ, now)
     this.blink.t = blinkable ? key ?? (this.blinkQ.length ? this.blink.t : pose.lid) : 1
 
-    if (now >= this.gazeUntil) {
+    if (this.mood !== 'idle' && now >= this.gazeUntil) {
       const gz = nextGaze(this.mood, (a, b) => this.rand(a, b), () => this.sign())
       this.gazeX.t = gz.x
       this.gazeY.t = gz.y
-      this.gazeUntil = now + (this.mood === 'idle' ? this.span(...gz.hold) : this.rand(...gz.hold))
+      this.gazeUntil = now + this.rand(...gz.hold)
     }
     if (WINK.has(this.mood) && now >= this.winkUntil) {
       if (blinkable) {
         this.winkAt = now
         this.winkEye = this.random() < 0.5 ? 0 : 1
-        this.winkDur = this.mood === 'idle' ? 700 : 320
+        this.winkDur = 320
       }
-      this.winkUntil = now + (this.mood === 'idle' ? this.span(8000, 24000) : this.rand(4500, 10000))
+      this.winkUntil = now + this.rand(4500, 10000)
     }
     const hopEvery = hopCadence(this.mood)
     if (hopEvery && now >= this.ctx.hopUntil && this.hopAt < 0) {
       this.hopAt = now
-      this.ctx.hopUntil = now + (this.mood === 'idle' ? this.span(...hopEvery) : this.rand(...hopEvery))
-      if (this.mood === 'idle') this.onAntic?.('hop')
-    }
-    if (this.mood === 'idle' && !this.reduced && now >= this.ctx.biasUntil) {
-      const next = nextIdleBias((a, b) => this.rand(a, b), () => this.sign())
-      this.ctx.bias = { spin: next.spin, tx: next.tx, ty: next.ty, squash: next.squash }
-      this.ctx.biasUntil = now + this.span(...next.hold)
-      if (next.hop && this.hopAt < 0) {
-        this.hopAt = now
-        this.onAntic?.('hop')
-      }
-      if (next.antic) {
-        this.ctx.antic = next.antic
-        this.ctx.anticUntil = now + this.rand(...next.hold)
-        this.onAntic?.(next.antic)
-      }
+      this.ctx.hopUntil = now + this.rand(...hopEvery)
     }
 
     const n = Math.max(1, Math.ceil(dt / DT))
@@ -815,6 +750,7 @@ export class KivioBlobSim {
       this.hopAt = -1
       hop = 0
     }
+    this.finishIdlePose(now)
     const polys = this.face.current()
     const k = this.face.progress()
     const gx = this.gazeX.x
@@ -829,8 +765,7 @@ export class KivioBlobSim {
         lid = Math.min(lid, Math.max(fr, 0.04))
       }
       const [cx, cy] = centroid(polys[i])
-      const live = this.mood !== 'idle'
-      const amp = live ? 1 : 0.28
+      const amp = this.mood === 'idle' ? 0 : 1
       const wobX = (Math.sin(now * 42e-5 + i) * 3.6 + Math.sin(now * 0.001 + i * 2) * 1.3) * amp
       const wobY = Math.sin(now * 58e-5 + i) * 2.2 * amp
       const lookX = gx + wobX
@@ -856,12 +791,66 @@ export class KivioBlobSim {
     }
   }
 
-  /** 此刻身体该是什么形：被戳 > 出错抖动炸毛 > 闲置小动作 > 心情轮播。 */
+  /** 此刻身体该是什么形：被戳 > 出错抖动炸毛 > 心情轮播。闲置停在圆上。 */
   private bodyTarget(now: number): BodyShape {
     if (this.pokeShape) return this.pokeShape
     if (this.mood === 'error') return now < this.ctx.shakeUntil ? 'burst' : 'puddle'
-    if (this.mood === 'idle') return this.ctx.antic ?? 'circle'
+    if (this.mood === 'idle') return 'circle'
     return this.bodyList[this.bodyIdx % this.bodyList.length]
+  }
+
+  private springsAtTarget(): boolean {
+    return (
+      springAtTarget(this.spin) &&
+      springAtTarget(this.tx) &&
+      springAtTarget(this.ty) &&
+      springAtTarget(this.gazeX) &&
+      springAtTarget(this.gazeY) &&
+      springAtTarget(this.squash, SPRING_UNIT_AT, SPRING_UNIT_V) &&
+      springAtTarget(this.blink, SPRING_UNIT_AT, SPRING_UNIT_V) &&
+      springAtTarget(this.boost, SPRING_UNIT_AT, SPRING_UNIT_V) &&
+      springAtTarget(this.face.s, SPRING_UNIT_AT, SPRING_UNIT_V) &&
+      springAtTarget(this.body.s, SPRING_UNIT_AT, SPRING_UNIT_V)
+    )
+  }
+
+  /** 戳和 nudge 的倾斜、眼神、表情到点后收回，不再排下一轮。 */
+  private releaseIdleHolds(now: number) {
+    if (this.mood !== 'idle') return
+    if (now >= this.ctx.biasUntil) {
+      this.ctx.bias = { spin: 0, tx: 0, ty: 0, squash: 1 }
+      this.ctx.biasUntil = Infinity
+    }
+    if (now >= this.gazeUntil) {
+      this.gazeX.t = 0
+      this.gazeY.t = 0
+      this.gazeUntil = Infinity
+    }
+    if (now >= this.faceUntil) {
+      const rest = FACE_PLAY.idle[0]
+      if (this.face.key !== rest) this.face.retarget(rest, facePoints(rest))
+      this.faceUntil = Infinity
+    }
+  }
+
+  private finishIdlePose(now: number) {
+    if (this.mood !== 'idle' || this.reduced) return
+    if (this.blinkQ.length > 0) return
+    if (now < this.winkAt + this.winkDur) return
+    if (this.hopAt >= 0) return
+    if (now < this.ctx.shakeUntil) return
+    if (this.pokeShape && now < this.pokeShapeUntil + 600) return
+    if (!this.springsAtTarget()) return
+    snapSpring(this.spin)
+    snapSpring(this.tx)
+    snapSpring(this.ty)
+    snapSpring(this.squash)
+    snapSpring(this.blink)
+    snapSpring(this.gazeX)
+    snapSpring(this.gazeY)
+    snapSpring(this.boost)
+    snapSpring(this.face.s)
+    snapSpring(this.body.s)
   }
 
   private rand(a: number, b: number) {
