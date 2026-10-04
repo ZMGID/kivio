@@ -1941,6 +1941,73 @@ mod tests {
     }
 
     #[test]
+    fn migrated_pdf_survives_message_deletion_gc_from_each_artifact_source() {
+        for source in ["message", "tool_call", "model_tool_result"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut retained: ChatToolArtifact = serde_json::from_value(serde_json::json!({
+                "name": "report.pdf", "mime_type": "application/pdf",
+                "data_url": format!("data:application/pdf;base64,{}", general_purpose::STANDARD.encode(b"%PDF-retained")),
+            })).unwrap();
+            let mut deleted = retained.clone();
+            deleted.data_url = format!(
+                "data:application/pdf;base64,{}",
+                general_purpose::STANDARD.encode(b"%PDF-deleted"),
+            );
+            assert!(externalize_artifact_in_dir(dir.path(), &mut retained));
+            assert!(externalize_artifact_in_dir(dir.path(), &mut deleted));
+            let retained_path = Path::new(retained.path.as_deref().unwrap()).to_path_buf();
+            assert!(retained_path.is_absolute());
+            let retained_name = retained_path.file_name().unwrap().to_str().unwrap().to_string();
+            let orphan_name = Path::new(deleted.path.as_deref().unwrap())
+                .file_name().unwrap().to_str().unwrap().to_string();
+            let upload_name = "att_original-user.pdf".to_string();
+            fs::write(dir.path().join(&upload_name), b"user upload").unwrap();
+
+            let mut message = serde_json::json!({
+                "id": "remaining", "role": "assistant", "content": "report", "timestamp": 1,
+            });
+            match source {
+                "message" => message["artifacts"] = serde_json::json!([retained]),
+                "tool_call" => message["tool_calls"] = serde_json::json!([{
+                    "id": "call", "name": "report", "status": "success", "artifacts": [retained],
+                }]),
+                "model_tool_result" => message["model_messages"] = serde_json::json!([{
+                    "role": "tool", "content": [{
+                        "type": "tool_result", "tool_call_id": "call", "content": "report",
+                        "is_error": false, "artifacts": [retained],
+                    }],
+                }]),
+                _ => unreachable!(),
+            }
+            let mut conversation: crate::chat::Conversation =
+                serde_json::from_value(serde_json::json!({
+                    "id": "conv_gc_pdf", "title": "test", "provider_id": "p", "model": "m",
+                    "created_at": 1, "updated_at": 2, "messages": [message, {
+                        "id": "deleted", "role": "assistant", "content": "old report",
+                        "timestamp": 2, "artifacts": [deleted],
+                    }],
+                })).unwrap();
+            conversation.messages.pop();
+            let disk = dir.path().join("conversation.json");
+            fs::write(&disk, serde_json::to_vec(&conversation).unwrap()).unwrap();
+            let restored = serde_json::from_slice(&fs::read(disk).unwrap()).unwrap();
+            let references = crate::chat::gc::referenced_attachment_names(&restored);
+            let orphans = crate::chat::gc::unreferenced_attachment_names(
+                dir.path(),
+                &[retained_name, orphan_name.clone(), upload_name.clone()],
+                &references,
+            );
+            assert_eq!(orphans, vec![orphan_name.clone()], "{source}");
+            for name in orphans {
+                fs::remove_file(dir.path().join(name)).unwrap();
+            }
+            assert_eq!(fs::read(retained_path).unwrap(), b"%PDF-retained", "{source}");
+            assert!(!dir.path().join(orphan_name).exists(), "{source}");
+            assert_eq!(fs::read(dir.path().join(upload_name)).unwrap(), b"user upload");
+        }
+    }
+
+    #[test]
     fn compaction_fix_replay_image_survives_gc_and_reload() {
         let dir = tempfile::tempdir().unwrap();
         let payload = general_purpose::STANDARD.encode(b"retained-image");
@@ -1970,6 +2037,7 @@ mod tests {
         let orphan = "msgimg-unreferenced.png".to_string();
         fs::write(dir.path().join(&orphan), b"unused").unwrap();
         for name in crate::chat::gc::unreferenced_attachment_names(
+            dir.path(),
             &[file_name.clone(), orphan.clone()],
             &referenced,
         ) {

@@ -55,13 +55,25 @@ fn to_claude_code_tool_name(name: &str) -> &str {
         .unwrap_or(name)
 }
 
-/// 模型回来的工具名 → 本次请求里 Kivio 声明的原名；本次没声明同名工具就原样返回。
+/// Prefer exact declared names; case-insensitive recovery must be unambiguous.
 fn from_claude_code_tool_name(name: &str, tools: &[ModelTool]) -> String {
-    tools
-        .iter()
-        .map(ModelTool::openai_tool_name)
-        .find(|declared| declared.eq_ignore_ascii_case(name))
-        .unwrap_or_else(|| name.to_string())
+    let mut candidate = None;
+    let mut matches = 0;
+    for tool in tools {
+        let declared = tool.openai_tool_name();
+        if declared == name {
+            return declared;
+        }
+        if declared.eq_ignore_ascii_case(name) {
+            matches += 1;
+            candidate = Some(declared);
+        }
+    }
+    if matches == 1 {
+        candidate.expect("one matching declared tool")
+    } else {
+        name.to_string()
+    }
 }
 
 /// 改写最终请求体里的工具名：工具声明、历史 `tool_use`、`tool_choice`。
@@ -2528,6 +2540,56 @@ mod tests {
             "read"
         );
         assert_eq!(plain.declared_tool_name("Read", &request), "Read");
+    }
+
+    #[test]
+    fn claude_code_tool_mapping_preserves_case_distinct_mcp_calls() {
+        let state = crate::state::AppState::new_headless(
+            crate::settings::Settings::default(),
+            std::env::temp_dir(),
+        );
+        let mut provider = cache_test_provider(false, "short");
+        provider.request.cli_identity = "claude_code".into();
+        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let mut request = cache_test_request();
+        request.tools = ["read", "Read"]
+            .into_iter()
+            .map(|name| {
+                let mut tool = cache_test_tool(name);
+                tool.id = format!("mcp__server__{name}");
+                tool.source = "mcp".into();
+                tool.server_id = Some("server".into());
+                tool
+            })
+            .collect();
+        let response = serde_json::json!({
+            "content": [
+                { "type": "tool_use", "id": "lower", "name": "mcp__server__read", "input": {} },
+                { "type": "tool_use", "id": "upper", "name": "mcp__server__Read", "input": {} },
+                { "type": "tool_use", "id": "ambiguous", "name": "mcp__server__READ", "input": {} },
+            ],
+            "stop_reason": "tool_use",
+        });
+        let output = output_from_anthropic_message(
+            &adapter.with_declared_tool_names(response.clone(), &request),
+            "test",
+        )
+        .expect("tool calls");
+        let names: Vec<&str> = output.tool_calls.iter().map(|call| call.function_name.as_str()).collect();
+        assert_eq!(names, ["mcp__server__read", "mcp__server__Read", "mcp__server__READ"]);
+        assert_eq!(
+            output.to_openai_compatible_message()["tool_calls"][1]["function"]["name"],
+            "mcp__server__Read"
+        );
+
+        // Removing the case-distinct peer makes recovery unambiguous.
+        request.tools.pop();
+        let output = output_from_anthropic_message(
+            &adapter.with_declared_tool_names(response, &request),
+            "test",
+        )
+        .expect("unique tool calls");
+        assert_eq!(output.tool_calls[2].function_name, "mcp__server__read");
     }
 
     #[test]

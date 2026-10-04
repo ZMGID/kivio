@@ -245,26 +245,58 @@ fn is_gc_managed_attachment(name: &str) -> bool {
 
 /// 收集一个会话附件目录里**没有任何消息引用**的 GC 托管附件。
 ///
-/// 纯函数（吃「目录里的文件名」+「消息引用到的文件名」两个集合），便于单测覆盖那条
-/// 关键不变式：**引用集合为空时必须返回空**——若上层因为任何原因（消息还没落盘、
+/// 只读对账（附件目录 + 目录里的文件名 + 消息引用路径），便于单测覆盖那条
+/// 关键不变式：**有效引用集合为空时必须返回空**——若上层因为任何原因（消息还没落盘、
 /// 转录被剥离、解析失败）交来一个空引用集，绝不能把整目录判成孤儿全删。
 pub fn unreferenced_attachment_names(
+    attachment_dir: &Path,
     files_on_disk: &[String],
     referenced: &HashSet<String>,
 ) -> Vec<String> {
+    let referenced: HashSet<&str> = referenced
+        .iter()
+        .filter_map(|path| attachment_reference_name(attachment_dir, path))
+        .collect();
     if referenced.is_empty() {
         // 保守：一个都不删。宁可留垃圾，也不能误删还在用的图。
         return Vec::new();
     }
     files_on_disk
         .iter()
-        .filter(|name| is_gc_managed_attachment(name) && !referenced.contains(*name))
+        .filter(|name| is_gc_managed_attachment(name) && !referenced.contains(name.as_str()))
         .cloned()
         .collect()
 }
 
-/// 一条会话里被引用到的附件文件名：消息附件、artifact 的 `path`、`model_messages` 里
-/// 图片部件的 `path`，以及压缩快照的媒体引用。遗漏快照会误删仍用于续聊的文件。
+/// 裸文件名与当前附件目录的绝对路径使用同一对账规则。外部路径、子目录和
+/// `..` 不变成文件名：它们不能充当可信引用，让原本应保守跳过的 GC 开始删除。
+/// 使用平台 Path 组件，因此 Windows 的盘符、UNC 与两种分隔符也遵守目录边界。
+fn attachment_reference_name<'a>(attachment_dir: &Path, reference: &'a str) -> Option<&'a str> {
+    let path = Path::new(reference);
+    let relative = if path.is_absolute() {
+        path.strip_prefix(attachment_dir).ok()?
+    } else {
+        path
+    };
+    let mut components = relative
+        .components()
+        .filter(|component| *component != std::path::Component::CurDir);
+    let std::path::Component::Normal(name) = components.next()? else {
+        return None;
+    };
+    if components.next().is_some() {
+        return None;
+    }
+    let name = name.to_str()?;
+    // On Unix a Windows path is otherwise a single component. Never treat it as a bare name.
+    if name.contains('\\') || name.contains(':') {
+        return None;
+    }
+    Some(name)
+}
+
+/// 一条会话里被引用到的附件路径：消息附件、artifact 的 `path`、`model_messages` 里
+/// 媒体部件的 `path`，以及压缩快照的媒体引用。对账时统一解析裸文件名与托管绝对路径。
 pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSet<String> {
     let mut referenced = HashSet::new();
     for message in &conversation.messages {
@@ -395,7 +427,7 @@ pub fn sweep_conversation_attachments(app: &AppHandle, conversation_id: &str) ->
     };
     let mut removed = 0usize;
     let mut freed = 0u64;
-    for name in unreferenced_attachment_names(&files_on_disk, &referenced) {
+    for name in unreferenced_attachment_names(&dir, &files_on_disk, &referenced) {
         let path = dir.join(&name);
         let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if fs::remove_file(&path).is_ok() {
@@ -495,7 +527,7 @@ mod tests {
         let referenced: HashSet<String> =
             ["msgimg-referenced.png".to_string()].into_iter().collect();
 
-        let mut orphans = unreferenced_attachment_names(&files, &referenced);
+        let mut orphans = unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
         orphans.sort();
         assert_eq!(orphans, vec!["artifact-orphan.png", "msgimg-orphan.png"]);
     }
@@ -505,7 +537,64 @@ mod tests {
     #[test]
     fn unreferenced_returns_nothing_when_reference_set_is_empty() {
         let files = vec!["msgimg-a.png".to_string(), "artifact-b.png".to_string()];
-        assert!(unreferenced_attachment_names(&files, &HashSet::new()).is_empty());
+        assert!(unreferenced_attachment_names(
+            Path::new("attachments"),
+            &files,
+            &HashSet::new(),
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn attachment_lookup_normalizes_only_direct_managed_directory_references() {
+        let root = temp_root("paths");
+        let dir = root.join("conv_alive_attachments");
+        let retained = "artifact-retained.pdf";
+        let orphan = "artifact-orphan.pdf";
+        let files = vec![retained.to_string(), orphan.to_string(), "att_user.pdf".to_string()];
+        for reference in [
+            retained.to_string(),
+            format!("./{retained}"),
+            dir.join(retained).to_string_lossy().into_owned(),
+            dir.join(".").join(retained).to_string_lossy().into_owned(),
+        ] {
+            let references = HashSet::from([reference]);
+            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+        }
+        for reference in [
+            root.join(orphan).to_string_lossy().into_owned(),
+            dir.join("..").join(orphan).to_string_lossy().into_owned(),
+            dir.join("nested").join(orphan).to_string_lossy().into_owned(),
+            format!("../{orphan}"),
+            format!("C:\\outside\\{orphan}"),
+            format!("\\\\server\\outside\\{orphan}"),
+        ] {
+            // An outside path must not turn an otherwise empty reference set into delete permission.
+            let references = HashSet::from([reference.clone()]);
+            assert!(unreferenced_attachment_names(&dir, &files, &references).is_empty());
+            // Nor may its basename protect a different, genuinely orphaned managed file.
+            let references = HashSet::from([retained.to_string(), reference]);
+            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn attachment_lookup_accepts_windows_drive_unc_and_forward_slash_paths() {
+        for (dir, reference) in [
+            (r"C:\data\conv_a_attachments", r"C:\data\conv_a_attachments\artifact-a.pdf"),
+            (r"C:\data\conv_a_attachments", "C:/data/conv_a_attachments/artifact-a.pdf"),
+            (r"\\server\data\conv_a_attachments", r"\\server\data\conv_a_attachments\artifact-a.pdf"),
+            (r"\\?\C:\data\conv_a_attachments", r"\\?\C:\data\conv_a_attachments\artifact-a.pdf"),
+        ] {
+            let files = vec!["artifact-a.pdf".to_string(), "artifact-orphan.pdf".to_string()];
+            let references = HashSet::from([reference.to_string()]);
+            assert_eq!(
+                unreferenced_attachment_names(Path::new(dir), &files, &references),
+                vec!["artifact-orphan.pdf"],
+            );
+        }
     }
 
     /// 中断草稿的 `api_messages` 哨兵也是一处引用来源，漏掉就会误删它还要用的图。

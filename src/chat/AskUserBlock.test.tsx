@@ -191,6 +191,36 @@ describe('AskUserBlock', () => {
     await waitFor(() => expect(reply).toHaveBeenCalledWith('tool-1', '用哪种方式重试？\n立即重试'))
   })
 
+  it('preserves native Codex question indexes after blank questions are filtered', async () => {
+    const reply = vi.fn().mockResolvedValue(undefined)
+    const call = {
+      ...askUserCall({
+        async: true, phase: 'awaiting',
+        questions: [
+          { id: '0', prompt: ' ', options: [], allow_custom: true },
+          { id: '1', prompt: '使用哪个环境？', options: [], allow_custom: true },
+        ],
+        answers: {},
+      }),
+      id: 'codex-async-item-42',
+      toolCallId: 'codex-async-item-42',
+    }
+    render(<AsyncQuestionsContext.Provider value={{ closedIds: new Set(), reply }}>
+      <AskUserBlock toolCall={call} />
+    </AsyncQuestionsContext.Provider>)
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: 'staging' } })
+    fireEvent.keyDown(screen.getByPlaceholderText('自己写一个…'), { key: 'Enter' })
+    await waitFor(() => expect(reply).toHaveBeenCalledOnce())
+    const [id, text] = reply.mock.calls[0] as [string, string]
+    expect(id).toBe('codex-async-item-42')
+    const answers = JSON.parse(text.slice('<send_user_message_question_reply>'.length, -'</send_user_message_question_reply>'.length))
+    expect(answers).toEqual([{
+      questionItemId: JSON.stringify(['request_user_input_async', 'item-42', 1]),
+      question: '使用哪个环境？',
+      answer: 'staging',
+    }])
+  })
+
   it('supports free text and skipping async questions, and closes superseded cards', async () => {
     const reply = vi.fn().mockResolvedValue(undefined)
     const call = askUserCall({ async: true, phase: 'awaiting', questions: [{

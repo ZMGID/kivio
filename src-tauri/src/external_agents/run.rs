@@ -1773,8 +1773,8 @@ fn launch_config_for_turn(
         return LaunchConfig::for_pi(model, reasoning);
     }
     if matches!(protocol, StreamFormat::CodexAppServer) {
-        // sandbox / approvalPolicy 只在 `thread/start` 生效；`turn/start` 不能改 kebab
-        // `sandbox`。不进指纹的话，底栏从「工作区写」切到「完全」胶囊变了、进程还是旧档。
+        // sandbox 进入进程配置，握手解析出的 sandboxPolicy 每轮显式发送。
+        // 切档必须重连并续接同一原生会话，重新解析配置中的网络权限和可写目录。
         // model / effort 每轮都能带，不进指纹。
         return LaunchConfig {
             flags: crate::external_agents::session::codex_app_server::normalize_codex_sandbox(
@@ -5352,7 +5352,7 @@ mod tests {
         assert!(with(Some("sonnet")).accepts(&with(None)));
     }
 
-    /// Codex sandbox 只在 thread 握手时生效：未选与「工作区写」是同一档，切「完全」必须换进程。
+    /// Codex sandbox 切档需重连以重新解析策略：未选与「工作区写」是同一档。
     /// model / effort 每轮都能带，换它们不该重连。
     #[test]
     fn codex_sandbox_change_forces_a_reconnect() {

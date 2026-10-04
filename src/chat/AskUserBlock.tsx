@@ -500,12 +500,12 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         }))
       if (parsed.async) {
         if (!asyncQuestions) throw new Error('当前视图无法发送答复')
-        const replies = parsed.questions.flatMap((question, index) => {
+        const replies = parsed.questions.flatMap((question) => {
           const answer = answers[question.id]
           if (!answer) return []
           const labels = answer.selected_option_ids.map((id) => optionLabel(question, id))
           if (answer.custom_text) labels.push(answer.custom_text)
-          return [{ index, question: question.prompt, answer: labels.join('；') }]
+          return [{ index: Number(question.id), question: question.prompt, answer: labels.join('；') }]
         })
         // Codex 认得出这个信封：别的客户端会收起同一张卡、历史里也记成「答复」。
         const text = codexAsyncReplyEnvelope(toolCall.id, replies)

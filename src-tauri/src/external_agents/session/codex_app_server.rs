@@ -1346,11 +1346,10 @@ pub fn normalize_codex_effort(raw: Option<&str>) -> Option<String> {
 /// applies both every turn, so a mid-session switch takes effect on the next turn). Pure so the
 /// per-turn application is unit-testable.
 ///
-/// Extra writable roots become `runtimeWorkspaceRoots` (cwd + extras). Do **not** replace
-/// the thread sandbox with a `sandboxPolicy` object — that object defaults
-/// `networkAccess: false` and drops the environment-scoped workspace roots, which is
-/// exactly the "工作区权限没放开" failure mode. Empty extra list = omit the field so
-/// the thread's existing roots stay in force.
+/// Carry the server-resolved policy every turn: `sandboxPolicy` is sticky, including after
+/// a resumed plan turn. Keep its configured network access and writable roots rather than
+/// constructing a workspace-write policy with protocol defaults. Runtime workspace roots
+/// remain independent; an empty extra list must not clear the thread's existing roots.
 ///
 /// `approval_policy` is sent every turn so a live thread that started under `never` still
 /// picks up `on-request` after this adapter change (and the 「完全」档 can switch back).
@@ -1362,12 +1361,14 @@ fn build_codex_turn_params(
     effort: Option<&str>,
     extra_writable_roots: &[String],
     approval_policy: &str,
+    sandbox_policy: &Value,
 ) -> Value {
     let mut turn_params = json!({
         "threadId": thread_id,
         "input": input,
         "cwd": cwd,
         "approvalPolicy": approval_policy,
+        "sandboxPolicy": sandbox_policy,
     });
     if let Some(effort) = normalize_codex_effort(effort) {
         turn_params["effort"] = json!(effort);
@@ -1434,6 +1435,8 @@ pub struct CodexAppServerSession {
     stderr_tail: tokio::task::JoinHandle<String>,
     /// `on-request` (workspace-write / read-only) asks the host; `never` (完全) auto-allows.
     approval_policy: &'static str,
+    /// Server-resolved policy for the selected capsule, including configured network/roots.
+    sandbox_policy: Value,
     /// 底栏选的是「计划」档：每轮带 `collaborationMode {mode:"plan"}`。
     plan_mode: bool,
     /// thread/start / resume 回报的模型，`collaborationMode.settings.model` 的兜底。
@@ -1490,8 +1493,14 @@ impl CodexAppServerSession {
         sandbox: Option<&str>,
         resume_thread: Option<&str>,
     ) -> Result<Self, String> {
+        let tier = normalize_codex_sandbox(sandbox);
+        let sandbox_mode = codex_thread_sandbox(tier);
+        let approval_policy = codex_approval_policy(Some(sandbox_mode));
         let mut child = codex_cli_command(resolved_bin)
             .args(args)
+            // Resume must stay narrow, but its config must use the selected capsule rather
+            // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
+            .args(["-c", &format!("sandbox_mode=\"{sandbox_mode}\"")])
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -1522,9 +1531,6 @@ impl CodexAppServerSession {
             .to_string_lossy()
             .into_owned();
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
-        let tier = normalize_codex_sandbox(sandbox);
-        let sandbox_mode = codex_thread_sandbox(tier);
-        let approval_policy = codex_approval_policy(Some(sandbox_mode));
 
         let handshake = async {
             let mut next_id = 1u64;
@@ -1560,7 +1566,7 @@ impl CodexAppServerSession {
             } else {
                 CODEX_THREAD_START_TIMEOUT
             };
-            let result =
+            let mut result =
                 read_until_response(&mut reader, &mut stdin, thread_rpc_id, thread_timeout)
                     .await
                     .map_err(|e| format!("thread-start: {e}"))?;
@@ -1576,12 +1582,22 @@ impl CodexAppServerSession {
                 .get("model")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            Ok::<_, String>((thread_id, next_id, thread_model))
+            let sandbox_policy = if sandbox_mode == "read-only" {
+                // A native writable rollout must not weaken a plan/read-only turn.
+                json!({"type": "readOnly"})
+            } else {
+                result
+                    .get_mut("sandbox")
+                    .map(Value::take)
+                    .filter(Value::is_object)
+                    .ok_or_else(|| format!("thread-start: missing {method} sandbox policy"))?
+            };
+            Ok::<_, String>((thread_id, next_id, thread_model, sandbox_policy))
         }
         .await;
 
         match handshake {
-            Ok((thread_id, next_id, thread_model)) => Ok(Self {
+            Ok((thread_id, next_id, thread_model, sandbox_policy)) => Ok(Self {
                 child,
                 stdin,
                 reader,
@@ -1593,6 +1609,7 @@ impl CodexAppServerSession {
                 active_turn_id: None,
                 stderr_tail,
                 approval_policy,
+                sandbox_policy,
                 plan_mode: tier == CODEX_PLAN_MODE,
                 thread_model,
             }),
@@ -1743,6 +1760,7 @@ impl CodexAppServerSession {
                 chosen_effort.as_deref(),
                 extra_writable_roots,
                 self.approval_policy,
+                &self.sandbox_policy,
             );
             if let Some(mode) = codex_collaboration_mode(
                 self.plan_mode,
@@ -3110,6 +3128,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 approval_policy: "never",
+                sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
                 thread_model: None,
             };
@@ -3413,6 +3432,123 @@ mod tests {
         assert_eq!(merged.models[1].id, "my-custom-proxy-model");
         assert!(merged.models[1].label.contains("config"));
         assert!(merged.models.iter().any(|m| m.id == "gpt-5.5"));
+    }
+
+    /// Real app-server policy transitions, with no model turns or user native sessions.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "requires an installed Codex app-server; offline, no model requests"]
+    async fn resumed_plan_enforces_read_only_then_restores_writable_policy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = which_codex().expect("codex on PATH");
+        let fixture = tempfile::tempdir().unwrap();
+        let home = fixture.path().join("codex-home");
+        let work = fixture.path().join("work");
+        let extra = fixture.path().join("extra");
+        for path in [&home, &work, &extra] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                "sandbox_mode = \"workspace-write\"\n[sandbox_workspace_write]\nnetwork_access = true\nwritable_roots = [{}]\n",
+                serde_json::to_string(&extra.to_string_lossy()).unwrap(),
+            ),
+        )
+        .unwrap();
+        let quote = |path: &Path| format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+        let wrapper = fixture.path().join("codex");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nexport CODEX_HOME={}\nexec {} \"$@\"\n",
+                quote(&home),
+                quote(&bin),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let args = vec!["app-server".to_string()];
+        let mut writable = CodexAppServerSession::connect(
+            &wrapper, &args, &work, None, Some("workspace-write"), None,
+        )
+        .await
+        .unwrap();
+        let native_id = writable.thread_id().to_string();
+        let original_policy = writable.sandbox_policy.clone();
+        eprintln!("initial writable sandbox: {original_policy}");
+        assert_eq!(original_policy["type"], "workspaceWrite");
+        assert_eq!(original_policy["networkAccess"], true);
+        assert!(original_policy["writableRoots"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(extra)));
+        let native = writable.request("thread/read", json!({
+            "threadId": native_id, "includeTurns": false
+        })).await.unwrap();
+        let rollout = native["thread"]["path"].as_str().map(PathBuf::from).unwrap_or_else(|| {
+            home.join("sessions/2026/10/04").join(format!(
+                "rollout-2026-10-04T00-00-00-{native_id}.jsonl"
+            ))
+        });
+        writable.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+        writable.close().await;
+        // Empty threads need not flush a rollout until their first model turn. Seed only
+        // this isolated test home's metadata instead of paying for generation to persist it.
+        if !rollout.exists() {
+            std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+            std::fs::write(&rollout, format!("{}\n", json!({
+                "timestamp": "2026-10-04T00:00:00.000Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": native_id, "timestamp": "2026-10-04T00:00:00.000Z",
+                    "cwd": work, "originator": "kivio-offline-regression",
+                    "cli_version": "0.158.0", "source": "cli", "model_provider": "openai"
+                }
+            }))).unwrap();
+        }
+
+        let mut plan = CodexAppServerSession::connect(
+            &wrapper, &args, &work, None, Some(CODEX_PLAN_MODE), Some(&native_id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.thread_id(), native_id);
+        // Ask the loaded server, not just the adapter's cached policy.
+        let active = plan.request("thread/resume", json!({"threadId": native_id, "excludeTurns": true})).await.unwrap();
+        eprintln!("resumed plan sandbox: {}", active["sandbox"]);
+        assert_eq!(active["sandbox"]["type"], "readOnly");
+        let turn = build_codex_turn_params(
+            &native_id, &plan.cwd, vec![], None, None, &[], plan.approval_policy,
+            &plan.sandbox_policy,
+        );
+        // Apply precisely the turn's policy through the offline settings API. Both APIs
+        // update the same sticky thread policy, without starting an inference request.
+        plan.request("thread/settings/update", json!({
+            "threadId": native_id, "sandboxPolicy": turn["sandboxPolicy"]
+        })).await.unwrap();
+        plan.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+        plan.close().await;
+
+        for tier in ["workspace-write", "danger-full-access"] {
+            let mut resumed = CodexAppServerSession::connect(
+                &wrapper, &args, &work, None, Some(tier), Some(&native_id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resumed.thread_id(), native_id);
+            let active = resumed.request("thread/resume", json!({"threadId": native_id, "excludeTurns": true})).await.unwrap();
+            eprintln!("resumed {tier} sandbox: {}", active["sandbox"]);
+            if tier == "workspace-write" {
+                assert_eq!(active["sandbox"], original_policy);
+                assert_eq!(resumed.sandbox_policy, original_policy);
+            } else {
+                assert_eq!(active["sandbox"]["type"], "dangerFullAccess");
+            }
+            resumed.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+            resumed.close().await;
+        }
     }
 
     /// Live cross-turn continuity: connect once, run two turns on the SAME process, and confirm
@@ -4167,6 +4303,7 @@ mod tests {
             Some("high"),
             &[],
             "on-request",
+            &json!({"type": "workspaceWrite", "networkAccess": true}),
         );
         assert_eq!(params["threadId"], json!("thread-1"));
         assert_eq!(params["model"], json!("gpt-5.3-codex"));
@@ -4180,8 +4317,16 @@ mod tests {
             {"name": "wizard", "path": "/work/.agents/skills/wizard/SKILL.md", "enabled": true}
         ]}]});
         let input = codex_skill_input("/wizard 帮我配置环境", &catalog).unwrap();
-        let params =
-            build_codex_turn_params("thread-1", "/work", input, None, None, &[], "on-request");
+        let params = build_codex_turn_params(
+            "thread-1",
+            "/work",
+            input,
+            None,
+            None,
+            &[],
+            "on-request",
+            &json!({"type": "workspaceWrite", "networkAccess": true}),
+        );
         assert_eq!(
             params["input"],
             json!([
@@ -4222,43 +4367,6 @@ mod tests {
                 vec![json!({"type":"text", "text":prompt})]
             );
         }
-    }
-
-    #[test]
-    fn build_codex_turn_params_omits_defaults() {
-        let params = build_codex_turn_params(
-            "thread-1",
-            "/work",
-            vec![json!({ "type": "text", "text": "hi" })],
-            None,
-            None,
-            &[],
-            "on-request",
-        );
-        assert!(params.get("model").is_none());
-        assert!(params.get("effort").is_none());
-        assert!(params.get("sandboxPolicy").is_none());
-        assert!(params.get("sandbox").is_none());
-        assert!(params.get("runtimeWorkspaceRoots").is_none());
-    }
-
-    #[test]
-    fn build_codex_turn_params_adds_writable_roots_without_sandbox_string() {
-        let params = build_codex_turn_params(
-            "thread-1",
-            "/work",
-            vec![json!({ "type": "text", "text": "hi" })],
-            None,
-            None,
-            &["/tmp/attach".to_string()],
-            "on-request",
-        );
-        assert_eq!(
-            params["runtimeWorkspaceRoots"],
-            json!(["/work", "/tmp/attach"]),
-        );
-        assert!(params.get("sandboxPolicy").is_none());
-        assert!(params.get("sandbox").is_none());
     }
 
     #[test]
@@ -4428,10 +4536,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_tier_runs_read_only_and_sends_collaboration_mode() {
-        assert_eq!(normalize_codex_sandbox(Some("plan")), CODEX_PLAN_MODE);
-        assert_eq!(codex_thread_sandbox(CODEX_PLAN_MODE), "read-only");
-        assert_eq!(codex_approval_policy(Some("read-only")), "on-request");
+    fn collaboration_mode_explicitly_leaves_plan() {
         assert_eq!(
             codex_collaboration_mode(true, Some("gpt-6-astra"), Some("high")),
             Some(json!({"mode": "plan", "settings": {
