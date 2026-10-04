@@ -15,7 +15,9 @@ function page(...items: ArtifactLibraryItem[]): ArtifactLibraryPage { return { i
 
 const openFlights: Array<{ reject: (error: Error) => void; done: Promise<void> }> = []
 function park<T>() {
-  const { promise, resolve, reject } = Promise.withResolvers<T>()
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
   openFlights.push({ reject, done: promise.then(() => undefined, () => undefined) })
   return { promise, resolve, reject }
 }
