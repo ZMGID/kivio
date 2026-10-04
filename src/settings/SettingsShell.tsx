@@ -548,10 +548,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [setSettings])
 
-  const updateChatTools = useCallback((updates: Partial<ChatToolsConfig>) => {
+  const updateChatTools = useCallback((updates: Partial<ChatToolsConfig> | ((current: ChatToolsConfig) => Partial<ChatToolsConfig>)) => {
     setSettings((prev) => {
       if (!prev) return prev
-      return { ...prev, chatTools: { ...prev.chatTools, ...updates } }
+      const patch = typeof updates === 'function' ? updates(prev.chatTools) : updates
+      return { ...prev, chatTools: { ...prev.chatTools, ...patch } }
     })
   }, [setSettings])
 

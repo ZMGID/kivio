@@ -13,11 +13,9 @@ import {
   X,
 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { homeDir } from '@tauri-apps/api/path'
 import { ChatMarkdown } from './ChatMarkdown'
 import {
   api,
-  isTauriRuntime,
   type ChatToolsConfig,
   type Settings,
   type SkillDetail,
@@ -29,7 +27,28 @@ import { useT, type I18n } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { SkillStoreBrowser } from './SkillStoreBrowser'
 import { DefaultSkillIcon, SkillIcon } from '../settings/public/icons'
-import { confirmDialog } from '../components/dialogQueue'
+import { useWindowStore } from '../utils/windowStore'
+import {
+  CLI_SKILL_SOURCES,
+  deleteInstalledSkill,
+  effectiveDisabledSkillIds,
+  importSelectedCliSkills,
+  importSkillFolder,
+  importSkillZip,
+  installSkillFromUrl,
+  markSkillInventoryNotified,
+  markSkillInventoryRefreshed,
+  refreshSkillInventory,
+  retryFailedSkillEnables,
+  scanCliSkills,
+  setSkillActionError,
+  setSkillEnabled,
+  setSkillUrlDraft,
+  setSkillView,
+  skillLifecycleStore,
+  subscribeSkillSettingsSaved,
+  toggleCliSkillSelected,
+} from './skillLifecycle'
 
 interface SkillCenterProps {
   heading?: ReactNode
@@ -38,17 +57,6 @@ interface SkillCenterProps {
   /** 当前对话工作目录：扫描项目 `.kivio/skills` 与 `.agents/skills` */
   projectCwd?: string
 }
-
-/** 本地 CLI 技能来源：只扫各家「自己的」目录。`~/.agents/skills` 是共享目录，Kivio 会直接扫描，不必再导入。 */
-const CLI_SKILL_SOURCES = [
-  { key: 'claude', label: 'Claude Code', dirs: ['.claude/skills'] },
-  { key: 'codex', label: 'Codex', dirs: ['.codex/skills'] },
-  { key: 'opencode', label: 'OpenCode', dirs: ['.config/opencode/skills', '.opencode/skills'] },
-  { key: 'pi', label: 'Pi', dirs: ['.pi/agent/skills'] },
-] as const
-
-type CliSkillKey = (typeof CLI_SKILL_SOURCES)[number]['key']
-type CliSkillGroups = Record<CliSkillKey, SkillMeta[]>
 
 function isBuiltinSkill(skill: SkillMeta): boolean {
   return skill.source === 'builtin'
@@ -79,6 +87,21 @@ function skillSourceLabel(skill: SkillMeta, t: I18n): string {
   return t.chatSkillSourcePersonal
 }
 
+function ownsSkillPreview(ownership: {
+  mounted: boolean
+  request: number
+  currentRequest: number
+  navigationEpoch: number
+  currentNavigationEpoch: number
+  projectCwd: string | undefined
+  currentProjectCwd: string | undefined
+}): boolean {
+  return ownership.mounted
+    && ownership.request === ownership.currentRequest
+    && ownership.navigationEpoch === ownership.currentNavigationEpoch
+    && ownership.projectCwd === ownership.currentProjectCwd
+}
+
 function skillMatches(skill: SkillMeta, query: string): boolean {
   if (!query) return true
   return (
@@ -96,6 +119,8 @@ function SkillCard({
   onPreview,
   onDelete,
   manageLocked = false,
+  toggleBusy = false,
+  deleteBusy = false,
 }: {
   skill: SkillMeta
   enabled: boolean
@@ -107,6 +132,8 @@ function SkillCard({
   onDelete?: (skill: SkillMeta) => void
   /** 插件附属：开关在插件页，此处只展示 */
   manageLocked?: boolean
+  toggleBusy?: boolean
+  deleteBusy?: boolean
 }) {
   const t = useT()
   return (
@@ -152,7 +179,7 @@ function SkillCard({
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
           >
-            <Toggle checked={enabled} onChange={(next) => onToggleEnabled(skill.id, next)} ariaLabel={t.chatSkillEnableNamed.replace('{name}', skill.name)} />
+            <Toggle checked={enabled} disabled={toggleBusy} onChange={(next) => onToggleEnabled(skill.id, next)} ariaLabel={t.chatSkillEnableNamed.replace('{name}', skill.name)} />
           </span>
         )}
       </div>
@@ -177,6 +204,7 @@ function SkillCard({
             <IconButton
               size="sm"
               className="danger"
+              disabled={deleteBusy}
               onClick={() => onDelete(skill)}
               label={t.chatSkillDeleteNamed.replace('{name}', skill.name)}
               title={t.chatSkillDelete}
@@ -203,6 +231,8 @@ function SkillSection({
   defaultCollapsed = false,
   manageLocked = false,
   lockedActiveIds,
+  enableBusyIds,
+  deleteBusyIds,
 }: {
   title: string
   note?: string
@@ -216,6 +246,8 @@ function SkillSection({
   defaultCollapsed?: boolean
   manageLocked?: boolean
   lockedActiveIds?: Set<string>
+  enableBusyIds?: readonly string[]
+  deleteBusyIds?: readonly string[]
 }) {
   const [collapsed, setCollapsed] = useState(collapsible && defaultCollapsed)
   const t = useT()
@@ -261,6 +293,8 @@ function SkillSection({
               onPreview={onPreview}
               onDelete={onDelete}
               manageLocked={manageLocked}
+              toggleBusy={enableBusyIds?.includes(skill.id)}
+              deleteBusy={deleteBusyIds?.includes(skill.id)}
             />
           ))}
         </div>
@@ -269,30 +303,13 @@ function SkillSection({
   )
 }
 
-function SkillUrlImport({ onInstalled }: { onInstalled: () => void }) {
+function SkillUrlImport() {
   const t = useT()
-  const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [done, setDone] = useState('')
-  const install = useCallback(async () => {
-    const value = url.trim()
-    if (!value) return
-    setBusy(true)
-    setError('')
-    setDone('')
-    try {
-      const result = await api.chatSkillsInstallFromUrl(value)
-      if (!result.success) throw new Error(result.error || t.chatSkillInstallFailed)
-      setDone(t.chatSkillInstalled)
-      setUrl('')
-      onInstalled()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }, [t, url, onInstalled])
+  const [ops] = useWindowStore(skillLifecycleStore)
+  const busy = ops.busyKeys.includes('url')
+  const install = useCallback(() => {
+    void installSkillFromUrl({ failed: t.chatSkillInstallFailed, installed: t.chatSkillInstalled })
+  }, [t])
   return (
     <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
       <div className="mb-1.5 text-[13px] font-medium text-neutral-800 dark:text-neutral-100">{t.chatSkillInstallFromUrl}</div>
@@ -302,116 +319,138 @@ function SkillUrlImport({ onInstalled }: { onInstalled: () => void }) {
       <div className="flex items-center gap-2">
         <input
           type="text"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
+          value={ops.urlDraft}
+          onChange={(e) => setSkillUrlDraft(e.target.value)}
           placeholder="https://github.com/owner/repo"
           className="h-9 w-full rounded-md border border-neutral-200 bg-white px-2.5 font-mono text-[12.5px] text-neutral-800 outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
           data-tauri-drag-region="false"
         />
-        <Button onClick={() => void install()} disabled={busy || !url.trim()} data-tauri-drag-region="false">
+        <Button onClick={install} disabled={busy || !ops.urlDraft.trim()} data-tauri-drag-region="false">
           {busy ? t.chatSkillInstalling : t.chatSkillInstall}
         </Button>
       </div>
-      {error && <div className="mt-2 text-[12px] text-red-600 dark:text-red-400">{error}</div>}
-      {done && <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{done}</div>}
+      {ops.urlError && <div className="mt-2 text-[12px] text-red-600 dark:text-red-400">{ops.urlError}</div>}
+      {ops.urlDone && <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{ops.urlDone}</div>}
     </div>
   )
 }
 
 export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCenterProps) {
   const t = useT()
+  const [ops] = useWindowStore(skillLifecycleStore)
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [skills, setSkills] = useState<SkillMeta[]>([])
-  const [skillsLoading, setSkillsLoading] = useState(false)
-  const [skillError, setSkillError] = useState('')
   const [query, setQuery] = useState('')
-  const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
+  const view = ops.view
   const [selectedSkillPreview, setSelectedSkillPreview] = useState<SkillDetail | null>(null)
-  // 从本地 CLI（Claude Code / Codex / OpenCode）的技能目录导入
-  const [cliSkills, setCliSkills] = useState<CliSkillGroups | null>(null)
-  const [cliScanning, setCliScanning] = useState(false)
-  const [cliSelected, setCliSelected] = useState<Set<string>>(new Set())
-  const [cliImporting, setCliImporting] = useState(false)
-  const [cliImportDone, setCliImportDone] = useState('')
-  const [enabledPluginSkillIds, setEnabledPluginSkillIds] = useState<Set<string>>(() => new Set())
 
   const settingsRef = useRef<Settings | null>(null)
   const saveTimer = useRef<number | null>(null)
+  const previewMountedRef = useRef(true)
+  const previewRequestRef = useRef(0)
+  const projectCwdRef = useRef(projectCwd)
+  projectCwdRef.current = projectCwd
+  const skills = ops.skills
+  const skillsLoading = ops.skillsLoading
+  const skillError = ops.actionError || ops.listError
+  const cliSkills = ops.cliSkills
+  const cliScanning = ops.busyKeys.includes('cli-scan')
+  const cliImporting = ops.busyKeys.includes('cli-import')
+  const cliImportDone = ops.cliImportDone
+  const enabledPluginSkillIds = useMemo(() => new Set(ops.enabledPluginSkillIds), [ops.enabledPluginSkillIds])
 
   const chatTools = settings?.chatTools
-  const disabledSkillIds = chatTools?.disabledSkillIds ?? []
+  const disabledSkillIds = effectiveDisabledSkillIds(chatTools?.disabledSkillIds, ops.enableIntents)
   const skillScanPaths = chatTools?.skillScanPaths ?? []
+  const enableBusyIds = ops.busyKeys.filter((key) => key.startsWith('enable:')).map((key) => key.slice('enable:'.length))
+  const deleteBusyIds = ops.busyKeys.filter((key) => key.startsWith('delete:')).map((key) => key.slice('delete:'.length))
 
-  const refreshChatSkills = useCallback(async (scanPaths?: string[]) => {
-    setSkillsLoading(true)
-    setSkillError('')
-    try {
-      if (isTauriRuntime()) {
-        try {
-          const plugins = await api.pluginsListCached()
-          const ids = new Set<string>()
-          for (const plugin of plugins) {
-            if (!plugin.enabled) continue
-            for (const skillId of plugin.skillIds ?? []) ids.add(skillId)
-          }
-          setEnabledPluginSkillIds(ids)
-        } catch {
-          /* 插件列表失败不挡技能列表 */
-        }
-      }
-      const result = await api.chatSkillsList(
-        scanPaths ?? settingsRef.current?.chatTools?.skillScanPaths,
-        projectCwd || undefined,
-      )
-      if (result.success) {
-        setSkills(result.skills)
-      } else {
-        setSkillError(result.error || t.chatSkillListLoadFailed)
-      }
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSkillsLoading(false)
-    }
+  const refreshChatSkills = useCallback((scanPaths?: string[]) => {
+    return refreshSkillInventory({
+      scanPaths: scanPaths ?? settingsRef.current?.chatTools?.skillScanPaths,
+      projectCwd: projectCwd ?? null,
+      listFailedLabel: t.chatSkillListLoadFailed,
+    })
   }, [projectCwd, t])
 
   useEffect(() => {
-    let cancelled = false
+    previewMountedRef.current = true
+    return () => { previewMountedRef.current = false }
+  }, [])
+
+  useEffect(() => subscribeSkillSettingsSaved((saved) => {
+    settingsRef.current = saved
+    setSettings(saved)
+  }), [])
+
+  useEffect(() => {
+    let mounted = true
     void (async () => {
       try {
         const loaded = await getSettingsCached()
-        if (cancelled) return
-        settingsRef.current = loaded
-        setSettings(loaded)
-        await refreshChatSkills(loaded.chatTools.skillScanPaths)
+        if (mounted) {
+          settingsRef.current = loaded
+          setSettings(loaded)
+        }
+        await refreshSkillInventory({
+          scanPaths: loaded.chatTools.skillScanPaths,
+          projectCwd: projectCwd ?? null,
+          listFailedLabel: t.chatSkillListLoadFailed,
+        })
       } catch (err) {
-        if (!cancelled) setSkillError(err instanceof Error ? err.message : String(err))
+        if (mounted) setSkillActionError(err instanceof Error ? err.message : String(err))
       }
     })()
     return () => {
-      cancelled = true
+      mounted = false
       if (saveTimer.current) window.clearTimeout(saveTimer.current)
     }
-  }, [refreshChatSkills])
+  }, [projectCwd, t])
+
+  const refreshingGeneration = useRef(0)
+  useEffect(() => {
+    const snap = skillLifecycleStore.getSnapshot()
+    if (snap.settledGeneration === 0) return
+    const generation = snap.settledGeneration
+    if (snap.notifiedGeneration !== generation) {
+      markSkillInventoryNotified(generation)
+      const claimed = skillLifecycleStore.getSnapshot()
+      if (claimed.notifiedGeneration === generation) onSkillsChanged?.()
+    }
+    const pending = skillLifecycleStore.getSnapshot()
+    if (pending.refreshedGeneration === generation || refreshingGeneration.current === generation) return
+    refreshingGeneration.current = generation
+    let active = true
+    void refreshSkillInventory({
+      projectCwd: projectCwd ?? null,
+      listFailedLabel: t.chatSkillListLoadFailed,
+    }).then(() => {
+      if (!active) return
+      const latest = skillLifecycleStore.getSnapshot()
+      if (latest.settledGeneration !== generation) return
+      markSkillInventoryRefreshed(generation)
+    })
+    return () => { active = false }
+  }, [onSkillsChanged, ops.notifiedGeneration, ops.refreshedGeneration, ops.settledGeneration, projectCwd, t])
 
   const flushSave = useCallback(async (next: Settings) => {
     try {
       // 只把技能页改过的字段盖到 fresh 上，避免把 MCP / 收藏 / 插件开关盖回旧值。
+      // 启用状态由 setSkillEnabled 单独提交，这里不回写，免得并行保存把未完成的开关盖掉。
       const nextTools = next.chatTools
       const saved = await updateSettingsCached((fresh) => ({
         ...fresh,
         chatTools: {
           ...fresh.chatTools,
-          disabledSkillIds: nextTools.disabledSkillIds,
           skillScanPaths: nextTools.skillScanPaths,
           skillAutoMatch: nextTools.skillAutoMatch,
           skillFallbackMode: nextTools.skillFallbackMode,
         },
       }))
       settingsRef.current = saved
+      setSettings(saved)
       onSkillsChanged?.()
     } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
+      setSkillActionError(err instanceof Error ? err.message : String(err))
     }
   }, [onSkillsChanged])
 
@@ -441,179 +480,76 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
   }, [flushSave])
 
   const handleToggleSkillEnabled = useCallback((skillId: string, enabled: boolean) => {
-    const disabled = settingsRef.current?.chatTools?.disabledSkillIds ?? []
-    const next = enabled
-      ? disabled.filter((id) => id !== skillId)
-      : disabled.includes(skillId)
-        ? disabled
-        : [...disabled, skillId]
-    persistChatTools({ disabledSkillIds: next })
-  }, [persistChatTools])
+    void setSkillEnabled(skillId, enabled)
+  }, [])
 
   const handlePreviewSkill = useCallback(async (skillId: string) => {
-    setSkillError('')
+    const request = ++previewRequestRef.current
+    const navigationEpoch = skillLifecycleStore.getSnapshot().navigationEpoch
+    const cwd = projectCwd
+    setSkillActionError('')
+    const baselineError = skillLifecycleStore.getSnapshot().actionError
+    const owned = () => ownsSkillPreview({
+      mounted: previewMountedRef.current,
+      request,
+      currentRequest: previewRequestRef.current,
+      navigationEpoch,
+      currentNavigationEpoch: skillLifecycleStore.getSnapshot().navigationEpoch,
+      projectCwd: cwd,
+      currentProjectCwd: projectCwdRef.current,
+    })
     try {
-      const result = await api.chatSkillsRead(skillId, projectCwd || undefined)
+      const result = await api.chatSkillsRead(skillId, cwd || undefined)
+      if (!owned()) return
       if (result.success && result.skill) {
         setSelectedSkillPreview(result.skill)
-      } else {
-        setSkillError(result.error || t.chatSkillReadFailed)
+        return
       }
+      if (!owned() || skillLifecycleStore.getSnapshot().actionError !== baselineError) return
+      setSkillActionError(result.error || t.chatSkillReadFailed)
     } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
+      if (!owned() || skillLifecycleStore.getSnapshot().actionError !== baselineError) return
+      setSkillActionError(err instanceof Error ? err.message : String(err))
     }
   }, [projectCwd, t])
 
-  const handleImportSkill = useCallback(async () => {
-    try {
-      const selected = await open({ directory: true, multiple: false })
-      if (typeof selected !== 'string') return
-      const result = await api.chatSkillsImport(selected)
-      if (!result.success) {
-        setSkillError(result.error || t.chatSkillImportFailed)
-        return
-      }
-      await refreshChatSkills()
-      onSkillsChanged?.()
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [onSkillsChanged, refreshChatSkills, t])
+  const handleImportSkill = useCallback(() => {
+    void importSkillFolder(t.chatSkillImportFailed)
+  }, [t])
 
-  const handleDeleteSkill = useCallback(async (skill: SkillMeta) => {
-    if (!(await confirmDialog({ message: t.chatSkillDeleteConfirm.replace('{name}', () => skill.name), confirmLabel: t.dialogDelete, danger: true }))) return
-    setSkillError('')
-    try {
-      await api.chatSkillsUninstall(skill.id)
-      await refreshChatSkills()
-      onSkillsChanged?.()
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [onSkillsChanged, refreshChatSkills, t])
+  const handleDeleteSkill = useCallback((skill: SkillMeta) => {
+    void deleteInstalledSkill(skill, {
+      confirm: t.chatSkillDeleteConfirm.replace('{name}', skill.name),
+      confirmLabel: t.dialogDelete,
+    })
+  }, [t])
 
-  const handleImportSkillZip = useCallback(async () => {
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        filters: [{ name: 'Skill Zip', extensions: ['zip'] }],
-      })
-      if (typeof selected !== 'string') return
-      const result = await api.chatSkillsImport(selected)
-      if (!result.success) {
-        setSkillError(result.error || t.chatSkillImportFailed)
-        return
-      }
-      await refreshChatSkills()
-      onSkillsChanged?.()
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    }
-  }, [onSkillsChanged, refreshChatSkills, t])
+  const handleImportSkillZip = useCallback(() => {
+    void importSkillZip(t.chatSkillImportFailed)
+  }, [t])
 
   const handleOpenSkillFolder = useCallback(async () => {
-    setSkillError('')
+    setSkillActionError('')
     try {
       const result = await api.chatSkillsOpenFolder()
       if (!result.success) {
-        setSkillError(result.error || t.chatSkillOpenFolderFailed)
+        setSkillActionError(result.error || t.chatSkillOpenFolderFailed)
       }
     } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
+      setSkillActionError(err instanceof Error ? err.message : String(err))
     }
   }, [t])
 
-  // 扫描各本地 CLI 的技能目录：复用 chat_skills_list 的额外扫描路径（external 源即 CLI 技能），
-  // 再按 skill.path 的目录前缀把结果归到对应 CLI 分组。
-  const handleCliScan = useCallback(async () => {
-    setCliScanning(true)
-    setCliImportDone('')
-    setSkillError('')
-    try {
-      const home = (await homeDir()).replace(/[/\\]+$/, '')
-      const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase()
-      const piAgentDir = (await api.chatPiAgentDir())?.replace(/[/\\]+$/, '')
-      const defaultPiDirs = CLI_SKILL_SOURCES
-        .filter((source) => source.key === 'pi')
-        .flatMap((source) => source.dirs.map((dir) => `${home}/${dir}`))
-      const piSkillDirs = Array.from(new Set([
-        ...(piAgentDir ? [`${piAgentDir}/skills`] : []),
-        ...defaultPiDirs,
-      ].map((dir) => dir.replace(/\\/g, '/'))))
-      // 每个 CLI 目录 → 归一化前缀（用于把扫描结果分组）
-      const sources = CLI_SKILL_SOURCES.map((source) => ({
-        key: source.key,
-        prefixes: source.key === 'pi'
-          ? piSkillDirs.map(norm)
-          : source.dirs.map((dir) => norm(`${home}/${dir}`)),
-      }))
-      const scanDirs = [
-        ...CLI_SKILL_SOURCES.filter((source) => source.key !== 'pi')
-          .flatMap((source) => source.dirs.map((dir) => `${home}/${dir}`)),
-        ...piSkillDirs,
-      ]
-      const result = await api.chatSkillsList(scanDirs)
-      if (!result.success) {
-        setSkillError(result.error || t.chatSkillScanFailed)
-        setCliSkills({ claude: [], codex: [], opencode: [], pi: [] })
-        return
-      }
-      const scanned = result.skills.filter((skill) => skill.source === 'external' && skill.path)
-      const groups: CliSkillGroups = { claude: [], codex: [], opencode: [], pi: [] }
-      for (const skill of scanned) {
-        const path = norm(skill.path as string)
-        const source = sources.find((s) => s.prefixes.some((prefix) => path.startsWith(prefix)))
-        if (source) groups[source.key].push(skill)
-      }
-      setCliSkills(groups)
-      setCliSelected(new Set())
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCliScanning(false)
-    }
+  const handleCliScan = useCallback(() => {
+    void scanCliSkills(t.chatSkillScanFailed)
   }, [t])
 
-  const toggleCliSelected = useCallback((id: string) => {
-    setCliSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
+  const handleCliImportSelected = useCallback(() => {
+    void importSelectedCliSkills({
+      importNamedFailed: (name) => t.chatSkillImportNamedFailed.replace('{name}', name),
+      done: (count) => t.chatSkillCliImportDone.replace('{n}', String(count)),
     })
-  }, [])
-
-  // 导入选中技能 = 逐项从 skill.path（.../<id>/SKILL.md）推出文件夹后复制进 Kivio 用户技能目录。
-  const handleCliImportSelected = useCallback(async () => {
-    if (!cliSkills) return
-    const all = [...cliSkills.claude, ...cliSkills.codex, ...cliSkills.opencode, ...cliSkills.pi]
-    const chosen = all.filter((skill) => cliSelected.has(skill.id) && skill.path)
-    if (chosen.length === 0) return
-    setCliImporting(true)
-    setCliImportDone('')
-    setSkillError('')
-    let imported = 0
-    try {
-      for (const skill of chosen) {
-        const folder = (skill.path as string).replace(/[/\\]+SKILL\.md$/i, '')
-        const result = await api.chatSkillsImport(folder)
-        if (result.success) imported += 1
-        else setSkillError(result.error || t.chatSkillImportNamedFailed.replace('{name}', skill.name))
-      }
-      await refreshChatSkills()
-      onSkillsChanged?.()
-      if (imported > 0) {
-        setCliImportDone(t.chatSkillCliImportDone.replace('{n}', String(imported)))
-        setCliSkills(null)
-        setCliSelected(new Set())
-      }
-    } catch (err) {
-      setSkillError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setCliImporting(false)
-    }
-  }, [cliSkills, cliSelected, onSkillsChanged, refreshChatSkills, t])
+  }, [t])
 
   const normalizedQuery = query.trim().toLowerCase()
   const builtinSkills = useMemo(
@@ -667,6 +603,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   size="lg"
                   label={t.chatSkillImportFolder}
                   onClick={() => void handleImportSkill()}
+                  disabled={ops.busyKeys.includes('import-folder')}
                   data-tauri-drag-region="false"
                 >
                   <FolderOpen size={17} />
@@ -675,6 +612,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   size="lg"
                   label={t.chatSkillImportZip}
                   onClick={() => void handleImportSkillZip()}
+                  disabled={ops.busyKeys.includes('import-zip')}
                   data-tauri-drag-region="false"
                 >
                   <Download size={17} />
@@ -706,7 +644,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
               <button
                 key={id}
                 type="button"
-                onClick={() => setView(id)}
+                onClick={() => setSkillView(id)}
                 data-tauri-drag-region="false"
                 className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
                   view === id
@@ -719,7 +657,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{skills.length}</span>
                 )}
                 {view === id && (
-                  <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-[#2f6ff0] dark:bg-[#5c8df7]" />
+                  <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />
                 )}
               </button>
             ))}
@@ -727,16 +665,16 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
 
           {view === 'store' ? (
             <div key="store" className="chat-motion-tab-in mt-5 flex min-h-[420px] flex-col">
-              <SkillStoreBrowser onInstalled={() => void refreshChatSkills()} />
+              <SkillStoreBrowser />
             </div>
           ) : view === 'import' ? (
             <div key="import" className="chat-motion-tab-in mt-5 space-y-4">
               <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void handleImportSkill()} data-tauri-drag-region="false">
+                <Button onClick={() => void handleImportSkill()} disabled={ops.busyKeys.includes('import-folder')} data-tauri-drag-region="false">
                   <FolderOpen size={14} />
                   {t.chatSkillImportFolder}
                 </Button>
-                <Button onClick={() => void handleImportSkillZip()} data-tauri-drag-region="false">
+                <Button onClick={() => void handleImportSkillZip()} disabled={ops.busyKeys.includes('import-zip')} data-tauri-drag-region="false">
                   <Download size={14} />
                   {t.chatSkillImportZip}
                 </Button>
@@ -745,7 +683,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   {t.chatSkillOpenSkillFolder}
                 </Button>
               </div>
-              <SkillUrlImport onInstalled={() => void refreshChatSkills()} />
+              <SkillUrlImport />
               <div className="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -785,8 +723,8 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                                     >
                                       <input
                                         type="checkbox"
-                                        checked={cliSelected.has(skill.id)}
-                                        onChange={() => toggleCliSelected(skill.id)}
+                                        checked={ops.cliSelectedIds.includes(skill.id)}
+                                        onChange={() => toggleCliSkillSelected(skill.id)}
                                         className="size-3.5 shrink-0 accent-[#2f6ff0]"
                                       />
                                       <div className="min-w-0 flex-1">
@@ -801,10 +739,10 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                           })}
                           <Button
                             onClick={() => void handleCliImportSelected()}
-                            disabled={cliImporting || cliSelected.size === 0}
+                            disabled={cliImporting || ops.cliSelectedIds.length === 0}
                             data-tauri-drag-region="false"
                           >
-                            {cliImporting ? t.chatSkillImporting : t.chatSkillImportSelected.replace('{n}', String(cliSelected.size))}
+                            {cliImporting ? t.chatSkillImporting : t.chatSkillImportSelected.replace('{n}', String(ops.cliSelectedIds.length))}
                           </Button>
                         </>
                       )}
@@ -817,8 +755,11 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                 )}
               </div>
               {skillError && (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-                  {skillError}
+                <div className="flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+                  <span>{skillError}</span>
+                  {ops.enableFailedIds.length > 0 && (
+                    <Button size="sm" onClick={() => void retryFailedSkillEnables()}>{t.chatRetry}</Button>
+                  )}
                 </div>
               )}
             </div>
@@ -923,14 +864,17 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t.chatSkillSearchPlaceholder}
-              className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
               data-tauri-drag-region="false"
             />
           </div>
 
           {skillError && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              {skillError}
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+              <span>{skillError}</span>
+              {ops.enableFailedIds.length > 0 && (
+                <Button size="sm" onClick={() => void retryFailedSkillEnables()}>{t.chatRetry}</Button>
+              )}
             </div>
           )}
 
@@ -948,6 +892,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                     skills={projectSkills}
                     disabledSkillIds={disabledSkillIds}
                     onToggleEnabled={handleToggleSkillEnabled}
+                    enableBusyIds={enableBusyIds}
                     onPreview={handlePreviewSkill}
                   />
                 )}
@@ -960,6 +905,8 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   onToggleEnabled={handleToggleSkillEnabled}
                   onPreview={handlePreviewSkill}
                   onDelete={handleDeleteSkill}
+                  enableBusyIds={enableBusyIds}
+                  deleteBusyIds={deleteBusyIds}
                 />
                 <SkillSection
                   title={t.chatSkillSectionPlugin}
@@ -980,6 +927,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                     skills={globalSkills}
                     disabledSkillIds={disabledSkillIds}
                     onToggleEnabled={handleToggleSkillEnabled}
+                    enableBusyIds={enableBusyIds}
                     onPreview={handlePreviewSkill}
                   />
                 )}
@@ -990,6 +938,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   skills={builtinSkills}
                   disabledSkillIds={disabledSkillIds}
                   onToggleEnabled={handleToggleSkillEnabled}
+                  enableBusyIds={enableBusyIds}
                   onPreview={handlePreviewSkill}
                   collapsible
                   defaultCollapsed
@@ -1017,7 +966,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-start gap-2">
-              <Sparkles size={16} className="mt-0.5 shrink-0 text-[#2f6ff0] dark:text-[#5c8df7]" />
+              <Sparkles size={16} className="mt-0.5 shrink-0 text-accent" />
               <div className="min-w-0 flex-1">
                 <h3 id="skill-preview-title" className="truncate text-[15px] font-semibold text-neutral-900 dark:text-neutral-100">
                   {selectedSkillPreview.name}

@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { open } from '@tauri-apps/plugin-dialog'
 import { externalCliSettingsApi, type PiSkillInventory } from '../api/externalCliSettings'
 import { PiSkillsSettings } from './PiSkillsSettings'
+import { resetPiSkillsOperationState } from './piSkillsOperation'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('../api/externalCliSettings', () => ({
@@ -75,8 +76,16 @@ const inventory: PiSkillInventory = {
   ],
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
 describe('PiSkillsSettings', () => {
   beforeEach(() => {
+    resetPiSkillsOperationState()
     vi.mocked(open).mockReset()
     vi.mocked(externalCliSettingsApi.piSkillsInventory).mockReset()
     vi.mocked(externalCliSettingsApi.piSkillSetEnabled).mockReset()
@@ -152,5 +161,51 @@ describe('PiSkillsSettings', () => {
     await waitFor(() => {
       expect(externalCliSettingsApi.piSkillRemovePath).toHaveBeenCalledWith('C:\\Users\\u\\.codex\\skills')
     })
+  })
+
+  it('starts one skill toggle and restores the failure and search after leaving', async () => {
+    const gate = deferred<void>()
+    vi.mocked(externalCliSettingsApi.piSkillSetEnabled).mockReturnValue(gate.promise)
+    let view = render(<PiSkillsSettings lang="zh" onBack={vi.fn()} />)
+    const local = (await screen.findByText('local-review')).closest<HTMLElement>('.kv-row')!
+    const toggle = within(local).getByRole('switch')
+    await act(async () => {
+      toggle.click()
+      toggle.click()
+    })
+    expect(externalCliSettingsApi.piSkillSetEnabled).toHaveBeenCalledOnce()
+    fireEvent.change(screen.getByPlaceholderText('搜索 Skill、描述、来源或路径'), {
+      target: { value: 'local' },
+    })
+    expect(screen.getByRole('button', { name: '刷新 Skill' })).toBeDisabled()
+    view.unmount()
+
+    view = render(<PiSkillsSettings lang="zh" onBack={vi.fn()} />)
+    expect(screen.getByPlaceholderText('搜索 Skill、描述、来源或路径')).toHaveValue('local')
+    expect(screen.getByRole('button', { name: '刷新 Skill' })).toBeDisabled()
+    view.unmount()
+
+    await act(async () => { gate.reject(new Error('skill write failed')) })
+    render(<PiSkillsSettings lang="zh" onBack={vi.fn()} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('skill write failed')
+    expect(screen.getByPlaceholderText('搜索 Skill、描述、来源或路径')).toHaveValue('local')
+    expect(externalCliSettingsApi.piSkillSetEnabled).toHaveBeenCalledOnce()
+  })
+
+  it('shows a scan-path result that finished while the page was gone', async () => {
+    const gate = deferred<void>()
+    vi.mocked(open).mockResolvedValue('C:\\Users\\u\\.claude\\skills')
+    vi.mocked(externalCliSettingsApi.piSkillAddPath).mockReturnValue(gate.promise)
+    const view = render(<PiSkillsSettings lang="zh" onBack={vi.fn()} />)
+    await screen.findByText('local-review')
+    fireEvent.click(screen.getByRole('button', { name: '添加扫描路径' }))
+    await waitFor(() => {
+      expect(externalCliSettingsApi.piSkillAddPath).toHaveBeenCalledWith('C:\\Users\\u\\.claude\\skills')
+    })
+    view.unmount()
+    await act(async () => { gate.resolve() })
+    render(<PiSkillsSettings lang="zh" onBack={vi.fn()} />)
+    expect(await screen.findByText('已添加 Skill 扫描路径。')).toBeInTheDocument()
+    expect(vi.mocked(externalCliSettingsApi.piSkillsInventory).mock.calls.length).toBeGreaterThan(1)
   })
 })

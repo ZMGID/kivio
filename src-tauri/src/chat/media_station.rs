@@ -70,13 +70,32 @@ pub struct MediaJob {
     pub provider_task_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDeleteFailure {
+    pub id: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDeleteResult {
+    pub deleted_ids: Vec<String>,
+    pub failures: Vec<MediaDeleteFailure>,
+}
+
 #[derive(Default)]
 pub struct MediaStation(Mutex<MediaJobs>);
 #[derive(Default)]
 struct MediaJobs {
     loaded: bool,
     jobs: HashMap<String, MediaJob>,
-    stops: HashMap<String, tokio::sync::oneshot::Sender<()>>,
+    stops: HashMap<String, RunningTask>,
+}
+
+struct RunningTask {
+    token: uuid::Uuid,
+    stop: tokio::sync::oneshot::Sender<()>,
 }
 
 fn root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -103,14 +122,21 @@ impl MediaJobs {
         fs::create_dir_all(root).map_err(|e| e.to_string())?;
         let mut jobs = HashMap::new();
         for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
-            let path = entry.map_err(|e| e.to_string())?.path().join("job.json");
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                continue;
+            }
+            let directory = entry.path();
+            let path = directory.join("job.json");
             if !path.exists() {
                 continue;
             }
             let mut job: MediaJob =
                 serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
                     .map_err(|e| format!("Cannot read media history: {e}"))?;
-            if !valid_id(&job.id) {
+            if !valid_id(&job.id)
+                || directory.file_name().and_then(|name| name.to_str()) != Some(job.id.as_str())
+            {
                 return Err("Invalid media job ID".into());
             }
             if job.status == MediaStatus::Running {
@@ -124,6 +150,131 @@ impl MediaJobs {
         self.jobs = jobs;
         self.loaded = true;
         Ok(())
+    }
+
+    fn active(&self, id: &str, token: uuid::Uuid) -> bool {
+        self.stops.get(id).is_some_and(|task| task.token == token)
+            && self
+                .jobs
+                .get(id)
+                .is_some_and(|job| job.status == MediaStatus::Running)
+    }
+
+    fn record_task(
+        &mut self,
+        root: &Path,
+        id: &str,
+        token: uuid::Uuid,
+        task_id: &str,
+    ) -> Result<(), String> {
+        if !self.active(id, token) {
+            return Ok(());
+        }
+        let job = self.jobs.get_mut(id).ok_or("Task not found")?;
+        job.provider_task_id = Some(task_id.to_string());
+        persist(root, job)
+    }
+
+    fn write_output(
+        &self,
+        root: &Path,
+        id: &str,
+        token: uuid::Uuid,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        if !self.active(id, token) {
+            return Err("Task is no longer running".into());
+        }
+        if Path::new(name).file_name().and_then(|name| name.to_str()) != Some(name) {
+            return Err("Invalid output path".into());
+        }
+        fs::write(root.join(id).join(name), bytes).map_err(|e| e.to_string())
+    }
+
+    fn finish(
+        &mut self,
+        root: &Path,
+        id: &str,
+        token: uuid::Uuid,
+        result: Result<Vec<MediaOutput>, String>,
+    ) {
+        if !self.active(id, token) {
+            return;
+        }
+        self.stops.remove(id);
+        if let Some(job) = self.jobs.get_mut(id) {
+            match result {
+                Ok(outputs) => {
+                    job.outputs = outputs;
+                    job.status = MediaStatus::Completed;
+                }
+                Err(error) => {
+                    job.error = Some(error);
+                    job.status = MediaStatus::Failed;
+                }
+            }
+            if let Err(error) = persist(root, job) {
+                job.status = MediaStatus::Failed;
+                job.error = Some(format!("保存任务失败：{error}"));
+            }
+        }
+    }
+
+    fn register(
+        &mut self,
+        root: &Path,
+        job: &MediaJob,
+        task: RunningTask,
+        resume: bool,
+    ) -> Result<MediaJob, String> {
+        self.load(root)?;
+        if resume {
+            let current = self.jobs.get(&job.id).ok_or("Task not found")?;
+            if current.status == MediaStatus::Running || current.status == MediaStatus::Completed {
+                return Ok(current.clone());
+            }
+        }
+        if self.stops.len() >= 3 {
+            return Err("已有 3 个任务运行中，请等待完成。".into());
+        }
+        persist(root, job)?;
+        self.jobs.insert(job.id.clone(), job.clone());
+        self.stops.insert(job.id.clone(), task);
+        Ok(job.clone())
+    }
+
+    fn delete(
+        &mut self,
+        ids: Vec<String>,
+        mut remove: impl FnMut(&str) -> Result<(), String>,
+    ) -> MediaDeleteResult {
+        let mut result = MediaDeleteResult {
+            deleted_ids: vec![],
+            failures: vec![],
+        };
+        for id in ids {
+            let outcome = if !valid_id(&id) {
+                Err("Invalid media job ID".into())
+            } else if self
+                .jobs
+                .get(&id)
+                .is_some_and(|job| job.status == MediaStatus::Running)
+            {
+                Err("请先停止本地等待，再删除任务。".into())
+            } else {
+                remove(&id)
+            };
+            match outcome {
+                Ok(()) => {
+                    self.jobs.remove(&id);
+                    self.stops.remove(&id);
+                    result.deleted_ids.push(id);
+                }
+                Err(error) => result.failures.push(MediaDeleteFailure { id, error }),
+            }
+        }
+        result
     }
 }
 
@@ -189,7 +340,7 @@ pub fn media_station_start(
         outputs: vec![],
         provider_task_id: None,
     };
-    run_job(app, &station, job, provider)
+    run_job(app, &station, job, provider, false)
 }
 
 /// Re-attach to a video the provider already accepted (after an app restart, a stopped wait
@@ -215,7 +366,7 @@ pub fn media_station_resume(
     let provider = media_provider(&state, &job.request)?;
     job.status = MediaStatus::Running;
     job.error = None;
-    run_job(app, &station, job, provider)
+    run_job(app, &station, job, provider, true)
 }
 
 /// Gate shared by start and resume; the page mirrors it when listing providers.
@@ -250,18 +401,17 @@ fn run_job(
     station: &MediaStation,
     job: MediaJob,
     provider: ModelProvider,
+    resume: bool,
 ) -> Result<MediaJob, String> {
     let dir = root(&app)?;
     let (stop, stopped) = tokio::sync::oneshot::channel();
+    let token = uuid::Uuid::new_v4();
     {
         let mut store = station.0.lock().map_err(|e| e.to_string())?;
-        store.load(&dir)?;
-        if store.stops.len() >= 3 {
-            return Err("已有 3 个任务运行中，请等待完成。".into());
+        let registered = store.register(&dir, &job, RunningTask { token, stop }, resume)?;
+        if !store.active(&job.id, token) {
+            return Ok(registered);
         }
-        persist(&dir, &job)?;
-        store.jobs.insert(job.id.clone(), job.clone());
-        store.stops.insert(job.id.clone(), stop);
     }
     let running = job.clone();
     tauri::async_runtime::spawn(async move {
@@ -269,39 +419,24 @@ fn run_job(
         let record_task = |task_id: &str| {
             let station = app.state::<MediaStation>();
             let mut store = station.0.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(job) = store.jobs.get_mut(&running.id) {
-                job.provider_task_id = Some(task_id.to_string());
-                if let Err(error) = persist(&dir, job) {
-                    eprintln!("[media_station] failed to save provider task id: {error}");
-                }
+            if let Err(error) = store.record_task(&dir, &running.id, token, task_id) {
+                eprintln!("[media_station] failed to save provider task id: {error}");
             }
         };
+        let write_output = |name: &str, bytes: &[u8]| {
+            let station = app.state::<MediaStation>();
+            let store = station.0.lock().unwrap_or_else(|e| e.into_inner());
+            // Hold the lifetime lock through the write: cancellation/deletion must
+            // not race a synchronous write following the final network await.
+            store.write_output(&dir, &running.id, token, name, bytes)
+        };
         let result = tokio::select! {
-            result = generate(&dir, &running, &provider, &state, record_task) => result,
+            result = generate(&running, &provider, &state, record_task, write_output) => result,
             _ = stopped => return,
         };
         let station = app.state::<MediaStation>();
         let mut store = station.0.lock().unwrap_or_else(|e| e.into_inner());
-        store.stops.remove(&running.id);
-        if let Some(job) = store.jobs.get_mut(&running.id) {
-            if job.status != MediaStatus::Running {
-                return;
-            }
-            match result {
-                Ok(outputs) => {
-                    job.outputs = outputs;
-                    job.status = MediaStatus::Completed;
-                }
-                Err(error) => {
-                    job.error = Some(error);
-                    job.status = MediaStatus::Failed;
-                }
-            }
-            if let Err(error) = persist(&dir, job) {
-                job.status = MediaStatus::Failed;
-                job.error = Some(format!("保存任务失败：{error}"));
-            }
-        }
+        store.finish(&dir, &running.id, token, result);
     });
     Ok(job)
 }
@@ -322,10 +457,22 @@ pub fn media_station_cancel(
     cancelled.error = Some("已停止本地等待；供应商任务可能继续并计费。".into());
     persist(&root(&app)?, &cancelled)?;
     store.jobs.insert(id.clone(), cancelled);
-    if let Some(stop) = store.stops.remove(&id) {
-        let _ = stop.send(());
+    if let Some(task) = store.stops.remove(&id) {
+        let _ = task.stop.send(());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn media_station_delete(
+    app: AppHandle,
+    station: State<'_, MediaStation>,
+    ids: Vec<String>,
+) -> Result<MediaDeleteResult, String> {
+    let dir = root(&app)?;
+    let mut store = station.0.lock().map_err(|e| e.to_string())?;
+    store.load(&dir)?;
+    Ok(store.delete(ids, |id| super::artifacts::delete_media_job(&app, &dir, id)))
 }
 
 fn output_path(
@@ -393,14 +540,13 @@ pub fn media_station_reference(
 const POLL_RETRY_LIMIT: u32 = 6;
 
 async fn generate(
-    root: &Path,
     job: &MediaJob,
     provider: &ModelProvider,
     state: &AppState,
     record_task: impl FnOnce(&str),
+    write_output: impl Fn(&str, &[u8]) -> Result<(), String>,
 ) -> Result<Vec<MediaOutput>, String> {
     let request = &job.request;
-    let dir = root.join(&job.id);
     if request.kind == MediaKind::Image {
         let paths: Vec<_> = request.reference_paths.iter().map(PathBuf::from).collect();
         let images = super::image_generation::load_input_images_from_paths(&paths)?;
@@ -426,7 +572,7 @@ async fn generate(
                 .1;
             let bytes = STANDARD.decode(encoded).map_err(|e| e.to_string())?;
             let name = artifact.name;
-            fs::write(dir.join(&name), &bytes).map_err(|e| e.to_string())?;
+            write_output(&name, &bytes)?;
             // The image is paid for and saved; a thumbnail failure only costs the preview.
             let preview = image_preview(&bytes).unwrap_or_else(|error| {
                 eprintln!("[media_station] preview failed for {name}: {error}");
@@ -532,7 +678,7 @@ async fn generate(
                     if bytes.is_empty() {
                         return Err("视频内容为空。".into());
                     }
-                    fs::write(dir.join("video.mp4"), bytes).map_err(|e| e.to_string())?;
+                    write_output("video.mp4", &bytes)?;
                     return Ok(vec![MediaOutput {
                         name: "video.mp4".into(),
                         mime_type: "video/mp4".into(),
@@ -758,7 +904,15 @@ mod tests {
         persist(dir.path(), &job).unwrap();
         let outputs = tokio::time::timeout(
             Duration::from_secs(10),
-            generate(dir.path(), &job, &provider, &state, |_| {}),
+            generate(
+                &job,
+                &provider,
+                &state,
+                |_| {},
+                |name, bytes| {
+                    fs::write(dir.path().join(&job.id).join(name), bytes).map_err(|e| e.to_string())
+                },
+            ),
         )
         .await
         .unwrap()
@@ -770,5 +924,151 @@ mod tests {
             png
         );
         assert!(outputs[0].preview.starts_with("data:image/png;base64,"));
+    }
+
+    fn job(status: MediaStatus) -> MediaJob {
+        MediaJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: 1,
+            request: request(),
+            status,
+            error: None,
+            outputs: vec![],
+            provider_task_id: Some("remote-1".into()),
+        }
+    }
+
+    fn task(token: uuid::Uuid) -> RunningTask {
+        let (stop, _) = tokio::sync::oneshot::channel();
+        RunningTask { token, stop }
+    }
+
+    #[test]
+    fn batch_delete_preserves_failed_items_and_rejects_running_and_invalid_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let completed = job(MediaStatus::Completed);
+        let running = job(MediaStatus::Running);
+        let failed = job(MediaStatus::Failed);
+        for job in [&completed, &running, &failed] {
+            persist(dir.path(), job).unwrap();
+        }
+        let mut store = MediaJobs {
+            loaded: true,
+            ..Default::default()
+        };
+        for job in [&completed, &running, &failed] {
+            store.jobs.insert(job.id.clone(), job.clone());
+        }
+        let missing = uuid::Uuid::new_v4().to_string();
+        let result = store.delete(
+            vec![
+                completed.id.clone(),
+                running.id.clone(),
+                "../escape".into(),
+                failed.id.clone(),
+                missing.clone(),
+            ],
+            |id| {
+                if id == failed.id {
+                    return Err("filesystem failure".into());
+                }
+                super::super::artifacts::delete_media_job_in(artifacts.path(), dir.path(), id)
+            },
+        );
+        assert_eq!(
+            result.deleted_ids,
+            vec![completed.id.clone(), missing.clone()]
+        );
+        assert_eq!(
+            result
+                .failures
+                .iter()
+                .map(|failure| failure.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![running.id.as_str(), "../escape", failed.id.as_str()]
+        );
+        assert!(store.jobs.contains_key(&failed.id));
+        assert!(store.jobs.contains_key(&running.id));
+        assert!(!dir.path().join(&completed.id).exists());
+        assert!(dir.path().join(&failed.id).join("job.json").exists());
+        let again = store.delete(vec![completed.id.clone(), missing], |id| {
+            super::super::artifacts::delete_media_job_in(artifacts.path(), dir.path(), id)
+        });
+        assert!(again.failures.is_empty());
+        let mut restarted = MediaJobs::default();
+        restarted.load(dir.path()).unwrap();
+        assert!(!restarted.jobs.contains_key(&completed.id));
+    }
+
+    #[test]
+    fn deleted_jobs_reject_stale_resume_and_all_late_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut running = job(MediaStatus::Running);
+        let old = uuid::Uuid::new_v4();
+        let mut store = MediaJobs::default();
+        store
+            .register(dir.path(), &running, task(old), false)
+            .unwrap();
+        store.jobs.get_mut(&running.id).unwrap().status = MediaStatus::Cancelled;
+        store.stops.remove(&running.id);
+        let result = store.delete(vec![running.id.clone()], |id| {
+            super::super::artifacts::delete_media_job_in(artifacts.path(), dir.path(), id)
+        });
+        assert!(result.failures.is_empty());
+        running.status = MediaStatus::Running;
+        assert!(store
+            .register(dir.path(), &running, task(uuid::Uuid::new_v4()), true)
+            .is_err());
+        store
+            .record_task(dir.path(), &running.id, old, "late")
+            .unwrap();
+        assert!(store
+            .write_output(dir.path(), &running.id, old, "video.mp4", b"late")
+            .is_err());
+        store.finish(dir.path(), &running.id, old, Ok(vec![]));
+        assert!(!dir.path().join(&running.id).exists());
+        assert!(!store.jobs.contains_key(&running.id));
+    }
+
+    #[test]
+    fn old_run_cannot_modify_or_stop_a_resumed_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let running = job(MediaStatus::Running);
+        let old = uuid::Uuid::new_v4();
+        let current = uuid::Uuid::new_v4();
+        let mut store = MediaJobs::default();
+        store
+            .register(dir.path(), &running, task(old), false)
+            .unwrap();
+        store.jobs.get_mut(&running.id).unwrap().status = MediaStatus::Cancelled;
+        store.stops.remove(&running.id);
+        store
+            .register(dir.path(), &running, task(current), true)
+            .unwrap();
+        store
+            .record_task(dir.path(), &running.id, old, "stale")
+            .unwrap();
+        store.finish(dir.path(), &running.id, old, Err("stale".into()));
+        assert!(store
+            .write_output(dir.path(), &running.id, old, "video.mp4", b"stale")
+            .is_err());
+        assert!(store.active(&running.id, current));
+        assert_eq!(
+            store.jobs[&running.id].provider_task_id.as_deref(),
+            Some("remote-1")
+        );
+        let duplicate = uuid::Uuid::new_v4();
+        store
+            .register(dir.path(), &running, task(duplicate), true)
+            .unwrap();
+        assert!(store.active(&running.id, current));
+        assert!(!store.active(&running.id, duplicate));
+        store
+            .write_output(dir.path(), &running.id, current, "video.mp4", b"current")
+            .unwrap();
+        store.finish(dir.path(), &running.id, current, Ok(vec![]));
+        assert_eq!(store.jobs[&running.id].status, MediaStatus::Completed);
     }
 }

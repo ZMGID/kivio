@@ -91,6 +91,10 @@ Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current not
 
 - Global hotkeys (remappable, conflict-aware), tray, light / dark
 - Usage stats, lifecycle hooks, optional chat-window keep-alive (hide instead of destroy)
+- Computer control: installation/update progress survives page navigation in the same window; completion refreshes tool status, and failures remain visible for retry
+- Page tasks: skill and plugin installs, model downloads, media submissions, native-session imports, conversation-library batch actions, and archive / delete / export continue in the same window. Returning shows progress, results, or failures; an in-flight operation cannot be submitted twice. Skills and Media retain their current view. Uninstalling a skill restores its store install action; retired previews, media references, and Pi install callbacks cannot overwrite newer drafts or feedback. This frontend state lasts for the current window; it is not application-restart recovery.
+- Editor drafts: note and automation saves continue across navigation. Notes snapshot editor text before navigation so delayed change notifications cannot lose trailing edits. Assistants write only on explicit Save; retired delete or duplicate callbacks cannot clear or replace another editing session. Returning through Tasks restores the automation canvas. Loading a remote version refreshes the canvas, and late reads cannot replace intervening edits, including edits already saved successfully.
+- TinyFish authorization: leaving cancels the current flow. A new visit accepts only the new authorization result, never credentials from a retired flow.
 
 ## Hotkeys
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useWindowStore } from '../utils/windowStore'
 import {
   ArrowLeft,
   Check,
@@ -17,13 +18,30 @@ import {
 import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
-import { api, isTauriRuntime, type Note, type NoteMeta } from '../api/tauri'
+import { api, isTauriRuntime, type NoteMeta } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { workspaceActivity } from './dock/workspaceActivity'
 import { useLang, useT } from '../components/i18n'
 import { confirmDialog } from '../components/dialogQueue'
+import {
+  discardNoteDraft,
+  editNoteDraft,
+  flushNoteDraft,
+  noteDraftStore,
+  settleNoteDelete,
+  showNote,
+} from './notesDraftStore'
 
-const SAVE_DEBOUNCE_MS = 800
+let noteNavigation = 0
+
+function claimNoteNavigation() {
+  noteNavigation += 1
+  return noteNavigation
+}
+
+function noteNavigationCurrent(request: number) {
+  return request === noteNavigation
+}
 
 /** 顶部入口：最近（全部按时间）/ 聊天保存（对话存来）/ 库（手动笔记 + 文件夹）。 */
 type NotesTab = 'recent' | 'chat' | 'library'
@@ -36,9 +54,11 @@ type NotesTab = 'recent' | 'chat' | 'library'
 function MilkdownNoteEditor({
   initialMarkdown,
   onChange,
+  flushMarkdownRef,
 }: {
   initialMarkdown: string
   onChange: (markdown: string) => void
+  flushMarkdownRef: { current: (() => void) | null }
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const onChangeRef = useRef(onChange)
@@ -48,11 +68,32 @@ function MilkdownNoteEditor({
     const el = rootRef.current
     if (!el) return
     const crepe = new Crepe({ root: el, defaultValue: initialMarkdown })
+    let active = true
+    let created = false
+    let publishedMarkdown = initialMarkdown
+    const flush = () => {
+      if (!active || !created) return
+      const markdown = crepe.getMarkdown()
+      if (markdown === publishedMarkdown) return
+      publishedMarkdown = markdown
+      onChangeRef.current(markdown)
+    }
+    flushMarkdownRef.current = flush
     crepe.on((listener) => {
-      listener.markdownUpdated((_ctx, markdown) => onChangeRef.current(markdown))
+      listener.markdownUpdated((_ctx, markdown) => {
+        if (!active) return
+        publishedMarkdown = markdown
+        onChangeRef.current(markdown)
+      })
     })
-    const ready = crepe.create()
+    const ready = crepe.create().then(() => {
+      if (!active) return
+      created = true
+      publishedMarkdown = crepe.getMarkdown()
+    })
     return () => {
+      active = false
+      if (flushMarkdownRef.current === flush) flushMarkdownRef.current = null
       void ready.then(() => crepe.destroy())
     }
     // 挂载一次；切笔记由外层 key 触发重挂
@@ -103,25 +144,13 @@ export function NotesCenter() {
   // 卡片「移动到文件夹」菜单：当前展开的笔记 id。
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null)
 
-  // 编辑器态：null 表示列表态
-  const [editing, setEditing] = useState<Note | null>(null)
-  // 目录监听回调里读它：编辑期我们自己在写文件，不该被自己的写入触发重读。
-  const editingRef = useRef<Note | null>(null)
-  // 标题/文件夹/正文都走 ref 非受控：受控 input 在中文 IME 合成期被 React 写回 value 会打断输入 → 吞字
-  const titleRef = useRef('')
-  const folderRef = useRef('')
-  const contentRef = useRef('')
-  const [charCount, setCharCount] = useState(0)
-  const [saving, setSaving] = useState(false)
-
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const countTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // One write at a time per open note; every caller waits for the latest draft.
-  const saveFlightRef = useRef<{ id: string; promise: Promise<boolean> } | null>(null)
-  const setCurrentNote = useCallback((note: Note | null) => {
-    editingRef.current = note
-    setEditing(note)
-  }, [])
+  // 打开的笔记、草稿和保存队列在窗口 store 里，离开页面后仍在。
+  // 标题/正文输入保持非受控：受控 input 在中文 IME 合成期被 React 写回 value 会打断输入。
+  const [draft] = useWindowStore(noteDraftStore)
+  const editing = draft.note
+  const flushMarkdownRef = useRef<(() => void) | null>(null)
+  const saving = draft.status === 'saving'
+  const charCount = draft.content.length
 
   const loadNotes = useCallback(async () => {
     setError('')
@@ -177,7 +206,7 @@ export function NotesCenter() {
         unsubscribe = workspaceActivity.subscribe(dir, (event) => {
           // 编辑期跳过：正在编辑的笔记是我们自己在防抖写盘，重读会把列表状态
           // 拽回去；退出编辑时 backToList 已经自己 loadNotes 了。
-          if (editingRef.current) return
+          if (noteDraftStore.getSnapshot().note) return
           if (event.fs || event.truncated) void loadNotes()
         })
       })
@@ -223,118 +252,69 @@ export function NotesCenter() {
     return list
   }, [notes, tab, currentFolder, search, t])
 
-  /** Flush serially until the current draft is durable; failed drafts stay editable. */
-  const flushSave = useCallback((): Promise<boolean> => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    const note = editingRef.current
-    if (!note) return Promise.resolve(true)
-    if (saveFlightRef.current?.id === note.id) return saveFlightRef.current.promise
+  // 离开笔记页不是取消：把未落盘的草稿交给窗口里的保存队列，回来仍打开同一篇。
+  useEffect(() => () => {
+    claimNoteNavigation()
+    flushMarkdownRef.current?.()
+    void flushNoteDraft()
+  }, [])
 
-    setSaving(true)
+  /** 编辑器回传：草稿进窗口 store，保存队列在页面之外继续。 */
+  const onEditorChange = useCallback((markdown: string) => {
+    if (noteDraftStore.getSnapshot().session !== draft.session) return
+    editNoteDraft({ content: markdown })
+  }, [draft.session])
+
+  const openNote = useCallback(async (id: string) => {
+    const request = claimNoteNavigation()
+    const session = noteDraftStore.getSnapshot().session
+    flushMarkdownRef.current?.()
+    if (!await flushNoteDraft()) return
+    if (!noteNavigationCurrent(request)) return
+    if (noteDraftStore.getSnapshot().session !== session) return
     setError('')
-    const promise = (async () => {
-      try {
-        while (editingRef.current?.id === note.id) {
-          const baseline = editingRef.current
-          const title = titleRef.current
-          const content = contentRef.current
-          const folder = folderRef.current
-          if (title === baseline.title && content === baseline.content && folder === baseline.folder) return true
-          const updated = await api.notesUpdate(note.id, title, content, folder)
-          if (editingRef.current?.id !== note.id) return false
-          // Normalize only fields still equal to what was submitted. Later typing
-          // remains the draft and is persisted by the next iteration.
-          if (titleRef.current === title) titleRef.current = updated.title
-          if (contentRef.current === content) contentRef.current = updated.content
-          if (folderRef.current === folder) folderRef.current = updated.folder
-          setCurrentNote(updated)
-        }
-        return false
-      } catch (err) {
-        if (editingRef.current?.id === note.id) {
-          setError(err instanceof Error ? err.message : String(err))
-        }
-        return false
-      }
-    })().finally(() => {
-      if (saveFlightRef.current?.promise === promise) saveFlightRef.current = null
-      if (editingRef.current?.id === note.id) setSaving(false)
-    })
-    saveFlightRef.current = { id: note.id, promise }
-    return promise
-  }, [setCurrentNote])
-
-  const scheduleSave = useCallback(() => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
+    try {
+      const note = await api.notesRead(id)
+      if (!noteNavigationCurrent(request)) return
+      showNote(note)
+    } catch (err) {
+      if (!noteNavigationCurrent(request)) return
+      setError(err instanceof Error ? err.message : String(err))
     }
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = null
-      void flushSave()
-    }, SAVE_DEBOUNCE_MS)
-  }, [flushSave])
-
-  /** 编辑器回传：正文只落 ref + 防抖保存；字数计数节流刷新，不逐字触发重渲染。 */
-  const onEditorChange = useCallback(
-    (markdown: string) => {
-      contentRef.current = markdown
-      scheduleSave()
-      if (!countTimerRef.current) {
-        countTimerRef.current = setTimeout(() => {
-          countTimerRef.current = null
-          setCharCount(contentRef.current.length)
-        }, 400)
-      }
-    },
-    [scheduleSave],
-  )
-
-  const openNote = useCallback(
-    async (id: string) => {
-      if (!await flushSave()) return
-      setError('')
-      try {
-        const note = await api.notesRead(id)
-        setCurrentNote(note)
-        titleRef.current = note.title
-        contentRef.current = note.content
-        folderRef.current = note.folder
-        setCharCount(note.content.length)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-      }
-    },
-    [flushSave, setCurrentNote],
-  )
+  }, [])
 
   const backToList = useCallback(async () => {
-    if (!await flushSave()) return
-    setCurrentNote(null)
-    titleRef.current = ''
-    folderRef.current = ''
-    contentRef.current = ''
+    const request = claimNoteNavigation()
+    const session = noteDraftStore.getSnapshot().session
+    flushMarkdownRef.current?.()
+    if (!await flushNoteDraft()) return
+    if (!noteNavigationCurrent(request)) return
+    if (noteDraftStore.getSnapshot().session !== session) return
+    discardNoteDraft()
     void loadNotes()
-  }, [flushSave, loadNotes, setCurrentNote])
+  }, [loadNotes])
 
   const createNote = useCallback(async () => {
+    const request = claimNoteNavigation()
+    const session = noteDraftStore.getSnapshot().session
+    flushMarkdownRef.current?.()
+    if (!await flushNoteDraft()) return
+    if (!noteNavigationCurrent(request)) return
+    if (noteDraftStore.getSnapshot().session !== session) return
     setError('')
     // 库内新建归入当前文件夹；其他视图归库根。手动笔记一律 origin=user。
     const folder = tab === 'library' && currentFolder ? currentFolder : ''
     try {
       const note = await api.notesCreate('', '', folder, 'user')
+      if (!noteNavigationCurrent(request)) return
       await loadNotes()
-      setCurrentNote(note)
-      titleRef.current = note.title
-      contentRef.current = note.content
-      folderRef.current = note.folder
-      setCharCount(0)
+      if (!noteNavigationCurrent(request)) return
+      showNote(note)
     } catch (err) {
+      if (!noteNavigationCurrent(request)) return
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [loadNotes, tab, currentFolder, setCurrentNote])
+  }, [loadNotes, tab, currentFolder])
 
   const deleteNote = useCallback(
     async (id: string) => {
@@ -347,19 +327,13 @@ export function NotesCenter() {
       if (!ok) return
       setError('')
       try {
-        await api.notesDelete(id)
-        if (editing?.id === id) {
-          setCurrentNote(null)
-          titleRef.current = ''
-          folderRef.current = ''
-          contentRef.current = ''
-        }
+        await settleNoteDelete(id, () => api.notesDelete(id))
         setNotes((prev) => prev.filter((n) => n.id !== id))
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
     },
-    [editing?.id, notes, t, setCurrentNote],
+    [notes, t],
   )
 
   /* ===== 文件夹管理（用原生 prompt/confirm，不做自定义弹窗） ===== */
@@ -469,12 +443,11 @@ export function NotesCenter() {
           </div>
 
           <input
-            key={editing.id}
+            key={`${editing.id}:${draft.session}`}
             type="text"
-            defaultValue={editing.title}
+            defaultValue={draft.title}
             onChange={(e) => {
-              titleRef.current = e.target.value
-              scheduleSave()
+              editNoteDraft({ title: e.target.value })
             }}
             placeholder={t.chatNotesUntitled}
             className="mt-5 w-full shrink-0 bg-transparent text-[26px] font-semibold tracking-normal text-neutral-950 placeholder:text-neutral-300 focus:outline-none dark:text-neutral-50 dark:placeholder:text-neutral-600"
@@ -496,15 +469,16 @@ export function NotesCenter() {
 
           <div className="custom-scrollbar mt-3 min-h-0 flex-1 overflow-y-auto">
             <MilkdownNoteEditor
-              key={editing.id}
-              initialMarkdown={editing.content}
+              key={`${editing.id}:${draft.session}`}
+              initialMarkdown={draft.content}
               onChange={onEditorChange}
+              flushMarkdownRef={flushMarkdownRef}
             />
           </div>
 
-          {error && (
+          {(draft.error || error) && (
             <div className="mt-3 shrink-0 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-              {error}
+              {draft.error || error}
             </div>
           )}
         </div>
@@ -776,7 +750,7 @@ export function NotesCenter() {
                                       className="kv-menu-item"
                                       onClick={() => void moveNoteToFolder(note.id, '')}
                                     >
-                                      {note.folder.trim() === '' && <Check size={12} className="text-[#2f6ff0]" />}
+                                      {note.folder.trim() === '' && <Check size={12} className="text-accent" />}
                                       <span className={note.folder.trim() === '' ? '' : 'ml-[18px]'}>{t.chatNotesLibraryRoot}</span>
                                     </button>
                                     {folders.map((f) => (
@@ -786,7 +760,7 @@ export function NotesCenter() {
                                         className="kv-menu-item truncate"
                                         onClick={() => void moveNoteToFolder(note.id, f)}
                                       >
-                                        {note.folder.trim() === f && <Check size={12} className="text-[#2f6ff0]" />}
+                                        {note.folder.trim() === f && <Check size={12} className="text-accent" />}
                                         <span className={`truncate ${note.folder.trim() === f ? '' : 'ml-[18px]'}`}>{f}</span>
                                       </button>
                                     ))}
@@ -853,7 +827,7 @@ export function NotesCenter() {
 
       {folderDialog && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/30 px-4"
           onMouseDown={() => setFolderDialog(null)}
         >
           <div
@@ -875,7 +849,7 @@ export function NotesCenter() {
                 if (e.key === 'Escape') setFolderDialog(null)
               }}
               placeholder={t.chatNotesFolderNamePlaceholder}
-              className="mt-3 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-[13px] text-neutral-900 outline-none focus:border-[#2f6ff0] dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-100"
+              className="mt-3 w-full rounded-lg border border-neutral-300 bg-neutral-50 px-3 py-2 text-[13px] text-neutral-900 outline-none focus:border-accent dark:border-neutral-600"
             />
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setFolderDialog(null)}>

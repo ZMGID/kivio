@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { externalCliSettingsApi, type PiExtensionInventory } from '../api/externalCliSettings'
 import { PiExtensionsSettings } from './PiExtensionsSettings'
+import { resetPiExtensionsOperationState } from './piExtensionsOperation'
 import { open } from '@tauri-apps/plugin-dialog'
 
 vi.mock('../api/externalCliSettings', () => ({
@@ -69,8 +70,16 @@ const inventory: PiExtensionInventory = {
   ],
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
+
 describe('PiExtensionsSettings', () => {
   beforeEach(() => {
+    resetPiExtensionsOperationState()
     vi.mocked(externalCliSettingsApi.piExtensionsInventory).mockReset()
     vi.mocked(externalCliSettingsApi.piExtensionSetEnabled).mockReset()
     vi.mocked(externalCliSettingsApi.piExtensionInstall).mockReset()
@@ -143,5 +152,120 @@ describe('PiExtensionsSettings', () => {
     expect(screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')).toHaveValue(
       'C:\\packages\\demo',
     )
+  })
+
+  it('starts an install once and restores a failure with the draft source after leaving', async () => {
+    const gate = deferred<{ output: string }>()
+    vi.mocked(externalCliSettingsApi.piExtensionInstall).mockReturnValue(gate.promise)
+    let view = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    await screen.findByText('pi-mcp-adapter')
+    const source = screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')
+    const search = screen.getByPlaceholderText('搜索扩展或来源')
+    fireEvent.change(source, { target: { value: 'npm:draft-extension' } })
+    fireEvent.change(search, { target: { value: 'mcp' } })
+    const install = screen.getByRole('button', { name: '安装' })
+    await act(async () => {
+      install.click()
+      install.click()
+    })
+    expect(externalCliSettingsApi.piExtensionInstall).toHaveBeenCalledOnce()
+    expect(externalCliSettingsApi.piExtensionInstall).toHaveBeenCalledWith('npm:draft-extension')
+    expect(screen.getByRole('button', { name: '安装中…' })).toBeDisabled()
+
+    view.unmount()
+    view = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '安装中…' })).toBeDisabled()
+    expect(screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')).toHaveValue('npm:draft-extension')
+    expect(screen.getByPlaceholderText('搜索扩展或来源')).toHaveValue('mcp')
+    view.unmount()
+
+    await act(async () => { gate.reject(new Error('registry down')) })
+    render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('registry down')
+    expect(screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')).toHaveValue('npm:draft-extension')
+    expect(screen.getByPlaceholderText('搜索扩展或来源')).toHaveValue('mcp')
+    expect(externalCliSettingsApi.piExtensionInstall).toHaveBeenCalledOnce()
+  })
+
+  it('restores an in-flight update and the refreshed inventory after the page is gone', async () => {
+    const gate = deferred<{ output: string }>()
+    const refreshed: PiExtensionInventory = {
+      ...inventory,
+      packages: [
+        ...inventory.packages,
+        { ...inventory.packages[0], source: 'npm:fresh-pack', name: 'fresh-pack' },
+      ],
+    }
+    let refresh = false
+    vi.mocked(externalCliSettingsApi.piExtensionUpdate).mockReturnValue(gate.promise)
+    vi.mocked(externalCliSettingsApi.piExtensionsInventory).mockImplementation(async () => (
+      refresh ? refreshed : inventory
+    ))
+    let view = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    await screen.findByText('pi-mcp-adapter')
+    fireEvent.click(screen.getByRole('button', { name: '全部更新' }))
+    await waitFor(() => expect(externalCliSettingsApi.piExtensionUpdate).toHaveBeenCalledOnce())
+    expect(screen.getByRole('button', { name: '更新中…' })).toBeDisabled()
+    view.unmount()
+
+    view = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '更新中…' })).toBeDisabled()
+    view.unmount()
+
+    refresh = true
+    await act(async () => { gate.resolve({ output: 'updated all' }) })
+    render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    expect(await screen.findByText('updated all')).toBeInTheDocument()
+    expect(screen.getByText('fresh-pack')).toBeInTheDocument()
+    expect(externalCliSettingsApi.piExtensionUpdate).toHaveBeenCalledOnce()
+  })
+
+  it('restores a package removal failure that finishes while the page is gone', async () => {
+    vi.stubGlobal('confirm', () => true)
+    const gate = deferred<{ output: string }>()
+    vi.mocked(externalCliSettingsApi.piExtensionRemove).mockReturnValue(gate.promise)
+    const view = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    const row = (await screen.findByText('pi-mcp-adapter')).closest<HTMLElement>('.kv-row')!
+    fireEvent.click(within(row).getByRole('button', { name: '卸载 Package' }))
+    await waitFor(() => {
+      expect(externalCliSettingsApi.piExtensionRemove).toHaveBeenCalledWith('npm:pi-mcp-adapter')
+    })
+    view.unmount()
+    await act(async () => { gate.reject(new Error('package is locked')) })
+    render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('package is locked')
+    expect(externalCliSettingsApi.piExtensionRemove).toHaveBeenCalledOnce()
+  })
+  it('does not let a retired folder picker replace a source typed after returning', async () => {
+    const picker = deferred<string | null>()
+    vi.mocked(open).mockReturnValue(picker.promise)
+    const first = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    await screen.findByText('pi-mcp-adapter')
+    fireEvent.click(screen.getByRole('button', { name: '选择本地 Package 目录' }))
+    first.unmount()
+    render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    const source = screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')
+    fireEvent.change(source, { target: { value: 'npm:new-source' } })
+    await act(async () => { picker.resolve('/retired/package'); await picker.promise })
+    expect(source).toHaveValue('npm:new-source')
+  })
+
+  it.each(['unchanged', 'replacement'])('clears only the submitted source after a successful install with %s input', async (input) => {
+    const gate = deferred<{ output: string }>()
+    vi.mocked(externalCliSettingsApi.piExtensionInstall).mockReturnValue(gate.promise)
+    const first = render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    await screen.findByText('pi-mcp-adapter')
+    fireEvent.change(screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径'), { target: { value: 'npm:submitted' } })
+    fireEvent.click(screen.getByRole('button', { name: '安装' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '安装中…' })).toBeDisabled())
+    first.unmount()
+    render(<PiExtensionsSettings lang="zh" onBack={vi.fn()} />)
+    const source = screen.getByPlaceholderText('npm:包名、git:仓库地址或本地路径')
+    if (input === 'replacement') fireEvent.change(source, { target: { value: 'npm:new-draft' } })
+    await act(async () => { gate.resolve({ output: 'installed submitted' }) })
+    expect(source).toHaveValue(input === 'replacement' ? 'npm:new-draft' : '')
+    expect(await screen.findByText('installed submitted')).toBeInTheDocument()
+    if (input === 'replacement') expect(screen.getByRole('button', { name: '安装' })).toBeEnabled()
+    else expect(screen.getByRole('button', { name: '安装' })).toBeDisabled()
   })
 })

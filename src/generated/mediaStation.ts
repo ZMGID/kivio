@@ -13,3 +13,7 @@ export type MediaJob = { id: string, createdAt: number, request: MediaRequest, s
  * accepts the paid request so an interrupted or abandoned wait can fetch the result later.
  */
 providerTaskId?: string, };
+
+export type MediaDeleteFailure = { id: string, error: string, };
+
+export type MediaDeleteResult = { deletedIds: Array<string>, failures: Array<MediaDeleteFailure>, };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   ArrowLeft,
   BookOpen,
@@ -26,6 +26,18 @@ import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
 import type { ChatAssistant, SkillMeta } from './types'
 import { confirmDialog } from '../components/dialogQueue'
+import { useWindowStore } from '../utils/windowStore'
+import {
+  abandonAssistantEdit,
+  assistantDraftStore,
+  assistantSaveLanded,
+  beginAssistantEdit,
+  blockAssistantSave,
+  forgetAssistantLanding,
+  joinAssistantSave,
+  saveAssistantDraft,
+  updateAssistantDraft,
+} from './assistantDraftStore'
 
 interface AssistantCenterProps {
   skills: SkillMeta[]
@@ -61,38 +73,6 @@ function toggleId(list: string[], id: string): string[] {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
 }
 
-function normalizeStringList(values?: string[], limit = 64): string[] {
-  const out: string[] = []
-  for (const value of values ?? []) {
-    const item = value.trim()
-    if (!item || out.includes(item)) continue
-    out.push(item)
-    if (out.length >= limit) break
-  }
-  return out
-}
-
-function normalizeAssistantForDraft(assistant: ChatAssistant): AssistantDraft {
-  return {
-    ...assistant,
-    description: assistant.description ?? '',
-    icon: assistant.icon ?? 'bot',
-    color: assistant.color ?? '#6A8FBD',
-    source: assistant.source ?? (assistant.built_in ?? assistant.builtIn ? 'builtin' : 'user'),
-    system_prompt: assistant.system_prompt ?? assistant.systemPrompt ?? '',
-    provider_id: assistant.provider_id ?? assistant.providerId ?? '',
-    model: assistant.model ?? '',
-    mcp_server_ids: assistantMcpIds(assistant),
-    skill_ids: assistantSkillIds(assistant),
-    enabled: assistant.enabled ?? true,
-    installed: assistant.installed ?? true,
-    archived: assistant.archived ?? false,
-    built_in: assistant.built_in ?? assistant.builtIn ?? false,
-    created_at: assistant.created_at ?? assistant.createdAt ?? nowSeconds(),
-    updated_at: assistant.updated_at ?? assistant.updatedAt ?? nowSeconds(),
-  }
-}
-
 function createBlankAssistant(): AssistantDraft {
   const now = nowSeconds()
   return {
@@ -113,28 +93,6 @@ function createBlankAssistant(): AssistantDraft {
     built_in: false,
     created_at: now,
     updated_at: now,
-  }
-}
-
-function draftPayload(draft: AssistantDraft): ChatAssistant {
-  return {
-    ...draft,
-    name: draft.name.trim(),
-    description: draft.description?.trim() ?? '',
-    icon: draft.icon?.trim() || 'bot',
-    color: draft.color?.trim() || '#6A8FBD',
-    source: draft.source || (draft.built_in ?? draft.builtIn ? 'builtin' : 'user'),
-    system_prompt: (draft.system_prompt ?? draft.systemPrompt ?? '').trim(),
-    provider_id: (draft.provider_id ?? draft.providerId ?? '').trim(),
-    model: draft.provider_id ? (draft.model ?? '').trim() : '',
-    mcp_server_ids: normalizeStringList(assistantMcpIds(draft)),
-    skill_ids: normalizeStringList(assistantSkillIds(draft)),
-    enabled: draft.enabled ?? true,
-    installed: draft.installed ?? true,
-    archived: false,
-    built_in: draft.built_in ?? draft.builtIn ?? false,
-    created_at: draft.created_at,
-    updated_at: nowSeconds(),
   }
 }
 
@@ -267,17 +225,30 @@ export function AssistantCenter({
   onApplyAssistant,
 }: AssistantCenterProps) {
   const t = useT()
+  const [session] = useWindowStore(assistantDraftStore)
   const [assistants, setAssistants] = useState<ChatAssistant[]>([])
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const [mcpServers, setMcpServers] = useState<Array<{ id: string; name: string }>>([])
-  const [selectedId, setSelectedId] = useState<string | null>(currentAssistantId ?? null)
-  const [draft, setDraft] = useState<AssistantDraft | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => assistantDraftStore.getSnapshot().draft?.id ?? currentAssistantId ?? null,
+  )
   const [query, setQuery] = useState('')
-  const [view, setView] = useState<CenterView>('list')
+  const [localView, setView] = useState<CenterView>('list')
   const [tab, setTab] = useState<SuiteTab>('installed')
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const navigation = useRef({ selectedId, localView })
+  navigation.current = { selectedId, localView }
+  const draft = session.draft
+  const saving = session.status === 'saving' || working
+  const view: CenterView = session.editing ? 'edit' : localView === 'edit' ? 'list' : localView
+  const bannerError = (session.editing ? session.error : '') || error
 
   const loadAssistants = useCallback(async (preferredId?: string | null) => {
     setLoading(true)
@@ -285,10 +256,14 @@ export function AssistantCenter({
     try {
       const data = await chatApi.getAssistants()
       setAssistants(data)
+      const open = assistantDraftStore.getSnapshot()
+      if (open.editing && open.draft) {
+        setSelectedId(open.draft.id)
+        return
+      }
       const nextSelectedId = preferredId ?? currentAssistantId ?? data[0]?.id ?? null
       const selected = data.find((assistant) => assistant.id === nextSelectedId) ?? null
       setSelectedId(selected?.id ?? null)
-      setDraft(selected ? normalizeAssistantForDraft(selected) : null)
     } catch (err) {
       setError(typeof err === 'string' ? err : (err as Error).message || t.chatAssistantLoadFailed)
     } finally {
@@ -353,88 +328,128 @@ export function AssistantCenter({
   const installedCount = assistants.filter((assistant) => assistant.installed !== false).length
 
   const updateDraft = <K extends keyof AssistantDraft>(key: K, value: AssistantDraft[K]) => {
-    setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
+    updateAssistantDraft((prev) => ({ ...prev, [key]: value }))
   }
 
   const openDetail = (assistant: ChatAssistant) => {
     setSelectedId(assistant.id)
-    setDraft(normalizeAssistantForDraft(assistant))
     setView('detail')
     setError('')
   }
 
   const handleCreate = () => {
     const blank = createBlankAssistant()
-    setSelectedId(null)
-    setDraft(blank)
-    setView('edit')
+    beginAssistantEdit(blank, false)
+    setSelectedId(blank.id)
     setError('')
   }
 
+  const leaveEditIfSettled = (saved: ChatAssistant | null, editingSession: number) => {
+    if (!saved || !mounted.current) return false
+    const snap = assistantDraftStore.getSnapshot()
+    if (snap.session !== editingSession || snap.draft?.id !== saved.id || !snap.editing || snap.status === 'error' || snap.revision !== snap.acknowledgedRevision) return false
+    abandonAssistantEdit()
+    setSelectedId(saved.id)
+    return true
+  }
+
   const saveDraft = async (): Promise<ChatAssistant | null> => {
-    if (!draft) return null
-    const payload = draftPayload(draft)
-    if (!payload.name) {
-      setError(t.chatAssistantNameRequired)
-      return null
-    }
-    setSaving(true)
-    setError('')
-    try {
-      const exists = assistants.some((assistant) => assistant.id === payload.id)
-      const saved = exists
-        ? await chatApi.updateAssistant(payload)
-        : await chatApi.createAssistant(payload)
-      await loadAssistants(saved.id)
-      setSelectedId(saved.id)
-      setDraft(normalizeAssistantForDraft(saved))
-      return saved
-    } catch (err) {
-      setError(typeof err === 'string' ? err : (err as Error).message || t.chatAssistantSaveFailed)
-      return null
-    } finally {
-      setSaving(false)
-    }
+    const editingSession = assistantDraftStore.getSnapshot().session
+    const saved = await saveAssistantDraft(t.chatAssistantNameRequired)
+    if (!saved || !mounted.current || assistantDraftStore.getSnapshot().session !== editingSession) return null
+    if (assistantDraftStore.getSnapshot().editing) await loadAssistants(saved.id)
+    const snap = assistantDraftStore.getSnapshot()
+    if (!mounted.current || snap.session !== editingSession || snap.status === 'error' || (snap.editing && snap.revision !== snap.acknowledgedRevision)) return null
+    return saved
   }
 
   const handleDuplicate = async (assistant?: ChatAssistant | null) => {
     const target = assistant ?? draft
     if (!target || !assistants.some((item) => item.id === target.id)) return
-    setSaving(true)
+    const editingSession = assistantDraftStore.getSnapshot().session
+    const originSelectedId = navigation.current.selectedId
+    const originView = navigation.current.localView
+    const navigationHeld = () => {
+      const place = navigation.current
+      return mounted.current
+        && assistantDraftStore.getSnapshot().session === editingSession
+        && place.selectedId === originSelectedId
+        && place.localView === originView
+    }
+    setWorking(true)
     setError('')
     try {
       const copy = await chatApi.duplicateAssistant(target.id)
-      await loadAssistants(copy.id)
+      if (!mounted.current) return
+      const data = await chatApi.getAssistants()
+      if (!mounted.current) return
+      setAssistants(data)
+      if (!navigationHeld()) return
       setSelectedId(copy.id)
-      setDraft(normalizeAssistantForDraft(copy))
-      setView('edit')
+      beginAssistantEdit(copy, true)
     } catch (err) {
+      if (!mounted.current) return
       setError(typeof err === 'string' ? err : (err as Error).message || t.chatAssistantDuplicateFailed)
     } finally {
-      setSaving(false)
+      if (mounted.current) setWorking(false)
     }
   }
 
   const handleDelete = async () => {
-    if (!draft) return
-    const exists = assistants.some((assistant) => assistant.id === draft.id)
+    const current = assistantDraftStore.getSnapshot().draft
+    if (!current) return
+    const capturedId = current.id
+    const editingSession = assistantDraftStore.getSnapshot().session
+    const ownsEdit = () => {
+      if (!mounted.current) return false
+      const snap = assistantDraftStore.getSnapshot()
+      return snap.editing && snap.session === editingSession && snap.draft?.id === capturedId
+    }
+    const exists = assistants.some((assistant) => assistant.id === capturedId) || assistantSaveLanded(capturedId)
     if (!exists) {
-      setDraft(null)
-      setSelectedId(null)
-      setView('list')
+      const release = blockAssistantSave(capturedId)
+      try {
+        await joinAssistantSave(capturedId)
+        if (assistantSaveLanded(capturedId)) {
+          await chatApi.deleteAssistant(capturedId)
+          forgetAssistantLanding(capturedId)
+        }
+        if (!ownsEdit()) return
+        abandonAssistantEdit()
+        setSelectedId(null)
+        setView('list')
+      } catch (err) {
+        if (!mounted.current) return
+        setError(typeof err === 'string' ? err : (err as Error).message || t.chatAssistantDeleteFailed)
+      } finally {
+        release()
+      }
       return
     }
-    if (!(await confirmDialog({ message: t.chatAssistantDeleteConfirm.replace('{name}', () => draft.name), confirmLabel: t.dialogDelete, danger: true }))) return
-    setSaving(true)
-    setError('')
+    if (!(await confirmDialog({ message: t.chatAssistantDeleteConfirm.replace('{name}', () => current.name), confirmLabel: t.dialogDelete, danger: true }))) return
+    const release = blockAssistantSave(capturedId)
     try {
-      await chatApi.deleteAssistant(draft.id)
+      if (mounted.current) setError('')
+      await joinAssistantSave(capturedId)
+      await chatApi.deleteAssistant(capturedId)
+      forgetAssistantLanding(capturedId)
+      if (!mounted.current) return
+      if (!ownsEdit()) {
+        const data = await chatApi.getAssistants()
+        if (!mounted.current) return
+        setAssistants(data)
+        return
+      }
+      abandonAssistantEdit()
+      const leftSession = assistantDraftStore.getSnapshot().session
       await loadAssistants(null)
+      if (!mounted.current || assistantDraftStore.getSnapshot().session !== leftSession) return
       setView('list')
     } catch (err) {
+      if (!mounted.current) return
       setError(typeof err === 'string' ? err : (err as Error).message || t.chatAssistantDeleteFailed)
     } finally {
-      setSaving(false)
+      release()
     }
   }
 
@@ -443,8 +458,9 @@ export function AssistantCenter({
       onStartAssistantChat(assistant)
       return
     }
+    const editingSession = assistantDraftStore.getSnapshot().session
     const saved = await saveDraft()
-    if (saved) onStartAssistantChat(saved)
+    if (saved && leaveEditIfSettled(saved, editingSession)) onStartAssistantChat(saved)
   }
 
   const handleApplyAssistant = async (assistant?: ChatAssistant | null) => {
@@ -501,7 +517,7 @@ export function AssistantCenter({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t.chatAssistantSearch}
-            className="h-10 w-full rounded-md border border-neutral-200 bg-white pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
             data-tauri-drag-region="false"
           />
         </div>
@@ -607,8 +623,8 @@ export function AssistantCenter({
             )}
             <Button
               onClick={() => {
-                setDraft(normalizeAssistantForDraft(assistant))
-                setView('edit')
+                beginAssistantEdit(assistant, true)
+                setSelectedId(assistant.id)
               }}
             >
               <Pencil size={15} />
@@ -692,7 +708,10 @@ export function AssistantCenter({
           <div className="flex min-w-0 items-center gap-3">
             <IconButton
               size="md"
-              onClick={() => setView(selectedAssistant ? 'detail' : 'list')}
+              onClick={() => {
+                abandonAssistantEdit()
+                setView(selectedAssistant ? 'detail' : 'list')
+              }}
               label={t.chatAssistantBack}
             >
               <ArrowLeft size={18} />
@@ -709,7 +728,7 @@ export function AssistantCenter({
               size="sm"
               variant="danger"
               onClick={() => void handleDelete()}
-              disabled={saving}
+              disabled={working}
               label={t.chatAssistantDeleteTitle}
               title={t.chatDelete}
             >
@@ -717,9 +736,12 @@ export function AssistantCenter({
             </IconButton>
             <Button
               variant="ghost"
-              onClick={() => void saveDraft().then((saved) => {
-                if (saved) setView('detail')
-              })}
+              onClick={() => {
+                const editingSession = assistantDraftStore.getSnapshot().session
+                void saveDraft().then((saved) => {
+                  if (leaveEditIfSettled(saved, editingSession)) setView('detail')
+                })
+              }}
               disabled={saving}
             >
               <Save size={15} />
@@ -745,7 +767,7 @@ export function AssistantCenter({
                   type="text"
                   value={draft.icon ?? ''}
                   onChange={(event) => updateDraft('icon', event.target.value)}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[13px] outline-none focus:border-neutral-300 text-neutral-900"
                 />
               </label>
               <label className="block">
@@ -754,7 +776,7 @@ export function AssistantCenter({
                   type="text"
                   value={draft.name}
                   onChange={(event) => updateDraft('name', event.target.value)}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-[15px] font-medium outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[15px] font-medium outline-none focus:border-neutral-300 text-neutral-900"
                 />
               </label>
             </div>
@@ -764,7 +786,7 @@ export function AssistantCenter({
                 type="text"
                 value={draft.description ?? ''}
                 onChange={(event) => updateDraft('description', event.target.value)}
-                className="h-10 w-full rounded-md border border-neutral-200 bg-white px-3 text-[13px] outline-none focus:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[13px] outline-none focus:border-neutral-300 text-neutral-900"
               />
             </label>
             <label className="block">
@@ -924,9 +946,9 @@ export function AssistantCenter({
               </div>
             </header>
 
-            {error && (
+            {bannerError && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-                {error}
+                {bannerError}
               </div>
             )}
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Play, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
 import type { I18n, Lang } from '../components/i18n'
@@ -343,30 +343,51 @@ function TinyfishMcpAuthRow({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const generation = useRef(0)
+  const attempt = useRef<AbortController | null>(null)
   const authorized = (auth?.accessToken ?? '').trim() !== ''
   const account = auth?.account?.trim()
 
+  // Leaving this row cancels the window's connector OAuth flow. connectorOauthConnect
+  // aborts via connector_oauth_cancel; a late server must not be written back.
+  useEffect(() => () => {
+    generation.current += 1
+    attempt.current?.abort()
+    attempt.current = null
+  }, [])
+
   const authorize = useCallback(async () => {
+    if (attempt.current) return
     const endpoint = url.trim() || 'https://agent.tinyfish.ai/mcp'
+    const run = generation.current + 1
+    generation.current = run
+    const controller = new AbortController()
+    attempt.current = controller
     setError(null)
     setBusy(true)
     try {
       const server = await api.connectorOauthConnect({
         url: endpoint,
         name: 'TinyFish MCP',
-      })
+      }, undefined, controller.signal)
+      if (generation.current !== run || controller.signal.aborted) return
       const next = server.auth?.accessToken?.trim()
         ? server.auth
         : authFromOauthHeader(server.headers)
+      if (generation.current !== run || controller.signal.aborted) return
       if (!next) {
         setError(t.webSearchTinyfishMcpAuthFailed)
         return
       }
       onChange(next)
     } catch (err) {
-      setError(String(err))
+      if (generation.current !== run || controller.signal.aborted) return
+      const message = err instanceof Error ? err.message : String(err)
+      if (message.includes('OAUTH_CANCELLED')) return
+      setError(message)
     } finally {
-      setBusy(false)
+      if (attempt.current === controller) attempt.current = null
+      if (generation.current === run) setBusy(false)
     }
   }, [onChange, t.webSearchTinyfishMcpAuthFailed, url])
 

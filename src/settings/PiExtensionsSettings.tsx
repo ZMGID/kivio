@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   ArrowLeft,
   Download,
@@ -12,7 +12,6 @@ import {
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   externalCliSettingsApi as piExtensionsSettingsApi,
-  type PiExtensionInventory,
   type PiExtensionPackage,
   type PiLocalExtension,
 } from '../api/externalCliSettings'
@@ -20,74 +19,51 @@ import { Button, IconButton } from '../components/Button'
 import { Input, Toggle } from './components'
 import { i18n, type Lang } from '../components/i18n'
 import { confirmDialog } from '../components/dialogQueue'
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message
-  if (typeof error === 'string' && error.trim()) return error
-  return String(error)
-}
+import {
+  refreshPiExtensionsNow,
+  refreshPiExtensionsOnVisit,
+  runPiExtensionAction,
+  usePiExtensionsOperation,
+} from './piExtensionsOperation'
 
 export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () => void }) {
   const t = i18n[lang]
-  const [inventory, setInventory] = useState<PiExtensionInventory | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [source, setSource] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
-  const [result, setResult] = useState<string | null>(null)
-
-  const reload = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      setInventory(await piExtensionsSettingsApi.piExtensionsInventory())
-    } catch (nextError) {
-      setError(errorMessage(nextError))
-      setInventory(null)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
-
-  const runAction = async (key: string, action: () => Promise<{ output?: string } | void>) => {
-    setBusy(key)
-    setResult(null)
-    setError(null)
-    try {
-      const next = await action()
-      const output =
-        next && 'output' in next && typeof next.output === 'string' ? next.output.trim() : ''
-      setResult(output || t.externalAgentsPiExtensionsCommandDone)
-      await reload()
-    } catch (nextError) {
-      setError(errorMessage(nextError))
-    } finally {
-      setBusy(null)
-    }
+  const [{ inventory, loading, error, query, source, busy, result }, setOperation] = usePiExtensionsOperation()
+  const pickerGeneration = useRef(0)
+  const setQuery = (value: string) => setOperation((current) => ({ ...current, query: value }))
+  const setSource = (value: string) => {
+    pickerGeneration.current += 1
+    setOperation((current) => ({ ...current, source: value }))
   }
 
-  const install = async () => {
+  useEffect(() => {
+    void refreshPiExtensionsOnVisit()
+    return () => { pickerGeneration.current += 1 }
+  }, [])
+
+  const reload = () => refreshPiExtensionsNow()
+  const runAction = (key: string, action: () => Promise<{ output?: string } | void>) =>
+    runPiExtensionAction(key, action, t.externalAgentsPiExtensionsCommandDone)
+
+  const install = () => {
     const value = source.trim()
-    if (!value) return
-    await runAction('install', async () => {
-      const response = await piExtensionsSettingsApi.piExtensionInstall(value)
-      setSource('')
-      return response
-    })
+    if (!value) return undefined
+    return runPiExtensionAction(
+      'install',
+      () => piExtensionsSettingsApi.piExtensionInstall(value),
+      t.externalAgentsPiExtensionsCommandDone,
+      { clearSource: true },
+    )
   }
 
   const pickLocalPackage = async () => {
+    const request = ++pickerGeneration.current
     const picked = await open({
       multiple: false,
       directory: true,
       defaultPath: inventory?.agentDir,
     })
-    if (typeof picked === 'string') setSource(picked)
+    if (request === pickerGeneration.current && typeof picked === 'string') setSource(picked)
   }
 
   const needle = query.trim().toLowerCase()

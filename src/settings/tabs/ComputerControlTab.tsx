@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FileSpreadsheet, Globe2, Monitor, RefreshCw } from 'lucide-react'
-import { api, type ChatMcpServer, type ChatToolsConfig, type ControlToolStatus, type PluginStatus, type SkillMeta } from '../../api/tauri'
+import { api } from '../../api/tauri'
+import type { ChatMcpServer, ChatToolsConfig, ControlToolStatus, PluginStatus, SkillMeta } from '../../api/tauri'
 import { refreshSettings } from '../../api/settingsCache'
 import { Button } from '../../components/Button'
 import { Toggle } from '../components'
@@ -134,10 +135,80 @@ function detectControls(skillScanPaths: string[]): Promise<ControlDetectionSnaps
   return promise
 }
 
+type ControlOperation = {
+  pending: { tool: Tool; kind: 'install' | 'update' | 'toggle' } | null
+  error: { kind: 'install' | 'update'; detail: string } | null
+  detectionRevision: number
+}
+
+// Installations belong to this window, not to an individual settings-page mount.
+let controlOperation: ControlOperation = { pending: null, error: null, detectionRevision: 0 }
+const operationListeners = new Set<() => void>()
+function subscribeOperation(listener: () => void): () => void {
+  operationListeners.add(listener)
+  return () => { operationListeners.delete(listener) }
+}
+function operationSnapshot(): ControlOperation {
+  return controlOperation
+}
+function publishOperation(next: ControlOperation): void {
+  controlOperation = next
+  for (const listener of operationListeners) listener()
+}
+
+async function runControlOperation(
+  tool: Tool,
+  kind: 'install' | 'update' | 'toggle',
+  paths: string[],
+  work: () => Promise<void>,
+): Promise<void> {
+  if (controlOperation.pending) return
+  publishOperation({ ...controlOperation, pending: { tool, kind }, error: null })
+  try {
+    await work()
+    // A detection begun before installation must not become the final result.
+    if (detectionInFlight) await detectionInFlight.promise
+    if (kind !== 'toggle') await detectControls(paths)
+    publishOperation({ ...controlOperation, detectionRevision: controlOperation.detectionRevision + 1 })
+  } catch (cause) {
+    const detail = typeof cause === 'string' ? cause : cause instanceof Error ? cause.message : ''
+    publishOperation({
+      ...controlOperation,
+      error: { kind: kind === 'install' ? 'install' : 'update', detail },
+    })
+  } finally {
+    publishOperation({ ...controlOperation, pending: null })
+  }
+}
+
+function nativeControlUpdates(current: ChatToolsConfig, tool: NativeTool, id: string, enabled: boolean): Partial<ChatToolsConfig> {
+  const disabled = new Set(current.disabledSkillIds ?? [])
+  if (enabled) disabled.delete(id)
+  else disabled.add(id)
+  return {
+    disabledSkillIds: [...disabled],
+    ...(enabled ? {
+      enabled: true,
+      nativeTools: {
+        ...current.nativeTools,
+        skillRuntime: true,
+        runCommand: true,
+        readFile: true,
+      },
+    } : {}),
+    ...(tool === 'cua' ? {
+      servers: [
+        ...current.servers.filter(server => !isCuaMcp(server)),
+        cuaMcpServer(current.servers.find(isCuaMcp), enabled),
+      ],
+    } : {}),
+  }
+}
+
 export function ComputerControlTab({ lang, tools, onChange }: {
   lang: Lang
   tools: ChatToolsConfig
-  onChange: (updates: Partial<ChatToolsConfig>) => void
+  onChange: (updates: Partial<ChatToolsConfig> | ((current: ChatToolsConfig) => Partial<ChatToolsConfig>)) => void
 }) {
   const zh = lang === 'zh'
   const initialCache = useRef(readDetectionCache(tools.skillScanPaths)).current
@@ -146,9 +217,17 @@ export function ComputerControlTab({ lang, tools, onChange }: {
   const [skills, setSkills] = useState<SkillMeta[]>(initialCache?.skills ?? [])
   const [plugins, setPlugins] = useState<PluginStatus[]>(initialCache?.plugins ?? [])
   const [loading, setLoading] = useState(initialCache === null)
-  const [installing, setInstalling] = useState<Tool | null>(null)
-  const [updating, setUpdating] = useState<NativeTool | null>(null)
-  const [error, setError] = useState('')
+  const operation = useSyncExternalStore(subscribeOperation, operationSnapshot)
+  const appliedRevision = useRef(operation.detectionRevision)
+  const installing = operation.pending?.kind !== 'update' ? operation.pending?.tool ?? null : null
+  const updating = operation.pending?.kind === 'update' ? operation.pending.tool : null
+  const error = operation.error
+    ? operation.error.kind === 'install'
+      ? (zh ? '安装失败，请稍后重试。' : 'Installation failed. Please try again.')
+      : operation.error.detail
+        ? `${zh ? '更新失败' : 'Update failed'}：${operation.error.detail.slice(0, 240)}`
+        : (zh ? '更新失败，请稍后重试。' : 'Update failed. Please try again.')
+    : ''
   const latest = useRef({ tools, onChange })
   const mounted = useRef(false)
   latest.current = { tools, onChange }
@@ -170,94 +249,54 @@ export function ComputerControlTab({ lang, tools, onChange }: {
     return () => { mounted.current = false }
   }, [initialCache, reload])
 
+  useEffect(() => {
+    if (appliedRevision.current === operation.detectionRevision) return
+    appliedRevision.current = operation.detectionRevision
+    const snapshot = readDetectionCache(latest.current.tools.skillScanPaths)
+    if (!snapshot) {
+      void reload(false)
+      return
+    }
+    setVersions(snapshot.versions)
+    setUpdates(snapshot.updates)
+    setSkills(snapshot.skills)
+    setPlugins(snapshot.plugins)
+    setLoading(false)
+  }, [operation.detectionRevision, reload])
+
   const setNativeControlEnabled = (tool: NativeTool, id: string, enabled: boolean) => {
-    const { tools: current, onChange: change } = latest.current
-    const disabled = new Set(current.disabledSkillIds ?? [])
-    if (enabled) disabled.delete(id)
-    else disabled.add(id)
-    const updates: Partial<ChatToolsConfig> = {
-      disabledSkillIds: [...disabled],
-      ...(enabled ? {
-        enabled: true,
-        nativeTools: {
-          ...current.nativeTools,
-          skillRuntime: true,
-          runCommand: true,
-          readFile: true,
-        },
-      } : {}),
-    }
-    if (tool === 'cua') {
-      const existing = current.servers.find(isCuaMcp)
-      updates.servers = [
-        ...current.servers.filter(server => !isCuaMcp(server)),
-        cuaMcpServer(existing, enabled),
-      ]
-    }
-    change(updates)
+    latest.current.onChange(current => nativeControlUpdates(current, tool, id, enabled))
   }
 
-  const install = async (tool: Tool) => {
-    setInstalling(tool)
-    setError('')
-    try {
+  const install = (tool: Tool) => {
+    const paths = [...latest.current.tools.skillScanPaths]
+    return runControlOperation(tool, 'install', paths, async () => {
       if (tool === 'ego-lite' || tool === 'officecli') {
         const result = await api.pluginsRunOfficialInstall(tool)
-        if (!mounted.current) return
-        setPlugins(current => current.map(plugin => plugin.id === result.status.id ? result.status : plugin))
+        updatePluginInDetectionCache(paths, result.status)
         await refreshSettings().catch(() => undefined)
       } else {
         const skill = await api.computerControlInstall(tool)
-        if (!mounted.current) return
         setNativeControlEnabled(tool, skill.id, true)
       }
-      await reload(false)
-    } catch {
-      if (mounted.current) setError(zh ? '安装失败，请稍后重试。' : 'Installation failed. Please try again.')
-    } finally {
-      if (mounted.current) setInstalling(null)
-    }
+    })
   }
 
-  const update = async (tool: NativeTool) => {
-    setUpdating(tool)
-    setError('')
-    try {
+  const update = (tool: NativeTool) => {
+    const paths = [...latest.current.tools.skillScanPaths]
+    return runControlOperation(tool, 'update', paths, async () => {
       const skill = await api.computerControlUpdate(tool)
-      if (!mounted.current) return
       setNativeControlEnabled(tool, skill.id, true)
-      await reload(false)
-    } catch (cause) {
-      console.error('Failed to update computer-control tool:', cause)
-      const detail = typeof cause === 'string'
-        ? cause
-        : cause instanceof Error
-          ? cause.message
-          : ''
-      if (mounted.current) {
-        setError(detail
-          ? `${zh ? '更新失败' : 'Update failed'}：${detail.slice(0, 240)}`
-          : (zh ? '更新失败，请稍后重试。' : 'Update failed. Please try again.'))
-      }
-    } finally {
-      if (mounted.current) setUpdating(null)
-    }
+    })
   }
 
-  const setPluginEnabled = async (id: 'ego-lite' | 'officecli', enabled: boolean) => {
-    setInstalling(id)
-    setError('')
-    try {
+  const setPluginEnabled = (id: 'ego-lite' | 'officecli', enabled: boolean) => {
+    const paths = [...latest.current.tools.skillScanPaths]
+    return runControlOperation(id, 'toggle', paths, async () => {
       const result = await api.pluginsSetEnabled(id, enabled)
-      if (!mounted.current) return
-      setPlugins(current => current.map(plugin => plugin.id === result.status.id ? result.status : plugin))
-      updatePluginInDetectionCache(latest.current.tools.skillScanPaths, result.status)
+      updatePluginInDetectionCache(paths, result.status)
       await refreshSettings().catch(() => undefined)
-    } catch {
-      if (mounted.current) setError(zh ? '更新失败，请稍后重试。' : 'Update failed. Please try again.')
-    } finally {
-      if (mounted.current) setInstalling(null)
-    }
+    })
   }
 
   const runtimeEnabled = tools.enabled
@@ -343,7 +382,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
                     ) : (
                       <Button
                         size="sm"
-                        disabled={installing !== null || (tool.kind === 'plugin' && plugin?.canInstall !== true)}
+                        disabled={installing !== null || updating !== null || (tool.kind === 'plugin' && plugin?.canInstall !== true)}
                         onClick={() => { void install(tool.id) }}
                       >
                         {installing === tool.id && <RefreshCw size={12} className="animate-spin" />}

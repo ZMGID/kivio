@@ -1,16 +1,37 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, type PluginStatus, type SkillMeta } from '../../api/tauri'
-import { ComputerControlTab } from './ComputerControlTab'
+import { api } from '../../api/tauri'
+import type { ChatToolsConfig, PluginStatus, SkillMeta } from '../../api/tauri'
+import type * as TauriModule from '../../api/tauri'
+import type * as ControlTabModule from './ComputerControlTab'
+import type { Lang } from '../../components/i18n'
 import { makeChatToolsFixture } from './testFixtures'
 
-vi.mock('../../api/tauri', async importOriginal => ({
-  ...await importOriginal<typeof import('../../api/tauri')>(),
-  api: {
-    computerControlCheck: vi.fn(), computerControlStatus: vi.fn(), computerControlInstall: vi.fn(), computerControlUpdate: vi.fn(), chatSkillsList: vi.fn(),
-    pluginsList: vi.fn(), pluginsRunOfficialInstall: vi.fn(), pluginsSetEnabled: vi.fn(), openExternal: vi.fn(),
-  },
+const mockedApi = vi.hoisted(() => ({
+  computerControlCheck: vi.fn(), computerControlStatus: vi.fn(), computerControlInstall: vi.fn(), computerControlUpdate: vi.fn(), chatSkillsList: vi.fn(),
+  pluginsList: vi.fn(), pluginsRunOfficialInstall: vi.fn(), pluginsSetEnabled: vi.fn(), openExternal: vi.fn(),
 }))
+vi.mock('../../api/tauri', async importOriginal => ({
+  ...await importOriginal<typeof TauriModule>(),
+  api: mockedApi,
+}))
+let ComputerControlTab: typeof ControlTabModule.ComputerControlTab
+
+function renderControls(initial: ChatToolsConfig, lang: Lang = 'zh') {
+  let current = initial
+  let visible = true
+  const change = (updates: Partial<ChatToolsConfig> | ((tools: ChatToolsConfig) => Partial<ChatToolsConfig>)) => {
+    current = { ...current, ...(typeof updates === 'function' ? updates(current) : updates) }
+    if (visible) view.rerender(<ComputerControlTab lang={lang} tools={current} onChange={change} />)
+  }
+  let view = render(<ComputerControlTab lang={lang} tools={current} onChange={change} />)
+  return {
+    tools: () => current,
+    edit: change,
+    leave() { visible = false; view.unmount() },
+    enter() { visible = true; view = render(<ComputerControlTab lang={lang} tools={current} onChange={change} />) },
+  }
+}
 
 const playwrightSkill = { id: 'playwright-cli', name: 'playwright-cli', source: 'user', description: 'Browser automation', recommendedTools: [] } satisfies SkillMeta
 const cuaSkill = { id: 'cua-driver', name: 'cua-driver', source: 'user', description: 'Desktop automation', recommendedTools: [] } satisfies SkillMeta
@@ -26,7 +47,10 @@ const pluginStatus = (overrides: Partial<PluginStatus>): PluginStatus => ({
 })
 
 describe('ComputerControlTab', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // Each test models a fresh window; a static import would retain its operation owner.
+    vi.resetModules()
+    ;({ ComputerControlTab } = await import('./ComputerControlTab'))
     vi.clearAllMocks()
     window.sessionStorage.clear()
     vi.mocked(api.computerControlStatus).mockImplementation(async tool => {
@@ -59,19 +83,17 @@ describe('ComputerControlTab', () => {
   it('installs and enables the official Skill using current settings', async () => {
     let finish!: (value: SkillMeta) => void
     vi.mocked(api.computerControlInstall).mockReturnValue(new Promise(resolve => { finish = resolve }))
-    const onChange = vi.fn()
     const tools = { ...makeChatToolsFixture(), disabledSkillIds: ['playwright-cli', 'other'] }
-    const { rerender } = render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
+    const controls = renderControls(tools)
     await screen.findAllByText('未安装')
-    fireEvent.click(screen.getAllByRole('button', { name: '安装' })[1])
-    expect(api.computerControlInstall).toHaveBeenCalledWith('playwright')
-    const latest = { ...tools, disabledSkillIds: [...tools.disabledSkillIds, 'newly-disabled'] }
-    rerender(<ComputerControlTab lang="zh" tools={latest} onChange={onChange} />)
-    finish(playwrightSkill)
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      enabled: true, disabledSkillIds: ['other', 'newly-disabled'],
-      nativeTools: expect.objectContaining({ skillRuntime: true, runCommand: true, readFile: true }),
-    })))
+    fireEvent.click(within(screen.getByText('Playwright CLI').closest('.computer-control-row') as HTMLElement).getByRole('button', { name: '安装' }))
+    controls.edit({ disabledSkillIds: [...tools.disabledSkillIds, 'newly-disabled'] })
+    vi.mocked(api.computerControlStatus).mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.0', updateAvailable: false })
+    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [playwrightSkill] })
+    await act(async () => { finish(playwrightSkill) })
+    expect(await screen.findByRole('switch', { name: 'Playwright CLI 控制' })).toBeChecked()
+    expect(controls.tools().disabledSkillIds).toEqual(['other', 'newly-disabled'])
+    expect(controls.tools().nativeTools).toMatchObject({ skillRuntime: true, runCommand: true, readFile: true })
   })
 
   it('surfaces install failure and keeps settings unchanged', async () => {
@@ -89,11 +111,11 @@ describe('ComputerControlTab', () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [playwrightSkill] })
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    const onChange = vi.fn()
-    render(<ComputerControlTab lang="en" tools={tools} onChange={onChange} />)
+    const controls = renderControls(tools, 'en')
     await screen.findByText('v1.0.0 · 1 Skill')
     fireEvent.click(screen.getByRole('switch', { name: 'Playwright CLI control' }))
-    expect(onChange).toHaveBeenCalledWith({ disabledSkillIds: ['playwright-cli'] })
+    expect(screen.getByRole('switch', { name: 'Playwright CLI control' })).not.toBeChecked()
+    expect(controls.tools().disabledSkillIds).toEqual(['playwright-cli'])
   })
 
   it('controls the Cua Skill and MCP together', async () => {
@@ -101,18 +123,14 @@ describe('ComputerControlTab', () => {
     const tools = makeChatToolsFixture()
     tools.enabled = true
     tools.servers = [{ ...cuaMcp, id: 'plugin-cua-driver', connectorId: 'plugin:cua-driver' }]
-    const onChange = vi.fn()
-    render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
+    const controls = renderControls(tools)
     await screen.findByText('v0.28.1 · 1 Skill · 1 MCP')
     fireEvent.click(screen.getByRole('switch', { name: 'Cua Driver 控制' }))
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      disabledSkillIds: ['cua-driver'],
-      servers: [expect.objectContaining({
-        id: 'computer-control-cua-driver',
-        enabled: false,
-        args: ['mcp'],
-      })],
-    }))
+    expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).not.toBeChecked()
+    expect(controls.tools().disabledSkillIds).toContain('cua-driver')
+    expect(controls.tools().servers).toEqual([expect.objectContaining({
+      id: 'computer-control-cua-driver', enabled: false, args: ['mcp'],
+    })])
   })
 
   it('groups ego lite with browsers and OfficeCLI with documents', async () => {
@@ -206,5 +224,83 @@ describe('ComputerControlTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: '更新' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('更新失败：installer exited with code 1')
+  })
+
+  it.each(['install', 'update'] as const)('keeps native %s busy across navigation and refreshes completion while away', async kind => {
+    const oldStatus = { currentVersion: '1.0.0', latestVersion: '1.1.0', updateAvailable: true }
+    vi.mocked(api.computerControlStatus).mockImplementation(async tool => {
+      if (tool === 'cua') return { currentVersion: '0.28.1', latestVersion: '0.28.1', updateAvailable: false }
+      if (kind === 'install') throw new Error('not installed')
+      return oldStatus
+    })
+    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: kind === 'update' ? [playwrightSkill] : [] })
+    let finish!: (skill: SkillMeta) => void
+    const command = kind === 'install' ? api.computerControlInstall : api.computerControlUpdate
+    vi.mocked(command).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const controls = renderControls(makeChatToolsFixture({ disabledSkillIds: ['playwright-cli'] }))
+    const action = kind === 'install' ? '安装' : '更新'
+    const busy = kind === 'install' ? '安装中…' : '更新中…'
+    const row = () => within(screen.getByText('Playwright CLI').closest('.computer-control-row') as HTMLElement)
+    await waitFor(() => expect(row().getByRole('button', { name: action })).toBeEnabled())
+    fireEvent.click(row().getByRole('button', { name: action }))
+    controls.leave()
+    controls.enter()
+    expect(row().getByRole('button', { name: busy })).toBeDisabled()
+    expect(vi.mocked(command).mock.calls).toHaveLength(1)
+    controls.leave()
+    controls.edit({ disabledSkillIds: ['playwright-cli', 'other'], nativeTools: { ...controls.tools().nativeTools, workingDirectory: '/changed-while-away' } })
+    vi.mocked(api.computerControlStatus).mockResolvedValue({ currentVersion: '1.1.0', latestVersion: '1.1.0', updateAvailable: false })
+    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [playwrightSkill] })
+    await act(async () => { finish(playwrightSkill) })
+    await waitFor(() => expect(JSON.parse(window.sessionStorage.getItem('kivio.computer-control.detection.v1')!).versions.playwright).toBe('v1.1.0'))
+    controls.enter()
+    expect(row().getByText('v1.1.0 · 1 Skill')).toBeTruthy()
+    expect(row().getByRole('switch', { name: 'Playwright CLI 控制' })).toBeChecked()
+    expect(row().queryByRole('button', { name: action })).toBeNull()
+    expect(controls.tools().disabledSkillIds).toEqual(['other'])
+    expect(controls.tools().nativeTools.workingDirectory).toBe('/changed-while-away')
+  })
+
+  it('retains an update failure after leaving and allows retry', async () => {
+    vi.mocked(api.computerControlStatus).mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.1.0', updateAvailable: true })
+    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [playwrightSkill] })
+    let reject!: (cause: Error) => void
+    vi.mocked(api.computerControlUpdate).mockReturnValue(new Promise((_, fail) => { reject = fail }))
+    const controls = renderControls(makeChatToolsFixture())
+    const row = () => within(screen.getByText('Playwright CLI').closest('.computer-control-row') as HTMLElement)
+    fireEvent.click(await row().findByRole('button', { name: '更新' }))
+    controls.leave()
+    await act(async () => { reject(new Error('download interrupted')) })
+    controls.enter()
+    expect(await screen.findByRole('alert')).toHaveTextContent('更新失败：download interrupted')
+    expect(row().getByRole('button', { name: '更新' })).toBeEnabled()
+    vi.mocked(api.computerControlUpdate).mockResolvedValue(playwrightSkill)
+    vi.mocked(api.computerControlStatus).mockResolvedValue({ currentVersion: '1.1.0', latestVersion: '1.1.0', updateAvailable: false })
+    fireEvent.click(row().getByRole('button', { name: '更新' }))
+    await waitFor(() => expect(row().queryByRole('button', { name: '更新中…' })).toBeNull())
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(row().getByRole('switch', { name: 'Playwright CLI 控制' })).toBeChecked()
+  })
+
+  it('finishes a plugin installation while away and restores its enabled result', async () => {
+    const missing = pluginStatus({ installed: false, enabled: false, version: '', skillCount: 0 })
+    const installed = pluginStatus({ version: '0.5.0' })
+    vi.mocked(api.pluginsList).mockResolvedValue([missing])
+    let finish!: (value: Awaited<ReturnType<typeof api.pluginsRunOfficialInstall>>) => void
+    vi.mocked(api.pluginsRunOfficialInstall).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const controls = renderControls(makeChatToolsFixture())
+    const row = () => within(screen.getByText('ego lite').closest('.computer-control-row') as HTMLElement)
+    fireEvent.click(await row().findByRole('button', { name: '安装' }))
+    controls.leave()
+    controls.enter()
+    expect(row().getByRole('button', { name: '安装中…' })).toBeDisabled()
+    controls.leave()
+    vi.mocked(api.pluginsList).mockResolvedValue([installed])
+    await act(async () => { finish({ ok: true, message: '', status: installed }) })
+    await waitFor(() => expect(JSON.parse(window.sessionStorage.getItem('kivio.computer-control.detection.v1')!).plugins[0].version).toBe('0.5.0'))
+    controls.enter()
+    expect(row().getByText('v0.5.0 · 1 Skill')).toBeTruthy()
+    expect(row().getByRole('switch', { name: 'ego lite 控制' })).toBeChecked()
+    expect(row().queryByRole('button', { name: '安装' })).toBeNull()
   })
 })

@@ -1,23 +1,38 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
-import { MARKET_CHANGED_EVENT, marketApi, marketplaceApi, type Marketplace, type MarketplacePlugin, type MarketPlugin, type MarketSnapshot } from '../../api/market'
+import { MARKET_CHANGED_EVENT, type Marketplace, type MarketplacePlugin, type MarketPlugin } from '../../api/market'
+import type { PluginPackage } from '../../api/pluginPackages'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
 import { useLang } from '../../components/i18n'
 import { Input, Toggle } from '../../settings/public/controls'
 import { DefaultPluginIcon } from '../../settings/public/icons'
-import { packageApi, type PluginPackage } from '../../api/pluginPackages'
-import { refreshSettings } from '../../api/settingsCache'
 import { DockContextMenu, type DockMenuAnchor } from '../dock/DockContextMenu'
+import { useWindowStore } from '../../utils/windowStore'
 import { PluginImportDialog } from './PluginImportDialog'
 import { MarketplaceDialog } from './MarketplaceDialog'
-import { claudeMarketplaceIcon, marketDetailHash, marketHash, marketPluginIdFromHash, pluginAction, type PluginAction } from './marketModel'
+import { claudeMarketplaceIcon, marketDetailHash, marketHash, marketPluginIdFromHash, pluginAction } from './marketModel'
 import { PluginContents } from './PluginContents'
+import {
+  discardMarketInventoryReads,
+  entryKey,
+  marketWindow,
+  packageKey,
+  refreshMarketInventory,
+  runCatalogPlugin,
+  runInstallEntry,
+  runRemovePackage,
+  runSetEnabled,
+  runTogglePackage,
+  runUninstall,
+  subscribeMarketWindow,
+  type ImportKind,
+  type MarketIntent,
+} from './marketOperations'
 import './market.css'
 
-const EMPTY: MarketSnapshot = { categories: [], plugins: [] }
 /** 离开再回来时保留搜索词与滚动位置。 */
 const viewState = { query: '', scroll: 0 }
 
@@ -42,106 +57,75 @@ function PluginIcon({ plugin, src, size = 'md' }: { plugin?: MarketPlugin; src?:
 export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps) {
   const zh = useLang() === 'zh'
   const text = (cn: string, en: string) => (zh ? cn : en)
-  const [snapshot, setSnapshot] = useState<MarketSnapshot>(EMPTY)
-  const [packages, setPackages] = useState<PluginPackage[]>([])
-  const [packageError, setPackageError] = useState('')
-  const [markets, setMarkets] = useState<Marketplace[]>([])
-  const [marketError, setMarketError] = useState('')
+  const [state] = useWindowStore(marketWindow)
+  const { snapshot, packages, packageError, markets, marketError, loading, loadError, busyIds, actionError } = state
   const [marketDialog, setMarketDialog] = useState<'add' | 'manage' | null>(null)
   const [scope, setScope] = useState<'public' | 'personal'>('public')
   const [addMenu, setAddMenu] = useState<DockMenuAnchor | null>(null)
-  const [importKind, setImportKind] = useState<'local' | 'git' | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState('')
-  const [actionError, setActionError] = useState('')
-  const [busyIds, setBusyIds] = useState<Set<string>>(new Set())
+  const [importKind, setImportKind] = useState<ImportKind | null>(null)
   const [query, setQuery] = useState(viewState.query)
   const [selected, setSelected] = useState(marketPluginIdFromHash)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const locks = useRef(new Set<string>())
   const scroller = useRef<HTMLDivElement>(null)
-  const refreshVersion = useRef(0)
-  const packageVersion = useRef(0)
-  const marketVersion = useRef(0)
-  const mounted = useRef(true)
-
-  const refreshMarkets = useCallback(async () => {
-    const version = ++marketVersion.current
-    try {
-      const next = await marketplaceApi.list()
-      if (version !== marketVersion.current) return
-      setMarkets(next)
-      setMarketError('')
-    } catch (e) { if (version === marketVersion.current) setMarketError(String(e)) }
-  }, [])
-
-  const acceptMarkets = (next: Marketplace[], added: boolean) => {
-    marketVersion.current += 1
-    setMarkets(next)
-    setMarketError('')
-    if (added) { setScope('personal'); setQuery(''); setMarketDialog(null) }
-  }
-
-  const refreshPackages = useCallback(async () => {
-    const version = ++packageVersion.current
-    try {
-      const next = await packageApi.list()
-      if (version !== packageVersion.current) return
-      setPackages(next)
-      setPackageError('')
-    } catch (e) { if (version === packageVersion.current) setPackageError(String(e)) }
-  }, [])
-
-  const applyMutationSnapshot = (next: MarketSnapshot) => {
-    // A completed mutation supersedes reads that started before its result.
-    refreshVersion.current += 1
-    setSnapshot(next)
-    setLoadError('')
-    setLoading(false)
-  }
-
-  const refresh = useCallback(async () => {
-    if (!isTauriRuntime()) {
-      setLoading(false)
-      return
-    }
-    const version = ++refreshVersion.current
-    void refreshPackages()
-    void refreshMarkets()
-    setLoading(true)
-    try {
-      const next = await marketApi.snapshot()
-      if (version !== refreshVersion.current) return
-      setSnapshot(next)
-      setLoadError('')
-    } catch (e) {
-      if (version === refreshVersion.current) setLoadError(String(e))
-    } finally {
-      if (version === refreshVersion.current) setLoading(false)
-    }
-  }, [refreshPackages, refreshMarkets])
+  const surface = useRef({ marketDialog, importKind, onUse, onSkillsChanged })
+  surface.current = { marketDialog, importKind, onUse, onSkillsChanged }
 
   useEffect(() => {
-    mounted.current = true
-    void refresh()
+    const onSkills = () => { surface.current.onSkillsChanged() }
+    const onIntent = (intent: MarketIntent): void | Promise<void> => {
+      const current = surface.current
+      if (intent.type === 'market-added') {
+        if (current.marketDialog !== 'add') return
+        setScope('personal')
+        setQuery('')
+        setMarketDialog(null)
+        return
+      }
+      if (intent.type === 'imported') {
+        if (current.importKind !== intent.kind) return
+        setImportKind(null)
+        setScope('personal')
+        setQuery('')
+        window.location.hash = marketDetailHash(packageKey(intent.plugin))
+        return
+      }
+      if (intent.type === 'open-package') {
+        const hashId = marketPluginIdFromHash()
+        if (hashId === intent.entryKey || window.location.hash === marketHash()) {
+          window.location.hash = marketDetailHash(packageKey({ id: intent.packageId }))
+        }
+        return
+      }
+      if (intent.type === 'leave-package') {
+        if (marketPluginIdFromHash() !== intent.packageKey) return
+        setScope('personal')
+        window.location.hash = marketHash()
+        return
+      }
+      if (intent.type === 'use-plugin' && marketPluginIdFromHash() === intent.plugin.manifest.id) {
+        return current.onUse(intent.plugin)
+      }
+    }
+    return subscribeMarketWindow({ onSkills, onIntent })
+  }, [])
+
+  useEffect(() => {
+    void refreshMarketInventory()
     if (!isTauriRuntime()) return
     let disposed = false
     let unlisten: (() => void) | undefined
-    void listen(MARKET_CHANGED_EVENT, () => void refresh())
+    void listen(MARKET_CHANGED_EVENT, () => { if (!disposed) void refreshMarketInventory() })
       .then((fn) => { if (disposed) fn(); else unlisten = fn })
       .catch(() => { /* 窗口聚焦时仍会刷新 */ })
-    const onFocus = () => void refresh()
+    const onFocus = () => { if (!disposed) void refreshMarketInventory() }
     window.addEventListener('focus', onFocus)
     return () => {
       disposed = true
-      mounted.current = false
-      refreshVersion.current += 1
-      packageVersion.current += 1
-      marketVersion.current += 1
+      discardMarketInventoryReads()
       unlisten?.()
       window.removeEventListener('focus', onFocus)
     }
-  }, [refresh])
+  }, [])
 
   useEffect(() => {
     const onHash = () => { setSelected(marketPluginIdFromHash()); setAddMenu(null) }
@@ -152,25 +136,6 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   useEffect(() => {
     if (!selected && scroller.current) scroller.current.scrollTop = viewState.scroll
   }, [selected])
-
-  /** 同一插件的操作串行；失败把原因显示在页底。 */
-  const run = async (id: string, task: () => Promise<MarketSnapshot | void>, changesSkills = true) => {
-    if (locks.current.has(id)) return
-    locks.current.add(id)
-    setBusyIds(new Set(locks.current))
-    setActionError('')
-    try {
-      const next = await task()
-      if (next) applyMutationSnapshot(next)
-      if (changesSkills) onSkillsChanged()
-    } catch (e) {
-      setActionError(String(e instanceof Error ? e.message : e))
-      void refresh()
-    } finally {
-      locks.current.delete(id)
-      setBusyIds(new Set(locks.current))
-    }
-  }
 
   const matches = (plugin: MarketPlugin) => {
     const q = query.trim().toLowerCase()
@@ -196,68 +161,42 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   }, [snapshot, query, zh])
 
   const chosen = snapshot.plugins.find((p) => p.manifest.id === selected)
-  const packageKey = (plugin: PluginPackage) => `package:${plugin.id}`
   const chosenPackage = packages.find(p => packageKey(p) === selected)
   const personal = packages.filter(p => `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()))
-  const entryKey = (market: Marketplace, entry: MarketplacePlugin) => `marketplace:${market.id}:${entry.name}`
   const entryPackage = (market: Marketplace, entry: MarketplacePlugin) => packages.find(p => p.marketplace?.source === market.source && p.marketplace?.plugin === entry.name)
   const packageIcon = (plugin: PluginPackage) => claudeMarketplaceIcon(plugin.marketplace?.source, plugin.marketplace?.plugin ?? plugin.name)
   const chosenEntry = markets.flatMap(market => market.plugins.map(entry => ({ market, entry }))).find(({ market, entry }) => entryKey(market, entry) === selected)
   const catalogSections = markets.map(market => ({ market, entries: market.plugins.filter(entry => `${entry.name} ${entry.displayName} ${entry.description} ${entry.category}`.toLowerCase().includes(query.trim().toLowerCase())) })).filter(section => section.entries.length > 0)
   const standalone = personal.filter(p => !markets.some(market => market.source === p.marketplace?.source && market.plugins.some(entry => entry.name === p.marketplace?.plugin)))
   const openPackage = (plugin: PluginPackage) => { window.location.hash = marketDetailHash(packageKey(plugin)) }
-  const acceptPackage = (plugin: PluginPackage) => {
-    packageVersion.current += 1
-    setPackages(current => [...current.filter(p => p.id !== plugin.id), plugin])
-    setPackageError('')
-  }
-  const installEntry = (market: Marketplace, entry: MarketplacePlugin) => run(entryKey(market, entry), async () => {
-    const plugin = await marketplaceApi.install(market.id, entry.name)
-    if (!mounted.current) return
-    acceptPackage(plugin)
-    // Do not navigate a user who left this catalog/detail while the install was pending.
-    const current = marketPluginIdFromHash()
-    if (current === entryKey(market, entry) || window.location.hash === marketHash()) openPackage(plugin)
-  })
-  const openEntry = (market: Marketplace, entry: MarketplacePlugin) => {
-    const installed = entryPackage(market, entry)
-    if (installed) openPackage(installed)
-    else window.location.hash = marketDetailHash(entryKey(market, entry))
-  }
-  const togglePackage = (plugin: PluginPackage, enabled: boolean) => run(packageKey(plugin), async () => {
-    acceptPackage(await packageApi.setEnabled(plugin.id, enabled))
-    await refreshSettings()
-  })
   const removePackage = async (plugin: PluginPackage) => {
     const ok = await confirmDialog({ title: text('移除插件', 'Remove plugin'),
       message: text(`移除「${plugin.name}」？导入的插件及其能力将被移除。`, `Remove "${plugin.name}" and its imported capabilities?`),
       confirmLabel: text('移除', 'Remove'), danger: true })
-    if (ok) void run(packageKey(plugin), async () => {
-      await packageApi.remove(plugin.id)
-      packageVersion.current += 1
-      setPackages(current => current.filter(p => p.id !== plugin.id))
-      setScope('personal')
-      window.location.hash = marketHash()
-      await refreshSettings()
-    })
+    if (ok) void runRemovePackage(plugin)
   }
 
-  const actionLabel = (action: PluginAction) => ({
+  const actionLabel = (action: ReturnType<typeof pluginAction>) => ({
     install: text('安装', 'Install'),
     repair: text('重新配置', 'Repair'),
     use: text('使用', 'Use'),
     'enable-use': text('加载并使用', 'Load and use'),
   })[action]
 
-  const primary = (plugin: MarketPlugin) => {
-    const id = plugin.manifest.id
-    const action = pluginAction(plugin)
-    if (action === 'install' || action === 'repair') return run(id, () => marketApi.install(id))
-    return run(id, async () => {
-      const next = action === 'enable-use' ? await marketApi.setEnabled(id, true) : undefined
-      if (next) { applyMutationSnapshot(next); onSkillsChanged() }
-      await onUse(plugin)
-    }, false)
+  const primaryButton = (plugin: MarketPlugin, variant: 'default' | 'primary' = 'default') => {
+    const busy = busyIds.has(plugin.manifest.id)
+    return (
+      <Button variant={variant} size="sm" disabled={busy} onClick={() => void runCatalogPlugin(plugin)}>
+        {busy && <Loader2 size={14} className="animate-spin" />}
+        {actionLabel(pluginAction(plugin))}
+      </Button>
+    )
+  }
+
+  const statusText = (plugin: MarketPlugin) => {
+    if (!plugin.local) return ''
+    if (plugin.local.status === 'failed') return text('需修复', 'Needs repair')
+    return plugin.local.enabled ? '' : text('未加载', 'Not loaded')
   }
 
   const uninstall = async (plugin: MarketPlugin) => {
@@ -270,23 +209,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
       confirmLabel: text('卸载', 'Uninstall'),
       danger: true,
     })
-    if (ok) void run(plugin.manifest.id, () => marketApi.uninstall(plugin.manifest.id))
-  }
-
-  const primaryButton = (plugin: MarketPlugin, variant: 'default' | 'primary' = 'default') => {
-    const busy = busyIds.has(plugin.manifest.id)
-    return (
-      <Button variant={variant} size="sm" disabled={busy} onClick={() => void primary(plugin)}>
-        {busy && <Loader2 size={14} className="animate-spin" />}
-        {actionLabel(pluginAction(plugin))}
-      </Button>
-    )
-  }
-
-  const statusText = (plugin: MarketPlugin) => {
-    if (!plugin.local) return ''
-    if (plugin.local.status === 'failed') return text('需修复', 'Needs repair')
-    return plugin.local.enabled ? '' : text('未加载', 'Not loaded')
+    if (ok) void runUninstall(plugin.manifest.id)
   }
 
   const detail = chosen && (
@@ -309,7 +232,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
                 checked={chosen.local.enabled}
                 disabled={busyIds.has(chosen.manifest.id)}
                 ariaLabel={text(`加载 ${chosen.manifest.name}`, `Load ${chosen.manifest.name}`)}
-                onChange={(enabled) => void run(chosen.manifest.id, () => marketApi.setEnabled(chosen.manifest.id, enabled))}
+                onChange={(enabled) => void runSetEnabled(chosen.manifest.id, enabled)}
               />
             </label>
           )}
@@ -385,7 +308,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
             <span>{chosenPackage.enabled ? text('已加载', 'Loaded') : text('未加载', 'Not loaded')}</span>
             <Toggle checked={chosenPackage.enabled} ariaLabel={text(`加载 ${chosenPackage.name}`, `Load ${chosenPackage.name}`)}
               disabled={busyIds.has(packageKey(chosenPackage)) || (!chosenPackage.enabled && chosenPackage.diagnostics.length > 0)}
-              onChange={enabled => void togglePackage(chosenPackage, enabled)} />
+              onChange={enabled => void runTogglePackage(chosenPackage, enabled)} />
           </label>
           <Button size="sm" disabled={busyIds.has(packageKey(chosenPackage))} onClick={() => void removePackage(chosenPackage)}>{text('移除', 'Remove')}</Button>
         </div>
@@ -416,7 +339,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
     <PluginIcon size="lg" src={claudeMarketplaceIcon(chosenEntry.market.source, chosenEntry.entry.name)} />
     <header className="kv-market-detail-head"><h1>{chosenEntry.entry.displayName}</h1>
       <Button variant="primary" disabled={!!chosenEntry.entry.unavailableReason || busyIds.has(entryKey(chosenEntry.market, chosenEntry.entry))}
-        onClick={() => void installEntry(chosenEntry.market, chosenEntry.entry)}>
+        onClick={() => void runInstallEntry(chosenEntry.market, chosenEntry.entry)}>
         {busyIds.has(entryKey(chosenEntry.market, chosenEntry.entry)) ? text('安装中…', 'Installing…') : text('安装', 'Install')}
       </Button>
     </header>
@@ -453,7 +376,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
                 <p>{text('用插件为 Kivio 扩展技能、命令与 MCP 能力', 'Extend Kivio with skills, commands and MCP through plugins')}</p>
               </div>
               <div className="kv-market-toolbar">
-                <IconButton size="md" label={text('刷新', 'Refresh')} disabled={loading} onClick={() => void refresh()}>
+                <IconButton size="md" label={text('刷新', 'Refresh')} disabled={loading} onClick={() => void refreshMarketInventory()}>
                   <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
                 </IconButton>
                 <IconButton size="md" label={text('管理插件市场', 'Manage marketplaces')} disabled={!isTauriRuntime()} onClick={() => setMarketDialog('manage')}><Settings2 size={16} /></IconButton>
@@ -509,7 +432,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
             {(loadError || packageError || marketError) && (
               <div role="status" className="kv-market-warning">
                 {text('部分插件暂时无法读取。', 'Some plugins could not be loaded.')} {loadError || packageError || marketError}
-                <Button size="sm" onClick={() => void refresh()}>{text('重试', 'Retry')}</Button>
+                <Button size="sm" onClick={() => void refreshMarketInventory()}>{text('重试', 'Retry')}</Button>
               </div>
             )}
 
@@ -519,12 +442,19 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
               {catalogSections.map(({ market, entries }) => <section className="kv-market-section" key={market.id}>
                 <h2>{market.name}<small>{entries.length}</small></h2>
                 <div className="kv-market-rows">{entries.map(entry => <article className="kv-market-row" key={entry.name}>
-                  <button type="button" className="kv-market-row-info" onClick={() => openEntry(market, entry)}>
+                  <button type="button" className="kv-market-row-info" onClick={() => {
+                    const installedPackage = entryPackage(market, entry)
+                    if (installedPackage) openPackage(installedPackage)
+                    else window.location.hash = marketDetailHash(entryKey(market, entry))
+                  }}>
                     <PluginIcon src={claudeMarketplaceIcon(market.source, entry.name)} /><span className="min-w-0"><strong>{entry.displayName}</strong><span>{entry.description || entry.unavailableReason}</span></span>
                   </button>
-                  {entryPackage(market, entry) ? <IconButton variant="ghost" label={text(`${entry.displayName} 更多操作`, `More options for ${entry.displayName}`)} onClick={() => openEntry(market, entry)}><MoreHorizontal size={16} /></IconButton>
-                    : entry.unavailableReason ? <Button size="sm" onClick={() => openEntry(market, entry)}>{text('查看原因', 'Details')}</Button>
-                    : <Button size="sm" disabled={busyIds.has(entryKey(market, entry))} onClick={() => void installEntry(market, entry)}>{busyIds.has(entryKey(market, entry)) ? text('安装中…', 'Installing…') : text('安装', 'Install')}</Button>}
+                  {entryPackage(market, entry) ? <IconButton variant="ghost" label={text(`${entry.displayName} 更多操作`, `More options for ${entry.displayName}`)} onClick={() => {
+                    const installedPackage = entryPackage(market, entry)
+                    if (installedPackage) openPackage(installedPackage)
+                  }}><MoreHorizontal size={16} /></IconButton>
+                    : entry.unavailableReason ? <Button size="sm" onClick={() => { window.location.hash = marketDetailHash(entryKey(market, entry)) }}>{text('查看原因', 'Details')}</Button>
+                    : <Button size="sm" disabled={busyIds.has(entryKey(market, entry))} onClick={() => void runInstallEntry(market, entry)}>{busyIds.has(entryKey(market, entry)) ? text('安装中…', 'Installing…') : text('安装', 'Install')}</Button>}
                 </article>)}</div>
               </section>)}
               {(standalone.length > 0 || !catalogSections.length) && <section className="kv-market-section">
@@ -594,15 +524,8 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
         { key: 'local', label: text('从本地目录导入', 'Import from a folder'), icon: <FolderOpen size={16} />, onSelect: () => setImportKind('local') },
         { key: 'git', label: text('从 Git 仓库导入', 'Import from Git'), icon: <GitBranch size={16} />, onSelect: () => setImportKind('git') },
       ]} />}
-      {marketDialog && <MarketplaceDialog mode={marketDialog} zh={zh} markets={markets} onClose={() => setMarketDialog(null)} onChanged={acceptMarkets} />}
-      {importKind && <PluginImportDialog kind={importKind} zh={zh} onClose={() => setImportKind(null)} onImported={plugin => {
-        acceptPackage(plugin)
-        setImportKind(null)
-        setScope('personal')
-        setQuery('')
-        onSkillsChanged()
-        openPackage(plugin)
-      }} />}
+      {marketDialog && <MarketplaceDialog mode={marketDialog} zh={zh} onClose={() => setMarketDialog(null)} />}
+      {importKind && <PluginImportDialog kind={importKind} zh={zh} onClose={() => setImportKind(null)} />}
     </section>
   )
 }

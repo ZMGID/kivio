@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MarketPage } from './MarketPage'
+import { resetMarketWindow } from './marketOperations'
 import { claudeMarketplaceIcon, pluginAction } from './marketModel'
 import { marketApi, marketplaceApi, type Marketplace, type MarketPlugin, type MarketSnapshot } from '../../api/market'
 import { listen } from '@tauri-apps/api/event'
@@ -34,7 +35,15 @@ function plugin(local: MarketPlugin['local'] = null): MarketPlugin {
 }
 const snapshot = (item: MarketPlugin): MarketSnapshot => ({ categories: [{ id: 'productivity', name: '效率办公' }], plugins: [item] })
 
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {}
+  let reject: (reason?: unknown) => void = () => {}
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
 beforeEach(() => {
+  resetMarketWindow()
   vi.resetAllMocks()
   const details = { author: null, version: null, homepage: null, license: null, groups: [], diagnostics: [] }
   vi.mocked(packageApi.describe).mockResolvedValue(details)
@@ -338,5 +347,189 @@ describe('MarketPage', () => {
     await screen.findByRole('heading', { name: '飞书 CLI', level: 1 })
     expect(screen.getByText('feishu-cli-setup')).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: '加载 飞书 CLI' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  function clickTwice(element: HTMLElement) {
+    act(() => {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+  }
+
+  function openFeishuDetail() {
+    window.location.hash = '#chat/plugins/feishu-cli'
+  }
+
+  it('keeps a catalog install across leaving, rejects a second start, and applies the result on return', async () => {
+    const onSkillsChanged = vi.fn()
+    const pending = deferred<MarketSnapshot>()
+    const installed = snapshot(plugin({ status: 'ready', enabled: true, error: null }))
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(marketApi.install).mockReturnValue(pending.promise)
+    const first = render(<MarketPage onUse={vi.fn()} onSkillsChanged={onSkillsChanged} />)
+    const install = await screen.findByRole('button', { name: '安装' })
+    clickTwice(install)
+    await waitFor(() => expect(marketApi.install).toHaveBeenCalledTimes(1))
+    expect(install).toBeDisabled()
+    first.unmount()
+    const second = render(<MarketPage onUse={vi.fn()} onSkillsChanged={onSkillsChanged} />)
+    const again = await screen.findByRole('button', { name: '安装' })
+    expect(again).toBeDisabled()
+    fireEvent.click(again)
+    expect(marketApi.install).toHaveBeenCalledTimes(1)
+    second.unmount()
+    vi.mocked(marketApi.snapshot).mockResolvedValue(installed)
+    await act(async () => { pending.resolve(installed) })
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={onSkillsChanged} />)
+    await waitFor(() => expect(onSkillsChanged).toHaveBeenCalled())
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '飞书 CLI' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '安装' })).not.toBeInTheDocument()
+  })
+
+  it('shows a queued install failure after leaving and keeps retry available', async () => {
+    const pending = deferred<MarketSnapshot>()
+    const installed = snapshot(plugin({ status: 'ready', enabled: true, error: null }))
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(marketApi.install).mockReturnValue(pending.promise)
+    const view = render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: '安装' }))
+    await waitFor(() => expect(marketApi.install).toHaveBeenCalledTimes(1))
+    view.unmount()
+    await act(async () => { pending.reject('queued') })
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('queued')
+    const retry = screen.getByRole('button', { name: '安装' })
+    expect(retry).toBeEnabled()
+    vi.mocked(marketApi.install).mockResolvedValue(installed)
+    fireEvent.click(retry)
+    await waitFor(() => expect(marketApi.install).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('keeps marketplace add in flight when the dialog or page closes without pretending it was cancelled', async () => {
+    const pending = deferred<Marketplace[]>()
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(marketplaceApi.add).mockReturnValue(pending.promise)
+    const first = render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '添加插件市场' }))
+    fireEvent.change(screen.getByLabelText('市场来源'), { target: { value: 'team/tools' } })
+    const add = screen.getByRole('button', { name: '添加市场' })
+    clickTwice(add)
+    await waitFor(() => expect(marketplaceApi.add).toHaveBeenCalledTimes(1))
+    expect(marketplaceApi.add).toHaveBeenCalledWith('team/tools')
+    expect(screen.getByText('正在读取市场，请稍候…')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    first.unmount()
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '添加插件市场' }))
+    expect(screen.getByLabelText('市场来源')).toHaveValue('team/tools')
+    expect(screen.getByText('正在读取市场，请稍候…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '添加市场' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '添加市场' }))
+    expect(marketplaceApi.add).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    openFeishuDetail()
+    expect(await screen.findByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    await act(async () => { pending.resolve([customMarket]) })
+    expect(screen.getByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /team-tools/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '插件' }))
+    fireEvent.click(await screen.findByRole('tab', { name: '个人' }))
+    expect(await screen.findByRole('heading', { name: /team-tools/ })).toBeInTheDocument()
+  })
+
+  it('does not let a closed folder picker overwrite a newer marketplace source', async () => {
+    const pending = deferred<string | null>()
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(open).mockReturnValue(pending.promise)
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '添加插件市场' }))
+    fireEvent.click(screen.getByRole('button', { name: '本地目录' }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '添加插件市场' }))
+    fireEvent.change(screen.getByLabelText('市场来源'), { target: { value: 'team/kept' } })
+    await act(async () => { pending.resolve('/late/folder') })
+    expect(screen.getByLabelText('市场来源')).toHaveValue('team/kept')
+  })
+
+  it('applies a no-op marketplace install without opening it over a plugin the user already chose', async () => {
+    const pending = deferred<PluginPackage>()
+    const installedPackage: PluginPackage = {
+      id: 'installed-demo', name: 'demo', description: 'Build a demo', version: '1', source: '/cache/demo',
+      revision: null, enabled: false, format: 'claude', components: { skills: 1 }, diagnostics: [],
+      marketplace: { name: customMarket.name, source: customMarket.source, plugin: 'demo' },
+    }
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(marketplaceApi.list).mockResolvedValue([customMarket])
+    vi.mocked(marketplaceApi.install).mockReturnValue(pending.promise)
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.click(screen.getByRole('tab', { name: '个人' }))
+    const install = await screen.findByRole('button', { name: '安装' })
+    clickTwice(install)
+    await waitFor(() => expect(marketplaceApi.install).toHaveBeenCalledTimes(1))
+    expect(marketplaceApi.install).toHaveBeenCalledWith('team-market', 'demo')
+    openFeishuDetail()
+    expect(await screen.findByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    await act(async () => { pending.resolve(installedPackage) })
+    expect(screen.getByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '插件' }))
+    fireEvent.click(await screen.findByRole('tab', { name: '个人' }))
+    expect(screen.getByRole('button', { name: 'Demo plugin 更多操作' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '安装' })).not.toBeInTheDocument()
+  })
+
+  it('keeps an import draft across closing the dialog and does not navigate when that dialog is gone', async () => {
+    const pending = deferred<PluginPackage>()
+    const imported: PluginPackage = {
+      id: 'local-example', name: 'Local example', version: '1', description: 'Example skill',
+      source: 'https://github.com/example/plugin', revision: null, format: 'kivio', enabled: false,
+      components: { skills: 1 }, diagnostics: [],
+    }
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    vi.mocked(packageApi.import)
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce('queued')
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '从 Git 仓库导入' }))
+    fireEvent.change(screen.getByLabelText('插件来源'), { target: { value: 'https://github.com/example/plugin' } })
+    fireEvent.change(screen.getByLabelText('插件子目录'), { target: { value: 'plugins/my-plugin' } })
+    const submit = screen.getByRole('button', { name: '导入' })
+    clickTwice(submit)
+    await waitFor(() => expect(packageApi.import).toHaveBeenCalledTimes(1))
+    expect(packageApi.import).toHaveBeenCalledWith('https://github.com/example/plugin', 'plugins/my-plugin')
+    expect(screen.getByRole('button', { name: '正在导入…' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    openFeishuDetail()
+    expect(await screen.findByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    vi.mocked(packageApi.list).mockResolvedValue([imported])
+    await act(async () => { pending.resolve(imported) })
+    expect(screen.getByRole('heading', { name: '飞书 CLI', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Local example' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '插件' }))
+    fireEvent.click(await screen.findByRole('tab', { name: '个人' }))
+    expect(screen.getByRole('button', { name: 'Local example' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '公开' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '从 Git 仓库导入' }))
+    fireEvent.change(screen.getByLabelText('插件来源'), { target: { value: 'https://github.com/example/retry' } })
+    fireEvent.click(screen.getByRole('button', { name: '导入' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('queued')
+    expect(screen.getByLabelText('插件来源')).toHaveValue('https://github.com/example/retry')
+    expect(screen.getByRole('button', { name: '导入' })).toBeEnabled()
   })
 })

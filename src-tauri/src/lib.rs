@@ -518,6 +518,7 @@ pub fn run() {
             chat::media_station::media_station_list,
             chat::media_station::media_station_start,
             chat::media_station::media_station_cancel,
+            chat::media_station::media_station_delete,
             chat::media_station::media_station_resume,
             chat::media_station::media_station_read,
             chat::media_station::media_station_export,

@@ -274,6 +274,8 @@ fn main() {
         MediaRequest::decl(&config),
         MediaOutput::decl(&config),
         MediaJob::decl(&config),
+        MediaDeleteFailure::decl(&config),
+        MediaDeleteResult::decl(&config),
     ]
     .into_iter()
     .map(|d| format!("export {d}"))

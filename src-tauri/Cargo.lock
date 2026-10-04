@@ -3272,6 +3272,7 @@ dependencies = [
  "objc2-user-notifications",
  "objc_exception",
  "ort",
+ "parking_lot",
  "pdf-extract",
  "portable-pty",
  "rand 0.8.5",

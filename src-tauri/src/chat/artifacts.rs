@@ -1,8 +1,9 @@
 //! Artifact IDs for model reads/edits, and the Works gallery index.
-//! Files stay where they were created. Works is a view of delivered conversation files.
+//! Files stay where they were created. Works indexes delivered chat files and completed media creations.
 use super::{ChatMessage, Conversation};
 use crate::mcp::types::{ChatToolArtifact, ChatToolDefinition, McpToolCallResult};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -49,6 +50,105 @@ fn root(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?
         .join("artifacts"))
+}
+
+// Media import/list/action never acquire the station lock. Deletion acquires the
+// station lock first, then this lock, so a stale import cannot restore a record.
+static MEDIA_INDEX: Mutex<()> = Mutex::new(());
+
+pub(crate) fn delete_media_job(app: &AppHandle, media_root: &Path, id: &str) -> Result<(), String> {
+    delete_media_job_in(&root(app)?, media_root, id)
+}
+
+pub(crate) fn delete_media_job_in(root: &Path, media_root: &Path, id: &str) -> Result<(), String> {
+    let _guard = MEDIA_INDEX.lock();
+    if uuid::Uuid::parse_str(id).is_err() {
+        return Err("Invalid media job ID".into());
+    }
+    let directory = media_root.join(id);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Err("Invalid media job directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let prefix = format!("art_media_{id}_");
+    match fs::read_dir(root.join("records")) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name
+                    .strip_prefix(&prefix)
+                    .and_then(|s| s.strip_suffix(".json"))
+                    .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    // Only the index belongs to this job, never a referenced/exported file.
+                    fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let mut removed = load_removed(root);
+    let previous_len = removed.len();
+    removed.retain(|artifact| !artifact.starts_with(&prefix));
+    if removed.len() != previous_len {
+        super::storage::atomic_write(
+            &removed_path(root),
+            &serde_json::to_string(&removed).map_err(|e| e.to_string())?,
+            "artifact removed",
+        )?;
+    }
+    delete_media_directory(&directory, |path| {
+        let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(path).map_err(|e| e.to_string())
+        } else {
+            fs::remove_file(path).map_err(|e| e.to_string())
+        }
+    })
+}
+
+fn delete_media_directory(
+    directory: &Path,
+    mut remove_output: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    // Metadata is the restart-visible record. Keep it until all output cleanup
+    // succeeds, even when an earlier output was already removed.
+    let metadata = directory.join("job.json");
+    let saved = match fs::read_to_string(&metadata) {
+        Ok(saved) => Some(saved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_name() != "job.json" {
+            remove_output(&entry.path())
+                .map_err(|error| format!("部分文件清理失败，任务记录已保留：{error}"))?;
+        }
+    }
+    if saved.is_some() {
+        fs::remove_file(&metadata).map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = fs::remove_dir(directory) {
+        if let Some(saved) = saved {
+            super::storage::atomic_write(&metadata, &saved, "media job")
+                .map_err(|restore| format!("删除目录失败：{error}；恢复任务记录失败：{restore}"))?;
+        }
+        return Err(format!(
+            "部分文件已清理，删除目录失败，任务记录已保留：{error}"
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn is_valid_artifact_id(id: &str) -> bool {
@@ -236,8 +336,8 @@ fn persist_filename(name: &str) -> String {
     sanitized_name(name, name).unwrap_or_else(|_| "artifact.bin".into())
 }
 
-fn visible_in_works(delivered: bool, conversation_exists: bool) -> bool {
-    delivered && conversation_exists
+fn visible_in_works(record: &ArtifactRecord, conversation_exists: bool) -> bool {
+    record.delivered && (conversation_exists || record.source_tool == "media_station")
 }
 
 fn conversation_artifact_ids(conversation: &Conversation) -> HashSet<String> {
@@ -832,6 +932,83 @@ fn omit_repeated_image_reads(items: &mut Vec<LibraryItem>) {
     });
 }
 
+/// Media jobs remain the source of truth; import only completed outputs into the
+/// same index used by chat works, keeping original files and gallery edits intact.
+fn import_media_jobs(root: &Path, media_root: &Path) -> usize {
+    use super::media_station::{MediaJob, MediaStatus};
+    let entries = match fs::read_dir(media_root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(_) => return 1,
+    };
+    let removed = load_removed(root);
+    let mut warnings = 0;
+    for entry in entries {
+        let directory = match entry {
+            Ok(entry) if entry.path().is_dir() => entry.path(),
+            Ok(_) => continue,
+            Err(_) => {
+                warnings += 1;
+                continue;
+            }
+        };
+        let job_path = directory.join("job.json");
+        if !job_path.exists() {
+            continue;
+        }
+        let job = fs::read(&job_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<MediaJob>(&bytes).ok());
+        let Some(job) = job else {
+            warnings += 1;
+            continue;
+        };
+        if uuid::Uuid::parse_str(&job.id).is_err()
+            || directory.file_name().and_then(|name| name.to_str()) != Some(job.id.as_str())
+        {
+            warnings += 1;
+            continue;
+        }
+        if job.status != MediaStatus::Completed {
+            continue;
+        }
+        for (index, output) in job.outputs.iter().enumerate() {
+            let id = format!("art_media_{}_{index}", job.id);
+            if removed.contains(&id) || record_path(root, &id).is_ok_and(|path| path.exists()) {
+                continue;
+            }
+            if sanitized_name(&output.name, &output.name).as_deref() != Ok(output.name.as_str()) {
+                warnings += 1;
+                continue;
+            }
+            let path = directory.join(&output.name);
+            let record = ArtifactRecord {
+                work_id: id.clone(),
+                parent_id: None,
+                conversation_id: String::new(),
+                message_id: job.id.clone(),
+                title: job.request.prompt.clone(),
+                created_at: job.created_at / 1000,
+                source_tool: "media_station".into(),
+                delivered: true,
+                artifact: ChatToolArtifact {
+                    id: Some(id.clone()),
+                    name: output.name.clone(),
+                    mime_type: output.mime_type.clone(),
+                    data_url: String::new(),
+                    path: None,
+                    size_bytes: None,
+                },
+                id,
+            };
+            if register(root, record, Some(&path), None).is_err() {
+                warnings += 1;
+            }
+        }
+    }
+    warnings
+}
+
 #[tauri::command]
 pub async fn chat_artifacts_list(
     app: AppHandle,
@@ -839,9 +1016,11 @@ pub async fn chat_artifacts_list(
 ) -> Result<LibraryPage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = root(&app)?;
+        let _media_guard = MEDIA_INDEX.lock();
         let index = super::storage::load_index(&app)?;
         let mut warnings = 0;
         if import_history.unwrap_or(true) {
+            warnings += import_media_jobs(&root, &root.with_file_name("media-station"));
             let removed = load_removed(&root);
             // The conversation revision owns invalidation. Failed imports remain
             // retryable; unchanged conversations need no repeated JSON/image reads.
@@ -905,7 +1084,7 @@ pub async fn chat_artifacts_list(
                     continue;
                 };
                 let source = sources.get(record.conversation_id.as_str()).copied();
-                if !visible_in_works(record.delivered, source.is_some()) {
+                if !visible_in_works(&record, source.is_some()) {
                     continue;
                 }
                 if let Some(source) = source {
@@ -919,7 +1098,7 @@ pub async fn chat_artifacts_list(
                 items.push(LibraryItem {
                     record,
                     available,
-                    source_available: true,
+                    source_available: source.is_some(),
                 });
             }
         }
@@ -946,6 +1125,7 @@ pub async fn chat_artifact_action(
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = root(&app)?;
+        let _media_guard = MEDIA_INDEX.lock();
         match action.as_str() {
             "delete" => {
                 remove_from_library(&root, &id)?;
@@ -1002,6 +1182,7 @@ pub async fn chat_artifact_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn input_artifact_ids_ignore_empty_placeholders_and_deduplicate() {
         assert!(
@@ -1042,6 +1223,159 @@ mod tests {
                 size_bytes: None,
             },
         }
+    }
+
+    fn media_job(
+        media_root: &Path,
+        kind: super::super::media_station::MediaKind,
+        name: &str,
+        bytes: &[u8],
+    ) -> super::super::media_station::MediaJob {
+        use super::super::media_station::{
+            MediaJob, MediaKind, MediaOutput, MediaRequest, MediaStatus,
+        };
+        let mime = if kind == MediaKind::Image {
+            "image/png"
+        } else {
+            "video/mp4"
+        };
+        let job = MediaJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: 1_700_000_000_123,
+            request: MediaRequest {
+                kind,
+                provider_id: "provider".into(),
+                model: "model".into(),
+                prompt: "Ocean at sunset".into(),
+                aspect_ratio: "16:9".into(),
+                duration: 5,
+                reference_paths: Vec::new(),
+            },
+            status: MediaStatus::Completed,
+            error: None,
+            outputs: vec![MediaOutput {
+                name: name.into(),
+                mime_type: mime.into(),
+                preview: String::new(),
+            }],
+            provider_task_id: None,
+        };
+        let directory = media_root.join(&job.id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(name), bytes).unwrap();
+        fs::write(
+            directory.join("job.json"),
+            serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        job
+    }
+
+    #[test]
+    fn media_works_import_existing_images_and_completed_videos_without_a_chat() {
+        use super::super::media_station::{MediaKind, MediaStatus};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("artifacts");
+        let media = dir.path().join("media-station");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(8, 8)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let image = media_job(
+            &media,
+            MediaKind::Image,
+            "generated-image-1.png",
+            png.get_ref(),
+        );
+        let mut video = media_job(&media, MediaKind::Video, "video.mp4", b"video bytes");
+        video.status = MediaStatus::Running;
+        fs::write(
+            media.join(&video.id).join("job.json"),
+            serde_json::to_vec(&video).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(import_media_jobs(&root, &media), 0);
+        let image_id = format!("art_media_{}_0", image.id);
+        let video_id = format!("art_media_{}_0", video.id);
+        let saved_image = load(&root, &image_id).unwrap();
+        assert!(load(&root, &video_id).is_err());
+        assert!(visible_in_works(&saved_image, false));
+        assert_eq!(saved_image.created_at, 1_700_000_000);
+        assert_eq!(saved_image.title, image.request.prompt);
+        assert!(saved_image.artifact.data_url.starts_with("data:image/"));
+        assert_eq!(
+            Path::new(saved_image.artifact.path.as_ref().unwrap()),
+            media.join(&image.id).join("generated-image-1.png")
+        );
+        let chat = record("art_chat", b"chat");
+        assert!(!visible_in_works(&chat, false));
+        assert!(visible_in_works(&chat, true));
+
+        video.status = MediaStatus::Completed;
+        fs::write(
+            media.join(&video.id).join("job.json"),
+            serde_json::to_vec(&video).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(import_media_jobs(&root, &media), 0);
+        let saved_video = load(&root, &video_id).unwrap();
+        assert!(visible_in_works(&saved_video, false));
+        assert_eq!(saved_video.artifact.mime_type, "video/mp4");
+        let exports = dir.path().join("exports");
+        fs::create_dir_all(&exports).unwrap();
+        for saved in [&saved_image, &saved_video] {
+            let source = Path::new(saved.artifact.path.as_ref().unwrap());
+            let target = exports.join(&saved.artifact.name);
+            export_artifact(&root, source, &target, false).unwrap();
+            assert_eq!(fs::read(target).unwrap(), fs::read(source).unwrap());
+        }
+        let mut renamed = saved_image;
+        renamed.artifact.name = "cover.png".into();
+        save(&root, &renamed).unwrap();
+        remove_from_library(&root, &video_id).unwrap();
+        assert_eq!(import_media_jobs(&root, &media), 0);
+        assert_eq!(load(&root, &image_id).unwrap().artifact.name, "cover.png");
+        assert!(load(&root, &video_id).is_err());
+        assert_eq!(
+            fs::read(media.join(&video.id).join("video.mp4")).unwrap(),
+            b"video bytes"
+        );
+        assert!(!root.join("files").exists());
+    }
+
+    #[test]
+    fn media_works_report_bad_history_and_retry_missing_files_without_blocking_other_results() {
+        use super::super::media_station::MediaKind;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("artifacts");
+        let media = dir.path().join("media-station");
+        let good = media_job(&media, MediaKind::Video, "video.mp4", b"good video");
+        let missing = media_job(&media, MediaKind::Video, "video.mp4", b"recoverable video");
+        fs::remove_file(media.join(&missing.id).join("video.mp4")).unwrap();
+        let mut unsafe_job = media_job(&media, MediaKind::Video, "video.mp4", b"unsafe");
+        unsafe_job.outputs[0].name = "../outside.mp4".into();
+        fs::write(
+            media.join(&unsafe_job.id).join("job.json"),
+            serde_json::to_vec(&unsafe_job).unwrap(),
+        )
+        .unwrap();
+        let broken = media.join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("job.json"), b"not json").unwrap();
+        assert_eq!(import_media_jobs(&root, &media), 3);
+        assert!(load(&root, &format!("art_media_{}_0", good.id)).is_ok());
+        assert!(load(&root, &format!("art_media_{}_0", unsafe_job.id)).is_err());
+        fs::write(
+            media.join(&missing.id).join("video.mp4"),
+            b"recovered video",
+        )
+        .unwrap();
+        assert_eq!(import_media_jobs(&root, &media), 2);
+        let restored = load(&root, &format!("art_media_{}_0", missing.id)).unwrap();
+        assert_eq!(
+            fs::read(restored.artifact.path.unwrap()).unwrap(),
+            b"recovered video"
+        );
     }
 
     #[test]
@@ -1252,13 +1586,6 @@ mod tests {
     }
 
     #[test]
-    fn works_gallery_requires_a_living_conversation() {
-        assert!(visible_in_works(true, true));
-        assert!(!visible_in_works(true, false));
-        assert!(!visible_in_works(false, true));
-    }
-
-    #[test]
     fn prune_drops_records_removed_from_the_conversation() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("gone.xlsx");
@@ -1286,5 +1613,159 @@ mod tests {
             dir.path(),
             dir.path().join("project/report.xlsx").to_str().unwrap()
         ));
+    }
+
+    fn multi_output_media_job(
+        media_root: &Path,
+        kind: super::super::media_station::MediaKind,
+    ) -> super::super::media_station::MediaJob {
+        use super::super::media_station::MediaOutput;
+        let mut job = media_job(media_root, kind, "first.png", b"source");
+        job.outputs.push(MediaOutput {
+            name: "video.mp4".into(),
+            mime_type: "video/mp4".into(),
+            preview: String::new(),
+        });
+        save_media_fixture(media_root, &job);
+        job
+    }
+
+    fn save_media_fixture(media_root: &Path, job: &super::super::media_station::MediaJob) {
+        let directory = media_root.join(&job.id);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("job.json"), serde_json::to_vec(job).unwrap()).unwrap();
+        for output in &job.outputs {
+            fs::write(directory.join(&output.name), b"source").unwrap();
+        }
+    }
+
+    #[test]
+    fn deleting_media_removes_all_works_without_exports_or_other_references() {
+        use super::super::media_station::MediaKind;
+        let root = tempfile::tempdir().unwrap();
+        let media = tempfile::tempdir().unwrap();
+        let exported = tempfile::tempdir().unwrap();
+        for kind in [MediaKind::Image, MediaKind::Video] {
+            let job = multi_output_media_job(media.path(), kind);
+            assert_eq!(import_media_jobs(root.path(), media.path()), 0);
+            let id = format!("art_media_{}_0", job.id);
+            let other = format!("art_media_{}_1", job.id);
+            let stale = format!("art_media_{}_99", job.id);
+            let mut stale_record = record(&stale, b"old");
+            stale_record.artifact.path =
+                Some(exported.path().join("export.png").to_string_lossy().into());
+            save(root.path(), &stale_record).unwrap();
+            fs::write(exported.path().join("export.png"), b"exported").unwrap();
+            let mut reference = record("art_independent_reference", b"reference");
+            reference.artifact.path = Some(
+                media
+                    .path()
+                    .join(&job.id)
+                    .join("first.png")
+                    .to_string_lossy()
+                    .into(),
+            );
+            save(root.path(), &reference).unwrap();
+            remove_from_library(root.path(), &other).unwrap();
+            mark_removed(root.path(), "art_unrelated_hidden").unwrap();
+            delete_media_job_in(root.path(), media.path(), &job.id).unwrap();
+            assert!(!media.path().join(&job.id).exists());
+            for id in [&id, &other, &stale] {
+                assert!(load(root.path(), id).is_err());
+                assert!(!load_removed(root.path()).contains(id));
+            }
+            assert_eq!(
+                load(root.path(), "art_independent_reference").unwrap().id,
+                "art_independent_reference"
+            );
+            assert!(load_removed(root.path()).contains("art_unrelated_hidden"));
+            assert_eq!(
+                fs::read(exported.path().join("export.png")).unwrap(),
+                b"exported"
+            );
+            assert_eq!(import_media_jobs(root.path(), media.path()), 0);
+            assert!(load(root.path(), &id).is_err());
+        }
+    }
+
+    #[test]
+    fn source_delete_failure_is_not_reported_as_success() {
+        let root = tempfile::tempdir().unwrap();
+        let media = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        fs::write(media.path().join(&id), b"not a directory").unwrap();
+        assert!(delete_media_job_in(root.path(), media.path(), &id).is_err());
+        assert_eq!(
+            fs::read(media.path().join(&id)).unwrap(),
+            b"not a directory"
+        );
+        assert!(delete_media_job_in(root.path(), media.path(), "../escape").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_symlink_never_deletes_an_external_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let media = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        fs::write(external.path().join("keep"), b"keep").unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        std::os::unix::fs::symlink(external.path(), media.path().join(&id)).unwrap();
+        assert!(delete_media_job_in(root.path(), media.path(), &id).is_err());
+        assert_eq!(fs::read(external.path().join("keep")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn media_import_finishes_before_delete_and_cannot_restore_deleted_output() {
+        let root = tempfile::tempdir().unwrap();
+        let media = tempfile::tempdir().unwrap();
+        let job =
+            multi_output_media_job(media.path(), super::super::media_station::MediaKind::Video);
+        let guard = MEDIA_INDEX.lock();
+        let root_path = root.path().to_path_buf();
+        let media_path = media.path().to_path_buf();
+        let id = job.id.clone();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let deleting = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            delete_media_job_in(&root_path, &media_path, &id)
+        });
+        waiting.recv().unwrap();
+        // Same lock/snapshot boundary as the real gallery list.
+        assert_eq!(import_media_jobs(root.path(), media.path()), 0);
+        assert!(load(root.path(), &format!("art_media_{}_0", job.id)).is_ok());
+        drop(guard);
+        deleting.join().unwrap().unwrap();
+        let _guard = MEDIA_INDEX.lock();
+        assert_eq!(import_media_jobs(root.path(), media.path()), 0);
+        assert!(load(root.path(), &format!("art_media_{}_0", job.id)).is_err());
+    }
+
+    #[test]
+    fn partial_output_cleanup_keeps_metadata_for_restart() {
+        let media = tempfile::tempdir().unwrap();
+        let job =
+            multi_output_media_job(media.path(), super::super::media_station::MediaKind::Video);
+        let directory = media.path().join(&job.id);
+        let mut calls = 0;
+        let outcome = delete_media_directory(&directory, |path| {
+            calls += 1;
+            if calls == 2 {
+                return Err("injected filesystem failure".into());
+            }
+            fs::remove_file(path).map_err(|e| e.to_string())
+        });
+        assert!(outcome.unwrap_err().contains("部分文件清理失败"));
+        assert_eq!(calls, 2);
+        let saved: super::super::media_station::MediaJob =
+            serde_json::from_slice(&fs::read(directory.join("job.json")).unwrap()).unwrap();
+        assert_eq!(saved.id, job.id);
+        assert_eq!(
+            job.outputs
+                .iter()
+                .filter(|output| directory.join(&output.name).exists())
+                .count(),
+            1
+        );
     }
 }
