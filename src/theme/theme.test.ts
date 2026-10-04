@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
+import bootstrap from '../../public/theme-bootstrap.js?raw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { THEME_FIELDS } from './types'
 import { BUILTIN_THEMES, applyThemeSettings, disposeTheme, exportThemeJson, paletteVariables, parseThemeJson, resolveTheme } from './theme'
 
 const startupKey = 'kivio.theme.startup.v1'
-const bootstrap = readFileSync('public/theme-bootstrap.js', 'utf8')
 
 function reloadThemeDocument() {
   disposeTheme()
