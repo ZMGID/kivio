@@ -25,6 +25,12 @@ path = "src/bin/export_chat_protocol.rs"
 name = "bundled-resources"
 path = "build_support/resources.rs"
 
+# AppKit must be exercised on the process main thread, not libtest workers.
+[[test]]
+name = "traffic-lights"
+path = "tests/traffic_lights.rs"
+harness = false
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
