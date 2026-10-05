@@ -13,8 +13,7 @@ export const chatTitlebarRowClass = usesNativeTitlebar
  * 两者抵消 → 这里保持 92px。收起态主顶栏在主区卡片内，而收起时主区卡片左缘同样在 x=8
  * （`.chat-sidebar-shell.is-collapsed` 用负侧栏宽留出那道左缝），所以收起态也是 92px，
  * `.chat-titlebar-row--collapsed-mac` 不再补 8px。
- * 垂直：不在这里定 —— 整条顶栏线对到 `--chat-traffic-center-y`（交通灯中心的实测值，
- * 由 ChatWindowHost 量出来写进 documentElement），见 index.css。
+ * 垂直保持页面原有布局，ChatWindowHost 测量按钮中心，让原生交通灯对齐。
  */
 export const chatTitlebarMacInsetClass = usesNativeTitlebar ? 'pl-[92px]' : ''
 

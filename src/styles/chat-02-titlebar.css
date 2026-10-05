@@ -3,18 +3,6 @@
   padding-bottom: 10px;
 }
 
-/* macOS：整条顶栏线（灯 / 那两枚图标 / 模型 / 思考强度 / 审批）对到 --chat-traffic-center-y
-   —— 交通灯中心的实测值，不再是写死的 30（那个常数只在部分 macOS 版本上成立，见 windows.rs）。
-   用 padding-bottom 而非改行高：行仍占 52px（下方内容不位移），内容盒居中落在
-   card-top + (52 − pb)/2 = center → pb = 52 − 2*(center − card-top)。
-   排除侧栏那行：它不是 52px 居中行，自己按同一个变量算 padding-top（见 .chat-sidebar-titlebar-row）。 */
-.chat-window-host--mac-titlebar .chat-titlebar-row:not(.chat-sidebar-titlebar-row) {
-  padding-bottom: max(
-    0px,
-    calc(52px - 2 * (var(--chat-traffic-center-y) - var(--chat-card-top)))
-  );
-}
-
 /* 侧栏收起时顶栏行回到主区。收起态主区卡片左缘也在 x=8（`.is-collapsed` 用 -W 而非
    -(W+8)，刻意把那 8px 留成左缝），与展开态侧栏卡片的左缘同位；灯 x 也按「卡片内」算过
    （windows.rs 里 x = 14 + 8）。所以两态用同一个 92px，收起态不再额外 +8 ——

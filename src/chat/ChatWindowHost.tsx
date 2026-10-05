@@ -115,30 +115,49 @@ export function ChatWindowHost({ children, translucentSidebar }: ChatWindowHostP
     }
   }, [])
 
-  // 顶栏那条线对齐交通灯。灯的 y 由 AppKit 布局决定、随 macOS 版本变（见 windows.rs
-  // CHAT_TRAFFIC_LIGHT_INSET_Y 注释），写死常数必然「这台对了那台错」—— 所以量一次真值，
-  // 让 CSS 跟着灯走（index.css --chat-traffic-center-y）。
-  // 窗口刚建出来时 contentView 可能还没尺寸，量不到就隔一会儿再试，别永远卡在默认值。
+  // 页面布局是基准：只把按钮的中心传给原生窗口，不用交通灯位置改页面。
   useEffect(() => {
     if (!usesNativeTitlebar || !isTauriRuntime()) return
-
     let cancelled = false
+    let generation = 0
     let timer: ReturnType<typeof setTimeout> | undefined
-
-    const measure = async (attempt: number) => {
-      const y = await api.chatTrafficLightCenterY().catch(() => null)
-      if (cancelled) return
-      if (y != null) {
-        document.documentElement.style.setProperty('--chat-traffic-center-y', `${y}px`)
-      } else if (attempt < 3) {
-        timer = setTimeout(() => void measure(attempt + 1), 250)
+    const stops: (() => void)[] = []
+    const measure = async (gen: number, attempt = 0) => {
+      const buttons = document.querySelectorAll<HTMLElement>('.chat-titlebar-row button')
+      const rect = Array.from(buttons, button => button.getBoundingClientRect())
+        .find(rect => rect.width > 0 && rect.height > 0 && rect.right > 0)
+      const center = rect ? rect.top + rect.height / 2 : null
+      const y = center != null
+        ? await api.chatTrafficLightCenterY(center).catch(() => null)
+        : null
+      if (cancelled || gen !== generation) return
+      if ((attempt === 0 || y == null || center == null || Math.abs(y - center) > 0.5) && attempt < 3) {
+        timer = setTimeout(() => void measure(gen, attempt + 1), 250)
       }
     }
-
-    void measure(0)
+    const schedule = () => {
+      if (cancelled) return
+      const gen = ++generation
+      clearTimeout(timer)
+      timer = setTimeout(() => void measure(gen), 150)
+    }
+    const observer = new MutationObserver(schedule)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+    window.addEventListener('resize', schedule)
+    window.addEventListener('focus', schedule)
+    window.addEventListener('blur', schedule)
+    const win = getCurrentWindow()
+    void win.onResized(schedule).then(stop => cancelled ? stop() : stops.push(stop)).catch(() => {})
+    void win.onFocusChanged(schedule).then(stop => cancelled ? stop() : stops.push(stop)).catch(() => {})
+    void measure(++generation)
     return () => {
       cancelled = true
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
+      stops.forEach(stop => stop())
+      observer.disconnect()
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('focus', schedule)
+      window.removeEventListener('blur', schedule)
     }
   }, [])
 

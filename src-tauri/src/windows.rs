@@ -6,11 +6,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::json;
+#[cfg(target_os = "macos")]
+use tauri::TitleBarStyle;
 use tauri::{
     window::Color, AppHandle, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
-#[cfg(target_os = "macos")]
-use tauri::{LogicalPosition, TitleBarStyle};
 
 /// 侧栏收起时主内容区最小宽度（与前端 `CHAT_MIN_SIZE_COLLAPSED` 一致）。
 pub const CHAT_MIN_INNER_WIDTH_COLLAPSED: f64 = 400.0;
@@ -44,7 +44,7 @@ pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool
 }
 
 /// 悬浮卡片式侧栏的外边距（与 index.css `.chat-sidebar-shell { margin: 8px }` 同步）。
-/// 灯 x 随卡片左缘 +8；y 跟随侧栏顶栏图标（图标在卡片内上提后，窗口坐标中心仍约 26px，与主区顶栏齐）。
+/// 灯 x 随卡片左缘 +8；y 跟随页面顶栏图标的实际中心。
 #[cfg(target_os = "macos")]
 const CHAT_SIDEBAR_CARD_INSET: f64 = 8.0;
 
@@ -52,24 +52,12 @@ const CHAT_SIDEBAR_CARD_INSET: f64 = 8.0;
 #[cfg(target_os = "macos")]
 const CHAT_TRAFFIC_LIGHT_X: f64 = 14.0 + CHAT_SIDEBAR_CARD_INSET;
 
-/// 交给 tao `traffic_light_inset` 的 y。tao 会在每次内容视图 `drawRect` 重新应用这个 inset
-/// （见 tao 源 view.rs::draw_rect → inset_traffic_lights），故窗口拖动/缩放/移动全程都保持对齐。
-///
-/// 这个 y **不等于**灯中心。tao 只写按钮的 `origin.x`，`origin.y` 始终是 AppKit 布局出来的值：
-///   容器高 = 按钮高 + y，灯中心距顶 = y − button.origin.y + button.height / 2
-/// 而 `button.origin.y` / `button.height` 随 macOS 版本变（标题栏容器自然高度不同），
-/// 所以「y=32 → 中心 30」只在某些系统上成立 —— 早先几次「统一到 30」的修复就是栽在这里。
-/// 现在不再假设：前端用 `chat_traffic_light_center_y` 量出真实中心，顶栏那条线跟着灯走
-/// （见 index.css `--chat-traffic-center-y`）。这个常数只决定灯大致落在哪，不需要精确。
-#[cfg(target_os = "macos")]
-const CHAT_TRAFFIC_LIGHT_INSET_Y: f64 = 32.0;
-
-/// 交通灯中心距 WebView 内容顶缘的距离（CSS px / AppKit point，同一单位）。
-///
-/// 前端据此把侧栏顶栏图标、主区顶栏控件摆到同一条线上。非 macOS / 取不到 / 数值离谱都返回
-/// `None`，前端退回 CSS 里的默认 30px。
+/// 将原生交通灯对齐页面顶栏按钮，返回实际中心供确认；不反向修改页面布局。
 #[tauri::command]
-pub async fn chat_traffic_light_center_y(window: WebviewWindow) -> Option<f64> {
+pub async fn chat_traffic_light_center_y(window: WebviewWindow, center_y: f64) -> Option<f64> {
+    if !center_y.is_finite() || !(24.0..=80.0).contains(&center_y) {
+        return None;
+    }
     #[cfg(target_os = "macos")]
     {
         // NSView 几何只能在主线程读，命令本身在 worker 线程，用 channel 取回。
@@ -82,7 +70,11 @@ pub async fn chat_traffic_light_center_y(window: WebviewWindow) -> Option<f64> {
                     .ok()
                     .filter(|ptr| !ptr.is_null())
                     .and_then(|ptr| unsafe {
-                        measure_traffic_light_center_y(ptr as cocoa::base::id)
+                        let window = ptr as cocoa::base::id;
+                        if !restore_macos_traffic_lights(window, center_y) {
+                            return None;
+                        }
+                        measure_traffic_light_center_y(window)
                     });
                 let _ = tx.send(measured);
             })
@@ -90,7 +82,7 @@ pub async fn chat_traffic_light_center_y(window: WebviewWindow) -> Option<f64> {
         rx.recv_timeout(std::time::Duration::from_millis(500))
             .ok()
             .flatten()
-            // 灯只可能在标题栏那一带；离谱值当没量到，别把 padding 算成负数。
+            // 只确认标题栏范围内的有效坐标；前端不据此改变布局。
             .filter(|y| (8.0..=80.0).contains(y))
     }
     #[cfg(not(target_os = "macos"))]
@@ -101,7 +93,7 @@ pub async fn chat_traffic_light_center_y(window: WebviewWindow) -> Option<f64> {
 }
 
 /// 把 close 按钮的 bounds 转到 contentView 坐标系，换算成「距内容顶缘」。
-/// contentView 未翻转（y 自下而上），故距顶 = 内容高 − (y + 高/2)。
+/// 按 contentView 的实际坐标方向换算，避免依赖 NSView 子类的翻转约定。
 /// Overlay 标题栏下 contentView 铺满整个窗口 frame，所以这就是 CSS 的 y。
 #[cfg(target_os = "macos")]
 unsafe fn measure_traffic_light_center_y(window: cocoa::base::id) -> Option<f64> {
@@ -121,11 +113,16 @@ unsafe fn measure_traffic_light_center_y(window: cocoa::base::id) -> Option<f64>
     if content_bounds.size.height <= 0.0 || in_content.size.height <= 0.0 {
         return None;
     }
-    Some(content_bounds.size.height - (in_content.origin.y + in_content.size.height / 2.0))
+    let flipped: bool = msg_send![content, isFlipped];
+    let center = in_content.origin.y + in_content.size.height / 2.0;
+    Some(if flipped {
+        center - content_bounds.origin.y
+    } else {
+        content_bounds.origin.y + content_bounds.size.height - center
+    })
 }
 
-/// 隐藏 Overlay 标题栏的窗口标题文字。交通灯位置本身由 builder 的 `traffic_light_position`
-/// （= tao `traffic_light_inset`，tao 每次 drawRect 自动重新应用）负责并持久保持，这里不再手动重排。
+/// 恢复 Overlay 标题栏外观；AppKit 重排后不能只依赖 tao 的下一次 drawRect。
 #[cfg(target_os = "macos")]
 pub(crate) fn apply_macos_traffic_light_position(window: &WebviewWindow) {
     use cocoa::base::id;
@@ -140,8 +137,221 @@ pub(crate) fn apply_macos_traffic_light_position(window: &WebviewWindow) {
         }
         unsafe {
             hide_macos_window_title(ptr as id);
+            let observer = observe_macos_traffic_light_layout(ptr as id, None);
+            let center_y = *(*observer).get_ivar::<f64>("targetCenter");
+            restore_macos_traffic_lights(ptr as id, center_y);
         }
     });
+}
+
+// NSWindow 关联持有观察者，观察者只保存弱窗口指针；窗口销毁时解除订阅。
+#[cfg(target_os = "macos")]
+unsafe fn observe_macos_traffic_light_layout(
+    window: cocoa::base::id,
+    center_y: Option<f64>,
+) -> cocoa::base::id {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::runtime::{Object, Sel};
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::sync::OnceLock;
+    extern "C" {
+        fn objc_getAssociatedObject(object: id, key: *const u8) -> id;
+        fn objc_setAssociatedObject(object: id, key: *const u8, value: id, policy: usize);
+        fn object_setClass(
+            object: id,
+            class: *const objc::runtime::Class,
+        ) -> *const objc::runtime::Class;
+    }
+    static KEY: u8 = 0;
+    static CLASS: OnceLock<usize> = OnceLock::new();
+    extern "C" fn update(this: &mut Object, _: Sel, _: id) {
+        unsafe {
+            restore_macos_traffic_lights(
+                *this.get_ivar::<id>("targetWindow"),
+                *this.get_ivar::<f64>("targetCenter"),
+            );
+        }
+    }
+    extern "C" fn dealloc(this: &mut Object, _: Sel) {
+        unsafe {
+            let center: id = msg_send![class!(NSNotificationCenter), defaultCenter];
+            let _: () = msg_send![center, removeObserver: this as *mut Object];
+            let _: () = msg_send![super(this, class!(NSObject)), dealloc];
+        }
+    }
+    let class = *CLASS.get_or_init(|| {
+        let mut decl =
+            objc::declare::ClassDecl::new("KivioTrafficLightLayoutObserver", class!(NSObject))
+                .unwrap();
+        decl.add_ivar::<id>("targetWindow");
+        decl.add_ivar::<f64>("targetCenter");
+        decl.add_ivar::<bool>("busy");
+
+        decl.add_method(
+            sel!(windowUpdated:),
+            update as extern "C" fn(&mut Object, Sel, id),
+        );
+        decl.add_method(sel!(dealloc), dealloc as extern "C" fn(&mut Object, Sel));
+        decl.register() as *const _ as usize
+    }) as *const objc::runtime::Class;
+    let mut observer = objc_getAssociatedObject(window, &KEY);
+    if observer == nil {
+        observer = msg_send![class, new];
+        (*observer).set_ivar("targetWindow", window);
+        (*observer).set_ivar("targetCenter", center_y.unwrap_or(30.0));
+        (*observer).set_ivar("busy", false);
+
+        objc_setAssociatedObject(window, &KEY, observer, 1);
+        let center: id = msg_send![class!(NSNotificationCenter), defaultCenter];
+        for event in [
+            "NSWindowDidResizeNotification",
+            "NSWindowDidBecomeKeyNotification",
+            "NSWindowDidResignKeyNotification",
+            "NSWindowDidExitFullScreenNotification",
+        ] {
+            let name = NSString::alloc(nil).init_str(event);
+            let _: () = msg_send![center, addObserver: observer selector: sel!(windowUpdated:) name: name object: window];
+            let _: () = msg_send![name, release];
+        }
+        let _: () = msg_send![observer, release];
+    }
+    if let Some(center_y) = center_y {
+        (*observer).set_ivar("targetCenter", center_y);
+    }
+    // 在标题栏自身的布局入口保持高度，避免拖动追踪循环绕过窗口更新通知。
+    // 只给此窗口的容器安装无额外 ivar 的子类，不修改系统类或其它窗口。
+    extern "C" fn set_frame(this: &mut Object, _: Sel, mut frame: cocoa::foundation::NSRect) {
+        unsafe {
+            let window: id = msg_send![this, window];
+            // During fullscreen teardown the container briefly has no owning window.
+            let observer = if window == nil {
+                nil
+            } else {
+                objc_getAssociatedObject(window, &KEY)
+            };
+            let mask: u64 = if window == nil {
+                0
+            } else {
+                msg_send![window, styleMask]
+            };
+            if observer != nil && mask & (1 << 14) == 0 {
+                let height = *(*observer).get_ivar::<f64>("targetCenter") * 2.0;
+                frame.origin.y += frame.size.height - height;
+                frame.size.height = height;
+            }
+            // AppKit may add another dynamic subclass during fullscreen transitions.
+            // Dispatch above our own implementation, not above the object's current class.
+            let mut owner = this.class();
+            while !owner.name().starts_with("KivioAlignedTitlebar_") {
+                owner = owner.superclass().unwrap();
+            }
+            let superclass = owner.superclass().unwrap();
+            let _: () = msg_send![super(this, superclass), setFrame: frame];
+            if observer != nil {
+                restore_macos_traffic_lights(window, *(*observer).get_ivar::<f64>("targetCenter"));
+            }
+        }
+    }
+    let button: id = msg_send![window, standardWindowButton: 0_u64];
+    if button == nil {
+        return observer;
+    }
+    let parent: id = msg_send![button, superview];
+    if parent == nil {
+        return observer;
+    }
+    let container: id = msg_send![parent, superview];
+    let mut installed = false;
+    if container != nil {
+        let mut ancestor = Some((*container).class());
+        while let Some(class) = ancestor {
+            if class.name().starts_with("KivioAlignedTitlebar_") {
+                installed = true;
+                break;
+            }
+            ancestor = class.superclass();
+        }
+    }
+    if container != nil && !installed {
+        let base = (*container).class();
+        let name = format!("KivioAlignedTitlebar_{}", base.name());
+        let subclass = if let Some(class) = objc::runtime::Class::get(&name) {
+            class
+        } else {
+            let mut decl = objc::declare::ClassDecl::new(&name, base).unwrap();
+            decl.add_method(
+                sel!(setFrame:),
+                set_frame as extern "C" fn(&mut Object, Sel, cocoa::foundation::NSRect),
+            );
+            decl.register()
+        };
+        object_setClass(container, subclass);
+    }
+    observer
+}
+
+/// 原生位置由这里唯一维护；builder 不再设置会在每次重绘覆盖校准的 inset。
+/// 全屏期间由系统管理标题栏，不修改也不采样隐藏按钮。
+#[cfg(target_os = "macos")]
+unsafe fn restore_macos_traffic_lights(window: cocoa::base::id, center_y: f64) -> bool {
+    let observer = observe_macos_traffic_light_layout(window, Some(center_y));
+    if *(*observer).get_ivar::<bool>("busy") {
+        return false;
+    }
+    (*observer).set_ivar("busy", true);
+    let aligned = layout_macos_traffic_lights(window, center_y);
+    (*observer).set_ivar("busy", false);
+    aligned
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn layout_macos_traffic_lights(window: cocoa::base::id, center_y: f64) -> bool {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSRect;
+    use objc::{msg_send, sel, sel_impl};
+
+    let mask: u64 = msg_send![window, styleMask];
+    if mask & (1 << 14) != 0 {
+        return false;
+    }
+    let close: id = msg_send![window, standardWindowButton: 0_u64];
+    let mini: id = msg_send![window, standardWindowButton: 1_u64];
+    let zoom: id = msg_send![window, standardWindowButton: 2_u64];
+    if close == nil || mini == nil || zoom == nil {
+        return false;
+    }
+    let current_rect: NSRect = msg_send![close, frame];
+    if measure_traffic_light_center_y(window).is_some_and(|y| (y - center_y).abs() < 0.25)
+        && (current_rect.origin.x - CHAT_TRAFFIC_LIGHT_X).abs() < 0.25
+    {
+        return true;
+    }
+    let parent: id = msg_send![close, superview];
+    if parent == nil {
+        return false;
+    }
+    let container: id = msg_send![parent, superview];
+    if container == nil {
+        return false;
+    }
+    let close_rect: NSRect = msg_send![close, frame];
+    let mini_rect: NSRect = msg_send![mini, frame];
+    let window_rect: NSRect = msg_send![window, frame];
+    let mut frame: NSRect = msg_send![container, frame];
+    frame.size.height = center_y * 2.0;
+    frame.origin.y = window_rect.size.height - frame.size.height;
+    let _: () = msg_send![container, setFrame: frame];
+    // 同 Electron WindowButtonsProxy：容器上下对称留白，并直接设置按钮 y。
+    // 不依赖 AppKit 留下的旧按钮 origin，也不测完再移动整个网页。
+    let spacing = mini_rect.origin.x - close_rect.origin.x;
+    for (index, button) in [close, mini, zoom].into_iter().enumerate() {
+        let mut rect: NSRect = msg_send![button, frame];
+        rect.origin.x = CHAT_TRAFFIC_LIGHT_X + index as f64 * spacing;
+        rect.origin.y = (frame.size.height - rect.size.height) / 2.0;
+        let _: () = msg_send![button, setFrameOrigin: rect.origin];
+    }
+    true
 }
 
 /// NSWindowTitleHidden — 隐藏 Overlay 标题栏中的窗口标题文字。
@@ -437,10 +647,6 @@ pub fn ensure_chat_window_with_hash(app: &AppHandle, hash: &str) -> Result<Webvi
             .decorations(true)
             .title_bar_style(TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(LogicalPosition::new(
-                CHAT_TRAFFIC_LIGHT_X,
-                CHAT_TRAFFIC_LIGHT_INSET_Y,
-            ))
             .transparent(true)
             .background_color(Color(0, 0, 0, 0))
             .shadow(true);
@@ -512,10 +718,6 @@ pub fn ensure_chat_popout_window(
             .decorations(true)
             .title_bar_style(TitleBarStyle::Overlay)
             .hidden_title(true)
-            .traffic_light_position(LogicalPosition::new(
-                CHAT_TRAFFIC_LIGHT_X,
-                CHAT_TRAFFIC_LIGHT_INSET_Y,
-            ))
             .transparent(true)
             .background_color(Color(0, 0, 0, 0))
             .shadow(true);

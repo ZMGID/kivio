@@ -1987,9 +1987,9 @@ export const api = {
    *  材质上了必须传 false，否则 Menu 材质被实色背景挡死。非 macOS 是 no-op。 */
   chatWindowSetOpaque: (opaque: boolean): Promise<void> =>
     invoke('chat_window_set_opaque', { opaque }),
-  /** macOS 交通灯中心距内容顶缘的真实距离（CSS px）。取不到返回 null，前端退回默认值。 */
-  chatTrafficLightCenterY: (): Promise<number | null> =>
-    invoke('chat_traffic_light_center_y'),
+  /** macOS：把交通灯对齐到页面按钮中心，返回校准后的实际位置。 */
+  chatTrafficLightCenterY: (centerY: number): Promise<number | null> =>
+    invoke('chat_traffic_light_center_y', { centerY }),
   chatReportNotificationView: (route: string, viewing: boolean): Promise<void> =>
     invoke('chat_report_notification_view', { route, viewing }),
   resizeWindow: async (width: number, height: number) => {

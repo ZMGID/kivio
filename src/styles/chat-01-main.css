@@ -71,10 +71,6 @@
   --chat-card-top: 8px;
   --chat-card-inset: 8px;
   --chat-card-radius: 12px;
-  /* 交通灯中心距窗口内容顶缘的距离；整条 macOS 顶栏线（灯 / 侧栏那两枚图标 / 模型 /
-     思考强度 / 审批）都对到这条线上。默认 30px 只是兜底 —— 真值由 ChatWindowHost
-     从 AppKit 量出来后覆写，因为它随 macOS 版本变（见 windows.rs 那条注释）。 */
-  --chat-traffic-center-y: 30px;
 }
 
 .chat-window-shell:has(> .chat-titlebar-strip) {
@@ -246,20 +242,11 @@
 }
 
 /* 侧栏顶栏：只上移那俩图标，卡片本身沿用统一外沿。
-   基线（Windows / Linux）保持 5/3，行总高 40。macOS 见下面那条按灯对齐的覆写。 */
+   保持原来的 5/3 内边距，原生交通灯按按钮实际中心对齐。 */
 .chat-sidebar-shell > .chat-sidebar-titlebar-row {
   align-items: flex-start;
   padding-top: 5px;
   padding-bottom: 3px;
-}
-
-/* macOS：图标是 h-8（32px）按钮，要让按钮中心落在窗口的 --chat-traffic-center-y
-   （= 交通灯中心实测值，见 :root）→ 卡片内 padding-top = center − card-top − 16。
-   padding-bottom 补足，行总高恒定 40，下方内容不位移。
-   max() 兜底：万一量到的 center 小得离谱，负 padding 会让整条声明失效。 */
-.chat-window-host--mac-titlebar .chat-sidebar-shell > .chat-sidebar-titlebar-row {
-  padding-top: max(0px, calc(var(--chat-traffic-center-y) - var(--chat-card-top) - 16px));
-  padding-bottom: max(0px, calc(8px + 16px + var(--chat-card-top) - var(--chat-traffic-center-y)));
 }
 
 .chat-sidebar-shell.is-collapsed {
