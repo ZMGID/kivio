@@ -62,7 +62,7 @@ export const ChatTitlebar = memo(function ChatTitlebar({
         </div>
       )}
       <div
-        className="flex min-w-0 flex-1 items-center gap-1 self-stretch"
+        className="chat-titlebar-strip-content flex min-w-0 flex-1 items-center gap-1 self-stretch"
         data-tauri-drag-region
       >
         {children}

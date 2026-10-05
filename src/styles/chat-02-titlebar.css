@@ -3,6 +3,15 @@
   padding-bottom: 10px;
 }
 
+/* 齐边布局共用 52px 顶栏，所有控件中心位于窗口顶部下方 26px。
+   原生交通灯继续由 ChatWindowHost 测量控件中心后对齐。 */
+.chat-window-shell--native-titlebar .chat-titlebar-row {
+  height: 52px;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
 /* 侧栏收起时顶栏行回到主区。收起态主区卡片左缘也在 x=8（`.is-collapsed` 用 -W 而非
    -(W+8)，刻意把那 8px 留成左缝），与展开态侧栏卡片的左缘同位；灯 x 也按「卡片内」算过
    （windows.rs 里 x = 14 + 8）。所以两态用同一个 92px，收起态不再额外 +8 ——
@@ -66,19 +75,24 @@
   background: #28c840;
 }
 
-/* Windows / Linux 全宽标题栏带：无独立底色（透出窗口底色）、无底边框，整条可拖拽。
-   会话页的业务控件也在这一条里 —— 非 mac 没有主区 52px 顶栏，chrome 只此一行，
-   所以高度按 32px 胶囊控件取 44（38 只够放三键，装不下控件）。
-   侧栏卡片 / Dock / 主区都在带下方，故三键可贴角、不必让各视图 padding-right 躲开。
-
-   第一枚按钮的盒子左缘与侧栏外沿对齐，共用 --chat-card-inset。 */
+/* Windows / Linux 共用 44px 标题栏：与原生窗口命中区保持一致。
+   导航段和侧栏同宽同色，内容段与主内容同色，分隔线从顶端连续向下。 */
 .chat-titlebar-strip {
   display: flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 2px;
+  gap: 0;
   height: 44px;
-  padding-left: var(--chat-card-inset);
+  padding-left: 0;
+}
+
+.chat-titlebar-strip-content,
+.chat-titlebar-strip > .chat-win-controls {
+  background: var(--theme-surface);
+}
+
+.chat-titlebar-strip-content {
+  padding-left: 8px;
 }
 
 /* 独立窗口沿用主窗口的顶栏底色，由外壳统一处理 Mica 和深浅色。
@@ -88,24 +102,23 @@
   z-index: 20;
 }
 
-/* 带内导航区（侧栏开合 + 新建）。侧栏展开时撑到侧栏那一列的宽度，
-   把业务控件推到主区卡片左缘 —— 否则控件压在侧栏卡片上方，读作错位。
-   宽度 = 侧栏宽 + 面板间隙 − 顶栏 flex gap，与 `.chat-sidebar-shell` 同步。
-   用 min-width 而非 width 做过渡：width 的收起态是 auto（按钮自然宽），auto 不可插值、
-   动画会直接跳；min-width 两端都是具体值，且 max(内容宽, min-width) 天然贴合按钮宽度，
-   不必把「两枚 28px 钮 + 2px 间距」这种数字硬编码进来。
-   曲线与时长同侧栏折叠（--kv-dur-slow / --kv-ease-standard），两者才像一起移动。 */
+/* 导航段与侧栏同步切换宽度，避免折叠或拖拽时上下分隔线错位。 */
 .chat-titlebar-strip-nav {
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 2px;
   min-width: 0;
-  transition: min-width var(--kv-dur-slow) var(--kv-ease-standard);
+  align-self: stretch;
+  padding-inline: 8px;
+  background: var(--theme-surface);
 }
 
 .chat-titlebar-strip-nav--reserve {
-  min-width: calc(var(--chat-sidebar-width, 240px) + var(--chat-card-inset) - 2px);
+  width: var(--chat-sidebar-width, 240px);
+  min-width: var(--chat-sidebar-width, 240px);
+  border-right: 1px solid var(--theme-surface-border);
+  background: var(--theme-surface-soft);
 }
 
 /* 设置页：带浮起、不占行高，让 200/52px 灰导航栏自己从 y=0 画起（见 ChatTitlebar 注释）。
@@ -139,6 +152,10 @@
    点击交给下面的页头（页头空白处仍会 startDragging）；只有窗口按钮自己接收点击。 */
 .chat-titlebar-strip--settings {
   pointer-events: none;
+}
+.chat-titlebar-strip--settings > .chat-titlebar-strip-content,
+.chat-titlebar-strip--settings > .chat-win-controls {
+  background: transparent;
 }
 .chat-titlebar-strip--settings .chat-win-controls {
   pointer-events: auto;

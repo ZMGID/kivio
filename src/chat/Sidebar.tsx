@@ -1506,8 +1506,8 @@ export const Sidebar = memo(function Sidebar({
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between px-2 pb-1 pt-3">
-              <div className="flex items-center gap-1.5 text-[13px] font-semibold">
+            <div className="flex flex-wrap items-center justify-between gap-y-1 px-2 pb-1 pt-3">
+              <div className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[13px] font-semibold">
                 {([
                   ['conversations', t.chatTabRecent],
                   ['sets', t.chatTabSets],
@@ -1518,7 +1518,7 @@ export const Sidebar = memo(function Sidebar({
                       key={tab}
                       type="button"
                       onClick={() => setActiveTab(tab)}
-                      className={`rounded-md px-1.5 py-0.5 transition-colors ${
+                      className={`shrink-0 rounded-md px-1 py-0.5 transition-colors ${
                         activeTab === tab
                           ? 'text-neutral-900'
                           : 'text-neutral-400 hover:text-neutral-600 dark:text-neutral-500'
@@ -1538,7 +1538,7 @@ export const Sidebar = memo(function Sidebar({
                       ]
                 })}
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="ml-auto flex shrink-0 items-center gap-1">
                 {activeTab === 'conversations' && (
                   <IconButton
                     ref={sectionMenuButtonRef}
