@@ -319,6 +319,8 @@ mod tests {
             stream_outcome: None,
             usage: None,
             anchor_usage: None,
+            cache_pair_input: None,
+            cache_pair_read: None,
             group_id: None,
             provider_id: None,
             model: None,

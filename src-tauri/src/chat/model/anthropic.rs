@@ -381,6 +381,9 @@ impl AnthropicMessagesProvider<'_> {
             while let Some(pos) = buffer.find('\n') {
                 let line: String = buffer.drain(..=pos).collect();
                 match parse_anthropic_sse_event(&line) {
+                    Some(AnthropicSseEvent::Usage(next)) => {
+                        merge_stream_usage(&mut usage, next, sink)?;
+                    }
                     Some(AnthropicSseEvent::TextDelta(text)) => {
                         full.push_str(&text);
                         sink.emit(StreamPart::TextDelta { delta: text })?;
@@ -461,10 +464,13 @@ impl AnthropicMessagesProvider<'_> {
                         reason,
                         usage: next_usage,
                     }) => {
-                        finish_reason = finish_reason_from_anthropic_stop_reason(&reason);
-                        if next_usage.is_some() {
-                            usage = next_usage;
+                        if let Some(next) = next_usage {
+                            merge_stream_usage(&mut usage, next, sink)?;
                         }
+                        if reason.is_empty() {
+                            continue;
+                        }
+                        finish_reason = finish_reason_from_anthropic_stop_reason(&reason);
                         sink.emit(StreamPart::Finish {
                             reason: finish_reason.clone(),
                             full: full.clone(),
@@ -1327,6 +1333,7 @@ fn parse_anthropic_response(response: &Value) -> AnthropicParsedResponse {
 }
 
 enum AnthropicSseEvent {
+    Usage(ModelUsage),
     TextDelta(String),
     ThinkingDelta(String),
     ToolUseStart {
@@ -1361,6 +1368,8 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
         .and_then(|value| value.as_str())
         .unwrap_or_default()
     {
+        "message_start" => model_usage_from_anthropic_value(value.get("message")?)
+            .map(AnthropicSseEvent::Usage),
         "content_block_start" => {
             let block = value.get("content_block")?;
             match block.get("type").and_then(|value| value.as_str()) {
@@ -1437,7 +1446,7 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
                 .get("delta")
                 .and_then(|delta| delta.get("stop_reason"))
                 .and_then(|value| value.as_str())
-                .unwrap_or("end_turn")
+                .unwrap_or("")
                 .to_string();
             Some(AnthropicSseEvent::MessageStopWithReason {
                 reason,
@@ -1455,6 +1464,32 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
         )),
         _ => None,
     }
+}
+
+/// Delta fields are cumulative snapshots, not increments. Omitted fields retain
+/// the input/cache counts received at message_start.
+fn merge_stream_usage(
+    usage: &mut Option<ModelUsage>,
+    next: ModelUsage,
+    sink: &mut dyn StreamSink,
+) -> Result<(), ModelError> {
+    let current = usage.get_or_insert_with(ModelUsage::default);
+    current.input_tokens = next.input_tokens.or(current.input_tokens);
+    current.output_tokens = next.output_tokens.or(current.output_tokens);
+    current.cached_input_tokens = next.cached_input_tokens.or(current.cached_input_tokens);
+    current.cache_creation_input_tokens =
+        next.cache_creation_input_tokens.or(current.cache_creation_input_tokens);
+    current.total_tokens = current.input_tokens.zip(current.output_tokens)
+        .map(|(input, output)| input.saturating_add(output));
+    if let Some(input_tokens) = current.input_tokens {
+        let input_tokens = input_tokens
+            .saturating_add(current.cached_input_tokens.unwrap_or(0))
+            .saturating_add(current.cache_creation_input_tokens.unwrap_or(0));
+        sink.emit(StreamPart::ContextUsage {
+            input_tokens, output_tokens: current.output_tokens.unwrap_or(0),
+        })?;
+    }
+    Ok(())
 }
 
 fn assemble_tool_call_from_stream(
@@ -1511,7 +1546,7 @@ fn anthropic_content_blocks(message: &ModelMessage, role: ModelRole) -> Vec<Valu
                     }
                 }
             }
-            MessagePart::ImageUrl { url } => {
+            MessagePart::ImageUrl { url, .. } => {
                 if matches!(role, ModelRole::User) {
                     blocks.push(serde_json::json!({
                         "type": "image",
@@ -2744,6 +2779,7 @@ mod tests {
                             mime_type: "image/png".to_string(),
                             data: "abc".to_string(),
                             path: None,
+                            detail: None,
                         },
                     ],
                 },

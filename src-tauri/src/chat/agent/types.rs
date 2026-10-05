@@ -59,6 +59,8 @@ pub struct AgentRunConfig<'a> {
     pub retry_attempts: usize,
     pub assistant_snapshot: Option<ChatAssistantSnapshot>,
     pub provider_tools_fallback_system_prompt: String,
+    /// Completed selected-branch main requests: (normalized input, cache-read tokens).
+    pub initial_cache_usage: Option<(u64, u64)>,
     /// 真实用量锚点（来自会话最后一条带 `anchor_usage` 的 assistant 消息，由 commands.rs 解析）：
     /// run 首次压缩检查前用它把上下文占用锚定到 provider 实报值。值为「上次 prompt + 该次响应」的
     /// token **总数**（含 output，见 `context_estimate::anchor_total_tokens`）。`None` = 无可用锚点
@@ -95,6 +97,8 @@ pub struct AgentRunResult {
     /// 本轮全部模型调用（规划/合成/压缩摘要）累计的 provider 真实 usage；
     /// provider 不报告时为 None（前端回落到 chars 估算）。
     pub usage: Option<crate::chat::model::ModelUsage>,
+    /// Sum of complete per-request cache telemetry pairs; independent of billing usage.
+    pub cache_pairs: Option<(u64, u64)>,
     /// 本轮**最后一次**模型调用的 usage（真实用量锚点，落盘到 `ChatMessage.anchor_usage`）。
     /// 与累计 `usage` 区分——累计是多步之和会虚高，锚点须是单次调用值。None = provider 未报。
     pub last_step_usage: Option<crate::chat::model::ModelUsage>,

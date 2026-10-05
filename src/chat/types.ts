@@ -351,6 +351,7 @@ export interface ContextUsageSegment {
   label: string
   estimated_tokens?: number
   estimatedTokens?: number
+  chars?: number
   color?: string | null
 }
 
@@ -411,6 +412,15 @@ export interface ConversationContextState {
   usageRatio?: number | null
   status?: ContextUsageStatus
   segments?: ContextUsageSegment[]
+  reported_context_tokens?: number | null
+  reportedContextTokens?: number | null
+  /** Backend measurement order shared by full snapshots and live reports. */
+  measurement_seq?: number | null
+  measurementSeq?: number | null
+  lifecycle_id?: number | null
+  lifecycleId?: number | null
+  cache_hit_rate?: number | null
+  cacheHitRate?: number | null
   last_measured_at?: number
   lastMeasuredAt?: number
   last_compressed_at?: number | null
@@ -426,12 +436,12 @@ export interface ConversationContextState {
   clearBoundaries?: ContextClearBoundaryRecord[]
   warning?: string | null
   warningMessage?: string | null
-  context_source?: 'kivio_builtin' | 'external_cli' | string
-  contextSource?: 'kivio_builtin' | 'external_cli' | string
-  token_count_source?: 'cli_reported' | 'estimated' | 'provider_reported' | string
-  tokenCountSource?: 'cli_reported' | 'estimated' | 'provider_reported' | string
-  session_input_tokens?: number
-  sessionInputTokens?: number
+  context_source?: 'kivio_builtin' | 'external_cli' | string | null
+  contextSource?: 'kivio_builtin' | 'external_cli' | string | null
+  token_count_source?: 'cli_reported' | 'estimated' | 'provider_context_reported' | string | null
+  tokenCountSource?: 'cli_reported' | 'estimated' | 'provider_context_reported' | string | null
+  session_input_tokens?: number | null
+  sessionInputTokens?: number | null
   session_output_tokens?: number
   sessionOutputTokens?: number
   external_agent_id?: string

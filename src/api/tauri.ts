@@ -92,6 +92,7 @@ export type ChatContextUsageSegment = {
   label: string
   estimated_tokens?: number
   estimatedTokens?: number
+  chars?: number
   color?: string | null
 }
 
@@ -138,10 +139,25 @@ export type ChatContextState = {
   autoCompactThresholdTokens?: number | null
   context_window_estimated?: boolean
   contextWindowEstimated?: boolean
+  context_source?: string | null
+  contextSource?: string | null
+  token_count_source?: string | null
+  tokenCountSource?: string | null
+  session_input_tokens?: number | null
+  sessionInputTokens?: number | null
   usage_ratio?: number | null
   usageRatio?: number | null
   status?: string
   segments?: ChatContextUsageSegment[]
+  reported_context_tokens?: number | null
+  reportedContextTokens?: number | null
+  /** Backend measurement order. Full snapshots and live reports share it. */
+  measurement_seq?: number | null
+  measurementSeq?: number | null
+  lifecycle_id?: number | null
+  lifecycleId?: number | null
+  cache_hit_rate?: number | null
+  cacheHitRate?: number | null
   last_measured_at?: number
   lastMeasuredAt?: number
   last_compressed_at?: number | null
@@ -158,18 +174,29 @@ export type ChatContextState = {
 }
 
 export type ChatContextLiveUsage = {
-  /** 此刻已用（分子）。口径与轮末权威值一致，真源在 Rust 侧。 */
+  /** 最近主请求的 API 实报输入＋输出；无来源的事件清除失效实报。 */
   usedTokens: number
-  /** 实报、实报加新增估算或无实报；不能继承上一条快照的来源。 */
+  /** `provider_context_reported` 或空值（历史已改写）；不能继承旧快照来源。 */
   tokenCountSource?: string | null
   /** 上下文窗口（分母）。`null` = 本次上报没带窗口，前端必须保留已知的旧值（分母粘滞）。 */
   contextWindowTokens?: number | null
+  cacheInputTokens?: number | null
+  cacheReadTokens?: number | null
+  /**
+   * 与完整快照共用的后端测量序号。更小的序号不能覆盖已应用的测量；
+   * 失效（改写、压缩、清空、换模型）使用更大的序号。
+   */
+  measurementSeq?: number | null
+  /** Bumped on model change, compaction, and context clear. A higher id invalidates omitted fields. */
+  lifecycleId?: number | null
+  /** Null or omitted keeps the previous categories. An empty array clears them. */
+  segments?: ChatContextUsageSegment[] | null
 }
 
 /**
  * 上下文状态更新。两种形态共用这一条通道：
- * - `contextState` —— 轮末/手动刷新的**权威快照**（含分段、压缩计数、来源标签）。
- * - `live` —— 生成过程中的**活数**（分子 + 分母 + 来源）。完整快照的分段计算不在增量通道执行。
+ * - `contextState` —— 轮末/手动刷新的快照（内部估算与 API 实报分开存放）。
+ * - `live` —— API 实报占用、主请求累计缓存计数或压缩后的失效通知，不传入本地估算。
  */
 export type ChatContextPayload = {
   conversationId: string

@@ -354,6 +354,8 @@ pub fn compute_external_context_state(
             usage_ratio: None,
             status: "unknown".to_string(),
             segments: Vec::new(),
+            reported_context_tokens: None,
+            cache_hit_rate: None,
             last_measured_at: chrono::Local::now().timestamp(),
             last_compressed_at: conversation.context_state.last_compressed_at,
             compressed_message_count: 0,
@@ -368,6 +370,9 @@ pub fn compute_external_context_state(
             session_output_tokens: None,
             external_agent_id: Some(agent_id.to_string()),
             external_model: normalized_external_model(model),
+            lifecycle_id: 0,
+            measurement_seq: 0,
+            request_measurement: None,
         };
     }
     let usage_ratio = context_window_tokens
@@ -379,6 +384,9 @@ pub fn compute_external_context_state(
     let compression_count = conversation.context_state.compression_count;
 
     ConversationContextState {
+        lifecycle_id: 0,
+        measurement_seq: 0,
+        request_measurement: None,
         estimated_input_tokens: usage.input_tokens,
         context_window_tokens,
         context_window_estimated,
@@ -386,6 +394,8 @@ pub fn compute_external_context_state(
         usage_ratio,
         status,
         segments,
+        reported_context_tokens: None,
+        cache_hit_rate: None,
         last_measured_at: chrono::Local::now().timestamp(),
         last_compressed_at,
         compressed_message_count: 0,
@@ -438,6 +448,7 @@ fn external_context_segments(usage: &ExternalSessionUsage) -> Vec<ContextUsageSe
         id: "external-session".to_string(),
         label,
         estimated_tokens: usage.input_tokens,
+        chars: 0,
         color: Some("#4A7FD7".to_string()),
     }]
 }
@@ -556,6 +567,8 @@ mod tests {
             stream_outcome: None,
             usage,
             anchor_usage: None,
+            cache_pair_input: None,
+            cache_pair_read: None,
             group_id: None,
             provider_id: None,
             model: None,

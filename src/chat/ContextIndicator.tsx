@@ -1,29 +1,33 @@
-import { Button } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { Archive, Eraser, RefreshCw, Square } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
-  buildContextBarSlices,
   autoCompactPercent,
+  contextBreakdown,
   CONTEXT_CRITICAL_PERCENT,
-  CONTEXT_FREE_SEGMENT_ID,
   CONTEXT_WARNING_PERCENT,
-  fullnessLabel,
-  segmentTokens,
+  reportedContextTokens,
 } from './contextPanel'
 import { i18n, type I18n, type Lang } from '../components/i18n'
-import { formatTokensK } from '../utils/tokens'
 import type { ConversationContextState } from './types'
 import { usePopoverMenu } from './usePopoverMenu'
+import { formatTokens } from '../utils/tokens'
 
 const PANEL_WIDTH = 280
 const PANEL_GAP = 8
 const VIEW_MARGIN = 8
 // 弹层尽量贴底栏，限制高度，少盖住上方对话消息。
-const PANEL_MAX_H = 220
+const PANEL_MAX_H = 360
 // 圆环：viewBox 20×20 里留 1.5px 描边半宽 + 1px 余量。
 const RING_RADIUS = 7.5
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+
+const SEGMENT_LABELS: Record<string, keyof I18n> = {
+  system_prompt: 'contextSegmentSystemPrompt',
+  tools: 'contextSegmentTools',
+  conversation: 'contextSegmentConversation',
+}
 
 interface ContextIndicatorProps {
   contextState?: ConversationContextState | null
@@ -54,15 +58,7 @@ function statusColor(status: string, ratio: number | null): string {
   return '#3E8B60'
 }
 
-function formatTokenTotal(tokens: number, exact = false, approximatePrefix = '~'): string {
-  const formatted = formatTokensK(tokens)
-  return exact ? formatted : `${approximatePrefix}${formatted}`
-}
 
-function windowLabel(contextWindowTokens: number | null): string {
-  if (!contextWindowTokens) return '—'
-  return formatTokensK(contextWindowTokens)
-}
 
 function messageCountLabel(messageCount: number, compressedMessageCount: number, t: I18n): string {
   if (compressedMessageCount > 0) {
@@ -91,7 +87,6 @@ export function ContextIndicator({
 }: ContextIndicatorProps) {
   void _placement
   const t = i18n[lang]
-  const approximatePrefix = '~'
   const [open, setOpen] = useState(false)
   // 用 bottom/right 锚定，避免量高不准时整块飘到对话消息中间。
   const [pos, setPos] = useState<{ bottom: number; right: number; maxH: number; width: number } | null>(null)
@@ -99,30 +94,20 @@ export function ContextIndicator({
   const popoverRef = useRef<HTMLDivElement>(null)
   usePopoverMenu(open, () => setOpen(false), popoverRef)
 
-  const estimatedInputTokens = valueFrom(
-    contextState?.estimated_input_tokens,
-    contextState?.estimatedInputTokens,
-    0,
-  )
+  const reportedTokens = reportedContextTokens(contextState)
   const contextWindowTokens = valueFrom(
+    contextState?.context_window_estimated, contextState?.contextWindowEstimated, false,
+  ) ? null : valueFrom(
     contextState?.context_window_tokens,
     contextState?.contextWindowTokens,
     null,
   )
-  const usageRatio = valueFrom(contextState?.usage_ratio, contextState?.usageRatio, null)
+  const usageRatio = reportedTokens != null && contextWindowTokens != null && contextWindowTokens > 0
+    ? reportedTokens / contextWindowTokens : null
   const status = contextState?.status ?? 'unknown'
   const contextSource = valueFrom(contextState?.context_source, contextState?.contextSource, null)
-  const tokenCountSource = valueFrom(
-    contextState?.token_count_source,
-    contextState?.tokenCountSource,
-    null,
-  )
   const isExternalContext =
     usesExternalRuntime || contextSource === 'external_cli'
-  const isCliReported = tokenCountSource === 'cli_reported'
-  // 内置路径把 provider 实报 usage 作锚点时的口径（对齐 CLI 的 cli_reported）：显示精确值、不带 `~`。
-  const isProviderReported = tokenCountSource === 'provider_reported'
-  const isReportedExact = isCliReported || isProviderReported
   const compressedMessageCount = valueFrom(
     contextState?.compressed_message_count,
     contextState?.compressedMessageCount,
@@ -134,33 +119,24 @@ export function ContextIndicator({
     0,
   )
   const color = statusColor(status, usageRatio)
-  const rawSegments = useMemo(
-    () => (contextState?.segments ?? []).filter((segment) => segmentTokens(segment) > 0),
-    [contextState?.segments],
-  )
-  const barSlices = useMemo(
-    () => buildContextBarSlices(rawSegments, estimatedInputTokens, contextWindowTokens, t),
-    [contextWindowTokens, estimatedInputTokens, rawSegments, t],
-  )
-  const legendSlices = useMemo(
-    () => barSlices.filter((slice) => slice.id !== CONTEXT_FREE_SEGMENT_ID),
-    [barSlices],
-  )
-  const fullness = fullnessLabel(usageRatio, isExternalContext, contextWindowTokens, t)
-  const usedLabel = formatTokenTotal(estimatedInputTokens, isReportedExact, approximatePrefix)
-  const windowPart = windowLabel(contextWindowTokens)
-  // 有比例 → "42% · ~1.2K / 128K"；有 token 无比例 → "~0 / —"；全空 → "—"
-  const displayMetric = usageRatio != null
-    ? `${Math.round(Math.max(0, Math.min(1, usageRatio)) * 100)}% · ${usedLabel} / ${windowPart}`
-    : (estimatedInputTokens > 0 || contextWindowTokens)
-      ? `${usedLabel} / ${windowPart}`
-      : '—'
-  const sourceLabel = isExternalContext
-    ? (isCliReported ? t.contextSourceCliReported : t.contextSourceCliEstimated)
-    : (isProviderReported ? t.contextSourceProviderReported
-      : tokenCountSource === 'provider_reported_with_estimate'
-        ? t.contextSourceProviderWithEstimate : t.contextSourceKivio)
+  const percentFormat = new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : 'en', {
+    style: 'percent', maximumFractionDigits: 1,
+  })
+  const windowPart = contextWindowTokens ? formatTokens(contextWindowTokens) : '—'
+  const displayMetric = reportedTokens == null && contextWindowTokens == null
+    ? '—'
+    : `${reportedTokens == null ? '—' : formatTokens(reportedTokens)}/${windowPart}`
+      + (usageRatio == null ? '' : ` (${percentFormat.format(usageRatio)})`)
+  const sourceLabel = reportedTokens == null
+    ? ''
+    : (isExternalContext ? t.contextSourceCliReported : t.contextUsageLastPrompt)
   const ringRatio = usageRatio == null ? 0 : Math.max(0, Math.min(1, usageRatio))
+  const segments = contextBreakdown(contextState?.segments).map((segment) => ({
+    ...segment, label: t[SEGMENT_LABELS[segment.id]],
+  }))
+  const cacheRate = contextState?.cache_hit_rate ?? contextState?.cacheHitRate
+  const showCache = !isExternalContext && cacheRate != null && Number.isFinite(cacheRate)
+    && cacheRate >= 0.78 && cacheRate <= 1
   const lastClearUntilId = (
     contextState?.clear_boundaries ?? contextState?.clearBoundaries ?? []
   ).at(-1)?.source_until_message_id
@@ -228,7 +204,7 @@ export function ContextIndicator({
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)
     }
-  }, [open, place, legendSlices.length, displayMetric, compressMeta, error])
+  }, [open, place, displayMetric, compressMeta, error])
 
   useEffect(() => {
     if (!open) return
@@ -245,8 +221,9 @@ export function ContextIndicator({
     ? createPortal(
         <div
           ref={popoverRef}
-          className="chat-motion-popover fixed z-[200] flex flex-col overflow-hidden kv-menu p-2"
+          className="chat-motion-popover fixed z-[200] flex flex-col overflow-hidden kv-menu"
           style={{
+            padding: 10,
             bottom: pos?.bottom ?? 0,
             right: pos?.right ?? 0,
             width: pos?.width ?? PANEL_WIDTH,
@@ -256,25 +233,65 @@ export function ContextIndicator({
           }}
           data-tauri-drag-region="false"
         >
-          <div className="mb-1.5 flex items-center gap-1">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] font-semibold text-neutral-800">
-                {t.contextPanelTitle}
+          <div className="mb-1.5 flex items-center justify-between gap-2" title={sourceLabel || undefined}>
+            <span className="text-[12px] font-medium text-neutral-800">{t.contextPanelTitle}</span>
+            <span className="text-[11px] tabular-nums text-neutral-500">{displayMetric}</span>
+          </div>
+
+          <div className="h-1 shrink-0 overflow-hidden rounded-full bg-neutral-100"
+            role="progressbar" aria-label={t.contextPanelTitle}
+            aria-valuenow={usageRatio == null ? undefined : Math.min(100, usageRatio * 100)}
+            aria-valuemin={0} aria-valuemax={100} aria-valuetext={displayMetric}>
+            {usageRatio != null && (
+              <div className="flex h-full bg-[var(--accent)]" style={{ width: `${ringRatio * 100}%` }}>
+                {!isExternalContext && segments.map((segment) => (
+                  <span key={segment.id} className="h-full"
+                    style={{ width: `${segment.percent * 100}%`, backgroundColor: segment.color }} />
+                ))}
               </div>
-              <div className="mt-0.5 truncate text-[11px] tabular-nums leading-none text-neutral-500 dark:text-neutral-400">
-                {displayMetric}
-              </div>
+            )}
+          </div>
+          {!isExternalContext && segments.length > 0 && (
+            <div className="custom-scrollbar mt-2 min-h-0 overflow-y-auto" title={t.contextBreakdownHint}>
+                <div className="pb-1 text-right text-[10px] leading-none text-neutral-400">{t.contextCharacterShare}</div>
+                <dl className="space-y-1">
+                  {segments.map((segment) => (
+                    <div key={segment.id} className="flex items-center gap-2 text-[12px]">
+                      <span
+                        className="size-2 shrink-0 rounded-sm"
+                        style={{ backgroundColor: segment.color }}
+                        aria-hidden="true"
+                      />
+                      <dt className="min-w-0 flex-1 truncate" title={segment.label}>{segment.label}</dt>
+                      <dd className="flex shrink-0 items-baseline gap-2 tabular-nums">
+                        <span className="text-neutral-700">
+                          {segment.estimatedTokens == null ? '—' : `≈ ${formatTokens(segment.estimatedTokens)}`}
+                        </span>
+                        <span className="min-w-[38px] text-right text-neutral-500" title={t.contextCharacterShare}>{percentFormat.format(segment.percent)}</span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
             </div>
-            <button
-              type="button"
-              className="grid size-7 shrink-0 place-items-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 disabled:opacity-40 dark:text-neutral-400"
-              aria-label={t.contextRefreshAria}
+          )}
+          {showCache && (
+            <div className="mt-1.5 flex items-center justify-between border-t border-[var(--theme-surface-border)] pt-1.5 text-[11px] text-neutral-500"
+              title={t.contextCacheHint}>
+              <span>{t.contextCacheHitRate}</span>
+              <span className="tabular-nums">{percentFormat.format(cacheRate)}</span>
+            </div>
+          )}
+          <div className="mt-1.5 flex items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-1">
+            <IconButton
+              variant="ghost"
+              size="sm"
+              label={t.contextRefreshAria}
               title={t.contextRefresh}
               onClick={onRefresh}
               disabled={loading}
             >
               <RefreshCw size={13} strokeWidth={1.9} className={loading ? 'animate-spin' : ''} />
-            </button>
+            </IconButton>
             <Button
               variant="ghost"
               size="sm"
@@ -287,9 +304,9 @@ export function ContextIndicator({
               <span>{compressing && onStopCompression ? stopLabel : compressLabel}</span>
             </Button>
             {onClear && (
-              <button
-                type="button"
-                className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-semibold text-neutral-700 transition-colors hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40"
+              <Button
+                variant="ghost"
+                size="sm"
                 aria-label={t.contextClearAria}
                 title={t.contextClearAria}
                 onClick={() => {
@@ -300,51 +317,9 @@ export function ContextIndicator({
               >
                 <Eraser size={13} strokeWidth={1.9} />
                 <span>{t.contextClear}</span>
-              </button>
+              </Button>
             )}
           </div>
-
-          <div className="relative mb-1">
-            <div className="flex h-1.5 overflow-hidden rounded-full bg-neutral-100">
-              {barSlices.length === 0 ? (
-                <div className="h-full w-full bg-neutral-200/80" />
-              ) : (
-                barSlices.map((slice) => (
-                  <div
-                    key={slice.id}
-                    className={`h-full min-w-[1px] ${slice.id === CONTEXT_FREE_SEGMENT_ID ? 'bg-[var(--theme-surface-border)]' : ''}`}
-                    style={{
-                      width: `${slice.widthPercent}%`,
-                      backgroundColor: slice.id === CONTEXT_FREE_SEGMENT_ID ? undefined : slice.color,
-                    }}
-                    title={`${slice.label} · ${formatTokenTotal(slice.tokens, isCliReported, approximatePrefix)}`}
-                  />
-                ))
-              )}
-            </div>
-          </div>
-
-          {legendSlices.length > 0 && (
-            <div className="chat-popover-scroll min-h-0 max-h-32 space-y-0 overflow-y-auto">
-              {legendSlices.map((slice) => (
-                <div
-                  key={`row-${slice.id}`}
-                  className="flex items-center gap-1.5 py-[2px] text-[11px] leading-none"
-                >
-                  <span
-                    className="size-1.5 shrink-0 rounded-full"
-                    style={{ backgroundColor: slice.color }}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-neutral-600">
-                    {slice.label}
-                  </span>
-                  <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
-                    {formatTokenTotal(slice.tokens, isCliReported, approximatePrefix)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
 
           {compressMeta && (
             <div className="mt-1 truncate text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -371,7 +346,7 @@ export function ContextIndicator({
         title={loading
           ? t.contextTriggerLoading
           : [
-            displayMetric !== '—' ? displayMetric : fullness,
+            displayMetric,
             sourceLabel,
             messageCount > 0 ? messageCountLabel(messageCount, compressedMessageCount, t) : '',
           ].filter(Boolean).join(' · ')}

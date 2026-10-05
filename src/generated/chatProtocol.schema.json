@@ -160,6 +160,13 @@
             "null"
           ]
         },
+        "cacheHitRate": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "clearBoundaries": {
           "items": {
             "$ref": "#/$defs/ChatContextClearBoundaryPayload"
@@ -226,6 +233,26 @@
         "lastMeasuredAt": {
           "format": "int64",
           "type": "integer"
+        },
+        "lifecycleId": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "measurementSeq": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reportedContextTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "segments": {
           "items": {
@@ -364,11 +391,53 @@
     "ChatContextUsagePayload": {
       "additionalProperties": false,
       "properties": {
+        "cacheInputTokens": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cacheReadTokens": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "contextWindowTokens": {
           "format": "uint64",
           "minimum": 0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "lifecycleId": {
+          "default": 0,
+          "description": "Bumped on model change, compaction, and context clear.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "measurementSeq": {
+          "default": 0,
+          "description": "Monotonic per conversation. A lower value must not replace a newer meter.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "segments": {
+          "description": "Request-bound categories. Null leaves the previous categories; an empty array clears them.",
+          "items": {
+            "$ref": "#/$defs/ChatContextUsageSegmentPayload"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
@@ -393,6 +462,11 @@
     "ChatContextUsageSegmentPayload": {
       "additionalProperties": false,
       "properties": {
+        "chars": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "color": {
           "type": [
             "string",
@@ -414,7 +488,8 @@
       "required": [
         "id",
         "label",
-        "estimatedTokens"
+        "estimatedTokens",
+        "chars"
       ],
       "type": "object"
     },

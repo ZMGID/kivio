@@ -1,228 +1,213 @@
-import type { I18n } from '../components/i18n'
-import type { ContextUsageSegment, ConversationContextState } from './types'
+import type { ChatContextLiveUsage } from '../api/tauri'
+import { mergeCompactionContextState } from './compactionBoundary'
+import { mergeClearContextState } from './contextClearBoundary'
+import type { Conversation, ConversationContextState } from './types'
 
 export const CONTEXT_WARNING_PERCENT = 70
 export const CONTEXT_CRITICAL_PERCENT = 95
 
-export const CONTEXT_FREE_SEGMENT_ID = '__free__'
-export const CONTEXT_FREE_COLOR = '#E8E8ED'
-
-export function segmentTokens(segment: ContextUsageSegment): number {
-  return segment.estimated_tokens ?? segment.estimatedTokens ?? 0
+/** Old estimated/mixed snapshots are deliberately not promoted to API reports. */
+export function reportedContextTokens(state: ConversationContextState | null | undefined): number | null {
+  const source = state?.token_count_source ?? state?.tokenCountSource
+  const tokens = source === 'provider_context_reported'
+    ? state?.reported_context_tokens ?? state?.reportedContextTokens
+    : source === 'cli_reported'
+      ? state?.estimated_input_tokens ?? state?.estimatedInputTokens
+      : undefined
+  return tokens != null && Number.isFinite(tokens) && tokens >= 0 ? tokens : null
 }
 
-const SEGMENT_LABEL_KEY: Record<string, keyof I18n> = {
-  system_prompt: 'contextSegmentSystemPrompt',
-  assistant: 'contextSegmentAssistant',
-  set: 'contextSegmentSet',
-  runtime_context: 'contextSegmentRuntime',
-  memory_l1: 'contextSegmentMemory',
-  knowledge_base: 'contextSegmentKnowledgeBase',
-  agent_plan: 'contextSegmentAgentPlan',
-  agent_todo: 'contextSegmentAgentTodo',
-  tool_definitions: 'contextSegmentToolDefinitions',
-  native_tools: 'contextSegmentNativeTools',
-  skills: 'contextSegmentSkills',
-  mcp: 'contextSegmentMcp',
-  summarized_conversation: 'contextSegmentSummarized',
-  conversation: 'contextSegmentConversation',
-  attachments: 'contextSegmentAttachments',
+/** Backend measurement order. Missing means the payload predates the contract. */
+export function readMeasurementSeq(
+  value: { measurement_seq?: number | null; measurementSeq?: number | null } | null | undefined,
+): number | null {
+  const seq = value?.measurement_seq ?? value?.measurementSeq
+  return typeof seq === 'number' && Number.isFinite(seq) && seq >= 0 ? seq : null
 }
 
-export function localizedSegmentLabel(segment: ContextUsageSegment, t: I18n): string {
-  const key = SEGMENT_LABEL_KEY[segment.id]
-  if (key && t[key]) return String(t[key])
-  return segment.label
+/** A sequenced measurement replaces the applied one only at an equal or newer
+ * sequence. An unsequenced payload must not roll back a sequenced measure. */
+export function measurementSupersedes(current: number | null, incoming: number | null): boolean {
+  if (incoming == null) return current == null
+  if (current == null) return true
+  return incoming >= current
 }
 
-export type ContextBarSlice = {
-  id: string
-  label: string
-  tokens: number
-  color: string
-  widthPercent: number
+export function readLifecycleId(
+  value: { lifecycle_id?: number | null; lifecycleId?: number | null } | null | undefined,
+): number | null {
+  const id = value?.lifecycle_id ?? value?.lifecycleId
+  return typeof id === 'number' && Number.isFinite(id) && id >= 0 ? id : null
 }
 
-/** 面板只展示三大类：系统提示词 / 工具 / 对话消息（+ 剩余空间在条上）。 */
-export const CONTEXT_GROUP_SYSTEM = 'system'
-export const CONTEXT_GROUP_TOOLS = 'tools'
-export const CONTEXT_GROUP_CONVERSATION = 'conversation'
+/** Full snapshot or live report. Main, popout, and restore all apply this. */
+export type ContextMeasurementIncoming =
+  | { kind: 'snapshot'; state: ConversationContextState }
+  | { kind: 'live'; usage: ChatContextLiveUsage }
 
-const GROUP_COLORS: Record<string, string> = {
-  [CONTEXT_GROUP_SYSTEM]: '#7A7A7A',
-  [CONTEXT_GROUP_TOOLS]: '#7553CF',
-  [CONTEXT_GROUP_CONVERSATION]: '#3B82F6',
-}
-
-/** 把细粒度 segment id 归到三大类。未知段并入对话消息。 */
-export function contextSegmentGroupId(segmentId: string): string {
-  if (
-    segmentId === 'system_prompt'
-    || segmentId === 'assistant'
-    || segmentId === 'set'
-    || segmentId === 'runtime_context'
-    || segmentId === 'memory_l1'
-    || segmentId === 'knowledge_base'
-    || segmentId === 'skills'
-  ) {
-    return CONTEXT_GROUP_SYSTEM
-  }
-  if (
-    segmentId === 'tool_definitions'
-    || segmentId === 'native_tools'
-    || segmentId === 'mcp'
-    || segmentId === 'agent'
-    || segmentId.startsWith('agent_')
-  ) {
-    return CONTEXT_GROUP_TOOLS
-  }
-  // conversation / attachments / summarized_conversation / external-session / …
-  return CONTEXT_GROUP_CONVERSATION
-}
-
-function groupLabel(groupId: string, t: I18n): string {
-  if (groupId === CONTEXT_GROUP_SYSTEM) return t.contextSegmentSystemPrompt
-  if (groupId === CONTEXT_GROUP_TOOLS) return t.contextSegmentTools
-  return t.contextSegmentConversation
-}
-
-export function buildContextBarSlices(
-  segments: ContextUsageSegment[],
-  estimatedInputTokens: number,
-  contextWindowTokens: number | null,
-  t: I18n,
-): ContextBarSlice[] {
-  const active = segments.filter((segment) => segmentTokens(segment) > 0)
-  const window = contextWindowTokens ?? 0
-  const denominator = window > 0 ? window : Math.max(estimatedInputTokens, 1)
-
-  // 固定顺序：系统 → 工具 → 对话（与参考图一致）
-  const order = [CONTEXT_GROUP_SYSTEM, CONTEXT_GROUP_TOOLS, CONTEXT_GROUP_CONVERSATION]
-  const totals = new Map<string, number>(order.map((id) => [id, 0]))
-  for (const segment of active) {
-    const groupId = contextSegmentGroupId(segment.id)
-    totals.set(groupId, (totals.get(groupId) ?? 0) + segmentTokens(segment))
-  }
-
-  const slices: ContextBarSlice[] = []
-  for (const groupId of order) {
-    const tokens = totals.get(groupId) ?? 0
-    if (tokens <= 0) continue
-    slices.push({
-      id: groupId,
-      label: groupLabel(groupId, t),
-      tokens,
-      color: GROUP_COLORS[groupId] ?? '#7A7A7A',
-      widthPercent: Math.max(0, (tokens / denominator) * 100),
-    })
-  }
-
-  if (window > 0) {
-    const freeTokens = Math.max(0, window - estimatedInputTokens)
-    if (freeTokens > 0) {
-      slices.push({
-        id: CONTEXT_FREE_SEGMENT_ID,
-        label: t.contextSegmentFree,
-        tokens: freeTokens,
-        color: CONTEXT_FREE_COLOR,
-        widthPercent: (freeTokens / window) * 100,
-      })
-    }
-  }
-
-  return slices
-}
-
-/**
- * 生成过程中的「上下文占用活数」就地补进已有的上下文状态。
- *
- * **唯一的生产者是内置 agent 的压缩检查**（Rust 侧 `chat/agent/compaction.rs`），每个
- * planning 轮发一次，两个数与轮末权威计算出自同一对函数，所以轮末那次覆盖不会跳。
- * 外部 CLI 不走这条（它的占用一轮只由轮末权威计算更新一次）——曾经那条 350ms 节流的通道
- * 分子是单次请求快照、分母是上一轮的粘滞值，看着就是在跳，已删。
- *
- * 用量来源由 Rust 随每次更新一起发送，不能沿用旧值：压缩后可能已退回估算。
- * `status` 的阈值仍由轮末快照负责；环形进度读 `usage_ratio`。
- *
- * **分母粘滞**：`contextWindowTokens` 为 `null`/`undefined` 时保留已知的旧窗口 —— 冲掉旧值
- * 会让用量条在生成过程中退回「满度未知」。
- *
- * 分段按比例缩放（构成不变、只有总量涨）：分段的真实明细只有轮末那次权威计算算得出，
- * 但把它原样留在旧总量上会让进度条里出现一条对不上的缝。
- */
-export function applyLiveContextUsage(
+/** Shared measurement merge.
+ * A lower `measurementSeq` leaves the meter, cache, and categories untouched.
+ * A higher `lifecycleId` drops omitted categories and cache; the backend sequence
+ * still moves forward. Live `segments` null or omitted keeps the previous
+ * categories, and `[]` replaces them. A provider report that omits cache keeps
+ * the previous rate; a full snapshot with cache null clears it. */
+export function mergeContextMeasurement(
   prev: ConversationContextState | null | undefined,
-  live: { usedTokens: number; contextWindowTokens?: number | null; tokenCountSource?: string | null },
-): ConversationContextState | null {
-  if (!prev) return prev ?? null
-  const used = Math.max(0, Math.round(live.usedTokens))
-  const knownWindow = prev.context_window_tokens ?? prev.contextWindowTokens ?? null
-  const window = live.contextWindowTokens ?? knownWindow
-  const ratio = window && window > 0 ? used / window : null
-  const previousUsed = prev.estimated_input_tokens ?? prev.estimatedInputTokens ?? 0
-  const segments = scaleContextSegments(prev.segments ?? [], previousUsed, used)
+  incoming: ContextMeasurementIncoming,
+): ConversationContextState {
+  return incoming.kind === 'snapshot'
+    ? mergeSnapshot(prev, incoming.state)
+    : mergeLive(prev, incoming.usage)
+}
+
+function mergeSnapshot(
+  prev: ConversationContextState | null | undefined,
+  next: ConversationContextState,
+): ConversationContextState {
+  const snapshot = clearExplicitCache(next)
+  if (!prev) return snapshot
+  if (!measurementSupersedes(readMeasurementSeq(prev), readMeasurementSeq(next))) return prev
+  return clearExplicitCache(mergeClearContextState(prev, mergeCompactionContextState(prev, snapshot)))
+}
+
+/** `null` on either cache alias clears both, so a stale twin cannot survive `??`. */
+function clearExplicitCache(state: ConversationContextState): ConversationContextState {
+  if (state.cache_hit_rate !== null && state.cacheHitRate !== null) return state
+  if (state.cache_hit_rate === null || state.cacheHitRate === null) {
+    return { ...state, cache_hit_rate: null, cacheHitRate: null }
+  }
+  return state
+}
+
+/** Full snapshots (refresh, restore, compaction, clear, model change). */
+export function mergeContextSnapshot(
+  prev: ConversationContextState | null | undefined,
+  next: ConversationContextState,
+): ConversationContextState {
+  return mergeContextMeasurement(prev, { kind: 'snapshot', state: next })
+}
+
+/** Restored conversations may carry an older persisted meter under a newer
+ * conversation revision. Keep the fresher measurement on the incoming shell. */
+export function keepNewerContextMeasurement<T extends Conversation>(
+  incoming: T,
+  previous: Conversation | null,
+): T {
+  if (!previous || previous.id !== incoming.id) return incoming
+  const prevState = previous.context_state ?? previous.contextState ?? null
+  if (!prevState) return incoming
+  const nextState = incoming.context_state ?? incoming.contextState
+  if (!nextState) {
+    return readMeasurementSeq(prevState) == null
+      ? incoming
+      : { ...incoming, context_state: prevState, contextState: prevState }
+  }
+  const merged = mergeContextMeasurement(prevState, { kind: 'snapshot', state: nextState })
+  if (merged === nextState) return incoming
+  return { ...incoming, context_state: merged, contextState: merged }
+}
+
+/** Only provider reports fill the meter. A source-less event leaves it unknown
+ * and never imports the internal budget. Request segments on that event still
+ * show; omitted segments stay, and an empty array replaces them. */
+function mergeLive(
+  prev: ConversationContextState | null | undefined,
+  live: ChatContextLiveUsage,
+): ConversationContextState {
+  const incomingSeq = readMeasurementSeq(live)
+  if (prev && !measurementSupersedes(readMeasurementSeq(prev), incomingSeq)) return prev
+  const incomingLifecycle = readLifecycleId(live)
+  const prevLifecycle = readLifecycleId(prev)
+  const newLifecycle = prevLifecycle != null && incomingLifecycle != null && incomingLifecycle > prevLifecycle
+  const lifecycle = incomingLifecycle ?? prevLifecycle ?? undefined
+  const reported = live.tokenCountSource === 'provider_context_reported'
+    && Number.isFinite(live.usedTokens) && live.usedTokens >= 0
+  const tokens = reported ? Math.round(live.usedTokens) : undefined
+  const window = live.contextWindowTokens
+    ?? prev?.context_window_tokens ?? prev?.contextWindowTokens ?? null
+  const ratio = tokens != null && window != null && window > 0 ? tokens / window : null
+  const cacheMissing = live.cacheInputTokens == null && live.cacheReadTokens == null
+  const cacheInput = live.cacheInputTokens
+  const cacheRead = live.cacheReadTokens
+  const providedRate = !cacheMissing && cacheInput != null && cacheRead != null
+    && Number.isFinite(cacheInput) && Number.isFinite(cacheRead)
+    && cacheInput > 0 && cacheRead >= 0 && cacheRead <= cacheInput
+    ? cacheRead / cacheInput : undefined
+  const cacheRate = providedRate != null
+    ? providedRate
+    : reported && !newLifecycle && cacheMissing
+      ? prev?.cache_hit_rate ?? prev?.cacheHitRate
+      : undefined
+  const segments = live.segments == null
+    ? (newLifecycle ? [] : prev?.segments ?? [])
+    : live.segments
   return {
     ...prev,
-    estimated_input_tokens: used,
-    estimatedInputTokens: used,
+    context_source: 'kivio_builtin',
+    contextSource: 'kivio_builtin',
     context_window_tokens: window,
     contextWindowTokens: window,
+    reported_context_tokens: tokens,
+    reportedContextTokens: tokens,
+    cache_hit_rate: cacheRate,
+    cacheHitRate: cacheRate,
     usage_ratio: ratio,
     usageRatio: ratio,
-    token_count_source: live.tokenCountSource ?? undefined,
-    tokenCountSource: live.tokenCountSource ?? undefined,
+    token_count_source: reported ? 'provider_context_reported' : undefined,
+    tokenCountSource: reported ? 'provider_context_reported' : undefined,
+    measurement_seq: incomingSeq ?? undefined,
+    measurementSeq: incomingSeq ?? undefined,
+    lifecycle_id: lifecycle,
+    lifecycleId: lifecycle,
+    status: ratio == null ? 'unknown' : ratio >= 0.95 ? 'critical' : ratio >= 0.7 ? 'warning' : 'normal',
     segments,
   }
 }
 
-function scaleContextSegments(
-  segments: ContextUsageSegment[],
-  previousTotal: number,
-  nextTotal: number,
-): ContextUsageSegment[] {
-  if (segments.length === 0) return segments
-  const sum = segments.reduce((total, segment) => total + segmentTokens(segment), 0)
-  const base = previousTotal > 0 ? previousTotal : sum
-  if (base <= 0 || nextTotal === base) return segments
-  const factor = nextTotal / base
-  return segments.map((segment) => {
-    const tokens = Math.max(0, Math.round(segmentTokens(segment) * factor))
-    return { ...segment, estimated_tokens: tokens, estimatedTokens: tokens }
-  })
+export function applyLiveContextUsage(
+  prev: ConversationContextState | null | undefined,
+  live: ChatContextLiveUsage,
+): ConversationContextState {
+  return mergeContextMeasurement(prev, { kind: 'live', usage: live })
 }
 
-export function compactPercent(ratio: number | null): string {
-  if (ratio == null || !Number.isFinite(ratio)) return '--'
-  return `${Math.max(0, Math.min(999, Math.round(ratio * 100)))}`
-}
-
-/**
- * 上下文用量条的「满度」文案。
- *
- * 三种 usageRatio 为空的情形要分开说，否则会误导：
- * - 窗口未知：CLI 既不报 `usage_update.size`、模型名也匹配不到任何静态表
- *   （如 cursor 选了不带 `context=` 的模型）。百分比**永远**算不出来，
- *   不能用「CLI 待上报」让用户空等。
- * - 窗口已知但用量还没到：外部 CLI 的正常中间态，「CLI 待上报」准确。
- * - 内置路径：走估算，「估算中」。
- */
-export function fullnessLabel(
-  usageRatio: number | null,
-  isExternalContext: boolean,
-  contextWindowTokens: number | null,
-  t: I18n,
-): string {
-  if (usageRatio == null) {
-    if (!contextWindowTokens) return t.contextFullnessWindowUnknown
-    return isExternalContext ? t.contextFullnessCliPending : t.contextFullnessEstimated
-  }
-  return t.contextFullnessPercentFull.replace('{percent}', compactPercent(usageRatio))
-}
-
-/** The backend owns model-dependent input reserves; never repeat its policy in the UI. */
+/** The backend owns model-dependent input reserves. */
 export function autoCompactPercent(state: ConversationContextState | null | undefined): number | null {
   const budget = state?.auto_compact_threshold_tokens ?? state?.autoCompactThresholdTokens
   const window = state?.context_window_tokens ?? state?.contextWindowTokens
   return budget != null && window != null && window > 0
     ? Math.round(budget / window * 100) : null
+}
+
+const CATEGORY_IDS = ['system_prompt', 'tools', 'conversation'] as const
+type CategoryId = typeof CATEGORY_IDS[number]
+
+/** Character shares and independently estimated tokens; neither is scaled to API totals. */
+export function contextBreakdown(segments: ConversationContextState['segments']) {
+  const groups = new Map<CategoryId, { chars: number; estimatedTokens: number | null }>()
+  for (const segment of segments ?? []) {
+    const chars = Number.isFinite(segment.chars) && segment.chars! > 0 ? segment.chars! : 0
+    const estimate = segment.estimated_tokens ?? segment.estimatedTokens
+    const tokens = estimate != null && Number.isFinite(estimate) && estimate >= 0 ? estimate : null
+    if (!chars && !tokens) continue
+    const id: CategoryId = ['native_tools', 'tool_definitions', 'tools', 'mcp', 'skills'].includes(segment.id)
+      ? 'tools'
+      : ['conversation', 'summarized_conversation', 'attachments'].includes(segment.id)
+        ? 'conversation'
+        : 'system_prompt'
+    const group = groups.get(id) ?? { chars: 0, estimatedTokens: 0 }
+    group.chars += chars
+    group.estimatedTokens = group.estimatedTokens != null && tokens != null
+      ? group.estimatedTokens + tokens : null
+    groups.set(id, group)
+  }
+  const total = [...groups.values()].reduce((sum, group) => sum + group.chars, 0)
+  if (!total) return []
+  return CATEGORY_IDS.filter((id) => groups.has(id))
+    .map((id) => ({ id, percent: groups.get(id)!.chars / total, estimatedTokens: groups.get(id)!.estimatedTokens }))
+    .sort((a, b) => b.percent - a.percent)
+    .map((segment, rank) => ({
+      ...segment,
+      color: `color-mix(in srgb, var(--accent) ${[100, 78, 58][rank]}%, var(--theme-surface))`,
+    }))
 }

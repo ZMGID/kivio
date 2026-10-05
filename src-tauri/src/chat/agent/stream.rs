@@ -592,6 +592,15 @@ impl<'a> AgentStreamSink<'a> {
 impl StreamSink for AgentStreamSink<'_> {
     fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
         match part {
+            StreamPart::ContextUsage { input_tokens, output_tokens } => {
+                self.host.emit_context_usage_live(
+                    &self.conversation_id,
+                    input_tokens.saturating_add(output_tokens),
+                    Some("provider_context_reported"),
+                    None,
+                    None,
+                );
+            }
             StreamPart::TextDelta { delta } => {
                 self.handle_text_delta(delta);
             }

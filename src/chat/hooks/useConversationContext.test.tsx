@@ -243,10 +243,120 @@ describe('useConversationContext: clear + live usage', () => {
     })
     expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(100)
     act(() => {
-      contextListener?.({ conversationId: 'c1', live: { usedTokens: 5 } } as never)
+      contextListener?.({ conversationId: 'c1', live: { usedTokens: 5, tokenCountSource: 'provider_context_reported' } } as never)
     })
-    expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(5)
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBe(5)
     expect(result.current.current?.context_state).toEqual(result.current.ctx.contextState)
+  })
+
+  it('does not let a refresh started after the streaming report roll 53k back to 7.1k', async () => {
+    const { result } = setup()
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        live: { usedTokens: 53_000, tokenCountSource: 'provider_context_reported', measurementSeq: 5, contextWindowTokens: 1_000_000 },
+      } as never)
+    })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBe(53_000)
+    mockStats.mockResolvedValue({
+      contextState: state({
+        reported_context_tokens: 7_100,
+        token_count_source: 'provider_context_reported',
+        measurement_seq: 4,
+      }),
+      conversation: conversation(),
+    })
+    await act(async () => { await result.current.ctx.refreshContextStats('c1') })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBe(53_000)
+    expect(result.current.ctx.contextState?.measurement_seq).toBe(5)
+    expect(result.current.ctx.contextLoading).toBe(false)
+  })
+
+  it('does not overwrite a newer API report with an in-flight older snapshot', async () => {
+    const { promise, resolve } = Promise.withResolvers<{ contextState: ConversationContextState; conversation: Conversation }>()
+    mockStats.mockReturnValue(promise)
+    const { result } = setup()
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ctx.refreshContextStats('c1') })
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        live: { usedTokens: 53_000, tokenCountSource: 'provider_context_reported', measurementSeq: 5 },
+      } as never)
+    })
+    await act(async () => {
+      resolve({
+        contextState: state({
+          reported_context_tokens: 7_100,
+          token_count_source: 'provider_context_reported',
+          measurement_seq: 4,
+        }),
+        conversation: conversation(),
+      })
+      await pending
+    })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBe(53_000)
+    expect(result.current.ctx.contextLoading).toBe(false)
+  })
+
+  it('applies an in-flight refresh when its measurement is newer than the live report', async () => {
+    const { promise, resolve } = Promise.withResolvers<{ contextState: ConversationContextState; conversation: Conversation }>()
+    mockStats.mockReturnValue(promise)
+    const { result } = setup()
+    let pending!: Promise<void>
+    act(() => { pending = result.current.ctx.refreshContextStats('c1') })
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        live: { usedTokens: 53_000, tokenCountSource: 'provider_context_reported', measurementSeq: 5 },
+      } as never)
+    })
+    await act(async () => {
+      resolve({
+        contextState: state({
+          reported_context_tokens: 7_100,
+          token_count_source: 'provider_context_reported',
+          measurement_seq: 6,
+          segments: [],
+        }),
+        conversation: conversation(),
+      })
+      await pending
+    })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBe(7_100)
+    expect(result.current.ctx.contextState?.measurement_seq).toBe(6)
+  })
+
+  it('applies a newer clear and ignores a late older measurement', async () => {
+    const { result } = setup()
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        live: { usedTokens: 53_000, tokenCountSource: 'provider_context_reported', measurementSeq: 5 },
+      } as never)
+    })
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        contextState: state({
+          reported_context_tokens: null,
+          token_count_source: null,
+          measurement_seq: 6,
+          segments: [],
+          clear_boundaries: [{ id: 'clr', created_at: 1 }],
+        }),
+      } as never)
+    })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBeNull()
+    expect(result.current.ctx.contextState?.clear_boundaries?.[0]?.id).toBe('clr')
+    act(() => {
+      contextListener?.({
+        conversationId: 'c1',
+        live: { usedTokens: 53_000, tokenCountSource: 'provider_context_reported', measurementSeq: 5 },
+      } as never)
+    })
+    expect(result.current.ctx.contextState?.reported_context_tokens).toBeNull()
+    expect(result.current.ctx.contextState?.measurement_seq).toBe(6)
   })
 
   it('takes an authoritative snapshot from the event and clears the error', async () => {

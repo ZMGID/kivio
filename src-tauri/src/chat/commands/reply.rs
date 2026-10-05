@@ -745,6 +745,8 @@ pub(super) async fn complete_assistant_reply_inner(
         // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
         // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
         suppress_partial_persist: arm.is_some(),
+        context_owner: arm.is_none() || (resolved_provider_id == conversation.provider_id
+            && resolved_model == conversation.model),
         // 生命周期 Hooks：无启用条目时为 None，loop 完全不感知。先用 `any_enabled`
         // 短路，没配 Hook 时连下面这几个 id / model 字符串都不分配（验收 6）。
         hooks: crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks)
@@ -804,6 +806,10 @@ pub(super) async fn complete_assistant_reply_inner(
     // （对齐 pi/opencode 的 ground-truth 口径，避免字符估算低估导致压缩过晚/超窗）。
     let (initial_anchor_total_tokens, initial_anchor_trailing_estimate) =
         resolve_usage_anchor(conversation, Some(&provider));
+    state.chat_runtime().seed_context_measurement(
+        &conversation.id, conversation.context_state.lifecycle_id, conversation.context_state.measurement_seq,
+        conversation.context_state.request_measurement.as_ref(),
+    );
     let result = crate::chat::agent::run_agent_loop(
         crate::chat::agent::AgentRunConfig {
             provider_runtime: state.inner(),
@@ -828,6 +834,7 @@ pub(super) async fn complete_assistant_reply_inner(
             retry_attempts,
             assistant_snapshot: conversation.assistant_snapshot.clone(),
             provider_tools_fallback_system_prompt,
+            initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
             skill_project_cwd: skill_cwd.clone(),
@@ -915,6 +922,8 @@ pub(super) async fn complete_assistant_reply_inner(
         );
         // 降级兜底的结构化描述挂到消息上，前端渲染成独立错误卡片（正文不再混故障文案）。
         let mut message = message;
+        message.cache_pair_input = result.cache_pairs.map(|pair| pair.0);
+        message.cache_pair_read = result.cache_pairs.map(|pair| pair.1);
         message.degraded = result.degraded;
         protocol_guard.defer_terminal();
         return Ok(ArmReplyOutcome {

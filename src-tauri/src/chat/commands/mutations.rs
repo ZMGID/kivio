@@ -244,6 +244,7 @@ pub(crate) async fn chat_update_message(
         mark_summary_stale_if_needed(&mut candidate, idx);
         replace_final_text_segments_for_edit(&mut candidate.messages[idx], trimmed);
         candidate.messages[idx].timestamp = chrono::Local::now().timestamp();
+        super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
         let edited_message = candidate.messages[idx].clone();
         match repository
@@ -1080,11 +1081,26 @@ pub(crate) async fn chat_update_conversation(
                     conversation.folder = None;
                 }
             }
+            let model_changed = provider_id.as_ref().is_some_and(|id| id != &conversation.provider_id)
+                || model.as_ref().is_some_and(|model| model != &conversation.model);
             if let Some(provider_id) = provider_id {
                 conversation.provider_id = provider_id;
             }
             if let Some(model) = model {
                 conversation.model = model;
+            }
+            if model_changed && !conversation.agent_runtime.is_external() {
+                super::context::invalidate_context_measurement(&state, conversation);
+                let context = &mut conversation.context_state;
+                context.session_input_tokens = None;
+                context.reported_context_tokens = None;
+                context.cache_hit_rate = None;
+                context.token_count_source = None;
+                context.usage_ratio = None;
+                context.status = "unknown".into();
+                context.context_window_tokens = None;
+                context.context_window_estimated = false;
+                context.auto_compact_threshold_tokens = None;
             }
             if let Some(skill_id) = active_skill_id {
                 let trimmed = skill_id.trim();
@@ -1357,12 +1373,39 @@ pub(crate) async fn chat_bulk_delete_conversations(
     }))
 }
 
+pub(super) fn apply_group_selection(
+    state: &AppState,
+    conversation: &mut Conversation,
+    group_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    let valid = conversation.messages.iter().any(|message| {
+        message.id == message_id && message.role == "assistant"
+            && message.group_id.as_deref() == Some(group_id.as_str())
+    });
+    if !valid {
+        return Err("选中的回答不属于该多答组".to_string());
+    }
+    if conversation.group_selections.get(&group_id) == Some(&message_id) {
+        return Ok(());
+    }
+    conversation.select_group_answer(group_id, message_id);
+    if !conversation.agent_runtime.is_external() {
+        super::context::invalidate_context_measurement(state, conversation);
+        conversation.context_state.cache_hit_rate =
+            super::context::conversation_cache_usage(conversation, &state.settings_read())
+                .map(|(input, read)| read as f64 / input as f64);
+    }
+    Ok(())
+}
+
 /// 设置某个多答组（task 06-30）的「选中条」（决策 D5）：用户点选某一列后续聊以它为准。
 /// `message_id` 必须是属于 `group_id` 这组的某条 assistant 消息；写入
 /// `conversation.group_selections[group_id] = message_id`，下一轮历史拼装据此只保留该条。
 #[tauri::command]
 pub(crate) async fn chat_set_group_selection(
     app: AppHandle,
+    state: State<'_, AppState>,
     conversation_id: String,
     group_id: String,
     message_id: String,
@@ -1374,20 +1417,12 @@ pub(crate) async fn chat_set_group_selection(
     }
     let mut conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
-            let valid = conversation.messages.iter().any(|message| {
-                message.id == message_id
-                    && message.role == "assistant"
-                    && message.group_id.as_deref() == Some(group_id.as_str())
-            });
-            if !valid {
-                return Err("选中的回答不属于该多答组".to_string());
-            }
-            conversation.select_group_answer(group_id, message_id);
-            Ok(())
+            apply_group_selection(&state, conversation, group_id, message_id)
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
 
+    emit_chat_context_state(&app, &conversation.id, conversation.revision, &conversation.context_state);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
@@ -1576,6 +1611,7 @@ pub(crate) async fn chat_reply_with_model(
     };
 
     let group_id_for_apply = prep.group_id.clone();
+    let state_ref = state.inner();
     let mut latest = repository
         .mutate(&app, &conversation_id, move |latest| {
             let prep = prepare_reply_with_model(
@@ -1586,6 +1622,9 @@ pub(crate) async fn chat_reply_with_model(
                 Some(&group_id_for_apply),
             )?;
             apply_reply_with_model_result(latest, &prep, produced);
+            if !latest.agent_runtime.is_external() {
+                super::context::invalidate_context_measurement(state_ref, latest);
+            }
             Ok(())
         })
         .await

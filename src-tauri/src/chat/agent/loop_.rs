@@ -125,6 +125,7 @@ pub(crate) struct RunState {
     pub(crate) skill_cache: skills::SkillRunCache,
     /// 本轮全部模型调用（规划/合成/压缩摘要）的 usage 累计；provider 不报则保持 None。
     pub(crate) usage: Option<crate::chat::model::ModelUsage>,
+    pub(crate) cache_pairs: Option<(u64, u64)>,
     /// 本轮**最后一次**模型调用的 usage（真实用量锚点，与累计 `usage` 区分——累计是多步之和、
     /// 会虚高数倍，不能当锚点）。`maybe_compact_send_view` 据此把上下文占用锚定到 provider
     /// 实报值，只对锚点之后新增的消息做字符估算（对齐 pi/opencode 的 ground-truth 口径）。
@@ -176,10 +177,34 @@ impl RunState {
     /// 而在 `rounds.rs` push 完该次响应后设——保证 trailing = 锚点响应**之后**新增（对齐 pi、避免
     /// 与锚点里的 output 双算）。
     /// 使用独立精简输入的 recovery 必须清除锚点，它的实报不代表完整运行上下文。
-    pub(crate) fn merge_usage(&mut self, next: Option<crate::chat::model::ModelUsage>) {
-        self.last_step_usage = next.clone();
-        self.initial_anchor_valid = false;
-        let Some(next) = next else { return };
+    /// `display` is false for a reduced recovery prompt: its bill still counts,
+    /// but it is not the context meter or the budget anchor.
+    pub(crate) fn merge_usage(
+        &mut self,
+        next: Option<crate::chat::model::ModelUsage>,
+        env: &LoopEnv<'_>,
+        display: bool,
+    ) {
+        let main_display = display && env.config.depth == 0;
+        if display {
+            self.last_step_usage = next.clone();
+            self.initial_anchor_valid = false;
+        }
+        let Some(next) = next else {
+            if main_display {
+                env.host.finish_unreported_context(&env.config.conversation_id);
+            }
+            return;
+        };
+        if main_display {
+            super::context_measure::accumulate_cache_pair(
+                &mut self.cache_pairs,
+                &next,
+                &env.config.provider.api_format,
+            );
+            env.host
+                .note_context_cache(&env.config.conversation_id, self.cache_pairs);
+        }
         let total = self.usage.get_or_insert_with(Default::default);
         let add = |slot: &mut Option<u64>, value: Option<u64>| {
             if let Some(value) = value {
@@ -195,6 +220,27 @@ impl RunState {
             next.cache_creation_input_tokens,
         );
         add(&mut total.reasoning_tokens, next.reasoning_tokens);
+        if !main_display {
+            return;
+        }
+        let api_format = env.config.provider.api_format.as_str();
+        if let Some(used) = super::context_estimate::prompt_tokens(&next, api_format)
+            .map(|input| input.saturating_add(next.output_tokens.unwrap_or(0)))
+        {
+            let cache = super::context_measure::combine_cache(
+                env.config.initial_cache_usage,
+                self.cache_pairs,
+            );
+            env.host.emit_context_usage_live(
+                &env.config.conversation_id,
+                used,
+                Some("provider_context_reported"),
+                None,
+                cache,
+            );
+        } else {
+            env.host.finish_unreported_context(&env.config.conversation_id);
+        }
     }
 }
 
@@ -303,6 +349,7 @@ pub async fn run_agent_loop(
         pending_follow_up: std::collections::VecDeque::new(),
         skill_cache: skills::SkillRunCache::default(),
         usage: None,
+        cache_pairs: None,
         last_step_usage: None,
         runtime_len_at_last_call: 0,
         initial_anchor_valid: true,
@@ -620,6 +667,7 @@ pub async fn run_agent_loop(
 /// `compacted_history`，供跨轮调用方替换其累积历史（finalize 构造器们也不感知压缩）。
 fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
     result.usage = state.usage.take();
+    result.cache_pairs = state.cache_pairs.take();
     result.last_step_usage = state.last_step_usage.take();
     if state.compacted {
         let mut history = std::mem::take(&mut state.runtime_messages);

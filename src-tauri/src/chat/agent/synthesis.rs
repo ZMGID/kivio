@@ -171,7 +171,7 @@ pub(crate) async fn synthesis_step(
                 ),
         ));
     }
-    state.merge_usage(stream.usage.clone());
+    state.merge_usage(stream.usage.clone(), env, true);
     state.generated_images.append(&mut stream.images);
     let final_reasoning_for_api = stream.reasoning.clone();
     let reasoning = merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone());
@@ -362,6 +362,16 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
     let config = env.config;
     // 压缩一次(L1 snip → L2 摘要);返回压缩后的发送视图,并已写回 state.runtime_messages。
     let compacted = super::compaction::compact_send_view(env, state, true).await;
+    if config.depth == 0 {
+        env.host.begin_context_request(
+            &config.conversation_id,
+            &config.message_id,
+            &config.provider.id,
+            &config.model,
+            &compacted,
+            &[],
+        );
+    }
     // 恢复重试内部有 send_with_retry 多次退避——必须接取消，否则用户点停止后卡到重试耗尽。
     let result = tokio::select! {
         result = config.provider_runtime.message(super::provider_runtime::MessageRequest {
@@ -385,7 +395,7 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
     let mut retry_error: Option<String> = None;
     let text = match result {
         Ok((message, usage)) => {
-            state.merge_usage(usage);
+            state.merge_usage(usage, env, true);
             sanitize_assistant_text_response(
                 message
                     .get("content")
@@ -449,10 +459,8 @@ async fn recover_remediate(
     };
     let text = match result {
         Ok((message, usage)) => {
-            state.merge_usage(usage);
-            // 独立精简请求的实报仅进费用总账，不能代表仍保留的完整上下文。
-            state.last_step_usage = None;
-            state.initial_anchor_valid = false;
+            // Bill only. The reduced prompt is not the context meter or the budget anchor.
+            state.merge_usage(usage, env, false);
             sanitize_assistant_text_response(
                 message
                     .get("content")

@@ -15,7 +15,19 @@ export type ChatToolArtifactPayload = { id: string | null, name: string, mimeTyp
 
 export type ChatToolPayload = { id: string, name: string, source: string, serverId: string | null, status: string, argumentsPreview: string, resultPreview: string | null, error: string | null, startedAt: number | null, completedAt: number | null, durationMs: number | null, round: number, sensitive: boolean, artifacts: Array<ChatToolArtifactPayload>, traceId: string | null, spanId: string | null, structuredContent: unknown, };
 
-export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, };
+export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, cacheInputTokens: number | null, cacheReadTokens: number | null, 
+/**
+ * Monotonic per conversation. A lower value must not replace a newer meter.
+ */
+measurementSeq: number, 
+/**
+ * Bumped on model change, compaction, and context clear.
+ */
+lifecycleId: number, 
+/**
+ * Request-bound categories. Null leaves the previous categories; an empty array clears them.
+ */
+segments?: Array<ChatContextUsageSegmentPayload>, };
 
 export type ChatRunRecoveryMetadata = { groupId: string, groupSize: number, armIndex: number, providerId: string, model: string, };
 
@@ -41,13 +53,13 @@ export type ChatCompactionBoundaryPayload = { id: string, sourceUntilMessageId: 
 
 export type ChatContextClearBoundaryPayload = { id: string, sourceUntilMessageId: string, createdAt: number, };
 
-export type ChatContextUsageSegmentPayload = { id: string, label: string, estimatedTokens: number, color: string | null, };
+export type ChatContextUsageSegmentPayload = { id: string, label: string, estimatedTokens: number, chars: number, color: string | null, };
 
 export type ChatFileLedgerPayload = { readFiles: Array<string>, modifiedFiles: Array<string>, omittedCount: number, };
 
 export type ChatContextSummaryPayload = { id: string, content: string, sourceMessageIds: Array<string>, sourceUntilMessageId: string, tokenEstimateBefore: number, tokenEstimateAfter: number, createdAt: number, providerId: string, model: string, stale: boolean, fileLedger: ChatFileLedgerPayload | null, };
 
-export type ChatContextStatePayload = { autoCompactThresholdTokens: number | null, estimatedInputTokens: number, contextWindowTokens: number | null, contextWindowEstimated: boolean, usageRatio: number | null, status: string, segments: Array<ChatContextUsageSegmentPayload>, lastMeasuredAt: number, lastCompressedAt: number | null, compressedMessageCount: number, compressionCount: number, summary: ChatContextSummaryPayload | null, compactionBoundaries: Array<ChatCompactionBoundaryPayload>, clearBoundaries: Array<ChatContextClearBoundaryPayload>, warning: string | null, contextSource: string | null, tokenCountSource: string | null, sessionInputTokens: number | null, sessionOutputTokens: number | null, externalAgentId: string | null, externalModel: string | null, };
+export type ChatContextStatePayload = { autoCompactThresholdTokens: number | null, estimatedInputTokens: number, contextWindowTokens: number | null, contextWindowEstimated: boolean, usageRatio: number | null, status: string, segments: Array<ChatContextUsageSegmentPayload>, reportedContextTokens: number | null, cacheHitRate: number | null, lastMeasuredAt: number, lastCompressedAt: number | null, compressedMessageCount: number, compressionCount: number, summary: ChatContextSummaryPayload | null, compactionBoundaries: Array<ChatCompactionBoundaryPayload>, clearBoundaries: Array<ChatContextClearBoundaryPayload>, warning: string | null, contextSource: string | null, tokenCountSource: string | null, sessionInputTokens: number | null, sessionOutputTokens: number | null, externalAgentId: string | null, externalModel: string | null, measurementSeq: number, lifecycleId: number, };
 
 export type ChatAskUserOptionPayload = { id: string, label: string, description: string | null, };
 

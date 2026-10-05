@@ -60,6 +60,13 @@ pub(crate) fn prompt_tokens(usage: &ModelUsage, api_format: &str) -> Option<u64>
     }
 }
 
+/// Normalized input and cache-read totals. Missing cache telemetry is not a measured zero.
+pub(crate) fn cache_usage(usage: &ModelUsage, api_format: &str) -> Option<(u64, u64)> {
+    let input = prompt_tokens(usage, api_format)?;
+    let read = usage.cached_input_tokens?;
+    (input > 0 && read <= input).then_some((input, read))
+}
+
 /// 计算上下文有效占用与是否采用了真实锚点。
 ///
 /// - `anchor_total`：`Some` = 有可用锚点（上次「prompt+响应」真实 token 总数）；`None` = 无锚点。
@@ -84,16 +91,6 @@ pub(crate) fn effective_context_tokens(
     }
 }
 
-/// 同一来源标记用于落盘快照和循环内实时事件，防止压缩后沿用过期的「实报」标签。
-pub(crate) fn token_count_source(anchored: bool, trailing_estimate: usize) -> Option<&'static str> {
-    if !anchored {
-        None
-    } else if trailing_estimate == 0 {
-        Some("provider_reported")
-    } else {
-        Some("provider_reported_with_estimate")
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -186,16 +183,6 @@ mod tests {
         assert_eq!(effective_context_tokens(None, 0, 42_000), (42_000, false));
     }
 
-    #[test]
-    fn usage_source_distinguishes_reported_incremental_and_fallback_counts() {
-        assert_eq!(token_count_source(true, 0), Some("provider_reported"));
-        assert_eq!(
-            token_count_source(true, 200),
-            Some("provider_reported_with_estimate")
-        );
-        assert_eq!(token_count_source(false, 0), None);
-        assert_eq!(effective_context_tokens(Some(0), 0, 100), (0, true));
-    }
 
     #[test]
     fn prompt_tokens_excludes_output_and_sums_anthropic_cache() {

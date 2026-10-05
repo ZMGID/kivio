@@ -791,6 +791,7 @@ fn append_context_segment(
         id: id.to_string(),
         label: label.to_string(),
         estimated_tokens: estimate_tokens(trimmed),
+        chars: trimmed.encode_utf16().count(),
         color: context_segment_color(id).map(str::to_string),
     });
 }
@@ -820,11 +821,33 @@ pub fn merge_context_segments(segments: Vec<ContextUsageSegment>) -> Vec<Context
         }
         if let Some(existing) = merged.iter_mut().find(|item| item.id == segment.id) {
             existing.estimated_tokens += segment.estimated_tokens;
+            existing.chars += segment.chars;
         } else {
             merged.push(segment);
         }
     }
     merged
+}
+
+/// Count serialized JSON characters without allocating another copy of tool/message content.
+pub(crate) fn context_json_chars(value: &serde_json::Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            // Count UTF-8 leading bytes; supplementary code points occupy two UTF-16 units.
+            self.0 += bytes.iter().map(|byte| match byte {
+                0x00..=0x7f | 0xc0..=0xef => 1,
+                0xf0..=0xf7 => 2,
+                _ => 0,
+            }).sum::<usize>();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value)
+        .expect("JSON Value serialization to an infallible character counter");
+    counter.0
 }
 
 pub fn context_segment_color(id: &str) -> Option<&'static str> {
@@ -861,11 +884,9 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 /// content-part `type` 值：图片部件（估算记 0 token——图片按 provider 的 tile 计费，
 /// 而非 base64 体积；把 base64 长度算进 token 会把估算打爆几个数量级）。
-/// **务必保持 0**：上下文用量条（`compute_context_state`）已用
-/// `estimate_image_attachment_tokens`（按图片真实尺寸/tile）**另行**累加图片 token，
-/// `count_tokens_in_value` 委托本函数、对内联图片返回 0 正是为了**不重复计**。
-/// 若在此给图片一个非 0 常量，用量条会双重计数；而 L2 循环内估算对内联图片的欠计
-/// 由 auto 触发路径（usage_ratio 已含图片）兜住，无需在此 hedge。
+/// Display measurement adds image costs separately in `measure_request_segments`,
+/// using image dimensions rather than base64 bytes. Keep this text estimate at
+/// zero to avoid counting the same image twice; budget anchors remain separate.
 pub(crate) const IMAGE_PART_TYPES: [&str; 3] = ["image_url", "input_image", "image"];
 /// content-part `type` 值：文本部件（按其 `text` 字段估算）。
 pub(crate) const TEXT_PART_TYPES: [&str; 2] = ["text", "input_text"];

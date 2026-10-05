@@ -18,6 +18,7 @@ pub(super) struct ChatAgentHost<'a> {
     pub(super) run_id: String,
     /// 多模型臂置 true：抑制 mid-run 部分快照落盘（协调者统一落盘）。默认 false（现状）。
     pub(super) suppress_partial_persist: bool,
+    pub(super) context_owner: bool,
     /// 用户配置的生命周期 Hooks。无启用 Hook 时为 `None`，loop 零开销。
     pub(super) hooks: Option<crate::chat::hooks::HookDispatcher>,
     pub(super) workflow_hooks: crate::chat::workflow_hooks::Runtime,
@@ -123,7 +124,21 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         used_tokens: u64,
         token_count_source: Option<&str>,
         context_window_tokens: Option<u64>,
+        cache_usage: Option<(u64, u64)>,
     ) {
+        if !self.context_owner { return; }
+        let runtime = self.state.chat_runtime();
+        let (live, segments_once) = if token_count_source.is_some() {
+            let Some((live, include_segments)) =
+                runtime.report_context_tokens(conversation_id, &self.run_id, used_tokens)
+            else {
+                return;
+            };
+            (live, include_segments)
+        } else {
+            (runtime.invalidate_context_display(conversation_id), true)
+        };
+        let segments = segments_once.then_some(live.segments.as_slice());
         emit_chat_context_usage_live(
             &self.app,
             conversation_id,
@@ -131,7 +146,80 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             used_tokens,
             token_count_source,
             context_window_tokens,
+            cache_usage,
+            live.seq,
+            live.lifecycle_id,
+            segments,
         );
+    }
+
+
+    fn begin_context_request(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        provider_id: &str,
+        model: &str,
+        messages: &[Value],
+        tools: &[ChatToolDefinition],
+    ) {
+        if !self.context_owner { return; }
+        let runtime = self.state.chat_runtime();
+        let cache = runtime
+            .context_measurement(conversation_id)
+            .filter(|live| live.message_id == message_id)
+            .and_then(|live| live.run_cache);
+        // One walk of the request that is about to be sent. No event and no
+        // disk write: categories ride the first provider report, or the normal
+        // snapshot if the user refreshes before that report arrives.
+        let settings = self.state.settings_read();
+        let segments = super::context::measure_request_segments(
+            messages, tools, settings.get_provider(provider_id), model,
+        );
+        drop(settings);
+        runtime.bind_prepared_context(
+            conversation_id,
+            &self.run_id,
+            message_id,
+            provider_id,
+            model,
+            &segments,
+            cache,
+        );
+    }
+
+    fn finish_unreported_context(&self, conversation_id: &str) {
+        if !self.context_owner {
+            return;
+        }
+        let Some(live) = self
+            .state
+            .chat_runtime()
+            .finish_unreported_context(conversation_id, &self.run_id)
+        else {
+            return;
+        };
+        // Clear the meter and publish the categories captured for this request,
+        // even when no provider report arrived to carry them.
+        emit_chat_context_usage_live(
+            &self.app,
+            conversation_id,
+            &self.run_id,
+            0,
+            None,
+            None,
+            None,
+            live.seq,
+            live.lifecycle_id,
+            Some(&live.segments),
+        );
+    }
+
+    fn note_context_cache(&self, conversation_id: &str, run_cache: Option<(u64, u64)>) {
+        if !self.context_owner { return; }
+        self.state
+            .chat_runtime()
+            .note_context_run_cache(conversation_id, &self.run_id, run_cache);
     }
 
     fn persist_partial_assistant<'a>(

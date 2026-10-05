@@ -727,6 +727,7 @@ pub fn ocr_image_message(image_path: &Path, prompt: &str) -> Result<ModelMessage
                 mime_type: "image/png".to_string(),
                 data: base64,
                 path: None,
+                detail: None,
             },
             MessagePart::Text {
                 text: prompt.to_string(),

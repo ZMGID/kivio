@@ -6,7 +6,9 @@ use std::{
     },
 };
 
+use super::agent::context_measure::LiveContextMeasurement;
 use super::agent::SteeringMessage;
+use super::types::ContextUsageSegment;
 
 /// Process-local ownership for Chat run coordination.
 ///
@@ -32,6 +34,7 @@ struct ChatRunIndexes {
     pending_follow_up: HashMap<String, Vec<SteeringMessage>>,
     pending_goal_user_queue: HashSet<String>,
     auto_compact_failures: HashMap<String, u32>,
+    context_measurements: HashMap<String, LiveContextMeasurement>,
 }
 
 impl ChatRuntimeState {
@@ -168,9 +171,149 @@ impl ChatRuntimeState {
             indexes.pending_follow_up.remove(conversation_id);
             indexes.pending_goal_user_queue.remove(conversation_id);
             indexes.auto_compact_failures.remove(conversation_id);
+            indexes.context_measurements.remove(conversation_id);
         }
         self.reply_idle.notify_waiters();
     }
+
+    pub(crate) fn context_measurement(&self, conversation_id: &str) -> Option<LiveContextMeasurement> {
+        self.indexes()
+            .context_measurements
+            .get(conversation_id)
+            .cloned()
+    }
+
+    /// Raise the stored floor to the persisted snapshot. Never lowers a newer in-memory report.
+    /// An empty slot copies the disk measurement so a refresh cannot hide a valid report.
+    pub(crate) fn seed_context_measurement(
+        &self,
+        conversation_id: &str,
+        lifecycle_id: u64,
+        seq: u64,
+        stored: Option<&crate::chat::types::ContextRequestMeasurement>,
+    ) {
+        let mut indexes = self.indexes();
+        let slot = indexes
+            .context_measurements
+            .entry(conversation_id.to_string())
+            .or_default();
+        if lifecycle_id > slot.lifecycle_id {
+            *slot = Default::default();
+            slot.lifecycle_id = lifecycle_id;
+        }
+        if slot.request_id.is_empty() && slot.seq <= seq {
+            slot.seq = seq;
+            slot.lifecycle_id = lifecycle_id;
+            if let Some(stored) = stored.filter(|stored| {
+                stored.lifecycle_id == lifecycle_id && stored.seq == seq
+            }) {
+                slot.provider_id = stored.provider_id.clone();
+                slot.model = stored.model.clone();
+                slot.reported_tokens = stored.reported_tokens;
+                slot.segments = stored.segments.clone();
+                slot.categories_published = true;
+            }
+        }
+    }
+
+    pub(crate) fn bind_prepared_context(
+        &self,
+        conversation_id: &str,
+        request_id: &str,
+        message_id: &str,
+        provider_id: &str,
+        model: &str,
+        segments: &[ContextUsageSegment],
+        run_cache: Option<(u64, u64)>,
+    ) -> LiveContextMeasurement {
+        let mut indexes = self.indexes();
+        let slot = indexes
+            .context_measurements
+            .entry(conversation_id.to_string())
+            .or_default();
+        slot.seq = slot.seq.saturating_add(1);
+        slot.request_id = request_id.to_string();
+        slot.message_id = message_id.to_string();
+        slot.provider_id = provider_id.to_string();
+        slot.model = model.to_string();
+        slot.segments = segments.to_vec();
+        // Never attach an earlier request's report to newly measured material.
+        slot.reported_tokens = None;
+        slot.categories_published = false;
+        slot.report_received = false;
+        slot.run_cache = run_cache;
+        slot.clone()
+    }
+
+    /// Apply a provider report only to the request currently bound. A late report
+    /// after invalidation or a newer bind is ignored. Categories ride the first
+    /// report of the request; later deltas only move the token count.
+    pub(crate) fn report_context_tokens(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        tokens: u64,
+    ) -> Option<(LiveContextMeasurement, bool)> {
+        let mut indexes = self.indexes();
+        let slot = indexes.context_measurements.get_mut(conversation_id)?;
+        if slot.request_id != run_id || run_id.is_empty() {
+            return None;
+        }
+        slot.seq = slot.seq.saturating_add(1);
+        slot.reported_tokens = Some(tokens);
+        slot.report_received = true;
+        let include_segments = !slot.categories_published;
+        slot.categories_published = true;
+        Some((slot.clone(), include_segments))
+    }
+
+    /// Publish an unknown meter when the request finishes without its own report.
+    /// Its measured categories remain available until the next bind.
+    pub(crate) fn finish_unreported_context(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+    ) -> Option<LiveContextMeasurement> {
+        let mut indexes = self.indexes();
+        let slot = indexes.context_measurements.get_mut(conversation_id)?;
+        if slot.request_id != run_id || run_id.is_empty() || slot.report_received {
+            return None;
+        }
+        slot.seq = slot.seq.saturating_add(1);
+        slot.reported_tokens = None;
+        Some(slot.clone())
+    }
+
+    pub(crate) fn note_context_run_cache(
+        &self,
+        conversation_id: &str,
+        run_id: &str,
+        run_cache: Option<(u64, u64)>,
+    ) {
+        let mut indexes = self.indexes();
+        if let Some(slot) = indexes.context_measurements.get_mut(conversation_id) {
+            if !run_id.is_empty() && slot.request_id == run_id {
+                slot.run_cache = run_cache;
+            }
+        }
+    }
+
+    pub(crate) fn invalidate_context_display(&self, conversation_id: &str) -> LiveContextMeasurement {
+        let mut indexes = self.indexes();
+        let slot = indexes
+            .context_measurements
+            .entry(conversation_id.to_string())
+            .or_default();
+        slot.lifecycle_id = slot.lifecycle_id.saturating_add(1);
+        slot.seq = slot.seq.saturating_add(1);
+        slot.reported_tokens = None;
+        slot.segments.clear();
+        slot.request_id.clear();
+        slot.message_id.clear();
+        slot.run_cache = None;
+        slot.clone()
+    }
+
 
     /// Consecutive automatic compaction failures, kept for the life of the process like
     /// ZCode's per-session circuit breaker.
@@ -440,5 +583,20 @@ mod tests {
         assert!(!runtime.has_active_reply("conversation"));
         assert!(!runtime.has_pending_input("conversation"));
         assert!(runtime.try_reserve_send("conversation", "next"));
+    }
+
+    #[test]
+    fn late_cache_report_cannot_overwrite_new_branch_request() {
+        let runtime = ChatRuntimeState::default();
+        runtime.bind_prepared_context("conversation", "old", "first", "openai", "gpt-4o", &[], Some((100, 90)));
+        runtime.invalidate_context_display("conversation");
+        runtime.bind_prepared_context("conversation", "new", "second", "openai", "gpt-4o", &[], Some((100, 10)));
+        // This callback belongs to the old run, which has already lost ownership.
+        runtime.note_context_run_cache("conversation", "old", Some((100, 90)));
+        let (reported, _) = runtime.report_context_tokens("conversation", "new", 7_100).unwrap();
+        assert_eq!(reported.run_cache, Some((100, 10)));
+        runtime.note_context_run_cache("conversation", "new", Some((200, 30)));
+        let (reported, _) = runtime.report_context_tokens("conversation", "new", 8_000).unwrap();
+        assert_eq!(reported.run_cache, Some((200, 30)));
     }
 }

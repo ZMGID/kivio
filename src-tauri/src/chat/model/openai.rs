@@ -332,6 +332,11 @@ impl OpenAiChatProvider<'_> {
                     Err(_) => continue,
                 };
                 if let Some(next_usage) = model_usage_from_stream_value(&value) {
+                    if let Some(input_tokens) = next_usage.input_tokens {
+                        sink.emit(StreamPart::ContextUsage {
+                            input_tokens, output_tokens: next_usage.output_tokens.unwrap_or(0),
+                        })?;
+                    }
                     usage = Some(next_usage);
                 }
                 if let Some(reason) = openai_stream_finish_reason(&value) {

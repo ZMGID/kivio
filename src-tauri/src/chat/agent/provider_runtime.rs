@@ -67,7 +67,7 @@ pub(crate) struct SummaryRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: &'a [Value],
-    pub preserve_recent: bool,
+    pub automatic: bool,
     /// The run's tools; the summary request carries them so tool history stays valid.
     pub tools: &'a [ChatToolDefinition],
     pub max_output_tokens: u32,
@@ -148,7 +148,7 @@ impl ProviderRuntime for AppState {
             request.provider,
             request.model,
             request.messages,
-            request.preserve_recent,
+            request.automatic,
             request.tools,
             request.max_output_tokens,
             request.conversation_id,

@@ -228,6 +228,8 @@ pub(super) fn build_assistant_message(
         stream_outcome: stream_outcome.map(str::to_string),
         usage,
         anchor_usage,
+        cache_pair_input: None,
+        cache_pair_read: None,
         group_id,
         provider_id,
         model,
@@ -305,7 +307,18 @@ pub(crate) async fn push_assistant_message(
         None,
     );
     let mut message = message;
+    message.provider_id = Some(conversation.provider_id.clone());
+    message.model = Some(conversation.model.clone());
     message.degraded = degraded;
+    if let Some(live) = state.chat_runtime().context_measurement(&conversation.id)
+        .filter(|live| live.message_id == message.id)
+    {
+        message.cache_pair_input = live.run_cache.map(|pair| pair.0);
+        message.cache_pair_read = live.run_cache.map(|pair| pair.1);
+        conversation.context_state.measurement_seq = live.seq;
+        conversation.context_state.lifecycle_id = live.lifecycle_id;
+        conversation.context_state.request_measurement = Some(live.stored());
+    }
     let stored_content = message.content.clone();
 
     // 标题还是自动生成的样子吗——占位「新对话」，或者等于第一句用户消息的启发式结果。
@@ -509,6 +522,8 @@ pub(super) async fn persist_partial_assistant_snapshot(
         stream_outcome: Some("interrupted".to_string()),
         usage: None,
         anchor_usage: None,
+        cache_pair_input: None,
+        cache_pair_read: None,
         group_id: None,
         provider_id: None,
         model: None,

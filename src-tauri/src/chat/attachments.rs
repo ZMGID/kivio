@@ -318,6 +318,7 @@ fn externalize_model_message_images_in_dir(
                 mime_type,
                 data,
                 path,
+                ..
             }
             | MessagePart::Video {
                 mime_type,
@@ -1754,6 +1755,7 @@ mod tests {
                     mime_type: mime.to_string(),
                     data: data.to_string(),
                     path: path.map(str::to_string),
+                    detail: None,
                 })
                 .collect(),
         }]

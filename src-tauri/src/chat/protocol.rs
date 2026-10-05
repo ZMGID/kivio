@@ -223,6 +223,20 @@ pub struct ChatContextUsagePayload {
     pub context_window_tokens: Option<u64>,
     #[serde(default)]
     pub token_count_source: Option<String>,
+    #[serde(default)]
+    pub cache_input_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_read_tokens: Option<u64>,
+    /// Monotonic per conversation. A lower value must not replace a newer meter.
+    #[serde(default)]
+    pub measurement_seq: u64,
+    /// Bumped on model change, compaction, and context clear.
+    #[serde(default)]
+    pub lifecycle_id: u64,
+    /// Request-bound categories. Null leaves the previous categories; an empty array clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub segments: Option<Vec<ChatContextUsageSegmentPayload>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
@@ -496,6 +510,7 @@ pub struct ChatContextUsageSegmentPayload {
     pub id: String,
     pub label: String,
     pub estimated_tokens: u64,
+    pub chars: u64,
     pub color: Option<String>,
 }
 
@@ -536,6 +551,8 @@ pub struct ChatContextStatePayload {
     pub usage_ratio: Option<f32>,
     pub status: String,
     pub segments: Vec<ChatContextUsageSegmentPayload>,
+    pub reported_context_tokens: Option<u64>,
+    pub cache_hit_rate: Option<f64>,
     pub last_measured_at: i64,
     pub last_compressed_at: Option<i64>,
     pub compressed_message_count: u64,
@@ -550,6 +567,10 @@ pub struct ChatContextStatePayload {
     pub session_output_tokens: Option<u64>,
     pub external_agent_id: Option<String>,
     pub external_model: Option<String>,
+    #[serde(default)]
+    pub measurement_seq: u64,
+    #[serde(default)]
+    pub lifecycle_id: u64,
 }
 
 impl From<&crate::chat::ConversationContextState> for ChatContextStatePayload {
@@ -561,6 +582,8 @@ impl From<&crate::chat::ConversationContextState> for ChatContextStatePayload {
             context_window_estimated: state.context_window_estimated,
             usage_ratio: state.usage_ratio,
             status: state.status.clone(),
+            reported_context_tokens: state.reported_context_tokens,
+            cache_hit_rate: state.cache_hit_rate,
             segments: state
                 .segments
                 .iter()
@@ -568,6 +591,7 @@ impl From<&crate::chat::ConversationContextState> for ChatContextStatePayload {
                     id: segment.id.clone(),
                     label: segment.label.clone(),
                     estimated_tokens: segment.estimated_tokens as u64,
+                    chars: segment.chars as u64,
                     color: segment.color.clone(),
                 })
                 .collect(),
@@ -607,6 +631,8 @@ impl From<&crate::chat::ConversationContextState> for ChatContextStatePayload {
             session_output_tokens: state.session_output_tokens.map(|value| value as u64),
             external_agent_id: state.external_agent_id.clone(),
             external_model: state.external_model.clone(),
+            measurement_seq: state.measurement_seq,
+            lifecycle_id: state.lifecycle_id,
         }
     }
 }
@@ -2337,7 +2363,12 @@ mod tests {
             }),
             serde_json::json!({
                 "type": "context_usage_updated",
-                "usage": {"usedTokens": 10, "contextWindowTokens": 100, "tokenCountSource": "provider_reported"}
+                "usage": {
+                    "usedTokens": 10, "contextWindowTokens": 100,
+                    "tokenCountSource": "provider_context_reported",
+                    "cacheInputTokens": 100, "cacheReadTokens": 88,
+                    "measurementSeq": 0, "lifecycleId": 0
+                }
             }),
             serde_json::json!({
                 "type": "compaction_updated", "phase": "started", "trigger": null,
@@ -2413,6 +2444,8 @@ mod tests {
                     "estimatedInputTokens": 0, "contextWindowTokens": null,
                     "contextWindowEstimated": false, "autoCompactThresholdTokens": null, "usageRatio": null, "status": "idle",
                     "segments": [], "lastMeasuredAt": 1, "lastCompressedAt": null,
+                    "reportedContextTokens": null, "cacheHitRate": null,
+                    "measurementSeq": 0, "lifecycleId": 0,
                     "compressedMessageCount": 0, "compressionCount": 0, "summary": null,
                     "compactionBoundaries": [], "clearBoundaries": [], "warning": null, "contextSource": null,
                     "tokenCountSource": null, "sessionInputTokens": null,

@@ -7,9 +7,9 @@ import {
 } from 'react'
 import { api } from '../../api/tauri'
 import { chatApi } from '../api'
-import { latestCompactionBoundaryId, mergeCompactionContextState } from '../compactionBoundary'
-import { latestClearBoundaryId, mergeClearContextState } from '../contextClearBoundary'
-import { applyLiveContextUsage } from '../contextPanel'
+import { latestCompactionBoundaryId } from '../compactionBoundary'
+import { latestClearBoundaryId } from '../contextClearBoundary'
+import { mergeContextMeasurement } from '../contextPanel'
 import type { Conversation, ConversationContextState, ContextCompactionResult } from '../types'
 import { useTauriEvent } from './useTauriEvent'
 
@@ -94,9 +94,9 @@ export function useConversationContext({
     setContextLoading(false)
   }, [setContextState])
 
-  /** 合并一份完整的权威上下文快照（保留本地已知的压缩 / 清空边界）。 */
+  /** 合并一份完整快照。测量序号更旧时保留已应用的实报和边界。 */
   const patchContextState = useCallback((nextState: ConversationContextState) => {
-    setContextState((prev) => mergeClearContextState(prev, mergeCompactionContextState(prev, nextState)))
+    setContextState((prev) => mergeContextMeasurement(prev, { kind: 'snapshot', state: nextState }))
   }, [setContextState])
 
   const refreshContextStats = useCallback(async (conversationId?: string) => {
@@ -188,11 +188,11 @@ export function useConversationContext({
     if (!currentConversationId || payload.conversationId !== currentConversationId) {
       return
     }
-    // 生成过程中的活数：只有分子 + 分母，就地补进现有状态（分段/压缩计数/来源标签留给
-    // 轮末的权威快照）。不能走 patchContextState —— 那条要求一份完整的上下文状态对象。
+    // Provider prompt reports arrive independently of the persisted snapshot.
+    // A history rewrite clears the report until the next API measurement.
     if (payload.live) {
       const live = payload.live
-      setContextState((prev) => applyLiveContextUsage(prev, live) ?? prev)
+      setContextState((prev) => mergeContextMeasurement(prev, { kind: 'live', usage: live }))
       return
     }
     if (!payload.contextState) return

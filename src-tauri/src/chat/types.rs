@@ -14,6 +14,9 @@ pub struct ContextUsageSegment {
     pub id: String,
     pub label: String,
     pub estimated_tokens: usize,
+    /// Serialized/content UTF-16 length; independent of provider token usage.
+    #[serde(default)]
+    pub chars: usize,
     #[serde(default)]
     pub color: Option<String>,
 }
@@ -103,6 +106,26 @@ pub struct ConversationContextSummary {
     pub replay: Option<CompactionReplay>,
 }
 
+/// Display measurement taken from one prepared main request.
+/// Sequence and lifecycle decide whether it may replace an older snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContextRequestMeasurement {
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub lifecycle_id: u64,
+    #[serde(default)]
+    pub request_id: String,
+    #[serde(default)]
+    pub provider_id: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_tokens: Option<u64>,
+    #[serde(default)]
+    pub segments: Vec<ContextUsageSegment>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConversationContextState {
     #[serde(default)]
@@ -119,6 +142,10 @@ pub struct ConversationContextState {
     pub status: String,
     #[serde(default)]
     pub segments: Vec<ContextUsageSegment>,
+    #[serde(default)]
+    pub reported_context_tokens: Option<u64>,
+    #[serde(default)]
+    pub cache_hit_rate: Option<f64>,
     #[serde(default)]
     pub last_measured_at: i64,
     #[serde(default)]
@@ -152,6 +179,14 @@ pub struct ConversationContextState {
     pub external_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_model: Option<String>,
+    /// Bumped on model change, compaction, and context clear.
+    #[serde(default)]
+    pub lifecycle_id: u64,
+    /// Monotonic order of `request_measurement`. A lower value must not replace a newer one.
+    #[serde(default)]
+    pub measurement_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_measurement: Option<ContextRequestMeasurement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -438,6 +473,11 @@ pub struct ChatMessage {
     /// 锚定到 provider 实报值（见 `chat/agent/context_estimate.rs`）。旧会话无字段 → None → 回落估算。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor_usage: Option<crate::chat::model::ModelUsage>,
+    /// Sum of this reply's complete cache pairs. Missing telemetry is absent, not zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_pair_input: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_pair_read: Option<u64>,
     /// 多模型一问多答（任务 06-30）：同一条 user 消息 fan-out 出的 N 条 assistant 共享同一个
     /// group_id；单模型回答为 None（旧会话缺字段反序列化为 None，向后兼容）。
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1305,6 +1305,11 @@ fn handle_responses_stream_event(
         "response.completed" | "response.incomplete" => {
             if let Some(response) = value.get("response") {
                 if let Some(usage) = model_usage_from_openai_value(response) {
+                    if let Some(input_tokens) = usage.input_tokens {
+                        sink.emit(StreamPart::ContextUsage {
+                            input_tokens, output_tokens: usage.output_tokens.unwrap_or(0),
+                        })?;
+                    }
                     state.usage = Some(usage);
                 }
                 if let Some(status) = response.get("status").and_then(Value::as_str) {

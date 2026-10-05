@@ -258,7 +258,7 @@ pub(crate) async fn planning_step(
                             ),
                     ));
                 }
-                state.merge_usage(stream.usage.clone());
+                state.merge_usage(stream.usage.clone(), env, true);
                 state.generated_images.append(&mut stream.images);
                 break Ok(ChatPlanningStep {
                     message: stream.to_openai_compatible_message(),
@@ -685,6 +685,9 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
     tool_draft_tracker: Option<ToolCallDraftTracker>,
     web_search_tracker: Option<WebSearchCardTracker>,
 ) -> Result<ChatStreamOutput, ModelError> {
+    host.begin_context_request(
+        conversation_id, message_id, &provider.id, model, &messages, tools.unwrap_or_default(),
+    );
     let request = generate_request_from_openai_messages(
         model,
         messages,

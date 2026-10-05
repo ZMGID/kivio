@@ -314,6 +314,11 @@ impl GeminiProvider<'_> {
                     finish_reason = reason;
                 }
                 if let Some(next_usage) = gemini_usage(&value) {
+                    if let Some(input_tokens) = next_usage.input_tokens {
+                        sink.emit(StreamPart::ContextUsage {
+                            input_tokens, output_tokens: next_usage.output_tokens.unwrap_or(0),
+                        })?;
+                    }
                     usage = Some(next_usage);
                 }
                 // 实时卡（任务 07-23）：grounding 通常在末段到达，实时性打折但答案前定位
@@ -741,7 +746,7 @@ fn gemini_parts_from_message(
                     }
                 }
             }
-            MessagePart::ImageUrl { url } => {
+            MessagePart::ImageUrl { url, .. } => {
                 if matches!(message.role, ModelRole::User) {
                     parts.push(serde_json::json!({ "fileData": { "fileUri": url } }));
                 }

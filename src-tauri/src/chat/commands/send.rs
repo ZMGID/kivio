@@ -297,6 +297,8 @@ async fn send_reserved(
         stream_outcome: None,
         usage: None,
         anchor_usage: None,
+        cache_pair_input: None,
+        cache_pair_read: None,
         group_id: group_id.clone(),
         provider_id: None,
         model: None,

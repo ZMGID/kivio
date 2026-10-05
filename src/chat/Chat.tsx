@@ -17,6 +17,7 @@ import { createChatNavigationController } from './chatNavigationController'
 import { createConversationWarmCache } from './conversationWarmCache'
 import { EMPTY_HISTORY_DIRECTORY, isPartialConversation } from './conversationHistoryWindow'
 import { keepNewerTodoState, patchTodoState } from './agentTodoState'
+import { keepNewerContextMeasurement } from './contextPanel'
 import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
@@ -652,7 +653,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       && (conversation.revision < previous.revision
         || (conversation.revision === previous.revision
           && isPartialConversation(conversation) && !isPartialConversation(previous)))
-      ? previous : conversation && keepNewerTodoState(conversation, previous))
+      ? previous
+      : conversation && keepNewerContextMeasurement(keepNewerTodoState(conversation, previous), previous))
   }, [])
 
 
@@ -705,7 +707,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setCurrentConversation((prev) => {
       if (!prev || prev.id !== updated.id || updated.revision < prev.revision) return prev
       return {
-        ...keepNewerTodoState(updated, prev),
+        ...keepNewerContextMeasurement(keepNewerTodoState(updated, prev), prev),
         messages: prev.messages,
         history_start: prev.history_start,
         history_total: prev.history_total,

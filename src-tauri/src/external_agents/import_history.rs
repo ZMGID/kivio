@@ -119,6 +119,8 @@ impl Pending {
                 degraded: None,
                 usage: None,
                 anchor_usage: None,
+                cache_pair_input: None,
+                cache_pair_read: None,
                 group_id: None,
                 // 导入的消息不归属任何 Kivio provider——续聊由 CLI 承担（ADR-0001）。
                 provider_id: None,

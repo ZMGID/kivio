@@ -1,217 +1,304 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyLiveContextUsage,
-  buildContextBarSlices,
-  CONTEXT_FREE_SEGMENT_ID,
-  CONTEXT_GROUP_CONVERSATION,
-  CONTEXT_GROUP_SYSTEM,
-  CONTEXT_GROUP_TOOLS,
-  contextSegmentGroupId,
-  fullnessLabel,
+  autoCompactPercent,
+  contextBreakdown,
+  keepNewerContextMeasurement,
+  mergeContextMeasurement,
+  mergeContextSnapshot,
+  reportedContextTokens,
 } from './contextPanel'
-import { i18n } from '../components/i18n'
-import type { ConversationContextState } from './types'
+import type { Conversation, ConversationContextState } from './types'
 
-describe('contextSegmentGroupId', () => {
-  it('maps fine-grained segments into the three display groups', () => {
-    expect(contextSegmentGroupId('system_prompt')).toBe(CONTEXT_GROUP_SYSTEM)
-    expect(contextSegmentGroupId('assistant')).toBe(CONTEXT_GROUP_SYSTEM)
-    expect(contextSegmentGroupId('skills')).toBe(CONTEXT_GROUP_SYSTEM)
-    expect(contextSegmentGroupId('knowledge_base')).toBe(CONTEXT_GROUP_SYSTEM)
-
-    expect(contextSegmentGroupId('tool_definitions')).toBe(CONTEXT_GROUP_TOOLS)
-    expect(contextSegmentGroupId('mcp')).toBe(CONTEXT_GROUP_TOOLS)
-    expect(contextSegmentGroupId('agent')).toBe(CONTEXT_GROUP_TOOLS)
-    expect(contextSegmentGroupId('agent_todo')).toBe(CONTEXT_GROUP_TOOLS)
-    expect(contextSegmentGroupId('agent_plan')).toBe(CONTEXT_GROUP_TOOLS)
-
-    expect(contextSegmentGroupId('conversation')).toBe(CONTEXT_GROUP_CONVERSATION)
-    expect(contextSegmentGroupId('attachments')).toBe(CONTEXT_GROUP_CONVERSATION)
-    expect(contextSegmentGroupId('summarized_conversation')).toBe(CONTEXT_GROUP_CONVERSATION)
-    // unknown ids must not invent a fourth group
-    expect(contextSegmentGroupId('external-session')).toBe(CONTEXT_GROUP_CONVERSATION)
-    expect(contextSegmentGroupId('something_new')).toBe(CONTEXT_GROUP_CONVERSATION)
-  })
-})
-
-describe('buildContextBarSlices', () => {
-  const t = i18n.zh
-
-  it('includes free space slice when window is known', () => {
-    const slices = buildContextBarSlices(
-      [
-        { id: 'conversation', label: 'Conversation', estimated_tokens: 50_000 },
-        { id: 'attachments', label: 'Attachments', estimated_tokens: 10_000 },
-      ],
-      60_000,
-      200_000,
-      t,
-    )
-    const free = slices.find((slice) => slice.id === CONTEXT_FREE_SEGMENT_ID)
-    expect(free?.tokens).toBe(140_000)
-    expect(free?.widthPercent).toBeCloseTo(70, 1)
-    expect(slices.reduce((sum, slice) => sum + slice.widthPercent, 0)).toBeCloseTo(100, 1)
-  })
-
-  // 外部 CLI 拿不到窗口时后端现在送 null（不再编造 200K）。此时不该出现「剩余空间」条，
-  // 也不该按假分母算宽度 —— 已用段独占整条，视觉上等价于「满度未知」。
-  it('omits the free slice when the window is unknown', () => {
-    const slices = buildContextBarSlices(
-      [{ id: 'external-session', label: 'CLI session context', estimated_tokens: 23_605 }],
-      23_605,
-      null,
-      t,
-    )
-    expect(slices.find((slice) => slice.id === CONTEXT_FREE_SEGMENT_ID)).toBeUndefined()
-    expect(slices).toHaveLength(1)
-    expect(slices[0].widthPercent).toBeCloseTo(100, 1)
-  })
-
-  it('collapses fine-grained segments into system / tools / conversation', () => {
-    const slices = buildContextBarSlices(
-      [
-        { id: 'system_prompt', label: 'System', estimated_tokens: 1_200 },
-        { id: 'assistant', label: 'Assistant', estimated_tokens: 300 },
-        { id: 'tool_definitions', label: 'Tools', estimated_tokens: 4_000 },
-        { id: 'mcp', label: 'MCP', estimated_tokens: 2_500 },
-        { id: 'agent_todo', label: 'Todo', estimated_tokens: 100 },
-        { id: 'conversation', label: 'Chat', estimated_tokens: 16_000 },
-        { id: 'attachments', label: 'Images', estimated_tokens: 500 },
-      ],
-      26_600,
-      1_000_000,
-      t,
-    )
-    const used = slices.filter((slice) => slice.id !== CONTEXT_FREE_SEGMENT_ID)
-    expect(used.map((slice) => slice.id)).toEqual(['system', 'tools', 'conversation'])
-    expect(used.map((slice) => slice.label)).toEqual([
-      t.contextSegmentSystemPrompt,
-      t.contextSegmentTools,
-      t.contextSegmentConversation,
-    ])
-    expect(used.find((s) => s.id === 'system')?.tokens).toBe(1_500)
-    expect(used.find((s) => s.id === 'tools')?.tokens).toBe(6_600)
-    expect(used.find((s) => s.id === 'conversation')?.tokens).toBe(16_500)
-  })
-})
-
-
-describe('fullnessLabel', () => {
-  const t = i18n.zh
-
-  it('says the fullness is unknown when the window could not be resolved', () => {
-    // 外部 CLI 既不报 usage_update.size、模型名也匹配不到静态表（如 cursor 选了不带
-    // `context=` 的模型）：百分比永远算不出来，不能用「CLI 待上报」暗示用户再等。
-    expect(fullnessLabel(null, true, null, t)).toBe(t.contextFullnessWindowUnknown)
-    expect(fullnessLabel(null, true, null, t)).not.toBe(t.contextFullnessCliPending)
-  })
-
-  it('still says CLI pending when the window is known but usage has not arrived', () => {
-    expect(fullnessLabel(null, true, 200_000, t)).toBe(t.contextFullnessCliPending)
-  })
-
-  it('falls back to the builtin estimating label off the external path', () => {
-    expect(fullnessLabel(null, false, 200_000, t)).toBe(t.contextFullnessEstimated)
-  })
-
-  it('renders a percentage once both numerator and denominator exist', () => {
-    expect(fullnessLabel(0.42, true, 200_000, t)).toBe(
-      t.contextFullnessPercentFull.replace('{percent}', '42'),
-    )
-  })
-})
-
-describe('applyLiveContextUsage', () => {
-  const base: ConversationContextState = {
-    estimated_input_tokens: 40_000,
-    context_window_tokens: 1_000_000,
-    usage_ratio: 0.04,
-    status: 'normal',
-    token_count_source: 'cli_reported',
-    context_source: 'external_cli',
+describe('provider-only context meter', () => {
+  const previous: ConversationContextState = {
+    context_window_tokens: 200_000,
+    estimated_input_tokens: 120_000,
+    reported_context_tokens: 30_000,
+    token_count_source: 'provider_context_reported',
     compression_count: 2,
-    segments: [{ id: 'external-session', label: 'CLI session context', estimated_tokens: 40_000 }],
+    segments: [
+      { id: 'tool_definitions', label: 'Tools', estimated_tokens: 24_000, chars: 2000 },
+      { id: 'conversation', label: 'Messages', estimated_tokens: 100, chars: 6000 },
+    ],
   }
 
-  it('moves the numerator and the percentage during generation', () => {
-    const next = applyLiveContextUsage(base, { usedTokens: 47_300, contextWindowTokens: 1_000_000 })
-    expect(next?.estimated_input_tokens).toBe(47_300)
-    expect(next?.estimatedInputTokens).toBe(47_300)
-    expect(next?.usage_ratio).toBeCloseTo(0.0473, 6)
+  it('never lets a budget estimate or tool breakdown replace reported occupancy', () => {
+    expect(reportedContextTokens(previous)).toBe(30_000)
+    for (const token_count_source of [undefined, 'estimated', 'provider_reported_with_estimate', 'provider_reported']) {
+      expect(reportedContextTokens({ ...previous, token_count_source })).toBeNull()
+    }
   })
 
-  // 分母粘滞：claude 只在轮末那条 result 里带窗口，中途的上报不带。
-  // 冲掉已知窗口会让用量条在生成过程中退回「满度未知」。
-  it('keeps the known window when a live report omits it', () => {
-    const next = applyLiveContextUsage(base, { usedTokens: 50_000 })
-    expect(next?.context_window_tokens).toBe(1_000_000)
-    expect(next?.contextWindowTokens).toBe(1_000_000)
-    expect(next?.usage_ratio).toBeCloseTo(0.05, 6)
-
-    const nullWindow = applyLiveContextUsage(base, { usedTokens: 50_000, contextWindowTokens: null })
-    expect(nullWindow?.context_window_tokens).toBe(1_000_000)
+  it('accepts the first API report before any full snapshot exists', () => {
+    const next = applyLiveContextUsage(null, {
+      usedTokens: 33_000, tokenCountSource: 'provider_context_reported', contextWindowTokens: 200_000,
+    })
+    expect(reportedContextTokens(next)).toBe(33_000)
+    expect(next.usage_ratio).toBe(0.165)
   })
 
-  it('adopts a newly reported window (the model may switch mid-session)', () => {
-    const next = applyLiveContextUsage(base, { usedTokens: 50_000, contextWindowTokens: 200_000 })
-    expect(next?.context_window_tokens).toBe(200_000)
-    expect(next?.usage_ratio).toBeCloseTo(0.25, 6)
+  it('replaces the report rather than accumulating it or scaling tool definitions', () => {
+    const first = applyLiveContextUsage(previous, { usedTokens: 120_000, tokenCountSource: 'provider_context_reported' })
+    expect(first.segments?.[0].estimated_tokens).toBe(24_000)
+    const next = applyLiveContextUsage(first, { usedTokens: 31_000, tokenCountSource: 'provider_context_reported' })
+    expect(reportedContextTokens(next)).toBe(31_000)
+    expect(next.usage_ratio).toBe(0.155)
+    expect(next.segments?.[0].estimated_tokens).toBe(24_000)
+    expect(contextBreakdown(next.segments).map(({ id, percent }) => [id, percent]))
+      .toEqual([['conversation', 0.75], ['tools', 0.25]])
+    expect(next.compression_count).toBe(2)
   })
 
-  it('leaves the window unknown when nothing ever reported one', () => {
-    const noWindow = applyLiveContextUsage(
-      { ...base, context_window_tokens: null, usage_ratio: null },
-      { usedTokens: 50_000 },
-    )
-    expect(noWindow?.context_window_tokens).toBeNull()
-    expect(noWindow?.usage_ratio).toBeNull()
+  it('invalidates the meter without dropping categories the event did not replace', () => {
+    const invalidated = applyLiveContextUsage(previous, { usedTokens: 0 })
+    expect(reportedContextTokens(invalidated)).toBeNull()
+    expect(invalidated.usage_ratio).toBeNull()
+    expect(invalidated.segments).toEqual(previous.segments)
+    expect(invalidated.context_window_tokens).toBe(200_000)
+    const cleared = applyLiveContextUsage(previous, { usedTokens: 0, segments: [] })
+    expect(cleared.segments).toEqual([])
+    const refreshed = applyLiveContextUsage(cleared, { usedTokens: 4_000, tokenCountSource: 'provider_context_reported' })
+    expect(reportedContextTokens(refreshed)).toBe(4_000)
+    expect(refreshed.segments).toEqual([])
   })
 
-  it('clears a stale reported label when live usage has no reported source', () => {
-    const next = applyLiveContextUsage(base, { usedTokens: 990_000 })
-    expect(next?.status).toBe('normal')
-    expect(next?.token_count_source).toBeUndefined()
-    expect(next?.tokenCountSource).toBeUndefined()
-    expect(next?.compression_count).toBe(2)
+  it('keeps unknown capacity distinct from zero usage and accepts a model-window change', () => {
+    const next = applyLiveContextUsage(null, { usedTokens: 0, tokenCountSource: 'provider_context_reported' })
+    expect(reportedContextTokens(next)).toBe(0)
+    expect(next.usage_ratio).toBeNull()
+    const switched = applyLiveContextUsage(previous, {
+      usedTokens: 32_000, tokenCountSource: 'provider_context_reported', contextWindowTokens: 128_000,
+    })
+    expect(switched.usage_ratio).toBe(0.25)
   })
 
-  it('uses the live source instead of inheriting the previous count source', () => {
-    const mixed = applyLiveContextUsage(base, { usedTokens: 269_350, tokenCountSource: 'provider_reported_with_estimate' })
-    expect(mixed?.token_count_source).toBe('provider_reported_with_estimate')
-    const reported = applyLiveContextUsage(mixed, { usedTokens: 269_150, tokenCountSource: 'provider_reported' })
-    expect(reported?.token_count_source).toBe('provider_reported')
-    expect(reported?.estimated_input_tokens).toBe(269_150)
-  })
-
-  // 分段按比例缩放：明细只有轮末算得准，但留在旧总量上会让进度条里出现一条对不上的缝。
-  it('scales the existing segments so the bar stays consistent', () => {
-    const next = applyLiveContextUsage(base, { usedTokens: 80_000 })
-    expect(next?.segments?.[0].estimated_tokens).toBe(80_000)
-    const twoSegments = applyLiveContextUsage(
-      {
-        ...base,
-        estimated_input_tokens: 100,
-        segments: [
-          { id: 'conversation', label: 'C', estimated_tokens: 75 },
-          { id: 'tool_definitions', label: 'T', estimated_tokens: 25 },
-        ],
-      },
-      { usedTokens: 200 },
-    )
-    expect(twoSegments?.segments?.map((segment) => segment.estimated_tokens)).toEqual([150, 50])
-  })
-
-  it('is a no-op before any context state exists', () => {
-    expect(applyLiveContextUsage(null, { usedTokens: 100 })).toBeNull()
-    expect(applyLiveContextUsage(undefined, { usedTokens: 100 })).toBeNull()
+  it('keeps CLI reports but does not promote CLI estimates to measurements', () => {
+    expect(reportedContextTokens({ estimated_input_tokens: 42, token_count_source: 'cli_reported' })).toBe(42)
+    expect(reportedContextTokens({ estimated_input_tokens: 42, token_count_source: 'estimated' })).toBeNull()
   })
 })
 
-
-import { autoCompactPercent } from './contextPanel'
-
-it('uses the backend compaction budget instead of a fixed percentage', () => {
-  expect(autoCompactPercent({ contextWindowTokens: 200000, autoCompactThresholdTokens: 166000 })).toBe(83)
-  expect(autoCompactPercent({ context_window_tokens: 128000, auto_compact_threshold_tokens: 106808 })).toBe(83)
+it('reads the backend compaction budget', () => {
+  expect(autoCompactPercent({ contextWindowTokens: 200000, autoCompactThresholdTokens: 170000 })).toBe(85)
   expect(autoCompactPercent({ contextWindowTokens: 200000 })).toBeNull()
+})
+
+it('does not invent a character distribution for legacy estimates or malformed counts', () => {
+  expect(contextBreakdown([
+    { id: 'mcp', label: 'MCP', estimated_tokens: 100_000 },
+    { id: 'skills', label: 'Skills', chars: NaN },
+    { id: 'conversation', label: 'Messages', chars: -1 },
+  ])).toEqual([])
+})
+
+it('merges all measured content into three categories without losing character counts', () => {
+  const segments = contextBreakdown([
+    { id: 'native_tools', label: '', chars: 100 },
+    { id: 'tool_definitions', label: '', chars: 200 },
+    { id: 'mcp', label: '', chars: 100 },
+    { id: 'skills', label: '', chars: 100 },
+    { id: 'system_prompt', label: '', chars: 50 },
+    { id: 'assistant', label: '', chars: 50 },
+    { id: 'memory_l1', label: '', chars: 50 },
+    { id: 'runtime_context', label: '', chars: 50 },
+    { id: 'conversation', label: '', chars: 100 },
+    { id: 'summarized_conversation', label: '', chars: 100 },
+    { id: 'attachments', label: '', chars: 100 },
+  ])
+  expect(segments.map(({ id, percent }) => [id, percent]))
+    .toEqual([['tools', 0.5], ['conversation', 0.3], ['system_prompt', 0.2]])
+})
+
+describe('measurement order', () => {
+  const streaming: ConversationContextState = {
+    context_window_tokens: 1_000_000,
+    reported_context_tokens: 53_000,
+    token_count_source: 'provider_context_reported',
+    measurement_seq: 5,
+    segments: [{ id: 'conversation', label: '', chars: 800, estimated_tokens: 2_000 }],
+    clear_boundaries: [{ id: 'clr', created_at: 2 }],
+    compaction_boundaries: [{ id: 'cmp', created_at: 1 }],
+  }
+
+  it('does not let an older refresh snapshot roll a streaming report back', () => {
+    const disk = mergeContextSnapshot(streaming, {
+      ...streaming,
+      reported_context_tokens: 7_100,
+      measurement_seq: 4,
+      segments: [{ id: 'tools', label: '', chars: 10, estimated_tokens: 100 }],
+      clear_boundaries: [],
+      compaction_boundaries: [],
+    })
+    expect(reportedContextTokens(disk)).toBe(53_000)
+    expect(disk.measurement_seq).toBe(5)
+    expect(disk.clear_boundaries).toEqual([{ id: 'clr', created_at: 2 }])
+    expect(disk.compaction_boundaries).toEqual([{ id: 'cmp', created_at: 1 }])
+    expect(disk).toBe(streaming)
+  })
+
+  it('applies a newer snapshot even when the reported total drops', () => {
+    const compacted = mergeContextSnapshot(streaming, {
+      reported_context_tokens: 7_100,
+      token_count_source: 'provider_context_reported',
+      measurement_seq: 6,
+      context_window_tokens: 1_000_000,
+      segments: [{ id: 'conversation', label: '', chars: 100, estimated_tokens: 400 }],
+      compaction_boundaries: [{ id: 'cmp', created_at: 1 }, { id: 'cmp2', created_at: 3 }],
+    })
+    expect(reportedContextTokens(compacted)).toBe(7_100)
+    expect(compacted.compaction_boundaries?.map((boundary) => boundary.id)).toEqual(['cmp', 'cmp2'])
+    expect(compacted.clear_boundaries).toEqual([{ id: 'clr', created_at: 2 }])
+  })
+
+  it('applies a newer model invalidation and ignores a late older report', () => {
+    const invalidated = mergeContextSnapshot(streaming, {
+      reported_context_tokens: null,
+      token_count_source: null,
+      measurement_seq: 6,
+      segments: [],
+      context_window_tokens: 128_000,
+    })
+    expect(reportedContextTokens(invalidated)).toBeNull()
+    expect(invalidated.segments).toEqual([])
+    const late = applyLiveContextUsage(invalidated, {
+      usedTokens: 53_000,
+      tokenCountSource: 'provider_context_reported',
+      measurementSeq: 5,
+    })
+    expect(late).toBe(invalidated)
+    const preserved = applyLiveContextUsage(streaming, { usedTokens: 0, measurementSeq: 6 })
+    expect(reportedContextTokens(preserved)).toBeNull()
+    expect(preserved.segments).toEqual(streaming.segments)
+    expect(preserved.context_window_tokens).toBe(1_000_000)
+    const cleared = applyLiveContextUsage(streaming, { usedTokens: 0, measurementSeq: 6, segments: [] })
+    expect(cleared.segments).toEqual([])
+  })
+
+  it('ignores a stale live report and an unsequenced snapshot once a sequence is applied', () => {
+    const staleLive = applyLiveContextUsage(streaming, {
+      usedTokens: 7_100,
+      tokenCountSource: 'provider_context_reported',
+      measurementSeq: 4,
+    })
+    expect(staleLive).toBe(streaming)
+    const unsequenced = mergeContextSnapshot(streaming, {
+      reported_context_tokens: 7_100,
+      token_count_source: 'provider_context_reported',
+    })
+    expect(unsequenced).toBe(streaming)
+    const legacy = mergeContextSnapshot(
+      { reported_context_tokens: 100, token_count_source: 'provider_context_reported' },
+      { reported_context_tokens: 200, token_count_source: 'provider_context_reported' },
+    )
+    expect(reportedContextTokens(legacy)).toBe(200)
+  })
+
+  it('keeps the fresher meter when a restored conversation revision is newer', () => {
+    const current = {
+      id: 'c', revision: 4, title: 'live', messages: [], provider_id: 'p', model: 'm',
+      created_at: 1, updated_at: 1, context_state: streaming, contextState: streaming,
+    } as Conversation
+    const restored = {
+      ...current,
+      revision: 8,
+      title: 'from disk',
+      context_state: {
+        reported_context_tokens: 7_100,
+        token_count_source: 'provider_context_reported',
+        measurement_seq: 4,
+      },
+      contextState: undefined,
+    } as Conversation
+    const kept = keepNewerContextMeasurement(restored, current)
+    expect(kept.title).toBe('from disk')
+    expect(kept.revision).toBe(8)
+    expect(reportedContextTokens(kept.context_state)).toBe(53_000)
+    expect(kept.contextState).toBe(kept.context_state)
+  })
+
+  it('shows request segments from a source-less live report while the meter stays unknown', () => {
+    const current = { ...streaming, lifecycle_id: 2, cache_hit_rate: 0.8, cacheHitRate: 0.8 }
+    const next = mergeContextMeasurement(current, {
+      kind: 'live',
+      usage: {
+        usedTokens: 0,
+        measurementSeq: 6,
+        lifecycleId: 2,
+        segments: [
+          { id: 'system_prompt', label: '', chars: 200, estimatedTokens: 1000 },
+          { id: 'tools', label: '', chars: 100, estimatedTokens: 400 },
+          { id: 'conversation', label: '', chars: 500, estimatedTokens: 2000 },
+        ],
+      },
+    })
+    expect(reportedContextTokens(next)).toBeNull()
+    expect(contextBreakdown(next.segments).map((segment) => segment.id))
+      .toEqual(['conversation', 'system_prompt', 'tools'])
+    expect(next.cache_hit_rate).toBeUndefined()
+    const kept = mergeContextMeasurement(current, {
+      kind: 'live',
+      usage: {
+        usedTokens: 60_000,
+        tokenCountSource: 'provider_context_reported',
+        measurementSeq: 6,
+        lifecycleId: 2,
+      },
+    })
+    expect(reportedContextTokens(kept)).toBe(60_000)
+    expect(kept.cache_hit_rate).toBe(0.8)
+    expect(kept.segments).toEqual(streaming.segments)
+  })
+
+  it('drops omitted categories when the lifecycle changes and ignores a lower sequence', () => {
+    const current = { ...streaming, lifecycle_id: 2, cache_hit_rate: 0.8, cacheHitRate: 0.8 }
+    const invalidated = mergeContextMeasurement(current, {
+      kind: 'live',
+      usage: { usedTokens: 0, measurementSeq: 6, lifecycleId: 3 },
+    })
+    expect(reportedContextTokens(invalidated)).toBeNull()
+    expect(invalidated.segments).toEqual([])
+    expect(invalidated.cache_hit_rate).toBeUndefined()
+    const stale = mergeContextMeasurement(current, {
+      kind: 'live',
+      usage: {
+        usedTokens: 1,
+        tokenCountSource: 'provider_context_reported',
+        measurementSeq: 4,
+        lifecycleId: 9,
+        segments: [],
+        cacheInputTokens: 10,
+        cacheReadTokens: 1,
+      },
+    })
+    expect(stale).toBe(current)
+    const cleared = mergeContextMeasurement(current, {
+      kind: 'snapshot',
+      state: {
+        ...streaming,
+        measurement_seq: 6,
+        lifecycle_id: 3,
+        cache_hit_rate: null,
+        cacheHitRate: 0.8,
+        segments: [],
+      },
+    })
+    expect(cleared.cache_hit_rate).toBeNull()
+    expect(cleared.cacheHitRate).toBeNull()
+    expect(cleared.segments).toEqual([])
+  })
+})
+
+it('sums independent estimates including attachments without inventing missing measurements', () => {
+  const segments = contextBreakdown([
+    { id: 'native_tools', label: '', chars: 100, estimated_tokens: 4000 },
+    { id: 'mcp', label: '', chars: 200, estimatedTokens: 6000 },
+    { id: 'conversation', label: '', chars: 700, estimated_tokens: 1000 },
+    { id: 'attachments', label: '', chars: 0, estimated_tokens: 800 },
+    { id: 'system_prompt', label: '', chars: 100 },
+  ])
+  expect(segments.find(s => s.id === 'tools')?.estimatedTokens).toBe(10000)
+  expect(segments.find(s => s.id === 'conversation')?.estimatedTokens).toBe(1800)
+  expect(segments.find(s => s.id === 'system_prompt')?.estimatedTokens).toBeNull()
+  expect(segments.find(s => s.id === 'tools')?.percent).toBeCloseTo(300 / 1100)
 })

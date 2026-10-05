@@ -81,9 +81,26 @@ pub trait AgentHost: Send + Sync {
     ) {
     }
 
-    /// 生成过程中的上下文占用活数（分子 + 分母），让用量条在长轮次里跟着走而不是轮末
-    /// 才跳一个数。由 `compaction::maybe_compact_send_view` 每轮调用一次——那里**已经**
-    /// 按权威口径算出了这两个数（压缩阈值判定要用），所以实时通道是零额外计算。
+    /// Capture categories once from the final prepared main request.
+    /// Child hosts intentionally do not publish into their parent's context.
+    fn begin_context_request(
+        &self,
+        _conversation_id: &str,
+        _message_id: &str,
+        _provider_id: &str,
+        _model: &str,
+        _messages: &[serde_json::Value],
+        _tools: &[crate::mcp::ChatToolDefinition],
+    ) {}
+
+    fn note_context_cache(&self, _conversation_id: &str, _cache: Option<(u64, u64)>) {}
+
+    /// The bound main request ended with no provider occupancy. Default no-op
+    /// so a child host cannot clear the parent meter.
+    fn finish_unreported_context(&self, _conversation_id: &str) {}
+
+    /// Latest main-request API occupancy; completed requests also publish weighted cache totals.
+    /// History rewrites send a source-less invalidation, never the internal estimate.
     ///
     /// **默认 no-op，且子 agent host 必须保持默认**：子 agent 有自己独立的上下文窗口
     /// （常是便宜的小模型，窗口小 5 倍），它的占用混进主对话会让用量条来回乱跳。
@@ -93,8 +110,10 @@ pub trait AgentHost: Send + Sync {
         _used_tokens: u64,
         _token_count_source: Option<&str>,
         _context_window_tokens: Option<u64>,
+        _cache_usage: Option<(u64, u64)>,
     ) {
     }
+
 
     /// Persist a best-effort snapshot of the in-progress assistant message to
     /// durable storage after a completed tool round. The full assistant message
