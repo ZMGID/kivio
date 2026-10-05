@@ -2219,7 +2219,7 @@ function MessageListBase({
                   : undefined
               }
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
-              onDeleteMessage={onDeleteMessage}
+              onDeleteMessage={streaming || streamFrozen ? undefined : onDeleteMessage}
               onSaveMessageToNote={onSaveMessageToNote}
               outlineEligible={!streamFrozen}
               onOutlineSourceChange={handleOutlineSourceChange}

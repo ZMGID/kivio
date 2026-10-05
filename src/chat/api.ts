@@ -852,6 +852,14 @@ const mockChatApi = {
     if (!target) throw new Error('Message not found')
     if (target.role !== 'assistant') throw new Error('仅支持删除助手回复')
     conversation.messages = conversation.messages.filter((message) => message.id !== messageId)
+    const groupId = target.group_id ?? target.groupId
+    const groupSelections = conversation.group_selections ?? conversation.groupSelections
+    if (groupId && groupSelections?.[groupId] === messageId) {
+      const nextSelections = { ...groupSelections }
+      delete nextSelections[groupId]
+      conversation.group_selections = nextSelections
+      conversation.groupSelections = nextSelections
+    }
     conversation.updated_at = nowSeconds()
     const contextState = estimateMockContext(conversation)
     conversation.context_state = contextState

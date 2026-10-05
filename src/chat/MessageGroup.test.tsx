@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageGroup } from './MessageGroup'
 import { beginGroup, ensureGroupColumn, flushGroups, resetGroups } from './groupStreamingStore'
 import { useMultiAnswerViewMode, type MultiAnswerViewMode } from './multiAnswerViewMode'
-import type { ChatMessage } from './types'
+import type { ChatMessage, Conversation } from './types'
+import { chatApi } from './api'
 
 // 用公开 API 驱动展示模式（内存态 + storage 同步），替代已删除的测试专用导出。
 function setMultiAnswerViewMode(mode: MultiAnswerViewMode) {
@@ -33,6 +35,66 @@ function assistant(id: string, content: string, providerId: string, model: strin
     timestamp: 1,
   }
 }
+
+describe('MessageGroup — 删除单个回答', () => {
+  it.each(['tabs', 'columns'] as const)('%s 删除指定回答并保留其它回答与续聊选择', async (mode) => {
+    setMultiAnswerViewMode(mode)
+    const initial: Conversation = {
+      id: 'delete-group', revision: 0, title: 'Delete one answer',
+      provider_id: 'openai', model: 'model-a', created_at: 1, updated_at: 1,
+      messages: [
+        { id: 'question', role: 'user', content: 'Keep this question', timestamp: 1 },
+        assistant('a1', 'Answer A', 'openai', 'model-a'),
+        assistant('a2', 'Answer B', 'openai', 'model-b'),
+        assistant('a3', 'Answer C', 'openai', 'model-c'),
+      ],
+      group_selections: { g1: 'a2' },
+    }
+    window.localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify([initial]))
+    function ConversationView() {
+      const [conversation, setConversation] = useState(initial)
+      return (
+        <MessageGroup
+          conversationId={conversation.id}
+          groupId="g1"
+          messages={conversation.messages.filter(message => message.role === 'assistant')}
+          selectedMessageId={conversation.group_selections?.g1}
+          onDeleteMessage={async id => {
+            setConversation(await chatApi.deleteMessage(conversation.id, id))
+          }}
+        />
+      )
+    }
+    render(<ConversationView />)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '删除 model-c' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'model-c' })).toBeNull())
+    let saved = await chatApi.getConversation(initial.id)
+    expect(saved.messages.map(message => message.id)).toEqual(['question', 'a1', 'a2'])
+    expect(saved.group_selections).toEqual({ g1: 'a2' })
+    expect(screen.getByRole('button', { name: 'model-b' })).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(screen.getByRole('button', { name: '删除 model-b' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'model-b' })).toBeNull())
+    saved = await chatApi.getConversation(initial.id)
+    expect(saved.messages.map(message => message.id)).toEqual(['question', 'a1'])
+    expect(saved.group_selections).toEqual({})
+    expect(screen.getByText('Answer A')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'model-a' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('生成期间不允许删除已完成的同组回答', () => {
+    act(() => {
+      beginGroup('c1', 'g1', [{ providerId: 'openai', model: 'model-a' }])
+      const column = ensureGroupColumn('c1', 'a1', 'openai', 'model-a')!
+      column.streaming = false
+      column.content = 'Already completed'
+      flushGroups()
+    })
+    render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} onDeleteMessage={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: '删除 model-a' })).toBeNull()
+  })
+})
 
 describe('MessageGroup — columns 模式', () => {
   beforeEach(() => {

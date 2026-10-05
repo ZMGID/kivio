@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { Check, Columns2, Square } from 'lucide-react'
+import { Check, Columns2, Square, Trash2 } from 'lucide-react'
 import type { ChatMessage, ChatToolArtifact, ModelRef } from './types'
 import { MessageBubble } from './MessageBubble'
 import { ReasoningPreviewContext } from './reasoningPreview'
@@ -7,6 +7,8 @@ import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { ModelIcon } from '../components/ModelIcon'
 import { getActiveGroup, useGroupVersion, type GroupColumnSnapshot } from './groupStreamingStore'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
+import { IconButton } from '../components/Button'
+import { useT } from '../components/i18n'
 
 // 多模型一问多答（任务 06-30 / 步骤 6 + 8）：把同一 group_id 的 N 条 assistant 答案展示出来。
 // 两种来源互斥：
@@ -226,6 +228,7 @@ function GroupFooter({
   activeMessageId,
   markContext,
   onSelectChip,
+  onDeleteMessage,
 }: {
   columns: GroupColumn[]
   viewMode: 'tabs' | 'columns'
@@ -235,7 +238,9 @@ function GroupFooter({
   // 高亮 chip 是否代表「已选为下一轮上下文」（落库后为 true；流式中上下文未定为 false）。
   markContext: boolean
   onSelectChip: (messageId: string) => void
+  onDeleteMessage?: (messageId: string) => Promise<void>
 }) {
+  const t = useT()
   return (
     <div className="chat-message-group-footer mt-2 flex flex-wrap items-center gap-2 border-t border-neutral-200/60 pt-2.5">
       {/* 视图切换：iOS 风分段控件，激活项白底浮起，克制不抢眼 */}
@@ -267,24 +272,35 @@ function GroupFooter({
           const isActive = message.id === activeMessageId
           const shortLabel = (message.model ?? '').trim() || columnModelLabel(message.provider_id, message.model)
           return (
-            <button
-              key={message.id}
-              type="button"
-              onClick={() => onSelectChip(message.id)}
-              aria-pressed={isActive}
-              title={columnModelLabel(message.provider_id, message.model)}
-              className={`inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                isActive
-                  ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                  : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
-              }`}
-            >
-              {message.model && <ModelIcon model={message.model} size={13} />}
-              <span className="min-w-0 truncate">{shortLabel}</span>
-              {isActive && markContext && (
-                <Check size={12} strokeWidth={2.5} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <div key={message.id} className="inline-flex items-center">
+              <button
+                type="button"
+                onClick={() => onSelectChip(message.id)}
+                aria-pressed={isActive}
+                title={columnModelLabel(message.provider_id, message.model)}
+                className={`inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  isActive
+                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                    : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
+                }`}
+              >
+                {message.model && <ModelIcon model={message.model} size={13} />}
+                <span className="min-w-0 truncate">{shortLabel}</span>
+                {isActive && markContext && (
+                  <Check size={12} strokeWidth={2.5} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+                )}
+              </button>
+              {onDeleteMessage && (
+                <IconButton
+                  variant="ghost"
+                  size="xs"
+                  label={`${t.dialogDelete} ${shortLabel}`}
+                  onClick={() => { void onDeleteMessage(message.id) }}
+                >
+                  <Trash2 size={12} />
+                </IconButton>
               )}
-            </button>
+            </div>
           )
         })}
       </div>
@@ -421,6 +437,7 @@ function MessageGroupBase({
         activeMessageId={footerActiveId}
         markContext={!live}
         onSelectChip={handleChipClick}
+        onDeleteMessage={!live ? onDeleteMessage : undefined}
       />
     </div>
   )
