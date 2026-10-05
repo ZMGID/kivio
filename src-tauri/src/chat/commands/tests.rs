@@ -3813,7 +3813,7 @@ fn persisted_cache_pairs_keep_the_same_total_when_a_later_request_omits_telemetr
 }
 
 #[test]
-fn request_measurement_refresh_and_missing_usage_do_not_resurrect_old_reports() {
+fn request_measurement_refresh_preserves_last_report_until_replacement() {
     use crate::chat::agent::context_measure::resolve_display;
     use crate::chat::runtime_state::ChatRuntimeState;
 
@@ -3825,25 +3825,57 @@ fn request_measurement_refresh_and_missing_usage_do_not_resurrect_old_reports() 
         estimated_tokens: 42, chars: 168, color: None,
     }];
     runtime.bind_prepared_context(&id, "first", "reply", "openai", "gpt-4o", &segments, None);
+    // Without any provider report the meter really is unknown.
+    assert_eq!(resolve_display(&conversation, runtime.context_measurement(&id).as_ref()).reported_tokens, None);
     runtime.report_context_tokens(&id, "first", 7_100).unwrap();
     let first = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
     conversation.context_state.measurement_seq = first.seq;
     conversation.context_state.request_measurement = first.persist;
 
-    runtime.bind_prepared_context(&id, "second", "reply", "openai", "gpt-4o", &segments, None);
+    let mut next_segments = segments.clone();
+    next_segments[0].estimated_tokens = 84;
+    runtime.bind_prepared_context(&id, "second", "reply", "openai", "gpt-4o", &next_segments, None);
+    // Reopening/refreshing during the next request must show one coherent report.
+    let waiting = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
+    assert_eq!(waiting.reported_tokens, Some(7_100));
+    assert_eq!(waiting.segments[0].estimated_tokens, 42);
+    assert!(runtime.report_context_tokens(&id, "first", 99_000).is_none());
+
     runtime.report_context_tokens(&id, "second", 53_000).unwrap();
     let refreshed = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
     assert_eq!(refreshed.reported_tokens, Some(53_000));
-    assert!(refreshed.seq > conversation.context_state.measurement_seq);
+    assert_eq!(refreshed.segments[0].estimated_tokens, 84);
+    assert!(refreshed.seq > waiting.seq);
 
-    runtime.bind_prepared_context(&id, "third", "reply", "openai", "gpt-4o", &segments, None);
-    runtime.finish_unreported_context(&id, "third").unwrap();
-    let unknown = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
-    assert_eq!(unknown.reported_tokens, None);
-    assert_eq!(unknown.segments[0].estimated_tokens, 42);
-    conversation.context_state.measurement_seq = unknown.seq;
-    conversation.context_state.request_measurement = unknown.persist;
-    assert_eq!(resolve_display(&conversation, None).reported_tokens, None);
+    // An unreported request must not erase the latest valid report, even when
+    // disk still contains the first request and another request follows it.
+    for request in ["third", "fourth"] {
+        runtime.bind_prepared_context(&id, request, "reply", "openai", "gpt-4o", &segments, None);
+        assert!(runtime.finish_unreported_context(&id, request).is_none());
+        let retained = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
+        assert_eq!(retained.reported_tokens, Some(53_000));
+        assert_eq!(retained.segments[0].estimated_tokens, 84);
+    }
+    let retained = resolve_display(&conversation, runtime.context_measurement(&id).as_ref());
+    conversation.context_state.measurement_seq = retained.seq;
+    conversation.context_state.request_measurement = retained.persist;
+    let restored: Conversation = serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    assert_eq!(resolve_display(&restored, None).reported_tokens, Some(53_000));
+    let restarted = ChatRuntimeState::default();
+    restarted.seed_context_measurement(&id, restored.context_state.lifecycle_id,
+        restored.context_state.measurement_seq, restored.context_state.request_measurement.as_ref());
+    restarted.bind_prepared_context(&id, "fifth", "reply", "openai", "gpt-4o", &segments, None);
+    let waiting = resolve_display(&restored, restarted.context_measurement(&id).as_ref());
+    assert_eq!(waiting.reported_tokens, Some(53_000));
+    assert_eq!(waiting.segments[0].estimated_tokens, 84);
+
+    let invalid = restarted.invalidate_context_display(&id);
+    conversation.context_state.lifecycle_id = invalid.lifecycle_id;
+    conversation.context_state.measurement_seq = invalid.seq;
+    conversation.context_state.request_measurement = Some(invalid.stored());
+    restarted.bind_prepared_context(&id, "after-clear", "reply", "openai", "gpt-4o", &segments, None);
+    assert!(restarted.finish_unreported_context(&id, "after-clear").is_some());
+    assert_eq!(resolve_display(&conversation, restarted.context_measurement(&id).as_ref()).reported_tokens, None);
 }
 
 #[test]

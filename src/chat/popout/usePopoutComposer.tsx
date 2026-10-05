@@ -662,6 +662,8 @@ export function usePopoutComposer({
   const usageSlot = useMemo(
     () => (
       <SessionUsageStrip
+        conversationId={conversation?.id}
+        generating={streaming}
         messages={displayMessages}
         lang={lang}
         apiFormats={providerApiFormats}
@@ -679,6 +681,7 @@ export function usePopoutComposer({
       lang,
       providerApiFormats,
       runtime.externalAgentId,
+      streaming,
       usesExternalRuntime,
     ],
   )

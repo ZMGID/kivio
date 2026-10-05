@@ -398,6 +398,51 @@ pub fn today_usage(dir: &Path) -> Result<TodayUsage, String> {
 }
 
 #[tauri::command]
+pub fn usage_get_conversation_cost(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<ConversationCost, String> {
+    let children = crate::chat::sub_agent::control::runtime(&app)?;
+    conversation_cost(&state.usage_dir, &conversation_id, &children)
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationCost {
+    pub cost_usd: Option<f64>,
+    pub unpriced_requests: usize,
+    pub skipped_records: usize,
+}
+
+// Use recorded request costs, not the visible history window or today's prices.
+// Deleted messages and older tool requests still incurred their original cost.
+fn conversation_cost(
+    dir: &Path,
+    conversation_id: &str,
+    children: &crate::chat::sub_agent::runtime::Runtime,
+) -> Result<ConversationCost, String> {
+    // Durable child identities include every execution of each child, even
+    // after restart. All children belong to the root conversation; nesting is
+    // currently forbidden. Scan each request once, not once per execution.
+    let mut ids = std::collections::HashSet::from([conversation_id.to_owned()]);
+    for child in children.list(conversation_id)? {
+        ids.insert(format!("subagent-{}", child.id));
+    }
+    let (records, skipped_records) = read_records(dir, None);
+    let mut result = ConversationCost { skipped_records, ..Default::default() };
+    for record in records.iter().filter(|record| record.conversation_id.as_ref().is_some_and(|id| ids.contains(id))) {
+        match record.cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.0)
+            .filter(|_| record.usage_source != "missing")
+        {
+            Some(cost) => *result.cost_usd.get_or_insert(0.0) += cost,
+            None => result.unpriced_requests += 1,
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
 pub fn usage_get_stats(
     state: State<'_, AppState>,
     query: Option<UsageStatsQuery>,
@@ -1015,6 +1060,66 @@ mod tests {
             message_id: None,
             error_kind: None,
         }
+    }
+
+    #[test]
+    fn conversation_cost_includes_durable_children_and_continuations_once() {
+        use crate::chat::sub_agent::runtime::{Profile, Runtime};
+        let dir = tempfile::tempdir().unwrap();
+        let children_dir = dir.path().join("children");
+        let runtime = Runtime::open(children_dir.clone()).unwrap();
+        let child = runtime.start("parent", "run", "key", "child", Profile::default(), "work").unwrap();
+        let unrelated = runtime.start("other", "run-other", "key-other", "other", Profile::default(), "work").unwrap();
+        let child_id = format!("subagent-{}", child.id);
+        let unrelated_id = format!("subagent-{}", unrelated.id);
+        runtime.finish("parent", &child.id, &child.current().id, Ok(("done".into(), None))).unwrap();
+        let (continued, _) = runtime.resume("parent", &child.id, "next-run", "next-key", "user", "continue").unwrap();
+        assert_eq!(continued.runs.len(), 2);
+        let usage_dir = dir.path().join("usage");
+        for (id, cost) in [
+            ("parent", Some(0.125)),
+            (child_id.as_str(), Some(0.25)),
+            (child_id.as_str(), Some(0.5)),
+            (child_id.as_str(), None),
+            (unrelated_id.as_str(), Some(99.0)),
+        ] {
+            let mut record = base_record("openai_chat");
+            record.conversation_id = Some(id.into());
+            record.cost_usd = cost;
+            append_record(&usage_dir, &record).unwrap();
+        }
+        drop(runtime);
+        let reopened = Runtime::open(children_dir).unwrap();
+        let cost = conversation_cost(&usage_dir, "parent", &reopened).unwrap();
+        assert_eq!(cost.cost_usd, Some(0.875));
+        assert_eq!(cost.unpriced_requests, 1);
+    }
+
+    #[test]
+    fn conversation_cost_covers_all_recorded_requests_without_conflating_unknown_and_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let children = crate::chat::sub_agent::runtime::Runtime::open(dir.path().join("children")).unwrap();
+        for (id, age_days, cost, usage_source) in [
+            ("a", 400, Some(0.125), "provider_reported"),
+            ("a", 0, Some(0.25), "provider_reported"),
+            ("a", 0, None, "provider_reported"),
+            ("a", 0, Some(0.0), "missing"),
+            ("other", 0, Some(999.0), "provider_reported"),
+            ("free", 0, Some(0.0), "provider_reported"),
+        ] {
+            let mut record = base_record("openai_chat");
+            record.conversation_id = Some(id.into());
+            record.created_at -= age_days * 86400;
+            record.cost_usd = cost;
+            record.usage_source = usage_source.into();
+            append_record(dir.path(), &record).unwrap();
+        }
+        let cost = conversation_cost(dir.path(), "a", &children).unwrap();
+        assert_eq!(cost.cost_usd, Some(0.375));
+        assert_eq!(cost.unpriced_requests, 2);
+        assert_eq!(cost.skipped_records, 0);
+        assert_eq!(conversation_cost(dir.path(), "free", &children).unwrap().cost_usd, Some(0.0));
+        assert_eq!(conversation_cost(dir.path(), "absent", &children).unwrap().cost_usd, None);
     }
 
     #[test]

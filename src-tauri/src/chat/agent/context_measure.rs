@@ -2,7 +2,7 @@
 //!
 //! Budget anchors stay in `context_estimate` / `resolve_usage_anchor`. This module
 //! only decides what the meter and category breakdown may show: the latest
-//! main-request measurement for the current lifecycle, never a rebuilt prompt
+//! reported main-request measurement for the current lifecycle, never a rebuilt prompt
 //! and never an older report with a lower sequence.
 
 use serde_json::Value;
@@ -23,17 +23,31 @@ pub(crate) struct LiveContextMeasurement {
     pub model: String,
     pub reported_tokens: Option<u64>,
     pub segments: Vec<ContextUsageSegment>,
+    /// Last coherent report while the bound request is waiting for its own usage.
+    /// Pending categories must never be paired with the previous request's total.
+    pub last_reported: Option<ContextRequestMeasurement>,
     /// Complete cache pairs produced by the in-flight reply, not the conversation total.
     pub run_cache: Option<(u64, u64)>,
     /// Categories for this request were already attached to one usage report.
     pub categories_published: bool,
-    /// This bind has received its own provider report. Until then a finished
-    /// request with no usage clears the meter instead of keeping an older one.
+    /// This bind has received its own provider report.
     pub report_received: bool,
 }
 
 impl LiveContextMeasurement {
     pub(crate) fn stored(&self) -> ContextRequestMeasurement {
+        if self.reported_tokens.is_none() {
+            if let Some(previous) = self.last_reported.as_ref().filter(|previous| {
+                previous.lifecycle_id == self.lifecycle_id
+                    && previous.provider_id == self.provider_id
+                    && previous.model == self.model
+            }) {
+                return ContextRequestMeasurement {
+                    seq: self.seq,
+                    ..previous.clone()
+                };
+            }
+        }
         ContextRequestMeasurement {
             seq: self.seq,
             lifecycle_id: self.lifecycle_id,
@@ -214,8 +228,8 @@ fn legacy_display(conversation: &crate::chat::types::Conversation) -> DisplayMea
     }
 }
 
-/// Latest request-bound measurement for this lifecycle. A missing report stays
-/// unknown; an older anchor is not promoted into the meter.
+/// Last reported request for this lifecycle, retained while a new request waits.
+/// Without any report the meter stays unknown; budget anchors are not promoted.
 pub(crate) fn resolve_display(
     conversation: &crate::chat::types::Conversation,
     live: Option<&LiveContextMeasurement>,
@@ -250,7 +264,7 @@ pub(crate) fn resolve_display(
     .max(conversation.context_state.lifecycle_id);
 
     let (provider_id, model, lifecycle_id, reported, segments, request_id) = if live_wins {
-        let live = live.expect("live wins only when present");
+        let live = live.expect("live wins only when present").stored();
         (
             live.provider_id.clone(),
             live.model.clone(),

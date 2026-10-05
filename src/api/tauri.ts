@@ -1394,6 +1394,12 @@ export type PluginInstallBrief = {
 
 export type UsageRange = 'today' | '1d' | '7d' | '30d' | '365d'
 
+export type ConversationCost = {
+  costUsd: number | null
+  unpricedRequests: number
+  skippedRecords: number
+}
+
 export type UsageStatsQuery = {
   range?: UsageRange
   source?: string
@@ -1840,6 +1846,8 @@ export const api = {
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion })),
   usageGetStats: (query?: UsageStatsQuery) =>
     invoke<UsageStatsResponse>('usage_get_stats', { query }),
+  usageGetConversationCost: (conversationId: string) =>
+    invoke<ConversationCost>('usage_get_conversation_cost', { conversationId }),
   usageClear: () => invoke<void>('usage_clear'),
   getRequestDebugRecords: () =>
     invoke<RequestDebugRecord[]>('get_request_debug_records'),

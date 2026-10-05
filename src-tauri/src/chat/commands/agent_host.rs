@@ -170,8 +170,8 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             .filter(|live| live.message_id == message_id)
             .and_then(|live| live.run_cache);
         // One walk of the request that is about to be sent. No event and no
-        // disk write: categories ride the first provider report, or the normal
-        // snapshot if the user refreshes before that report arrives.
+        // disk write: categories ride the first provider report. Until then,
+        // refreshes retain the last reported request's total and categories.
         let settings = self.state.settings_read();
         let segments = super::context::measure_request_segments(
             messages, tools, settings.get_provider(provider_id), model,
@@ -199,8 +199,8 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         else {
             return;
         };
-        // Clear the meter and publish the categories captured for this request,
-        // even when no provider report arrived to carry them.
+        // No valid report exists yet: publish this request's categories with an
+        // unknown meter. Otherwise the runtime retains the last valid snapshot.
         emit_chat_context_usage_live(
             &self.app,
             conversation_id,

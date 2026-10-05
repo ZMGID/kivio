@@ -231,6 +231,11 @@ impl ChatRuntimeState {
             .context_measurements
             .entry(conversation_id.to_string())
             .or_default();
+        let previous = slot.stored();
+        slot.last_reported = (previous.reported_tokens.is_some()
+            && previous.provider_id == provider_id
+            && previous.model == model)
+            .then_some(previous);
         slot.seq = slot.seq.saturating_add(1);
         slot.request_id = request_id.to_string();
         slot.message_id = message_id.to_string();
@@ -261,14 +266,15 @@ impl ChatRuntimeState {
         }
         slot.seq = slot.seq.saturating_add(1);
         slot.reported_tokens = Some(tokens);
+        slot.last_reported = None;
         slot.report_received = true;
         let include_segments = !slot.categories_published;
         slot.categories_published = true;
         Some((slot.clone(), include_segments))
     }
 
-    /// Publish an unknown meter when the request finishes without its own report.
-    /// Its measured categories remain available until the next bind.
+    /// Publish unknown only if this lifecycle has never received a valid report.
+    /// A request without usage otherwise leaves the last coherent report visible.
     pub(crate) fn finish_unreported_context(
         &self,
         conversation_id: &str,
@@ -276,7 +282,9 @@ impl ChatRuntimeState {
     ) -> Option<LiveContextMeasurement> {
         let mut indexes = self.indexes();
         let slot = indexes.context_measurements.get_mut(conversation_id)?;
-        if slot.request_id != run_id || run_id.is_empty() || slot.report_received {
+        if slot.request_id != run_id || run_id.is_empty() || slot.report_received
+            || slot.stored().reported_tokens.is_some()
+        {
             return None;
         }
         slot.seq = slot.seq.saturating_add(1);
@@ -308,6 +316,7 @@ impl ChatRuntimeState {
         slot.seq = slot.seq.saturating_add(1);
         slot.reported_tokens = None;
         slot.segments.clear();
+        slot.last_reported = None;
         slot.request_id.clear();
         slot.message_id.clear();
         slot.run_cache = None;

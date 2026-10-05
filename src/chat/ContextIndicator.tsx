@@ -282,6 +282,11 @@ export function ContextIndicator({
             </div>
           )}
           <div className="mt-1.5 flex items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-1">
+            {compressMeta && (
+              <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-400 dark:text-neutral-500" title={compressMeta}>
+                {compressMeta}
+              </span>
+            )}
             <IconButton
               variant="ghost"
               size="sm"
@@ -320,12 +325,6 @@ export function ContextIndicator({
               </Button>
             )}
           </div>
-
-          {compressMeta && (
-            <div className="mt-1 truncate text-[10px] text-neutral-400 dark:text-neutral-500">
-              {compressMeta}
-            </div>
-          )}
 
           {error && (
             <p className="mt-1 text-[10px] text-danger">

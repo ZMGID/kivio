@@ -2356,6 +2356,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const composerUsageSlot = useMemo(
     () => (
       <SessionUsageStrip
+        conversationId={currentConversation?.id}
+        generating={streamCoarse.streaming}
         messages={displayMessages}
         lang={uiLang}
         apiFormats={providerApiFormats}
@@ -2372,6 +2374,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       currentConversation,
       displayMessages,
       providerApiFormats,
+      streamCoarse.streaming,
       uiLang,
       usesExternalRuntime,
     ],

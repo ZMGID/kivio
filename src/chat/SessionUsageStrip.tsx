@@ -1,9 +1,13 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { api, type ConversationCost } from '../api/tauri'
 import { formatTokensK } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
 import type { ChatMessage } from './types'
+import { useSubAgents } from './useSubAgents'
 
 interface SessionUsageStripProps {
+  conversationId?: string
+  generating?: boolean
   messages: ChatMessage[]
   lang: Lang
   /** provider id → apiFormat；用于判断该 provider 的 input_tokens 是否已含缓存。
@@ -35,9 +39,11 @@ function formatCachePercent(cached: number, input: number): string {
  * - ↑ = Σ input_tokens（Anthropic 之外的家 input 已含缓存，先减去缓存部分）。
  * - 缓存 = 命中缓存占输入总量的百分比（Σ cached_input_tokens / (新鲜 + 缓存)）。
  * - ↓ = Σ output_tokens。
- * 没有任何一条消息带用量（provider 不报 / 纯空会话）时整条不渲染。
+ * 费用按完整对话的已记录请求累计，与当前加载的消息窗口无关。
  */
 export function SessionUsageStrip({
+  conversationId,
+  generating = false,
   messages,
   lang,
   apiFormats = {},
@@ -76,7 +82,36 @@ export function SessionUsageStrip({
     return { input, cached, output, hasAny }
   }, [apiFormats, cacheIncludedInInput, defaultApiFormat, messages])
 
-  if (!totals.hasAny) return null
+  const [costSnapshot, setCostSnapshot] = useState<{ id: string; value: ConversationCost | null } | null>(null)
+  const { agents } = useSubAgents(conversationId ?? null)
+  // Reuse the existing child subscription. Progress text must not trigger cost reads.
+  const childExecutions = agents.map(child => {
+    const run = child.runs.at(-1)
+    return `${child.id}:${run?.id}:${run?.status}`
+  }).join('|')
+  useEffect(() => {
+    if (!conversationId) return
+    let cancelled = false
+    // Refresh on reopening and completed usage/run changes, not on text deltas.
+    void api.usageGetConversationCost(conversationId).then((value) => {
+      if (!cancelled) setCostSnapshot({ id: conversationId, value })
+    }).catch(() => {
+      if (!cancelled) setCostSnapshot({ id: conversationId, value: null })
+    })
+    return () => { cancelled = true }
+  }, [conversationId, generating, totals.input, totals.cached, totals.output, childExecutions])
+  const cost = costSnapshot?.id === conversationId ? costSnapshot?.value : null
+  const amount = cost?.costUsd
+  const knownCost = amount != null && Number.isFinite(amount) && amount >= 0
+  const partialCost = Boolean(cost && (cost.unpricedRequests > 0 || cost.skippedRecords > 0))
+  const costText = knownCost
+    ? `${amount.toFixed(2)}$`
+    : '—$'
+  const costHint = lang === 'zh'
+    ? `当前对话及其子代理累计估算费用（美元），按已记录请求及模型价格计算，非实际账单。${partialCost ? '部分请求缺少价格或用量，仅显示已知部分。' : ''}`
+    : `Estimated conversation and sub-agent cost in USD from recorded requests and model prices, not an invoice.${partialCost ? ' Some requests lack pricing or usage; known costs only.' : ''}`
+
+  if (!totals.hasAny && !conversationId) return null
 
   const t = i18n[lang]
   const cacheLabel = totals.cached > 0
@@ -95,9 +130,10 @@ export function SessionUsageStrip({
       title={tooltip}
       data-tauri-drag-region="false"
     >
+      {conversationId && <span title={costHint}>{costText}</span>}
       {cacheLabel && <span>{cacheLabel}</span>}
-      <span>↑{formatTokensK(totals.input)}</span>
-      <span>↓{formatTokensK(totals.output)}</span>
+      {totals.hasAny && <span>↑{formatTokensK(totals.input)}</span>}
+      {totals.hasAny && <span>↓{formatTokensK(totals.output)}</span>}
     </span>
   )
 }
