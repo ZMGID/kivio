@@ -682,7 +682,7 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-tick::before {
   content: '';
   display: block;
-  width: calc(10px - min(var(--heading-depth), 2) * 2.5px);
+  width: var(--heading-tick-width);
   height: 1.5px;
   border-radius: 999px;
   background: var(--outline-tick);
@@ -698,7 +698,7 @@ button.chat-composer-status-item:hover {
 .chat-heading-navigator-title {
   display: none;
   min-width: 0;
-  padding-left: calc(min(var(--heading-depth), 2) * 12px);
+  padding-left: var(--heading-indent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -122,13 +122,18 @@ function ChatHeadingOutlineBase({
         {visibleItems.map((item) => {
           const active = item.anchorId === activeAnchorId
           const level = item.depth - primaryDepth
+          // 直接传长度，避免生产 CSS 压缩把嵌套 min() × px 改写成无效的除法。
+          const cappedLevel = Math.min(level, 2)
           return (
             <button
               key={item.anchorId}
               type="button"
               className={`chat-heading-navigator-item${level > 0 ? ' is-sub' : ''}${active ? ' is-active' : ''}`}
               data-anchor-id={item.anchorId}
-              style={{ ['--heading-depth' as string]: String(level) } as CSSProperties}
+              style={{
+                '--heading-tick-width': `${10 - cappedLevel * 2.5}px`,
+                '--heading-indent': `${cappedLevel * 12}px`,
+              } as CSSProperties}
               title={item.title}
               aria-label={t.chatHeadingLabel.replace('{title}', item.title)}
               aria-current={active ? 'location' : undefined}

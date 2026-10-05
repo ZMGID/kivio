@@ -14,9 +14,13 @@ export function AddSelectionToChat({ containerEl, lang }: { containerEl: HTMLEle
   const [state, setState] = useState<{ text: string; left: number; top: number } | null>(null)
   const stateRef = useRef(state)
   stateRef.current = state
+  const buttonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
+    setState(null)
     if (!containerEl) return
+    let frame: number | null = null
+    let selecting = false
 
     const resolveFromSelection = () => {
       const sel = window.getSelection()
@@ -40,21 +44,52 @@ export function AddSelectionToChat({ containerEl, lang }: { containerEl: HTMLEle
       setState({ text, left: rect.right, top: rect.top })
     }
 
-    // mouseup 后 selection 才稳定，延一帧再读。
-    const onMouseUp = () => setTimeout(resolveFromSelection, 0)
-    const onSelectionChange = () => {
-      const sel = window.getSelection()
-      if (!sel || sel.isCollapsed) setState(null)
+    const cancelResolve = () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
     }
-    const hide = () => setState(null)
+    const hide = () => {
+      cancelResolve()
+      setState(null)
+    }
+    // 浏览器可能在 mouseup 之后才提交选区；键盘选区则根本没有 mouseup。
+    // 两个入口共用下一帧读取，拖选过程中不让按钮挡住鼠标。
+    const scheduleResolve = () => {
+      cancelResolve()
+      frame = requestAnimationFrame(() => {
+        frame = null
+        resolveFromSelection()
+      })
+    }
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.target instanceof Node && buttonRef.current?.contains(event.target)) return
+      selecting = true
+      hide()
+    }
+    const onMouseUp = () => {
+      selecting = false
+      scheduleResolve()
+    }
+    const onSelectionChange = () => {
+      if (!selecting) scheduleResolve()
+    }
+    const onBlur = () => {
+      selecting = false
+      hide()
+    }
 
-    document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('mousedown', onMouseDown, true)
+    document.addEventListener('mouseup', onMouseUp, true)
     document.addEventListener('selectionchange', onSelectionChange)
+    window.addEventListener('blur', onBlur)
     // 滚动/切换会话时选区位置失效，直接隐藏。
     containerEl.addEventListener('scroll', hide, true)
     return () => {
-      document.removeEventListener('mouseup', onMouseUp)
+      cancelResolve()
+      document.removeEventListener('mousedown', onMouseDown, true)
+      document.removeEventListener('mouseup', onMouseUp, true)
       document.removeEventListener('selectionchange', onSelectionChange)
+      window.removeEventListener('blur', onBlur)
       containerEl.removeEventListener('scroll', hide, true)
     }
   }, [containerEl])
@@ -66,6 +101,7 @@ export function AddSelectionToChat({ containerEl, lang }: { containerEl: HTMLEle
 
   return createPortal(
     <button
+      ref={buttonRef}
       type="button"
       className="kv-add-to-chat"
       style={{ position: 'fixed', left, top, zIndex: 60 }}

@@ -141,6 +141,7 @@ function GroupColumnView({
       onMouseEnter={onActivate}
       onFocusCapture={onActivate}
       className={wrapperClass}
+      data-message-id={message.id}
       data-chat-message-group-focused={isFocused ? 'true' : 'false'}
     >
       {showColumnChrome && (
