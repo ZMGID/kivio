@@ -41,7 +41,7 @@ A send follows:
 
 `StudyWorkspace UI → studyWorkspace.sendStudyHelp → studyRequest.requestStudyHelp → api/study IPC → chat/study.rs → existing stream_with_chat_provider`
 
-- `src/chat/study/studyWorkspace.ts` owns page drafts, request identity, in-progress results, original-document updates, and persistence coordination. Navigation does not retarget a running response.
+- `src/chat/study/studyWorkspaceStore.ts` owns page drafts, request identity, in-progress results, original-document updates, and persistence coordination. Navigation does not retarget a running response.
 - `studyStorage.ts` owns the IndexedDB schema and storage operations. Materials are identified by a SHA-256 content hash; questions and notes are bound to that document and page. Invalid records and save failures are surfaced rather than silently replaced with a successful-save claim.
 - `studyMaterial.ts` owns file validation, local PDF/image loading, bounded rendering, text extraction, and cropped context images. `StudyReader` binds those operations to navigation and selection.
 - `studyRequest.ts` owns the teaching instructions, context assembly, and a synchronous snapshot of the input before asynchronous work. It supplies a bounded tail of the current page's discussion.
@@ -76,7 +76,7 @@ No imported CLI conversation, native session, or working directory is changed. T
 
 Materials, drafts, notes, and history are kept in local application storage; this is not encrypted storage or a cloud backup. Clearing application data removes the stored work. Removing a material does not delete the original imported file.
 
-On Send, the selected provider receives the question, attempt, bounded page history, page number, supplied text, and any disclosed page/region image. Original filenames and document hashes are omitted from the provider prompt. The original file is not uploaded as a whole. The provider's own retention and usage policies still apply, and configured provider charges may apply.
+On Send, the selected provider receives the question, attempt, bounded page history, page number, supplied text, and any disclosed page/region image. Original filenames and document hashes are omitted from the provider prompt. Original PDF bytes and unselected PDF pages are not uploaded. Sending a whole-page or selected-region image shares that rendered image. The provider's own retention and usage policies still apply, and configured provider charges may apply.
 
 Retry preserves the original question, attempt, source text, and image-inclusion decision. Its disclosure must describe that saved decision rather than a stale checkbox from a different draft. A confirmed vision model is still required when the original question included an image.
 

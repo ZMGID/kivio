@@ -141,3 +141,25 @@ test('late reply stays on original document while drafts and model selection cha
   await page.locator('.kv-study-document-list button').filter({ hasText: 'Second.pdf' }).click()
   await expect(page.getByLabel('Question about this page')).toHaveValue('Second document unsent draft')
 })
+
+test('storage quota failure stays visible, keeps drafts and retries before reload', async ({ page }, info) => {
+  await importPdf(page)
+  await page.evaluate(() => {
+    const original = IDBObjectStore.prototype.put
+    IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore['put']>) {
+      if (this.name === 'documents') throw new DOMException('Simulated full disk', 'QuotaExceededError')
+      return original.apply(this, args)
+    }
+    Reflect.set(window, '__restoreStudyStorage', () => { IDBObjectStore.prototype.put = original })
+  })
+  await question(page, 'Keep this even when storage is full')
+  await expect(page.getByRole('button', { name: 'Retry save' })).toBeVisible()
+  await expect(page.getByText('Not saved', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Question about this page')).toHaveValue('Keep this even when storage is full')
+  await screenshot(page, info.outputPath('study-storage-error.png'))
+  await page.evaluate(() => { Reflect.get(window, '__restoreStudyStorage')() })
+  await page.getByRole('button', { name: 'Retry save' }).click()
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByLabel('Question about this page')).toHaveValue('Keep this even when storage is full')
+})
