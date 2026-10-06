@@ -3,7 +3,7 @@ import { loadStudyMaterial, type StudyReaderContext, type StudyRegion } from './
 import { requestStudyHelp, type StudyHelpInput } from './studyRequest'
 import {
   createEmptyStudyPage, deleteStudyDocument, importStudyDocument, loadStudyWorkspace,
-  saveStudyDocument, setSelectedStudyDocument, type StudyDocument, type StudyPageState, type StudyTurn,
+  saveStudyDocument, setSelectedStudyDocument, validateStudyDocument, STUDY_LIMITS, type StudyDocument, type StudyPageState, type StudyTurn,
 } from './studyStorage'
 
 type StudyState = {
@@ -29,6 +29,7 @@ function saveErrorMessage() { return [selectionError, ...documentSaveErrors.valu
 let requestController: AbortController | null = null
 let importController: AbortController | null = null
 let navigationRevision = 0
+let localEditRevision = 0
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 function documentById(id: string) { return studyWorkspace.getSnapshot().documents.find((doc) => doc.id === id) }
@@ -42,8 +43,12 @@ function flushDocument(id: string): Promise<void> {
       while (documentById(id) && !removing.has(id)) {
         const snapshot = documentById(id)
         if (!snapshot) break
-        await saveStudyDocument(snapshot)
-        if (snapshot === documentById(id)) {
+        const revision = await saveStudyDocument(snapshot)
+        const unchanged = snapshot === documentById(id)
+        // This window may have newer local edits while its previous snapshot is committing.
+        // Advance their CAS baseline without replacing any of those edits with the saved snapshot.
+        studyWorkspace.setState((state) => ({ ...state, documents: state.documents.map((doc) => doc.id === id ? { ...doc, revision } : doc) }))
+        if (unchanged) {
           documentSaveErrors.delete(id)
           studyWorkspace.setState((state) => ({ ...state, dirtyIds: state.dirtyIds.filter((key) => key !== id), saveError: saveErrorMessage() }))
           break
@@ -60,6 +65,7 @@ function flushDocument(id: string): Promise<void> {
 }
 function updateDocument(id: string, update: (doc: StudyDocument) => StudyDocument, persist = true) {
   if (!documentById(id) || removing.has(id)) return
+  localEditRevision += 1
   studyWorkspace.setState((state) => ({
     ...state,
     documents: state.documents.map((doc) => doc.id === id ? { ...update(doc), updatedAt: Date.now() } : doc),
@@ -115,9 +121,30 @@ export function initializeStudy() {
     } catch (error) { studyWorkspace.setState((state) => ({ ...state, loaded: false, error: message(error) })) }
   })
 }
+/** The caller must confirm discarding local edits before invoking this recovery action. */
+export function reloadStudyWorkspace(): Promise<void> {
+  const canReload = () => !studyWorkspace.getSnapshot().activeRequest && !importController && removing.size === 0
+  if (!canReload()) return Promise.reject(new Error('Stop the active reply, import, or removal before reloading saved work.'))
+  const revision = localEditRevision
+  return studyWorkspace.run('reload', async () => {
+    if (!canReload()) throw new Error('Stop the active reply, import, or removal before reloading saved work.')
+    // Already-submitted saves must settle before reading the authoritative version.
+    await Promise.all([...saving.values()].map((flight) => flight.catch(() => {})))
+    await selecting?.catch(() => {})
+    const loaded = await loadStudyWorkspace()
+    if (!canReload() || revision !== localEditRevision) throw new Error('Your local work changed while reloading. Nothing was discarded. Confirm again when you are ready to reload.')
+    if (loaded.warnings.length) throw new Error(`Saved work could not be fully recovered. Your local drafts remain unchanged. ${loaded.warnings.join(' ')}`)
+    documentSaveErrors.clear()
+    selectionError = ''
+    selectionPending = false
+    studyWorkspace.setState((state) => ({ ...state, ...loaded, loaded: true, selectedTurnId: null, dirtyIds: [], saveError: '', error: '', notice: loaded.warnings.join('\n') }))
+  })
+}
+
 export function importStudyFile(file: File) {
   if (importController) return studyWorkspace.run('import', async () => {})
   const revision = navigationRevision
+  localEditRevision += 1
   const controller = new AbortController()
   importController = controller
   studyWorkspace.setState((state) => ({ ...state, importing: true, error: '', notice: '' }))
@@ -149,6 +176,7 @@ export async function removeStudyDocument(id: string) {
   if (removing.has(id)) return
   if (studyWorkspace.getSnapshot().activeRequest?.documentId === id) throw new Error('Stop the active reply before removing this material.')
   removing.add(id)
+  localEditRevision += 1
   navigationRevision += 1
   try {
     // Lock edits and new requests before waiting, then let any in-flight write finish.
@@ -163,8 +191,11 @@ export async function removeStudyDocument(id: string) {
     await flushSelection()
   } finally { removing.delete(id) }
 }
+function withTurnPatch(doc: StudyDocument, page: number, turnId: string, patch: Partial<StudyTurn>): StudyDocument {
+  return { ...doc, pages: { ...doc.pages, [page]: { ...studyPage(doc, page), history: studyPage(doc, page).history.map((turn) => turn.id === turnId ? { ...turn, ...patch } : turn) } } }
+}
 function patchTurn(documentId: string, page: number, turnId: string, patch: Partial<StudyTurn>, persist = true) {
-  updateDocument(documentId, (doc) => ({ ...doc, pages: { ...doc.pages, [page]: { ...studyPage(doc, page), history: studyPage(doc, page).history.map((turn) => turn.id === turnId ? { ...turn, ...patch } : turn) } } }), persist)
+  updateDocument(documentId, (doc) => withTurnPatch(doc, page, turnId, patch), persist)
 }
 export function sameStudyRegion(a?: StudyRegion | null, b?: StudyRegion | null) {
   return (!a && !b) || Boolean(a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height)
@@ -180,6 +211,7 @@ export async function sendStudyHelp(options: {
   if (!Number.isInteger(page) || page < 1 || page > doc.pageCount) throw new Error('Select a valid document page.')
   if (retry && (retry.page !== page || !draftContainsTurn(doc, page, retry.id))) throw new Error('This saved question belongs to another material or page.')
   const draft = studyPage(doc, page)
+  if (draft.history.length >= STUDY_LIMITS.maxHistoryPerPage) throw new Error('This page has reached its 500-response history limit. Your question and notes are unchanged. Start on another page or material.')
   if (context.status !== 'ready' || context.page !== page || !sameStudyRegion(context.region, retry ? retry.region : draft.region)) throw new Error('Wait for the selected page or region to finish loading.')
   const question = retry?.question ?? draft.question.trim()
   const attempt = retry?.attempt ?? draft.attempt.trim()
@@ -199,28 +231,65 @@ export async function sendStudyHelp(options: {
     answer: '', status: 'streaming', createdAt: Date.now(), providerId: options.providerId, model: options.model,
     sourceImageUsed: includeImage, sourceWarning: retry?.sourceWarning ?? context.warning,
   }
+  // Leave room for a bounded error/terminal status even if the provider fills the response budget.
+  const terminalReserve = 4096
+  validateStudyDocument({ ...doc, pages: { ...doc.pages, [page]: { ...draft, history: [...draft.history, turn] } } }, terminalReserve)
   const controller = new AbortController()
   requestController = controller
   studyWorkspace.setState((state) => ({ ...state, activeRequest: { documentId, page, turnId }, selectedTurnId: turnId, error: '' }))
   editStudyPage(documentId, page, { history: [...draft.history, turn] })
   let content = ''
+  let responseLimitError = ''
+  let responseBytesRemaining = 0
+  let budgetSnapshot: StudyDocument | undefined
+  const encoder = new TextEncoder()
+  const refreshResponseBudget = () => {
+    budgetSnapshot = documentById(documentId)
+    if (budgetSnapshot) responseBytesRemaining = validateStudyDocument(budgetSnapshot, terminalReserve)
+  }
+  const stopAtResponseLimit = () => {
+    responseLimitError = 'The response reached the local storage limit. Its partial answer is still in this window. Shorten notes or use another material before retrying.'
+    controller.abort()
+  }
+  const validateAnswer = (answer: string) => {
+    const latest = documentById(documentId)
+    if (latest) validateStudyDocument(withTurnPatch(latest, page, turnId, { answer }), terminalReserve)
+  }
   let checkpoint: ReturnType<typeof setTimeout> | undefined
   try {
     // Persist the placeholder before starting the remote operation. A failed save must be visible.
     await flushDocument(documentId)
     if (controller.signal.aborted) throw new DOMException('Study request cancelled.', 'AbortError')
+    refreshResponseBudget()
     const result = await requestStudyHelp(input, (delta) => {
       if (controller.signal.aborted) return
+      // Only edits/checkpoints outside this stream invalidate the full-document budget.
+      // Encoding each fragment overestimates split surrogate pairs, so the byte bound stays safe.
+      try {
+        if (budgetSnapshot !== documentById(documentId)) refreshResponseBudget()
+        const bytes = encoder.encode(JSON.stringify(delta)).byteLength - 2
+        if (content.length + delta.length > STUDY_LIMITS.maxTextLength || bytes > responseBytesRemaining) {
+          stopAtResponseLimit()
+          return
+        }
+        responseBytesRemaining -= bytes
+      } catch { stopAtResponseLimit(); return }
       content += delta
       patchTurn(documentId, page, turnId, { answer: content }, false)
+      budgetSnapshot = documentById(documentId)
       if (!checkpoint && !studyWorkspace.getSnapshot().saveError) checkpoint = setTimeout(() => {
         checkpoint = undefined
+        try { refreshResponseBudget() } catch { stopAtResponseLimit(); return }
         void flushDocument(documentId).catch(() => {})
       }, 250)
     }, controller.signal)
-    patchTurn(documentId, page, turnId, { answer: result.content || content, status: controller.signal.aborted ? 'cancelled' : 'complete' })
+    if (responseLimitError) throw new Error(responseLimitError)
+    const answer = result.content || content
+    validateAnswer(answer)
+    patchTurn(documentId, page, turnId, { answer, status: controller.signal.aborted ? 'cancelled' : 'complete' })
   } catch (error) {
-    patchTurn(documentId, page, turnId, { answer: content, status: controller.signal.aborted ? 'cancelled' : 'error', error: controller.signal.aborted ? undefined : message(error) })
+    const cancelled = controller.signal.aborted && !responseLimitError
+    patchTurn(documentId, page, turnId, { answer: content, status: cancelled ? 'cancelled' : 'error', error: cancelled ? undefined : (responseLimitError || message(error)).slice(0, 512) })
   } finally {
     if (checkpoint) clearTimeout(checkpoint)
     if (requestController === controller) requestController = null
@@ -230,4 +299,4 @@ export async function sendStudyHelp(options: {
 export function cancelStudyHelp() { requestController?.abort() }
 
 /** Test cleanup releases resources, then restores the owner to its initial snapshot. */
-export function resetStudyWorkspaceForTests() { requestController?.abort(); importController?.abort(); requestController = null; importController = null; navigationRevision += 1; saving.clear(); removing.clear(); documentSaveErrors.clear(); selectionError = ''; selectionPending = false; selecting = null; studyWorkspace.setState(initialState()) }
+export function resetStudyWorkspaceForTests() { requestController?.abort(); importController?.abort(); requestController = null; importController = null; navigationRevision += 1; localEditRevision += 1; saving.clear(); removing.clear(); documentSaveErrors.clear(); selectionError = ''; selectionPending = false; selecting = null; studyWorkspace.setState(initialState()) }

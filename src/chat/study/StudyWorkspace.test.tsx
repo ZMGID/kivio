@@ -24,7 +24,7 @@ vi.mock('./studyWorkspaceStore', async (importOriginal) => {
 })
 import { studyWorkspace } from './studyWorkspaceStore'
 
-const makeDoc = (): StudyDocument => ({ id: 'a'.repeat(64), name: 'Worksheet.pdf', kind: 'pdf', pageCount: 1, createdAt: 1, updatedAt: 1, size: 10, lastPage: 1, pages: { 1: { ...createEmptyStudyPage(), question: 'Why subtract two?' } } })
+const makeDoc = (): StudyDocument => ({ id: 'a'.repeat(64), revision: 0, name: 'Worksheet.pdf', kind: 'pdf', pageCount: 1, createdAt: 1, updatedAt: 1, size: 10, lastPage: 1, pages: { 1: { ...createEmptyStudyPage(), question: 'Why subtract two?' } } })
 function setup(doc = makeDoc()) {
   studyWorkspace.setState({ documents: [doc], selectedDocumentId: doc.id, selectedTurnId: null, loaded: true, importing: false, error: '', notice: '', dirtyIds: [], saveError: '', activeRequest: null })
   return render(<LangContext.Provider value="en"><StudyWorkspace onOpenSettings={vi.fn()} /></LangContext.Provider>)

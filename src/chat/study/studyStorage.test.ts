@@ -112,7 +112,7 @@ describe('Study local persistence', () => {
   it('deduplicates identical bytes even under a new filename without replacing existing work', async () => {
     const { document } = await importPdf()
     addWork(document)
-    await storage.saveStudyDocument(document)
+    document.revision = await storage.saveStudyDocument(document)
     const imported = await importPdf('renamed.pdf')
     expect(imported).toEqual({ document, duplicate: true })
     expect((await storage.loadStudyWorkspace()).documents).toEqual([document])
@@ -137,7 +137,7 @@ describe('Study local persistence', () => {
     const second = await importPdf('second.pdf', 'second file')
     addWork(first.document)
     first.document.pages['1'] = { ...storage.createEmptyStudyPage(), notes: 'Different page notes' }
-    await storage.saveStudyDocument(first.document)
+    first.document.revision = await storage.saveStudyDocument(first.document)
     await storage.setSelectedStudyDocument(first.document.id)
     vi.resetModules()
     storage = await import('./studyStorage')
@@ -153,7 +153,7 @@ describe('Study local persistence', () => {
     addWork(document)
     document.pages['2'].region = null
     document.pages['2'].history[0].region = null
-    await storage.saveStudyDocument(document)
+    document.revision = await storage.saveStudyDocument(document)
     expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].region).toBeNull()
     expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].history[0].region).toBeNull()
   })
@@ -162,10 +162,10 @@ describe('Study local persistence', () => {
     const { document } = await importPdf()
     addWork(document)
     document.pages['2'].history[0].status = 'streaming'
-    await storage.saveStudyDocument(document)
+    document.revision = await storage.saveStudyDocument(document)
     const restored = (await storage.loadStudyWorkspace()).documents[0]
     expect(restored.pages['2'].history[0]).toMatchObject({ status: 'interrupted', answer: 'First, look at the equation.', error: expect.stringContaining('interrupted') })
-    await storage.saveStudyDocument(restored)
+    restored.revision = await storage.saveStudyDocument(restored)
     expect((await storage.loadStudyWorkspace()).warnings).toEqual([])
     expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].history[0].status).toBe('interrupted')
   })
@@ -174,11 +174,11 @@ describe('Study local persistence', () => {
     const { document } = await importPdf()
     addWork(document)
     document.pages['2'].history[0].status = status
-    await storage.saveStudyDocument(document)
+    document.revision = await storage.saveStudyDocument(document)
     expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].history[0].status).toBe(status)
   })
 
-  it('snapshots each save before awaiting storage and commits concurrent edits in call order', async () => {
+  it('snapshots saves before awaiting storage and rejects concurrent stale snapshots', async () => {
     const { document } = await importPdf()
     addWork(document)
     const saves = []
@@ -187,8 +187,65 @@ describe('Study local persistence', () => {
       saves.push(storage.saveStudyDocument(document))
     }
     document.pages['2'].notes = 'not submitted'
-    await Promise.all(saves)
-    expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].notes).toBe('latest edit')
+    const results = await Promise.allSettled(saves)
+    expect(results[0]).toMatchObject({ status: 'fulfilled', value: 1 })
+    expect(results.slice(1)).toEqual([
+      { status: 'rejected', reason: expect.objectContaining({ code: 'conflict' }) },
+      { status: 'rejected', reason: expect.objectContaining({ code: 'conflict' }) },
+    ])
+    expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].notes).toBe('first edit')
+  })
+
+  it('uses persisted CAS across independently loaded modules so stale navigation cannot erase another window’s notes', async () => {
+    await importPdf()
+    const first = (await storage.loadStudyWorkspace()).documents[0]
+    vi.resetModules()
+    const otherStorage = await import('./studyStorage')
+    const stale = (await otherStorage.loadStudyWorkspace()).documents[0]
+    first.pages['1'] = { ...storage.createEmptyStudyPage(), notes: 'Saved in the first window' }
+    expect(await storage.saveStudyDocument(first)).toBe(1)
+    stale.lastPage = 2
+    await expect(otherStorage.saveStudyDocument(stale)).rejects.toMatchObject({ code: 'conflict' })
+    const durable = (await otherStorage.loadStudyWorkspace()).documents[0]
+    expect(durable.revision).toBe(1)
+    expect(durable.lastPage).toBe(1)
+    expect(durable.pages['1'].notes).toBe('Saved in the first window')
+    expect(stale.revision).toBe(0)
+    expect(stale.lastPage).toBe(2)
+    expect(stale.pages).toEqual({})
+  })
+
+  it('keeps both the durable version and a conflicting caller’s draft unchanged on retries', async () => {
+    await importPdf()
+    const first = (await storage.loadStudyWorkspace()).documents[0]
+    const second = (await storage.loadStudyWorkspace()).documents[0]
+    first.pages['1'] = { ...storage.createEmptyStudyPage(), notes: 'External saved notes' }
+    second.pages['2'] = { ...storage.createEmptyStudyPage(), notes: 'Unsaved local notes' }
+    first.revision = await storage.saveStudyDocument(first)
+    for (let attempt = 0; attempt < 2; attempt++) await expect(storage.saveStudyDocument(second)).rejects.toMatchObject({ code: 'conflict' })
+    expect((await storage.loadStudyWorkspace()).documents[0]).toEqual(first)
+    expect(second.pages['2'].notes).toBe('Unsaved local notes')
+    expect(second.revision).toBe(0)
+  })
+
+  it('loads legacy records at revision zero and upgrades their metadata accounting on the first successful save', async () => {
+    const { document } = await importPdf()
+    const record = await rawRead('documents', document.id) as { document: Partial<StudyDocument>; metadataBytes: number; id: string }
+    const originalBytes = record.metadataBytes
+    delete record.document.revision
+    record.metadataBytes = new TextEncoder().encode(JSON.stringify(record.document)).byteLength
+    await rawWrite('documents', record)
+    const workspace = await rawRead('meta', 'workspace') as { totalBytes: number }
+    await rawWrite('meta', { ...workspace, totalBytes: workspace.totalBytes - originalBytes + record.metadataBytes })
+    const restored = await storage.loadStudyWorkspace()
+    expect(restored.warnings).toEqual([])
+    expect(restored.documents[0].revision).toBe(0)
+    restored.documents[0].pages['1'] = { ...storage.createEmptyStudyPage(), notes: 'Legacy work is retained' }
+    expect(await storage.saveStudyDocument(restored.documents[0])).toBe(1)
+    const upgraded = await storage.loadStudyWorkspace()
+    expect(upgraded.warnings).toEqual([])
+    expect(upgraded.documents[0].revision).toBe(1)
+    expect(upgraded.documents[0].pages['1'].notes).toBe('Legacy work is retained')
   })
 
   it('updates only the affected document and never rewrites binary blobs on a note save', async () => {
@@ -225,7 +282,7 @@ describe('Study local persistence', () => {
     await expect(storage.saveStudyDocument(addWork(document))).rejects.toMatchObject({ code: 'quota' })
     quota.mockRestore()
     expect((await storage.loadStudyWorkspace()).documents[0].pages).toEqual({})
-    await storage.saveStudyDocument(document)
+    document.revision = await storage.saveStudyDocument(document)
     expect((await storage.loadStudyWorkspace()).documents[0]).toEqual(document)
   })
 

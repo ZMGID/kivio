@@ -65,7 +65,7 @@ function holdNextSave() {
   vi.spyOn(storage, 'saveStudyDocument').mockImplementationOnce(async (document) => {
     entered.resolve()
     await release.promise
-    await save(document)
+    return save(document)
   })
   return { entered: entered.promise, release: () => release.resolve() }
 }
@@ -246,6 +246,7 @@ describe('Study workspace lifecycle', () => {
     owner.editStudyPage(first.id, 1, { notes: 'Pending notes' })
     await save.entered
     const removing = owner.removeStudyDocument(first.id)
+    await expect(owner.reloadStudyWorkspace()).rejects.toThrow('Stop the active reply, import, or removal')
     owner.editStudyPage(first.id, 1, { notes: 'Must not start another save' })
     await owner.sendStudyHelp(options(first))
     expect(mocks.request).not.toHaveBeenCalled()
@@ -281,6 +282,7 @@ describe('Study workspace lifecycle', () => {
     const sending = owner.sendStudyHelp(options(document))
     await started.promise
     await expect(owner.removeStudyDocument(document.id)).rejects.toThrow('Stop the active reply')
+    await expect(owner.reloadStudyWorkspace()).rejects.toThrow('Stop the active reply, import, or removal')
     owner.cancelStudyHelp()
     await sending
     await saved()
@@ -326,6 +328,164 @@ describe('Study workspace lifecycle', () => {
     await importing
     expect(owner.studyWorkspace.getSnapshot()).toMatchObject({ importing: false, documents: [], error: '' })
     expect((await storage.loadStudyWorkspace()).documents).toEqual([])
+  })
+
+  it('keeps conflicting local drafts dirty while protecting the external saved version from navigation and retries', async () => {
+    const [document] = await seed()
+    const external = (await storage.loadStudyWorkspace()).documents[0]
+    external.pages['1'] = { ...storage.createEmptyStudyPage(), notes: 'Notes from another window' }
+    external.revision = await storage.saveStudyDocument(external)
+    owner.openStudyPage(document.id, 2)
+    await vi.waitFor(() => expect(owner.studyWorkspace.getSnapshot().saveError).toContain('another Kivio window'))
+    owner.editStudyPage(document.id, 2, { notes: 'Keep my unsaved local work' })
+    owner.retryStudySave()
+    await vi.waitFor(() => expect(owner.studyWorkspace.getSnapshot().dirtyIds).toContain(document.id))
+    expect(current(document)).toMatchObject({ revision: 0, lastPage: 2 })
+    expect(current(document).pages['2'].notes).toBe('Keep my unsaved local work')
+    expect((await storage.loadStudyWorkspace()).documents[0]).toEqual(external)
+    await owner.reloadStudyWorkspace()
+    expect(current(document)).toEqual(external)
+    expect(owner.studyWorkspace.getSnapshot()).toMatchObject({ dirtyIds: [], saveError: '', activeRequest: null })
+  })
+
+  it('preserves a completed local answer when another window saves during the provider request', async () => {
+    const [document] = await seed()
+    await question(document)
+    const started = deferred()
+    const finish = deferred<StudyHelpResponse>()
+    let input!: StudyHelpInput
+    mocks.request.mockImplementationOnce((value: StudyHelpInput) => { input = value; started.resolve(); return finish.promise })
+    const sending = owner.sendStudyHelp(options(document))
+    await started.promise
+    const external = (await storage.loadStudyWorkspace()).documents[0]
+    external.pages['2'] = { ...storage.createEmptyStudyPage(), notes: 'Saved in the other window during the request' }
+    external.revision = await storage.saveStudyDocument(external)
+    finish.resolve(response(input, 'Keep this local answer for copying'))
+    await sending
+    await vi.waitFor(() => expect(owner.studyWorkspace.getSnapshot().saveError).toContain('another Kivio window'))
+    expect(current(document).pages['1'].history[0]).toMatchObject({ answer: 'Keep this local answer for copying', status: 'complete' })
+    expect(owner.studyWorkspace.getSnapshot().dirtyIds).toContain(document.id)
+    expect((await storage.loadStudyWorkspace()).documents[0]).toEqual(external)
+  })
+
+  it('does not discard a conflicting draft when reloading the saved version fails', async () => {
+    const [document] = await seed()
+    const external = (await storage.loadStudyWorkspace()).documents[0]
+    external.revision = await storage.saveStudyDocument(external)
+    owner.editStudyPage(document.id, 1, { notes: 'A local draft to preserve' })
+    await vi.waitFor(() => expect(owner.studyWorkspace.getSnapshot().saveError).toContain('another Kivio window'))
+    const draft = current(document)
+    vi.spyOn(storage, 'loadStudyWorkspace').mockRejectedValueOnce(new Error('Read temporarily failed'))
+    await expect(owner.reloadStudyWorkspace()).rejects.toThrow('Read temporarily failed')
+    expect(current(document)).toBe(draft)
+    expect(owner.studyWorkspace.getSnapshot().dirtyIds).toContain(document.id)
+    expect(owner.studyWorkspace.getSnapshot().saveError).toContain('another Kivio window')
+  })
+
+  it('keeps local work when a reload returns damaged or incomplete saved records', async () => {
+    const [document] = await seed()
+    await question(document, 'Preserve the local question')
+    const draft = current(document)
+    vi.spyOn(storage, 'loadStudyWorkspace').mockResolvedValueOnce({ documents: [], selectedDocumentId: null, warnings: ['The saved material is damaged.'] })
+    await expect(owner.reloadStudyWorkspace()).rejects.toThrow('Your local drafts remain unchanged')
+    expect(current(document)).toBe(draft)
+  })
+
+  it('does not discard edits made after the user confirmed a pending reload', async () => {
+    const [document] = await seed()
+    const loaded = deferred()
+    const entered = deferred()
+    const load = storage.loadStudyWorkspace
+    vi.spyOn(storage, 'loadStudyWorkspace').mockImplementationOnce(async () => { entered.resolve(); await loaded.promise; return load() })
+    const reloading = owner.reloadStudyWorkspace()
+    await entered.promise
+    owner.editStudyPage(document.id, 1, { notes: 'Typed after reload confirmation' })
+    loaded.resolve()
+    await expect(reloading).rejects.toThrow('Nothing was discarded')
+    await saved()
+    expect(current(document).pages['1'].notes).toBe('Typed after reload confirmation')
+  })
+
+  it('refuses reload while an import is active', async () => {
+    await owner.initializeStudy()
+    const parse = deferred<{ kind: 'pdf'; pageCount: number }>()
+    mocks.material.mockReturnValueOnce(parse.promise)
+    const importing = owner.importStudyFile(new File(['pending'], 'pending.pdf'))
+    await vi.waitFor(() => expect(mocks.material).toHaveBeenCalled())
+    await expect(owner.reloadStudyWorkspace()).rejects.toThrow('Stop the active reply, import, or removal')
+    owner.cancelStudyImport()
+    parse.resolve({ kind: 'pdf', pageCount: 3 })
+    await importing
+  })
+
+  it('rejects a 501st response before mutating history and keeps the question and future notes savable', async () => {
+    const [document] = await seed()
+    const history: StudyTurn[] = Array.from({ length: storage.STUDY_LIMITS.maxHistoryPerPage }, (_, index) => ({ id: `existing-${index}`, page: 1, mode: 'hint', question: 'Question', attempt: '', sourceText: 'Text', answer: 'Answer', status: 'complete', createdAt: index, providerId: 'provider', model: 'model' }))
+    owner.editStudyPage(document.id, 1, { question: 'My next question', notes: 'Existing notes', history })
+    await saved()
+    await expect(owner.sendStudyHelp(options(document))).rejects.toThrow('500-response history limit')
+    expect(mocks.request).not.toHaveBeenCalled()
+    expect(current(document).pages['1']).toMatchObject({ question: 'My next question', notes: 'Existing notes' })
+    expect(current(document).pages['1'].history).toHaveLength(500)
+    expect(owner.studyWorkspace.getSnapshot().activeRequest).toBeNull()
+    owner.editStudyPage(document.id, 1, { notes: 'I can still edit notes' })
+    await saved()
+    expect((await storage.loadStudyWorkspace()).documents[0].pages['1'].notes).toBe('I can still edit notes')
+  })
+
+  it('preflights request metadata without leaving an oversized placeholder in history', async () => {
+    const [document] = await seed()
+    for (let page = 1; page <= 3; page++) {
+      owner.editStudyPage(document.id, page, { question: 'A question', notes: 'n'.repeat(500_000), correctedText: 's'.repeat(500_000), attempt: 'a'.repeat(300_000) })
+    }
+    await saved()
+    await expect(owner.sendStudyHelp(options(document))).rejects.toMatchObject({ code: 'limit' })
+    expect(mocks.request).not.toHaveBeenCalled()
+    expect(current(document).pages['1'].history).toEqual([])
+    expect(current(document).pages['1'].question).toBe('A question')
+    owner.editStudyPage(document.id, 1, { notes: 'Shortened notes can still save' })
+    await saved()
+    expect(owner.studyWorkspace.getSnapshot().saveError).toBe('')
+  })
+
+  it('uses a precomputed response budget instead of serializing the whole document for every token', async () => {
+    const [document] = await seed()
+    await question(document)
+    const preflight = vi.spyOn(storage, 'validateStudyDocument')
+    mocks.request.mockImplementationOnce(async (input: StudyHelpInput, delta: (text: string) => void) => {
+      for (let index = 0; index < 100; index++) delta('token ')
+      return response(input, 'token '.repeat(100))
+    })
+    await owner.sendStudyHelp(options(document))
+    await saved()
+    expect(preflight).toHaveBeenCalledTimes(3)
+    expect(current(document).pages['1'].history[0]).toMatchObject({ answer: 'token '.repeat(100), status: 'complete' })
+  })
+
+  it('bounds oversized streamed responses without poisoning later note saves', async () => {
+    const [document] = await seed()
+    await question(document)
+    mocks.request.mockImplementationOnce(async (input: StudyHelpInput, delta: (text: string) => void) => {
+      delta('Preserve this partial answer')
+      delta('x'.repeat(storage.STUDY_LIMITS.maxTextLength + 1))
+      return response(input, 'x'.repeat(storage.STUDY_LIMITS.maxTextLength + 1))
+    })
+    await owner.sendStudyHelp(options(document))
+    await saved()
+    expect(current(document).pages['1'].history[0]).toMatchObject({ status: 'error', answer: 'Preserve this partial answer', error: expect.stringContaining('local storage limit') })
+    owner.editStudyPage(document.id, 1, { notes: 'Notes still save' })
+    await saved()
+    expect((await storage.loadStudyWorkspace()).documents[0].pages['1'].notes).toBe('Notes still save')
+  })
+
+  it('bounds provider error messages so a large error cannot invalidate the stored document', async () => {
+    const [document] = await seed()
+    await question(document)
+    mocks.request.mockRejectedValueOnce(new Error('failure '.repeat(100_000)))
+    await owner.sendStudyHelp(options(document))
+    await saved()
+    expect(current(document).pages['1'].history[0].error?.length).toBe(512)
+    expect((await storage.loadStudyWorkspace()).warnings).toEqual([])
   })
 
   it('ignores invalid page navigation instead of persisting an unusable reading position', async () => {

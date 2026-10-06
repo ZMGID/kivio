@@ -39,10 +39,10 @@ Khan Academy describes Khanmigo as guiding learners toward answers instead of im
 
 A send follows:
 
-`StudyWorkspace UI → studyWorkspace.sendStudyHelp → studyRequest.requestStudyHelp → api/study IPC → chat/study.rs → existing stream_with_chat_provider`
+`StudyWorkspace UI → studyWorkspaceStore.sendStudyHelp → studyRequest.requestStudyHelp → api/study IPC → chat/study.rs → existing stream_with_chat_provider`
 
 - `src/chat/study/studyWorkspaceStore.ts` owns page drafts, request identity, in-progress results, original-document updates, and persistence coordination. Navigation does not retarget a running response.
-- `studyStorage.ts` owns the IndexedDB schema and storage operations. Materials are identified by a SHA-256 content hash; questions and notes are bound to that document and page. Invalid records and save failures are surfaced rather than silently replaced with a successful-save claim.
+- `studyStorage.ts` owns the IndexedDB schema and storage operations. Materials are identified by a SHA-256 content hash; questions and notes are bound to that document and page. Invalid records and save failures are surfaced rather than silently replaced with a successful-save claim. A persisted revision is checked atomically before every document save so a stale window cannot overwrite newer notes or replies. Conflict recovery keeps local drafts available to copy, then offers an explicitly confirmed reload of the saved version.
 - `studyMaterial.ts` owns file validation, local PDF/image loading, bounded rendering, text extraction, and cropped context images. `StudyReader` binds those operations to navigation and selection.
 - `studyRequest.ts` owns the teaching instructions, context assembly, and a synchronous snapshot of the input before asynchronous work. It supplies a bounded tail of the current page's discussion.
 - `src/api/study.ts` owns the request-local channel and cancellation lifecycle; it contains no tutoring policy or scripted answer.

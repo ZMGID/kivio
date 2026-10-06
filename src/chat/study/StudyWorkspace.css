@@ -5,7 +5,7 @@
 .kv-study-heading h1 { font-size: 19px; letter-spacing: -.025em; font-weight: 650; margin: 0; }
 .kv-study-heading p { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); }
 .kv-study-save-status { font-size: 11px; color: var(--text-muted); }
-.kv-study-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; font-size: 12px; white-space: pre-wrap; flex: none; }
+.kv-study-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 20px; font-size: 12px; white-space: pre-wrap; flex: none; }
 .kv-study-layout { display: grid; grid-template-columns: 190px minmax(300px, 1fr) minmax(320px, .92fr); min-height: 0; flex: 1; }
 .kv-study-layout.is-library-closed { grid-template-columns: minmax(300px, 1fr) minmax(320px, .92fr); }
 .kv-study-layout.is-library-closed .kv-study-library { display: none; }

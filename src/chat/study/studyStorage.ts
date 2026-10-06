@@ -41,6 +41,8 @@ export interface StudyPageState {
 export interface StudyDocument {
   /** SHA-256 of the imported bytes; filenames are not identities. */
   id: string
+  /** Optimistic concurrency token. Only a successful save advances this value. */
+  revision: number
   name: string
   kind: 'pdf' | 'image'
   pageCount: number
@@ -58,7 +60,7 @@ export interface StudyWorkspace {
   warnings: string[]
 }
 
-type StorageErrorCode = 'unavailable' | 'blocked' | 'invalid' | 'corrupt' | 'quota' | 'limit' | 'not-found' | 'storage' | 'cancelled'
+type StorageErrorCode = 'unavailable' | 'blocked' | 'invalid' | 'corrupt' | 'quota' | 'limit' | 'not-found' | 'storage' | 'cancelled' | 'conflict'
 
 export class StudyStorageError extends Error {
   constructor(readonly code: StorageErrorCode, message: string, readonly cause?: unknown) {
@@ -184,7 +186,7 @@ function snapshotDocument(value: unknown): StudyDocument {
   const name = string(source.name, 'Material name', 1024)
   if (!name.trim()) invalid('A material name is required. Nothing was saved.')
   return {
-    id: source.id, name, kind: source.kind, pageCount,
+    id: source.id, revision: integer(source.revision === undefined ? 0 : source.revision, 'Material revision', 0), name, kind: source.kind, pageCount,
     createdAt: integer(source.createdAt, 'Import date', 0),
     updatedAt: integer(source.updatedAt, 'Update date', 0),
     size: integer(source.size, 'Material size', 1, STUDY_LIMITS.maxFileBytes),
@@ -199,13 +201,30 @@ function documentRecord(document: StudyDocument): DocumentRecord {
   return { id: document.id, document, metadataBytes }
 }
 
+/** Pure preflight; runtime quota and revision conflicts are still checked by the atomic save. */
+export function validateStudyDocument(value: StudyDocument, reservedMetadataBytes = 0): number {
+  const record = documentRecord(snapshotDocument(value))
+  if (record.metadataBytes + reservedMetadataBytes > STUDY_LIMITS.maxDocumentMetadataBytes) {
+    throw new StudyStorageError('limit', 'This material has too little local space for another response. Shorten its notes or use another material; your current draft is unchanged.')
+  }
+  return STUDY_LIMITS.maxDocumentMetadataBytes - record.metadataBytes - reservedMetadataBytes
+}
+
 function storedDocument(value: unknown): DocumentRecord {
   try {
     const record = object(value)
     if (!record) invalid('Missing material record.')
-    const canonical = documentRecord(snapshotDocument(record.document))
-    if (record.id !== canonical.id || record.metadataBytes !== canonical.metadataBytes) invalid('Invalid material record.')
-    return canonical
+    const document = snapshotDocument(record.document)
+    const canonical = { id: document.id, document, metadataBytes: new TextEncoder().encode(JSON.stringify(document)).byteLength }
+    // Version-one records predate CAS. Their byte accounting excluded the revision field.
+    let metadataBytes = canonical.metadataBytes
+    if (object(record.document)?.revision === undefined) {
+      const legacy: Partial<StudyDocument> = { ...canonical.document }
+      delete legacy.revision
+      metadataBytes = new TextEncoder().encode(JSON.stringify(legacy)).byteLength
+    }
+    if (metadataBytes > STUDY_LIMITS.maxDocumentMetadataBytes || record.id !== canonical.id || record.metadataBytes !== metadataBytes) invalid('Invalid material record.')
+    return { ...canonical, metadataBytes }
   } catch (error) {
     throw new StudyStorageError('corrupt', 'A saved Study material is damaged. It has been kept in local storage, but could not be loaded.', error)
   }
@@ -394,20 +413,27 @@ export async function loadStudyWorkspace(): Promise<StudyWorkspace> {
 }
 
 /** Saves only this document, never its binary or unrelated documents. Rejections must stay visible in the UI. */
-export async function saveStudyDocument(value: StudyDocument): Promise<void> {
-  const next = documentRecord(snapshotDocument(value))
-  await transaction([DOCUMENTS, META], 'readwrite', async (tx) => {
+export async function saveStudyDocument(value: StudyDocument): Promise<number> {
+  const snapshot = snapshotDocument(value)
+  documentRecord(snapshot)
+  return transaction([DOCUMENTS, META], 'readwrite', async (tx) => {
     const documents = tx.objectStore(DOCUMENTS)
-    const value: unknown = await request(documents.get(next.id))
+    const value: unknown = await request(documents.get(snapshot.id))
     if (value === undefined) throw new StudyStorageError('not-found', 'This material was removed. The latest changes were not saved.')
     const previous = storedDocument(value)
-    if (['kind', 'size', 'pageCount', 'createdAt'].some((key) => previous.document[key as keyof StudyDocument] !== next.document[key as keyof StudyDocument])) invalid('The original material identity cannot be changed when saving notes.')
+    if (snapshot.revision !== previous.document.revision) {
+      throw new StudyStorageError('conflict', 'This material changed in another Kivio window. Your local edits are still in this window and were not saved. Copy your unsaved work before reloading the saved version.')
+    }
+    if (['kind', 'size', 'pageCount', 'createdAt'].some((key) => previous.document[key as keyof StudyDocument] !== snapshot[key as keyof StudyDocument])) invalid('The original material identity cannot be changed when saving notes.')
+    if (snapshot.revision === Number.MAX_SAFE_INTEGER) throw new StudyStorageError('limit', 'This material’s revision limit has been reached. Your latest changes were not saved.')
+    const next = documentRecord({ ...snapshot, revision: snapshot.revision + 1 })
     const workspace = await workspaceRecord(tx)
     if (workspace.totalBytes < previous.document.size + previous.metadataBytes) throw new StudyStorageError('corrupt', 'The Study library index is inconsistent. The latest changes were not saved.')
     const totalBytes = workspace.totalBytes - previous.metadataBytes + next.metadataBytes
     checkCapacity(totalBytes, workspace.documentCount)
     await request(documents.put(next))
     await request(tx.objectStore(META).put({ ...workspace, totalBytes }))
+    return next.document.revision
   })
 }
 

@@ -7,12 +7,13 @@ import { Select, TextArea } from '../../settings/public/controls'
 import { getSettingsCached, subscribeSettings } from '../../api/settingsCache'
 import { type ModelProvider, type Settings } from '../../api/tauri'
 import { resolveModelInfo } from '../../data/modelMatching'
+import { copyToClipboard } from '../../utils/clipboard'
 import { useWindowStore } from '../../utils/windowStore'
 import { ChatMarkdown } from '../ChatMarkdown'
 import { StudyReader } from './StudyReader'
 import type { StudyReaderContext } from './studyMaterial'
 import { readStudyDocumentBlob, type StudyTurn } from './studyStorage'
-import { cancelStudyHelp, cancelStudyImport, editStudyPage, importStudyFile, initializeStudy, openStudyPage, removeStudyDocument, retryStudySave, sameStudyRegion, sendStudyHelp, studyPage, studyWorkspace } from './studyWorkspaceStore'
+import { cancelStudyHelp, cancelStudyImport, editStudyPage, importStudyFile, initializeStudy, openStudyPage, removeStudyDocument, reloadStudyWorkspace, retryStudySave, sameStudyRegion, sendStudyHelp, studyPage, studyWorkspace } from './studyWorkspaceStore'
 import './StudyWorkspace.css'
 
 type Pane = 'library' | 'reader' | 'help'
@@ -34,6 +35,7 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
   const [context, setContext] = useState<{ documentId: string; value: StudyReaderContext } | null>(null)
   const [includeImage, setIncludeImage] = useState(true)
   const [actionError, setActionError] = useState('')
+  const [actionNotice, setActionNotice] = useState('')
   const [retryTurn, setRetryTurn] = useState<StudyTurn | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const historyEnd = useRef<HTMLDivElement>(null)
@@ -115,6 +117,18 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
     event.preventDefault(); const next = tabs[(tabs.indexOf(current) + step + tabs.length) % tabs.length]
     setPane(next); document.getElementById(`study-tab-${next}`)?.focus()
   }
+  const copyUnsaved = async () => {
+    const current = studyWorkspace.getSnapshot()
+    const unsaved = current.documents.filter((item) => current.dirtyIds.includes(item.id))
+    const copied = await copyToClipboard(JSON.stringify(unsaved, null, 2))
+    if (copied) setActionNotice(text('已复制未保存的文字记录，请粘贴到安全位置后再重新读取。', 'Unsaved text records copied. Paste them somewhere safe before reloading.'))
+    else setActionError(text('复制失败，请手动保留草稿后再重新读取。', 'Copy failed. Preserve your draft manually before reloading.'))
+  }
+  const reloadSaved = async () => {
+    if (!(await confirmDialog({ title: text('重新读取已保存版本', 'Reload saved version'), message: text('这会替换当前窗口中全部未保存的草稿。请先复制未保存记录。其他窗口保存的内容不会被改动。', 'This replaces all unsaved drafts in this window. Copy your unsaved work first. Work saved by another window stays unchanged.'), confirmLabel: text('重新读取', 'Reload saved version'), danger: true }))) return
+    try { await reloadStudyWorkspace(); setRetryTurn(null); setActionError(''); setActionNotice('') }
+    catch (error) { setActionError(String(error)) }
+  }
   const remove = async () => {
     if (!doc || !(await confirmDialog({ title: text('移除学习材料', 'Remove study material'), message: text(`移除“${doc.name}”及其全部问题、草稿与笔记？此操作无法撤销，原始文件不受影响。`, `Remove “${doc.name}” and all its questions, drafts and notes? This cannot be undone. Your original file is unchanged.`), confirmLabel: text('移除', 'Remove'), danger: true }))) return
     try { await removeStudyDocument(doc.id) } catch (error) { setActionError(String(error)) }
@@ -130,7 +144,8 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
       </div>
     </header>
     {(state.error || actionError || settingsError) && <div className="kv-panel warn kv-study-banner" role="alert">{actionError || state.error || settingsError}{state.error && !state.loaded && <Button size="sm" onClick={() => void initializeStudy()}>{text('重试读取', 'Retry loading')}</Button>}</div>}
-    {state.saveError && <div className="kv-panel warn kv-study-banner" role="alert"><span>{text('保存失败，草稿仍在当前窗口。关闭前请重试：', 'Save failed. Your draft is still in this window. Retry before closing: ')}{state.saveError}</span><Button size="sm" onClick={retryStudySave}>{text('重试保存', 'Retry save')}</Button></div>}
+    {state.saveError && <div className="kv-panel warn kv-study-banner" role="alert"><span>{text('保存失败，草稿仍在当前窗口。关闭前请重试：', 'Save failed. Your draft is still in this window. Retry before closing: ')}{state.saveError}</span><Button size="sm" onClick={retryStudySave}>{text('重试保存', 'Retry save')}</Button><Button size="sm" onClick={() => void copyUnsaved()}>{text('复制未保存记录', 'Copy unsaved work')}</Button><Button size="sm" onClick={() => void reloadSaved()} disabled={Boolean(state.activeRequest || state.importing)}>{text('重新读取已保存版本', 'Reload saved version')}</Button></div>}
+    {actionNotice && <div className="kv-study-banner" role="status">{actionNotice}</div>}
     {state.notice && <div className="kv-study-banner" role="status">{state.notice}</div>}
     {state.importing && <div className="kv-study-banner" role="status">{text('正在检查并导入材料…', 'Checking and importing material…')}<Button size="sm" onClick={cancelStudyImport}>{text('取消', 'Cancel')}</Button></div>}
     <nav className="kv-study-tabs" role="tablist" aria-label={text('学习面板', 'Study panes')}>
