@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Database, RefreshCw, Trash2 } from 'lucide-react'
 import {
   api,
@@ -221,16 +221,21 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const isDark = useDocumentDark()
 
-  const WIDTH = 640
-  const HEIGHT = 168
-  const PAD_L = 8
-  const PAD_R = 8
-  const PAD_T = 16
-  const PAD_B = 8
+  const gradientId = useId()
+  const WIDTH = 760
+  const HEIGHT = 240
+  const PAD_L = 56
+  const PAD_R = 48
+  const PAD_T = 28
+  const PAD_B = 12
 
   const geom = useMemo(() => {
     const visible = TREND_SERIES.filter(series => !hidden.has(series.key))
-    const maxTokens = Math.max(1, ...points.flatMap(point => visible.map(series => point[series.key])))
+    const peak = Math.max(4, ...points.flatMap(point => visible.map(series => point[series.key])))
+    // Leave headroom and use readable quarter ticks without changing the underlying values.
+    const magnitude = 10 ** Math.floor(Math.log10(peak / 4))
+    const tickStep = Math.ceil(peak / 4 / magnitude) * magnitude
+    const maxTokens = tickStep * 4
     const step = points.length > 1 ? (WIDTH - PAD_L - PAD_R) / (points.length - 1) : 0
     const plotH = HEIGHT - PAD_T - PAD_B
     // 单点(如单日区间)居中,否则从左轴按步长铺开
@@ -286,51 +291,47 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
   const hoverPoint = hoverIndex != null ? points[hoverIndex] : null
   const hoverRate = hoverPoint ? trendHitRate(hoverPoint) : null
   const rateHidden = hidden.has('hitRate')
-  const gridYs = [0, 0.5, 1].map(fraction => PAD_T + geom.plotH - fraction * geom.plotH)
+  const gridYs = [0, 0.25, 0.5, 0.75, 1].map(fraction => PAD_T + geom.plotH - fraction * geom.plotH)
   // tooltip 靠左半边时显示在指针右侧，反之左侧，避免出界。
   const tooltipLeftPct = hoverIndex != null ? (geom.x(hoverIndex) / WIDTH) * 100 : 0
   const tooltipFlip = tooltipLeftPct > 55
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-1">
         {TREND_SERIES.map(series => (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             key={series.key}
             type="button"
             onClick={() => toggleSeries(series.key)}
             data-tauri-drag-region="false"
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-opacity ${
-              hidden.has(series.key)
-                ? 'border-[var(--border)] text-[var(--text-faint)] opacity-55'
-                : 'border-[var(--border)] text-[var(--text-muted)]'
-            }`}
+            aria-pressed={!hidden.has(series.key)}
           >
             <span
-              className="h-2 w-2 rounded-full"
+              className={`h-2 w-2 rounded-full ${hidden.has(series.key) ? 'opacity-30' : ''}`}
               style={{ backgroundColor: isDark ? series.darkStroke : series.stroke }}
             />
             {lang === 'zh' ? series.labelZh : series.labelEn}
-          </button>
+          </Button>
         ))}
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           type="button"
           onClick={() => toggleSeries('hitRate')}
           data-tauri-drag-region="false"
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-opacity ${
-            rateHidden
-              ? 'border-[var(--border)] text-[var(--text-faint)] opacity-55'
-              : 'border-[var(--border)] text-[var(--text-muted)]'
-          }`}
+          aria-pressed={!rateHidden}
         >
           <span
-            className="h-0.5 w-3 rounded-full"
+            className={`h-0.5 w-3 rounded-full ${rateHidden ? 'opacity-30' : ''}`}
             style={{
               backgroundImage: `repeating-linear-gradient(90deg, ${isDark ? HIT_RATE_COLOR.darkStroke : HIT_RATE_COLOR.stroke} 0 3px, transparent 3px 5px)`,
             }}
           />
           {lang === 'zh' ? '缓存命中率' : 'Cache hit rate'}
-        </button>
+        </Button>
       </div>
       <div className="relative">
         <svg
@@ -338,10 +339,20 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
           className="block w-full overflow-visible"
           style={{ aspectRatio: `${WIDTH} / ${HEIGHT}` }}
           role="img"
-          aria-label="token usage trend"
+          aria-label={lang === 'zh' ? 'Token 用量趋势' : 'Token usage trend'}
           onMouseMove={onMove}
           onMouseLeave={() => setHoverIndex(null)}
         >
+          <defs>
+            {geom.seriesPaths.map(series => (
+              <linearGradient key={series.key} id={`${gradientId}-${series.key}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={isDark ? series.darkStroke : series.stroke} stopOpacity={isDark ? 0.18 : 0.12} />
+                <stop offset="100%" stopColor={isDark ? series.darkStroke : series.stroke} stopOpacity="0" />
+              </linearGradient>
+            ))}
+          </defs>
+          <text x={PAD_L} y="12" className="fill-[var(--text-faint)] text-[10px]">Tokens</text>
+          {!rateHidden && <text x={WIDTH - PAD_R} y="12" textAnchor="end" className="fill-[var(--text-faint)] text-[10px]">{lang === 'zh' ? '命中率' : 'Hit rate'}</text>}
           {gridYs.map(y => (
             <line
               key={y}
@@ -351,15 +362,17 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
               y2={y}
               stroke="var(--theme-surface-border)"
               strokeWidth="1"
+              strokeDasharray={y === HEIGHT - PAD_B ? undefined : '3 5'}
+              vectorEffect="non-scaling-stroke"
             />
           ))}
           {/* 左轴 token 刻度 */}
-          {[0, 0.5, 1].map(fraction => (
+          {[0, 0.25, 0.5, 0.75, 1].map(fraction => (
             <text
               key={`l-${fraction}`}
-              x={PAD_L + 4}
-              y={PAD_T + geom.plotH - fraction * geom.plotH + (fraction === 1 ? 12 : -4)}
-              textAnchor="start"
+              x={PAD_L - 12}
+              y={PAD_T + geom.plotH - fraction * geom.plotH + 3}
+              textAnchor="end"
               className="fill-[var(--text-faint)] text-[10px] tabular-nums"
             >
               {formatTokens(geom.maxTokens * fraction)}
@@ -370,15 +383,17 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
             [0, 0.5, 1].map(fraction => (
               <text
                 key={`r-${fraction}`}
-                x={WIDTH - PAD_R - 4}
-                y={PAD_T + geom.plotH - fraction * geom.plotH + (fraction === 1 ? 12 : -4)}
-                textAnchor="end"
-                className="text-[10px] tabular-nums"
-                style={{ fill: isDark ? HIT_RATE_COLOR.darkStroke : HIT_RATE_COLOR.stroke }}
+                x={WIDTH - PAD_R + 12}
+                y={PAD_T + geom.plotH - fraction * geom.plotH + 3}
+                textAnchor="start"
+                className="fill-[var(--text-faint)] text-[10px] tabular-nums"
               >
                 {Math.round(fraction * 100)}%
               </text>
             ))}
+          {points.length > 1 && geom.seriesPaths.map(series => series.path && (
+            <path key={`area-${series.key}`} d={`${series.path} L ${geom.x(points.length - 1)} ${HEIGHT - PAD_B} L ${geom.x(0)} ${HEIGHT - PAD_B} Z`} fill={`url(#${gradientId}-${series.key})`} />
+          ))}
           {geom.seriesPaths.map(series =>
             series.path ? (
               <path
@@ -386,7 +401,8 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
                 d={series.path}
                 fill="none"
                 stroke={isDark ? series.darkStroke : series.stroke}
-                strokeWidth="2"
+                strokeWidth="2.25"
+                vectorEffect="non-scaling-stroke"
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
@@ -408,8 +424,9 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
               d={geom.ratePath}
               fill="none"
               stroke={isDark ? HIT_RATE_COLOR.darkStroke : HIT_RATE_COLOR.stroke}
-              strokeWidth="2"
-              strokeDasharray="5 4"
+              strokeWidth="1.75"
+              vectorEffect="non-scaling-stroke"
+              strokeDasharray="4 5"
               strokeLinecap="round"
             />
           )}
@@ -438,14 +455,14 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
         </svg>
         {hoverPoint && (
           <div
-            className="pointer-events-none absolute top-1 z-10 min-w-36 rounded-md border border-[var(--border)] bg-[var(--bg-input)] px-2.5 py-2 text-[11px] shadow-sm"
+            className="pointer-events-none absolute top-1 z-10 min-w-44 rounded-xl border border-[var(--border)] bg-[var(--bg-input)] px-3 py-2.5 text-[11px] shadow-lg"
             style={tooltipFlip ? { right: `${100 - tooltipLeftPct + 2}%` } : { left: `${tooltipLeftPct + 2}%` }}
           >
-            <div className="mb-1 font-medium text-neutral-800">
+            <div className="mb-2 font-medium text-[var(--text)]">
               {hoverPoint.label} · {formatCount(hoverPoint.requests)} {lang === 'zh' ? '次' : 'req'}
             </div>
-            {TREND_SERIES.map(series => (
-              <div key={series.key} className="flex items-center justify-between gap-3 text-neutral-600">
+            {TREND_SERIES.filter(series => !hidden.has(series.key)).map(series => (
+              <div key={series.key} className="flex items-center justify-between gap-3 text-[var(--text-muted)]">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: isDark ? series.darkStroke : series.stroke }} />
                   {lang === 'zh' ? series.labelZh : series.labelEn}
@@ -453,10 +470,10 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
                 <span className="tabular-nums">{formatTokens(hoverPoint[series.key])}</span>
               </div>
             ))}
-            <div className="flex items-center justify-between gap-3 text-neutral-600">
+            {!rateHidden && <div className="flex items-center justify-between gap-3 text-[var(--text-muted)]">
               <span>{lang === 'zh' ? '命中率' : 'Hit rate'}</span>
               <span className="tabular-nums">{hoverRate == null ? '--' : formatPercent(hoverRate)}</span>
-            </div>
+            </div>}
             <div className="mt-0.5 flex items-center justify-between gap-3 border-t border-[var(--divider)] pt-0.5 text-[var(--text-muted)]">
               <span>{lang === 'zh' ? '成本' : 'Cost'}</span>
               <span className="tabular-nums">{formatCost(hoverPoint.costUsd)}</span>
@@ -465,16 +482,16 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
         )}
       </div>
       <div
-        className="relative mt-1 h-4 text-[10.5px] text-[var(--text-muted)]"
+        className="relative mt-2 h-4 text-[10.5px] text-[var(--text-muted)]"
         style={{ marginLeft: `${(PAD_L / WIDTH) * 100}%`, marginRight: `${(PAD_R / WIDTH) * 100}%` }}
       >
         {trendAxisLabels(points, lang).map(item => {
-          const shift = item.index === 0 ? '0' : item.index === points.length - 1 ? '-100%' : '-50%'
+          const shift = points.length === 1 ? '-50%' : item.index === 0 ? '0' : item.index === points.length - 1 ? '-100%' : '-50%'
           return (
             <span
               key={item.index}
               className="absolute whitespace-nowrap"
-              style={{ left: `${item.pct}%`, transform: `translateX(${shift})` }}
+              style={{ left: `${points.length === 1 ? 50 : item.pct}%`, transform: `translateX(${shift})` }}
             >
               {item.text}
             </span>
