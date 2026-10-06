@@ -1,8 +1,10 @@
 {
   "_meta": {
-    "version": "2026-10-04",
+    "version": "2026-10-06",
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
+      "https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored",
+      "https://huggingface.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
       "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
       "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
       "https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5",
@@ -2024,6 +2026,20 @@
     "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
     "reasoningEfforts": [],
     "pricing": { "input": 0.16, "output": 0.47, "cachedInput": 0.016 }
+  },
+  "qwen3.8-27b-uncensored": {
+    "displayName": "Qwen3.8 27B Uncensored",
+    "contextWindow": 262144,
+    "maxOutput": 16384,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "reasoningEfforts": []
+  },
+  "qwen3.5-9b-uncensored-hauhaucs-aggressive": {
+    "displayName": "Qwen3.5 9B Uncensored (HauhauCS Aggressive)",
+    "contextWindow": 262144,
+    "maxOutput": 16384,
+    "capabilities": { "vision": true, "functionCalling": true, "reasoning": true, "streaming": true, "webSearch": false },
+    "reasoningEfforts": []
   },
   "qwen3.8-27b": {
     "displayName": "Qwen3.8 27B",

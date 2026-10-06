@@ -1,5 +1,18 @@
 # Model database refresh — 2026-09-24
 
+## Follow-up — 2026-10-06: self-hosted Qwen variants
+
+The Test1 catalog advertised 62 IDs. This focused update covers the five enabled models: the DeepSeek Flash, Kimi K3 and GPT-6.1 Sol aliases already resolve to existing entries; two distinct Qwen derivatives are now added rather than inheriting hosted Qwen defaults.
+
+| Catalog ID | Context / default output budget | Source |
+| --- | --- | --- |
+| `qwen3.8-27b-uncensored` | 262,144 / 16,384 | [Author model card](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored) |
+| `qwen3.5-9b-uncensored-hauhaucs-aggressive` | 262,144 / 16,384 | [Author model card](https://huggingface.co/HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive) |
+
+Both author cards describe native multimodal models and approximately 262K native context. The stored context describes the model, not a measured limit of this gateway. The 16,384 output value is a conservative application budget accepted by both Test1 routes, not a measured maximum or an author-published output limit. No hosted token price is inferred from the base models. Named effort controls are left empty, so ordinary chat does not inject a default `high`; the earlier Qwen 27B response had rejected `high` while accepting requests without an effort field.
+
+The Qwen 27B route also completed a full Kivio request with 61,051 input tokens and a 16,384 output budget. A 131,072 output budget failed even on a short prompt. The Qwen 9B route accepted a short streamed request with 16,384. The DeepSeek and Kimi routes returned 429 during this survey, and the GPT route returned 403; those results do not establish model parameter limits or successful availability. Existing public model limits and token prices are unchanged. Provider prefixes and bracketed route labels are covered by matching regressions; explicit user overrides still take precedence.
+
 Official vendor documentation was checked against the September 12 catalog. Prices below are USD per million tokens, in input / output / cached-input order. The shared baseline remains `src/data/modelDatabase.json`; explicit user overrides retain priority. This update does not enable models on users' provider accounts or change saved model selections.
 
 ## Added entries

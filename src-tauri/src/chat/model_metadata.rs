@@ -1661,6 +1661,16 @@ mod tests {
             chat_max_output_tokens_on_wire(Some(&provider), "glm-5.3", 16_384),
             131_072
         );
+        for model in [
+            "[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored",
+            "[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+        ] {
+            assert_eq!(
+                chat_max_output_tokens_on_wire(Some(&provider), model, 32_768),
+                16_384,
+                "{model}: self-hosted variants must not inherit a commercial output cap"
+            );
+        }
     }
 
     #[test]

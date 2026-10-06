@@ -3,6 +3,16 @@ import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
 describe('matchModel', () => {
   it.each([
+    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored'],
+    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)'],
+  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName) => {
+    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: [] })
+    expect(matchModel(id)?.pricing?.input).toBeUndefined()
+    expect(matchModel(id)?.pricing?.output).toBeUndefined()
+    expect(resolveModelInfo(id, { [id]: { maxOutput: 8192 } }).maxOutput).toBe(8192)
+  })
+
+  it.each([
     ['openai/gpt-6-sol', 'GPT-6 Sol', 256000, 2, 10, 0.2],
     ['openai/gpt-6-luna', 'GPT-6 Luna', 256000, 0.1, 0.5, 0.01],
     ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
