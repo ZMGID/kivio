@@ -55,9 +55,13 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await page.locator('.kv-study-notes > summary').click()
   await expect(page.getByLabel('Page notes', { exact: true })).toHaveValue('I need to track which variable changes.')
   await page.getByRole('button', { name: 'Toggle theme' }).click()
+  await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await expect(page.locator('.kv-study')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+  await expect(page.locator('.kv-study')).not.toHaveCSS('background-color', 'rgb(255, 255, 255)')
   await screenshot(page, info.outputPath('study-dark.png'))
   await page.goto('/tests/study-browser/index.html?lang=zh')
   await expect(page.getByText('一起想明白', { exact: true })).toBeVisible()
+  await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
   await screenshot(page, info.outputPath('study-chinese.png'))
 })
 

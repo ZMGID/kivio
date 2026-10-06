@@ -1,5 +1,5 @@
 /* Global controls and semantic theme tokens own all shared control styling. */
-.kv-study { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; container-type: inline-size; color: var(--text); }
+.kv-study { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; container-type: inline-size; color: var(--text); background: var(--theme-surface); }
 .kv-study-header { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px 16px; border-bottom: 1px solid var(--border); }
 .kv-study-heading, .kv-study-header-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .kv-study-heading h1 { font-size: 19px; letter-spacing: -.025em; font-weight: 650; margin: 0; }
