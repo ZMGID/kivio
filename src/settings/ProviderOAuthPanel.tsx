@@ -5,10 +5,11 @@ import { FieldBlock, Select } from './components'
 import type { Lang } from '../components/i18n'
 import { ProviderAccountIdentity } from './ProviderAccountIdentity'
 
-export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {
+export function ProviderOAuthPanel({ provider, lang, onUpdateProvider, authorizedNotice }: {
   provider: ModelProvider
   lang: Lang
   onUpdateProvider: (id: string, updates: Partial<ModelProvider>) => void
+  authorizedNotice?: string
 }) {
   const zh = lang === 'zh'
   const auth = provider.request.oauth
@@ -44,7 +45,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {
           loginRef.current = null
           setLogin(null)
           setBusy(false)
-          setNotice(zh ? '授权成功。请点击「管理模型」获取并启用模型，设置会自动保存。' : 'Signed in. Open Models to fetch and enable models. Settings save automatically.')
+          setNotice(authorizedNotice ?? (zh ? '授权成功。请点击「管理模型」获取并启用模型，设置会自动保存。' : 'Signed in. Open Models to fetch and enable models. Settings save automatically.'))
           return
         }
         timer = setTimeout(() => void poll(), Math.max(result.interval, 3) * 1000)
@@ -59,7 +60,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider }: {
     }
     timer = setTimeout(() => void poll(), login.interval * 1000)
     return () => { stopped = true; clearTimeout(timer) }
-  }, [login, zh])
+  }, [authorizedNotice, login, zh])
 
   const start = async () => {
     if (!auth) return

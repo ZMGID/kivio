@@ -1,9 +1,16 @@
+import { useState } from 'react'
+import { api, type ChatToolsConfig } from '../../api/tauri'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { MixerTab } from './MixerTab'
 import { makeSettings, makeProvider } from './testFixtures'
 import { i18n } from '../../components/i18n'
+
+vi.mock('../../api/tauri', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../api/tauri')>(),
+  api: { reasoningEffortsForModel: vi.fn().mockResolvedValue(['low', 'medium', 'high']) },
+}))
 
 const t = i18n.zh
 
@@ -31,6 +38,48 @@ function renderTab(overrides: Record<string, unknown> = {}) {
 }
 
 describe('MixerTab', () => {
+  it('按角色保存模型与推理强度，换模型清除旧档位且保留其他角色', async () => {
+    const saved = vi.fn()
+    const settings = makeSettings({ providers: [makeProvider({ enabledModels: ['gpt-5.5', 'gpt-4o'] })] })
+    function Harness() {
+      const [tools, setTools] = useState<ChatToolsConfig>({ ...settings.chatTools, subAgentModels: {
+        slow: { providerId: 'p1', model: 'gpt-5.5', thinkingLevel: 'high' },
+      } })
+      return <MixerTab settings={settings} t={t} lang="zh" chatTools={tools} hasChatProvider
+        onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()}
+        onUpdateChatTools={(update) => setTools((current) => {
+          const next = { ...current, ...(typeof update === 'function' ? update(current) : update) }
+          saved(next)
+          return next
+        })} />
+    }
+    render(<Harness />)
+    const row = screen.getByText('SMOL').closest('.kv-row') as HTMLElement
+    await userEvent.click(within(row).getByRole('button', { name: '跟随 TASK' }))
+    await userEvent.click(screen.getByRole('option', { name: /gpt-5.5/ }))
+    const effort = await within(row).findByRole('button', { name: 'SMOL 推理强度' })
+    await userEvent.click(effort)
+    await userEvent.click(screen.getByRole('option', { name: 'medium' }))
+    expect(saved.mock.lastCall?.[0].subAgentModels.smol).toEqual({ providerId: 'p1', model: 'gpt-5.5', thinkingLevel: 'medium' })
+    expect(saved.mock.lastCall?.[0].subAgentModels.slow.thinkingLevel).toBe('high')
+    await userEvent.click(within(row).getByRole('button', { name: /gpt-5.5/ }))
+    await userEvent.click(screen.getByRole('option', { name: /gpt-4o/ }))
+    expect(saved.mock.lastCall?.[0].subAgentModels.smol).toEqual({ providerId: 'p1', model: 'gpt-4o', thinkingLevel: null })
+    await userEvent.click(within(row).getByRole('button', { name: /gpt-4o/ }))
+    await userEvent.click(screen.getByRole('option', { name: '跟随 TASK' }))
+    expect(within(row).queryByRole('button', { name: 'SMOL 推理强度' })).toBeNull()
+    expect(saved.mock.lastCall?.[0].subAgentModels.smol.providerId).toBe('')
+  })
+
+  it('模型没有可调推理档位时禁用推理选择', async () => {
+    vi.mocked(api.reasoningEffortsForModel).mockResolvedValueOnce([])
+    const settings = makeSettings()
+    render(<MixerTab settings={settings} t={t} lang="zh" hasChatProvider
+      chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'fixed' } } }}
+      onUpdateChatTools={vi.fn()} onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()} />)
+    expect(await screen.findByTitle('此模型不支持调整推理强度')).toBeDisabled()
+  })
+
   it('可以关闭视频分析，且不清空已选模型', async () => {
     const props = renderTab()
     expect(screen.queryByText('启用视频分析')).toBeNull()

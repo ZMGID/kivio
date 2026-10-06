@@ -377,8 +377,8 @@ fn media_provider(state: &AppState, request: &MediaRequest) -> Result<ModelProvi
         .cloned()
         .filter(|p| p.enabled)
         .ok_or("供应商未启用或已删除。")?;
-    if provider.request.oauth.is_some() || provider.preferred_api_key().is_none() {
-        return Err("媒体生成需要供应商 API Key，不支持账号 OAuth 登录。".into());
+    if provider.request.oauth.is_some() {
+        return Err("媒体生成不支持账号 OAuth 登录。".into());
     }
     match (provider.api_format_kind(), &request.kind) {
         (ProviderApiFormat::AnthropicMessages, _)
@@ -589,9 +589,17 @@ async fn generate(
     // Asynchronous video API: create once, then poll the task until it ends.
     let api = video_generation::resolve_video_api(provider, &request.model)
         .ok_or("这个模型没有已知的视频接口；目前支持 Grok、MiniMax H3、Seedance 和万相。")?;
-    let key = provider.preferred_api_key().ok_or("API Key missing")?;
+    let key = provider.preferred_api_key().unwrap_or_default();
     let send = |builder: reqwest::RequestBuilder| {
-        crate::provider_request::apply(builder.bearer_auth(key), provider, None)
+        crate::provider_request::apply(
+            crate::provider_request::apply_api_key_auth(
+                builder,
+                ProviderApiFormat::OpenAiChat,
+                key,
+            ),
+            provider,
+            None,
+        )
             .timeout(Duration::from_secs(60))
     };
     let task_id = match &job.provider_task_id {

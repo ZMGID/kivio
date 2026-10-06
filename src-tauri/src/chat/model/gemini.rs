@@ -629,10 +629,12 @@ impl GeminiProvider<'_> {
 
 fn gemini_headers(api_key: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-goog-api-key",
-        HeaderValue::from_str(api_key).map_err(|err| format!("Invalid API key: {err}"))?,
-    );
+    if !api_key.trim().is_empty() {
+        headers.insert(
+            "x-goog-api-key",
+            HeaderValue::from_str(api_key).map_err(|err| format!("Invalid API key: {err}"))?,
+        );
+    }
     headers.insert("content-type", HeaderValue::from_static("application/json"));
     Ok(headers)
 }

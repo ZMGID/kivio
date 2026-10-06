@@ -1098,8 +1098,8 @@ fn call_advisor(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let Some(provider) = ctx.settings.get_provider(&provider_id).cloned() else {
             return Err("Advisor provider is missing or disabled.".to_string());
         };
-        if !provider.has_credentials() {
-            return Err("Advisor provider has no API key configured.".to_string());
+        if !provider.authentication_ready() {
+            return Err("Please log in to the advisor provider.".to_string());
         }
 
         let language = crate::settings::resolve_chat_language(ctx.settings);

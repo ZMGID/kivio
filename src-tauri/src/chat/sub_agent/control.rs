@@ -215,6 +215,8 @@ pub fn launch(app: &AppHandle, mut request: SubAgentRequest, key: &str) -> Resul
     let profile = Profile {
         provider_id: request.provider.id.clone(),
         model: request.model.clone(),
+        thinking_enabled: Some(request.thinking_enabled),
+        thinking_level: request.thinking_level.clone(),
         agent_type: request.agent_type.clone(),
         system_prompt: request.system_prompt.clone(),
         tool_names: request.tools.iter().map(|t| t.id.clone()).collect(),
@@ -291,7 +293,7 @@ async fn prepare_continuation(app: &AppHandle, record: &Record) -> Result<SubAge
     let parent = crate::chat::storage::load_conversation(app, &record.conversation_id)?;
     let provider = settings
         .get_provider(&record.profile.provider_id)
-        .filter(|p| p.enabled && p.has_credentials())
+        .filter(|p| p.enabled && p.authentication_ready())
         .cloned()
         .ok_or("Saved child provider is unavailable")?;
     if record.profile.model.is_empty() {
@@ -322,6 +324,11 @@ async fn prepare_continuation(app: &AppHandle, record: &Record) -> Result<SubAge
         system_prompt: record.profile.system_prompt.clone(),
         provider,
         model: record.profile.model.clone(),
+        thinking_enabled: record
+            .profile
+            .thinking_enabled
+            .unwrap_or(settings.chat.thinking_enabled),
+        thinking_level: record.profile.thinking_level.clone(),
         tools,
         max_output_tokens,
         language: crate::settings::resolve_chat_language(&settings),

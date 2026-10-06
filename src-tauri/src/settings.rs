@@ -302,14 +302,12 @@ impl ModelProvider {
             && self.api_keys.iter().all(|key| key.trim().is_empty())
     }
 
-    pub fn has_credentials(&self) -> bool {
-        if self.is_opencode_free() {
-            return true;
-        }
-        if let Some(auth) = &self.request.oauth {
-            return auth.credential_id.is_some();
-        }
-        self.api_keys.iter().any(|key| !key.trim().is_empty())
+    /// API-key requests may be anonymous; OAuth still requires a saved login.
+    pub fn authentication_ready(&self) -> bool {
+        self.request
+            .oauth
+            .as_ref()
+            .is_none_or(|auth| auth.credential_id.is_some())
     }
 
     pub fn api_format_kind(&self) -> ProviderApiFormat {
@@ -1097,6 +1095,15 @@ impl DefaultModelSelection {
     }
 }
 
+/// A mixer role binds its provider, model and reasoning selection together.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SubAgentModelSelection {
+    pub provider_id: String,
+    pub model: String,
+    pub thinking_level: Option<String>,
+}
+
 /// 当前 Chat 会话的主模型（顶栏选择），用于混音器 auto 时解析副任务路由。
 #[derive(Debug, Clone, Copy)]
 pub struct SessionModel<'a> {
@@ -1540,12 +1547,14 @@ pub struct ChatToolsConfig {
     /// 同一时刻最多并行运行的子 agent 数。受 [`SUB_AGENT_CONCURRENCY_MIN`]..[`MAX`] 钳制。
     #[serde(default = "default_sub_agent_concurrency")]
     pub sub_agent_concurrency: usize,
-    /// 子代理全局模型覆盖：spawn 的 sub-agent 用这个 provider+model 而非父会话的。
-    /// 两者皆空 = 跟随父会话（现状）。agent 定义文件里的 model 字段仍优先于此设置。
-    #[serde(default)]
+    /// Legacy global override, consumed into sub_agent_models.task during normalization.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub_agent_provider_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub_agent_model: String,
+    /// SMOL / SLOW / TASK model assignments. Empty roles inherit TASK, then the parent.
+    #[serde(default)]
+    pub sub_agent_models: std::collections::BTreeMap<String, SubAgentModelSelection>,
     /// 开发者「请求调试」总开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。
     /// 默认关闭；关闭时 adapter 零开销（不构造记录）。仅内存、不落盘。
     #[serde(default)]
@@ -1578,6 +1587,7 @@ impl Default for ChatToolsConfig {
             sub_agent_concurrency: default_sub_agent_concurrency(),
             sub_agent_provider_id: String::new(),
             sub_agent_model: String::new(),
+            sub_agent_models: Default::default(),
             request_debug_enabled: false,
             hooks: Vec::new(),
             native_tools: ChatNativeToolsConfig::default(),
@@ -2548,6 +2558,42 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         }
     }
 
+    // Consume the legacy global override once; TASK is its sole new owner.
+    let legacy_provider = std::mem::take(&mut settings.chat_tools.sub_agent_provider_id);
+    let legacy_model = std::mem::take(&mut settings.chat_tools.sub_agent_model);
+    if !legacy_provider.trim().is_empty() && !legacy_model.trim().is_empty() {
+        settings
+            .chat_tools
+            .sub_agent_models
+            .entry("task".into())
+            .or_insert(SubAgentModelSelection {
+                provider_id: legacy_provider,
+                model: legacy_model,
+                thinking_level: None,
+            });
+    }
+    for selection in settings.chat_tools.sub_agent_models.values_mut() {
+        selection.provider_id = selection.provider_id.trim().to_string();
+        selection.model = selection.model.trim().to_string();
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.id == selection.provider_id && p.enabled);
+        if provider.is_none() || selection.model.is_empty() {
+            *selection = SubAgentModelSelection::default();
+            continue;
+        }
+        if let Some(level) = selection.thinking_level.as_deref() {
+            let levels = crate::chat::model_metadata::reasoning_efforts_for_model(
+                provider,
+                &selection.model,
+            );
+            if level != "off" && !levels.iter().any(|candidate| candidate == level) {
+                selection.thinking_level = None;
+            }
+        }
+    }
+
     let provider_exists = |id: &str| settings.providers.iter().any(|p| p.id == id);
     let provider_selectable = |id: &str| settings.providers.iter().any(|p| p.id == id && p.enabled);
     let first_selectable_provider = || settings.providers.iter().find(|p| p.enabled);
@@ -2575,8 +2621,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.default_models = DefaultModelsConfig::default();
         settings.screenshot_translation.provider_id.clear();
         settings.lens.provider_id.clear();
-        settings.chat_tools.sub_agent_provider_id.clear();
-        settings.chat_tools.sub_agent_model.clear();
+        settings.chat_tools.sub_agent_models.clear();
     } else {
         if !provider_selectable(&settings.translator_provider_id) {
             if let Some(first) = first_selectable_provider() {
@@ -2608,14 +2653,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         {
             settings.lens.provider_id.clear();
             settings.lens.model.clear();
-        }
-
-        // 子代理模型覆盖可空（空 = 跟随父会话）；填了不存在/已禁用的 provider 则重置回跟随。
-        if !settings.chat_tools.sub_agent_provider_id.is_empty()
-            && !provider_selectable(&settings.chat_tools.sub_agent_provider_id)
-        {
-            settings.chat_tools.sub_agent_provider_id.clear();
-            settings.chat_tools.sub_agent_model.clear();
         }
 
         sanitize_default_model_selection(&mut settings.default_models.chat, &settings.providers);
@@ -3193,7 +3230,7 @@ fn onboarding_status_is_set(raw: &str) -> bool {
 }
 
 fn provider_has_usable_config(provider: &ModelProvider) -> bool {
-    provider.enabled && provider.has_credentials() && !provider.enabled_models.is_empty()
+    provider.enabled && provider.authentication_ready() && !provider.enabled_models.is_empty()
 }
 
 fn settings_has_usable_provider_config(settings: &Settings) -> bool {
@@ -3769,6 +3806,77 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::state::test_app_state;
+
+    #[test]
+    fn mixer_roles_migrate_legacy_selection_once_and_keep_effort_with_model() {
+        let mut settings = Settings::default();
+        let provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id": "worker", "name": "Worker", "enabled": true,
+            "baseUrl": "http://localhost", "enabledModels": ["gpt-5.5"]
+        }))
+        .unwrap();
+        settings.providers = vec![provider];
+        settings.chat_tools.sub_agent_provider_id = "worker".into();
+        settings.chat_tools.sub_agent_model = "gpt-5.5".into();
+        let mut settings = sanitize_settings(settings);
+        assert_eq!(
+            settings.chat_tools.sub_agent_models["task"].model,
+            "gpt-5.5"
+        );
+        assert!(settings.chat_tools.sub_agent_provider_id.is_empty());
+        assert!(settings.chat_tools.sub_agent_model.is_empty());
+        settings
+            .chat_tools
+            .sub_agent_models
+            .get_mut("task")
+            .unwrap()
+            .thinking_level = Some("medium".into());
+        settings.chat_tools.sub_agent_model = "obsolete".into();
+        settings.chat_tools.sub_agent_provider_id = "worker".into();
+        let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
+        let restored = sanitize_settings(serde_json::from_value(saved).unwrap());
+        assert_eq!(
+            restored.chat_tools.sub_agent_models["task"].model,
+            "gpt-5.5"
+        );
+        assert_eq!(
+            restored.chat_tools.sub_agent_models["task"]
+                .thinking_level
+                .as_deref(),
+            Some("medium")
+        );
+    }
+
+    #[test]
+    fn authentication_readiness_accepts_anonymous_keys_but_requires_oauth_login() {
+        let mut provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id": "anonymous",
+            "name": "Anonymous",
+            "baseUrl": "http://localhost:1234/v1",
+            "enabledModels": ["local-model"]
+        })).unwrap();
+        for format in ["openai_chat", "openai_responses", "xai_responses", "anthropic_messages", "gemini"] {
+            provider.api_format = format.into();
+            for keys in [Vec::new(), vec![" ".into(), "\t".into()], vec!["key".into()]] {
+                provider.api_keys = keys;
+                assert!(provider.authentication_ready());
+                assert!(provider_has_usable_config(&provider));
+            }
+        }
+        provider.request.oauth = Some(serde_json::from_value(serde_json::json!({
+            "provider": "codex"
+        })).unwrap());
+        assert!(!provider.authentication_ready());
+        assert!(!provider_has_usable_config(&provider));
+        provider.request.oauth.as_mut().unwrap().credential_id = Some("saved-login".into());
+        assert!(provider.authentication_ready());
+        assert!(provider_has_usable_config(&provider));
+        provider.enabled = false;
+        assert!(!provider_has_usable_config(&provider));
+        provider.enabled = true;
+        provider.enabled_models.clear();
+        assert!(!provider_has_usable_config(&provider));
+    }
 
     #[test]
     fn failed_durable_save_does_not_apply_external_settings_side_effects() {
@@ -5427,13 +5535,13 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_settings_marks_onboarding_completed_for_existing_provider_config() {
+    fn sanitize_settings_marks_onboarding_completed_for_anonymous_provider_config() {
         let mut s = Settings::default();
         s.onboarding_status.clear();
         s.providers.push(ModelProvider {
             id: "active".to_string(),
             name: "Active".to_string(),
-            api_keys: vec!["sk".to_string()],
+            api_keys: Vec::new(),
             api_key_legacy: None,
             base_url: "https://active.example/v1".to_string(),
             available_models: vec![],

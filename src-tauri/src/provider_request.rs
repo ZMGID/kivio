@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
-use crate::settings::{ModelProvider, ProviderCustomHeader};
+use crate::settings::{ModelProvider, ProviderApiFormat, ProviderCustomHeader};
 
 /// 由 Kivio 自己管理、不允许用户覆盖的头。放开会让鉴权/路由错乱。
 const RESERVED_HEADER_KEYS: &[&str] = &[
@@ -394,6 +394,27 @@ pub fn upsert_pair(pairs: &mut Vec<(String, String)>, name: String, value: Strin
     }
 }
 
+/// Attach protocol-specific API-key authentication, or send anonymously for a blank key.
+pub fn apply_api_key_auth(
+    request: reqwest::RequestBuilder,
+    api_format: ProviderApiFormat,
+    api_key: &str,
+) -> reqwest::RequestBuilder {
+    let request = if api_format == ProviderApiFormat::AnthropicMessages {
+        request.header("anthropic-version", "2023-06-01")
+    } else {
+        request
+    };
+    if api_key.trim().is_empty() {
+        return request;
+    }
+    match api_format {
+        ProviderApiFormat::AnthropicMessages => request.header("x-api-key", api_key),
+        ProviderApiFormat::Gemini => request.header("x-goog-api-key", api_key),
+        _ => request.bearer_auth(api_key),
+    }
+}
+
 /// 把 `header_pairs` 的结果贴到请求上。
 pub fn apply(
     request: reqwest::RequestBuilder,
@@ -420,14 +441,14 @@ mod tests {
         });
         provider.base_url = "https://opencode.ai/zen/v1".into();
         provider.api_keys.clear();
-        assert!(provider.has_credentials());
+        assert!(provider.authentication_ready());
         let pairs = header_pairs(&provider, Some("conversation-1"));
         assert!(!pairs
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
         assert!(pairs.contains(&("x-opencode-session".into(), "conversation-1".into())));
         provider.base_url = "https://opencode.ai/zen/go/v1".into();
-        assert!(!provider.has_credentials());
+        assert!(provider.authentication_ready());
     }
 
     fn provider_with(request: ProviderRequestConfig) -> ModelProvider {

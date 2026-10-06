@@ -7,7 +7,7 @@ import { buildHotkey } from '../../settings/public/hotkeys'
 import { OnboardingFormRow } from '../OnboardingFormRow'
 import { OnboardingStepFrame } from '../OnboardingStepFrame'
 
-type RecordingTarget = 'main' | 'screenshot' | 'selectedText' | 'replace' | 'lens'
+type RecordingTarget = 'chat' | 'main' | 'screenshot' | 'selectedText' | 'replace' | 'lens'
 
 type HotkeyStepProps = {
   t: I18n
@@ -42,6 +42,9 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
       if (!hotkey) return
 
       switch (recordingTarget) {
+        case 'chat':
+          onChange({ ...settings, chatHotkey: hotkey })
+          break
         case 'main':
           onChange({ ...settings, hotkey })
           break
@@ -78,6 +81,17 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
 
   const sections: HotkeySection[] = [
     {
+      title: t.onboardingHotkeySectionChat,
+      fields: [{
+        id: 'chat',
+        label: t.chatHotkeyLabel,
+        hint: t.onboardingHotkeyChatHint,
+        value: settings.chatHotkey || '',
+        placeholder: 'CommandOrControl+Shift+K',
+        onClear: () => onChange({ ...settings, chatHotkey: '' }),
+      }],
+    },
+    {
       title: t.onboardingHotkeySectionLens,
       fields: [{
         id: 'lens',
@@ -97,7 +111,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
         id: 'main',
         label: t.onboardingHotkeyTranslator,
         hint: t.onboardingHotkeyTranslatorHint,
-        value: settings.hotkey || 'CommandOrControl+Alt+T',
+        value: settings.hotkey || '',
         placeholder: 'CommandOrControl+Alt+T',
         onClear: () => onChange({ ...settings, hotkey: '' }),
       }],
@@ -151,7 +165,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
           id: 'replace',
           label: t.onboardingHotkeyReplace,
           hint: t.onboardingHotkeyReplaceHint,
-          value: settings.screenshotTranslation?.replaceHotkey || 'CommandOrControl+Shift+R',
+          value: settings.screenshotTranslation?.replaceHotkey || '',
           placeholder: 'CommandOrControl+Shift+R',
           onClear: () => onChange({
             ...settings,

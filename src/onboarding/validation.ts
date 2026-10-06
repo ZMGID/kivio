@@ -1,11 +1,11 @@
-import { providerHasCredentials } from '../api/tauri'
+import { providerAuthenticationReady } from '../api/tauri'
 import type { Settings } from '../api/tauri'
 import { isWebSearchConfigured } from '../settings/public/webSearch'
 
 export function providerHasUsableConfig(settings: Settings): boolean {
   return settings.providers.some((provider) =>
     provider.enabled !== false
-    && providerHasCredentials(provider)
+    && providerAuthenticationReady(provider)
     && provider.enabledModels.length > 0,
   )
 }
@@ -22,7 +22,7 @@ export function isProviderModelBindingUsable(
   const provider = settings.providers.find((item) => item.id === id)
   if (!provider || provider.enabled === false) return false
   if (!provider.baseUrl || provider.baseUrl.trim() === '') return false
-  if (!providerHasCredentials(provider)) return false
+  if (!providerAuthenticationReady(provider)) return false
   if (provider.enabledModels.length === 0) return false
   return provider.enabledModels.includes(modelName)
 }

@@ -2,9 +2,11 @@ import { Fragment } from 'react'
 import {
   Blocks,
   BookOpen,
+  CalendarClock,
   ChevronRight,
   FolderGit2,
   MessageSquare,
+  Images,
   ScanSearch,
   Terminal,
 } from 'lucide-react'
@@ -30,6 +32,8 @@ export function WelcomeStep({ t }: WelcomeStepProps) {
     { icon: BookOpen, title: t.onboardingWelcomeKnowledgeTitle, desc: t.onboardingWelcomeKnowledgeDesc },
     { icon: ScanSearch, title: t.onboardingWelcomeLensTitle, desc: t.onboardingWelcomeLensDesc },
     { icon: FolderGit2, title: t.onboardingWelcomeWorkspaceTitle, desc: t.onboardingWelcomeWorkspaceDesc },
+    { icon: CalendarClock, title: t.onboardingWelcomeTasksTitle, desc: t.onboardingWelcomeTasksDesc },
+    { icon: Images, title: t.onboardingWelcomeMediaTitle, desc: t.onboardingWelcomeMediaDesc },
   ]
 
   const setupSteps = [

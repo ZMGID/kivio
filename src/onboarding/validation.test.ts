@@ -119,12 +119,24 @@ describe('onboarding validation', () => {
     expect(canCompleteOnboarding(settings)).toBe(true)
   })
 
-  it('rejects bindings that point to providers without keys', () => {
+  it.each([{ apiKeys: [] }, { apiKeys: [''] }, { apiKeys: [' ', '\t'] }])('accepts an anonymous provider with key pool $apiKeys', ({ apiKeys }) => {
     const settings = baseSettings({
       ...configuredBindings,
       providers: [{
         ...testProvider,
-        apiKeys: [],
+        apiKeys,
+      }],
+    })
+    expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(true)
+    expect(canCompleteOnboarding(settings)).toBe(true)
+  })
+
+  it('still requires OAuth login even when an API key is present', () => {
+    const settings = baseSettings({
+      ...configuredBindings,
+      providers: [{
+        ...testProvider,
+        request: { ...testProvider.request, oauth: { provider: 'codex' } },
       }],
     })
     expect(isProviderModelBindingUsable(settings, 'p1', 'gpt-4o')).toBe(false)

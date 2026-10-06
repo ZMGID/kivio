@@ -684,9 +684,8 @@ export type ChatToolsConfig = {
   approvalPolicy: 'readonly_auto_sensitive_confirm' | 'always_confirm' | 'auto' | string
   /** 同一时刻最多并行运行的子 agent 数（后端钳制 1..64，默认 12）。 */
   subAgentConcurrency?: number
-  /** 子代理全局模型覆盖（providerId+model，皆空 = 跟随主对话模型）。agent 定义的 model 字段仍优先。 */
-  subAgentProviderId?: string
-  subAgentModel?: string
+  /** 子代理角色的模型与推理强度；SMOL/SLOW 未配置时跟随 TASK，TASK 跟随主对话。 */
+  subAgentModels?: Record<string, SubAgentModelSelection>
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */
   requestDebugEnabled?: boolean
   nativeTools: ChatNativeToolsConfig
@@ -980,9 +979,9 @@ export function isOpenCodeFree(provider: ModelProvider): boolean {
     && provider.apiKeys.every(key => !key.trim())
 }
 
-export function providerHasCredentials(provider: ModelProvider): boolean {
-  if (isOpenCodeFree(provider)) return true
-  return provider.request.oauth ? Boolean(provider.request.oauth.credentialId) : provider.apiKeys.some(key => key.trim() !== '')
+export function providerAuthenticationReady(provider: ModelProvider): boolean {
+  // API keys are optional for local/anonymous endpoints; OAuth still requires login.
+  return !provider.request.oauth || Boolean(provider.request.oauth.credentialId)
 }
 
 export type ProviderRequestConfig = {
@@ -1037,6 +1036,12 @@ export type ProviderConnectionInput = {
   apiFormat?: string
   /** 编辑中（可能尚未保存）的请求配置。不传则后端回落已保存的那份。 */
   request?: ProviderRequestConfig
+}
+
+export type SubAgentModelSelection = {
+  providerId: string
+  model: string
+  thinkingLevel?: string | null
 }
 
 export type DefaultModelSelection = {

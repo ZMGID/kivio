@@ -462,44 +462,55 @@ impl ToolExecutor for SubAgentToolExecutor {
 // Runner
 // ---------------------------------------------------------------------------
 
-/// Resolve the provider+model a sub-agent should run on. Three tiers:
-/// agent-definition `model` (on the PARENT provider) → global override
-/// (`chat_tools.sub_agent_provider_id`/`sub_agent_model`, may switch provider) →
-/// parent conversation provider+model. An override provider that no longer
-/// resolves falls back to the parent instead of failing the spawn.
+/// Definitions may use a concrete model on the parent provider, or a mixer role.
+/// Unconfigured roles follow TASK, then the parent. Unavailable providers keep
+/// the existing fallback-to-parent behavior, without carrying the old effort.
 fn resolve_sub_agent_provider_model(
     settings: &Settings,
     parent_provider_id: &str,
     parent_model: &str,
     def_model: Option<&str>,
-) -> Result<(ModelProvider, String), String> {
+) -> Result<(ModelProvider, String, Option<String>), String> {
     let parent_provider = || {
         settings
             .get_provider(parent_provider_id)
             .cloned()
             .ok_or_else(|| "Parent chat provider not found".to_string())
     };
-
-    // Tier 1: definition override — parent provider, definition's model.
-    if let Some(m) = def_model.map(str::trim).filter(|m| !m.is_empty()) {
-        return Ok((parent_provider()?, m.to_string()));
+    let definition = def_model.map(str::trim).filter(|m| !m.is_empty());
+    if let Some(model) = definition.filter(|m| !m.starts_with('@')) {
+        return Ok((parent_provider()?, model.to_string(), None));
     }
-
-    // Tier 2: global sub-agent override (both fields must be usable).
-    let ov_provider_id = settings.chat_tools.sub_agent_provider_id.trim();
-    let ov_model = settings.chat_tools.sub_agent_model.trim();
-    if !ov_provider_id.is_empty() && !ov_model.is_empty() {
-        if let Some(p) = settings
-            .get_provider(ov_provider_id)
-            .filter(|p| p.enabled && p.has_credentials())
-        {
-            return Ok((p.clone(), ov_model.to_string()));
-        }
-        // Unusable override → fall through to the parent (tier 3).
+    let role = definition
+        .and_then(|m| m.strip_prefix('@'))
+        .unwrap_or("task");
+    if !matches!(role, "smol" | "slow" | "task") {
+        return Err(format!(
+            "Unknown mixer role '@{role}'. Use @smol, @slow or @task."
+        ));
     }
-
-    // Tier 3: follow the parent conversation.
-    Ok((parent_provider()?, parent_model.to_string()))
+    let configured = |role: &str| {
+        settings
+            .chat_tools
+            .sub_agent_models
+            .get(role)
+            .filter(|selection| !selection.provider_id.is_empty() && !selection.model.is_empty())
+    };
+    if let Some(selection) = configured(role).or_else(|| configured("task")) {
+        let Some(provider) = settings
+            .get_provider(&selection.provider_id)
+            .filter(|p| p.enabled && p.authentication_ready())
+            .cloned()
+        else {
+            return Ok((parent_provider()?, parent_model.to_string(), None));
+        };
+        return Ok((
+            provider,
+            selection.model.clone(),
+            selection.thinking_level.clone(),
+        ));
+    }
+    Ok((parent_provider()?, parent_model.to_string(), None))
 }
 
 pub struct SubAgentRequest {
@@ -511,6 +522,8 @@ pub struct SubAgentRequest {
     pub system_prompt: String,
     pub provider: ModelProvider,
     pub model: String,
+    pub thinking_enabled: bool,
+    pub thinking_level: Option<String>,
     pub tools: Vec<ChatToolDefinition>,
     pub settings: Settings,
     pub max_output_tokens: u32,
@@ -648,7 +661,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         }),
     };
 
-    let thinking_enabled = req.settings.chat.thinking_enabled;
+    let thinking_enabled = req.thinking_enabled;
     let max_output_tokens = req.max_output_tokens;
     let retry_attempts = if req.settings.retry_enabled {
         req.settings.retry_attempts as usize
@@ -674,7 +687,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         effective_chat_tools,
         language: req.language.clone(),
         thinking_enabled,
-        thinking_level: None,
+        thinking_level: req.thinking_level.clone(),
         // 子代理不做联网搜索（父代理的搜索结果已在上下文里）。
         web_search_mode: crate::chat::types::WebSearchMode::Off,
         max_output_tokens,
@@ -957,23 +970,26 @@ pub fn handle_agent_spawn<'a>(
         let mut def = def.clone();
         apply_inline_overrides(&mut def, ctx.arguments);
 
-        // Provider/model resolution, three tiers:
-        //   1. agent definition `model` field — highest, resolved against the
-        //      PARENT provider (pre-existing semantics, ignores the global override)
-        //   2. global sub-agent override (settings.chat_tools.sub_agent_*) —
-        //      switches provider AND model, allowing a cheap cross-provider model
-        //   3. parent conversation provider+model — the default (follow)
-        // Runtime defense: an unusable override provider falls back to the parent
-        // rather than failing the spawn (sanitize_settings normally prevents this).
-        let (provider, model) = resolve_sub_agent_provider_model(
+        let (provider, model, selected_thinking) = resolve_sub_agent_provider_model(
             &settings,
             &parent_conversation.provider_id,
             &parent_conversation.model,
             def.model.as_deref(),
         )?;
-        if !provider.has_credentials() {
+        // A role's explicit effort travels with its model. Without an effort,
+        // preserve the existing subagent behavior (provider defaults/global toggle).
+        let (thinking_enabled, thinking_level) = match selected_thinking.as_deref() {
+            Some(level) => crate::chat::commands::reasoning::resolve_thinking(
+                Some(level),
+                settings.chat.thinking_enabled,
+                Some(&provider),
+                &model,
+            ),
+            None => (settings.chat.thinking_enabled, None),
+        };
+        if !provider.authentication_ready() {
             return Ok(err_result(
-                "Sub-agent provider has no API key configured.".to_string(),
+                "Please log in to the sub-agent provider.".to_string(),
             ));
         }
         if model.trim().is_empty() {
@@ -1045,7 +1061,7 @@ pub fn handle_agent_spawn<'a>(
         let system_prompt = build_chat_system_prompt(
             &language,
             false,
-            settings.chat.thinking_enabled,
+            thinking_enabled,
             &skill_registry,
             &settings.chat_tools,
             true,
@@ -1104,6 +1120,8 @@ pub fn handle_agent_spawn<'a>(
             system_prompt,
             provider,
             model,
+            thinking_enabled,
+            thinking_level,
             tools,
             settings,
             max_output_tokens,
@@ -1573,7 +1591,7 @@ mod tests {
     #[test]
     fn sub_agent_model_follows_parent_by_default() {
         let settings = settings_with_providers(vec![named_provider("parent-p")]);
-        let (provider, model) =
+        let (provider, model, _) =
             resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", None)
                 .expect("resolves");
         assert_eq!(provider.id, "parent-p");
@@ -1584,9 +1602,15 @@ mod tests {
     fn sub_agent_model_uses_global_override_cross_provider() {
         let mut settings =
             settings_with_providers(vec![named_provider("parent-p"), named_provider("cheap-p")]);
-        settings.chat_tools.sub_agent_provider_id = "cheap-p".to_string();
-        settings.chat_tools.sub_agent_model = "cheap-model".to_string();
-        let (provider, model) =
+        settings.chat_tools.sub_agent_models.insert(
+            "task".into(),
+            crate::settings::SubAgentModelSelection {
+                provider_id: "cheap-p".into(),
+                model: "cheap-model".into(),
+                thinking_level: None,
+            },
+        );
+        let (provider, model, _) =
             resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", None)
                 .expect("resolves");
         assert_eq!(provider.id, "cheap-p");
@@ -1597,10 +1621,16 @@ mod tests {
     fn sub_agent_definition_model_beats_global_override() {
         let mut settings =
             settings_with_providers(vec![named_provider("parent-p"), named_provider("cheap-p")]);
-        settings.chat_tools.sub_agent_provider_id = "cheap-p".to_string();
-        settings.chat_tools.sub_agent_model = "cheap-model".to_string();
+        settings.chat_tools.sub_agent_models.insert(
+            "task".into(),
+            crate::settings::SubAgentModelSelection {
+                provider_id: "cheap-p".into(),
+                model: "cheap-model".into(),
+                thinking_level: None,
+            },
+        );
         // Definition model resolves on the PARENT provider (pre-existing semantics).
-        let (provider, model) = resolve_sub_agent_provider_model(
+        let (provider, model, _) = resolve_sub_agent_provider_model(
             &settings,
             "parent-p",
             "parent-model",
@@ -1612,25 +1642,79 @@ mod tests {
     }
 
     #[test]
-    fn sub_agent_unusable_override_falls_back_to_parent() {
-        // Override points at a provider that is disabled / keyless / missing →
-        // fall back to the parent rather than failing the spawn.
-        let mut keyless = named_provider("cheap-p");
-        keyless.api_keys.clear();
-        let mut settings = settings_with_providers(vec![named_provider("parent-p"), keyless]);
-        settings.chat_tools.sub_agent_provider_id = "cheap-p".to_string();
-        settings.chat_tools.sub_agent_model = "cheap-model".to_string();
-        let (provider, model) =
-            resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", None)
-                .expect("resolves");
-        assert_eq!(provider.id, "parent-p");
-        assert_eq!(model, "parent-model");
+    fn sub_agent_unusable_role_falls_back_without_carrying_effort() {
+        let mut provider = named_provider("cheap-p");
+        provider.enabled = false;
+        let mut settings = settings_with_providers(vec![named_provider("parent-p"), provider]);
+        for provider_id in ["cheap-p", "missing-p"] {
+            settings.chat_tools.sub_agent_models.insert(
+                "smol".into(),
+                crate::settings::SubAgentModelSelection {
+                    provider_id: provider_id.into(),
+                    model: "cheap-model".into(),
+                    thinking_level: Some("medium".into()),
+                },
+            );
+            let (provider, model, effort) = resolve_sub_agent_provider_model(
+                &settings,
+                "parent-p",
+                "parent-model",
+                Some("@smol"),
+            )
+            .unwrap();
+            assert_eq!(provider.id, "parent-p");
+            assert_eq!(model, "parent-model");
+            assert_eq!(effort, None);
+        }
+    }
 
-        settings.chat_tools.sub_agent_provider_id = "missing-p".to_string();
-        let (provider, model) =
-            resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", None)
-                .expect("resolves");
-        assert_eq!(provider.id, "parent-p");
-        assert_eq!(model, "parent-model");
+    #[test]
+    fn builtin_agents_resolve_role_model_and_effort_together() {
+        let mut settings =
+            settings_with_providers(vec![named_provider("parent-p"), named_provider("worker-p")]);
+        for (role, level) in [("task", "high"), ("smol", "medium"), ("slow", "off")] {
+            settings.chat_tools.sub_agent_models.insert(
+                role.into(),
+                crate::settings::SubAgentModelSelection {
+                    provider_id: "worker-p".into(),
+                    model: "shared-model".into(),
+                    thinking_level: Some(level.into()),
+                },
+            );
+        }
+        for definition in crate::agents::builtin_agent_definitions() {
+            let (provider, model, effort) = resolve_sub_agent_provider_model(
+                &settings,
+                "parent-p",
+                "parent-model",
+                definition.model.as_deref(),
+            )
+            .unwrap();
+            assert_eq!(provider.id, "worker-p");
+            assert_eq!(model, "shared-model");
+            assert_eq!(
+                effort.as_deref(),
+                Some(match definition.name.as_str() {
+                    "researcher" => "medium",
+                    "reviewer" => "off",
+                    _ => "high",
+                })
+            );
+        }
+        settings.chat_tools.sub_agent_models.remove("smol");
+        let (_, model, effort) =
+            resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", Some("@smol"))
+                .unwrap();
+        assert_eq!(
+            (model.as_str(), effort.as_deref()),
+            ("shared-model", Some("high"))
+        );
+        assert!(resolve_sub_agent_provider_model(
+            &settings,
+            "parent-p",
+            "parent-model",
+            Some("@typo")
+        )
+        .is_err());
     }
 }

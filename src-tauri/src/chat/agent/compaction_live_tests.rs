@@ -16,7 +16,7 @@ fn configured_provider() -> (ModelProvider, String) {
         .find(|p| p["id"] == id)
         .expect("configured provider");
     let provider: ModelProvider = serde_json::from_value(provider.clone()).unwrap();
-    assert!(!provider.api_keys.is_empty(), "provider needs credentials");
+    assert!(provider.authentication_ready(), "provider needs OAuth login");
     (
         provider,
         std::env::var("KIVIO_COMPACTION_LIVE_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),

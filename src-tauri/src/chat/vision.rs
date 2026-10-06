@@ -21,7 +21,7 @@ use super::mcp_image_feedback::{
 };
 use super::storage::load_conversation;
 use super::{
-    chat_missing_model_error, format_chat_missing_api_key_error, session_model_for_conversation,
+    chat_missing_model_error, format_chat_login_required_error, session_model_for_conversation,
     ToolCallRecord, ToolCallStatus,
 };
 
@@ -197,8 +197,8 @@ pub(super) async fn analyze_chat_images_with_auxiliary_model(
         .get_provider(&auxiliary_model.provider_id)
         .ok_or_else(|| "Vision auxiliary provider not found".to_string())?
         .clone();
-    if !provider.has_credentials() {
-        return Err(format_chat_missing_api_key_error(&provider.name));
+    if !provider.authentication_ready() {
+        return Err(format_chat_login_required_error(&provider.name));
     }
     if auxiliary_model.model.trim().is_empty() {
         return Err(chat_missing_model_error());

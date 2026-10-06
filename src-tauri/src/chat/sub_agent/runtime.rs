@@ -31,6 +31,10 @@ impl Status {
 pub struct Profile {
     pub provider_id: String,
     pub model: String,
+    #[serde(default)]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
     pub agent_type: String,
     pub system_prompt: String,
     pub tool_names: Vec<String>,
@@ -1036,7 +1040,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path().into()).unwrap();
         let child = runtime
-            .start("conv", "parent", "k", "A", Profile::default(), "Inspect")
+            .start(
+                "conv",
+                "parent",
+                "k",
+                "A",
+                Profile {
+                    thinking_enabled: Some(true),
+                    thinking_level: Some("medium".into()),
+                    ..Profile::default()
+                },
+                "Inspect",
+            )
             .unwrap();
         let output = WorkerOutput {
             result: Err("response interrupted".into()),
@@ -1051,6 +1066,8 @@ mod tests {
             .unwrap();
         let reopened = Runtime::open(dir.path().into()).unwrap();
         let saved = reopened.get("conv", &child.id).unwrap();
+        assert_eq!(saved.profile.thinking_enabled, Some(true));
+        assert_eq!(saved.profile.thinking_level.as_deref(), Some("medium"));
         assert_eq!(saved.current().result.as_deref(), Some("Read evidence"));
         assert_eq!(saved.current().usage.as_ref().unwrap()["input_tokens"], 12);
         assert_eq!(

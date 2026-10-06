@@ -103,32 +103,30 @@ impl OpenAiChatProvider<'_> {
         stream: bool,
         label: &str,
     ) -> Result<reqwest::Response, String> {
-        let anonymous = self.provider.is_opencode_free();
         if crate::chat::video::has_video(request) {
             crate::chat::video::validate_request(self.provider, request)
                 .map_err(|e| e.to_string())?;
             crate::chat::video::validate_body(body).map_err(|e| e.to_string())?;
         }
-        if anonymous && !crate::opencode_free::is_free_model(&request.model) {
+        if self.provider.is_opencode_free() && !crate::opencode_free::is_free_model(&request.model) {
             return Err("OpenCode Free only supports free models; refresh the model list".into());
         }
-        let keys = if anonymous {
-            vec![String::new()]
-        } else {
-            self.provider.api_keys.clone()
-        };
         send_with_failover(
             self.state,
             label,
             self.retry_attempts,
             &self.provider.id,
-            &keys,
+            &self.provider.api_keys,
             |key| {
                 let req = self
                     .state
                     .client_for(self.provider)
                     .post(self.chat_completions_url());
-                let req = if anonymous { req } else { req.bearer_auth(key) };
+                let req = crate::provider_request::apply_api_key_auth(
+                    req,
+                    crate::settings::ProviderApiFormat::OpenAiChat,
+                    key,
+                );
                 let req = crate::api::attach_json_body(
                     self.with_session_headers(
                         req.header(ACCEPT_ENCODING, "identity"),

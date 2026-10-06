@@ -18,7 +18,7 @@ use crate::chat::vision::{
     user_content_with_auxiliary_vision_result,
 };
 use crate::chat::{
-    chat_missing_model_error, format_chat_missing_api_key_error, session_model_for_conversation,
+    chat_missing_model_error, format_chat_login_required_error, session_model_for_conversation,
     Conversation, ToolCallStatus,
 };
 use crate::skills;
@@ -218,8 +218,8 @@ pub(super) async fn complete_assistant_reply_inner(
         .get_provider(&resolved_provider_id)
         .ok_or_else(|| "Chat provider not found".to_string())?
         .clone();
-    if !provider.has_credentials() {
-        return Err(format_chat_missing_api_key_error(&provider.name));
+    if !provider.authentication_ready() {
+        return Err(format_chat_login_required_error(&provider.name));
     }
     if resolved_model.trim().is_empty() {
         return Err(chat_missing_model_error());

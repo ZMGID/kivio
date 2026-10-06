@@ -1,4 +1,4 @@
-import { providerHasCredentials } from '../../api/tauri'
+import { providerAuthenticationReady } from '../../api/tauri'
 import { ArrowDownAZ, Heart, Plus, Search, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -105,7 +105,7 @@ export function ProvidersTab({
   onOpenModelDrawer,
   onRemoveEnabledModel,
 }: ProvidersTabProps) {
-  const configured = selectedProvider && providerHasCredentials(selectedProvider)
+  const configured = selectedProvider && providerAuthenticationReady(selectedProvider)
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
   const [presetQuery, setPresetQuery] = useState('')

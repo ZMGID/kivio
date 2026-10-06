@@ -1001,10 +1001,12 @@ fn clamp_extended_thinking_budget(budget: u32, max_tokens: u32) -> Option<u32> {
 
 fn anthropic_headers(api_key: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-api-key",
-        HeaderValue::from_str(api_key).map_err(|err| format!("Invalid API key: {err}"))?,
-    );
+    if !api_key.trim().is_empty() {
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(api_key).map_err(|err| format!("Invalid API key: {err}"))?,
+        );
+    }
     headers.insert(
         "anthropic-version",
         HeaderValue::from_static(ANTHROPIC_VERSION),

@@ -393,6 +393,7 @@ pub fn is_failover_error(err_msg: &str) -> bool {
 }
 
 /// 多 key failover 包装：在 api_keys 列表上依次尝试，遇到 failover-eligible 错误自动切下一 key。
+/// 空列表或全空白 key 走匿名请求：保留重试 / 取消，不参与 key 池记账；服务端鉴权错误照常返回。
 ///
 /// 错误分类（内层 vs 外层换 key）：
 /// - **401/402/403（坏 / 失效 key）**：内层不重试，立即冒泡 → 外层换 key。
@@ -441,12 +442,25 @@ where
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
     C: Fn() -> bool + Send + Sync,
 {
-    let total = api_keys.len();
-    if total == 0 {
-        return Err(format!("{} Error: No API key configured", label));
+    if api_keys.iter().all(|key| key.trim().is_empty()) {
+        return send_with_retry_status_policy(
+            label,
+            attempts,
+            &mut || send(""),
+            FailoverRetryPolicy {
+                rate_limit_cap: None,
+            },
+            &is_cancelled,
+        )
+        .await;
     }
 
-    let mut tried: HashSet<usize> = HashSet::new();
+    let total = api_keys.len();
+    let mut tried: HashSet<usize> = api_keys
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, key)| key.trim().is_empty().then_some(idx))
+        .collect();
     let mut last_err: Option<String> = None;
 
     while tried.len() < total {
@@ -1634,6 +1648,71 @@ mod tests {
 
     fn test_never_cancelled() -> bool {
         false
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn anonymous_failover_keeps_retry_and_cancellation() {
+        for keys in [Vec::new(), vec!["".into(), " \t ".into()]] {
+            let state = crate::state::test_app_state();
+            let calls = AtomicUsize::new(0);
+            let result = send_with_failover(&state, "Test", 2, "prov", &keys, |key| {
+                assert_eq!(key, "");
+                let status = if calls.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                    500
+                } else {
+                    200
+                };
+                async move { Ok(make_response(status, None)) }
+            })
+            .await;
+            assert!(result.is_ok());
+            assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let calls = AtomicUsize::new(0);
+            let result = send_with_failover_cancelable(
+                &state,
+                "Test",
+                2,
+                "prov",
+                &keys,
+                || cancelled.load(AtomicOrdering::SeqCst),
+                |key| {
+                    assert_eq!(key, "");
+                    calls.fetch_add(1, AtomicOrdering::SeqCst);
+                    cancelled.store(true, AtomicOrdering::SeqCst);
+                    async { Ok(make_response(500, None)) }
+                },
+            )
+            .await;
+            assert!(matches!(result, Err(err) if err == "Test cancelled"));
+            assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn failover_ignores_blank_entries_when_nonempty_keys_exist() {
+        let state = crate::state::test_app_state();
+        let keys = vec![" \t ".into(), "key0".into(), "".into(), "key1".into()];
+        let calls = AtomicUsize::new(0);
+        let result = send_with_failover(&state, "Test", 2, "prov", &keys, |key| {
+            let call = calls.fetch_add(1, AtomicOrdering::SeqCst);
+            let status = match call {
+                0 => {
+                    assert_eq!(key, "key0");
+                    401
+                }
+                1 => {
+                    assert_eq!(key, "key1");
+                    200
+                }
+                _ => panic!("unexpected extra request"),
+            };
+            async move { Ok(make_response(status, None)) }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]

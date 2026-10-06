@@ -740,7 +740,7 @@ mod tests {
     fn oauth_destination_and_protocol_are_bound_before_credentials_are_read() {
         let mut p = provider();
         assert!(validate_provider(&p).is_ok());
-        assert!(p.has_credentials());
+        assert!(p.authentication_ready());
         for base in [
             "http://chatgpt.com/backend-api/codex",
             "https://chatgpt.com.evil.test/backend-api/codex",
@@ -755,7 +755,7 @@ mod tests {
         assert!(validate_provider(&p).is_err());
         p.request.oauth.as_mut().unwrap().credential_id = None;
         p.api_keys = vec!["old-api-key".into()];
-        assert!(!p.has_credentials());
+        assert!(!p.authentication_ready());
     }
     #[test]
     fn codex_account_headers_override_custom_headers_without_duplicates() {

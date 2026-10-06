@@ -28,17 +28,8 @@ pub async fn rerank(
     if model.trim().is_empty() {
         return Err("Rerank model is not set".to_string());
     }
-    let keys: Vec<String> = provider
-        .api_keys
-        .iter()
-        .filter(|k| !k.trim().is_empty())
-        .cloned()
-        .collect();
-    if keys.is_empty() {
-        return Err(format!(
-            "Rerank provider '{}' has no API key",
-            provider.name
-        ));
+    if !provider.authentication_ready() {
+        return Err(format!("Please log in to provider '{}'", provider.name));
     }
     let url = format!("{}/rerank", provider.base_url.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -48,13 +39,14 @@ pub async fn rerank(
         "top_n": top_n,
     });
 
-    let response = send_with_failover(state, "Rerank API", attempts, &provider.id, &keys, |key| {
+    let response = send_with_failover(state, "Rerank API", attempts, &provider.id, &provider.api_keys, |key| {
         with_standard_request_timeout(
             crate::provider_request::apply(
-                state
-                    .client_for(provider)
-                    .post(url.clone())
-                    .bearer_auth(key),
+                crate::provider_request::apply_api_key_auth(
+                    state.client_for(provider).post(url.clone()),
+                    crate::settings::ProviderApiFormat::OpenAiChat,
+                    key,
+                ),
                 provider,
                 None,
             )

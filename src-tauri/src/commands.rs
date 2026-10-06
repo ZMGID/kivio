@@ -363,7 +363,7 @@ pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState
 }
 
 /// 翻译文本命令
-/// 根据设置中的翻译供应商和模型进行翻译；如果 API Key 为空则返回提示信息
+/// 根据设置中的翻译供应商和模型进行翻译；OAuth 模式仍需先登录
 #[tauri::command]
 pub(crate) async fn translate_text(
     state: State<'_, AppState>,
@@ -379,8 +379,8 @@ pub(crate) async fn translate_text(
         .get_provider(&settings.translator_provider_id)
         .ok_or_else(|| "Translator provider not found".to_string())?;
 
-    if !provider.has_credentials() {
-        return Ok("Missing API Key".to_string());
+    if !provider.authentication_ready() {
+        return Ok("Please log in to the provider first".to_string());
     }
     if settings.translator_model.trim().is_empty() {
         return Ok("Please select a model first".to_string());
@@ -789,24 +789,6 @@ fn effective_request_provider(
     provider
 }
 
-/// 拉模型列表 / 测连接共用的鉴权：必须跟真实对话请求一致。
-/// Gemini 官方 key 不是 OAuth token，Bearer 会 400/401；Anthropic 要 `x-api-key`。
-fn apply_provider_auth(
-    request: reqwest::RequestBuilder,
-    api_format: ProviderApiFormat,
-    api_key: &str,
-) -> reqwest::RequestBuilder {
-    if api_key.is_empty() {
-        return request;
-    }
-    match api_format {
-        ProviderApiFormat::AnthropicMessages => request
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01"),
-        ProviderApiFormat::Gemini => request.header("x-goog-api-key", api_key),
-        _ => request.bearer_auth(api_key),
-    }
-}
 
 fn resolve_api_format(
     settings: &Settings,
@@ -918,6 +900,15 @@ pub(crate) async fn fetch_models(
     provider: Option<ProviderConnectionInput>,
     include_capabilities: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    fetch_models_with_state(state.inner(), provider_id, provider, include_capabilities).await
+}
+
+async fn fetch_models_with_state(
+    state: &AppState,
+    provider_id: String,
+    provider: Option<ProviderConnectionInput>,
+    include_capabilities: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let mut oauth_provider = effective_request_provider(
         &settings,
@@ -938,7 +929,7 @@ pub(crate) async fn fetch_models(
         }
     }
     if oauth_provider.request.oauth.is_some() {
-        let ids = crate::provider_oauth::models(&state, &oauth_provider).await?;
+        let ids = crate::provider_oauth::models(state, &oauth_provider).await?;
         return Ok(if include_capabilities == Some(true) {
             serde_json::json!({"models":ids,"capabilities":{}})
         } else {
@@ -949,20 +940,14 @@ pub(crate) async fn fetch_models(
     let api_format = resolve_api_format(&settings, &provider_id, provider.as_ref());
     let request_override = provider.as_ref().and_then(|p| p.request.clone());
     let preferred_idx = provider.as_ref().and_then(|p| p.active_key_index);
-    let (base_url, mut api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+    let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let anonymous = api_format == ProviderApiFormat::OpenAiChat
         && crate::opencode_free::is_endpoint(&base_url)
         && api_keys.iter().all(|key| key.trim().is_empty());
-    if anonymous {
-        api_keys = vec![String::new()];
-    }
     let retry_attempts = effective_retry_attempts(&settings);
     let effective = effective_request_provider(&settings, &provider_id, request_override);
 
-    if api_keys.is_empty() {
-        return Err("Missing API Key".to_string());
-    }
-    if let Some(idx) = preferred_idx {
+    if let Some(idx) = preferred_idx.filter(|_| !api_keys.is_empty()) {
         state
             .provider_runtime()
             .prefer_key(&provider_id, idx.min(api_keys.len() - 1));
@@ -976,7 +961,7 @@ pub(crate) async fn fetch_models(
     };
 
     let response = send_with_failover(
-        &state,
+        state,
         "Models API",
         retry_attempts,
         &provider_id,
@@ -984,7 +969,7 @@ pub(crate) async fn fetch_models(
         |key| {
             // 拉模型列表也走该供应商的请求配置：中转站常按自定义头/UA 决定放行与可见模型。
             let request = crate::provider_request::apply(
-                apply_provider_auth(
+                crate::provider_request::apply_api_key_auth(
                     state.client_for(&effective).get(url.clone()),
                     api_format,
                     key,
@@ -1040,6 +1025,14 @@ pub(crate) async fn test_provider_connection(
     provider_id: String,
     provider: Option<ProviderConnectionInput>,
 ) -> Result<serde_json::Value, String> {
+    test_provider_connection_with_state(state.inner(), provider_id, provider).await
+}
+
+async fn test_provider_connection_with_state(
+    state: &AppState,
+    provider_id: String,
+    provider: Option<ProviderConnectionInput>,
+) -> Result<serde_json::Value, String> {
     let settings = state.settings_read().clone();
     let mut oauth_provider = effective_request_provider(
         &settings,
@@ -1064,7 +1057,7 @@ pub(crate) async fn test_provider_connection(
             .as_ref()
             .and_then(|p| p.model.as_deref())
             .filter(|m| !m.trim().is_empty());
-        let result = crate::provider_oauth::test_connection(&state, &oauth_provider, model).await;
+        let result = crate::provider_oauth::test_connection(state, &oauth_provider, model).await;
         return Ok(match result {
             Ok(()) => serde_json::json!({"success": true}),
             Err(error) => serde_json::json!({"success": false, "error": error}),
@@ -1084,27 +1077,12 @@ pub(crate) async fn test_provider_connection(
                 .map(|p| p.clamped_active_key_index())
         })
         .unwrap_or(0);
-    let (base_url, mut api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+    let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
     let anonymous = api_format == ProviderApiFormat::OpenAiChat
         && crate::opencode_free::is_endpoint(&base_url)
         && api_keys.iter().all(|key| key.trim().is_empty());
-    if anonymous {
-        api_keys = vec![String::new()];
-    }
 
-    let api_key = match if anonymous {
-        Some(String::new())
-    } else {
-        crate::api::pick_key_at(&api_keys, preferred_idx)
-    } {
-        Some(k) => k,
-        None => {
-            return Ok(serde_json::json!({
-              "success": false,
-              "error": "Missing API Key"
-            }));
-        }
-    };
+    let api_key = crate::api::pick_key_at(&api_keys, preferred_idx).unwrap_or_default();
 
     let retry_attempts = effective_retry_attempts(&settings);
     let base = base_url.trim_end_matches('/');
@@ -1126,7 +1104,7 @@ pub(crate) async fn test_provider_connection(
             }
             let (url, body) = connection_test_url_and_body(api_format, base, model);
             send_with_retry("Provider API", retry_attempts, || {
-                let request = apply_provider_auth(
+                let request = crate::provider_request::apply_api_key_auth(
                     with_request_config(client.post(url.clone())).json(&body),
                     api_format,
                     &api_key,
@@ -1139,7 +1117,7 @@ pub(crate) async fn test_provider_connection(
             // /models 探测（Gemini 原生同样有 GET /models；Anthropic 也提供 /models）。
             let url = format!("{base}/models");
             send_with_retry("Provider API", retry_attempts, || {
-                let request = apply_provider_auth(
+                let request = crate::provider_request::apply_api_key_auth(
                     with_request_config(client.get(url.clone())),
                     api_format,
                     &api_key,
@@ -1312,6 +1290,158 @@ mod tests {
     use super::CONNECTION_TEST_PROMPT;
     use crate::settings::ProviderApiFormat;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn model_commands_require_oauth_login_even_with_api_keys() {
+        let state = crate::state::test_app_state();
+        let input: crate::api::ProviderConnectionInput = serde_json::from_value(json!({
+            "id": "codex",
+            "baseUrl": "https://chatgpt.com/backend-api/codex",
+            "apiFormat": "openai_responses",
+            "apiKeys": ["old-api-key"],
+            "request": {"oauth": {"provider": "codex"}}
+        })).unwrap();
+        let error = super::fetch_models_with_state(
+            &state, "codex".into(), Some(input.clone()), None,
+        ).await.unwrap_err();
+        assert_eq!(error, "Sign in to the model provider first");
+        let result = super::test_provider_connection_with_state(
+            &state, "codex".into(), Some(input),
+        ).await.unwrap();
+        assert_eq!(result, json!({
+            "success": false,
+            "error": "Sign in to the model provider first"
+        }));
+    }
+
+    async fn provider_http_response(
+        status: &str,
+        body: &str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert!(count > 0, "request closed before its body was complete");
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    }).unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            stream.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8(bytes).unwrap()
+        });
+        (format!("http://{address}/v1"), server)
+    }
+
+    fn anonymous_input(base_url: &str, format: ProviderApiFormat) -> crate::api::ProviderConnectionInput {
+        serde_json::from_value(json!({
+            "id": "anonymous",
+            "baseUrl": base_url,
+            "apiFormat": format.as_str(),
+            "apiKeys": [" ", "\t"],
+            "activeKeyIndex": 42
+        })).unwrap()
+    }
+
+    fn assert_anonymous_request(request: &str) {
+        let headers = request.split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
+        for name in ["authorization:", "x-api-key:", "x-goog-api-key:"] {
+            assert!(!headers.lines().any(|line| line.starts_with(name)), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_model_commands_reach_endpoint_without_auth_headers() {
+        use super::{fetch_models_with_state, test_provider_connection_with_state};
+        let state = crate::state::test_app_state();
+        for format in [
+            ProviderApiFormat::OpenAiChat,
+            ProviderApiFormat::OpenAiResponses,
+            ProviderApiFormat::XaiResponses,
+            ProviderApiFormat::AnthropicMessages,
+            ProviderApiFormat::Gemini,
+        ] {
+            let (base, server) = provider_http_response(
+                "200 OK",
+                r#"{"data":[{"id":"paid-model"},{"id":"demo-free"}]}"#,
+            ).await;
+            let mut input = anonymous_input(&base, format);
+            input.api_keys.clear();
+            let models = fetch_models_with_state(
+                &state, "anonymous".into(), Some(input), None,
+            ).await.unwrap();
+            assert_eq!(models, json!(["paid-model", "demo-free"]));
+            let request = server.await.unwrap();
+            assert!(request.starts_with("GET /v1/models"));
+            assert_anonymous_request(&request);
+            if format == ProviderApiFormat::AnthropicMessages {
+                assert!(request.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+            }
+
+            for model in [None, Some("paid-model")] {
+                let (base, server) = provider_http_response("200 OK", "{}").await;
+                let mut input = anonymous_input(&base, format);
+                input.model = model.map(str::to_string);
+                let result = test_provider_connection_with_state(
+                    &state, "anonymous".into(), Some(input),
+                ).await.unwrap();
+                assert_eq!(result, json!({"success": true}));
+                let request = server.await.unwrap();
+                if model.is_some() {
+                    assert!(request.starts_with("POST "), "{request}");
+                    assert!(request.contains("paid-model"));
+                } else {
+                    assert!(request.starts_with("GET /v1/models"));
+                }
+                assert_anonymous_request(&request);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_model_commands_report_server_authentication_failures() {
+        let state = crate::state::test_app_state();
+        let (base, server) = provider_http_response(
+            "401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#,
+        ).await;
+        let error = super::fetch_models_with_state(
+            &state, "anonymous".into(),
+            Some(anonymous_input(&base, ProviderApiFormat::OpenAiChat)), None,
+        ).await.unwrap_err();
+        assert!(error.contains("401"), "{error}");
+        assert!(error.contains("server requires authentication"), "{error}");
+        assert_anonymous_request(&server.await.unwrap());
+
+        let (base, server) = provider_http_response(
+            "401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#,
+        ).await;
+        let result = super::test_provider_connection_with_state(
+            &state, "anonymous".into(),
+            Some(anonymous_input(&base, ProviderApiFormat::OpenAiChat)),
+        ).await.unwrap();
+        assert_eq!(result["success"], false);
+        assert!(result["error"].as_str().unwrap().contains("401"), "{result}");
+        assert!(result["error"].as_str().unwrap().contains("server requires authentication"));
+        assert_anonymous_request(&server.await.unwrap());
+    }
 
     /// 旧 artifact（无 path）落临时文件时的文件名清洗：只取 basename，挡目录穿越。
     /// 扩展名闸门与本地文件链接共用 `ensure_openable_extension`——落盘后同样是「交给默认程序」。

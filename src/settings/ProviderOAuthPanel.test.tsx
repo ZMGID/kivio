@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, providerHasCredentials, type ProviderOAuthLogin, type ProviderOAuthPoll } from '../api/tauri'
+import { api, providerAuthenticationReady, type ProviderOAuthLogin, type ProviderOAuthPoll } from '../api/tauri'
 import { ProviderOAuthPanel } from './ProviderOAuthPanel'
 import { makeProvider } from './tabs/testFixtures'
 
@@ -94,7 +94,7 @@ describe('model OAuth onboarding', () => {
   })
   it('requires an OAuth reference even when old API keys remain', () => {
     const { provider } = setup()
-    expect(providerHasCredentials({ ...provider, apiKeys: ['old-key'] })).toBe(false)
-    expect(providerHasCredentials({ ...provider, apiKeys: [], request: { ...provider.request, oauth: { provider: 'codex', credentialId: 'id' } } })).toBe(true)
+    expect(providerAuthenticationReady({ ...provider, apiKeys: ['old-key'] })).toBe(false)
+    expect(providerAuthenticationReady({ ...provider, apiKeys: [], request: { ...provider.request, oauth: { provider: 'codex', credentialId: 'id' } } })).toBe(true)
   })
 })

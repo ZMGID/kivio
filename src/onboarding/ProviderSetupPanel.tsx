@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { api, type ModelProvider, type Settings } from '../api/tauri'
+import { api, isOpenCodeFree, providerAuthenticationReady, type ModelProvider, type ProviderApiFormat, type Settings } from '../api/tauri'
 import { applyModelCatalog } from '../data/modelCatalog'
 import { ModelPairSelect, ProviderModelsPicker } from '../settings/public/modelSelection'
 import { Button, IconButton } from '../components/Button'
-import { Input, Label } from '../settings/public/controls'
+import { Input, Label, Select } from '../settings/public/controls'
 import type { I18n, Lang } from '../components/i18n'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/public/modelSelection'
-import { isProviderEnabled } from '../settings/public/providers'
+import { isProviderEnabled, ProviderOAuthPanel } from '../settings/public/providers'
 import { ProviderIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
@@ -267,6 +267,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
         id: provider.id,
         baseUrl: provider.baseUrl,
         apiKeys: provider.apiKeys,
+        activeKeyIndex: provider.activeKeyIndex,
         apiFormat: provider.apiFormat,
         request: provider.request,
       })
@@ -287,7 +288,9 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
         id: provider.id,
         baseUrl: provider.baseUrl,
         apiKeys: provider.apiKeys,
+        activeKeyIndex: provider.activeKeyIndex,
         apiFormat: provider.apiFormat,
+        request: provider.request,
         model: provider.enabledModels[0] ?? provider.availableModels[0],
       })
       if (result.success) {
@@ -362,6 +365,13 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
 
         {provider ? (
           <div className="onboarding-card onboarding-provider-card">
+            <ProviderOAuthPanel
+              key={provider.id}
+              provider={provider}
+              lang={lang}
+              authorizedNotice={t.onboardingProviderAuthorized}
+              onUpdateProvider={(id, patch) => onChange(updateProviderInSettings(settings, id, patch))}
+            />
             <div className="onboarding-provider-grid">
               <div className="onboarding-field">
                 <Label>{t.onboardingProviderName}</Label>
@@ -375,6 +385,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
                 <Label>{t.baseUrl}</Label>
                 <Input
                   value={provider.baseUrl}
+                  disabled={Boolean(provider.request.oauth)}
                   onChange={(value) => {
                     const baseUrlChanged = value !== provider.baseUrl
                     updateProvider({
@@ -389,14 +400,31 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
             </div>
 
             <div className="onboarding-field">
+              <Label>{t.onboardingProviderProtocol}</Label>
+              <Select
+                value={provider.apiFormat}
+                disabled={Boolean(provider.request.oauth)}
+                onChange={(value) => updateProvider({ apiFormat: value as ProviderApiFormat, availableModels: [], enabledModels: [] })}
+                options={[
+                  { value: 'openai_chat', label: 'OpenAI Chat' },
+                  { value: 'openai_responses', label: 'OpenAI Responses' },
+                  { value: 'anthropic_messages', label: 'Anthropic' },
+                  { value: 'gemini', label: 'Gemini' },
+                  { value: 'xai_responses', label: 'Grok (xAI)' },
+                ]}
+              />
+            </div>
+            {isOpenCodeFree(provider) ? <p className="onboarding-panel-note">{t.onboardingProviderFreeHint}</p> : null}
+            {!provider.request.oauth && !isOpenCodeFree(provider) ? <div className="onboarding-field">
               <Label>{t.onboardingProviderApiKey}</Label>
               <Input
                 type="password"
                 value={provider.apiKeys[0] || ''}
-                onChange={(value) => updateProvider({ apiKeys: value.trim() ? [value.trim()] : [] })}
+                onChange={(value) => updateProvider({ apiKeys: [value.trim(), ...provider.apiKeys.slice(1)] })}
                 placeholder="sk-..."
                 mono
               />
+              <p className="onboarding-field-hint">{t.onboardingProviderKeyHint}</p>
               {(() => {
                 // 命中快速预设 baseUrl 时，给出「获取 API Key」外链引导申请（与设置页一致）。
                 const preset = PROVIDER_PRESETS.find(
@@ -414,12 +442,12 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
                   </button>
                 )
               })()}
-            </div>
+            </div> : null}
 
             <div className="onboarding-action-row">
               <Button
                 onClick={() => void handleTestConnection()}
-                disabled={testing}
+                disabled={testing || !providerAuthenticationReady(provider)}
                 data-tauri-drag-region="false"
               >
                 {testing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
@@ -428,6 +456,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
               <Button
                 variant="primary"
                 onClick={openModelPicker}
+                disabled={!providerAuthenticationReady(provider)}
                 data-tauri-drag-region="false"
               >
                 {t.onboardingProviderManageModels}

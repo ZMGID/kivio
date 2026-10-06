@@ -302,8 +302,8 @@ pub(super) fn select_model(
             .filter(|p| p.enabled)
             .ok_or("视频分析模型不可用，请在混音器中重新选择。")?;
         super::video::validate_model(provider, &selection.model).map_err(|e| e.to_string())?;
-        if !provider.has_credentials() {
-            return Err(super::format_chat_missing_api_key_error(&provider.name));
+        if !provider.authentication_ready() {
+            return Err(super::format_chat_login_required_error(&provider.name));
         }
         return Ok(Some(VideoAnalysisModel {
             provider_id: provider.id.clone(),
@@ -313,7 +313,7 @@ pub(super) fn select_model(
     let found = settings
         .providers
         .iter()
-        .filter(|p| p.enabled && p.has_credentials())
+        .filter(|p| p.enabled && p.authentication_ready())
         .find_map(|p| {
             p.enabled_models
                 .iter()

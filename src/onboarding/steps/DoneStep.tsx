@@ -38,6 +38,7 @@ export function DoneStep({ t, settings }: DoneStepProps) {
   ]
 
   const hotkeyRows = [
+    { label: t.chatHotkeyLabel, value: formatHotkeyLabel(settings.chatHotkey || '', t.onboardingDoneNotConfigured) },
     { label: t.onboardingDoneHotkeyTranslator, value: formatHotkeyLabel(settings.hotkey, t.onboardingDoneNotConfigured) },
     { label: t.onboardingDoneHotkeyScreenshot, value: formatHotkeyLabel(settings.screenshotTranslation.hotkey, t.onboardingDoneNotConfigured) },
     { label: t.onboardingDoneHotkeySelectedText, value: formatHotkeyLabel(settings.screenshotTranslation.textHotkey, t.onboardingDoneNotConfigured) },
@@ -53,6 +54,14 @@ export function DoneStep({ t, settings }: DoneStepProps) {
   return (
     <OnboardingStepFrame title={t.onboardingDoneTitle} subtitle={t.onboardingDoneDesc}>
       <div className="onboarding-section">
+        <div className="onboarding-section-label">{t.onboardingDoneNextTitle}</div>
+        <div className="onboarding-card onboarding-card--rows">
+          <p className="onboarding-field-hint">{t.onboardingDoneNextChat}</p>
+          <p className="onboarding-field-hint">{t.onboardingDoneNextTasks}</p>
+          <p className="onboarding-field-hint">{t.onboardingDoneNextMedia}</p>
+        </div>
+      </div>
+      <div className="onboarding-section">
         <div className="onboarding-section-label">{t.onboardingDoneSectionModels}</div>
         <div className="onboarding-card onboarding-card--rows">
           <div className="onboarding-summary-list">
@@ -64,10 +73,16 @@ export function DoneStep({ t, settings }: DoneStepProps) {
               />
             ))}
             <SummaryRow
-              label={t.onboardingDoneWebSearch}
+              label={`${t.webSearchChatSection} · ${t.onboardingDoneWebSearch}`}
+              value={webSearchConfigured(settings) && settings.chatTools.nativeTools?.webSearch !== false
+                ? t.enabled
+                : t.onboardingDoneDisabled}
+            />
+            <SummaryRow
+              label={`${t.webSearchLensSection} · ${t.onboardingDoneWebSearch}`}
               value={webSearchConfigured(settings) && settings.lens.webSearch?.enabled
-                ? t.onboardingDoneConfigured
-                : t.onboardingDoneNotConfigured}
+                ? t.enabled
+                : t.onboardingDoneDisabled}
             />
           </div>
         </div>

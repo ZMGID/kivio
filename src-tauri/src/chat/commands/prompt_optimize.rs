@@ -180,11 +180,18 @@ async fn optimize_prompt_with_model(
             "No usable model. Configure one in Mixer or Models first.",
         ));
     };
-    if !provider.has_credentials() || model.trim().is_empty() {
+    if !provider.authentication_ready() {
         return Err(localize(
             &language,
-            "当前模型没有 API Key，请先在设置里填写",
-            "This model has no API key. Add one in Settings.",
+            "当前模型需要账号登录，请先在设置里登录",
+            "Please log in to this model's provider in Settings.",
+        ));
+    }
+    if model.trim().is_empty() {
+        return Err(localize(
+            &language,
+            "请先选择模型",
+            "Please select a model first.",
         ));
     }
     if model_can_generate_images_directly(&provider, &model) {

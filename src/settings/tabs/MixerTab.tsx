@@ -1,3 +1,6 @@
+import { useEffect, useState } from 'react'
+import { api, type SubAgentModelSelection } from '../../api/tauri'
+import { Select } from '../public/controls'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
 import { ModelPairSelect } from '../ModelPairSelect'
@@ -19,7 +22,7 @@ interface MixerTabProps {
     providerId: string,
     model: string,
   ) => void
-  onUpdateChatTools: (updates: Partial<ChatToolsConfig>) => void
+  onUpdateChatTools: (updates: Partial<ChatToolsConfig> | ((current: ChatToolsConfig) => Partial<ChatToolsConfig>)) => void
   onUpdateChat: (updates: Partial<NonNullable<SettingsData['chat']>>) => void
 }
 
@@ -167,20 +170,29 @@ export function MixerTab({
       </SettingsGroup>
 
       <SettingsGroup title={t.mixerSubAgentSection}>
-        <SettingRow
-          label={t.defaultSubAgentModel}
-          description={t.defaultSubAgentModelHint}
-        >
-          <ModelPairSelect
-            providerId={chatTools.subAgentProviderId || ''}
-            model={chatTools.subAgentModel || ''}
-            providers={settings.providers}
-            inheritLabel={t.mixerFollowChatModel}
-            onChange={(providerId, model) => {
-              onUpdateChatTools({ subAgentProviderId: providerId, subAgentModel: model })
-            }}
-          />
-        </SettingRow>
+        <p className="kv-row-desc mb-3">
+          {lang === 'zh'
+            ? '为子代理角色一起选择模型与推理强度。未单独配置的角色跟随 TASK；TASK 跟随主对话。已有子代理继续使用启动时的配置。'
+            : 'Choose a model and reasoning effort for each role. Unassigned roles follow TASK, then the parent chat. Existing agents keep their launch configuration.'}
+        </p>
+        {([
+          ['task', 'TASK', lang === 'zh' ? '通用、编码代理' : 'General-purpose and coding agents'],
+          ['smol', 'SMOL', lang === 'zh' ? '研究代理 · 只读搜索与调查' : 'Research agents · read-only investigation'],
+          ['slow', 'SLOW', lang === 'zh' ? '审查代理 · 分析正确性与风险' : 'Review agents · correctness and risk'],
+        ] as const).map(([role, label, description]) => (
+          <SettingRow key={role} label={label} description={description}>
+            <SubAgentRoleSelect
+              value={chatTools.subAgentModels?.[role] ?? { providerId: '', model: '' }}
+              providers={settings.providers}
+              lang={lang}
+              role={label}
+              inheritLabel={role === 'task' ? t.mixerFollowChatModel : (lang === 'zh' ? '跟随 TASK' : 'Follow TASK')}
+              onChange={(selection) => onUpdateChatTools((current) => ({
+                subAgentModels: { ...current.subAgentModels, [role]: selection },
+              }))}
+            />
+          </SettingRow>
+        ))}
       </SettingsGroup>
 
       <SettingsGroup title={t.mixerAdvisorSection}>
@@ -219,5 +231,63 @@ export function MixerTab({
         )}
       </SettingsGroup>
     </>
+  )
+}
+
+/** Both selectors edit one assignment; changing models clears the old model's effort. */
+function SubAgentRoleSelect({ value, providers, lang, role, inheritLabel, onChange }: {
+  value: SubAgentModelSelection
+  providers: SettingsData['providers']
+  lang: Lang
+  role: string
+  inheritLabel: string
+  onChange: (value: SubAgentModelSelection) => void
+}) {
+  const [capability, setCapability] = useState<{ key: string; levels: string[] } | null>(null)
+  const key = JSON.stringify([value.providerId, value.model, providers])
+  useEffect(() => {
+    let active = true
+    if (value.providerId && value.model) {
+      void api.reasoningEffortsForModel(value.model, value.providerId).then((levels) => {
+        if (active) setCapability({ key, levels })
+      }).catch(() => {
+        if (active) setCapability(null)
+      })
+    }
+    return () => { active = false }
+  }, [key, value.providerId, value.model])
+  const levels = capability?.key === key ? capability.levels : null
+  const selected = Boolean(value.providerId && value.model)
+  const options = [
+    { value: '', label: lang === 'zh' ? '模型设置' : 'Model setting' },
+    ...(levels?.length ? [
+      { value: 'off', label: 'Off' },
+      ...levels.map((level) => ({ value: level, label: level })),
+    ] : []),
+  ]
+  if (value.thinkingLevel && !options.some((option) => option.value === value.thinkingLevel)) {
+    options.push({ value: value.thinkingLevel, label: value.thinkingLevel })
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <ModelPairSelect
+        providerId={value.providerId}
+        model={value.model}
+        providers={providers}
+        inheritLabel={inheritLabel}
+        onChange={(providerId, model) => onChange({ providerId, model, thinkingLevel: null })}
+      />
+      {selected && (
+        <Select
+          className="w-32"
+          ariaLabel={`${role} ${lang === 'zh' ? '推理强度' : 'reasoning effort'}`}
+          value={value.thinkingLevel ?? ''}
+          options={options}
+          disabled={!levels?.length}
+          title={levels?.length === 0 ? (lang === 'zh' ? '此模型不支持调整推理强度' : 'This model has no adjustable reasoning effort') : undefined}
+          onChange={(thinkingLevel) => onChange({ ...value, thinkingLevel: thinkingLevel || null })}
+        />
+      )}
+    </div>
   )
 }

@@ -10,7 +10,10 @@ const google = { providerId: 'google', model: 'models/gemini-3.1-flash-lite' }
 const deepseek = { providerId: 'ds', model: 'deepseek-v4-flash' }
 const lens = { providerId: 'google', model: 'gemini-flash' }
 const translator = { providerId: 'google', model: 'gemini-flash-lite' }
-const providers = [{ id: 'google' }, { id: 'ds' }]
+const providers = [
+  { id: 'google', enabledModels: [google.model, lens.model, translator.model] },
+  { id: 'ds', enabledModels: [deepseek.model] },
+]
 
 describe('resolvePreferredChatModel', () => {
   it('优先用聊天界面上次选的模型，而不是 settings 里的 defaultModels.chat', () => {
@@ -26,7 +29,7 @@ describe('resolvePreferredChatModel', () => {
 
   it('上次选择的供应商已删则回落到已写入的 last-used', () => {
     expect(resolvePreferredChatModel({
-      providers: [{ id: 'google' }],
+      providers: [providers[0]],
       last: deepseek,
       storedChat: google,
       legacyChat: { providerId: '', model: '' },
@@ -44,6 +47,33 @@ describe('resolvePreferredChatModel', () => {
       lens,
       translator,
     })).toEqual(lens)
+  })
+
+  it.each([
+    { id: 'ds', enabledModels: [deepseek.model] },
+    { id: 'ds', enabledModels: ['gpt-4o'], enabled: false },
+    { id: 'ds', enabledModels: [] },
+  ])('ignores stale or disabled last-used models before the configured Lens model ($enabledModels)', provider => {
+    expect(resolvePreferredChatModel({
+      providers: [providers[0], provider],
+      last: { providerId: 'ds', model: 'gpt-4o' },
+      storedChat: { providerId: 'ds', model: 'gpt-4o' },
+      legacyChat: { providerId: 'ds', model: 'gpt-4o' },
+      lens,
+      translator,
+    })).toEqual(lens)
+  })
+
+  it('uses an enabled model when every saved binding is stale, and stays empty without models', () => {
+    const input = {
+      last: null,
+      storedChat: { providerId: '', model: '' },
+      legacyChat: { providerId: '', model: '' },
+      lens: { providerId: '', model: '' },
+      translator: { providerId: 'ds', model: 'gpt-4o' },
+    }
+    expect(resolvePreferredChatModel({ ...input, providers: [providers[1]] })).toEqual(deepseek)
+    expect(resolvePreferredChatModel({ ...input, providers: [] })).toEqual({ providerId: '', model: '' })
   })
 })
 

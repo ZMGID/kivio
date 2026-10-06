@@ -2932,7 +2932,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             <OnboardingShell
               onComplete={handleOnboardingExit}
               onSkip={handleOnboardingExit}
-              onSettingsChange={onSettingsChange}
+              onSettingsChange={handleSettingsChange}
             />
           </div>
         ) : chatView === 'settings' ? (

@@ -170,7 +170,7 @@ fn status_summary(settings: &Settings, cwd: Option<&Path>) -> Value {
         "skillRuntime":settings.chat_tools.native_tools.skill_runtime,"skillAutoMatch":settings.chat_tools.skill_auto_match,
         "skillScanPaths":settings.chat_tools.skill_scan_paths,"disabledSkillIds":settings.chat_tools.disabled_skill_ids,
         "configurationTools":{"inspect":settings.chat_tools.native_tools.read_file,"configure":settings.chat_tools.native_tools.run_command},
-        "providers":settings.providers.iter().map(|p|json!({"id":p.id,"name":p.name,"apiFormat":p.api_format,"hasCredentials":p.has_credentials()})).collect::<Vec<_>>(),
+        "providers":settings.providers.iter().map(|p|json!({"id":p.id,"name":p.name,"apiFormat":p.api_format,"hasCredentials":p.authentication_ready()})).collect::<Vec<_>>(),
         "defaultModels":settings.default_models,
         "note":"Application defaults, not a claim about this conversation's selected model/runtime. Changes to tool catalogs take effect next turn."})
 }
