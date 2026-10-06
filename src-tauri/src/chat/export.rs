@@ -204,6 +204,29 @@ pub(crate) fn chat_export_conversation_markdown(
         .map_err(|err| format!("write conversation export: {err}"))
 }
 
+#[tauri::command]
+pub(crate) async fn chat_export_set_backup(
+    app: AppHandle,
+    set_id: String,
+    path: String,
+) -> Result<(), String> {
+    super::repository::repository(&app)
+        .export_set_backup(&app, set_id, path.into())
+        .await
+        .map_err(super::repository::repository_error)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_import_set_backup(
+    app: AppHandle,
+    path: String,
+) -> Result<super::ChatSet, String> {
+    super::repository::repository(&app)
+        .import_set_backup(&app, path.into())
+        .await
+        .map_err(super::repository::repository_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

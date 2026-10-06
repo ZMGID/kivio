@@ -11,6 +11,13 @@ fn conversation_index_cache() -> &'static Mutex<HashMap<PathBuf, ConversationInd
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub(super) fn forget_index_cache(dir: &Path) {
+    conversation_index_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(dir);
+}
+
 fn remember_conversation_index_cache(dir: PathBuf, index: ConversationIndex, needs_persist: bool) {
     conversation_index_cache()
         .lock()

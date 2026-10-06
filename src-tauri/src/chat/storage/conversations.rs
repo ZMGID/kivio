@@ -409,6 +409,7 @@ pub fn set_conversation_pins(
     group_id: &str,
     pins: Vec<ConversationPin>,
 ) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
     let mut all = load_conversation_pins(app)?;
     if pins.is_empty() {
         all.remove(group_id);

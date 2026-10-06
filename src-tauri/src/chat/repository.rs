@@ -696,6 +696,36 @@ impl ConversationRepository {
         Ok(target)
     }
 
+    pub async fn export_set_backup(
+        &self,
+        app: &AppHandle,
+        set_id: String,
+        path: PathBuf,
+    ) -> RepositoryResult<()> {
+        let _barrier = self.barrier.write().await;
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        Self::spawn_storage(
+            move || super::storage::set_backup::export_in(&root, &set_id, &path),
+            "export set backup",
+        )
+        .await
+    }
+
+    pub async fn import_set_backup(
+        &self,
+        app: &AppHandle,
+        path: PathBuf,
+    ) -> RepositoryResult<super::ChatSet> {
+        let _barrier = self.barrier.write().await;
+        let _index = self.index_lock.lock().await;
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        Self::spawn_storage(
+            move || super::storage::set_backup::import_in(&root, &path),
+            "import set backup",
+        )
+        .await
+    }
+
     pub async fn create(
         &self,
         app: &AppHandle,

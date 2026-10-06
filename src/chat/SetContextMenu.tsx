@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Pencil, Trash2 } from 'lucide-react'
+import { Download, Pencil, Trash2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -8,12 +8,13 @@ import { useClampedMenuPosition } from './useClampedMenuPosition'
 
 interface SetContextMenuProps {
   anchor: ConversationMenuAnchor
+  onExport: () => void
   onRename: () => void
   onDelete: () => void
   onClose: () => void
 }
 
-export function SetContextMenu({ anchor, onRename, onDelete, onClose: onCloseProp }: SetContextMenuProps) {
+export function SetContextMenu({ anchor, onExport, onRename, onDelete, onClose: onCloseProp }: SetContextMenuProps) {
   const t = useT()
   const menuRef = useRef<HTMLDivElement>(null)
   const pos = useClampedMenuPosition(menuRef, anchor)
@@ -56,6 +57,18 @@ export function SetContextMenu({ anchor, onRename, onDelete, onClose: onClosePro
       >
         <Pencil strokeWidth={1.75} />
         {t.chatRenameSetSettings}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="kv-menu-item"
+        onClick={() => {
+          onExport()
+          onClose()
+        }}
+      >
+        <Download strokeWidth={1.75} />
+        {t.chatExportSetBackup}
       </button>
       <div className="my-1 border-t border-neutral-200/80" />
       <button

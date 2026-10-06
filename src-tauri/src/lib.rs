@@ -611,6 +611,8 @@ pub fn run() {
             chat::commands::catalog::chat_get_conversation_page,
             chat::commands::catalog::chat_get_conversation_revision,
             chat::export::chat_export_conversation_markdown,
+            chat::export::chat_export_set_backup,
+            chat::export::chat_import_set_backup,
             chat::commands::catalog::chat_create_conversation,
             chat::commands::catalog::chat_import_external_conversation,
             chat::commands::catalog::chat_create_builder_conversation,

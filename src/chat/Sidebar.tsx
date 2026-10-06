@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { save } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   ChevronRight,
   Folder,
@@ -11,6 +11,7 @@ import {
   Search,
   Settings,
   SquarePen,
+  Upload,
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
@@ -739,6 +740,13 @@ export const Sidebar = memo(function Sidebar({
   const [dialogSet, setDialogSet] = useState<ChatSet | null | undefined>(undefined)
   const [setDialogSaving, setSetDialogSaving] = useState(false)
   const [setDialogError, setSetDialogError] = useState('')
+  const setBackupLive = useRef(true)
+  useEffect(() => {
+    setBackupLive.current = true
+    return () => { setBackupLive.current = false }
+  }, [])
+  const setBackupInFlight = useRef(false)
+  const [setBackupBusy, setSetBackupBusy] = useState(false)
   const sectionMenuButtonRef = useRef<HTMLButtonElement>(null)
   const [userProfile, setUserProfile] = useState(() => resolveChatUserProfile())
   useChatPerfRenderProbe('Sidebar', {
@@ -1047,6 +1055,34 @@ export const Sidebar = memo(function Sidebar({
   const openSetMenu = (setId: string, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect()
     setSetMenuState({ setId, anchor: { left: rect.right - 180, top: rect.bottom + 4 } })
+  }
+
+  const handleSetBackup = async (set?: ChatSet) => {
+    if (setBackupInFlight.current) return
+    setBackupInFlight.current = true
+    setSetBackupBusy(true)
+    try {
+      if (set) {
+        const path = await save({ defaultPath: conversationMarkdownFilename(set.name).replace(/\.md$/, '.kivio-set.json'), filters: [{ name: 'Kivio set backup', extensions: ['json'] }] })
+        if (!path || !setBackupLive.current) return
+        await chatApi.exportSetBackup(set.id, path)
+        if (setBackupLive.current) void alertDialog(t.chatSetBackupDone)
+      } else {
+        const path = await open({ multiple: false, directory: false, filters: [{ name: 'Kivio set backup', extensions: ['json'] }] })
+        if (!path || typeof path !== 'string' || !setBackupLive.current) return
+        const imported = await chatApi.importSetBackup(path)
+        if (!setBackupLive.current) return
+        await loadSidebarData({ silent: true })
+        if (!setBackupLive.current) return
+        onSelectSet(imported)
+        void alertDialog(t.chatSetImportDone)
+      }
+    } catch (error) {
+      if (setBackupLive.current) void alertDialog(`${set ? t.chatExportFailed : t.chatSetImportFailed}${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setBackupInFlight.current = false
+      if (setBackupLive.current) setSetBackupBusy(false)
+    }
   }
 
   const handleSaveSet = async (
@@ -1573,6 +1609,14 @@ export const Sidebar = memo(function Sidebar({
                     </IconButton>
                     <IconButton
                       size="sm"
+                      onClick={() => void handleSetBackup()}
+                      disabled={setBackupBusy}
+                      label={t.chatImportSetBackup}
+                    >
+                      <Upload size={15} />
+                    </IconButton>
+                    <IconButton
+                      size="sm"
                       onClick={openCreateSetDialog}
                       label={t.chatNewSet}
                     >
@@ -1941,6 +1985,8 @@ export const Sidebar = memo(function Sidebar({
                   hasConversations={clearableConversationCount > 0}
                   onNewConversation={onNewConversation}
                   onOpenSearch={() => onSearchOpenChange(true)}
+                  onImportSetBackup={() => void handleSetBackup()}
+                  onExportSetBackup={selectedSet ? () => void handleSetBackup(selectedSet) : undefined}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}
@@ -2033,6 +2079,7 @@ export const Sidebar = memo(function Sidebar({
       {setMenuState && menuSet && (
         <SetContextMenu
           anchor={setMenuState.anchor}
+          onExport={() => void handleSetBackup(menuSet)}
           onRename={() => {
             setDialogSet(menuSet)
             setSetDialogError('')

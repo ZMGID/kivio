@@ -106,6 +106,7 @@ pub fn reorder_projects(app: &AppHandle, ids: &[String]) -> Result<Vec<ChatProje
 }
 
 pub fn reorder_sets(app: &AppHandle, ids: &[String]) -> Result<Vec<ChatSet>, String> {
+    let _catalog = catalog_mutation_lock();
     let mut index = load_set_index(app)?;
     index.sets = reorder_by_ids(index.sets, ids, |s| s.id.as_str());
     save_set_index(app, &index)?;

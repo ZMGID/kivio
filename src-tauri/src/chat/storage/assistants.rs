@@ -242,6 +242,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 /// 幂等性由调用方通过 `settings.builtin_assistants_seeded_v1` 标记保证；调用方必须在本函数
 /// 成功后立即持久化该标记，否则下次启动会再次覆盖（连用户届时新建的专家一起抹掉）。
 pub fn seed_builtin_assistants_v1(app: &AppHandle, now: i64) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
     let index = ChatAssistantIndex {
         assistants: builtin_assistant_definitions(now),
     };
@@ -275,6 +276,7 @@ pub(crate) fn merge_builtin_definitions(
 /// 补齐新增内置，**保留用户自建/非内置条目**。与 v1 的整表覆盖不同，可安全对已 seed v1 的
 /// 老用户重跑一次。幂等由调用方通过 `settings.builtin_assistants_seeded_v2` 标记保证。
 pub fn merge_builtin_assistants_v2(app: &AppHandle, now: i64) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
     let existing = load_assistant_index(app)?.assistants;
     let merged = merge_builtin_definitions(existing, builtin_assistant_definitions(now));
     save_assistant_index(app, &ChatAssistantIndex { assistants: merged })
@@ -316,6 +318,7 @@ pub fn create_assistant(
     app: &AppHandle,
     mut assistant: ChatAssistant,
 ) -> Result<ChatAssistant, String> {
+    let _catalog = catalog_mutation_lock();
     validate_assistant_id(&assistant.id)?;
     normalize_assistant(&mut assistant)?;
     let mut index = load_assistant_index(app)?;
@@ -338,6 +341,7 @@ pub fn update_assistant(
     app: &AppHandle,
     assistant: ChatAssistant,
 ) -> Result<ChatAssistant, String> {
+    let _catalog = catalog_mutation_lock();
     validate_assistant_id(&assistant.id)?;
     let mut next = assistant;
     normalize_assistant(&mut next)?;
@@ -377,6 +381,7 @@ pub fn duplicate_assistant(app: &AppHandle, assistant_id: &str) -> Result<ChatAs
 }
 
 pub fn archive_assistant(app: &AppHandle, assistant_id: &str) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
     validate_assistant_id(assistant_id)?;
     let mut index = load_assistant_index(app)?;
     let Some(pos) = index

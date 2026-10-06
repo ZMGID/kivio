@@ -69,6 +69,7 @@ pub fn live_set_system_prompt(app: &AppHandle, conversation: &Conversation) -> O
 }
 
 pub fn create_set(app: &AppHandle, mut set: ChatSet) -> Result<ChatSet, String> {
+    let _catalog = catalog_mutation_lock();
     validate_set_id(&set.id)?;
     set.name = normalize_set_name(&set.name)?;
     let mut index = load_set_index(app)?;
@@ -92,6 +93,7 @@ pub fn update_set(
     color: Option<String>,
     color_set: bool,
 ) -> Result<ChatSet, String> {
+    let _catalog = catalog_mutation_lock();
     validate_set_id(set_id)?;
     let mut index = load_set_index(app)?;
     let pos = index
@@ -131,13 +133,16 @@ pub fn update_set(
 }
 
 pub async fn delete_set(app: &AppHandle, set_id: &str) -> Result<(), String> {
-    validate_set_id(set_id)?;
-    let mut index = load_set_index(app)?;
-    let Some(pos) = index.sets.iter().position(|set| set.id == set_id) else {
-        return Err("集不存在".to_string());
-    };
-    index.sets.remove(pos);
-    save_set_index(app, &index)?;
+    {
+        let _catalog = catalog_mutation_lock();
+        validate_set_id(set_id)?;
+        let mut index = load_set_index(app)?;
+        let Some(pos) = index.sets.iter().position(|set| set.id == set_id) else {
+            return Err("集不存在".to_string());
+        };
+        index.sets.remove(pos);
+        save_set_index(app, &index)?;
+    }
     clear_set_from_conversations(app, set_id).await
 }
 

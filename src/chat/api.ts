@@ -1249,6 +1249,16 @@ export const chatApi = {
     return invoke<number | null>('chat_get_conversation_revision', { conversationId })
   },
 
+  async exportSetBackup(setId: string, path: string): Promise<void> {
+    if (!isTauriRuntime()) throw new Error('Set export requires the desktop app')
+    await invoke<void>('chat_export_set_backup', { setId, path })
+  },
+
+  async importSetBackup(path: string): Promise<ChatSet> {
+    if (!isTauriRuntime()) throw new Error('Set import requires the desktop app')
+    return invoke<ChatSet>('chat_import_set_backup', { path })
+  },
+
   async exportConversationMarkdown(
     conversationId: string,
     path: string,
