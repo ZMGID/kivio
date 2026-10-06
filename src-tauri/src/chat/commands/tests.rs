@@ -28,7 +28,7 @@ use super::messages::{
 };
 use super::mutations::{
     apply_regenerate_truncation, apply_reply_with_model_result, build_fork_messages,
-    build_fork_messages_before_anchor, prepare_reply_with_model,
+    build_fork_messages_before_anchor, prepare_reply_with_model, remove_assistant_answer,
 };
 use super::reply_runtime::resolve_reply_arms;
 use super::sanitization::sanitize_image_payloads_for_model;
@@ -3330,31 +3330,35 @@ fn group_excludes_only_non_selected_assistants() {
 
 #[test]
 fn stale_group_selection_falls_back_to_first_remaining() {
-    // D5/AC4：删除显式选中条后，清掉指向已删消息的 group_selections，选中条回退到组内
-    // 顺序第一条（这里模拟 chat_delete_message / chat_regenerate_message 的清理后状态）。
+    // 删掉显式选中的那一条：只少这一条，组选中记录被清掉，续聊回退到剩余的第一条。
     let messages = vec![
         test_chat_message("msg_user", "user", "q", 1),
         grouped_assistant("msg_a1", "answer one", "grp_1", 2),
         grouped_assistant("msg_a2", "answer two", "grp_1", 3),
+        grouped_assistant("msg_a3", "answer three", "grp_1", 4),
+        test_chat_message("msg_user_2", "user", "next question", 5),
+        test_chat_message("msg_later", "assistant", "later answer", 6),
     ];
     let mut conversation = test_conversation_with_messages(messages);
-    // 用户显式选了第二条。
     conversation
         .group_selections
         .insert("grp_1".to_string(), "msg_a2".to_string());
-
-    // 模拟删除被选中的 msg_a2：移除消息 + 删除命令对 group_selections 的清理。
-    conversation.messages.retain(|m| m.id != "msg_a2");
-    if conversation
+    conversation
         .group_selections
-        .get("grp_1")
-        .map(String::as_str)
-        == Some("msg_a2")
-    {
-        conversation.group_selections.remove("grp_1");
-    }
+        .insert("grp_other".to_string(), "msg_later".to_string());
 
-    // 残余的 msg_a1 必须仍进上下文（回退到组内第一条），而非被整组排除。
+    remove_assistant_answer(&mut conversation, "msg_a2").unwrap();
+
+    let ids: Vec<&str> = conversation.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["msg_user", "msg_a1", "msg_a3", "msg_user_2", "msg_later"]
+    );
+    assert!(conversation.group_selections.get("grp_1").is_none());
+    assert_eq!(
+        conversation.group_selections.get("grp_other").map(String::as_str),
+        Some("msg_later")
+    );
     assert!(!group_answer_excluded_from_context(
         &conversation,
         &conversation.messages[1]
@@ -3363,6 +3367,42 @@ fn stale_group_selection_falls_back_to_first_remaining() {
         build_chat_api_messages(None, "system", &conversation, Some(0), None, &[]).expect("build");
     let serialized = serde_json::to_string(&built).unwrap();
     assert!(serialized.contains("answer one"));
+    assert!(!serialized.contains("answer two"));
+    assert!(!serialized.contains("answer three"));
+    assert!(serialized.contains("next question"));
+    assert!(serialized.contains("later answer"));
+}
+
+#[test]
+fn remove_assistant_answer_keeps_selection_when_another_sibling_is_deleted() {
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("msg_user", "user", "q", 1),
+        grouped_assistant("msg_a1", "answer one", "grp_1", 2),
+        grouped_assistant("msg_a2", "answer two", "grp_1", 3),
+    ]);
+    conversation
+        .group_selections
+        .insert("grp_1".to_string(), "msg_a2".to_string());
+
+    remove_assistant_answer(&mut conversation, "msg_a1").unwrap();
+
+    assert_eq!(
+        conversation
+            .messages
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["msg_user", "msg_a2"]
+    );
+    assert_eq!(
+        conversation.group_selections.get("grp_1").map(String::as_str),
+        Some("msg_a2")
+    );
+    assert_eq!(
+        remove_assistant_answer(&mut conversation, "msg_user").unwrap_err(),
+        "仅支持删除助手回复"
+    );
+    assert_eq!(conversation.messages.len(), 2);
 }
 
 // ===== 对话分支（方案 B）=====

@@ -321,4 +321,58 @@ describe('MessageGroup — tabs 模式（默认）', () => {
     expect(screen.getByText('answer one')).toBeInTheDocument()
     expect(screen.getByText('answer two')).toBeInTheDocument()
   })
+
+  it('切换和并排都能只删当前这一条，流式列不提供删除', async () => {
+    const onDelete = vi.fn(async () => {})
+    const messages = [
+      assistant('a', 'answer a', 'dev-provider', 'model-a'),
+      assistant('b', 'answer b', 'dev-provider', 'model-b'),
+      assistant('c', 'answer c', 'dev-provider', 'model-c'),
+    ]
+    const view = render(
+      <MessageGroup
+        conversationId="c1"
+        groupId="g1"
+        messages={messages}
+        selectedMessageId="b"
+        onSelectColumn={() => {}}
+        onDeleteMessage={onDelete}
+      />,
+    )
+    expect(screen.getByText('answer b')).toBeInTheDocument()
+    expect(screen.queryByText('answer a')).not.toBeInTheDocument()
+    for (const model of ['model-a', 'model-b', 'model-c']) {
+      expect(screen.getByRole('button', { name: `删除 ${model}` })).toBeInTheDocument()
+    }
+    fireEvent.click(screen.getByRole('button', { name: '删除 model-b' }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+    expect(onDelete).toHaveBeenCalledWith('b')
+    expect(screen.getByText('answer b')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTitle('并排显示（多列）'))
+    expect(screen.getByText('answer a')).toBeInTheDocument()
+    expect(screen.getByText('answer c')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '删除 model-c' }))
+    expect(onDelete).toHaveBeenCalledTimes(2)
+    expect(onDelete).toHaveBeenLastCalledWith('c')
+
+    view.unmount()
+    act(() => {
+      beginGroup('c1', 'g1', [
+        { providerId: 'dev-provider', model: 'model-a' },
+        { providerId: 'dev-provider', model: 'model-b' },
+      ])
+      ensureGroupColumn('c1', 'live-a', 'dev-provider', 'model-a')
+      flushGroups()
+    })
+    render(
+      <MessageGroup
+        conversationId="c1"
+        groupId="g1"
+        messages={[]}
+        onDeleteMessage={onDelete}
+      />,
+    )
+    expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument()
+  })
 })

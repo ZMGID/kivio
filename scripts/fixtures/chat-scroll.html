@@ -16,7 +16,30 @@ const messages = createChatPerformanceFixture('F2').messages.map(message => {
     Array.from({length: 50}, (_, index) => `  const result${index} = input.trim().toUpperCase()`).join('\n'),
   )};
 });
+const paged = new URLSearchParams(location.search).has('history');
+function HistoryFixture() {
+  const [start, setStart] = React.useState(Math.max(0, messages.length - 10));
+  const [error, setError] = React.useState(null);
+  window.chatHistoryPaging ??= { requests: 0, commits: 0, failNext: false };
+  window.chatHistoryPaging.start = start;
+  const load = async () => {
+    window.chatHistoryPaging.requests++;
+    setError(null);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    if (window.chatHistoryPaging.failNext) {
+      window.chatHistoryPaging.failNext = false;
+      setError('加载更早消息失败，请重试。');
+      return;
+    }
+    window.chatHistoryPaging.commits++;
+    setStart(value => Math.max(0, value - 10));
+  };
+  return React.createElement(MessageList, {
+    conversationId: 'history-scroll-regression', messages: messages.slice(start),
+    historyStart: start, onLoadOlder: load, historyLoadError: error,
+  });
+}
 createRoot(document.getElementById('root')).render(React.createElement('div', {
   className: 'chat-main-pane', style: {height: '100vh', display: 'flex', flexDirection: 'column'},
-}, React.createElement(MessageList, {conversationId: 'scroll-regression', messages})));
+}, paged ? React.createElement(HistoryFixture) : React.createElement(MessageList, {conversationId: 'scroll-regression', messages})));
 </script></body></html>

@@ -62,6 +62,18 @@ describe('ComposerEditor', () => {
     expect(editor.current!.value).toBe('请用/review 检查')
   })
 
+  it('keeps underscores as plain text and does not swallow Shift+Minus', () => {
+    const sample = '___ _name_ file_name __value__'
+    const { editor, textbox } = setup()
+    fireEvent.paste(textbox, { clipboardData: { getData: () => sample, files: [] } })
+    expect(editor.current!.value).toBe(sample)
+    expect(textbox.textContent).toContain(sample)
+    expect(textbox.querySelector('em, strong')).toBeNull()
+    const event = new KeyboardEvent('keydown', { key: '_', code: 'Minus', shiftKey: true, bubbles: true, cancelable: true })
+    textbox.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
   it('pastes plain text, preserves newlines and ignores pasted HTML', () => {
     const { editor, textbox } = setup()
     fireEvent.paste(textbox, { clipboardData: { getData: (type: string) => type === 'text/plain' ? '第一行\n/review 任务' : '<b>bad</b>', files: [] } })

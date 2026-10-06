@@ -10,7 +10,7 @@ import { createMathPlugin } from '@streamdown/math'
 import 'katex/dist/katex.min.css'
 import { mermaid } from '@streamdown/mermaid'
 import remarkBreaks from 'remark-breaks'
-import { normalizeMarkdownForRender, preserveLocalMarkdownLinks } from './markdownUtils'
+import { normalizeMarkdownForRender, preserveLocalMarkdownLinks, remarkLiteralUnderscore } from './markdownUtils'
 import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import type { ChatToolArtifact } from './types'
 import { artifactDataUrl, isImageArtifact } from './artifacts'
@@ -1399,6 +1399,8 @@ const streamdownRemarkPlugins: PluggableList = [
   // Parse citation candidates once. Missing sources remain literal text in the
   // context consumer; a late source can become a chip inside a cached block.
   remarkCitations(new Set(Array.from({ length: 1000 }, (_, n) => n))),
+  // After GFM, so underscore emphasis/rules are restored from the parsed source.
+  remarkLiteralUnderscore,
 ]
 
 // Streamdown 2.5 can leave a block stale after a non-prefix replacement. Scope
@@ -1510,6 +1512,9 @@ const MarkdownDocument = memo(function MarkdownDocument({
       // The outer shell owns dir="auto". Streamdown's dir wrappers use
       // display:contents, which breaks the block spacing selectors.
       parseIncompleteMarkdown={streaming}
+      // remend 的 italic 会给未闭合的 `_` 补一个结尾下划线。下划线不再表示强调，
+      // 补出来的字符会直接显示；星号加粗仍由 bold 补全。
+      remend={streaming ? { italic: false } : undefined}
       normalizeHtmlIndentation
       plugins={streamdownPlugins}
       remarkPlugins={remarkPlugins}

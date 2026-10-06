@@ -37,6 +37,32 @@ fn find_message_index(conversation: &Conversation, message_id: &str) -> Result<u
         .ok_or_else(|| "消息不存在".to_string())
 }
 
+/// 只拿掉这一条助手回答。同组其它模型、用户提问和之后的轮次都留着。
+/// 组选中若正指向被删的那条，清掉该组记录，续聊回退到剩余回答里的第一条；
+/// 选中的是别的回答、或别的组，则不动。
+pub(super) fn remove_assistant_answer(
+    conversation: &mut Conversation,
+    message_id: &str,
+) -> Result<(), String> {
+    let idx = find_message_index(conversation, message_id)?;
+    if conversation.messages[idx].role != "assistant" {
+        return Err("仅支持删除助手回复".to_string());
+    }
+    mark_summary_stale_if_needed(conversation, idx);
+    let removed = conversation.messages.remove(idx);
+    if let Some(group_id) = removed.group_id.as_deref() {
+        if conversation
+            .group_selections
+            .get(group_id)
+            .map(String::as_str)
+            == Some(removed.id.as_str())
+        {
+            conversation.group_selections.remove(group_id);
+        }
+    }
+    Ok(())
+}
+
 /// Validated turn for 「换模型回答」: add another model's answer as a sibling
 /// column on the last user question, without replacing the existing reply.
 #[derive(Debug)]
@@ -547,35 +573,12 @@ pub(crate) async fn chat_delete_message(
     let mut attempt = 0;
     let (mut conversation, context_state) = loop {
         let mut candidate = snapshot.clone();
-        let idx = find_message_index(&candidate, &message_id)?;
-        if candidate.messages[idx].role != "assistant" {
-            return Err("仅支持删除助手回复".to_string());
-        }
-        mark_summary_stale_if_needed(&mut candidate, idx);
-        let removed = candidate.messages.remove(idx);
-        if let Some(group_id) = removed.group_id.as_deref() {
-            if candidate.group_selections.get(group_id).map(String::as_str)
-                == Some(removed.id.as_str())
-            {
-                candidate.group_selections.remove(group_id);
-            }
-        }
+        remove_assistant_answer(&mut candidate, &message_id)?;
+        super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
-                let latest_idx = find_message_index(latest, &message_id)?;
-                if latest.messages[latest_idx].role != "assistant" {
-                    return Err("仅支持删除助手回复".to_string());
-                }
-                mark_summary_stale_if_needed(latest, latest_idx);
-                let removed = latest.messages.remove(latest_idx);
-                if let Some(group_id) = removed.group_id.as_deref() {
-                    if latest.group_selections.get(group_id).map(String::as_str)
-                        == Some(removed.id.as_str())
-                    {
-                        latest.group_selections.remove(group_id);
-                    }
-                }
+                remove_assistant_answer(latest, &message_id)?;
                 latest.context_state = context_state.clone();
                 Ok(())
             })

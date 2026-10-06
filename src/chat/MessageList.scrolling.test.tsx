@@ -96,7 +96,8 @@ it('keeps the visible row anchored when an older page is prepended', async () =>
   await act(async () => { await Promise.resolve() })
   const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
   const originalStart = list.measurementsCache.find((item) => String(list.options.getItemKey(item.index)).endsWith(':recent-0'))!.start
-  fireEvent.click([...container.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  fireEvent.scroll(viewport)
   expect(load).toHaveBeenCalledOnce()
   rerender(<MessageList conversationId="page-anchor" messages={[...older, ...recent]}
     historyStart={0} onLoadOlder={load} />)
@@ -139,12 +140,17 @@ it('shows a failed history page request and lets the reader retry', async () => 
     historyStart: 2,
     onLoadOlder: load,
   }
-  const { rerender } = render(<MessageList {...props} />)
-  fireEvent.click([...document.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
+  const { container, rerender } = render(<MessageList {...props} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  fireEvent.scroll(viewport)
   expect(load).toHaveBeenCalledOnce()
   rerender(<MessageList {...props} historyLoadError="加载更早消息失败，请重试。" />)
   expect(document.querySelector('[role="alert"]')).toHaveTextContent('加载更早消息失败，请重试。')
-  fireEvent.click([...document.querySelectorAll('button')].find((button) => button.textContent === '加载更早消息')!)
+  await act(async () => { await Promise.resolve() })
+  // At scrollTop=0 another upward wheel must retry even without a scroll event.
+  fireEvent.wheel(viewport, { deltaY: -100 })
   expect(load).toHaveBeenCalledTimes(2)
 })
 
@@ -248,4 +254,43 @@ it('commits row positions in the same delivery as scroll compensation above the 
     expect(viewport.scrollTop).toBe(580)
     expect(row.style.transform).toBe(`translateY(${start - 20}px)`)
   })
+})
+
+it.each(['auto-prefetch', undefined])('prefetches within two viewports, coalesces pending reads, and stops at the oldest page (%s)', async (conversationId) => {
+  let complete!: () => void
+  const load = vi.fn(() => new Promise<void>((resolve) => { complete = resolve }))
+  const props = {
+    conversationId, historyStart: 60, onLoadOlder: load,
+    messages: Array.from({ length: 40 }, (_, index) => ({
+      id: `prefetch-${index}`, role: 'user' as const, content: 'Message', timestamp: index,
+    })),
+  }
+  const { container, rerender } = render(<MessageList {...props} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 })
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 6000 })
+  expect(container.textContent).not.toContain('加载更早消息')
+  expect(load).not.toHaveBeenCalled()
+  viewport.scrollTop = 1201
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  fireEvent.scroll(viewport)
+  expect(load).not.toHaveBeenCalled()
+  viewport.scrollTop = 1200
+  fireEvent.scroll(viewport)
+  expect(load).toHaveBeenCalledOnce()
+  viewport.scrollTop = 900
+  fireEvent.scroll(viewport)
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  expect(load).toHaveBeenCalledOnce()
+  await act(async () => { complete(); await Promise.resolve() })
+  viewport.scrollTop = 600
+  fireEvent.scroll(viewport)
+  expect(load).toHaveBeenCalledTimes(2)
+  await act(async () => { complete(); await Promise.resolve() })
+  rerender(<MessageList {...props} historyStart={0} />)
+  viewport.scrollTop = 0
+  fireEvent.scroll(viewport)
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  expect(load).toHaveBeenCalledTimes(2)
 })

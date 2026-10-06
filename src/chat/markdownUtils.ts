@@ -90,3 +90,65 @@ export function preserveLocalMarkdownLinks(content: string): string {
     }),
   )
 }
+
+type MarkdownNode = {
+  type?: string
+  value?: string
+  children?: MarkdownNode[]
+  position?: {
+    start?: { offset?: number }
+    end?: { offset?: number }
+  }
+}
+
+/**
+ * CommonMark 把成对 `_` 当成斜体/加粗，把单独成行的 `___` 当成分隔线。
+ * 助手回答里的普通下划线、文件名和标识符（`_name_`、`file_name`、`__value__`）
+ * 因此会丢掉这些字符。星号强调和 `---` / `***` 分隔线仍是有意 Markdown，不动。
+ * 输入框是纯文本，用户气泡也不走 Markdown，所以修复只放在解析之后。
+ */
+export function remarkLiteralUnderscore() {
+  return (tree: MarkdownNode, file: { value?: unknown } | string) => {
+    const source = typeof file === 'string' ? file : String(file?.value ?? '')
+    if (!source || !tree.children) return
+    tree.children = tree.children.flatMap((child) => expandLiteralUnderscore(child, source))
+  }
+}
+
+function expandLiteralUnderscore(node: MarkdownNode, source: string): MarkdownNode[] {
+  if (node.type === 'thematicBreak') {
+    const raw = sourceSlice(node, source)
+    const line = raw.replace(/\s+$/, '')
+    if (/^[ \t]*(?:_[ \t]*){3,}$/.test(line)) {
+      return [{ type: 'paragraph', children: [{ type: 'text', value: line.trim() }] }]
+    }
+    return [node]
+  }
+
+  if (node.children) {
+    node.children = node.children.flatMap((child) => expandLiteralUnderscore(child, source))
+  }
+
+  if (node.type !== 'emphasis' && node.type !== 'strong') return [node]
+  const start = node.position?.start?.offset
+  const end = node.position?.end?.offset
+  if (start == null || end == null || source[start] !== '_') return [node]
+
+  const first = node.children?.[0]?.position?.start?.offset
+  const last = node.children?.[node.children.length - 1]?.position?.end?.offset
+  if (first == null || last == null || first < start || last > end) {
+    return [{ type: 'text', value: source.slice(start, end) }]
+  }
+  return [
+    { type: 'text', value: source.slice(start, first) },
+    ...(node.children ?? []),
+    { type: 'text', value: source.slice(last, end) },
+  ]
+}
+
+function sourceSlice(node: MarkdownNode, source: string): string {
+  const start = node.position?.start?.offset
+  const end = node.position?.end?.offset
+  if (start == null || end == null) return ''
+  return source.slice(start, end)
+}

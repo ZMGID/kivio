@@ -1184,7 +1184,7 @@ function MessageBubbleComponent({
   const playEntranceAnimation = messageStreaming
   // 「这条是否已落盘并允许历史操作」：门控重新生成。`onUpdateMessage` / `onDeleteMessage`
   // 在这里作为完整可变能力信号；MessageGroup 的在飞列不传它们，从而一次关掉这些入口。
-  // 编辑与删除入口已按需求移除，但底层能力仍保留。
+  // 气泡上不再放编辑入口。多答组里每一条的删除在组页脚，不在这条操作行上。
   const canMutate = Boolean(onUpdateMessage && onDeleteMessage && onRegenerateMessage)
   const prepared = useMemo(() => {
     const attachments = message.attachments ?? []

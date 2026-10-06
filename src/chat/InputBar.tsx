@@ -787,10 +787,6 @@ export const InputBar = memo(function InputBar({
   // Right Dock「插入 @ 引用」等：文本直接追加到输入框正文（与引用卡片信道并列）。
   const insertTextAtEnd = useCallback((text: string) => {
     if (!text) return
-    setInput((prev) => {
-      const needsSpace = prev.length > 0 && !prev.endsWith(' ') && !prev.endsWith('\n')
-      return `${prev}${needsSpace ? ' ' : ''}${text}`
-    })
     requestAnimationFrame(() => {
       const textarea = editorRef.current
       if (textarea) {

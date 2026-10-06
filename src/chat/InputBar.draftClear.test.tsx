@@ -60,6 +60,14 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 发送清草稿', () => {
+  it('appends an inserted reference exactly once without remounting', () => {
+    render(<InputBar onSend={() => {}} conversationId="insert-once" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'existing draft' } })
+    act(() => insertTextIntoComposer('@reference'))
+    expect(screen.getByRole('textbox')).toHaveValue('existing draft @reference')
+    expect(getComposerDraft('insert-once')?.input).toBe('existing draft @reference')
+  })
+
   it('falls back to loaded prompts when older input history cannot be read', async () => {
     render(<InputBar onSend={() => {}} conversationId="history-offline" inputHistory={['available']} onLoadInputHistory={async () => null} />)
     const input = screen.getByRole('textbox')
