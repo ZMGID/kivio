@@ -787,6 +787,9 @@ export const InputBar = memo(function InputBar({
   // Right Dock「插入 @ 引用」等：文本直接追加到输入框正文（与引用卡片信道并列）。
   const insertTextAtEnd = useCallback((text: string) => {
     if (!text) return
+    // The insertion owner has already appended the text to the current draft.
+    const draft = getComposerDraft(draftScopeRef.current.key)
+    if (draft) setInput(draft.input)
     requestAnimationFrame(() => {
       const textarea = editorRef.current
       if (textarea) {

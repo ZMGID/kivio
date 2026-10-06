@@ -508,10 +508,17 @@ pub(crate) fn import_in(root: &Path, path: &Path) -> Result<ChatSet, String> {
             if !["", "live-", "imported-"].contains(&prefix.as_str()) {
                 return Err("无效的会话绑定".into());
             }
+            let mut record = record.clone();
+            // Keep embedded conversation identities aligned with the restored filename.
+            for key in ["conversationId", "conversation_id"] {
+                if let Some(value) = record.get_mut(key) {
+                    *value = Value::String(next.clone());
+                }
+            }
             new_files.push((
                 root.join("external-agent-sessions")
                     .join(format!("{prefix}{next}.json")),
-                json(record)?.into_bytes(),
+                json(&record)?.into_bytes(),
             ));
         }
     }
