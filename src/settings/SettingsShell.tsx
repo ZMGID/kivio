@@ -215,7 +215,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       return typeof selected === 'string' ? selected : null
     },
     pickExport: () => save({
-      defaultPath: 'kivio-settings-backup.json',
+      defaultPath: 'kivio-backup.json',
       filters: [{ name: 'JSON', extensions: ['json'] }],
     }),
     import: (path) => editorController.import(path),
@@ -1084,10 +1084,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
 
                 <SettingsGroup title={lang === 'zh' ? '备份与恢复' : 'Backup & Restore'}>
                   <FieldBlock
-                    label={lang === 'zh' ? '设置备份' : 'Settings backup'}
+                    label={lang === 'zh' ? '数据备份' : 'Data backup'}
                     description={lang === 'zh'
-                      ? '导出/导入全部设置（含 API Key）。'
-                      : 'Export/import all settings (incl. API keys).'}
+                      ? '一起备份和恢复全部设置（含 API Key）与集。'
+                      : 'Back up and restore all settings (including API keys) and sets together.'}
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
@@ -1097,7 +1097,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                         data-tauri-drag-region="false"
                       >
                         <Download size={11} />
-                        {lang === 'zh' ? '导出设置' : 'Export'}
+                        {lang === 'zh' ? '导出备份' : 'Export'}
                       </Button>
                       <Button
                         size="sm"
@@ -1106,7 +1106,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                         data-tauri-drag-region="false"
                       >
                         <Upload size={11} />
-                        {lang === 'zh' ? '导入设置' : 'Import'}
+                        {lang === 'zh' ? '导入备份' : 'Import'}
                       </Button>
                       {settingsBackup.status && (
                         <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>

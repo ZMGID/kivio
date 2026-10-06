@@ -1221,6 +1221,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     void loadSkills()
     void refreshToolIndicator()
     setSidebarProfileRefreshKey((key) => key + 1)
+    setSidebarRefreshKey((key) => key + 1)
   }, [loadDefaultModel, loadSkills, onSettingsChange, refreshToolIndicator])
 
   useEffect(() => {

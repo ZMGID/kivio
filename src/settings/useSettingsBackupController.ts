@@ -37,8 +37,8 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       setStatus({
         kind: 'ok',
         msg: kind === 'import'
-          ? (langRef.current === 'zh' ? '设置已导入并生效。' : 'Settings imported and applied.')
-          : (langRef.current === 'zh' ? '设置已导出。' : 'Settings exported.'),
+          ? (langRef.current === 'zh' ? '备份已导入并生效。' : 'Backup imported and applied.')
+          : (langRef.current === 'zh' ? '备份已导出。' : 'Backup exported.'),
       })
     } catch (error) {
       if (!live.current) return

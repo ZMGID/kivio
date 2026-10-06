@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use arboard::Clipboard;
 use base64::Engine as _;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_shell::ShellExt;
 
@@ -289,16 +289,23 @@ const SETTINGS_BACKUP_VERSION: u32 = 1;
 
 /// 导出全部设置（含供应商/模型配置与 API Key）到指定路径的 JSON 备份文件。
 #[tauri::command]
-pub(crate) fn export_settings(state: State<AppState>, path: String) -> Result<(), String> {
+pub(crate) fn export_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    path: String,
+) -> Result<(), String> {
     let settings = sanitize_settings(state.settings_read().clone());
+    let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let sets = crate::chat::storage::set_backup::export_catalog_in(&root)?;
     let backup = serde_json::json!({
         "app": "kivio",
         "type": "settings-backup",
         "version": SETTINGS_BACKUP_VERSION,
         "settings": serde_json::to_value(&settings).map_err(|e| e.to_string())?,
+        "sets": sets,
     });
     let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))?;
+    crate::chat::storage::atomic_write(std::path::Path::new(&path), &json, "backup")?;
     Ok(())
 }
 
@@ -321,7 +328,17 @@ pub(crate) async fn import_settings(
         .ok_or_else(|| "备份文件缺少 settings 字段".to_string())?;
     let settings: Settings = serde_json::from_value(settings_value.clone())
         .map_err(|e| format!("备份内容无法解析: {e}"))?;
-    apply_settings(&app, &state, settings, expected_version, false).await
+    let sets: Option<crate::chat::storage::set_backup::SetCatalogBackup> = value
+        .get("sets")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|e| format!("集备份无法解析: {e}"))?;
+    let snapshot = apply_settings(&app, &state, settings, expected_version, false).await?;
+    if let Some(sets) = sets {
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        crate::chat::storage::set_backup::import_catalog_in(&root, sets)?;
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]

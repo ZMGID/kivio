@@ -6,6 +6,75 @@ use serde_json::Value;
 
 const MAX_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The set catalog travels with settings so restoring preferences also restores
+/// their named personas and default assistants.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SetCatalogBackup {
+    sets: Vec<ChatSet>,
+    assistants: Vec<ChatAssistant>,
+}
+
+pub(crate) fn export_catalog_in(root: &Path) -> Result<SetCatalogBackup, String> {
+    let _catalog = catalog_mutation_lock();
+    let dir = root.join("conversations");
+    let sets: ChatSetIndex = read_json(&dir.join("sets.json"))?;
+    let assistants: ChatAssistantIndex = read_json(&dir.join("assistants.json"))?;
+    let ids: HashSet<_> = sets
+        .sets
+        .iter()
+        .filter_map(|set| set.default_assistant_id.as_deref())
+        .collect();
+    Ok(SetCatalogBackup {
+        assistants: assistants
+            .assistants
+            .into_iter()
+            .filter(|assistant| ids.contains(assistant.id.as_str()))
+            .collect(),
+        sets: sets.sets,
+    })
+}
+
+pub(crate) fn import_catalog_in(root: &Path, mut backup: SetCatalogBackup) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
+    let dir = root.join("conversations");
+    let mut ids = HashSet::new();
+    for set in &mut backup.sets {
+        sets::validate_set_id(&set.id)?;
+        set.name = sets::normalize_set_name(&set.name)?;
+        if !ids.insert(set.id.clone()) {
+            return Err("备份包含重复集".into());
+        }
+    }
+    let existing: ChatSetIndex = read_json(&dir.join("sets.json"))?;
+    backup.sets.extend(
+        existing
+            .sets
+            .into_iter()
+            .filter(|set| !ids.contains(&set.id)),
+    );
+    let mut assistants: ChatAssistantIndex = read_json(&dir.join("assistants.json"))?;
+    let assistant_ids: HashSet<_> = backup
+        .assistants
+        .iter()
+        .map(|assistant| assistant.id.clone())
+        .collect();
+    assistants
+        .assistants
+        .retain(|assistant| !assistant_ids.contains(&assistant.id));
+    assistants.assistants.extend(backup.assistants);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    commit_import(
+        &[],
+        &[
+            (dir.join("assistants.json"), json(&assistants)?),
+            (
+                dir.join("sets.json"),
+                json(&ChatSetIndex { sets: backup.sets })?,
+            ),
+        ],
+    )
+}
+
 #[derive(Serialize, Deserialize)]
 struct SetBackup {
     app: String,
@@ -646,6 +715,48 @@ mod tests {
         for (name, value) in values {
             fs::write(dir.join(name), serde_json::to_vec(&value).unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn settings_catalog_round_trip_restores_sets_and_default_assistants_in_order() {
+        let source = tempfile::tempdir().unwrap();
+        fixture(source.path());
+        let mut sets: ChatSetIndex =
+            read_json(&source.path().join("conversations/sets.json")).unwrap();
+        let mut second = sets.sets[0].clone();
+        second.id = "set_two".into();
+        second.name = "阅读".into();
+        sets.sets.push(second);
+        fs::write(
+            source.path().join("conversations/sets.json"),
+            json(&sets).unwrap(),
+        )
+        .unwrap();
+        let exported = export_catalog_in(source.path()).unwrap();
+        let raw = serde_json::to_vec(&exported).unwrap();
+        let target = tempfile::tempdir().unwrap();
+        import_catalog_in(target.path(), serde_json::from_slice(&raw).unwrap()).unwrap();
+        // Importing twice updates the same identities instead of multiplying sets.
+        import_catalog_in(target.path(), serde_json::from_slice(&raw).unwrap()).unwrap();
+        let restored: ChatSetIndex =
+            read_json(&target.path().join("conversations/sets.json")).unwrap();
+        assert_eq!(
+            restored
+                .sets
+                .iter()
+                .map(|set| set.name.as_str())
+                .collect::<Vec<_>>(),
+            ["写作", "阅读"]
+        );
+        assert_eq!(restored.sets[0].system_prompt, "保留提示词");
+        assert_eq!(
+            restored.sets[0].default_assistant_id.as_deref(),
+            Some("asst_one")
+        );
+        let assistants: ChatAssistantIndex =
+            read_json(&target.path().join("conversations/assistants.json")).unwrap();
+        assert_eq!(assistants.assistants.len(), 1);
+        assert_eq!(assistants.assistants[0].system_prompt, "保留助手提示词");
     }
 
     #[test]

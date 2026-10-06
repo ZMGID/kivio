@@ -29,7 +29,7 @@ describe('useSettingsBackupController', () => {
     expect(imported).toHaveBeenCalledOnce()
     pending.resolve()
     await act(async () => { await first })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Settings imported and applied.' })
+    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup imported and applied.' })
   })
 
   it('keeps import failure visible and allows a later retry', async () => {
@@ -44,6 +44,6 @@ describe('useSettingsBackupController', () => {
     await act(async () => { await result.current.importBackup() })
     expect(result.current.status).toEqual({ kind: 'err', msg: 'Import failed: version conflict' })
     await act(async () => { await result.current.importBackup() })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Settings imported and applied.' })
+    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup imported and applied.' })
   })
 })

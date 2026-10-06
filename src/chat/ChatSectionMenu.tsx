@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, Search, SquarePen, Trash2, Upload } from 'lucide-react'
+import { Search, SquarePen, Trash2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -11,8 +11,6 @@ interface ChatSectionMenuProps {
   hasConversations: boolean
   onNewConversation: () => void
   onOpenSearch: () => void
-  onImportSetBackup?: () => void
-  onExportSetBackup?: () => void
   onClearAll: () => void
   onClose: () => void
   triggerRef?: RefObject<HTMLElement | null>
@@ -23,8 +21,6 @@ export function ChatSectionMenu({
   hasConversations,
   onNewConversation,
   onOpenSearch,
-  onImportSetBackup,
-  onExportSetBackup,
   onClearAll,
   onClose: onCloseProp,
   triggerRef,
@@ -86,34 +82,6 @@ export function ChatSectionMenu({
         {t.chatSearchConversations}
       </button>
 
-      {onImportSetBackup && (
-        <button
-          type="button"
-          role="menuitem"
-          className="kv-menu-item"
-          onClick={() => {
-            onImportSetBackup()
-            onClose()
-          }}
-        >
-          <Upload strokeWidth={1.75} />
-          {t.chatImportSetBackup}
-        </button>
-      )}
-      {onExportSetBackup && (
-        <button
-          type="button"
-          role="menuitem"
-          className="kv-menu-item"
-          onClick={() => {
-            onExportSetBackup()
-            onClose()
-          }}
-        >
-          <Download strokeWidth={1.75} />
-          {t.chatExportSetBackup}
-        </button>
-      )}
       <div className="my-1 border-t border-neutral-200/80" />
 
       <button
