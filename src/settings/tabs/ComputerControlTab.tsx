@@ -4,7 +4,7 @@ import { api } from '../../api/tauri'
 import type { ChatMcpServer, ChatToolsConfig, ControlToolStatus, PluginStatus, SkillMeta } from '../../api/tauri'
 import { refreshSettings } from '../../api/settingsCache'
 import { Button } from '../../components/Button'
-import { Toggle } from '../components'
+import { FieldBlock, Input, Toggle } from '../public/controls'
 import type { Lang } from '../../components/i18n'
 
 type NativeTool = 'cua' | 'playwright'
@@ -342,54 +342,77 @@ export function ComputerControlTab({ lang, tools, onChange }: {
                 : (zh ? '未安装' : 'Not installed')
 
               return (
-                <div className="computer-control-row" key={tool.id}>
-                  <span className={`computer-control-icon computer-control-icon--${tool.id}`} aria-hidden="true">
-                    <Icon size={18} strokeWidth={1.8} />
-                  </span>
-                  <div className="computer-control-copy">
-                    <div className="computer-control-name">{tool.name}</div>
-                    <div className="computer-control-description">
-                      {!loading && <span className={`computer-control-status-dot ${ready ? 'is-ready' : ''}`} />}
-                      {loading ? (zh ? '正在检测…' : 'Checking…') : description}
+                <div className="computer-control-item" key={tool.id}>
+                  <div className="computer-control-row">
+                    <span className={`computer-control-icon computer-control-icon--${tool.id}`} aria-hidden="true">
+                      <Icon size={18} strokeWidth={1.8} />
+                    </span>
+                    <div className="computer-control-copy">
+                      <div className="computer-control-name">{tool.name}</div>
+                      <div className="computer-control-description">
+                        {!loading && <span className={`computer-control-status-dot ${ready ? 'is-ready' : ''}`} />}
+                        {loading ? (zh ? '正在检测…' : 'Checking…') : description}
+                      </div>
+                    </div>
+                    <div className="computer-control-action">
+                      {loading ? (
+                        <RefreshCw size={14} className="animate-spin text-neutral-400" aria-label={zh ? '正在检测' : 'Checking'} />
+                      ) : ready ? (
+                        <>
+                          {tool.kind === 'native' && updateStatus?.updateAvailable && (
+                            <Button
+                              size="sm"
+                              disabled={installing !== null || updating !== null}
+                              title={updateStatus.latestVersion ? `${zh ? '最新版本' : 'Latest'} v${updateStatus.latestVersion}` : undefined}
+                              onClick={() => { void update(tool.id) }}
+                            >
+                              {updating === tool.id && <RefreshCw size={12} className="animate-spin" />}
+                              {updating === tool.id ? (zh ? '更新中…' : 'Updating…') : (zh ? '更新' : 'Update')}
+                            </Button>
+                          )}
+                          <Toggle
+                            checked={enabled}
+                            disabled={installing !== null || updating !== null}
+                            ariaLabel={`${tool.name} ${zh ? '控制' : 'control'}`}
+                            onChange={value => {
+                              if (tool.kind === 'plugin') void setPluginEnabled(tool.id, value)
+                              else setNativeControlEnabled(tool.id, skill!.id, value)
+                            }}
+                          />
+                        </>
+                      ) : (
+                        <Button
+                          size="sm"
+                          disabled={installing !== null || updating !== null || (tool.kind === 'plugin' && plugin?.canInstall !== true)}
+                          onClick={() => { void install(tool.id) }}
+                        >
+                          {installing === tool.id && <RefreshCw size={12} className="animate-spin" />}
+                          {installing === tool.id ? (zh ? '安装中…' : 'Installing…') : (zh ? '安装' : 'Install')}
+                        </Button>
+                      )}
                     </div>
                   </div>
-                  <div className="computer-control-action">
-                    {loading ? (
-                      <RefreshCw size={14} className="animate-spin text-neutral-400" aria-label={zh ? '正在检测' : 'Checking'} />
-                    ) : ready ? (
-                      <>
-                        {tool.kind === 'native' && updateStatus?.updateAvailable && (
-                          <Button
-                            size="sm"
-                            disabled={installing !== null || updating !== null}
-                            title={updateStatus.latestVersion ? `${zh ? '最新版本' : 'Latest'} v${updateStatus.latestVersion}` : undefined}
-                            onClick={() => { void update(tool.id) }}
-                          >
-                            {updating === tool.id && <RefreshCw size={12} className="animate-spin" />}
-                            {updating === tool.id ? (zh ? '更新中…' : 'Updating…') : (zh ? '更新' : 'Update')}
-                          </Button>
-                        )}
-                        <Toggle
-                          checked={enabled}
-                          disabled={installing !== null || updating !== null}
-                          ariaLabel={`${tool.name} ${zh ? '控制' : 'control'}`}
-                          onChange={value => {
-                            if (tool.kind === 'plugin') void setPluginEnabled(tool.id, value)
-                            else setNativeControlEnabled(tool.id, skill!.id, value)
-                          }}
-                        />
-                      </>
-                    ) : (
-                      <Button
-                        size="sm"
-                        disabled={installing !== null || updating !== null || (tool.kind === 'plugin' && plugin?.canInstall !== true)}
-                        onClick={() => { void install(tool.id) }}
+                  {tool.id === 'playwright' && (
+                    <div className="computer-control-extension">
+                      <FieldBlock
+                        htmlFor="playwright-extension-token"
+                        label={zh ? '浏览器扩展 Token' : 'Browser extension token'}
+                        description={zh
+                          ? '从 Playwright 扩展页面复制 Token，保存后自动用于浏览器连接。也可以在聊天中提供，让 AI 帮你填写。'
+                          : 'Copy the token from the Playwright extension. It is reused for browser connections. You can also ask AI to save it in chat.'}
                       >
-                        {installing === tool.id && <RefreshCw size={12} className="animate-spin" />}
-                        {installing === tool.id ? (zh ? '安装中…' : 'Installing…') : (zh ? '安装' : 'Install')}
-                      </Button>
-                    )}
-                  </div>
+                        <Input
+                          id="playwright-extension-token"
+                          type="password"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={tools.playwrightExtensionToken ?? ''}
+                          placeholder={zh ? '粘贴 Token 或整行环境变量' : 'Paste token or environment variable assignment'}
+                          onChange={playwrightExtensionToken => onChange({ playwrightExtensionToken })}
+                        />
+                      </FieldBlock>
+                    </div>
+                  )}
                 </div>
               )
             })}

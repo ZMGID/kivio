@@ -59,9 +59,22 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
     cmd.env("FORCE_COLOR", "0");
     cmd.env("PAGER", "cat");
 
-    let Some(_state) = state else {
+    let Some(state) = state else {
         return;
     };
+    // Keep credentials out of command arguments and unrelated shell processes.
+    // Both foreground and background commands pass through this environment owner.
+    let uses_playwright = cmd.as_std().get_args().any(|arg| {
+        let arg = arg.to_string_lossy();
+        arg.contains("playwright-cli") || arg.contains("@playwright/cli")
+    });
+    if uses_playwright {
+        let settings = state.settings_read();
+        let token = &settings.chat_tools.playwright_extension_token;
+        if !token.is_empty() {
+            cmd.env("PLAYWRIGHT_MCP_EXTENSION_TOKEN", token);
+        }
+    }
     // PATH 合并：启用插件 bin 目录，再接系统 Path。
     let plugin_dirs = crate::plugins::enabled_bin_dirs();
     if !plugin_dirs.is_empty() {
@@ -89,6 +102,19 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
             next.push(existing);
         }
         cmd.env(key, next);
+    }
+}
+
+/// Playwright lists its extension connection URL, including the token, in CLI output.
+/// Redact before output reaches the model or is offloaded to a tool-output file.
+fn redact_shell_output(text: String, state: Option<&AppState>) -> String {
+    let Some(state) = state else { return text };
+    let settings = state.settings_read();
+    let token = &settings.chat_tools.playwright_extension_token;
+    if token.is_empty() {
+        text
+    } else {
+        text.replace(token, "[redacted]")
     }
 }
 
@@ -845,7 +871,10 @@ fn snapshot_bash_output(
 
     let bytes = std::fs::read(&log_path).unwrap_or_default();
     let start = (since_offset as usize).min(bytes.len());
-    let new_text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    let new_text = redact_shell_output(
+        String::from_utf8_lossy(&bytes[start..]).into_owned(),
+        Some(state),
+    );
     let new_offset = bytes.len() as u64;
     Ok((status, new_text, new_offset, command))
 }
@@ -1064,7 +1093,7 @@ async fn exec_shell_command(
                 }
                 kill_on_cancel.disarm();
                 return match tokio::time::timeout(std::time::Duration::from_secs(2), wait).await {
-                    Ok(Ok(output)) => Err(format_timeout_with_partial(timeout_ms, &output)),
+                    Ok(Ok(output)) => Err(redact_shell_output(format_timeout_with_partial(timeout_ms, &output), state)),
                     Ok(Err(err)) => Err(format!(
                         "Command timed out after {timeout_ms}ms and was killed ({err})"
                     )),
@@ -1082,8 +1111,8 @@ async fn exec_shell_command(
 
     Ok(CommandOutput {
         status_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: redact_shell_output(String::from_utf8_lossy(&output.stdout).into_owned(), state),
+        stderr: redact_shell_output(String::from_utf8_lossy(&output.stderr).into_owned(), state),
     })
 }
 
@@ -1204,6 +1233,44 @@ mod tests {
     }
 
     // ---- Background command registry + polling (PR2) ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn playwright_commands_receive_saved_token_in_foreground_and_background() {
+        let temp = tempfile::tempdir().unwrap();
+        // A process at the CLI boundary verifies inheritance without opening a real browser.
+        std::fs::write(temp.path().join("playwright-cli"),
+            "test \"$PLAYWRIGHT_MCP_EXTENSION_TOKEN\" = example-extension-token && printf 'connected chrome-extension://example/connect.html?token=%s' \"$PLAYWRIGHT_MCP_EXTENSION_TOKEN\"").unwrap();
+        let settings = crate::settings::sanitize_settings(serde_json::from_value(serde_json::json!({
+            "chatTools": {"playwrightExtensionToken": " PLAYWRIGHT_MCP_EXTENSION_TOKEN=example-extension-token "}
+        })).unwrap());
+        let state = AppState::new_headless(settings, temp.path().join("usage"));
+        let workspace = NativeToolWorkspace::global(&[]);
+        for background in [false, true] {
+            let output = run_command(
+                &workspace,
+                &serde_json::json!({
+                    "command":"sh ./playwright-cli", "cwd":temp.path(), "background":background
+                }),
+                Some(&state),
+                None,
+            )
+            .await
+            .unwrap();
+            let output = if background {
+                let id = output
+                    .lines()
+                    .find_map(|l| l.strip_prefix("job_id: "))
+                    .unwrap();
+                poll_until_terminal(&state, &serde_json::json!({"job_id":id,"wait_ms":0})).await
+            } else {
+                output
+            };
+            assert!(output.contains("connected"), "{output}");
+            assert!(output.contains("token=[redacted]"));
+            assert!(!output.contains("example-extension-token"));
+        }
+    }
 
     fn bg_test_state() -> AppState {
         AppState::new_headless(

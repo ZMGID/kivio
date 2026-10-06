@@ -22,7 +22,8 @@ pub fn inspect_definition() -> ChatToolDefinition {
 pub fn configure_definition() -> ChatToolDefinition {
     definition("kivio_configure", "Install or configure Kivio extensions using live application services. First load the relevant kivio configuration skill and inspect current state. Acts on the user's requested resources only. New skills/plugins/MCP tools are usable on the next turn. MCP tests may launch a process/connect a service. Config JSON is read from config_path; no whole-settings replacement. Requires the host command tool toggle and normal session consent.", json!({
         "type":"object", "properties":{
-            "action":{"type":"string","enum":["skill_install","skill_set_enabled","skill_settings","plugin_import","plugin_set_enabled","plugin_remove","mcp_upsert","mcp_remove","mcp_test","hooks_save"]},
+            "action":{"type":"string","enum":["skill_install","skill_set_enabled","skill_settings","playwright_extension_token","plugin_import","plugin_set_enabled","plugin_remove","mcp_upsert","mcp_remove","mcp_test","hooks_save"]},
+            "token":{"type":"string","description":"playwright_extension_token only: user-provided extension token or PLAYWRIGHT_MCP_EXTENSION_TOKEN=... assignment. Empty string clears it. Never echo the credential."},
             "source":{"type":"string","description":"skill_install: local skill directory or one-skill ZIP; plugin_import: local package root or HTTPS Git URL"},
             "scope":{"type":"string","enum":["user","project"],"description":"skill_install only; default user. project requires a project conversation."},
             "replace":{"type":"boolean","description":"skill_install only; explicit replacement keeps a recoverable backup outside scan roots"},
@@ -80,6 +81,9 @@ enum Action {
     },
     SkillSettings {
         config_path: String,
+    },
+    PlaywrightExtensionToken {
+        token: String,
     },
     PluginImport {
         source: String,
@@ -170,6 +174,7 @@ fn status_summary(settings: &Settings, cwd: Option<&Path>) -> Value {
         "skillRuntime":settings.chat_tools.native_tools.skill_runtime,"skillAutoMatch":settings.chat_tools.skill_auto_match,
         "skillScanPaths":settings.chat_tools.skill_scan_paths,"disabledSkillIds":settings.chat_tools.disabled_skill_ids,
         "configurationTools":{"inspect":settings.chat_tools.native_tools.read_file,"configure":settings.chat_tools.native_tools.run_command},
+        "playwrightExtensionTokenConfigured":!settings.chat_tools.playwright_extension_token.is_empty(),
         "providers":settings.providers.iter().map(|p|json!({"id":p.id,"name":p.name,"apiFormat":p.api_format,"hasCredentials":p.authentication_ready()})).collect::<Vec<_>>(),
         "defaultModels":settings.default_models,
         "note":"Application defaults, not a claim about this conversation's selected model/runtime. Changes to tool catalogs take effect next turn."})
@@ -261,6 +266,18 @@ async fn configure_action(ctx: &NativeCallCtx<'_>, action: Action) -> Result<Val
             let config = read_config(ctx, &config_path)?;
             update_settings(ctx, |next| apply_skill_settings(next, &config))?;
             Ok(json!({"saved":true}))
+        }
+        Action::PlaywrightExtensionToken { token } => {
+            if token.contains(['\n', '\r', '\0']) {
+                return Err("Extension token must be a single line".into());
+            }
+            update_settings(ctx, |next| {
+                next.chat_tools.playwright_extension_token = token;
+                Ok(())
+            })?;
+            Ok(
+                json!({"saved":true,"configured":!ctx.state.settings_read().chat_tools.playwright_extension_token.is_empty()}),
+            )
         }
         Action::PluginImport {
             source,
@@ -523,6 +540,7 @@ fn redact_value(settings: &Settings, value: &mut Value) {
 
 fn redact_text(settings: &Settings, mut text: String) -> String {
     let mut secrets = Vec::new();
+    secrets.push(settings.chat_tools.playwright_extension_token.clone());
     for p in &settings.providers {
         secrets.extend(p.api_keys.iter().cloned());
         if let Some(key) = &p.api_key_legacy {

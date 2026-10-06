@@ -688,6 +688,8 @@ export type ChatToolsConfig = {
   subAgentModels?: Record<string, SubAgentModelSelection>
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */
   requestDebugEnabled?: boolean
+  /** Browser extension credential, passed to Playwright CLI through its environment. */
+  playwrightExtensionToken?: string
   nativeTools: ChatNativeToolsConfig
 }
 

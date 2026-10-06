@@ -230,3 +230,37 @@ fn bundled_configuration_guide_is_automatically_discoverable() {
     assert!(parsed.meta.description.chars().count() > 20);
     assert!(!parsed.body.is_empty());
 }
+
+#[test]
+fn playwright_token_is_normalized_and_inspection_only_reports_presence() {
+    for raw in [
+        "example-extension-token",
+        " PLAYWRIGHT_MCP_EXTENSION_TOKEN=example-extension-token ",
+        "export PLAYWRIGHT_MCP_EXTENSION_TOKEN='example-extension-token'",
+    ] {
+        let action: Action =
+            serde_json::from_value(json!({"action":"playwright_extension_token", "token":raw}))
+                .unwrap();
+        let Action::PlaywrightExtensionToken { token } = action else {
+            panic!("wrong action")
+        };
+        let mut settings = Settings::default();
+        settings.chat_tools.playwright_extension_token = token;
+        let settings = crate::settings::sanitize_settings(settings);
+        assert_eq!(
+            settings.chat_tools.playwright_extension_token,
+            "example-extension-token"
+        );
+        let status = status_summary(&settings, None);
+        assert_eq!(status["playwrightExtensionTokenConfigured"], true);
+        assert!(!status.to_string().contains("example-extension-token"));
+        assert_eq!(
+            redact_text(&settings, "Error: example-extension-token".into()),
+            "Error: [redacted]"
+        );
+    }
+    assert_eq!(
+        status_summary(&Settings::default(), None)["playwrightExtensionTokenConfigured"],
+        false
+    );
+}

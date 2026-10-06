@@ -47,6 +47,20 @@ const pluginStatus = (overrides: Partial<PluginStatus>): PluginStatus => ({
 })
 
 describe('ComputerControlTab', () => {
+  it('edits the masked extension token through settings and retains it when returning', async () => {
+    const controls = renderControls(makeChatToolsFixture())
+    const input = screen.getByLabelText('浏览器扩展 Token')
+    expect(input).toHaveAttribute('type', 'password')
+    fireEvent.change(input, { target: { value: 'example-extension-token' } })
+    expect(controls.tools()).toMatchObject({ playwrightExtensionToken: 'example-extension-token' })
+    controls.leave()
+    controls.enter()
+    expect(screen.getByLabelText('浏览器扩展 Token')).toHaveValue('example-extension-token')
+    fireEvent.change(screen.getByLabelText('浏览器扩展 Token'), { target: { value: '' } })
+    expect(controls.tools()).toMatchObject({ playwrightExtensionToken: '' })
+    await screen.findAllByText('未安装')
+  })
+
   beforeEach(async () => {
     // Each test models a fresh window; a static import would retain its operation owner.
     vi.resetModules()

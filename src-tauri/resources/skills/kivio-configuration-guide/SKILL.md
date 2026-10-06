@@ -20,6 +20,7 @@ description: 配置与排查 Kivio 自身：模型、提示词、Skills、插件
 | 事件脚本、上下文注入、工具拦截、Hook 不触发 | [Hooks](references/hooks.md) |
 | 自定义斜杠命令、参数展开、命令冲突 | [命令](references/commands.md) |
 | CLI 检测、模型或工具不可用、会话绑定 | [运行时](references/runtime.md) |
+| Playwright 浏览器扩展 Token、保存连接凭据 | [工具契约](references/tools.md) |
 
 ## 操作与验证
 

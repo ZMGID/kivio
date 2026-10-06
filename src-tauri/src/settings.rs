@@ -1559,6 +1559,8 @@ pub struct ChatToolsConfig {
     /// 默认关闭；关闭时 adapter 零开销（不构造记录）。仅内存、不落盘。
     #[serde(default)]
     pub request_debug_enabled: bool,
+    /// Local browser extension credential; never include its value in agent prompts.
+    pub playwright_extension_token: String,
     /// 对话生命周期 Hooks（07-28-hooks）。空数组 = 无 Hook = agent loop 零开销。
     ///
     /// `deserialize_with` 而非光 `default`：字段刚上线时前端漏传，`invoke` 把缺失字段
@@ -1589,6 +1591,7 @@ impl Default for ChatToolsConfig {
             sub_agent_model: String::new(),
             sub_agent_models: Default::default(),
             request_debug_enabled: false,
+            playwright_extension_token: String::new(),
             hooks: Vec::new(),
             native_tools: ChatNativeToolsConfig::default(),
         }
@@ -2346,6 +2349,18 @@ fn mirror_explicit_chat_default_for_persistence(settings: &mut Settings) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
+    let token = settings.chat_tools.playwright_extension_token.trim();
+    let token = token.strip_prefix("export ").unwrap_or(token).trim();
+    let token = token
+        .strip_prefix("PLAYWRIGHT_MCP_EXTENSION_TOKEN=")
+        .unwrap_or(token)
+        .trim();
+    let token = token
+        .strip_prefix('\"')
+        .and_then(|s| s.strip_suffix('\"'))
+        .or_else(|| token.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+        .unwrap_or(token);
+    settings.chat_tools.playwright_extension_token = token.trim().to_owned();
     // RapidOCR 档位归一:非法值回落到各自默认(截图=standard,文档处理=high)。
     if settings.screenshot_translation.rapid_ocr_tier != "standard"
         && settings.screenshot_translation.rapid_ocr_tier != "high"

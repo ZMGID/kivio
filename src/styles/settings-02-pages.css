@@ -450,8 +450,11 @@
   align-items: center;
   gap: 12px;
 }
-.computer-control-row + .computer-control-row {
+.computer-control-item + .computer-control-item {
   border-top: 1px solid var(--divider);
+}
+.computer-control-extension {
+  margin: 0 0 10px 48px;
 }
 .computer-control-icon {
   display: inline-flex;

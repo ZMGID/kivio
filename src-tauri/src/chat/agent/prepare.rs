@@ -305,6 +305,11 @@ fn computer_control_system_prompt(
         lines.push(
             "- Browser interaction: prefer Playwright CLI over generic web tools; activate the `playwright-cli` skill before using it.",
         );
+        lines.push(if chat_tools.playwright_extension_token.is_empty() {
+            "- To control the user's existing browser through the Playwright extension, first ask for its PLAYWRIGHT_MCP_EXTENSION_TOKEN (unless already provided). Save it with kivio_configure action=playwright_extension_token and token=<user-provided value>, or direct the user to Settings > Computer Control > Playwright CLI. Never echo tokens or put them in shell commands."
+        } else {
+            "- Playwright extension token is configured. Kivio injects it into direct playwright-cli / @playwright/cli commands, including background runs. Use `playwright-cli attach --extension=chrome` for the user's existing Chrome browser (use the actual browser name for other browsers); this CLI requires an explicit extension value. Do not read, echo or copy the token into command arguments. If authentication fails, ask for the current token from that browser profile and update it with kivio_configure action=playwright_extension_token."
+        });
     }
 
     if skill_available("cua-driver") {

@@ -17,6 +17,7 @@ status 的版本来自当前二进制，默认模型来自应用设置，不能�
 | skill_install | source；scope=user/project；replace=false | 完整目录或单技能 ZIP；复制资源、校验、分阶段替换；replace=true 时备份旧目录，返回 backup 路径 |
 | skill_set_enabled | id, enabled | 修改普通技能全局禁用列表；插件技能拒绝，改所属插件 |
 | skill_settings | config_path | JSON 仅接受 skillRuntime / skillAutoMatch / skillScanPaths；只更新指定字段 |
+| playwright_extension_token | token | 保存用户提供的浏览器扩展 token；接受纯值或整行 PLAYWRIGHT_MCP_EXTENSION_TOKEN=…；空字符串清除。与电脑控制页面共用设置，只返回是否已配置 |
 | plugin_import | source；可选 subdirectory | 本地目录或 HTTPS Git 仓库，调用既有通用包导入，默认停用 |
 | plugin_set_enabled | id, enabled | 使用包 UUID，处理诊断、MCP 注册与断连 |
 | plugin_remove | id | 移除托管包含 data 及其 MCP；来源目录不动 |
@@ -36,3 +37,5 @@ MCP 配置字段为 name/enabled/transport/url/command/args/env/headers/cwd/enab
 当前不通过该工具管理：供应商密钥、模型默认值、提示词、热键、通知 Hooks、预设 CLI 的安装、连接器 OAuth、外部 CLI 原生配置。按配置地图使用各自现有入口，不能把全量 settings.json 填进 config_path 试探。
 
 工具返回 refresh 提示：当前轮工具/skill/Hook 已冻结，新增资源下一轮进入。不要循环重装以强迫本轮刷新。
+
+浏览器扩展 token 保存后，后续直接运行 `playwright-cli` 或 `npx @playwright/cli` 的命令自动通过环境变量读取，前后台均适用。连接已有 Chrome 浏览器使用 `playwright-cli attach --extension=chrome`，其他浏览器按实际名称传值；当前 CLI 的 `--extension` 不能省略值。首次缺少 token 时请用户从扩展状态页复制，或在设置 → 电脑控制 → Playwright CLI 下填写；不要将 token 拼进 shell 命令、回显或写入技能文件。`kivio_inspect` 的 status 只显示 `playwrightExtensionTokenConfigured`。更换浏览器配置或重置 token 后需重新保存并重新连接。外部 CLI 代理的原生命令环境不由这项设置管理。
