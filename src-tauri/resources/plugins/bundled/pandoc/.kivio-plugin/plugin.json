@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "pandoc",
+  "version": "1.0.0",
+  "description": "转换 Markdown、DOCX、HTML 等文档；PDF 输出需要额外渲染引擎。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://pandoc.org/MANUAL.html"
+  }
+}

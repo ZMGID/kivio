@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "tencent-meeting",
+  "version": "1.0.0",
+  "description": "查询会议、录制和参会信息；需要腾讯会议 OAuth 与相应账号权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://github.com/TencentCloud/tencentmeeting-cli"
+  }
+}

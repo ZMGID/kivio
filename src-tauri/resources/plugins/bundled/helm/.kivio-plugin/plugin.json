@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "helm",
+  "version": "1.0.0",
+  "description": "检查与部署 Helm Chart；需要 Kubernetes 集群，渲染可在本地完成。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://helm.sh/docs/"
+  }
+}

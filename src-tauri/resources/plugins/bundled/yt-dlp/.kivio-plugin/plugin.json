@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "yt-dlp",
+  "version": "1.0.0",
+  "description": "下载获准保存的网络音视频；部分站点需 FFmpeg、登录或额外运行时。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://github.com/yt-dlp/yt-dlp#usage-and-options"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "imagemagick",
+  "version": "1.0.0",
+  "description": "批量缩放、裁剪、转换和拼图；使用 ImageMagick 7 的 magick 命令。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://imagemagick.org/command-line-processing/"
+  }
+}

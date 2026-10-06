@@ -46,10 +46,11 @@ export type MarketPageProps = {
 
 function PluginIcon({ plugin, src, size = 'md' }: { plugin?: MarketPlugin; src?: string; size?: 'md' | 'lg' }) {
   const [failedSrc, setFailedSrc] = useState<string | null>(null)
+  const logo = src ?? plugin?.manifest.icon
   return (
     <span className={`kv-market-icon is-${size}`} aria-hidden="true">
-      {src && src !== failedSrc ? <img className="kv-market-logo" src={src} alt="" draggable={false} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />
-        : plugin?.manifest.icon ? <span className="kv-market-brand-mark" style={{ maskImage: `url("${plugin.manifest.icon}")` }} /> : <DefaultPluginIcon size={size === 'lg' ? 30 : 18} strokeWidth={1.75} />}
+      {logo && logo !== failedSrc ? <img className="kv-market-logo" src={logo} alt="" draggable={false} loading="lazy" referrerPolicy="no-referrer" onError={() => setFailedSrc(logo)} />
+        : <DefaultPluginIcon size={size === 'lg' ? 30 : 18} strokeWidth={1.75} />}
     </span>
   )
 }
@@ -162,7 +163,8 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
 
   const chosen = snapshot.plugins.find((p) => p.manifest.id === selected)
   const chosenPackage = packages.find(p => packageKey(p) === selected)
-  const personal = packages.filter(p => `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const bundledPackageIds = new Set(snapshot.plugins.flatMap(p => p.local?.packageId ? [p.local.packageId] : []))
+  const personal = packages.filter(p => !bundledPackageIds.has(p.id)).filter(p => `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()))
   const entryPackage = (market: Marketplace, entry: MarketplacePlugin) => packages.find(p => p.marketplace?.source === market.source && p.marketplace?.plugin === entry.name)
   const packageIcon = (plugin: PluginPackage) => claudeMarketplaceIcon(plugin.marketplace?.source, plugin.marketplace?.plugin ?? plugin.name)
   const chosenEntry = markets.flatMap(market => market.plugins.map(entry => ({ market, entry }))).find(({ market, entry }) => entryKey(market, entry) === selected)
@@ -245,6 +247,8 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
         <p className="kv-market-warning">{text('插件组件缺失，点击“重新配置”修复。', 'Some components are missing. Use Repair to restore them.')}</p>
       )}
 
+      {chosen.manifest.details ? <PluginContents bundledDetails={chosen.manifest.details} version={chosen.manifest.revision}
+        information={<><dt>{text('示例', 'Example')}</dt><dd>{chosen.manifest.inputHint}</dd></>} /> : <>
       <section className="kv-market-block">
         <h2>{text('技能', 'Skills')} <small>{1 + chosen.manifest.skillIds.length}</small></h2>
         {chosen.manifest.skillIds.map((skill) => (
@@ -291,6 +295,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
           </>}
         </dl>
       </section>
+      </>}
     </div>
   )
 

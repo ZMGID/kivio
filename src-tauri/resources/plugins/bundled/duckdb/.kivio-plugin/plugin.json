@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "duckdb",
+  "version": "1.0.0",
+  "description": "分析本地 CSV、Parquet 与 DuckDB 数据；默认只读，远程扩展按需启用。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://duckdb.org/docs/current/clients/cli/overview.html"
+  }
+}

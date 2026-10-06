@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "quarto",
+  "version": "1.0.0",
+  "description": "生成可复现报告、技术文档和幻灯片；代码块可能需要 Python 或 R。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://quarto.org/docs/guide/"
+  }
+}

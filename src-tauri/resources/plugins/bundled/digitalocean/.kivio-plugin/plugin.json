@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "digitalocean",
+  "version": "1.0.0",
+  "description": "通过 doctl 查询 Droplet、应用与集群；需要 DigitalOcean API 授权。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.digitalocean.com/reference/doctl/"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "stripe",
+  "version": "1.0.0",
+  "description": "调试 Stripe 测试事件和 Webhook；需要 Stripe 登录，默认使用测试环境。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.stripe.com/stripe-cli"
+  }
+}

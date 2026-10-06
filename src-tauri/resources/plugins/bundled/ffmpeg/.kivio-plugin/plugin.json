@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "ffmpeg",
+  "version": "1.0.0",
+  "description": "分析音视频、转码、剪辑和提取音轨；能力取决于本机编译的编解码器。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://ffmpeg.org/documentation.html"
+  }
+}

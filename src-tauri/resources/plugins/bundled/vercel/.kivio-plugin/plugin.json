@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "vercel",
+  "version": "1.0.0",
+  "description": "检查 Vercel 项目、预览部署与构建日志；需要账号和项目访问权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://vercel.com/docs/cli"
+  }
+}

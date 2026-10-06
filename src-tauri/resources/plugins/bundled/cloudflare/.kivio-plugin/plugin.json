@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "cloudflare",
+  "version": "1.0.0",
+  "description": "开发与部署 Cloudflare Workers，检查 KV/R2；需要目标账户权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://developers.cloudflare.com/workers/wrangler/"
+  }
+}

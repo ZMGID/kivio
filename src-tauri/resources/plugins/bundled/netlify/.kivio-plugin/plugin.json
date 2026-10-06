@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "netlify",
+  "version": "1.0.0",
+  "description": "检查 Netlify 站点、构建和草稿部署；需要账号及站点权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://cli.netlify.com/"
+  }
+}

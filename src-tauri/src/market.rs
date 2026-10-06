@@ -1,6 +1,8 @@
 //! 插件市场：内置清单（`resources/plugins/catalog.json`）里的插件由市场直接安装。
 //!
-//! 每个插件由这些组件组成，全部写进 `~/.kivio/skills`：
+//! 新目录的 `bundled` 条目使用原生 Kivio 包，配置与业务 Skills 随包安装，
+//! 组件、命名空间和启停由 `plugins::packages` 统一管理，不绑定主 Skill。
+//! 旧条目保留以下兼容路径，Skill 写进 `~/.kivio/skills`：
 //! - `<id>-setup`：随应用发布的环境检查 Skill（带 `kivio-market-managed: true` 标记）；
 //! - `entry`：可选，随应用发布的主 Skill；
 //! - `skills`：可选，从 GitHub 固定 revision 下载的官方 Skill（带 `.kivio-market-owner.json`）；
@@ -44,6 +46,8 @@ struct BuiltIn {
     unpack: String,
     skip: Vec<String>,
     preset_plugin_id: Option<String>,
+    bundled: Option<PathBuf>,
+    details: Option<crate::plugins::packages::details::Details>,
 }
 
 struct Catalog {
@@ -69,11 +73,13 @@ struct CatalogCategory {
 struct CatalogPlugin {
     id: String,
     name: String,
+    #[serde(default)]
     skill_id: String,
     summary: String,
     welcome: String,
     input_hint: String,
     start_prompt: String,
+    #[serde(default)]
     setup: String,
     #[serde(default)]
     entry: Option<String>,
@@ -93,6 +99,8 @@ struct CatalogPlugin {
     skip: Vec<String>,
     #[serde(default)]
     preset_plugin_id: Option<String>,
+    #[serde(default)]
+    bundled: Option<String>,
 }
 
 fn default_unpack() -> String {
@@ -109,7 +117,7 @@ fn id_ok(id: &str) -> bool {
         })
 }
 
-fn catalog_text(dir: &Path, relative: &str) -> Result<String, String> {
+fn catalog_bytes(dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
     if relative.is_empty()
         || relative.starts_with('/')
         || relative
@@ -118,7 +126,12 @@ fn catalog_text(dir: &Path, relative: &str) -> Result<String, String> {
     {
         return Err(format!("目录文件路径无效：{relative}"));
     }
-    fs::read_to_string(dir.join(relative)).map_err(|e| format!("无法读取 {relative}：{e}"))
+    fs::read(dir.join(relative)).map_err(|e| format!("无法读取 {relative}：{e}"))
+}
+
+fn catalog_text(dir: &Path, relative: &str) -> Result<String, String> {
+    String::from_utf8(catalog_bytes(dir, relative)?)
+        .map_err(|e| format!("无法读取文本 {relative}：{e}"))
 }
 
 fn load_catalog_from(dir: &Path) -> Result<Catalog, String> {
@@ -137,14 +150,48 @@ fn load_catalog_from(dir: &Path) -> Result<Catalog, String> {
         {
             return Err(format!("插件目录条目无效：{}", plugin.id));
         }
+        let bundled = plugin
+            .bundled
+            .as_deref()
+            .map(|path| crate::plugins::packages::contained(dir, path))
+            .transpose()?;
+        let details = bundled
+            .as_deref()
+            .map(crate::plugins::packages::details::describe_bundled)
+            .transpose()?;
+        if let Some(details) = &details {
+            if plugin.bundled.as_deref() != Some(format!("bundled/{}", plugin.id).as_str())
+                || !plugin.skill_id.is_empty()
+                || !plugin.setup.is_empty()
+                || plugin.entry.is_some()
+                || !plugin.skills.is_empty()
+                || plugin.command.is_some()
+                || plugin.preset_plugin_id.is_some()
+                || !details.diagnostics.is_empty()
+                || !details.groups.iter().any(|group| {
+                    group.kind == "skills" && group.items.iter().any(|item| item.name == "setup")
+                })
+            {
+                return Err(format!(
+                    "插件包必须提供 setup，且不能混用主 Skill 安装：{}",
+                    plugin.id
+                ));
+            }
+        }
         plugins.push(BuiltIn {
-            setup: catalog_text(dir, &plugin.setup)?,
+            setup: if bundled.is_some() {
+                String::new()
+            } else {
+                catalog_text(dir, &plugin.setup)?
+            },
+            bundled,
+            details,
             entry: plugin
                 .entry
                 .as_deref()
                 .map(|path| catalog_text(dir, path))
                 .transpose()?,
-            icon: catalog_text(dir, &plugin.icon)?,
+            icon: catalog_icon(dir, &plugin.icon)?,
             id: plugin.id,
             name: plugin.name,
             skill_id: plugin.skill_id,
@@ -235,6 +282,13 @@ fn skills_root() -> Result<PathBuf, String> {
 }
 
 fn built_in_ready(item: &BuiltIn, state: &BuiltInState) -> bool {
+    if item.bundled.is_some() {
+        return state.revision.as_deref() == Some(item.revision.as_str())
+            && crate::plugins::packages::plugin_packages_list()
+                .ok()
+                .and_then(|packages| bundled_installed(item, state, &packages).ok().flatten())
+                .is_some_and(|package| bundled_complete(item, &package));
+    }
     let skills_ready = skills_root().is_ok_and(|root| built_in_ready_at(item, state, &root));
     let command_ready = if item.command.is_some() {
         state
@@ -336,6 +390,9 @@ fn remove_market_skill(dir: &Path) -> Result<(), String> {
 }
 
 fn built_in_skill_ids(item: &BuiltIn) -> Vec<String> {
+    if item.bundled.is_some() {
+        return Vec::new();
+    }
     let mut ids = vec![built_in_setup_id(item)];
     if item.entry.is_some() {
         ids.push(item.skill_id.clone());
@@ -348,12 +405,17 @@ fn built_in_skill_ids(item: &BuiltIn) -> Vec<String> {
 // 快照（前端契约见 src/chat/market/types.ts）
 // ---------------------------------------------------------------------------
 
-fn icon_data_url(item: &BuiltIn) -> String {
+fn catalog_icon(dir: &Path, relative: &str) -> Result<String, String> {
     use base64::Engine;
-    format!(
-        "data:image/svg+xml;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(item.icon.as_bytes())
-    )
+    let mime = match Path::new(relative).extension().and_then(|ext| ext.to_str()) {
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        _ => return Err(format!("不支持的目录图标格式：{relative}")),
+    };
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(catalog_bytes(dir, relative)?)
+    ))
 }
 
 fn built_in_manifest(item: &BuiltIn) -> Value {
@@ -366,12 +428,13 @@ fn built_in_manifest(item: &BuiltIn) -> Value {
         "name": item.name,
         "summary": item.summary,
         "categoryIds": item.category_ids,
-        "icon": icon_data_url(item),
+        "icon": item.icon,
         "welcome": item.welcome,
         "inputHint": item.input_hint,
         "startPrompt": item.start_prompt,
-        "setupSkillId": built_in_setup_id(item),
-        "mainSkillId": item.skill_id,
+        "setupSkillId": if item.bundled.is_some() { format!("{}:setup", item.id) } else { built_in_setup_id(item) },
+        "mainSkillId": if item.bundled.is_some() { None } else { Some(&item.skill_id) },
+        "details": item.details,
         "skillIds": skill_ids,
         "checkCommand": item.command,
         "repository": (!item.repository.is_empty()).then(|| item.repository.clone()),
@@ -395,26 +458,37 @@ fn built_in_local(
         .is_none_or(|id| !crate::plugins::is_installed(id) || crate::plugins::is_enabled(id));
     // The Skill Center and runtime use these same settings. Do not persist a
     // second enabled flag in market state that can disagree with them.
+    let package_enabled = item.bundled.is_none()
+        || state
+            .plugin_id
+            .as_deref()
+            .is_some_and(crate::plugins::packages::owner_enabled);
     let skills_enabled = built_in_skill_ids(item)
         .iter()
         .all(|id| !disabled_skill_ids.contains(id));
     Some(json!({
         "status": if installed { "ready" } else { "failed" },
-        "enabled": installed && skills_enabled && preset_active,
+        "enabled": installed && skills_enabled && preset_active && package_enabled,
+        "packageId": if item.bundled.is_some() { state.plugin_id.as_deref() } else { None },
         "error": if installed { None } else { Some("插件组件缺失或未启用") },
     }))
 }
 
 fn snapshot_of(catalog: &Catalog, disabled_skill_ids: &[String]) -> Value {
+    let packages = crate::plugins::packages::plugin_packages_list().unwrap_or_default();
     json!({
         "categories": catalog.categories.iter()
             .map(|(id, name)| json!({ "id": id, "name": name }))
             .collect::<Vec<_>>(),
         "plugins": catalog.plugins.iter().map(|item| {
             let state = built_in_state(item);
+            let installed = if item.bundled.is_some() {
+                state.revision.as_deref() == Some(item.revision.as_str())
+                    && bundled_installed(item, &state, &packages).ok().flatten().is_some_and(|package| bundled_complete(item, &package))
+            } else { built_in_ready(item, &state) };
             json!({
                 "manifest": built_in_manifest(item),
-                "local": built_in_local(item, &state, built_in_ready(item, &state), disabled_skill_ids),
+                "local": built_in_local(item, &state, installed, disabled_skill_ids),
             })
         }).collect::<Vec<_>>(),
     })
@@ -601,6 +675,114 @@ fn market_companion_package(
     Ok(package)
 }
 
+// Bundled native packages share the existing package owner for all components.
+// Market state retains only the association; package enablement remains authoritative.
+fn bundled_installed(
+    item: &BuiltIn,
+    state: &BuiltInState,
+    packages: &[crate::plugins::packages::Package],
+) -> Result<Option<crate::plugins::packages::Package>, String> {
+    let Some(id) = state.plugin_id.as_deref() else {
+        return Ok(None);
+    };
+    let package = packages.iter().find(|p| p.id == id).cloned();
+    if let Some(package) = &package {
+        let suffix = format!("/bundled/{}", item.id);
+        if package.format != "kivio" || !package.source.replace('\\', "/").ends_with(&suffix) {
+            return Err("市场记录指向其他来源的插件，未执行操作".into());
+        }
+    }
+    Ok(package)
+}
+
+fn bundled_complete(item: &BuiltIn, package: &crate::plugins::packages::Package) -> bool {
+    let Some(details) = &item.details else {
+        return false;
+    };
+    package.name == item.id
+        && package.version == details.version
+        && package.diagnostics.is_empty()
+        && details.groups.iter().all(|group| {
+            package
+                .components
+                .get(&group.kind)
+                .copied()
+                .unwrap_or_default()
+                == group.items.len()
+        })
+}
+
+async fn install_bundled(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
+    use crate::plugins::packages::{
+        plugin_packages_import, plugin_packages_remove, plugin_packages_set_enabled,
+    };
+    let previous = built_in_state(item);
+    let old = bundled_installed(
+        item,
+        &previous,
+        &crate::plugins::packages::plugin_packages_list()?,
+    )?;
+    if old.as_ref().is_some_and(|p| bundled_complete(item, p))
+        && previous.revision.as_deref() == Some(&item.revision)
+    {
+        let id = old.as_ref().unwrap().id.clone();
+        plugin_packages_set_enabled(app.clone(), app.state::<AppState>(), id, true).await?;
+        return Ok(());
+    }
+    let source = item.bundled.as_ref().ok_or("缺少内置插件包")?;
+    let new = plugin_packages_import(source.display().to_string(), None).await?;
+    let result = async {
+        if !bundled_complete(item, &new) {
+            return Err("插件组件未完整导入".to_string());
+        }
+        if let Some(old) = old.as_ref().filter(|p| p.enabled) {
+            plugin_packages_set_enabled(
+                app.clone(),
+                app.state::<AppState>(),
+                old.id.clone(),
+                false,
+            )
+            .await?;
+        }
+        plugin_packages_set_enabled(app.clone(), app.state::<AppState>(), new.id.clone(), true)
+            .await?;
+        save_built_in_state(
+            item,
+            &BuiltInState {
+                revision: Some(item.revision.clone()),
+                plugin_id: Some(new.id.clone()),
+                owned_skills: vec![],
+            },
+        )
+    }
+    .await;
+    if let Err(error) = result {
+        let cleanup = plugin_packages_remove(app.clone(), app.state::<AppState>(), new.id).await;
+        let restore = if let Some(old) = old.as_ref().filter(|p| p.enabled) {
+            plugin_packages_set_enabled(app.clone(), app.state::<AppState>(), old.id.clone(), true)
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        return Err(format!(
+            "{error}{}{}",
+            cleanup
+                .err()
+                .map(|e| format!("；清理失败：{e}"))
+                .unwrap_or_default(),
+            restore
+                .err()
+                .map(|e| format!("；恢复失败：{e}"))
+                .unwrap_or_default()
+        ));
+    }
+    if let Some(old) = old {
+        plugin_packages_remove(app.clone(), app.state::<AppState>(), old.id).await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 操作
 // ---------------------------------------------------------------------------
@@ -612,6 +794,22 @@ async fn set_built_in_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     let saved = built_in_state(item);
+    if item.bundled.is_some() {
+        let package = bundled_installed(
+            item,
+            &saved,
+            &crate::plugins::packages::plugin_packages_list()?,
+        )?
+        .ok_or("插件尚未安装")?;
+        crate::plugins::packages::plugin_packages_set_enabled(
+            app.clone(),
+            app.state::<AppState>(),
+            package.id,
+            enabled,
+        )
+        .await?;
+        return Ok(());
+    }
     if !built_in_ready(item, &saved) {
         return Err(format!("{} 尚未安装", item.name));
     }
@@ -648,6 +846,9 @@ async fn set_built_in_enabled(
 }
 
 async fn install_plugin(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
+    if item.bundled.is_some() {
+        return install_bundled(app, item).await;
+    }
     let previous = built_in_state(item);
     if built_in_ready(item, &previous) {
         return Ok(());
@@ -810,6 +1011,21 @@ async fn install_plugin(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
 
 async fn uninstall_plugin(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
     let state = built_in_state(item);
+    if item.bundled.is_some() {
+        if let Some(package) = bundled_installed(
+            item,
+            &state,
+            &crate::plugins::packages::plugin_packages_list()?,
+        )? {
+            crate::plugins::packages::plugin_packages_remove(
+                app.clone(),
+                app.state::<AppState>(),
+                package.id,
+            )
+            .await?;
+        }
+        return save_built_in_state(item, &BuiltInState::default());
+    }
     if state.revision.is_none() && state.plugin_id.is_none() {
         return Err(format!("{} 尚未安装", item.name));
     }
@@ -965,11 +1181,30 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalog_loads_feishu_and_wecom() {
+    fn bundled_catalog_preserves_legacy_plugins_and_exposes_native_components() {
         let catalog = catalog();
         let ids: Vec<_> = catalog.plugins.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["feishu-cli", "wecom-cli"]);
+        assert_eq!(ids.len(), 32);
+        assert!(ids.starts_with(&["feishu-cli", "wecom-cli"]));
+        assert_eq!(
+            ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            ids.len()
+        );
         for item in &catalog.plugins {
+            if item.bundled.is_some() {
+                let manifest = built_in_manifest(item);
+                assert!(manifest["mainSkillId"].is_null());
+                assert!(item.entry.is_none());
+                assert!(item
+                    .details
+                    .as_ref()
+                    .unwrap()
+                    .groups
+                    .iter()
+                    .any(|group| group.kind == "skills"
+                        && group.items.iter().any(|skill| skill.name == "setup")));
+                continue;
+            }
             assert!(
                 item.setup.contains("\nkivio-market-managed: true\n"),
                 "{}",
@@ -982,18 +1217,96 @@ mod tests {
                 item.id
             );
             assert!(!item.setup.contains("Dsivio"), "{}", item.id);
-            assert!(item.icon.contains("<svg"), "{}", item.id);
+            assert!(
+                item.icon.starts_with("data:image/png;base64,"),
+                "{}",
+                item.id
+            );
             assert!(item.skills.is_empty() && item.command.is_none());
         }
         let snapshot = snapshot_of(&catalog, &[]);
-        assert_eq!(snapshot["categories"][0]["id"], "productivity");
+        assert!(snapshot["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|category| category["id"] == "productivity"));
         let feishu = &snapshot["plugins"][0]["manifest"];
         assert_eq!(feishu["setupSkillId"], "feishu-cli-setup");
         assert_eq!(feishu["skillIds"], json!(["feishu-cli"]));
         assert!(feishu["icon"]
             .as_str()
             .unwrap()
-            .starts_with("data:image/svg+xml;base64,"));
+            .starts_with("data:image/png;base64,"));
+    }
+
+    #[tokio::test]
+    async fn native_catalog_packages_import_with_real_components_and_detect_missing_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let _root = crate::plugins::packages::TestPackagesRoot::new(dir.path());
+        for item in catalog()
+            .plugins
+            .into_iter()
+            .filter(|item| item.bundled.is_some())
+        {
+            let source = item.bundled.as_ref().unwrap();
+            let package = crate::plugins::packages::plugin_packages_import(
+                source.display().to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(
+                !package.enabled,
+                "import must not enable or execute dependencies"
+            );
+            assert!(
+                bundled_complete(&item, &package),
+                "{}: {:?}",
+                item.id,
+                package.diagnostics
+            );
+            let details =
+                crate::plugins::packages::details::plugin_packages_describe(package.id.clone())
+                    .await
+                    .unwrap();
+            assert!(details.diagnostics.is_empty(), "{}", item.id);
+            let skills = details
+                .groups
+                .iter()
+                .find(|group| group.kind == "skills")
+                .unwrap();
+            assert!(skills.items.iter().any(|skill| skill.name == "setup"));
+            assert!(
+                skills
+                    .items
+                    .iter()
+                    .filter(|skill| skill.name != "setup")
+                    .count()
+                    >= 1
+            );
+            let state = BuiltInState {
+                revision: Some(item.revision.clone()),
+                plugin_id: Some(package.id.clone()),
+                owned_skills: vec![],
+            };
+            assert!(built_in_ready(&item, &state), "{}", item.id);
+            let local = built_in_local(&item, &state, true, &[]).unwrap();
+            assert_eq!(local["enabled"], false);
+            assert_eq!(local["packageId"], package.id);
+            // Damage the managed copy, preserving the shipped source and installation record.
+            fs::remove_file(
+                dir.path()
+                    .join(&package.id)
+                    .join("content/skills/setup/SKILL.md"),
+            )
+            .unwrap();
+            assert!(
+                !built_in_ready(&item, &state),
+                "{} must offer repair",
+                item.id
+            );
+            assert!(source.join("skills/setup/SKILL.md").is_file());
+        }
     }
 
     #[test]

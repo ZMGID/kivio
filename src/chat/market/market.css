@@ -31,7 +31,6 @@
 .kv-market-installed-item .kv-market-icon { background: transparent; }
 
 .kv-market-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 36px; height: 36px; padding: 6px; border-radius: 10px; background: var(--color-muted); color: var(--color-muted-foreground); overflow: hidden; }
-.kv-market-brand-mark { width: 100%; height: 100%; background: var(--text); mask-size: contain; mask-position: center; mask-repeat: no-repeat; }
 .kv-market-logo { width: 100%; height: 100%; object-fit: contain; }
 .kv-market-icon.is-lg { width: 64px; height: 64px; padding: 12px; border-radius: 16px; }
 

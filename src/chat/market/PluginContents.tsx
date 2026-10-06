@@ -7,15 +7,16 @@ import { Button } from '../../components/Button'
 import { useLang } from '../../components/i18n'
 
 /** Owns a detail request; navigation/unmount isolates late results from the next plugin. */
-export function PluginContents({ packageId, marketplaceId, plugin, version, information, children }: {
+export function PluginContents({ packageId, marketplaceId, plugin, version, information, children, bundledDetails }: {
   packageId?: string; marketplaceId?: string; plugin?: string; version: string | null
-  information: ReactNode; children?: ReactNode
+  information: ReactNode; children?: ReactNode; bundledDetails?: PluginDetails
 }) {
   const zh = useLang() === 'zh'
   const text = (cn: string, en: string) => zh ? cn : en
   const [attempt, setAttempt] = useState(0)
   const [state, setState] = useState<{ details?: PluginDetails; error?: string }>({})
   useEffect(() => {
+    if (bundledDetails) return
     let disposed = false
     setState({})
     const request = packageId ? packageApi.describe(packageId) : marketplaceApi.describe(marketplaceId!, plugin!)
@@ -23,7 +24,7 @@ export function PluginContents({ packageId, marketplaceId, plugin, version, info
       if (!disposed) setState({ error: String(error) })
     })
     return () => { disposed = true }
-  }, [packageId, marketplaceId, plugin, attempt])
+  }, [packageId, marketplaceId, plugin, attempt, bundledDetails])
   const kinds = {
     mcp: { label: text('MCP 服务器', 'MCP servers'), Icon: Server },
     skills: { label: text('技能', 'Skills'), Icon: WandSparkles },
@@ -31,7 +32,7 @@ export function PluginContents({ packageId, marketplaceId, plugin, version, info
     agents: { label: text('智能体', 'Agents'), Icon: Bot },
     hooks: { label: 'Hooks', Icon: Anchor },
   }
-  const details = state.details
+  const details = bundledDetails ?? state.details
   const homepage = details?.homepage && /^https?:\/\//i.test(details.homepage) ? details.homepage : null
   return <>
     {!details && <section className="kv-market-block" aria-live="polite">

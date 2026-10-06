@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "obsidian",
+  "version": "1.0.0",
+  "description": "管理 Obsidian 笔记、属性和 Canvas；CLI 需要桌面应用运行并启用。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://help.obsidian.md/cli"
+  }
+}

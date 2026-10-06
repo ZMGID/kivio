@@ -1,8 +1,28 @@
 {
   "categories": [
     {
+      "id": "developer-tools",
+      "name": "开发者工具"
+    },
+    {
+      "id": "cloud",
+      "name": "云服务与部署"
+    },
+    {
       "id": "productivity",
       "name": "效率办公"
+    },
+    {
+      "id": "documents",
+      "name": "文档与报告"
+    },
+    {
+      "id": "media",
+      "name": "音视频与图像"
+    },
+    {
+      "id": "data",
+      "name": "数据与文件"
     }
   ],
   "plugins": [
@@ -16,7 +36,7 @@
       "startPrompt": "使用飞书 CLI，告诉我可以做什么。",
       "setup": "feishu-cli-setup/SKILL.md",
       "entry": "feishu-cli/SKILL.md",
-      "icon": "feishu-logo.svg",
+      "icon": "icons/feishu-cli.png",
       "iconPath": "assets/feishu-logo.svg",
       "repository": "larksuite/cli",
       "revision": "ceace6d9349f827a5f5a646aac51e2c5ef428d48",
@@ -36,7 +56,7 @@
       "startPrompt": "使用企业微信 CLI，告诉我可以做什么。",
       "setup": "wecom-cli-setup/SKILL.md",
       "entry": "wecom-cli/SKILL.md",
-      "icon": "wecom-logo.svg",
+      "icon": "icons/wecom-cli.png",
       "iconPath": "assets/wecom-logo.svg",
       "repository": "WecomTeam/wecom-cli",
       "revision": "5ef249b2287caad144698e84c188f75345ff3edb",
@@ -45,6 +65,456 @@
         "productivity"
       ],
       "unpack": "skills"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "summary": "通过 gh 处理 Pull Request、Issue 和 Actions；需要 GitHub 账号授权。",
+      "welcome": "帮我检查这个仓库的待审 PR 和失败的 CI。",
+      "inputHint": "帮我检查这个仓库的待审 PR 和失败的 CI。",
+      "startPrompt": "使用 GitHub 插件。先按需要加载 github:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/github.png",
+      "repository": "cli/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/github"
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "summary": "通过官方 glab 处理 Merge Request、Issue 与 CI/CD，支持自托管 GitLab。",
+      "welcome": "帮我找出这个 GitLab 项目流水线失败的原因。",
+      "inputHint": "帮我找出这个 GitLab 项目流水线失败的原因。",
+      "startPrompt": "使用 GitLab 插件。先按需要加载 gitlab:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/gitlab.png",
+      "repository": "gitlabhq/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/gitlab"
+    },
+    {
+      "id": "aliyun",
+      "name": "阿里云 CLI",
+      "summary": "查询阿里云资源并执行明确授权的变更；需要对应 RAM 权限与地域配置。",
+      "welcome": "帮我列出指定地域的 ECS 实例，并检查异常状态。",
+      "inputHint": "帮我列出指定地域的 ECS 实例，并检查异常状态。",
+      "startPrompt": "使用 阿里云 CLI 插件。先按需要加载 aliyun:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/aliyun.png",
+      "repository": "aliyun/aliyun-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/aliyun"
+    },
+    {
+      "id": "docker",
+      "name": "Docker",
+      "summary": "检查容器、镜像和 Compose 项目；需要可访问的 Docker Engine。",
+      "welcome": "检查当前 Compose 项目有哪些容器不健康。",
+      "inputHint": "检查当前 Compose 项目有哪些容器不健康。",
+      "startPrompt": "使用 Docker 插件。先按需要加载 docker:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/docker.svg",
+      "repository": "docker/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/docker"
+    },
+    {
+      "id": "kubernetes",
+      "name": "Kubernetes",
+      "summary": "通过 kubectl 诊断工作负载与发布状态；需要集群配置和相应 RBAC。",
+      "welcome": "帮我检查指定命名空间里 Pod 无法启动的原因。",
+      "inputHint": "帮我检查指定命名空间里 Pod 无法启动的原因。",
+      "startPrompt": "使用 Kubernetes 插件。先按需要加载 kubernetes:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/kubernetes.svg",
+      "repository": "kubernetes/kubectl",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/kubernetes"
+    },
+    {
+      "id": "helm",
+      "name": "Helm",
+      "summary": "检查与部署 Helm Chart；需要 Kubernetes 集群，渲染可在本地完成。",
+      "welcome": "帮我审阅这个 Helm Chart 的渲染结果。",
+      "inputHint": "帮我审阅这个 Helm Chart 的渲染结果。",
+      "startPrompt": "使用 Helm 插件。先按需要加载 helm:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/helm.svg",
+      "repository": "helm/helm",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/helm"
+    },
+    {
+      "id": "terraform",
+      "name": "Terraform",
+      "summary": "审阅基础设施配置与执行计划；真实变更需要云凭证和明确授权。",
+      "welcome": "帮我检查 Terraform 变更计划里有没有意外删除。",
+      "inputHint": "帮我检查 Terraform 变更计划里有没有意外删除。",
+      "startPrompt": "使用 Terraform 插件。先按需要加载 terraform:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/terraform.svg",
+      "repository": "hashicorp/terraform",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/terraform"
+    },
+    {
+      "id": "aws",
+      "name": "AWS CLI",
+      "summary": "查询 AWS 资源和 CloudWatch 日志；需要 profile、region 与 IAM 权限。",
+      "welcome": "查看指定 AWS 地域的实例状态，并定位异常日志。",
+      "inputHint": "查看指定 AWS 地域的实例状态，并定位异常日志。",
+      "startPrompt": "使用 AWS CLI 插件。先按需要加载 aws:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/aws.svg",
+      "repository": "aws/aws-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/aws"
+    },
+    {
+      "id": "azure",
+      "name": "Azure CLI",
+      "summary": "查询 Azure 资源组、资源与部署；需要租户登录和订阅权限。",
+      "welcome": "帮我查看指定 Azure 订阅下的资源组。",
+      "inputHint": "帮我查看指定 Azure 订阅下的资源组。",
+      "startPrompt": "使用 Azure CLI 插件。先按需要加载 azure:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/azure.svg",
+      "repository": "Azure/azure-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/azure"
+    },
+    {
+      "id": "digitalocean",
+      "name": "DigitalOcean",
+      "summary": "通过 doctl 查询 Droplet、应用与集群；需要 DigitalOcean API 授权。",
+      "welcome": "查看我的 DigitalOcean Droplet 状态。",
+      "inputHint": "查看我的 DigitalOcean Droplet 状态。",
+      "startPrompt": "使用 DigitalOcean 插件。先按需要加载 digitalocean:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/digitalocean.svg",
+      "repository": "digitalocean/doctl",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/digitalocean"
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "summary": "检查 Vercel 项目、预览部署与构建日志；需要账号和项目访问权限。",
+      "welcome": "帮我检查 Vercel 最近一次预览部署为什么失败。",
+      "inputHint": "帮我检查 Vercel 最近一次预览部署为什么失败。",
+      "startPrompt": "使用 Vercel 插件。先按需要加载 vercel:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/vercel.svg",
+      "repository": "vercel/vercel",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/vercel"
+    },
+    {
+      "id": "netlify",
+      "name": "Netlify",
+      "summary": "检查 Netlify 站点、构建和草稿部署；需要账号及站点权限。",
+      "welcome": "检查这个 Netlify 站点的配置并准备草稿部署。",
+      "inputHint": "检查这个 Netlify 站点的配置并准备草稿部署。",
+      "startPrompt": "使用 Netlify 插件。先按需要加载 netlify:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/netlify.svg",
+      "repository": "netlify/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/netlify"
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare Wrangler",
+      "summary": "开发与部署 Cloudflare Workers，检查 KV/R2；需要目标账户权限。",
+      "welcome": "帮我检查 Worker 的绑定配置并准备预览部署。",
+      "inputHint": "帮我检查 Worker 的绑定配置并准备预览部署。",
+      "startPrompt": "使用 Cloudflare Wrangler 插件。先按需要加载 cloudflare:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/cloudflare.svg",
+      "repository": "cloudflare/workers-sdk",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/cloudflare"
+    },
+    {
+      "id": "supabase",
+      "name": "Supabase",
+      "summary": "管理 Supabase 本地开发、迁移和 Edge Functions；本地栈需要 Docker。",
+      "welcome": "帮我检查 Supabase 迁移文件是否会影响现有数据。",
+      "inputHint": "帮我检查 Supabase 迁移文件是否会影响现有数据。",
+      "startPrompt": "使用 Supabase 插件。先按需要加载 supabase:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/supabase.svg",
+      "repository": "supabase/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/supabase"
+    },
+    {
+      "id": "firebase",
+      "name": "Firebase",
+      "summary": "检查 Firebase 项目、模拟器与 Hosting；需要 Google 项目权限。",
+      "welcome": "检查 Firebase Hosting 配置并准备预览频道。",
+      "inputHint": "检查 Firebase Hosting 配置并准备预览频道。",
+      "startPrompt": "使用 Firebase 插件。先按需要加载 firebase:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/firebase.svg",
+      "repository": "firebase/firebase-tools",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "cloud"
+      ],
+      "bundled": "bundled/firebase"
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry CLI",
+      "summary": "管理 Sentry Release、Source Map 与部署记录；需要组织和项目权限。",
+      "welcome": "检查这个版本的 Sentry Source Map 上传配置。",
+      "inputHint": "检查这个版本的 Sentry Source Map 上传配置。",
+      "startPrompt": "使用 Sentry CLI 插件。先按需要加载 sentry:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/sentry.svg",
+      "repository": "getsentry/sentry-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/sentry"
+    },
+    {
+      "id": "stripe",
+      "name": "Stripe CLI",
+      "summary": "调试 Stripe 测试事件和 Webhook；需要 Stripe 登录，默认使用测试环境。",
+      "welcome": "帮我检查本地 Stripe Webhook 的测试流程。",
+      "inputHint": "帮我检查本地 Stripe Webhook 的测试流程。",
+      "startPrompt": "使用 Stripe CLI 插件。先按需要加载 stripe:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/stripe.svg",
+      "repository": "stripe/stripe-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/stripe"
+    },
+    {
+      "id": "dingtalk",
+      "name": "钉钉 Workspace",
+      "summary": "通过 dws 处理钉钉消息与文档；当前需企业管理员授权开通。",
+      "welcome": "检查钉钉账号是否就绪，然后找出指定文档。",
+      "inputHint": "检查钉钉账号是否就绪，然后找出指定文档。",
+      "startPrompt": "使用 钉钉 Workspace 插件。先按需要加载 dingtalk:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/dingtalk.png",
+      "repository": "DingTalk-Real-AI/dingtalk-workspace-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "productivity"
+      ],
+      "bundled": "bundled/dingtalk"
+    },
+    {
+      "id": "tencent-meeting",
+      "name": "腾讯会议",
+      "summary": "查询会议、录制和参会信息；需要腾讯会议 OAuth 与相应账号权限。",
+      "welcome": "列出我即将开始的腾讯会议。",
+      "inputHint": "列出我即将开始的腾讯会议。",
+      "startPrompt": "使用 腾讯会议 插件。先按需要加载 tencent-meeting:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/tencent-meeting.png",
+      "repository": "TencentCloud/tencentmeeting-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "productivity"
+      ],
+      "bundled": "bundled/tencent-meeting"
+    },
+    {
+      "id": "google-workspace",
+      "name": "Google Workspace CLI",
+      "summary": "通过 gws 处理 Drive、Gmail 与 Calendar；需 OAuth 项目，非 Google 官方支持产品。",
+      "welcome": "找出我 Google Drive 最近更新的几份文档。",
+      "inputHint": "找出我 Google Drive 最近更新的几份文档。",
+      "startPrompt": "使用 Google Workspace CLI 插件。先按需要加载 google-workspace:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/google-workspace.svg",
+      "repository": "googleworkspace/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "productivity"
+      ],
+      "bundled": "bundled/google-workspace"
+    },
+    {
+      "id": "obsidian",
+      "name": "Obsidian",
+      "summary": "管理 Obsidian 笔记、属性和 Canvas；CLI 需要桌面应用运行并启用。",
+      "welcome": "帮我整理指定 Obsidian 笔记中的链接与属性。",
+      "inputHint": "帮我整理指定 Obsidian 笔记中的链接与属性。",
+      "startPrompt": "使用 Obsidian 插件。先按需要加载 obsidian:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/obsidian.png",
+      "repository": "kepano/obsidian-skills",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "productivity"
+      ],
+      "bundled": "bundled/obsidian"
+    },
+    {
+      "id": "pandoc",
+      "name": "Pandoc",
+      "summary": "转换 Markdown、DOCX、HTML 等文档；PDF 输出需要额外渲染引擎。",
+      "welcome": "把这份 Markdown 转成保留目录和引用的 Word 文档。",
+      "inputHint": "把这份 Markdown 转成保留目录和引用的 Word 文档。",
+      "startPrompt": "使用 Pandoc 插件。先按需要加载 pandoc:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/pandoc.svg",
+      "repository": "jgm/pandoc",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "documents"
+      ],
+      "bundled": "bundled/pandoc"
+    },
+    {
+      "id": "quarto",
+      "name": "Quarto",
+      "summary": "生成可复现报告、技术文档和幻灯片；代码块可能需要 Python 或 R。",
+      "welcome": "将这份分析草稿整理为可复现的 Quarto 报告。",
+      "inputHint": "将这份分析草稿整理为可复现的 Quarto 报告。",
+      "startPrompt": "使用 Quarto 插件。先按需要加载 quarto:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/quarto.png",
+      "repository": "quarto-dev/quarto-cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "documents"
+      ],
+      "bundled": "bundled/quarto"
+    },
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg",
+      "summary": "分析音视频、转码、剪辑和提取音轨；能力取决于本机编译的编解码器。",
+      "welcome": "检查这个视频的编码，并压缩成适合分享的 MP4。",
+      "inputHint": "检查这个视频的编码，并压缩成适合分享的 MP4。",
+      "startPrompt": "使用 FFmpeg 插件。先按需要加载 ffmpeg:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/ffmpeg.png",
+      "repository": "FFmpeg/FFmpeg",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "media"
+      ],
+      "bundled": "bundled/ffmpeg"
+    },
+    {
+      "id": "imagemagick",
+      "name": "ImageMagick",
+      "summary": "批量缩放、裁剪、转换和拼图；使用 ImageMagick 7 的 magick 命令。",
+      "welcome": "把这一批图片等比缩小并生成联系表。",
+      "inputHint": "把这一批图片等比缩小并生成联系表。",
+      "startPrompt": "使用 ImageMagick 插件。先按需要加载 imagemagick:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/imagemagick.png",
+      "repository": "ImageMagick/ImageMagick",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "media"
+      ],
+      "bundled": "bundled/imagemagick"
+    },
+    {
+      "id": "yt-dlp",
+      "name": "yt-dlp",
+      "summary": "下载获准保存的网络音视频；部分站点需 FFmpeg、登录或额外运行时。",
+      "welcome": "检查这个视频有哪些可下载格式，先不要下载。",
+      "inputHint": "检查这个视频有哪些可下载格式，先不要下载。",
+      "startPrompt": "使用 yt-dlp 插件。先按需要加载 yt-dlp:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/yt-dlp.png",
+      "repository": "yt-dlp/yt-dlp",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "media"
+      ],
+      "bundled": "bundled/yt-dlp"
+    },
+    {
+      "id": "rclone",
+      "name": "Rclone",
+      "summary": "列出、复制和核对云盘文件；需要用户已有 remote，同步可能删除目标数据。",
+      "welcome": "对比本地目录和指定云盘目录，先列出差异。",
+      "inputHint": "对比本地目录和指定云盘目录，先列出差异。",
+      "startPrompt": "使用 Rclone 插件。先按需要加载 rclone:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/rclone.svg",
+      "repository": "rclone/rclone",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "data"
+      ],
+      "bundled": "bundled/rclone"
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "summary": "检查本地 SQLite 数据库并查询数据；默认只读，不需要云账号。",
+      "welcome": "只读检查这个 SQLite 数据库的表结构。",
+      "inputHint": "只读检查这个 SQLite 数据库的表结构。",
+      "startPrompt": "使用 SQLite 插件。先按需要加载 sqlite:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/sqlite.svg",
+      "repository": "sqlite/sqlite",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "data"
+      ],
+      "bundled": "bundled/sqlite"
+    },
+    {
+      "id": "duckdb",
+      "name": "DuckDB",
+      "summary": "分析本地 CSV、Parquet 与 DuckDB 数据；默认只读，远程扩展按需启用。",
+      "welcome": "分析这份 Parquet 文件的结构和缺失值。",
+      "inputHint": "分析这份 Parquet 文件的结构和缺失值。",
+      "startPrompt": "使用 DuckDB 插件。先按需要加载 duckdb:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/duckdb.svg",
+      "repository": "duckdb/duckdb",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "data"
+      ],
+      "bundled": "bundled/duckdb"
+    },
+    {
+      "id": "httpie",
+      "name": "HTTPie",
+      "summary": "构造和诊断 HTTP API 请求；认证沿用用户本地安全配置。",
+      "welcome": "帮我构造这个 API 的请求，先离线预览。",
+      "inputHint": "帮我构造这个 API 的请求，先离线预览。",
+      "startPrompt": "使用 HTTPie 插件。先按需要加载 httpie:setup 检查环境，再介绍已安装的具体能力；暂不执行业务写操作。",
+      "icon": "icons/httpie.png",
+      "repository": "httpie/cli",
+      "revision": "1.0.0",
+      "categoryIds": [
+        "developer-tools"
+      ],
+      "bundled": "bundled/httpie"
     }
   ]
 }

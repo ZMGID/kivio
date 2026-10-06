@@ -1941,7 +1941,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
-  // 插件市场“使用”：新建对话并绑定插件主 Skill，再发出插件的开场消息。
+  // 插件市场“使用”：新建对话并发出开场消息；原有单入口插件仍兼容 Skill 绑定。
   // Skill 由会话的 activeSkillId 决定（后端每次发送都会重新扫描），不依赖本地 skills 列表是否已刷新。
   const handleMarketUse = useCallback(async (plugin: MarketPlugin) => {
     if (usesExternalRuntime || usesChatRuntime) {

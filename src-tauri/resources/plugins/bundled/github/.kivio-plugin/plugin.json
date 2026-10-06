@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "github",
+  "version": "1.0.0",
+  "description": "通过 gh 处理 Pull Request、Issue 和 Actions；需要 GitHub 账号授权。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://cli.github.com/manual/"
+  }
+}

@@ -1,7 +1,7 @@
 //! Read-only component inspection shared by installed packages and marketplace previews.
 use super::*;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Details {
     pub author: Option<String>,
@@ -11,12 +11,12 @@ pub struct Details {
     pub groups: Vec<Group>,
     pub diagnostics: Vec<String>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Group {
     pub kind: String,
     pub items: Vec<Item>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Item {
     pub name: String,
     pub description: String,
@@ -155,6 +155,11 @@ fn read(root: &Path, normalized: bool) -> Result<Details, String> {
         }
     }
     Ok(details)
+}
+
+/// Inspect shipped native packages without staging, installing or executing them.
+pub(crate) fn describe_bundled(root: &Path) -> Result<Details, String> {
+    read(root, false)
 }
 
 #[tauri::command]

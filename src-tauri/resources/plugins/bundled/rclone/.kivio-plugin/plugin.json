@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "rclone",
+  "version": "1.0.0",
+  "description": "列出、复制和核对云盘文件；需要用户已有 remote，同步可能删除目标数据。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://rclone.org/docs/"
+  }
+}

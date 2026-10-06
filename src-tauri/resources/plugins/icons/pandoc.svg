@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 100 100">
+  <title>Pandoc Logo</title>
+  <!-- background -->
+  <rect fill="#fed" stroke="none" width="100" height="100"/>
+  <g fill="none"
+     stroke="#4093da"
+     stroke-linecap="round"
+     stroke-linejoin="round"
+     stroke-width="6"
+     transform="skewX(-6) translate(8 1)">
+    <!-- reverse pilcrow -->
+    <path
+        d="M 30,10
+           l 0,80
+           M 45,10
+           l 0,80
+           M 20,10
+           l 40,0
+           l 18,18
+           l 0,25
+           l -33,0" />
+    <!-- "document fold" triangle -->
+    <path
+        fill="#4093da"
+        stroke-width="4"
+        d="M 61,10
+           l 17,17
+           l -17,0
+           l 0,-17" />
+  </g>
+</svg>
+

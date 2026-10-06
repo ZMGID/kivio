@@ -73,6 +73,33 @@ describe('pluginAction', () => {
 })
 
 describe('MarketPage', () => {
+  it('shows native bundled capabilities without a principal skill or duplicate installed package', async () => {
+    const native = plugin({ status: 'ready', enabled: true, error: null, packageId: 'bundled-id' })
+    native.manifest = { ...native.manifest, id: 'github', name: 'GitHub', mainSkillId: null, skillIds: [], setupSkillId: 'github:setup',
+      details: { author: 'Kivio', version: '1.0.0', homepage: null, license: null, diagnostics: [], groups: [
+        { kind: 'skills', items: [{ name: 'setup', description: '验证环境' }, { name: 'pull-requests', description: '审阅 Pull Request' }] },
+      ] } }
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(native))
+    vi.mocked(packageApi.list).mockResolvedValue([{ id: 'bundled-id', name: 'github', description: 'Managed package', version: '1.0.0', source: '/plugins/bundled/github', revision: null, enabled: true, format: 'kivio', components: { skills: 2 }, diagnostics: [] }])
+    const onUse = vi.fn()
+    render(<MarketPage onUse={onUse} onSkillsChanged={vi.fn()} />)
+    const installed = await screen.findByRole('button', { name: 'GitHub' })
+    expect(installed.querySelector('img')).toHaveAttribute('src', native.manifest.icon)
+    fireEvent.click(installed)
+    const heading = await screen.findByRole('heading', { name: 'GitHub' })
+    expect(heading.parentElement?.parentElement?.querySelector('img')).toHaveAttribute('src', native.manifest.icon)
+    expect(screen.getByText('pull-requests')).toBeInTheDocument()
+    expect(screen.getByText('验证环境')).toBeInTheDocument()
+    expect(screen.queryByText('正在读取插件内容…')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '使用' }))
+    await waitFor(() => expect(onUse).toHaveBeenCalledWith(native))
+    fireEvent.click(screen.getByRole('button', { name: '插件' }))
+    await screen.findByRole('tab', { name: '个人' })
+    expect(screen.queryByRole('button', { name: 'github' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: '个人' }))
+    expect(screen.queryByText('Managed package')).not.toBeInTheDocument()
+  })
+
   it('shows Claude logos in the catalog, details and installed row and falls back on image errors', async () => {
     const source = 'https://github.com/anthropics/claude-plugins-official'
     const adobe = { name: 'adobe-for-creativity', displayName: 'Adobe', description: 'Creative tools', version: null, category: 'design', unavailableReason: null }

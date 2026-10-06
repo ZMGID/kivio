@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "supabase",
+  "version": "1.0.0",
+  "description": "管理 Supabase 本地开发、迁移和 Edge Functions；本地栈需要 Docker。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://supabase.com/docs/reference/cli/"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "azure",
+  "version": "1.0.0",
+  "description": "查询 Azure 资源组、资源与部署；需要租户登录和订阅权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://learn.microsoft.com/cli/azure/"
+  }
+}

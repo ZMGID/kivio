@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "gitlab",
+  "version": "1.0.0",
+  "description": "通过官方 glab 处理 Merge Request、Issue 与 CI/CD，支持自托管 GitLab。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.gitlab.com/cli/"
+  }
+}

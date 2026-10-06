@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "aws",
+  "version": "1.0.0",
+  "description": "查询 AWS 资源和 CloudWatch 日志；需要 profile、region 与 IAM 权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.aws.amazon.com/cli/latest/userguide/"
+  }
+}

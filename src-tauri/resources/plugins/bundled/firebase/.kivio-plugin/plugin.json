@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "firebase",
+  "version": "1.0.0",
+  "description": "检查 Firebase 项目、模拟器与 Hosting；需要 Google 项目权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://firebase.google.com/docs/cli"
+  }
+}

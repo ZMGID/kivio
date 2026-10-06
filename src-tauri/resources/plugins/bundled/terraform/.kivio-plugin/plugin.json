@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "terraform",
+  "version": "1.0.0",
+  "description": "审阅基础设施配置与执行计划；真实变更需要云凭证和明确授权。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://developer.hashicorp.com/terraform/cli"
+  }
+}

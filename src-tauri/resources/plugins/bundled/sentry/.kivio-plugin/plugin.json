@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "sentry",
+  "version": "1.0.0",
+  "description": "管理 Sentry Release、Source Map 与部署记录；需要组织和项目权限。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.sentry.io/cli/"
+  }
+}

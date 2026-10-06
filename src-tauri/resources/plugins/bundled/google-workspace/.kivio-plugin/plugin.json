@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "google-workspace",
+  "version": "1.0.0",
+  "description": "通过 gws 处理 Drive、Gmail 与 Calendar；需 OAuth 项目，非 Google 官方支持产品。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://github.com/googleworkspace/cli"
+  }
+}

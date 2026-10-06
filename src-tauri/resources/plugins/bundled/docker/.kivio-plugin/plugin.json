@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "docker",
+  "version": "1.0.0",
+  "description": "检查容器、镜像和 Compose 项目；需要可访问的 Docker Engine。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://docs.docker.com/reference/cli/docker/"
+  }
+}

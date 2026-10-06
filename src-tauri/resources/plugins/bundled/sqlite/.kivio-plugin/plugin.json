@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "sqlite",
+  "version": "1.0.0",
+  "description": "检查本地 SQLite 数据库并查询数据；默认只读，不需要云账号。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://sqlite.org/cli.html"
+  }
+}

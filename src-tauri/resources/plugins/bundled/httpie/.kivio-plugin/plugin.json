@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "httpie",
+  "version": "1.0.0",
+  "description": "构造和诊断 HTTP API 请求；认证沿用用户本地安全配置。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://httpie.io/docs/cli"
+  }
+}

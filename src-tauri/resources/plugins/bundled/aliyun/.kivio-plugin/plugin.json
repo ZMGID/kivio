@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "aliyun",
+  "version": "1.0.0",
+  "description": "查询阿里云资源并执行明确授权的变更；需要对应 RAM 权限与地域配置。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://www.alibabacloud.com/help/en/cli/"
+  }
+}

@@ -13,7 +13,9 @@ export type MarketManifest = {
   inputHint: string
   startPrompt: string
   setupSkillId: string
-  mainSkillId: string
+  /** Legacy entries bind one skill; native packages discover capabilities per task. */
+  mainSkillId: string | null
+  details?: PluginDetails | null
   skillIds: string[]
   checkCommand: string | null
   repository: string | null
@@ -21,6 +23,7 @@ export type MarketManifest = {
 }
 
 export type MarketLocal = {
+  packageId?: string | null
   status: 'ready' | 'failed'
   enabled: boolean
   error: string | null

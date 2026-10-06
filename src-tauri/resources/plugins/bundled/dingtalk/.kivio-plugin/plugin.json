@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "dingtalk",
+  "version": "1.0.0",
+  "description": "通过 dws 处理钉钉消息与文档；当前需企业管理员授权开通。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli"
+  }
+}

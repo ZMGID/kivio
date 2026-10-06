@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "kubernetes",
+  "version": "1.0.0",
+  "description": "通过 kubectl 诊断工作负载与发布状态；需要集群配置和相应 RBAC。",
+  "skills": "./skills/",
+  "metadata": {
+    "author": "Kivio",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://kubernetes.io/docs/reference/kubectl/"
+  }
+}

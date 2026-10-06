@@ -19,3 +19,7 @@
 # The exporter writes LF; without this, autocrlf=true checkouts get CRLF and
 # the check fails on Windows (and so do typecheck/build, which chain it).
 src/generated/** -text
+
+# Preserve upstream branding bytes and license formatting for provenance hashes.
+src-tauri/resources/plugins/icons/* -text whitespace=cr-at-eol,-blank-at-eof
+docs/licenses/PandocLogo-CC-BY-SA-4.0.txt -text whitespace=cr-at-eol,-blank-at-eof
