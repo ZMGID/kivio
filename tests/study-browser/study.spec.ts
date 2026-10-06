@@ -18,6 +18,17 @@ async function importPdf(page: Page, name?: string, pages?: string[]) {
   await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
 }
+async function expectPdfInk(page: Page) {
+  // A mounted canvas can still be blank before the PDF page has reached the compositor.
+  // Check actual pixels rather than treating a DOM node as proof of successful rendering.
+  await expect.poll(async () => page.locator('.kv-study-reader-paper canvas').evaluate((node) => {
+    const canvas = node as HTMLCanvasElement
+    const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, Math.min(canvas.height, 350)).data
+    let ink = 0
+    for (let i = 0; i < pixels.length; i += 16) if (pixels[i + 3] > 200 && pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) ink += 1
+    return ink
+  })).toBeGreaterThan(20)
+}
 async function question(page: Page, value: string) { await page.getByLabel('Question about this page').fill(value) }
 async function screenshot(page: Page, path: string) { await page.screenshot({ path, fullPage: true }) }
 
@@ -40,6 +51,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await expect(page.locator('.kv-study-turn')).toHaveCount(2)
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
   expect(await page.evaluate(() => window.__studyTest.requests[1].systemPrompt)).toContain('CHECK MODE')
+  await expectPdfInk(page)
   await screenshot(page, info.outputPath('study-desktop.png'))
   await page.getByRole('button', { name: /下一页|Next page/ }).click()
   await question(page, 'Second page draft')
@@ -58,10 +70,12 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
   await expect(page.locator('.kv-study')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
   await expect(page.locator('.kv-study')).not.toHaveCSS('background-color', 'rgb(255, 255, 255)')
+  await expectPdfInk(page)
   await screenshot(page, info.outputPath('study-dark.png'))
   await page.goto('/tests/study-browser/index.html?lang=zh')
   await expect(page.getByText('一起想明白', { exact: true })).toBeVisible()
   await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await expectPdfInk(page)
   await screenshot(page, info.outputPath('study-chinese.png'))
 })
 
