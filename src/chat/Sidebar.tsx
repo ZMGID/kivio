@@ -26,13 +26,14 @@ import { SetDialog } from './SetDialog'
 import { SidebarAccountMenu } from './SidebarAccountMenu'
 import { getSettingsCached } from '../api/settingsCache'
 import { IconButton } from '../components/Button'
+import { Select } from '../settings/public/controls'
 import { chatApi } from './api'
 import { applyIdOrder, moveIdToIndex } from '../utils/pointerReorder'
 import { useInsertionReorder } from '../utils/insertionReorder'
 import { applyConversationPins, withPinAt, type ConversationPin } from './conversationPins'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, isMac, usesNativeTitlebar } from './platform'
-import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH } from './persistence'
+import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedSidebarView, rememberSidebarView } from './persistence'
 import { useChatPerfRenderProbe } from './chatPerformanceProbe'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import type { ChatUserProfile } from './types'
@@ -41,6 +42,7 @@ import { i18n, useT, type I18n, type Lang } from '../components/i18n'
 import { conversationMarkdownFilename } from './conversationExport'
 import { displayConversationTitle, isPlaceholderTitle, isProvisionalTitle } from './conversationTitle'
 import { SwapTitle } from './SwapTitle'
+import { ProjectIcon } from './ProjectIcon'
 import { alertDialog, confirmDialog } from '../components/dialogQueue'
 
 function resolveChatUserProfile(
@@ -712,6 +714,15 @@ export const Sidebar = memo(function Sidebar({
   const [fullSearchResults, setFullSearchResults] = useState<ConversationSearchHit[]>([])
   // 侧栏三块改为横排标签页：同一时刻只显示一块（对话/集/项目）。
   const [activeTab, setActiveTab] = useState<'conversations' | 'sets' | 'projects'>('conversations')
+  const [sidebarView, setSidebarView] = useState(getRememberedSidebarView)
+  const flatView = sidebarView === 'flat'
+  const [flatScope, setFlatScope] = useState('all')
+  const toggleSidebarView = () => {
+    const next = flatView ? 'classic' : 'flat'
+    setSidebarView(next)
+    rememberSidebarView(next)
+  }
+
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
   )
@@ -1122,6 +1133,7 @@ export const Sidebar = memo(function Sidebar({
         : await chatApi.createProject(name, null, null, rootPath)
       onSelectProject(project)
       await loadSidebarData({ silent: true })
+      if (flatView) setFlatScope(`project:${project.id}`)
       setDialogProject(undefined)
     } catch (err) {
       setProjectError(typeof err === 'string' ? err : (err as Error).message || t.chatProjectSaveFailed)
@@ -1155,11 +1167,13 @@ export const Sidebar = memo(function Sidebar({
   }
 
   const handleClearAllConversations = async () => {
-    const targetConversations = selectedProject
+    const targetConversations = flatView ? flatConversations : selectedProject
       ? conversations.filter((conv) => conversationBelongsToProject(conv, selectedProject))
       : conversations
     if (targetConversations.length === 0) return
-    const confirmText = selectedProject
+    const confirmText = flatView
+      ? t.chatSidebarClearConfirm
+      : selectedProject
       ? t.chatDeleteAllInProjectConfirm.replace('{name}', () => selectedProject.name)
       : t.chatDeleteAllConfirm
     if (!(await confirmDialog({ message: confirmText.replace('{count}', String(targetConversations.length)), confirmLabel: t.dialogDelete, danger: true }))) return
@@ -1343,6 +1357,46 @@ export const Sidebar = memo(function Sidebar({
     [visibleConversations],
   )
 
+  const flatScopeOptions = [
+    { value: 'all', label: t.chatSidebarAll },
+    { value: 'ungrouped', label: t.chatSidebarUngrouped },
+    ...projects.map(project => ({ value: `project:${project.id}`, label: `${t.chatTabProjects} · ${project.name}` })),
+    ...sets.map(set => ({ value: `set:${set.id}`, label: `${t.chatSetPrefix} · ${set.name}` })),
+  ]
+  // A removed group falls back to the full list, without changing navigation.
+  const effectiveFlatScope = flatScopeOptions.some(option => option.value === flatScope) ? flatScope : 'all'
+  const flatProject = projects.find(project => effectiveFlatScope === `project:${project.id}`)
+  const flatSet = sets.find(set => effectiveFlatScope === `set:${set.id}`)
+  const flatScopeLabel = flatProject?.name ?? flatSet?.name
+    ?? (effectiveFlatScope === 'ungrouped' ? t.chatSidebarUngrouped : t.chatSidebarAll)
+  const flatConversations = recentConversations.filter(conversation => {
+    const projectId = conversationProjectId(conversation)
+      ?? projects.find(project => project.name === conversation.folder)?.id
+    const setId = conversation.set_id ?? conversation.setId
+    if (effectiveFlatScope === 'all') return true
+    if (effectiveFlatScope === 'ungrouped') return !projectId && !setId && !conversation.folder
+    return effectiveFlatScope === (setId ? `set:${setId}` : `project:${projectId}`)
+  })
+  const listedConversations = flatView ? flatConversations : recentConversations
+  const openFlatScope = (scope: string) => {
+    setFlatScope(scope)
+    const project = projects.find(item => scope === `project:${item.id}`)
+    const set = sets.find(item => scope === `set:${item.id}`)
+    if (project) onSelectProject(project)
+    else if (set) onSelectSet(set)
+    else if (scope === 'ungrouped') onSelectProject(null)
+  }
+  const newListedConversation = () => {
+    if (flatView && effectiveFlatScope !== 'all') {
+      const project = projects.find(item => effectiveFlatScope === `project:${item.id}`)
+      const set = sets.find(item => effectiveFlatScope === `set:${item.id}`)
+      if (set) onSelectSet(set)
+      else onSelectProject(project ?? null)
+      return
+    }
+    onNewConversation()
+  }
+
   // 查询变化时去后端全量索引搜（debounce 180ms）。覆盖掉出"最近 80"的老对话。
   useEffect(() => {
     if (!searchOpen || !normalizedSearchQuery) {
@@ -1386,7 +1440,7 @@ export const Sidebar = memo(function Sidebar({
       .slice(0, 9)
   }, [normalizedSearchQuery, projects, visibleConversations, fullSearchResults])
 
-  const clearableConversationCount = selectedProject
+  const clearableConversationCount = flatView ? flatConversations.length : selectedProject
     ? conversations.filter((conv) => conversationBelongsToProject(conv, selectedProject)).length
     : conversations.length
 
@@ -1442,7 +1496,7 @@ export const Sidebar = memo(function Sidebar({
             <ChatTitlebarActions
               sidebarExpanded
               onToggleSidebar={onToggleCollapsed}
-              onNewConversation={onNewConversation}
+              onNewConversation={newListedConversation}
             />
             <div className="min-w-0 flex-1" data-tauri-drag-region />
           </div>
@@ -1457,7 +1511,7 @@ export const Sidebar = memo(function Sidebar({
             <NavRow
               icon={<ComposeIcon size={18} strokeWidth={1.75} />}
               label={t.chatNewChat}
-              onClick={onNewConversation}
+              onClick={newListedConversation}
             />
           </div>
           <IconButton
@@ -1506,7 +1560,22 @@ export const Sidebar = memo(function Sidebar({
           </div>
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-y-1 px-2 pb-1 pt-3">
+            <div className={flatView ? 'flex items-center justify-between px-2 py-1' : 'flex flex-wrap items-center justify-between gap-y-1 px-2 pb-1 pt-3'}>
+              {flatView ? (
+                <Select
+                  className="min-w-0 flex-1"
+                  ariaLabel={t.chatSidebarScope}
+                  value={effectiveFlatScope}
+                  onChange={openFlatScope}
+                  options={flatScopeOptions}
+                  triggerLabel={flatScopeLabel}
+                  triggerIcon={flatProject
+                    ? <ProjectIcon workdir={flatProject.root_path ?? flatProject.rootPath} color={flatProject.color} />
+                    : flatSet
+                      ? <Layers size={16} style={flatSet.color ? { color: flatSet.color } : undefined} />
+                      : undefined}
+                />
+              ) : (
               <div className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[13px] font-semibold">
                 {([
                   ['conversations', t.chatTabRecent],
@@ -1538,8 +1607,19 @@ export const Sidebar = memo(function Sidebar({
                       ]
                 })}
               </div>
+              )}
               <div className="ml-auto flex shrink-0 items-center gap-1">
-                {activeTab === 'conversations' && (
+                {flatView && (
+                  <>
+                    <IconButton size="sm" label={t.chatNewProject} onClick={openCreateProjectDialog}>
+                      <FolderPlus size={16} />
+                    </IconButton>
+                    <IconButton size="sm" label={t.chatSidebarNewInScope} onClick={newListedConversation}>
+                      <SquarePen size={16} />
+                    </IconButton>
+                  </>
+                )}
+                {(flatView || activeTab === 'conversations') && (
                   <IconButton
                     ref={sectionMenuButtonRef}
                     size="sm"
@@ -1552,7 +1632,7 @@ export const Sidebar = memo(function Sidebar({
                     <MoreHorizontal size={15} />
                   </IconButton>
                 )}
-                {activeTab === 'sets' && (
+                {!flatView && activeTab === 'sets' && (
                   <>
                     <IconButton
                       size="sm"
@@ -1580,7 +1660,7 @@ export const Sidebar = memo(function Sidebar({
                     </IconButton>
                   </>
                 )}
-                {activeTab === 'projects' && (
+                {!flatView && activeTab === 'projects' && (
                   <>
                     <IconButton
                       size="sm"
@@ -1635,7 +1715,7 @@ export const Sidebar = memo(function Sidebar({
                 </div>,
                 document.body,
               )}
-            {activeTab === 'projects' && (
+            {!flatView && activeTab === 'projects' && (
             <section key="projects" className="chat-motion-tab-in group/projects px-2 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {visibleProjects.map((project) => {
@@ -1779,7 +1859,7 @@ export const Sidebar = memo(function Sidebar({
             </section>
             )}
 
-            {activeTab === 'sets' && (
+            {!flatView && activeTab === 'sets' && (
             <section key="sets" className="chat-motion-tab-in group/sets px-2 pb-2 pt-1">
                 <div className="mt-1.5 space-y-1">
                   {sets.length === 0 ? (
@@ -1933,24 +2013,27 @@ export const Sidebar = memo(function Sidebar({
             </section>
             )}
 
-            {activeTab === 'conversations' && (
+            {(flatView || activeTab === 'conversations') && (
             <section key="conversations" className="chat-motion-tab-in group/conversations px-2 pb-5 pt-1">
               {sectionMenuAnchor && (
                 <ChatSectionMenu
                   anchor={sectionMenuAnchor}
                   hasConversations={clearableConversationCount > 0}
-                  onNewConversation={onNewConversation}
+                  onNewConversation={newListedConversation}
                   onOpenSearch={() => onSearchOpenChange(true)}
+                  flatView={flatView}
+                  onToggleView={toggleSidebarView}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}
                 />
               )}
 
-              {recentConversations.length > 0 ? (
+              {listedConversations.length > 0 ? (
                 <div className="mt-1.5">
                     <ConversationList
-                      conversations={recentConversations}
+                      conversations={listedConversations}
+                      cardLayout={flatView}
                       currentConversationId={currentConversationId}
                       generatingConversationIds={generatingConversationIds}
                       titleGeneratingConversationIds={titleGeneratingIds}
@@ -1962,7 +2045,11 @@ export const Sidebar = memo(function Sidebar({
                       showAssistantName={false}
                       showFolderLabel
                       onSelectConversation={(id, conversation) => {
-                        onSelectConversation(id, conversation, { project: null, set: null })
+                        const setId = conversation?.set_id ?? conversation?.setId
+                        onSelectConversation(id, conversation, flatView && conversation ? {
+                          project: findConversationProject(conversation, projects) ?? null,
+                          set: sets.find(set => set.id === setId) ?? null,
+                        } : { project: null, set: null })
                       }}
                       onOpenInPopout={onOpenInPopout}
                       onRenameConversation={handleRenameConversation}
@@ -1975,6 +2062,8 @@ export const Sidebar = memo(function Sidebar({
                       onMoveConversationToSet={handleMoveConversationToSet}
                     />
                 </div>
+              ) : flatView ? (
+                <p className="px-2.5 py-4 text-xs text-neutral-400" role="status">{t.chatSidebarEmpty}</p>
               ) : null}
             </section>
             )}

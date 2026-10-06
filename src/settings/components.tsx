@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ExternalLink, X } from 'lucide-react'
 import { formatHotkey, getPlatform, type SelectOption } from './utils'
-import { Button } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { copyToClipboard, readClipboardText } from '../utils/clipboard'
 import { TextEditContextMenu } from './TextEditContextMenu'
 
@@ -15,6 +15,7 @@ function useSelectMenuRect(
   value: string,
   optionsLength: number,
   triggerRef: RefObject<HTMLElement | null>,
+  minWidth = 0,
 ) {
   const [menuRect, setMenuRect] = useState<{
     left: number
@@ -28,6 +29,8 @@ function useSelectMenuRect(
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
+    const width = minWidth ? Math.min(Math.max(rect.width, minWidth), window.innerWidth - MENU_MARGIN * 2) : rect.width
+    const left = minWidth ? Math.max(MENU_MARGIN, Math.min(rect.left, window.innerWidth - width - MENU_MARGIN)) : rect.left
     const viewportH = window.innerHeight
     const spaceBelow = viewportH - rect.bottom - MENU_GAP - MENU_MARGIN
     const spaceAbove = rect.top - MENU_GAP - MENU_MARGIN
@@ -37,11 +40,11 @@ function useSelectMenuRect(
     const maxHeight = Math.max(Math.min(MENU_MAX_HEIGHT, available), 80)
     if (flipUp) {
       // 用 bottom 定位让菜单底边贴着按钮向上生长，避免 top 计算后恒等于 MENU_MARGIN 导致飞到窗口顶部。
-      setMenuRect({ left: rect.left, bottom: viewportH - rect.top + MENU_GAP, width: rect.width, maxHeight })
+      setMenuRect({ left, bottom: viewportH - rect.top + MENU_GAP, width, maxHeight })
     } else {
-      setMenuRect({ left: rect.left, top: rect.bottom + MENU_GAP, width: rect.width, maxHeight })
+      setMenuRect({ left, top: rect.bottom + MENU_GAP, width, maxHeight })
     }
-  }, [triggerRef])
+  }, [triggerRef, minWidth])
 
   useLayoutEffect(() => {
     if (open) updateMenuRect()
@@ -159,12 +162,16 @@ function SelectMenuPortal({
 /**
  * 下拉选择 — 自绘菜单，避免 macOS 原生 select 的系统高亮/勾选反馈和受控状态不同步。
  */
-export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel }: {
+export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel, triggerIcon, triggerLabel }: {
   value: string
   onChange: (v: string) => void
   options: SelectOption[]
   className?: string
   disabled?: boolean
+  /** 紧凑工具栏使用图标触发器，选项菜单仍显示完整名称。 */
+  triggerIcon?: ReactNode
+  /** 图标工具栏同时显示当前范围时使用；菜单保留完整选项名称。 */
+  triggerLabel?: string
   /** 覆盖触发按钮的原生 tooltip（默认显示当前选中项）。 */
   title?: string
   /** 无可关联原生 label 时，为触发按钮提供可访问名称。 */
@@ -177,43 +184,59 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   const displayLabel = selected?.label || value
   const displayTitle = selected?.title || displayLabel
   const disabled = disabledProp || options.length === 0
-  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef)
+  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef, triggerIcon || triggerLabel !== undefined ? 200 : 0)
   useSelectMenuOpen(open, setOpen, triggerRef, menuRef, updateMenuRect)
+
+  const triggerProps = {
+    ref: (node: HTMLButtonElement | null) => {
+      triggerRef.current = node
+      // Recheck after each commit: portalled options bypass a disabled fieldset.
+      if (open && node?.matches(':disabled')) setOpen(false)
+    },
+    disabled,
+    onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!event.currentTarget.matches(':disabled')) setOpen(v => !v)
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.currentTarget.matches(':disabled')) return
+      if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        setOpen(true)
+      }
+    },
+    'aria-haspopup': 'listbox' as const,
+    'aria-expanded': open,
+    title: title ?? displayTitle,
+    'data-tauri-drag-region': 'false',
+  }
 
   return (
     <div className={`relative ${className}`}>
-      <button
-        ref={node => {
-          triggerRef.current = node
-          // Recheck after each commit: portalled options bypass a disabled fieldset.
-          if (open && node?.matches(':disabled')) setOpen(false)
-        }}
-        type="button"
-        disabled={disabled}
-        onClick={(event) => {
-          if (!event.currentTarget.matches(':disabled')) setOpen(v => !v)
-        }}
-        onKeyDown={(event) => {
-          if (event.currentTarget.matches(':disabled')) return
-          if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            setOpen(true)
-          }
-        }}
-        className="kv-select kv-select-button relative h-[30px] w-full min-w-0 max-w-none text-left disabled:cursor-not-allowed disabled:opacity-50"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        title={title ?? displayTitle}
-        data-tauri-drag-region="false"
-      >
-        <span className="block truncate">{displayLabel}</span>
-        <ChevronDown
-          size={14}
-          strokeWidth={2.25}
-          className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 transition-transform ${open ? 'rotate-180' : ''}`}
-        />
-      </button>
+      {triggerLabel !== undefined ? (
+        <Button {...triggerProps} variant="ghost" className="max-w-full min-w-0" aria-label={ariaLabel}>
+          {triggerIcon && <span className="flex shrink-0 items-center">{triggerIcon}</span>}
+          <span className="min-w-0 truncate">{triggerLabel}</span>
+          <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </Button>
+      ) : triggerIcon ? (
+        <IconButton {...triggerProps} size="sm" label={ariaLabel ?? displayLabel}>
+          {triggerIcon}
+        </IconButton>
+      ) : (
+        <button
+          {...triggerProps}
+          type="button"
+          className="kv-select kv-select-button relative h-[30px] w-full min-w-0 max-w-none text-left disabled:cursor-not-allowed disabled:opacity-50"
+          aria-label={ariaLabel}
+        >
+          <span className="block truncate">{displayLabel}</span>
+          <ChevronDown
+            size={14}
+            strokeWidth={2.25}
+            className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 transition-transform ${open ? 'rotate-180' : ''}`}
+          />
+        </button>
+      )}
 
       <SelectMenuPortal
         open={open}

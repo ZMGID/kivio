@@ -4,12 +4,16 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSettingsCached } from '../api/settingsCache'
 import { chatApi } from './api'
+import * as dialogs from '../components/dialogQueue'
+import * as nativeDialog from '@tauri-apps/plugin-dialog'
 import { Sidebar, type SidebarProps } from './Sidebar'
 import type { ChatProject, Conversation, ConversationListItem } from './types'
 
 vi.mock('../api/settingsCache', () => ({
   getSettingsCached: vi.fn().mockResolvedValue({ chat: {} }),
 }))
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 
 const project1: ChatProject = {
   id: 'project-1',
@@ -475,4 +479,148 @@ describe('Sidebar refresh lifecycle', () => {
     expect(reads).toHaveBeenCalledTimes(2)
     expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
   })
+})
+
+
+describe('Sidebar view choice', () => {
+  beforeEach(() => window.localStorage.removeItem('kivio-chat-sidebar-view'))
+  afterEach(() => window.localStorage.removeItem('kivio-chat-sidebar-view'))
+
+  function setup() {
+    const set = { id: 'writing', name: '写作', created_at: 1, updated_at: 1 }
+    const projectChat = conversation('project-chat', '修改导航', project1)
+    const setChat = { ...conversation('set-chat', '润色文章', project2), project_id: undefined, folder: undefined, set_id: set.id }
+    const looseChat = { ...conversation('loose-chat', '随便聊聊', project2), project_id: undefined, folder: undefined }
+    vi.spyOn(chatApi, 'getProjects').mockResolvedValue([project1, project2])
+    vi.spyOn(chatApi, 'getSets').mockResolvedValue([set])
+    vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
+    vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
+    vi.spyOn(chatApi, 'getConversations').mockResolvedValue([projectChat, setChat, looseChat])
+    const props: SidebarProps = {
+      lang: 'zh', selectedProject: project2, selectedSet: null,
+      onSelectProject: vi.fn(), onSelectSet: vi.fn(), onSelectConversation: vi.fn(),
+      onNewConversation: vi.fn(), onOpenSettings: vi.fn(), onOpenExtensionsItem: vi.fn(),
+      onSelectLang: vi.fn(), onOpenUsage: vi.fn(), collapsed: false, onToggleCollapsed: vi.fn(),
+      refreshKey: 0, searchOpen: false, onSearchOpenChange: vi.fn(),
+    }
+    return { props, projectChat, setChat, looseChat, set }
+  }
+
+  async function toggleView(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(await screen.findByRole('button', { name: '对话列表操作' }))
+    await user.click(await screen.findByRole('menuitem', { name }))
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  }
+
+  it('keeps both views available and remembers the choice across remounts', async () => {
+    const user = userEvent.setup()
+    const { props, projectChat } = setup()
+    const view = render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
+    await toggleView(user, '切换为扁平视图')
+    expect(screen.queryByRole('button', { name: '最近' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '筛选对话归属' })).toHaveTextContent('全部对话')
+    expect(screen.queryByRole('button', { name: '搜索对话' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: projectChat.title })).toHaveTextContent(project1.name)
+    expect(props.onSelectConversation).not.toHaveBeenCalled()
+    view.unmount()
+    const restored = render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: '筛选对话归属' })).toBeInTheDocument()
+    await toggleView(user, '切换为经典视图')
+    await user.click(screen.getByRole('button', { name: '项目', current: false }))
+    expect(await screen.findByRole('button', { name: projectChat.title })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '集', current: false }))
+    expect(await screen.findByText('写作')).toBeInTheDocument()
+    restored.unmount()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
+  })
+
+  it('opens the selected project or set and creates in that group', async () => {
+    const user = userEvent.setup()
+    const { props, projectChat, setChat, looseChat, set } = setup()
+    render(<Sidebar {...props} />)
+    await toggleView(user, '切换为扁平视图')
+    for (const [label, visible, hidden] of [
+      ['项目 · 项目1', projectChat, setChat],
+      ['集 · 写作', setChat, looseChat],
+      ['未分组', looseChat, projectChat],
+    ] as const) {
+      await user.click(screen.getByRole('button', { name: '筛选对话归属' }))
+      await user.click(screen.getByRole('option', { name: label }))
+      expect(screen.getByRole('button', { name: '筛选对话归属' })).toHaveTextContent(label.split(' · ').pop()!)
+      expect(screen.getByRole('button', { name: visible.title })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: hidden.title })).not.toBeInTheDocument()
+    }
+    expect(props.onSelectProject).toHaveBeenCalledWith(project1)
+    expect(props.onSelectSet).toHaveBeenCalledWith(set)
+    expect(props.onSelectConversation).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: looseChat.title }))
+    expect(props.onSelectConversation).toHaveBeenCalledWith(looseChat.id, looseChat, { project: null, set: null })
+    await user.click(screen.getByRole('button', { name: '筛选对话归属' }))
+    await user.click(screen.getByRole('option', { name: '集 · 写作' }))
+    await user.click(screen.getByRole('button', { name: '在当前归属中新建聊天' }))
+    expect(props.onSelectSet).toHaveBeenCalledWith(set)
+    expect(props.onNewConversation).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '筛选对话归属' }))
+    await user.click(screen.getByRole('option', { name: '项目 · 项目2' }))
+    expect(screen.getByRole('status')).toHaveTextContent('当前列表中没有此归属的对话')
+    await user.click(screen.getByRole('button', { name: '在当前归属中新建聊天' }))
+    expect(props.onSelectProject).toHaveBeenCalledWith(project2)
+  })
+
+  it('clears only the filtered list after confirmation, even with another project open', async () => {
+    const user = userEvent.setup()
+    const { props, setChat } = setup()
+    const confirm = vi.spyOn(dialogs, 'confirmDialog').mockResolvedValue(false)
+    const remove = vi.spyOn(chatApi, 'deleteConversation').mockResolvedValue([])
+    render(<Sidebar {...props} />)
+    await toggleView(user, '切换为扁平视图')
+    await user.click(screen.getByRole('button', { name: '筛选对话归属' }))
+    await user.click(screen.getByRole('option', { name: '集 · 写作' }))
+    for (const accepted of [false, true]) {
+      confirm.mockResolvedValue(accepted)
+      await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+      await user.click(screen.getByRole('menuitem', { name: '清空当前列表' }))
+      await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+      if (!accepted) expect(remove).not.toHaveBeenCalled()
+    }
+    expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({
+      message: '确定删除当前列表中的 1 条对话？此操作无法撤销。',
+    }))
+    expect(remove).toHaveBeenCalledTimes(1)
+    expect(remove).toHaveBeenCalledWith(setChat.id)
+  })
+
+  it('adds a project in flat view, reports save failure, and creates the next chat in the new project', async () => {
+    const user = userEvent.setup()
+    const { props } = setup()
+    const created = { ...project1, id: 'new-project', name: '新工程', root_path: '/tmp/new-project' }
+    vi.mocked(nativeDialog.open).mockResolvedValue('/tmp/new-project')
+    const create = vi.spyOn(chatApi, 'createProject').mockRejectedValueOnce(new Error('保存失败'))
+      .mockImplementationOnce(async () => {
+        vi.mocked(chatApi.getProjects).mockResolvedValue([created, project1, project2])
+        return created
+      })
+    render(<Sidebar {...props} />)
+    await toggleView(user, '切换为扁平视图')
+    await user.click(screen.getByRole('button', { name: '新建项目' }))
+    await user.type(screen.getByPlaceholderText('例如：产品发布计划'), created.name)
+    await user.click(screen.getByRole('button', { name: '选择文件夹' }))
+    expect(await screen.findByText('/tmp/new-project')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    expect(await screen.findByText('保存失败')).toBeInTheDocument()
+    expect(props.onSelectProject).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(create).toHaveBeenLastCalledWith(created.name, null, null, '/tmp/new-project')
+    expect(props.onSelectProject).toHaveBeenCalledWith(created)
+    expect(screen.getByRole('button', { name: '筛选对话归属' })).toHaveAttribute('title', '项目 · 新工程')
+    vi.mocked(props.onSelectProject).mockClear()
+    await user.click(screen.getByRole('button', { name: '在当前归属中新建聊天' }))
+    expect(props.onSelectProject).toHaveBeenCalledWith(created)
+    expect(props.onNewConversation).not.toHaveBeenCalled()
+  })
+
 })

@@ -58,6 +58,11 @@ const MOCK_MUTATION: GitMutationResult = {
 }
 
 export const dockApi = {
+  async projectIcon(workdir: string): Promise<string | null> {
+    if (!isTauriRuntime()) return null
+    return invoke<string | null>('dock_project_icon', { workdir })
+  },
+
   /** 解析当前会话/项目的有效工作目录。 */
   async resolveCwd(conversationId: string | null | undefined, projectId?: string | null): Promise<string> {
     if (!isTauriRuntime()) return ''

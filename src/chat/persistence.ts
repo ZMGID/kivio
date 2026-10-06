@@ -34,6 +34,7 @@ export type ChatWindowGeometry = {
 
 const CHAT_LAST_ROUTE_KEY = 'kivio-chat-last-route'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'kivio-chat-sidebar-collapsed'
+const CHAT_SIDEBAR_VIEW_KEY = 'kivio-chat-sidebar-view'
 const CHAT_TASKS_TAB_KEY = 'kivio-chat-tasks-tab'
 const CHAT_WINDOW_GEOMETRY_KEY = 'kivio-chat-window-geometry'
 /** @deprecated 旧版仅持久化尺寸；读取时自动迁移到 geometry key */
@@ -71,6 +72,14 @@ export function getRememberedTasksTab(): TasksTab {
 
 export function rememberTasksTab(tab: TasksTab) {
   setLocalStorageItem(CHAT_TASKS_TAB_KEY, tab)
+}
+
+export function getRememberedSidebarView(): 'classic' | 'flat' {
+  return getLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY) === 'flat' ? 'flat' : 'classic'
+}
+
+export function rememberSidebarView(view: 'classic' | 'flat') {
+  setLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY, view)
 }
 
 function forgetRememberedChatGeometry() {

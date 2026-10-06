@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ignore::WalkBuilder;
 use serde::Serialize;
 
@@ -444,6 +445,68 @@ pub async fn dock_fs_read(workdir: String, path: String) -> Result<FsReadRespons
     .map_err(|e| format!("dock_fs_read join: {e}"))?
 }
 
+/// Small, conventional project branding assets only; no recursive directory scan.
+fn project_icon(workdir: &Path) -> Option<String> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 256 * 1024;
+    for directory in ["", "public/", "assets/", "src/assets/", "src-tauri/icons/"] {
+        for name in [
+            "logo.svg",
+            "logo.png",
+            "icon.svg",
+            "icon.png",
+            "favicon.svg",
+            "favicon.png",
+            "favicon.ico",
+        ] {
+            let relative = format!("{directory}{name}");
+            let Ok(path) = resolve_target(workdir, Path::new(&relative)) else {
+                continue;
+            };
+            let Ok(file) = fs::File::open(&path) else {
+                continue;
+            };
+            if !file
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_BYTES)
+            {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            if file.take(MAX_BYTES + 1).read_to_end(&mut bytes).is_err()
+                || bytes.is_empty()
+                || bytes.len() as u64 > MAX_BYTES
+            {
+                continue;
+            }
+            let mime = if name.ends_with(".svg") {
+                if !String::from_utf8_lossy(&bytes).contains("<svg") {
+                    continue;
+                }
+                "image/svg+xml"
+            } else {
+                match image::guess_format(&bytes).ok() {
+                    Some(image::ImageFormat::Png) => "image/png",
+                    Some(image::ImageFormat::Ico) => "image/x-icon",
+                    _ => continue,
+                }
+            };
+            return Some(format!("data:{mime};base64,{}", STANDARD.encode(bytes)));
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub async fn dock_project_icon(workdir: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = canonicalize_workdir(&workdir)?;
+        Ok(project_icon(&root))
+    })
+    .await
+    .map_err(|e| format!("dock_project_icon join: {e}"))?
+}
+
 /// 查看器保存：只覆写已存在的文件（新建走 dock_fs_create），路径守卫同读取。
 fn fs_write_impl(workdir: &Path, path: String, content: String) -> Result<FsWriteResponse, String> {
     let rel = sanitize_rel_path(&path)?;
@@ -805,6 +868,36 @@ mod tests {
             std::env::temp_dir().join(format!("kivio-dock-fs-{tag}-{}-{id}", std::process::id()));
         fs::create_dir_all(&dir).expect("create temp workdir");
         fs::canonicalize(&dir).expect("canonicalize temp workdir")
+    }
+
+    #[test]
+    fn project_icon_uses_bounded_branding_candidates() {
+        let root = temp_workdir("project-icon");
+        assert_eq!(project_icon(&root), None);
+        fs::create_dir(root.join("public")).unwrap();
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>";
+        fs::write(root.join("public/logo.svg"), svg).unwrap();
+        // Invalid or oversized root assets must not hide a usable nested logo.
+        fs::write(root.join("logo.png"), b"not an image").unwrap();
+        fs::write(root.join("logo.svg"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+        let url = project_icon(&root).expect("project logo");
+        assert_eq!(
+            url,
+            format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_icon_does_not_follow_links_outside_project() {
+        let root = temp_workdir("icon-link");
+        let outside = temp_workdir("icon-outside");
+        fs::write(outside.join("logo.svg"), b"<svg/>").unwrap();
+        std::os::unix::fs::symlink(outside.join("logo.svg"), root.join("logo.svg")).unwrap();
+        assert_eq!(project_icon(&root), None);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
     }
 
     #[test]

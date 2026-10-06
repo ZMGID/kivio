@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { FieldBlock, Select, TextArea, Toggle } from './components'
@@ -16,11 +16,14 @@ describe('Toggle', () => {
 })
 
 describe('Select', () => {
-  it('opens menu and selects an option', async () => {
+  it.each(['text', 'icon', 'labeled-icon'])('opens menu and selects an option (%s trigger)', async (mode) => {
     const user = userEvent.setup()
     const onChange = vi.fn()
     render(
       <Select
+        ariaLabel="Option A"
+        triggerIcon={mode !== 'text' ? <span aria-hidden>+</span> : undefined}
+        triggerLabel={mode === 'labeled-icon' ? 'Current option' : undefined}
         value="a"
         onChange={onChange}
         options={[
@@ -30,20 +33,24 @@ describe('Select', () => {
       />,
     )
     expect(screen.getByRole('button', { name: /Option A/i })).toBeInTheDocument()
+    if (mode === 'labeled-icon') {
+      expect(within(screen.getByRole('button', { name: 'Option A' })).getByText('Current option')).toBeVisible()
+    }
     await user.click(screen.getByRole('button', { name: /Option A/i }))
     await user.click(screen.getByRole('option', { name: 'Option B' }))
     expect(onChange).toHaveBeenCalledWith('b')
   })
 
-  it('cannot open or change an option while its fieldset is disabled', () => {
+  it.each(['text', 'icon', 'labeled-icon'])('cannot open or change an option while its fieldset is disabled (%s trigger)', (mode) => {
     const onChange = vi.fn()
     const options = [{ value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' }]
-    const view = render(<fieldset><Select value="a" onChange={onChange} options={options} /></fieldset>)
+    const triggerProps = { ariaLabel: 'Option A', triggerIcon: mode !== 'text' ? <span aria-hidden>+</span> : undefined, triggerLabel: mode === 'labeled-icon' ? 'Current option' : undefined }
+    const view = render(<fieldset><Select {...triggerProps} value="a" onChange={onChange} options={options} /></fieldset>)
     const trigger = screen.getByRole('button', { name: 'Option A' })
     fireEvent.click(trigger)
     expect(screen.getByRole('listbox')).toBeInTheDocument()
 
-    view.rerender(<fieldset disabled><Select value="a" onChange={onChange} options={options} /></fieldset>)
+    view.rerender(<fieldset disabled><Select {...triggerProps} value="a" onChange={onChange} options={options} /></fieldset>)
     expect(trigger).toBeDisabled()
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     fireEvent.keyDown(trigger, { key: 'ArrowDown' })

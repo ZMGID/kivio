@@ -822,6 +822,7 @@ pub fn run() {
             dock::fs::dock_fs_list,
             dock::fs::dock_fs_search,
             dock::fs::dock_fs_read,
+            dock::fs::dock_project_icon,
             dock::fs::dock_fs_write,
             dock::fs::dock_fs_create,
             dock::fs::dock_fs_rename,

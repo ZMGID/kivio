@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chatApi } from './api'
+import { dockApi } from './dock/api'
 import { ConversationList } from './ConversationList'
 import type { ConversationListItem } from './types'
 
@@ -44,6 +45,37 @@ function renderList(onRenameConversation = vi.fn()) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('ConversationList project branch', () => {
+  it.each(['main', 'feature/a-long-sidebar-refinement', null])('shows the actual Git branch %s only for a repository', async (head) => {
+    const query = vi.spyOn(dockApi, 'gitSnapshot').mockResolvedValue({
+      state: { status: head ? 'ready' : 'not_repo', head: head ?? '', repoRoot: '/project', upstream: null, ahead: 0, behind: 0, stashCount: 0, entries: [] },
+      diffStat: null,
+    })
+    render(<ConversationList {...listProps} cardLayout
+      conversations={[{ ...conversation, project_id: 'project' }]}
+      projects={[{ id: 'project', name: 'Kivio', root_path: '/project', created_at: 1, updated_at: 1 }]}
+    />)
+    await waitFor(() => expect(query).toHaveBeenCalled())
+    if (head) expect(await screen.findByTitle(head)).toHaveTextContent(head)
+    else expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+})
+
+describe('ConversationList project logo', () => {
+  it('keeps the project label when its logo loads or fails to render', async () => {
+    vi.spyOn(dockApi, 'projectIcon').mockResolvedValue('data:image/png;base64,logo')
+    const { container } = render(<ConversationList {...listProps} cardLayout
+      conversations={[{ ...conversation, project_id: 'project' }]}
+      projects={[{ id: 'project', name: 'My project', root_path: '/logo-project', created_at: 1, updated_at: 1 }]}
+    />)
+    await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,logo'))
+    expect(screen.getByTitle('My project')).toBeVisible()
+    fireEvent.error(container.querySelector('img')!)
+    expect(container.querySelector('img')).not.toBeInTheDocument()
+    expect(screen.getByTitle('My project')).toBeVisible()
+  })
 })
 
 describe('ConversationList inline rename', () => {
@@ -330,5 +362,3 @@ describe('ConversationList title display', () => {
     expect(onRename).not.toHaveBeenCalled()
   })
 })
-
-
