@@ -273,7 +273,8 @@ describe('useConversationContext: clear + live usage', () => {
   })
 
   it('does not overwrite a newer API report with an in-flight older snapshot', async () => {
-    const { promise, resolve } = Promise.withResolvers<{ contextState: ConversationContextState; conversation: Conversation }>()
+    let resolve!: (value: { contextState: ConversationContextState; conversation: Conversation }) => void
+    const promise = new Promise<{ contextState: ConversationContextState; conversation: Conversation }>((done) => { resolve = done })
     mockStats.mockReturnValue(promise)
     const { result } = setup()
     let pending!: Promise<void>
@@ -300,7 +301,8 @@ describe('useConversationContext: clear + live usage', () => {
   })
 
   it('applies an in-flight refresh when its measurement is newer than the live report', async () => {
-    const { promise, resolve } = Promise.withResolvers<{ contextState: ConversationContextState; conversation: Conversation }>()
+    let resolve!: (value: { contextState: ConversationContextState; conversation: Conversation }) => void
+    const promise = new Promise<{ contextState: ConversationContextState; conversation: Conversation }>((done) => { resolve = done })
     mockStats.mockReturnValue(promise)
     const { result } = setup()
     let pending!: Promise<void>
