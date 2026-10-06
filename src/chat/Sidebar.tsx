@@ -76,6 +76,7 @@ const extensionSubItems: Array<{
 }> = [
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
+  { id: 'study', label: () => 'Kivio Study', icon: KnowledgeIcon },
   { id: 'media', label: (t) => t.chatNavMedia, icon: MediaIcon },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: NotesIcon },
 ]

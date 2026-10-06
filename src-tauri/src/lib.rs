@@ -652,6 +652,8 @@ pub fn run() {
             chat::goal::chat_set_goal_user_queue_pending,
             chat::commands::send::chat_continue_goal,
             chat::commands::send::chat_send_message,
+            chat::study::study_request_help,
+            chat::study::study_cancel_request,
             chat::commands::interaction::chat_cancel_stream,
             chat::sub_agent::control::chat_subagent_control,
             chat::commands::interaction::chat_confirm_tool_call,

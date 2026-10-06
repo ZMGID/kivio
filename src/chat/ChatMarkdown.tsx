@@ -41,6 +41,8 @@ import { isSvgSource, readSvgPreview } from './svgPreview'
 
 interface ChatMarkdownProps {
   content: string
+  /** Render untrusted study/source output without media, previews, links, or local-file actions. */
+  readOnly?: boolean
   artifacts?: ChatToolArtifact[]
   /** 用于把外置 artifact（path + 缩略图）还原成整图 */
   conversationId?: string | null
@@ -1393,6 +1395,31 @@ const streamdownPlugins = {
   math: createMathPlugin({ singleDollarTextMath: true }),
   mermaid,
 }
+
+// The opt-in profile preserves text/math formatting but never mounts network media,
+// artifact loaders, HTML/SVG/Mermaid previews, or file-opening controls.
+const readOnlyMarkdownComponents: Components = {
+  ...markdownComponents,
+  pre: ({ children }) => <pre className="custom-scrollbar max-w-full overflow-x-auto">{children}</pre>,
+  code: ({ children }) => <code>{children}</code>,
+  a: ({ children }) => <span>{children}</span>,
+  img: ({ alt }) => <span>{alt || '[image omitted]'}</span>,
+}
+const readOnlyStreamdownPlugins = { cjk, math: streamdownPlugins.math }
+const readOnlyBlockedElements = ['iframe', 'video', 'audio', 'source', 'object', 'embed', 'script', 'style', 'link', 'meta', 'base', 'form', 'input']
+const readOnlyUrlTransform: UrlTransform = () => ''
+
+type ReadOnlyMarkdownNode = { type: string; value?: string; children?: ReadOnlyMarkdownNode[] }
+function remarkReadOnlyHtml() {
+  // Escape raw HTML before the existing rehype-raw stage; skipHtml alone is too late.
+  return (tree: ReadOnlyMarkdownNode) => {
+    const walk = (node: ReadOnlyMarkdownNode) => {
+      if (node.type === 'html') node.type = 'text'
+      node.children?.forEach(walk)
+    }
+    walk(tree)
+  }
+}
 const streamdownRemarkPlugins: PluggableList = [
   ...Object.values(defaultRemarkPlugins),
   remarkBreaks,
@@ -1402,6 +1429,7 @@ const streamdownRemarkPlugins: PluggableList = [
   // After GFM, so underscore emphasis/rules are restored from the parsed source.
   remarkLiteralUnderscore,
 ]
+const readOnlyRemarkPlugins: PluggableList = [...streamdownRemarkPlugins, remarkReadOnlyHtml]
 
 // Streamdown 2.5 can leave a block stale after a non-prefix replacement. Scope
 // that recovery to the affected block: resetting the entire document also
@@ -1423,6 +1451,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
   components,
   remarkPlugins,
   streaming,
+  readOnly = false,
   outlineSource,
   documentRoot,
 }: {
@@ -1430,6 +1459,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
   components: Components
   remarkPlugins: PluggableList
   streaming: boolean
+  readOnly?: boolean
   outlineSource?: ChatMarkdownOutlineSource
   documentRoot: HTMLDivElement | null
 }) {
@@ -1516,7 +1546,9 @@ const MarkdownDocument = memo(function MarkdownDocument({
       // 补出来的字符会直接显示；星号加粗仍由 bold 补全。
       remend={streaming ? { italic: false } : undefined}
       normalizeHtmlIndentation
-      plugins={streamdownPlugins}
+      plugins={readOnly ? readOnlyStreamdownPlugins : streamdownPlugins}
+      skipHtml={readOnly}
+      disallowedElements={readOnly ? readOnlyBlockedElements : undefined}
       remarkPlugins={remarkPlugins}
       components={components}
       shikiTheme={['github-light', 'github-dark']}
@@ -1527,7 +1559,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
       }}
       isAnimating={streaming}
       animated={false}
-      urlTransform={chatMarkdownUrlTransform}
+      urlTransform={readOnly ? readOnlyUrlTransform : chatMarkdownUrlTransform}
       linkSafety={{ enabled: false }}
     >
       {entry.normalized}
@@ -1538,6 +1570,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
 
 function ChatMarkdownComponent({
   content,
+  readOnly = false,
   artifacts = EMPTY_ARTIFACTS,
   conversationId = null,
   onImageClick,
@@ -1565,10 +1598,12 @@ function ChatMarkdownComponent({
       <MarkdownErrorBoundary fallbackText={content}>
         <MarkdownReferencesContext.Provider value={artifactContext}>
           <MarkdownDocument
+            key={readOnly ? 'read-only' : 'interactive'}
             content={content}
-            components={referencedMarkdownComponents}
-            remarkPlugins={streamdownRemarkPlugins}
+            components={readOnly ? readOnlyMarkdownComponents : referencedMarkdownComponents}
+            remarkPlugins={readOnly ? readOnlyRemarkPlugins : streamdownRemarkPlugins}
             streaming={streaming}
+            readOnly={readOnly}
             outlineSource={outlineSource}
             documentRoot={documentRoot}
           />
@@ -1583,7 +1618,7 @@ function ChatMarkdownComponent({
 // parser, components and loaded images. Artifact objects remain immutable, so
 // replacing an artifact (even with the same ID) must invalidate this boundary.
 export const ChatMarkdown = memo(ChatMarkdownComponent, (previous, next) => {
-  if (previous.content !== next.content || previous.conversationId !== next.conversationId
+  if (previous.content !== next.content || previous.readOnly !== next.readOnly || previous.conversationId !== next.conversationId
     || previous.onImageClick !== next.onImageClick || previous.variant !== next.variant) return false
   const previousArtifacts = previous.artifacts ?? EMPTY_ARTIFACTS
   const nextArtifacts = next.artifacts ?? EMPTY_ARTIFACTS

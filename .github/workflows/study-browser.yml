@@ -1,0 +1,34 @@
+name: Study browser regression
+on:
+  pull_request:
+    paths:
+      - 'src/chat/study/**'
+      - 'src/api/study.ts'
+      - 'tests/study-browser/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/study-browser.yml'
+jobs:
+  study-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise real PDF, image, storage and responsive UI with simulated provider
+        run: npm run test:study-browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: study-browser-evidence
+          path: |
+            playwright-study-report/
+            test-results/
+          retention-days: 14

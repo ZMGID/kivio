@@ -40,6 +40,7 @@ import {
   isChatNotesPath,
   isChatArtifactsPath,
   isChatMediaPath,
+  isChatStudyPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -197,6 +198,10 @@ const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => 
   default: module.KnowledgeCenter,
 })))
 
+const StudyWorkspace = lazy(() => import('./study/StudyWorkspace').then((module) => ({
+  default: module.StudyWorkspace,
+})))
+
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
@@ -339,6 +344,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatNotesPath(path)) return 'notes'
+    if (isChatStudyPath(path)) return 'study'
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
@@ -2983,6 +2989,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <KnowledgeCenter />
+            </Suspense>
+          </div>
+        ) : chatView === 'study' ? (
+          <div key="center" className={worksPageClass}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <StudyWorkspace onOpenSettings={handleOpenChatSettings} />
             </Suspense>
           </div>
         ) : chatView === 'media' ? (

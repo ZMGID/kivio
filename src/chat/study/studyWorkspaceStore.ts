@@ -1,0 +1,233 @@
+import { createWindowStore } from '../../utils/windowStore'
+import { loadStudyMaterial, type StudyReaderContext, type StudyRegion } from './studyMaterial'
+import { requestStudyHelp, type StudyHelpInput } from './studyRequest'
+import {
+  createEmptyStudyPage, deleteStudyDocument, importStudyDocument, loadStudyWorkspace,
+  saveStudyDocument, setSelectedStudyDocument, type StudyDocument, type StudyPageState, type StudyTurn,
+} from './studyStorage'
+
+type StudyState = {
+  documents: StudyDocument[]
+  selectedDocumentId: string | null
+  selectedTurnId: string | null
+  loaded: boolean
+  importing: boolean
+  error: string
+  notice: string
+  dirtyIds: string[]
+  saveError: string
+  activeRequest: { documentId: string; page: number; turnId: string } | null
+}
+const initialState = (): StudyState => ({ documents: [], selectedDocumentId: null, selectedTurnId: null, loaded: false, importing: false, error: '', notice: '', dirtyIds: [], saveError: '', activeRequest: null })
+/** The single owner of Study drafts, request identity and persistence across page navigation. */
+export const studyWorkspace = createWindowStore(initialState())
+const saving = new Map<string, Promise<void>>()
+const removing = new Set<string>()
+const documentSaveErrors = new Map<string, string>()
+let selectionError = ''
+function saveErrorMessage() { return [selectionError, ...documentSaveErrors.values()].filter(Boolean).join('\n') }
+let requestController: AbortController | null = null
+let importController: AbortController | null = null
+let navigationRevision = 0
+
+function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function documentById(id: string) { return studyWorkspace.getSnapshot().documents.find((doc) => doc.id === id) }
+export function studyPage(doc: StudyDocument, page = doc.lastPage): StudyPageState { return doc.pages[String(page)] ?? createEmptyStudyPage() }
+
+function flushDocument(id: string): Promise<void> {
+  const existing = saving.get(id)
+  if (existing) return existing
+  const flight = Promise.resolve().then(async () => {
+    try {
+      while (documentById(id) && !removing.has(id)) {
+        const snapshot = documentById(id)
+        if (!snapshot) break
+        await saveStudyDocument(snapshot)
+        if (snapshot === documentById(id)) {
+          documentSaveErrors.delete(id)
+          studyWorkspace.setState((state) => ({ ...state, dirtyIds: state.dirtyIds.filter((key) => key !== id), saveError: saveErrorMessage() }))
+          break
+        }
+      }
+    } catch (error) {
+      documentSaveErrors.set(id, message(error))
+      studyWorkspace.setState((state) => ({ ...state, saveError: saveErrorMessage() }))
+      throw error
+    }
+  }).finally(() => { if (saving.get(id) === flight) saving.delete(id) })
+  saving.set(id, flight)
+  return flight
+}
+function updateDocument(id: string, update: (doc: StudyDocument) => StudyDocument, persist = true) {
+  if (!documentById(id) || removing.has(id)) return
+  studyWorkspace.setState((state) => ({
+    ...state,
+    documents: state.documents.map((doc) => doc.id === id ? { ...update(doc), updatedAt: Date.now() } : doc),
+    dirtyIds: state.dirtyIds.includes(id) ? state.dirtyIds : [...state.dirtyIds, id],
+  }))
+  if (persist) void flushDocument(id).catch(() => {})
+}
+let selectionPending = false
+let selecting: Promise<void> | null = null
+function flushSelection(): Promise<void> {
+  if (selecting) return selecting
+  const flight = Promise.resolve().then(async () => {
+    while (selectionPending) {
+      const id = studyWorkspace.getSnapshot().selectedDocumentId
+      await setSelectedStudyDocument(id)
+      if (studyWorkspace.getSnapshot().selectedDocumentId === id) selectionPending = false
+    }
+    selectionError = ''
+    studyWorkspace.setState((state) => ({ ...state, saveError: saveErrorMessage() }))
+  }).catch((error) => {
+    selectionError = message(error)
+    studyWorkspace.setState((state) => ({ ...state, saveError: saveErrorMessage() }))
+    throw error
+  }).finally(() => { if (selecting === flight) selecting = null })
+  selecting = flight
+  return flight
+}
+function persistSelection() { selectionPending = true; void flushSelection().catch(() => {}) }
+export function retryStudySave() {
+  studyWorkspace.getSnapshot().dirtyIds.forEach((id) => { void flushDocument(id).catch(() => {}) })
+  if (selectionPending) void flushSelection().catch(() => {})
+}
+export function editStudyPage(documentId: string, page: number, patch: Partial<StudyPageState>) {
+  const doc = documentById(documentId)
+  if (!doc || !Number.isInteger(page) || page < 1 || page > doc.pageCount) return
+  updateDocument(documentId, (doc) => ({ ...doc, pages: { ...doc.pages, [page]: { ...studyPage(doc, page), ...patch } } }))
+}
+export function openStudyPage(documentId: string, page: number, region?: StudyRegion | null, turnId: string | null = null) {
+  const doc = documentById(documentId)
+  if (!doc || removing.has(documentId) || !Number.isFinite(page)) return
+  navigationRevision += 1
+  const nextPage = Math.max(1, Math.min(doc.pageCount, Math.round(page)))
+  studyWorkspace.setState((state) => ({ ...state, selectedDocumentId: documentId, selectedTurnId: turnId, error: '' }))
+  updateDocument(documentId, (item) => ({ ...item, lastPage: nextPage, ...(region === undefined ? {} : { pages: { ...item.pages, [nextPage]: { ...studyPage(item, nextPage), region } } }) }))
+  persistSelection()
+}
+export function initializeStudy() {
+  return studyWorkspace.run('initialize', async () => {
+    if (studyWorkspace.getSnapshot().loaded) return
+    try {
+      const loaded = await loadStudyWorkspace()
+      studyWorkspace.setState((state) => ({ ...state, ...loaded, loaded: true, notice: loaded.warnings.join('\n'), error: '' }))
+    } catch (error) { studyWorkspace.setState((state) => ({ ...state, loaded: false, error: message(error) })) }
+  })
+}
+export function importStudyFile(file: File) {
+  if (importController) return studyWorkspace.run('import', async () => {})
+  const revision = navigationRevision
+  const controller = new AbortController()
+  importController = controller
+  studyWorkspace.setState((state) => ({ ...state, importing: true, error: '', notice: '' }))
+  return studyWorkspace.run('import', async () => {
+    try {
+      await initializeStudy()
+      if (controller.signal.aborted) return
+      if (!studyWorkspace.getSnapshot().loaded) throw new Error(studyWorkspace.getSnapshot().error || 'Could not restore the Study library. Retry before importing.')
+      const material = await loadStudyMaterial(file, controller.signal)
+      if (controller.signal.aborted) return
+      const result = await importStudyDocument({ name: file.name, kind: material.kind, pageCount: material.pageCount, blob: file, signal: controller.signal })
+      studyWorkspace.setState((state) => ({ ...state,
+        documents: state.documents.some((doc) => doc.id === result.document.id) ? state.documents : [result.document, ...state.documents],
+        selectedDocumentId: revision === navigationRevision && !controller.signal.aborted ? result.document.id : state.selectedDocumentId,
+        selectedTurnId: revision === navigationRevision && !controller.signal.aborted ? null : state.selectedTurnId,
+        notice: result.duplicate ? 'This material is already in your library. Your saved work is unchanged. / 材料已存在，已保留原有学习记录。' : '',
+      }))
+      if (revision !== navigationRevision || controller.signal.aborted) { selectionPending = true; await flushSelection() }
+    } catch (error) {
+      if (!controller.signal.aborted) studyWorkspace.setState((state) => ({ ...state, error: message(error) }))
+    } finally {
+      if (importController === controller) importController = null
+      studyWorkspace.setState((state) => ({ ...state, importing: false }))
+    }
+  })
+}
+export function cancelStudyImport() { importController?.abort() }
+export async function removeStudyDocument(id: string) {
+  if (removing.has(id)) return
+  if (studyWorkspace.getSnapshot().activeRequest?.documentId === id) throw new Error('Stop the active reply before removing this material.')
+  removing.add(id)
+  navigationRevision += 1
+  try {
+    // Lock edits and new requests before waiting, then let any in-flight write finish.
+    await saving.get(id)?.catch(() => {})
+    await deleteStudyDocument(id)
+    documentSaveErrors.delete(id)
+    studyWorkspace.setState((state) => {
+      const dirtyIds = state.dirtyIds.filter((key) => key !== id)
+      return { ...state, documents: state.documents.filter((doc) => doc.id !== id), selectedDocumentId: state.selectedDocumentId === id ? state.documents.find((doc) => doc.id !== id)?.id ?? null : state.selectedDocumentId, selectedTurnId: state.selectedDocumentId === id ? null : state.selectedTurnId, dirtyIds, saveError: saveErrorMessage() }
+    })
+    selectionPending = true
+    await flushSelection()
+  } finally { removing.delete(id) }
+}
+function patchTurn(documentId: string, page: number, turnId: string, patch: Partial<StudyTurn>, persist = true) {
+  updateDocument(documentId, (doc) => ({ ...doc, pages: { ...doc.pages, [page]: { ...studyPage(doc, page), history: studyPage(doc, page).history.map((turn) => turn.id === turnId ? { ...turn, ...patch } : turn) } } }), persist)
+}
+export function sameStudyRegion(a?: StudyRegion | null, b?: StudyRegion | null) {
+  return (!a && !b) || Boolean(a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height)
+}
+function draftContainsTurn(doc: StudyDocument, page: number, id: string) { return studyPage(doc, page).history.some((turn) => turn.id === id) }
+export async function sendStudyHelp(options: {
+  documentId: string; page: number; mode: StudyTurn['mode']; providerId: string; model: string
+  context: StudyReaderContext; includeImage: boolean; retry?: StudyTurn
+}) {
+  const { documentId, page, context, retry } = options
+  const doc = documentById(documentId)
+  if (!doc || removing.has(documentId) || studyWorkspace.getSnapshot().activeRequest) return
+  if (!Number.isInteger(page) || page < 1 || page > doc.pageCount) throw new Error('Select a valid document page.')
+  if (retry && (retry.page !== page || !draftContainsTurn(doc, page, retry.id))) throw new Error('This saved question belongs to another material or page.')
+  const draft = studyPage(doc, page)
+  if (context.status !== 'ready' || context.page !== page || !sameStudyRegion(context.region, retry ? retry.region : draft.region)) throw new Error('Wait for the selected page or region to finish loading.')
+  const question = retry?.question ?? draft.question.trim()
+  const attempt = retry?.attempt ?? draft.attempt.trim()
+  if (!question) throw new Error('Write a question about this page first. / 请先写下问题。')
+  if (options.mode === 'check' && !attempt.trim()) throw new Error('Add your attempt before checking it. / 请先写出自己的解答或思路。')
+  const sourceText = retry?.sourceText ?? (draft.correctedText.trim() || context.text)
+  const includeImage = retry?.sourceImageUsed ?? options.includeImage
+  if (includeImage && !context.imageDataUrl) throw new Error('The page image is not ready. Try again or use corrected problem text.')
+  if (!sourceText.trim() && !includeImage) throw new Error('This page has no readable text. Paste or correct the problem text, or choose an image-capable model. / 无可读文字，请补充题目文字或选择视觉模型。')
+  const turnId = crypto.randomUUID()
+  const input: StudyHelpInput = { requestId: turnId, documentId, documentName: doc.name, pageNumber: page, mode: options.mode,
+    question, attempt, pageText: sourceText, imageDataUrl: includeImage ? context.imageDataUrl : undefined,
+    providerId: options.providerId, model: options.model,
+    history: draft.history.filter((turn) => turn.status === 'complete').slice(-6).flatMap((turn) => [{ role: 'user' as const, content: `${turn.question}\n${turn.attempt}` }, { role: 'assistant' as const, content: turn.answer }]),
+  }
+  const turn: StudyTurn = { id: turnId, page, mode: options.mode, question, attempt, sourceText, region: retry ? retry.region : draft.region,
+    answer: '', status: 'streaming', createdAt: Date.now(), providerId: options.providerId, model: options.model,
+    sourceImageUsed: includeImage, sourceWarning: retry?.sourceWarning ?? context.warning,
+  }
+  const controller = new AbortController()
+  requestController = controller
+  studyWorkspace.setState((state) => ({ ...state, activeRequest: { documentId, page, turnId }, selectedTurnId: turnId, error: '' }))
+  editStudyPage(documentId, page, { history: [...draft.history, turn] })
+  let content = ''
+  let checkpoint: ReturnType<typeof setTimeout> | undefined
+  try {
+    // Persist the placeholder before starting the remote operation. A failed save must be visible.
+    await flushDocument(documentId)
+    if (controller.signal.aborted) throw new DOMException('Study request cancelled.', 'AbortError')
+    const result = await requestStudyHelp(input, (delta) => {
+      if (controller.signal.aborted) return
+      content += delta
+      patchTurn(documentId, page, turnId, { answer: content }, false)
+      if (!checkpoint && !studyWorkspace.getSnapshot().saveError) checkpoint = setTimeout(() => {
+        checkpoint = undefined
+        void flushDocument(documentId).catch(() => {})
+      }, 250)
+    }, controller.signal)
+    patchTurn(documentId, page, turnId, { answer: result.content || content, status: controller.signal.aborted ? 'cancelled' : 'complete' })
+  } catch (error) {
+    patchTurn(documentId, page, turnId, { answer: content, status: controller.signal.aborted ? 'cancelled' : 'error', error: controller.signal.aborted ? undefined : message(error) })
+  } finally {
+    if (checkpoint) clearTimeout(checkpoint)
+    if (requestController === controller) requestController = null
+    studyWorkspace.setState((state) => state.activeRequest?.turnId === turnId ? { ...state, activeRequest: null } : state)
+  }
+}
+export function cancelStudyHelp() { requestController?.abort() }
+
+/** Test cleanup releases resources, then restores the owner to its initial snapshot. */
+export function resetStudyWorkspaceForTests() { requestController?.abort(); importController?.abort(); requestController = null; importController = null; navigationRevision += 1; saving.clear(); removing.clear(); documentSaveErrors.clear(); selectionError = ''; selectionPending = false; selecting = null; studyWorkspace.setState(initialState()) }
