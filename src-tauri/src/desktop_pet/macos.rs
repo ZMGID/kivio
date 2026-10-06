@@ -39,7 +39,7 @@ use objc::runtime::{Class, Object, Sel};
 use objc::{class, msg_send, sel, sel_impl};
 use tauri::AppHandle;
 
-use super::visual::{Visual, SIZE};
+use super::visual::{self, Visual, SIZE};
 use super::{native_action, NativeAction, Position};
 
 const INITIAL_STATUS: &str = "Momo · Kivio";
@@ -91,6 +91,7 @@ struct Speech {
     visible: bool,
     origin: NSPoint,
     size: NSSize,
+    dark: Option<bool>,
 }
 
 struct Pet {
@@ -327,7 +328,7 @@ pub(super) fn set_speech(text: Option<&str>) {
                 }
                 return;
             };
-            const MAX_TEXT_WIDTH: f64 = 208.0;
+            let dark = super::speech_dark(&pet.app);
             if pet.speech.is_none() {
                 let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(100.0, 34.0));
                 let Ok(panel) = init_panel(class!(NSPanel), frame) else { return; };
@@ -340,29 +341,38 @@ pub(super) fn set_speech(text: Option<&str>) {
                 let _: () = msg_send![panel, setHasShadow: YES];
                 let _: () = msg_send![panel, setIgnoresMouseEvents: YES];
                 let _: () = msg_send![panel, setAnimationBehavior: ANIMATION_NONE];
-                let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: ns_string("NSAppearanceNameDarkAqua")];
-                let _: () = msg_send![panel, setAppearance: appearance];
-                let content: id = msg_send![class!(NSVisualEffectView), alloc];
+                let content: id = msg_send![class!(NSView), alloc];
                 let content: id = msg_send![content, initWithFrame: frame];
-                let _: () = msg_send![content, setMaterial: 13_isize]; // HUD material
-                let _: () = msg_send![content, setBlendingMode: 0_isize];
-                let _: () = msg_send![content, setState: 1_isize];
                 let _: () = msg_send![content, setWantsLayer: YES];
                 let layer: id = msg_send![content, layer];
-                let _: () = msg_send![layer, setCornerRadius: 10.0_f64];
+                let _: () = msg_send![layer, setCornerRadius: visual::SPEECH_RADIUS];
+                let _: () = msg_send![layer, setBorderWidth: 0.75_f64];
                 let _: () = msg_send![layer, setMasksToBounds: YES];
                 let _: () = msg_send![panel, setContentView: content];
                 let _: () = msg_send![content, release];
                 let string = ns_string("");
                 let label: id = msg_send![class!(NSTextField), wrappingLabelWithString: string];
-                let font: id = msg_send![class!(NSFont), systemFontOfSize: 12.0_f64];
+                let font: id = msg_send![class!(NSFont), systemFontOfSize: visual::SPEECH_FONT_SIZE];
                 let _: () = msg_send![label, setFont: font];
                 let _: () = msg_send![content, addSubview: label];
                 let _: () = msg_send![pet.panel, addChildWindow: panel ordered: 1_isize];
                 pet.speech = Some(Speech { panel, label, text: String::new(), visible: false,
-                    origin: NSPoint::new(f64::NAN, f64::NAN), size: NSSize::new(100.0, 34.0) });
+                    origin: NSPoint::new(f64::NAN, f64::NAN), size: NSSize::new(100.0, 34.0), dark: None });
             }
             let speech = pet.speech.as_mut().unwrap();
+            if speech.dark != Some(dark) {
+                let palette = visual::speech_palette(dark);
+                let content: id = msg_send![speech.panel, contentView];
+                let layer: id = msg_send![content, layer];
+                let background = speech_color(palette.background);
+                let border = speech_color(palette.border);
+                let background_cg: *const c_void = msg_send![background, CGColor];
+                let border_cg: *const c_void = msg_send![border, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: background_cg];
+                let _: () = msg_send![layer, setBorderColor: border_cg];
+                let _: () = msg_send![speech.label, setTextColor: speech_color(palette.foreground)];
+                speech.dark = Some(dark);
+            }
             if speech.text != text {
                 let string = ns_string(text);
                 let _: () = msg_send![speech.label, setStringValue: string];
@@ -370,15 +380,16 @@ pub(super) fn set_speech(text: Option<&str>) {
                 let font: id = msg_send![speech.label, font];
                 let attrs: id = msg_send![class!(NSDictionary), dictionaryWithObject: font forKey: ns_string("NSFont")];
                 let natural: NSSize = msg_send![string, sizeWithAttributes: attrs];
-                let width = (natural.width.ceil() + 4.0).clamp(70.0, MAX_TEXT_WIDTH);
+                let width = (natural.width.ceil() + 4.0).clamp(40.0, visual::SPEECH_MAX_WIDTH);
                 let cell: id = msg_send![speech.label, cell];
                 let measured: NSSize = msg_send![cell, cellSizeForBounds:
                     NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 1000.0))];
                 let height = measured.height.ceil().max(16.0);
-                speech.size = NSSize::new(width + 20.0, height + 16.0);
+                speech.size = NSSize::new(width + visual::SPEECH_PADDING_X * 2.0,
+                    height + visual::SPEECH_PADDING_Y * 2.0);
                 let _: () = msg_send![speech.panel, setContentSize: speech.size];
                 let _: () = msg_send![speech.label, setFrame:
-                    NSRect::new(NSPoint::new(10.0, 8.0), NSSize::new(width, height))];
+                    NSRect::new(NSPoint::new(visual::SPEECH_PADDING_X, visual::SPEECH_PADDING_Y), NSSize::new(width, height))];
                 speech.text.clear();
                 speech.text.push_str(text);
             }
@@ -386,12 +397,12 @@ pub(super) fn set_speech(text: Option<&str>) {
             let screen: id = msg_send![pet.panel, screen];
             if screen == nil { return; }
             let work: NSRect = msg_send![screen, visibleFrame];
-            let x = (pet_frame.origin.x + 84.0 - speech.size.width)
+            let x = (pet_frame.origin.x + 84.0 - speech.size.width * 0.5)
                 .clamp(work.origin.x, (work.origin.x + work.size.width - speech.size.width).max(work.origin.x));
             let above = pet_frame.origin.y + 108.0;
             let y = if above + speech.size.height <= work.origin.y + work.size.height {
                 above
-            } else { pet_frame.origin.y + 40.0 - speech.size.height };
+            } else { pet_frame.origin.y + 32.0 - speech.size.height };
             let y = y.clamp(work.origin.y, (work.origin.y + work.size.height - speech.size.height).max(work.origin.y));
             if speech.origin.x != x || speech.origin.y != y {
                 speech.origin = NSPoint::new(x, y);
@@ -407,6 +418,10 @@ pub(super) fn set_speech(text: Option<&str>) {
     if let Err(exception) = result {
         release_exception(exception);
     }
+}
+
+unsafe fn speech_color(color: visual::Color) -> id {
+    msg_send![class!(NSColor), colorWithSRGBRed: color.r green: color.g blue: color.b alpha: color.a]
 }
 
 pub(super) fn reduced_motion() -> bool {

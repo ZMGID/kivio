@@ -1,4 +1,4 @@
-//! Desktop-only gaze and placement over the round state animation.
+//! Desktop-only gaze and placement over the shared mascot animation.
 //! Native adapters own placement; this state never pulls a placed pet downward.
 use super::{visual::Visual, Mood};
 
@@ -123,12 +123,19 @@ impl DesktopBehavior {
             .iter()
             .zip(look)
             .any(|(value, target)| (value - target).abs() > 0.04);
-        // Dragging moves the native panel, never stretches the circular body.
-        // Only the idle eyes follow the pointer; task poses keep facing their prop.
+        // Dragging moves the native panel, never stretches the body.
+        // Only the idle eyes follow the pointer; task poses keep their expressions.
         for eye in &mut visual.eyes {
             for point in eye {
                 point[0] += self.gaze[0];
                 point[1] += self.gaze[1];
+            }
+        }
+        if motion.delta[0].abs() > 0.0 && !reduced_motion {
+            let step = (now * std::f64::consts::TAU * 2.0).sin();
+            for (i, foot) in visual.props[..visual.prop_count.min(2)].iter_mut().enumerate() {
+                let lift = (step * if i == 0 { 1.0 } else { -1.0 }).max(0.0) * 1.8;
+                for point in &mut foot.points[..foot.len] { point[1] -= lift; }
             }
         }
         motion.active = !reduced_motion && (env.dragging || self.stroll_left > 0.0 || settling);

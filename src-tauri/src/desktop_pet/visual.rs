@@ -1,5 +1,5 @@
 //! Flat filled polygons shared by the macOS and Windows desktop pet.
-//! Paint order is body, eyes, then props. No contour, tint, or shading.
+//! Paint order is body, eyes, then the face details, feet and state props.
 pub const SIZE: f64 = 128.0;
 pub type Point = [f64; 2];
 
@@ -10,6 +10,30 @@ pub struct Color {
     pub b: f64,
     pub a: f64,
 }
+
+#[derive(Clone, Copy)]
+pub(super) struct SpeechPalette {
+    pub background: Color,
+    pub foreground: Color,
+    pub border: Color,
+}
+
+pub(super) fn speech_palette(dark: bool) -> SpeechPalette {
+    let color = |r: u8, g: u8, b: u8| Color {
+        r: r as f64 / 255.0, g: g as f64 / 255.0, b: b as f64 / 255.0, a: 1.0,
+    };
+    if dark {
+        SpeechPalette { background: color(38, 42, 51), foreground: color(244, 246, 251), border: color(66, 72, 85) }
+    } else {
+        SpeechPalette { background: color(255, 255, 255), foreground: color(39, 47, 62), border: color(224, 229, 237) }
+    }
+}
+
+pub(super) const SPEECH_MAX_WIDTH: f64 = 184.0;
+pub(super) const SPEECH_PADDING_X: f64 = 12.0;
+pub(super) const SPEECH_PADDING_Y: f64 = 9.0;
+pub(super) const SPEECH_RADIUS: f64 = 12.0;
+pub(super) const SPEECH_FONT_SIZE: f64 = 12.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {

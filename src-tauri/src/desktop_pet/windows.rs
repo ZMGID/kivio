@@ -29,6 +29,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     LOGPIXELSX, MONITORINFO, MONITOR_DEFAULTTONEAREST, RGBQUAD,
+    CreateFontIndirectW, CreateRoundRectRgn, SetWindowRgn, HFONT, LOGFONTW,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Accessibility::NotifyWinEvent;
@@ -81,12 +82,18 @@ struct Speech {
     wide: Vec<u16>,
     visible: bool,
     origin: (i32, i32),
+    dark: Option<bool>,
+    dpi: u32,
+    font: HFONT,
 }
 
 impl Drop for Speech {
     fn drop(&mut self) {
         unsafe {
             let _ = DestroyWindow(self.hwnd);
+            if !self.font.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(self.font.0));
+            }
         }
     }
 }
@@ -266,6 +273,7 @@ pub(super) fn set_speech(text: Option<&str>) {
             }
             return;
         };
+        let dark = super::speech_dark(&pet.app);
         if pet.speech.is_none() {
             let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
             let hwnd = create_tooltip(pet.hwnd, wide.as_ptr());
@@ -284,11 +292,10 @@ pub(super) fn set_speech(text: Option<&str>) {
                 {
                     let _ = set_theme(hwnd, w!(""), w!(""));
                 }
-                SendMessageW(hwnd, WM_USER + 19, Some(WPARAM(0x302a28)), None);
-                SendMessageW(hwnd, WM_USER + 20, Some(WPARAM(0xebebed)), None);
                 use windows::Win32::UI::WindowsAndMessaging::{
-                    GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE,
+                    GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, GWL_STYLE,
                     LWA_ALPHA, WS_EX_TRANSPARENT,
+                    WS_BORDER, WS_DLGFRAME,
                 };
                 let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
                 SetWindowLongPtrW(
@@ -296,13 +303,9 @@ pub(super) fn set_speech(text: Option<&str>) {
                     GWL_EXSTYLE,
                     style | (WS_EX_LAYERED | WS_EX_TRANSPARENT).0 as isize,
                 );
-                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 242, LWA_ALPHA);
-                SendMessageW(
-                    hwnd,
-                    TTM_SETMAXTIPWIDTH,
-                    None,
-                    Some(LPARAM(scale_px(208.0, pet.dpi) as isize)),
-                );
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                SetWindowLongPtrW(hwnd, GWL_STYLE, style & !((WS_BORDER | WS_DLGFRAME).0 as isize));
             }
             pet.speech = Some(Speech {
                 hwnd,
@@ -310,10 +313,44 @@ pub(super) fn set_speech(text: Option<&str>) {
                 wide,
                 visible: false,
                 origin: (i32::MIN, i32::MIN),
+                dark: None,
+                dpi: 0,
+                font: HFONT::default(),
             });
         }
         let speech = pet.speech.as_mut().unwrap();
-        let changed = speech.text != text;
+        let changed = speech.text != text || speech.dpi != pet.dpi || speech.dark != Some(dark);
+        if speech.dark != Some(dark) {
+            let palette = visual::speech_palette(dark);
+            let color = |c: visual::Color| (c.r * 255.0).round() as usize
+                | ((c.g * 255.0).round() as usize) << 8
+                | ((c.b * 255.0).round() as usize) << 16;
+            unsafe {
+                SendMessageW(speech.hwnd, WM_USER + 19, Some(WPARAM(color(palette.background))), None);
+                SendMessageW(speech.hwnd, WM_USER + 20, Some(WPARAM(color(palette.foreground))), None);
+            }
+            speech.dark = Some(dark);
+        }
+        if speech.dpi != pet.dpi {
+            let mut font = LOGFONTW { lfHeight: -scale_px(visual::SPEECH_FONT_SIZE, pet.dpi), ..LOGFONTW::default() };
+            for (slot, value) in font.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) { *slot = value; }
+            unsafe {
+                let new_font = CreateFontIndirectW(&font);
+                if !new_font.is_invalid() {
+                    SendMessageW(speech.hwnd, windows::Win32::UI::WindowsAndMessaging::WM_SETFONT,
+                        Some(WPARAM(new_font.0 as usize)), Some(LPARAM(1)));
+                    if !speech.font.is_invalid() { let _ = DeleteObject(HGDIOBJ(speech.font.0)); }
+                    speech.font = new_font;
+                }
+                let margin = RECT {
+                    left: scale_px(visual::SPEECH_PADDING_X, pet.dpi), right: scale_px(visual::SPEECH_PADDING_X, pet.dpi),
+                    top: scale_px(visual::SPEECH_PADDING_Y, pet.dpi), bottom: scale_px(visual::SPEECH_PADDING_Y, pet.dpi),
+                };
+                SendMessageW(speech.hwnd, WM_USER + 26, None, Some(LPARAM(&margin as *const RECT as isize)));
+                SendMessageW(speech.hwnd, TTM_SETMAXTIPWIDTH, None, Some(LPARAM(scale_px(visual::SPEECH_MAX_WIDTH, pet.dpi) as isize)));
+            }
+            speech.dpi = pet.dpi;
+        }
         if changed {
             let wide = text.encode_utf16().chain(Some(0)).collect();
             let previous = mem::replace(&mut speech.wide, wide);
@@ -342,13 +379,22 @@ pub(super) fn set_speech(text: Option<&str>) {
             let work = work_area(pet.origin_x, pet.origin_y);
             let width = (rect.right - rect.left).max(1);
             let height = (rect.bottom - rect.top).max(1);
-            let x = (pet.origin_x + scale_px(84.0, pet.dpi) - width)
+            if changed || !speech.visible {
+                unsafe {
+                    let diameter = scale_px(visual::SPEECH_RADIUS * 2.0, pet.dpi);
+                    let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+                    if !region.is_invalid() && SetWindowRgn(speech.hwnd, Some(region), true) == 0 {
+                        let _ = DeleteObject(HGDIOBJ(region.0));
+                    }
+                }
+            }
+            let x = (pet.origin_x + scale_px(84.0, pet.dpi) - width / 2)
                 .clamp(work.left, (work.right - width).max(work.left));
             let above = pet.origin_y + scale_px(20.0, pet.dpi) - height;
             let y = if above >= work.top {
                 above
             } else {
-                pet.origin_y + scale_px(88.0, pet.dpi)
+                pet.origin_y + scale_px(96.0, pet.dpi)
             };
             let y = y.clamp(work.top, (work.bottom - height).max(work.top));
             let packed = (x as u16 as u32) | ((y as u16 as u32) << 16);

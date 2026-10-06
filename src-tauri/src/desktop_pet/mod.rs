@@ -469,6 +469,23 @@ fn start_animation(app: &AppHandle, state: &Arc<DesktopPet>) {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+fn speech_dark(app: &AppHandle) -> bool {
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        if let Ok(settings) = state.try_settings_read() {
+            match settings.theme.as_str() {
+                "dark" => return true,
+                "light" => return false,
+                _ => {}
+            }
+        }
+    }
+    app.get_webview_window("chat")
+        .or_else(|| app.get_webview_window("main"))
+        .and_then(|window| window.theme().ok())
+        .is_some_and(|theme| theme == tauri::Theme::Dark)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn draw(app: &AppHandle, state: &DesktopPet) {
     let suspended = platform::suspended();
     state.suspended.store(suspended, Ordering::Relaxed);
