@@ -116,7 +116,8 @@ export function StudyReader({ blob, page, onPageChange, region, onRegionChange, 
   const pointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (!selecting || event.button !== 0 || !frame) return
     event.preventDefault()
-    event.currentTarget.focus()
+    // Keep the pointer on the same PDF coordinates when the page is scrolled.
+    event.currentTarget.focus({ preventScroll: true })
     event.currentTarget.setPointerCapture(event.pointerId)
     dragRef.current = { ...point(event), pointerId: event.pointerId }
     setDraftRegion(null)

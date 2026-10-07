@@ -132,6 +132,29 @@ describe('StudyReader lifecycle and accessibility', () => {
     fireEvent.pointerCancel(group)
     expect(input.onRegionChange).toHaveBeenCalledTimes(1)
   })
+  it('keeps a scrolled page stationary when starting a pointer selection', async () => {
+    vi.stubGlobal('PointerEvent', class extends MouseEvent { pointerId = 1 })
+    materialMocks.openStudyMaterial.mockResolvedValue(material())
+    const input = props()
+    render(<StudyReader {...input} />)
+    const group = await screen.findByRole('group', { name: /第 1 页/ })
+    let top = -300
+    vi.spyOn(group, 'getBoundingClientRect').mockImplementation(() => ({ left: 10, top, width: 600, height: 800 } as DOMRect))
+    const focus = vi.spyOn(group, 'focus').mockImplementation(options => {
+      // Browsers otherwise scroll a large focusable page into view before the
+      // pointer handler calculates its page-relative selection coordinates.
+      if (!options?.preventScroll) top = 0
+    })
+    group.setPointerCapture = vi.fn()
+    group.hasPointerCapture = vi.fn(() => true)
+    group.releasePointerCapture = vi.fn()
+    fireEvent.click(screen.getByRole('button', { name: '框选' }))
+    fireEvent.pointerDown(group, { button: 0, clientX: 130, clientY: 340 })
+    fireEvent.pointerUp(group, { clientX: 310, clientY: 380 })
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    expect(input.onRegionChange).toHaveBeenCalledWith(expect.objectContaining({ x: 0.2, y: 0.8, width: 0.3 }))
+    expect(input.onRegionChange.mock.calls[0][0].height).toBeCloseTo(0.05)
+  })
   it('supports keyboard-only region creation, movement, resizing and clearing', async () => {
     materialMocks.openStudyMaterial.mockResolvedValue(material())
     const input = props()

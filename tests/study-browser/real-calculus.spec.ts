@@ -35,6 +35,8 @@ test('student journey through a real MIT calculus PDF with honest math fallback'
   // The problem row was inspected in the actual source page, not guessed from extracted math.
   await page.mouse.move(rect!.x + rect!.width * 0.18, rect!.y + rect!.height * 0.80)
   await page.mouse.down()
+  const afterFocus = await paper.boundingBox()
+  expect(afterFocus!.y).toBeCloseTo(rect!.y, 0)
   await page.mouse.move(rect!.x + rect!.width * 0.49, rect!.y + rect!.height * 0.85, { steps: 12 })
   await page.mouse.up()
   await expect(page.locator('.kv-study-reader-region')).toBeVisible()
