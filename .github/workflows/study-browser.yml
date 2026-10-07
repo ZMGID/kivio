@@ -4,6 +4,8 @@ on:
     paths:
       - 'src/chat/study/**'
       - 'src/api/study.ts'
+      - 'src/settings/components.tsx'
+      - 'src/styles/settings-02-pages.css'
       - 'tests/study-browser/**'
       - 'package.json'
       - 'package-lock.json'

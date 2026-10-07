@@ -364,6 +364,14 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
 /**
  * 多行文本输入 — 默认 sans
  */
+const TEXTAREA_MEASUREMENT_STYLES = [
+  'boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
+  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle',
+  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
+  'wordSpacing', 'textIndent', 'textTransform', 'direction', 'tabSize', 'wordBreak',
+  'overflowWrap', 'whiteSpace',
+] as const
+
 export function TextArea({
   value,
   onChange,
@@ -371,6 +379,8 @@ export function TextArea({
   rows = 2,
   mono = false,
   className = '',
+  autoSize,
+  style,
   onContextMenu,
   ...props
 }: {
@@ -379,10 +389,64 @@ export function TextArea({
   placeholder?: string
   rows?: number
   mono?: boolean
+  /** 按内容自动增减高度；超过最大行数后内部滚动，不显示手动缩放手柄。 */
+  autoSize?: { minRows: number; maxRows: number }
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const caretRef = useRef<{ start: number; end: number } | null>(null)
   const [menu, setMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null)
+  const [sizing, setSizing] = useState<{ height: number; overflowY: 'auto' | 'hidden' }>()
+  const minRows = autoSize ? Math.max(1, Math.floor(autoSize.minRows)) : 0
+  const maxRows = autoSize ? Math.max(minRows, Math.floor(autoSize.maxRows)) : 0
+
+  const updateHeight = useCallback(() => {
+    const el = ref.current
+    if (!el || !minRows || !el.getBoundingClientRect().width) return
+    const computed = getComputedStyle(el)
+    // Measure offscreen rather than collapsing the live field: collapsing can
+    // clamp its scroll position and move the surrounding scroll container.
+    const measure = document.createElement('textarea')
+    measure.setAttribute('aria-hidden', 'true')
+    measure.tabIndex = -1
+    for (const property of TEXTAREA_MEASUREMENT_STYLES) measure.style[property] = computed[property]
+    Object.assign(measure.style, {
+      position: 'fixed', top: '0', left: '0', visibility: 'hidden', pointerEvents: 'none',
+      height: '0', minHeight: '0', maxHeight: 'none', overflow: 'hidden',
+    })
+    document.body.appendChild(measure)
+    const padding = parseFloat(computed.paddingTop) + parseFloat(computed.paddingBottom)
+    const border = parseFloat(computed.borderTopWidth) + parseFloat(computed.borderBottomWidth)
+    measure.value = 'x'
+    const lineHeight = parseFloat(computed.lineHeight) || measure.scrollHeight - padding
+    measure.value = el.value || el.placeholder || ' '
+    const contentHeight = measure.scrollHeight + border
+    measure.remove()
+    const maximumHeight = maxRows * lineHeight + padding + border
+    const outerHeight = Math.min(maximumHeight, Math.max(minRows * lineHeight + padding + border, contentHeight))
+    const height = computed.boxSizing === 'border-box' ? outerHeight : outerHeight - padding - border
+    const overflowY = contentHeight > maximumHeight ? 'auto' : 'hidden'
+    setSizing(previous => previous?.height === height && previous.overflowY === overflowY ? previous : { height, overflowY })
+  }, [minRows, maxRows])
+
+  useLayoutEffect(() => {
+    updateHeight()
+  }, [updateHeight, value, placeholder, className, mono, style])
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || !minRows) return
+    let width = el.getBoundingClientRect().width
+    const observer = new ResizeObserver(() => {
+      const nextWidth = el.getBoundingClientRect().width
+      // Ignore our own height changes, but include 0 -> visible transitions for
+      // textareas mounted inside a closed details section or hidden panel.
+      if (nextWidth === width) return
+      width = nextWidth
+      updateHeight()
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [minRows, updateHeight])
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -412,7 +476,8 @@ export function TextArea({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        rows={rows}
+        rows={minRows || rows}
+        style={autoSize ? { ...style, ...sizing, resize: 'none' } : style}
         className={`kv-textarea custom-scrollbar w-full ${mono ? 'mono' : ''} ${className}`}
         data-tauri-drag-region="false"
         onContextMenu={(event) => {

@@ -70,6 +70,13 @@ describe('Study workspace interaction', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(mocks.send).not.toHaveBeenCalled()
   })
+  it('disables native resize on all Study text areas while preserving their labels', async () => {
+    setup()
+    await screen.findByText('Readable page fixture')
+    for (const label of ['Question about this page', 'My attempt', 'Corrected problem text', 'Page notes']) {
+      expect(screen.getByLabelText(label)).toHaveStyle({ resize: 'none' })
+    }
+  })
   it('shows save failures with a retry rather than a saved claim', async () => {
     setup()
     studyWorkspace.setState((state) => ({ ...state, saveError: 'Quota full', dirtyIds: ['a'.repeat(64)] }))
