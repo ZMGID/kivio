@@ -73,6 +73,10 @@ test('the shared composer and model menus retain drafts, keyboard dismissal and 
   await expect(model).toContainText('test-vision-alt')
   await page.getByRole('button', { name: '补充说明', exact: true }).click()
   await attempt(page).fill('My own interpretation stays optional')
+  const contextWidth = (await attempt(page).boundingBox())!.width
+  const composerWidth = (await composer(page).locator('[data-chat-composer="true"]').boundingBox())!.width
+  expect(contextWidth, 'Expanded context must use the shared composer width').toBeGreaterThanOrEqual(composerWidth * 0.85)
+  await capture(page, info, 'shared-chat-reading-expanded-context-desktop.png')
   await page.getByRole('button', { name: '补充说明', exact: true }).click()
   await selectMode(page, '检查我的解答')
   await expect(attempt(page)).toHaveValue('My own interpretation stays optional')
@@ -80,7 +84,9 @@ test('the shared composer and model menus retain drafts, keyboard dismissal and 
   await expect(sendButton(page)).toBeDisabled()
   await editor(page).press('Enter')
   expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
-  await attempt(page).fill('I tried substitution')
+  await attempt(page).fill('I tried substitution\nu = x³; du = 3x² dx\n∫ x²/(1+x⁶) dx = (1/3)∫du/(1+u²)')
+  const attemptWidth = (await attempt(page).boundingBox())!.width
+  expect(attemptWidth, 'The formula attempt must not be squeezed into a narrow side column').toBeGreaterThanOrEqual(composerWidth * 0.85)
   await expect(sendButton(page)).toBeEnabled()
   await editor(page).dispatchEvent('keydown', { key: 'Enter', isComposing: true })
   expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
@@ -191,7 +197,7 @@ test('shared streaming cancellation preserves a partial reply and late completio
 
 test('duplicate, corrupt and same-name materials retain the real reader and page ownership', async ({ page }) => {
   await importMaterial(page, material())
-  await page.getByLabel('导入 PDF 或图片').setInputFiles(material())
+  await importMaterial(page, material())
   await expect(page.locator('.kv-study-document-list button')).toHaveCount(1)
   await importMaterial(page, material('Reading handout.pdf', ['Different bytes under the same filename.']))
   await expect(page.locator('.kv-study-document-list button')).toHaveCount(2)
@@ -265,6 +271,7 @@ test('all legacy outcomes migrate once into Chat while original backup and missi
   const materialId = await importMaterial(page, material())
   await expect(page.getByText('材料草稿保存在此设备', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Normal Chat', exact: true }).click()
+  await expect(composer(page)).toHaveCount(0)
   const originalBackup = await page.evaluate(id => new Promise<string>((resolve, reject) => {
     const open = indexedDB.open('kivio-study')
     open.onerror = () => reject(open.error)
@@ -288,6 +295,9 @@ test('all legacy outcomes migrate once into Chat while original backup and missi
       }
     }
   }), materialId)
+  // This is a pre-upgrade startup snapshot. A hash-only goto keeps the already
+  // loaded Study and composer stores alive, so reload the normal route first.
+  await page.reload()
   await openStudy(page)
   await expectSharedChat(page)
   await expect(editor(page)).toHaveText('Legacy unsent draft')

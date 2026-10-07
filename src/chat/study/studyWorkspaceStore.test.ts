@@ -58,6 +58,19 @@ function holdNextSave() {
 }
 
 describe('Study material and draft persistence', () => {
+  it('does not write or advance a clean material merely when its conversation opens', async () => {
+    const [document] = await seed()
+    const save = vi.spyOn(storage, 'saveStudyDocument')
+    const revision = current(document).revision
+    await owner.flushStudyDocument(document.id)
+    expect(save).not.toHaveBeenCalled()
+    expect((await storage.loadStudyWorkspace()).documents[0].revision).toBe(revision)
+    owner.editStudyPage(document.id, 1, { notes: 'A real edit still persists' })
+    await saved()
+    expect(save).toHaveBeenCalledTimes(1)
+    expect((await storage.loadStudyWorkspace()).documents[0].pages['1'].notes).toBe('A real edit still persists')
+  })
+
   it('can retry initialization after a transient storage failure', async () => {
     const loading = vi.spyOn(storage, 'loadStudyWorkspace').mockRejectedValueOnce(new Error('Storage temporarily locked'))
     await owner.initializeStudy()

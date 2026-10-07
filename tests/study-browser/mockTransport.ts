@@ -15,10 +15,10 @@ export type FixtureLesson = 'mit-5b-13' | 'mit-5f-2a' | keyof typeof readingRepl
 export type FixtureRequest = { kind: 'send' | 'retry'; conversationId: string; content: string; attachments: PendingAttachment[]; studySource?: StudyMessageSource; model: string; providerId: string }
 export type SavedImage = { path: string; name: string; mimeType: string; imageDataUrl: string }
 declare global { interface Window { __studyTest: {
-  requests: FixtureRequest[]; savedImages: SavedImage[]; cancelled: string[]; packets: string[];
+  requests: FixtureRequest[]; openedConversations: string[]; savedImages: SavedImage[]; cancelled: string[]; packets: string[];
   readImage: (path: string) => Promise<string | null>; failNext: boolean; failAttachmentNext: boolean; hold: boolean; lesson?: FixtureLesson; rawReply?: string;
 } } }
-window.__studyTest = { readImage: readFixtureImage, requests: [], savedImages: [], cancelled: [], packets: [], failNext: false, failAttachmentNext: false, hold: false }
+window.__studyTest = { readImage: readFixtureImage, requests: [], openedConversations: [], savedImages: [], cancelled: [], packets: [], failNext: false, failAttachmentNext: false, hold: false }
 const wait = () => new Promise<void>(resolve => window.setTimeout(resolve, 100))
 const listeners = new Set<(packet: ChatStreamPayload) => void>()
 const active = new Map<string, { cancelled: boolean }>()
@@ -113,6 +113,20 @@ export function installChatFixture() {
     })
     window.__studyTest.savedImages.push(saved)
     return { success: true, path: saved.path, name, mimeType }
+  }
+  // Observe completed ordinary Chat loads without changing their result. New
+  // imports must bind this conversation, not merely leave an old editor visible.
+  const readConversation = chatApi.getConversation.bind(chatApi)
+  chatApi.getConversation = async (...args) => {
+    const conversation = await readConversation(...args)
+    window.__studyTest.openedConversations.push(conversation.id)
+    return conversation
+  }
+  const readWindow = chatApi.getConversationWindow.bind(chatApi)
+  chatApi.getConversationWindow = async (...args) => {
+    const conversation = await readWindow(...args)
+    window.__studyTest.openedConversations.push(conversation.id)
+    return conversation
   }
   const send = chatApi.sendMessage.bind(chatApi)
   chatApi.sendMessage = async (...args) => {

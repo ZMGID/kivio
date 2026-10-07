@@ -361,7 +361,7 @@ export async function importStudyDocument(input: { name: string; kind: StudyDocu
       const saved = storedDocument(existing).document
       materialBlob(await request(tx.objectStore(MATERIALS).get(id)), saved)
       await request(tx.objectStore(META).put({ ...workspace, selectedDocumentId: id }))
-      return { document: restoreInterrupted(saved), duplicate: true }
+      return { document: saved, duplicate: true }
     }
     const totalBytes = workspace.totalBytes + document.size + record.metadataBytes
     const documentCount = workspace.documentCount + 1
@@ -378,18 +378,8 @@ export async function importStudyDocument(input: { name: string; kind: StudyDocu
   }, signal)
 }
 
-function restoreInterrupted(document: StudyDocument): StudyDocument {
-  for (const page of Object.values(document.pages)) {
-    for (const turn of page.history) {
-      if (turn.status === 'streaming') {
-        turn.status = 'interrupted'
-        turn.error = 'This response was interrupted before completion. Any partial answer is preserved.'
-      }
-    }
-  }
-  return document
-}
-
+// Legacy history is an immutable source archive. Chat's importer maps unfinished turns to
+// interrupted display messages; material reads and unrelated draft saves never rewrite it.
 export async function loadStudyWorkspace(): Promise<StudyWorkspace> {
   return transaction([DOCUMENTS, MATERIALS, META], 'readonly', async (tx) => {
     const records: unknown[] = await request(tx.objectStore(DOCUMENTS).getAll(undefined, STUDY_LIMITS.maxDocuments + 1))
@@ -401,7 +391,7 @@ export async function loadStudyWorkspace(): Promise<StudyWorkspace> {
         const record = storedDocument(value)
         totalBytes += record.document.size + record.metadataBytes
         if (await request(tx.objectStore(MATERIALS).getKey(record.id)) === undefined) throw new StudyStorageError('corrupt', `The original file for “${record.document.name}” is missing. Its notes are still stored locally.`)
-        documents.push(restoreInterrupted(record.document))
+        documents.push(record.document)
       } catch (error) { warnings.push(failure(error).message) }
     }
     let selectedDocumentId: string | null = null
@@ -551,7 +541,7 @@ export async function readStudyChatSource(materialId: string, page: number): Pro
   return transaction([DOCUMENTS, MATERIALS, META], 'readonly', async tx => {
     const value: unknown = await request(tx.objectStore(DOCUMENTS).get(materialId))
     if (value === undefined) throw new StudyStorageError('not-found', 'This Study material is no longer saved.')
-    const document = restoreInterrupted(storedDocument(value).document)
+    const document = storedDocument(value).document
     integer(page, 'Conversation page', 1, document.pageCount)
     materialBlob(await request(tx.objectStore(MATERIALS).get(materialId)), document)
     const receipt = storedChatReceipt(await request(tx.objectStore(META).get(chatReceiptKey(materialId, page))), materialId, page)
@@ -568,7 +558,7 @@ export async function saveStudyChatReceipt(receipt: StudyChatReceipt, expectedHi
   await transaction([DOCUMENTS, META], 'readwrite', async tx => {
     const value: unknown = await request(tx.objectStore(DOCUMENTS).get(snapshot.materialId))
     if (value === undefined) throw new StudyStorageError('not-found', 'This Study material was removed before its conversation link could be saved.')
-    const document = restoreInterrupted(storedDocument(value).document)
+    const document = storedDocument(value).document
     integer(snapshot.page, 'Conversation page', 1, document.pageCount)
     if (JSON.stringify(document.pages[String(snapshot.page)]?.history ?? []) !== history) {
       throw new StudyStorageError('conflict', 'Study history changed in another window during migration. Both saved versions were kept; reload before continuing.')

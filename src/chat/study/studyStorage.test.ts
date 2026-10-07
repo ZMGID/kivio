@@ -174,16 +174,25 @@ describe('Study local persistence', () => {
     expect(restored.documents[0].pages['2'].history.map(turn => turn.mode)).toEqual(['read', 'hint', 'explain', 'check', 'solution'])
   })
 
-  it('restores an unfinished stream as interrupted and retains the partial answer', async () => {
+  it('preserves unfinished legacy history on load, duplicate import and unrelated draft saves', async () => {
     const { document } = await importPdf()
     addWork(document)
     document.pages['2'].history[0].status = 'streaming'
     document.revision = await storage.saveStudyDocument(document)
+    const original = await rawRead('documents', document.id) as { document: StudyDocument }
+    const history = JSON.stringify(original.document.pages['2'].history)
     const restored = (await storage.loadStudyWorkspace()).documents[0]
-    expect(restored.pages['2'].history[0]).toMatchObject({ status: 'interrupted', answer: 'First, look at the equation.', error: expect.stringContaining('interrupted') })
+    expect(restored.pages['2'].history[0]).toMatchObject({ status: 'streaming', answer: 'First, look at the equation.' })
+    expect(restored.pages['2'].history[0].error).toBeUndefined()
+    const duplicate = await importPdf()
+    expect(duplicate.duplicate).toBe(true)
+    expect(JSON.stringify(duplicate.document.pages['2'].history)).toBe(history)
+    restored.pages['2'].notes = 'A new note beside the unchanged archive'
     restored.revision = await storage.saveStudyDocument(restored)
     expect((await storage.loadStudyWorkspace()).warnings).toEqual([])
-    expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].history[0].status).toBe('interrupted')
+    expect(JSON.stringify((await storage.loadStudyWorkspace()).documents[0].pages['2'].history)).toBe(history)
+    const saved = await rawRead('documents', document.id) as { document: StudyDocument }
+    expect(JSON.stringify(saved.document.pages['2'].history)).toBe(history)
   })
 
   it.each(['complete', 'error', 'cancelled', 'interrupted'] as const)('retains a %s terminal response when restored', async (status) => {

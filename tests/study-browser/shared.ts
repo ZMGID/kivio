@@ -20,12 +20,44 @@ export async function expectSharedChat(page: Page) {
   await expect(messages(page)).toHaveCount(1)
   await expect(page.locator('.kv-study-composer, .kv-study-turn')).toHaveCount(0)
 }
+async function selectedMaterial(page: Page) {
+  return page.evaluate(() => new Promise<{ id: string | null; page: number | null; name: string | null }>((resolve, reject) => {
+    const open = indexedDB.open('kivio-study')
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['meta', 'documents'], 'readonly')
+      tx.onerror = () => { db.close(); reject(tx.error) }
+      const workspace = tx.objectStore('meta').get('workspace')
+      workspace.onsuccess = () => {
+        const id = workspace.result?.selectedDocumentId as string | null | undefined
+        if (!id) { db.close(); resolve({ id: null, page: null, name: null }); return }
+        const document = tx.objectStore('documents').get(id)
+        document.onsuccess = () => { db.close(); resolve({ id, page: document.result?.document.lastPage ?? null, name: document.result?.document.name ?? null }) }
+      }
+    }
+  }))
+}
 export async function importMaterial(page: Page, file: { name: string; mimeType: string; buffer: Buffer }) {
+  const id = createHash('sha256').update(file.buffer).digest('hex')
+  const duplicate = (await savedConversations(page)).some(item => item.study_context?.materialId === id)
+  const importButton = page.getByRole('button', { name: '导入材料', exact: true })
+  // setInputFiles can bypass the visible import button's disabled state. Respect
+  // the actual UI gate so a pending duplicate import cannot swallow the next file.
+  await expect(importButton).toBeEnabled()
   await page.getByLabel('导入 PDF 或图片').setInputFiles(file)
+  if (duplicate) await expect(page.getByText(/This material is already in your library/)).toBeVisible()
+  await expect(importButton).toBeEnabled()
+  await expect.poll(async () => (await selectedMaterial(page)).id, { message: 'The imported file hash must be selected durably' }).toBe(id)
+  const selected = await selectedMaterial(page)
+  const conversationId = `conv_study_${id}_${selected.page}`
+  await expect.poll(() => page.evaluate(id => window.__studyTest.openedConversations.includes(id), conversationId), { message: 'The normal Chat owner must load the imported material conversation' }).toBe(true)
+  await expect(page.locator('.kv-study-reader-title h2')).toHaveText(selected.name!)
   await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', /^data:image\/png;base64,/)
   await expectSharedChat(page)
-  return createHash('sha256').update(file.buffer).digest('hex')
+  return id
 }
+
 export async function jumpToPage(page: Page, number: number) {
   const input = page.getByRole('spinbutton', { name: '页码' })
   await input.fill(String(number)); await input.press('Enter')
@@ -50,6 +82,7 @@ export async function send(page: Page, question: string, lesson?: FixtureLesson)
   const call = await page.evaluate(index => window.__studyTest.requests[index], count)
   await expect.poll(async () => (await savedConversations(page)).find(item => item.id === call.conversationId)?.messages.at(-1)?.stream_outcome).toBe('completed')
   await expect(editor(page)).toHaveText('')
+  await expectSharedChatSettled(page)
   return call
 }
 export async function sentSource(page: Page, index: number, pageNumber: number, mode: string, image: string) {
@@ -70,7 +103,21 @@ export async function sentSource(page: Page, index: number, pageNumber: number, 
   expect(user.attachments?.[0].path).toBe(call.attachments[0].path)
   return call
 }
+export async function expectSharedChatSettled(page: Page) {
+  await expect(page.getByRole('button', { name: /^(停止生成|正在停止|Stop generating|Stopping)$/ })).toHaveCount(0)
+  await expect(page.getByRole('status', { name: '正在加载对话', exact: true })).toBeHidden()
+  await expect(page.locator('[data-chat-message-list-item="streaming"], [data-chat-message-list-item="live-group"]')).toHaveCount(0)
+}
 export async function capture(page: Page, info: TestInfo, filename: string) {
+  // A persisted terminal can precede the shared preview twin being reconciled.
+  // Wait for that normal UI lifecycle, not a sleep or a hidden status graphic.
+  await expectSharedChatSettled(page)
+  await info.attach(`${filename}.state.json`, { body: JSON.stringify({
+    visibleCancelControls: await page.getByRole('button', { name: /^(停止生成|正在停止|Stop generating|Stopping)$/ }).count(),
+    liveRows: await page.locator('[data-chat-message-list-item="streaming"], [data-chat-message-list-item="live-group"]').count(),
+    idlePresenceMarkers: await page.locator('.kv-stream-status-idle').count(),
+    renderedMessageIds: await page.locator('[data-message-presentation="reading"] [data-message-id]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-message-id'))),
+  }, null, 2), contentType: 'application/json' })
   await page.screenshot({ path: info.outputPath(filename), fullPage: true, animations: 'disabled' })
 }
 export async function captureCrop(page: Page, info: TestInfo, filename: string) {

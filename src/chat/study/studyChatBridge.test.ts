@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({ createConversation: vi.fn(), getConversation: vi
 const attachments = vi.hoisted(() => ({ chatSavePastedImage: vi.fn() }))
 vi.mock('../../api/tauri', () => ({ api: attachments }))
 vi.mock('../api', () => ({ chatApi: api }))
+vi.mock('./studyMaterial', () => ({ loadStudyMaterial: vi.fn() }))
 let bridge: typeof import('./studyChatBridge')
 let storage: typeof import('./studyStorage')
 let composer: typeof import('../composerDraft')
@@ -102,6 +103,33 @@ describe('Study history migration into Chat', () => {
     expect(await rawRecord('meta', 'workspace')).toEqual(workspaceBefore)
     expect(await (await storage.readStudyDocumentBlob(document.id)).text()).toBe('original PDF')
     expect((await storage.readStudyChatSource(document.id, 1)).receipt?.conversationId).toBe(conversation.id)
+  })
+
+  it('keeps streaming legacy bytes and import identity unchanged when the loaded source owner saves notes and question', async () => {
+    const document = await seed([turn({ status: 'streaming', answer: 'Saved unfinished answer' })])
+    const raw = await rawRecord('documents', document.id) as { document: { pages: Record<string, { history: StudyTurn[] }> } }
+    const originalHistory = JSON.stringify(raw.document.pages['1'].history)
+    const owner = await import('./studyWorkspaceStore')
+    try {
+      await owner.initializeStudy()
+      const options = { documentId: document.id, page: 1 }
+      const migrated = await bridge.ensureStudyConversation(options)
+      expect(migrated.messages[1]).toMatchObject({ content: 'Saved unfinished answer', stream_outcome: 'interrupted' })
+      const originalReceipt = (await storage.readStudyChatSource(document.id, 1)).receipt
+      owner.editStudyPage(document.id, 1, { notes: 'New reading note', question: 'A new unsent question' })
+      await owner.flushStudyDocument(document.id)
+      const saved = await rawRecord('documents', document.id) as typeof raw
+      expect(JSON.stringify(saved.document.pages['1'].history)).toBe(originalHistory)
+      expect(owner.studyWorkspace.getSnapshot().saveError).toBe('')
+      await owner.reloadStudyWorkspace()
+      const reopened = await bridge.ensureStudyConversation(options)
+      expect(reopened.id).toBe(migrated.id)
+      expect(reopened.messages).toEqual(migrated.messages)
+      expect((await storage.readStudyChatSource(document.id, 1)).receipt).toEqual(originalReceipt)
+      expect((await storage.loadStudyWorkspace()).documents[0].pages['1']).toMatchObject({
+        notes: 'New reading note', question: 'A new unsent question', history: [expect.objectContaining({ status: 'streaming' })],
+      })
+    } finally { owner.resetStudyWorkspaceForTests() }
   })
 
   it('does not create duplicates under concurrent page opening or overwrite Chat continued after migration', async () => {

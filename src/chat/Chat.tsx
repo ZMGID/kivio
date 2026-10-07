@@ -3025,7 +3025,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       inputBarProps: {
         ...inputBarProps, presentation: 'reading', autoFocus: false, active: chatView === 'study', focusRequest: surface.focusRequest,
         placeholder: uiLang === 'zh' ? '想了解这页的什么？也可以问图表或翻译英文' : 'What would you like to understand, explain or translate on this page?',
-        readingContextSlot: <>{surface.controls}<small className="kv-study-disclosure">{uiLang === 'zh' ? '本页对话与原图会发送给所选模型。AI 可能出错。' : 'This page’s discussion and original image go to the selected model. AI can make mistakes.'}</small></>,
+        readingContextSlot: <div className="flex min-w-0 w-full flex-col gap-1">{surface.controls}<small className="kv-study-disclosure">{uiLang === 'zh' ? '本页对话与原图会发送给所选模型。AI 可能出错。' : 'This page’s discussion and original image go to the selected model. AI can make mistakes.'}</small></div>,
         modelSlot: <ModelSelector currentProviderId={target.provider_id} currentModel={target.model} onModelChange={handleModelChange} visionOnly placement="up" preserveLabel />,
         sendDisabledReason: disabledReason, onQueue: undefined,
         onSend: async (content, _attachments, options) => {

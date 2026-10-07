@@ -34,6 +34,9 @@ export function studyPage(doc: StudyDocument, page = doc.lastPage): StudyPageSta
 export function flushStudyDocument(id: string): Promise<void> {
   const existing = saving.get(id)
   if (existing) return existing
+  // Opening a shared Chat page is a read, not a material edit. Avoid bumping
+  // the CAS revision and making another unchanged window stale.
+  if (!studyWorkspace.getSnapshot().dirtyIds.includes(id)) return Promise.resolve()
   const flight = Promise.resolve().then(async () => {
     try {
       while (documentById(id) && !removing.has(id)) {
