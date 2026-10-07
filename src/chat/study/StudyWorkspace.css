@@ -115,3 +115,11 @@
   .kv-study-composer { max-height: 80%; overflow-y: auto; }
   .kv-study-compose-fields { overflow: visible; flex-shrink: 0; }
 }
+
+.kv-study-teaching-response { display: grid; gap: 10px; padding-top: 8px; }
+.kv-study-teaching-response h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.kv-study-answer-reveal { display: grid; gap: 8px; justify-items: start; }
+.kv-study-answer-guard { padding-top: 6px; }
+
+.kv-study-source-repair { font-size: 11px; line-height: 1.55; color: var(--text-muted); }
+.kv-study-source-repair p { margin: 0 0 4px; }

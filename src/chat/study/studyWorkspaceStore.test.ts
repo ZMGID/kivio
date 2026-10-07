@@ -5,7 +5,7 @@ import type { StudyHelpInput, StudyHelpResponse } from './studyRequest'
 import type { StudyReaderContext } from './studyMaterial'
 
 const mocks = vi.hoisted(() => ({ material: vi.fn(), request: vi.fn() }))
-vi.mock('./studyMaterial', () => ({ loadStudyMaterial: mocks.material }))
+vi.mock('./studyMaterial', async original => ({ ...await original<typeof import('./studyMaterial')>(), loadStudyMaterial: mocks.material }))
 vi.mock('./studyRequest', () => ({ requestStudyHelp: mocks.request }))
 let owner: typeof import('./studyWorkspaceStore')
 let storage: typeof import('./studyStorage')
@@ -71,6 +71,20 @@ function holdNextSave() {
 }
 
 describe('Study workspace lifecycle', () => {
+  it('will not send damaged extraction alone, but accepts corrected text or the exact region image', async () => {
+    const [document] = await seed()
+    await question(document)
+    const damaged = { ...options(document), context: { ...context(), text: '\uFFFDx2', textRisk: 'unmapped-glyphs' as const } }
+    await expect(owner.sendStudyHelp(damaged)).rejects.toThrow('Extracted symbols')
+    expect(mocks.request).not.toHaveBeenCalled()
+    owner.editStudyPage(document.id, 1, { correctedText: 'Integral of x squared.' })
+    await owner.sendStudyHelp(damaged)
+    expect(mocks.request).toHaveBeenLastCalledWith(expect.objectContaining({ pageText: 'Integral of x squared.', imageDataUrl: undefined }), expect.any(Function), expect.any(AbortSignal))
+    owner.editStudyPage(document.id, 1, { correctedText: '' })
+    await owner.sendStudyHelp({ ...damaged, includeImage: true })
+    expect(mocks.request).toHaveBeenLastCalledWith(expect.objectContaining({ imageDataUrl: damaged.context.imageDataUrl }), expect.any(Function), expect.any(AbortSignal))
+  })
+
   it('can retry initialization after a transient storage failure', async () => {
     const loading = vi.spyOn(storage, 'loadStudyWorkspace').mockRejectedValueOnce(new Error('Storage temporarily locked'))
     await owner.initializeStudy()
@@ -225,6 +239,15 @@ describe('Study workspace lifecycle', () => {
     await saved()
     expect(mocks.request.mock.calls[0][0]).toMatchObject({ question: 'Original question', attempt: 'Original attempt', pageText: 'Original corrected text', imageDataUrl: 'data:image/png;base64,newImage', providerId: 'provider', model: 'model' })
     expect(current(document).pages['1'].history[1]).toMatchObject({ region: null, sourceWarning: 'Original OCR warning', sourceImageUsed: true })
+  })
+
+  it('blocks damaged pre-upgrade retry snapshots without replacing their original source', async () => {
+    const [document] = await seed()
+    const original: StudyTurn = { id: 'old-damaged', page: 1, mode: 'hint', question: 'Original', attempt: '', sourceText: '\uFFFDx2', answer: '', status: 'error', createdAt: 1, providerId: 'provider', model: 'model', sourceImageUsed: false }
+    owner.editStudyPage(document.id, 1, { correctedText: 'New readable source', history: [original] })
+    await expect(owner.sendStudyHelp({ ...options(document), retry: original })).rejects.toThrow('Cancel retry')
+    expect(mocks.request).not.toHaveBeenCalled()
+    expect(current(document).pages['1'].history[0].sourceText).toBe('\uFFFDx2')
   })
 
   it('rejects a retry from another page or document and waits for its exact region', async () => {

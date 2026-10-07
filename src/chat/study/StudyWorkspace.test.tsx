@@ -4,17 +4,17 @@ import { LangContext } from '../../components/i18n'
 import { StudyWorkspace } from './StudyWorkspace'
 import { createEmptyStudyPage, type StudyDocument } from './studyStorage'
 
-const mocks = vi.hoisted(() => ({ send: vi.fn(), edit: vi.fn(), open: vi.fn(), providers: true }))
+const mocks = vi.hoisted(() => ({ send: vi.fn(), edit: vi.fn(), open: vi.fn(), providers: true, vision: true, textRisk: false }))
 vi.mock('../../api/settingsCache', () => ({
   subscribeSettings: () => () => {},
-  getSettingsCached: async () => ({ providers: mocks.providers ? [{ id: 'test', name: 'Test provider', enabled: true, enabledModels: ['text', 'vision'], modelOverrides: { text: { capabilities: { vision: false } }, vision: { capabilities: { vision: true } } } }] : [], defaultModels: { chat: { providerId: 'test', model: 'vision' } } }),
+  getSettingsCached: async () => ({ providers: mocks.providers ? [{ id: 'test', name: 'Test provider', enabled: true, enabledModels: ['text', 'vision'], modelOverrides: { text: { capabilities: { vision: false } }, vision: { capabilities: { vision: true } } } }] : [], defaultModels: { chat: { providerId: 'test', model: mocks.vision ? 'vision' : 'text' } } }),
 }))
 vi.mock('./studyStorage', async (importOriginal) => ({ ...await importOriginal<typeof import('./studyStorage')>(), readStudyDocumentBlob: async () => new Blob(['fake image']) }))
 vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 vi.mock('./StudyReader', async () => {
   const { useEffect } = await import('react')
   return { StudyReader: ({ onContextChange, page, region }: { onContextChange: (value: unknown) => void; page: number; region: unknown }) => {
-    useEffect(() => { onContextChange({ status: 'ready', page, pageCount: 1, region, text: 'x + 2 = 5', imageDataUrl: 'data:image/png;base64,AA==' }) }, [onContextChange, page, region])
+    useEffect(() => { onContextChange({ status: 'ready', page, pageCount: 1, region, text: 'x + 2 = 5', textRisk: mocks.textRisk ? 'unmapped-glyphs' : undefined, imageDataUrl: 'data:image/png;base64,AA==' }) }, [onContextChange, page, region])
     return <p>Readable page fixture</p>
   } }
 })
@@ -30,7 +30,7 @@ function setup(doc = makeDoc()) {
   return render(<LangContext.Provider value="en"><StudyWorkspace onOpenSettings={vi.fn()} /></LangContext.Provider>)
 }
 
-beforeEach(() => { vi.clearAllMocks(); mocks.providers = true; HTMLElement.prototype.scrollIntoView = vi.fn() })
+beforeEach(() => { vi.clearAllMocks(); mocks.providers = true; mocks.vision = true; mocks.textRisk = false; HTMLElement.prototype.scrollIntoView = vi.fn() })
 
 describe('Study workspace interaction', () => {
   it('defaults to one hint, requires an attempt for checking, and uses explicit solution action', async () => {
@@ -77,6 +77,27 @@ describe('Study workspace interaction', () => {
     for (const label of ['Question about this page', 'My attempt', 'Corrected problem text', 'Page notes']) {
       expect(screen.getByLabelText(label)).toHaveStyle({ resize: 'none' })
     }
+  })
+  it('requires correction or an included image for visibly damaged source text', async () => {
+    mocks.vision = false; mocks.textRisk = true
+    setup()
+    await screen.findByText(/Extracted text is missing or has unmapped symbols/)
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Correct the source text' }))
+    expect(screen.getByLabelText('Corrected problem text')).toHaveFocus()
+    expect(screen.getByLabelText('Corrected problem text').closest('details')).toHaveAttribute('open')
+    expect(mocks.send).not.toHaveBeenCalled()
+  })
+  it('requires leaving a damaged historical retry before correcting its source', async () => {
+    const doc = makeDoc()
+    doc.pages['1'].history.push({ id: 'old-damaged', page: 1, mode: 'hint', question: 'Old question', attempt: '', sourceText: '\uFFFDx2', sourceImageUsed: false, answer: '', status: 'error', error: 'Old failure', providerId: 'test', model: 'text', createdAt: 1 })
+    setup(doc)
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry this question' }))
+    expect(screen.getByRole('button', { name: 'Send retry' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel retry and correct source' }))
+    expect(screen.queryByRole('button', { name: 'Send retry' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Corrected problem text')).toHaveFocus()
+    expect(mocks.send).not.toHaveBeenCalled()
   })
   it('shows save failures with a retry rather than a saved claim', async () => {
     setup()

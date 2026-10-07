@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { loadStudyMaterial, normalizeStudyRegion, openStudyMaterial, STUDY_MATERIAL_LIMITS, studyPageImage, studyPageText, studyRegionFromPoints, studyRenderSize, validateStudyMaterial, type StudyPage } from './studyMaterial'
+import { loadStudyMaterial, normalizeStudyRegion, openStudyMaterial, STUDY_MATERIAL_LIMITS, studyPageImage, studyPageText, studyTextExtractionRisk, studyTextExtractionNotice, studyRegionFromPoints, studyRenderSize, validateStudyMaterial, type StudyPage } from './studyMaterial'
 
 const pdfMocks = vi.hoisted(() => ({ getDocument: vi.fn(), GlobalWorkerOptions: { workerSrc: '' } }))
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => pdfMocks)
@@ -152,9 +152,45 @@ describe('study region context', () => {
     expect(drawImage).toHaveBeenCalledWith(source, 100, 400, 300, 800, 0, 0, 300, 800)
     expect(canvas.width).toBe(0)
   })
+  it('never accepts an external URL or non-PNG data as a context image', () => {
+    for (const url of ['https://example.invalid/source.png', 'data:image/svg+xml,<svg />', 'data:image/png;base64,']) {
+      mockCanvas(url)
+      expect(studyPageImage({ canvas: { width: 100, height: 100 } as HTMLCanvasElement, spans: [] }, null)).toBeUndefined()
+    }
+  })
   it('bounds image serialization retries and omits an unbounded attachment', () => {
     const { canvas } = mockCanvas(`data:image/png;base64,${'A'.repeat(3_000_000)}`)
     expect(studyPageImage({ canvas: { width: 100, height: 100 } as HTMLCanvasElement, spans: [] } satisfies StudyPage, null)).toBeUndefined()
     expect(canvas.toDataURL).toHaveBeenCalledTimes(5)
+  })
+})
+
+
+describe('PDF text extraction risk', () => {
+  it('flags the replacement glyph in the observed MIT 18.01SC exercise 5B-13 extraction', () => {
+    // Actual PDF.js text from page 2, selection x=.18, y=.80, width=.31, height=.05.
+    // The rendered source has an integral and a fraction; plain text loses both.
+    const extracted = '� \nx 2 dx \n5B-13.   .   Hint:   Try   u   =   x 3   . \n1 +   x 6'
+    expect(studyTextExtractionRisk(extracted)).toBe('unmapped-glyphs')
+    expect(studyTextExtractionNotice('unmapped-glyphs', 'en')).toMatch(/missing or unmapped characters/i)
+  })
+  it.each(['', ' \t\r\n '])('flags empty extraction without asserting the page is scanned: %j', text => {
+    expect(studyTextExtractionRisk(text)).toBe('empty')
+    expect(studyTextExtractionNotice('empty', 'en')).not.toMatch(/scanned/i)
+  })
+  it.each(['x\u0000y', 'x\u0007y', 'x\u0085y', 'x\u007fy', 'x\uE000y', 'x\u{F0000}y', 'x\u{100000}y', 'x\uFFFCy', 'x\uFFFFy', 'x\uD800y'])('flags only observable invalid or unmapped character evidence: %j', text => {
+    expect(studyTextExtractionRisk(text)).toBe('unmapped-glyphs')
+  })
+  it.each(['Read the paragraph.\nThen explain it.\t第 2 页', '∫ x²/(1+x⁶) dx; u=x³; ∑ αᵢ ≤ ∞; □', String.raw`\int \frac{x^2}{1+x^6} \, dx`, 'x 2 dx \n1 + x 6'])('does not certify or reject valid-looking text and mathematical layouts: %j', text => {
+    expect(studyTextExtractionRisk(text)).toBeUndefined()
+    expect(studyTextExtractionNotice(undefined, 'en')).toBeUndefined()
+  })
+  it.each(['empty', 'unmapped-glyphs'] as const)('gives localized correction and vision fallback actions for %s', risk => {
+    expect(studyTextExtractionNotice(risk, 'en')).toMatch(/check formulas against the page/i)
+    expect(studyTextExtractionNotice(risk, 'en')).toMatch(/paste corrected text/i)
+    expect(studyTextExtractionNotice(risk, 'en')).toMatch(/selected image.*vision-capable model/i)
+    expect(studyTextExtractionNotice(risk, 'zh')).toContain('核对公式')
+    expect(studyTextExtractionNotice(risk, 'zh')).toContain('粘贴修正文字')
+    expect(studyTextExtractionNotice(risk, 'zh')).toContain('支持图片的模型')
   })
 })

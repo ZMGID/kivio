@@ -9,9 +9,9 @@ import { type ModelProvider, type Settings } from '../../api/tauri'
 import { resolveModelInfo } from '../../data/modelMatching'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useWindowStore } from '../../utils/windowStore'
-import { ChatMarkdown } from '../ChatMarkdown'
+import { StudyAnswer } from './StudyAnswer'
 import { StudyReader } from './StudyReader'
-import type { StudyReaderContext } from './studyMaterial'
+import { studyTextExtractionRisk, type StudyReaderContext } from './studyMaterial'
 import { readStudyDocumentBlob, type StudyTurn } from './studyStorage'
 import { cancelStudyHelp, cancelStudyImport, editStudyPage, importStudyFile, initializeStudy, openStudyPage, removeStudyDocument, reloadStudyWorkspace, retryStudySave, sameStudyRegion, sendStudyHelp, studyPage, studyWorkspace } from './studyWorkspaceStore'
 import './StudyWorkspace.css'
@@ -47,7 +47,8 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
   const currentContext = doc && context?.documentId === doc.id && context.value.page === doc.lastPage && sameStudyRegion(context.value.region, page?.region) ? context.value : null
   const sendingImage = retryTurn ? Boolean(retryTurn.sourceImageUsed) : vision && includeImage
   const activeHere = state.activeRequest?.documentId === doc?.id && state.activeRequest?.page === doc?.lastPage
-  const canSend = Boolean(doc && currentContext?.status === 'ready' && provider && model && !state.activeRequest)
+  const sourceNeedsRepair = retryTurn ? !retryTurn.sourceImageUsed && Boolean(studyTextExtractionRisk(retryTurn.sourceText)) : Boolean(currentContext?.textRisk) && !page?.correctedText.trim() && !(sendingImage && currentContext?.imageDataUrl)
+  const canSend = Boolean(!sourceNeedsRepair && doc && currentContext?.status === 'ready' && provider && model && !state.activeRequest)
   const allTurns = doc ? Object.values(doc.pages).flatMap((item) => item.history).sort((a, b) => b.createdAt - a.createdAt) : []
 
   useEffect(() => { void initializeStudy() }, [])
@@ -182,7 +183,7 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
             <div className="kv-study-question"><span className="kv-study-eyebrow">{modeNames[turn.mode][zh ? 0 : 1]}</span><p>{turn.question}</p>{turn.attempt && <details><summary>{text('我的思路', 'My attempt')}</summary><p>{turn.attempt}</p></details>}</div>
             <div className="kv-study-turn-meta"><Button size="sm" variant="ghost" onClick={() => { if (doc) { openStudyPage(doc.id, turn.page, turn.region ?? null, turn.id); setPane('reader') } }}>{text(`来源：第 ${turn.page} 页${turn.region ? ' · 选区' : ''}`, `Source: page ${turn.page}${turn.region ? ' · region' : ''}`)}</Button><small>{turn.model}</small></div>
             {turn.sourceWarning && <small className="kv-study-muted">{turn.sourceWarning}</small>}
-            {turn.answer && (turn.mode === 'solution' ? <details className="kv-study-solution"><summary>{text('展开完整解答', 'Reveal full solution')}</summary><ChatMarkdown content={turn.answer} readOnly /></details> : <ChatMarkdown content={turn.answer} readOnly />)}
+            <StudyAnswer turn={turn} />
             {turn.status === 'streaming' && <p role="status" className="kv-study-muted">{text('正在思考并回答…', 'Thinking and responding…')}</p>}
             {turn.status !== 'complete' && turn.status !== 'streaming' && <div className="kv-study-turn-error" role="status"><span>{turn.error || text('回答已停止，草稿与已生成内容已保留。', 'Stopped. Your draft and partial reply are preserved.')}</span><Button size="sm" onClick={() => prepareRetry(turn)} disabled={Boolean(state.activeRequest)}><RotateCcw size={13} />{text('重试此问题', 'Retry this question')}</Button></div>}
             <details className="kv-study-source"><summary>{text('查看发送的原文', 'View source text sent')}</summary><pre>{turn.sourceText || text('已发送页面图片，没有提取文字。', 'Page image sent; no text extracted.')}</pre>{turn.sourceImageUsed && <small>{text('同时发送了此页或选区的图片。', 'Also included an image of this page or region.')}</small>}</details>
@@ -206,7 +207,7 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
                 <TextArea id="study-attempt" aria-required={mode === 'check'} aria-label={text('我的解答或思路', 'My attempt')} value={page.attempt} onChange={(attempt) => edit({ attempt })} autoSize={{ minRows: mode === 'check' ? 3 : 2, maxRows: 6 }} maxLength={12000} placeholder={mode === 'check' ? text('写下你已经做到哪一步，或者你的推导过程', 'Write the steps you tried or the reasoning you used') : text('我试了……，但在这里卡住了', 'I tried… and got stuck when…')} />
               </div>
             </>}
-            <details className="kv-study-correction"><summary>{text('补充或修正题目文字', 'Paste or correct problem text')}{page.correctedText.trim() && <span className="kv-study-source-active">{text('已使用', 'In use')}</span>}</summary><p>{text('会替代自动提取文字。扫描件、公式和手写识别可能不准确，请核对；这里不会自动 OCR。', 'Replaces extracted text. Scans, equations and handwriting may be unreadable or inaccurate; check the source. No automatic OCR is performed.')}</p><TextArea aria-label={text('修正后的题目文字', 'Corrected problem text')} value={page.correctedText} onChange={(correctedText) => edit({ correctedText })} autoSize={{ minRows: 3, maxRows: 7 }} maxLength={16000} /></details>
+            <details className="kv-study-correction"><summary>{text('补充或修正题目文字', 'Paste or correct problem text')}{page.correctedText.trim() && <span className="kv-study-source-active">{text('已使用', 'In use')}</span>}</summary><p>{text('会替代自动提取文字。扫描件、公式和手写识别可能不准确，请核对；这里不会自动 OCR。', 'Replaces extracted text. Scans, equations and handwriting may be unreadable or inaccurate; check the source. No automatic OCR is performed.')}</p><TextArea id="study-corrected-source" aria-label={text('修正后的题目文字', 'Corrected problem text')} value={page.correctedText} onChange={(correctedText) => edit({ correctedText })} autoSize={{ minRows: 3, maxRows: 7 }} maxLength={16000} /></details>
             {mode === 'check' && !page.attempt.trim() && !retryTurn && <small className="kv-study-mode-note">{text('先写下自己的思路，再检查第一处需要调整的地方。', 'Add your thinking first, then check the first step that needs attention.')}</small>}
             {mode === 'solution' && <small className="kv-study-mode-note">{text('完整解答会揭示答案。想继续自己试，可以切回“提示一步”。', 'A full solution reveals the answer. Choose One hint to keep trying yourself.')}</small>}
           </div>
@@ -214,6 +215,7 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
             <div className="kv-study-models"><Select ariaLabel={text('模型服务', 'Model provider')} value={providerId} onChange={setProviderId} options={providers.map((item) => ({ value: item.id, label: item.name }))} disabled={!providers.length} /><Select ariaLabel={text('学习模型', 'Study model')} value={model} onChange={setModel} options={(provider?.enabledModels ?? []).map((item) => ({ value: item, label: item }))} disabled={!provider} /></div>
             {(vision || retryTurn?.sourceImageUsed) && <label className="kv-study-vision"><input type="checkbox" checked={sendingImage} disabled={Boolean(retryTurn)} onChange={(event) => setIncludeImage(event.target.checked)} />{text('同时发送页面 / 选区图片', 'Include page / region image')}</label>}
             {!providers.length && <div className="kv-study-no-provider"><span>{text('配置模型后即可提问。仍可阅读和记笔记。', 'Configure a model to ask for help. Reading and notes still work.')}</span><Button size="sm" onClick={onOpenSettings}>{text('打开设置', 'Open settings')}</Button></div>}
+            {sourceNeedsRepair && <div className="kv-study-source-repair" role="status"><p>{retryTurn ? text('保存的原文有缺失或乱码，请取消重试、修正原文后重新提问。', 'The saved source text is damaged. Cancel retry, correct the source, and send a new question.') : text('提取文字有缺失或乱码，暂不按这些文字回答。请补充准确题目，或选择视觉模型并附上选区图片。', 'Extracted text is missing or has unmapped symbols. Correct the problem text, or select an image-capable model and include the selected image before asking.')}</p><Button size="sm" variant="ghost" onClick={() => { setRetryTurn(null); const field = document.getElementById('study-corrected-source'); const details = field?.closest('details'); if (details) details.open = true; field?.focus() }}>{retryTurn ? text('取消重试并修正原文', 'Cancel retry and correct source') : text('修正题目文字', 'Correct the source text')}</Button></div>}
             <div className="kv-study-send-row"><small>{text('AI 可能出错，请对照原文检查。', 'AI can make mistakes. Check against the source.')}</small>{state.activeRequest ? <Button onClick={cancelStudyHelp}><Square size={13} />{text('停止回答', 'Stop reply')}</Button> : <Button variant="primary" disabled={!canSend || (!retryTurn && (!page.question.trim() || (mode === 'check' && !page.attempt.trim())))} onClick={() => void send()}><Send size={14} />{retryTurn ? text('重新发送', 'Send retry') : mode === 'solution' ? text('获取完整解答', 'Get full solution') : text('发送', 'Send')}</Button>}</div>
             <p className="kv-study-disclosure">{provider ? text(`发送时，你的问题、思路、此页历史与${sendingImage ? '页面文字及图片' : '页面文字'}将交给 ${provider.name}（${model}）。`, `Sending shares your question, attempt, this page’s history and ${sendingImage ? 'page text and image' : 'page text'} with ${provider.name} (${model}).`) : ''}</p>
             <details className="kv-study-privacy-details"><summary>{text('本机存储与调试信息', 'Local storage and diagnostics')}</summary><p>{text('草稿与笔记保存在此设备。如已启用请求调试，请求内容也会记录在本地调试日志。', 'Drafts and notes stay on this device. If Request Debug is enabled, request content is also recorded in local debug logs.')}</p></details>

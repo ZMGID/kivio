@@ -1,5 +1,5 @@
 import { createWindowStore } from '../../utils/windowStore'
-import { loadStudyMaterial, type StudyReaderContext, type StudyRegion } from './studyMaterial'
+import { loadStudyMaterial, studyTextExtractionRisk, type StudyReaderContext, type StudyRegion } from './studyMaterial'
 import { requestStudyHelp, type StudyHelpInput } from './studyRequest'
 import {
   createEmptyStudyPage, deleteStudyDocument, importStudyDocument, loadStudyWorkspace,
@@ -220,6 +220,8 @@ export async function sendStudyHelp(options: {
   const sourceText = retry?.sourceText ?? (draft.correctedText.trim() || context.text)
   const includeImage = retry?.sourceImageUsed ?? options.includeImage
   if (includeImage && !context.imageDataUrl) throw new Error('The page image is not ready. Try again or use corrected problem text.')
+  if (retry && !includeImage && studyTextExtractionRisk(retry.sourceText)) throw new Error('The saved source text is damaged. Cancel retry, correct the source, and send a new question. / 保存的原文有缺失或乱码，请取消重试、修正原文后重新提问。')
+  if (!retry && context.textRisk && !draft.correctedText.trim() && !includeImage) throw new Error('Extracted symbols are missing or unreadable. Correct the problem text or include a readable page image. / 提取文字有缺失或乱码，请修正题目文字或附上清晰图片。')
   if (!sourceText.trim() && !includeImage) throw new Error('This page has no readable text. Paste or correct the problem text, or choose an image-capable model. / 无可读文字，请补充题目文字或选择视觉模型。')
   const turnId = crypto.randomUUID()
   const input: StudyHelpInput = { requestId: turnId, documentId, documentName: doc.name, pageNumber: page, mode: options.mode,

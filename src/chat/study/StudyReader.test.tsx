@@ -6,7 +6,7 @@ import type { StudyMaterial, StudyPage, StudyReaderContext } from './studyMateri
 const locale = vi.hoisted(() => ({ lang: 'zh' }))
 vi.mock('../../components/i18n', () => ({ useLang: () => locale.lang }))
 
-const materialMocks = vi.hoisted(() => ({ openStudyMaterial: vi.fn(), studyPageImage: vi.fn(() => 'data:image/png;base64,AAAA'), studyPageText: vi.fn((page: { label: string }) => page.label) }))
+const materialMocks = vi.hoisted(() => ({ openStudyMaterial: vi.fn(), studyPageImage: vi.fn<() => string | undefined>(() => 'data:image/png;base64,AAAA'), studyPageText: vi.fn((page: { label: string }) => page.label) }))
 vi.mock('./studyMaterial', async importOriginal => ({ ...await importOriginal<typeof import('./studyMaterial')>(), ...materialMocks }))
 
 function deferred<T>() {
@@ -30,6 +30,8 @@ function props() { return { blob, page: 1, region: null, onPageChange: vi.fn(), 
 beforeEach(() => {
   vi.clearAllMocks()
   locale.lang = 'zh'
+  materialMocks.studyPageImage.mockReturnValue('data:image/png;base64,AAAA')
+  materialMocks.studyPageText.mockImplementation((page: { label: string }) => page.label)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -171,5 +173,84 @@ describe('StudyReader lifecycle and accessibility', () => {
     fireEvent.keyDown(group, { key: 'Escape' })
     expect(input.onRegionChange).toHaveBeenLastCalledWith(null)
     expect(input.onPageChange).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('StudyReader source confidence and image preview', () => {
+  it.each(['zh', 'en'])('warns about observable missing glyphs with actionable %s fallback guidance', async lang => {
+    locale.lang = lang
+    const source = material()
+    source.renderPage.mockResolvedValue(frame('� \nx 2 dx \n5B-13. Hint: Try u = x 3 \n1 + x 6'))
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    render(<StudyReader {...input} />)
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', textRisk: 'unmapped-glyphs' })))
+    const notice = screen.getByRole('status')
+    expect(notice).toHaveTextContent(lang === 'zh' ? '核对公式' : 'Check formulas against the page')
+    expect(notice).toHaveTextContent(lang === 'zh' ? '粘贴修正文字' : 'paste corrected text')
+    expect(notice).toHaveTextContent(lang === 'zh' ? '支持图片的模型' : 'vision-capable model')
+  })
+  it('updates risk for the active crop and clears it for clean text without certifying the math', async () => {
+    const source = material()
+    source.renderPage.mockResolvedValue(frame('� garbled elsewhere on the page'))
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const view = render(<StudyReader {...input} />)
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: 'unmapped-glyphs' })))
+    materialMocks.studyPageText.mockReturnValue('∫ x²/(1+x⁶) dx')
+    view.rerender(<StudyReader {...input} region={{ x: 0.2, y: 0.2, width: 0.3, height: 0.1 }} />)
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: undefined, text: '∫ x²/(1+x⁶) dx' }))
+    expect(view.container.querySelector('.kv-study-reader-risk')).not.toBeInTheDocument()
+    expect(screen.queryByText(/verified|validated|correct extraction/i)).not.toBeInTheDocument()
+    materialMocks.studyPageText.mockReturnValue('')
+    view.rerender(<StudyReader {...input} region={{ x: 0.1, y: 0.1, width: 0.1, height: 0.1 }} />)
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: 'empty' }))
+    expect(screen.getByRole('status')).toHaveTextContent('当前页面或选区没有可提取的文字')
+  })
+  it('keeps images as image-only sources rather than claiming damaged PDF extraction', async () => {
+    const source = { ...material(), kind: 'image' as const, mimeType: 'image/png', pageCount: 1 }
+    source.renderPage.mockResolvedValue(frame(''))
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const view = render(<StudyReader {...input} />)
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', textRisk: undefined, text: '', imageDataUrl: 'data:image/png;base64,AAAA' })))
+    expect(view.container.querySelector('.kv-study-reader-risk')).not.toBeInTheDocument()
+    expect(screen.getByText('当前不提供 OCR')).toBeInTheDocument()
+  })
+  it('previews the exact selected PNG from the outgoing context, updates it, and clears it during navigation', async () => {
+    locale.lang = 'en'
+    const source = material()
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const region = { x: 0.18, y: 0.8, width: 0.31, height: 0.05 }
+    const view = render(<StudyReader {...input} region={region} />)
+    const preview = await screen.findByRole('img', { name: 'Page 1 selected area image for question context' })
+    const context = input.onContextChange.mock.calls.at(-1)![0]
+    expect(preview).toHaveAttribute('src', context.imageDataUrl)
+    expect(preview.closest('details')).toHaveAttribute('open')
+    expect(screen.getByText(/same image.*question context/i)).toHaveTextContent(/only sent.*vision-capable model/i)
+    expect(materialMocks.studyPageImage).toHaveBeenLastCalledWith(expect.anything(), region)
+
+    materialMocks.studyPageImage.mockReturnValue('data:image/png;base64,Q1JPUFRXTw==')
+    view.rerender(<StudyReader {...input} region={{ ...region, width: 0.2 }} />)
+    expect(preview).toHaveAttribute('src', 'data:image/png;base64,Q1JPUFRXTw==')
+    expect(input.onContextChange.mock.calls.at(-1)![0].imageDataUrl).toBe(preview.getAttribute('src'))
+
+    view.rerender(<StudyReader {...input} page={2} />)
+    expect(screen.queryByRole('img', { name: /selected area image for question context/ })).not.toBeInTheDocument()
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'loading', imageDataUrl: undefined, textRisk: undefined }))
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'ready' })))
+    expect(screen.getByAltText('Page 2 full page image for question context').closest('details')).not.toHaveAttribute('open')
+  })
+  it('omits an unavailable image preview without claiming an image will be attached', async () => {
+    locale.lang = 'en'
+    materialMocks.studyPageImage.mockReturnValue(undefined)
+    materialMocks.openStudyMaterial.mockResolvedValue(material())
+    const input = props()
+    const view = render(<StudyReader {...input} region={{ x: 0.1, y: 0.1, width: 0.3, height: 0.2 }} />)
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', imageDataUrl: undefined })))
+    expect(view.container.querySelector('.kv-study-reader-preview')).not.toBeInTheDocument()
+    expect(screen.getByText(/image is too large to attach/)).toBeInTheDocument()
   })
 })

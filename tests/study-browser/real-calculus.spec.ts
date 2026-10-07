@@ -48,6 +48,10 @@ test('student journey through a real MIT calculus PDF with honest math fallback'
   await expect(page.locator('.kv-study-reader-notice')).toContainText('公式')
   await page.screenshot({ path: info.outputPath('real-calculus-source-selection.png'), fullPage: true })
 
+  await page.getByLabel('关于本页的问题').fill('请看这道题。')
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled()
+  await expect(page.getByText('提取文字有缺失或乱码，暂不按这些文字回答。', { exact: false })).toBeVisible()
+
   // Plain PDF text does not preserve reliable mathematical layout. The learner
   // checks the page image and supplies unambiguous text rather than trusting OCR.
   await page.getByText('补充或修正题目文字', { exact: true }).click()
@@ -61,6 +65,7 @@ test('student journey through a real MIT calculus PDF with honest math fallback'
   const first = await page.evaluate(() => window.__studyTest.requests[0])
   expect(first.systemPrompt).toContain('HINT MODE')
   expect(first.imageDataUrl).toMatch(/^data:image\/png;base64,/)
+  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', first.imageDataUrl!)
   const context = JSON.parse(first.userPrompt.slice(first.userPrompt.indexOf('\n') + 1))
   expect(context.pageNumber).toBe(2)
   expect(context.pageText).toBe(CORRECTED)
@@ -113,4 +118,46 @@ test('student journey through a real MIT calculus PDF with honest math fallback'
     pageRegionNotesAndDraftRestored: true, providerFailureAndRetryPreservedAttempt: true,
     teachingValidation: 'Fixed simulated replies, not live-model tutoring or grading validation',
   }, null, 2), contentType: 'application/json' })
+})
+
+
+test('a distinct real integration-by-parts exercise preserves source and exposes only first-step feedback', async ({ page, request }, info) => {
+  const download = await request.get(SOURCE_PDF)
+  expect(download.ok()).toBeTruthy()
+  const bytes = await download.body()
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(SOURCE_SHA256)
+  await page.goto('/tests/study-browser/index.html?lang=zh')
+  await page.evaluate(() => { window.__studyTest.lesson = 'mit-5f-2a' })
+  await page.getByLabel('导入 PDF 或图片').setInputFiles({ name: 'MIT18_01SC_pset5prb.pdf', mimeType: 'application/pdf', buffer: bytes })
+  await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveAttribute('max', '7')
+  await page.getByRole('spinbutton', { name: '页码' }).fill('5')
+  await page.getByRole('spinbutton', { name: '页码' }).press('Enter')
+  await expect(page.locator('.kv-study-page-label')).toHaveText('第 5 页')
+  await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await page.getByText('查看本页文字（可复制）', { exact: true }).scrollIntoViewIfNeeded()
+  await page.getByRole('button', { name: '框选', exact: true }).click()
+  const box = (await page.locator('.kv-study-reader-paper').boundingBox())!
+  await page.mouse.move(box.x + box.width * 0.20, box.y + box.height * 0.86)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.891, { steps: 8 })
+  await page.mouse.up()
+  await page.getByText('补充或修正题目文字', { exact: true }).click()
+  await page.getByLabel('修正后的题目文字').fill('MIT 18.01SC 5F-2(a): 求不定积分 ∫ x e^x dx。')
+  await page.locator('.kv-study-correction > summary').click()
+  await page.getByRole('radio', { name: '检查我的解答', exact: true }).click()
+  await page.getByLabel('关于本页的问题').fill('5F-2(a)：请检查分部积分的步骤。')
+  await page.getByLabel('我的解答或思路').fill('u=x, dv=e^x dx\ndu=dx, v=e^x\nI=x e^x+∫e^x dx\nI=(x+1)e^x+C')
+  await page.getByRole('button', { name: '发送', exact: true }).click()
+  await expect(page.getByText('第三行的加号应为减号。', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: '查看检查依据', exact: true })).toBeVisible()
+  await expect(page.getByText('演示核对：你写的结果求导后比被积函数多', { exact: false })).toHaveCount(0)
+  await page.screenshot({ path: info.outputPath('real-calculus-second-exercise.png'), fullPage: true })
+  await page.getByRole('button', { name: '查看检查依据', exact: true }).click()
+  await expect(page.getByText('演示核对：你写的结果求导后比被积函数多', { exact: false })).toBeVisible()
+  const call = await page.evaluate(() => window.__studyTest.requests[0])
+  expect(JSON.parse(call.userPrompt.slice(call.userPrompt.indexOf('\n') + 1)).pageNumber).toBe(5)
+  await page.reload()
+  await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('5')
+  await expect(page.getByText('第三行的加号应为减号。', { exact: false })).toBeVisible()
+  await expect(page.getByText('演示核对：你写的结果求导后比被积函数多', { exact: false })).toHaveCount(0)
 })

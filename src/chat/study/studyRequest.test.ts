@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { streamStudyCompletion } from '../../api/study'
 import { buildStudyPrompt, requestStudyHelp, type StudyHelpInput } from './studyRequest'
+import { parseStudyTeachingResponse, STUDY_TEACHING_RESPONSE_LIMITS } from './studyTeachingResponse'
 
 // Explicit mock of the real desktop provider seam; no network or paid model calls.
 vi.mock('../../api/study', () => ({ streamStudyCompletion: vi.fn() }))
@@ -46,6 +47,26 @@ describe('Study teaching prompts', () => {
     expect(check.systemPrompt).toContain('If you cannot verify it, say so')
     expect(check.systemPrompt).toContain('Do not label the attempt correct')
     expect(check.systemPrompt).not.toContain('arctan') // No exercise-specific answer is hard-coded.
+  })
+
+  it('requires versioned, bounded JSON sections only for hint and check', () => {
+    for (const mode of ['hint', 'check'] as const) {
+      const prompt = buildStudyPrompt(input({ mode, attempt: 'x = 8' }))
+      expect(prompt.systemPrompt).toContain('exactly one valid JSON object')
+      expect(prompt.systemPrompt).toContain(`"version":1,"mode":"${mode}"`)
+      expect(prompt.systemPrompt).toContain('Do not generate a full solution proactively')
+      expect(prompt.systemPrompt).toContain('withheldSolution')
+      expect(prompt.systemPrompt).toContain('no other keys')
+      for (const limit of Object.values(STUDY_TEACHING_RESPONSE_LIMITS)) expect(prompt.systemPrompt).toContain(String(limit))
+      const schema = prompt.systemPrompt.split('required schema: ')[1].split('\n')[0]
+      expect(parseStudyTeachingResponse(schema, mode).status).toBe('valid')
+    }
+    for (const mode of ['explain', 'solution'] as const) {
+      const prompt = buildStudyPrompt(input({ mode }))
+      expect(prompt.systemPrompt).not.toContain('exactly one valid JSON object')
+      expect(prompt.systemPrompt).not.toContain('withheldSolution')
+      expect(prompt.systemPrompt).toContain('Use readable Markdown and math when useful.')
+    }
   })
 
   it('requires an original document/page and configured model before any transport work', async () => {

@@ -26,6 +26,8 @@ const materialMessages = {
   truncated: [' 本页文字已截取前 16000 字。', ' Page text is limited to the first 16,000 characters.'],
   renderLimit: [' 为控制内存，超过 1600 万像素的内嵌图片可能不显示。', ' To limit memory use, embedded images above 16 megapixels may be omitted.'],
   noPdfText: ['这一页没有可提取的文字，可能是扫描件。当前不提供 OCR；请粘贴或修正题目文字，或选择支持图片的模型。', 'This page has no extractable text and may be scanned. OCR is not available. Paste or correct the problem text, or choose a vision-capable model.'],
+  missingGlyphs: ['提取文字中发现缺失或未映射字符，公式可能不完整。请对照页面核对公式，再粘贴修正文字，或使用支持图片的模型发送选区图片。', 'Extracted text contains missing or unmapped characters; formulas may be incomplete. Check formulas against the page, then paste corrected text or send the selected image with a vision-capable model.'],
+  emptySelection: ['当前页面或选区没有可提取的文字。请对照页面核对公式，再粘贴修正文字，或使用支持图片的模型发送选区图片。当前不提供 OCR。', 'No text could be extracted from this page or selection. Check formulas against the page, then paste corrected text or send the selected image with a vision-capable model. OCR is not available.'],
   extractionFailed: ['本页文字提取失败。当前不提供 OCR；请粘贴或修正题目文字，或选择支持图片的模型。', 'Text extraction failed for this page. OCR is not available. Paste or correct the problem text, or choose a vision-capable model.'],
   imagePage: ['图片只有一页', 'An image has only one page.'],
   pageLimit: ['PDF 最多支持 1000 页，请拆分后导入', 'PDFs support up to 1000 pages. Split the file before importing.'],
@@ -34,6 +36,7 @@ const materialMessages = {
 } as const
 const message = (key: keyof typeof materialMessages, lang: MaterialLanguage) => materialMessages[key][lang === 'zh' ? 0 : 1]
 
+export type StudyTextExtractionRisk = 'empty' | 'unmapped-glyphs'
 export type StudyRegion = { x: number; y: number; width: number; height: number }
 export type StudyMaterialInfo = { kind: 'pdf' | 'image'; pageCount: number; mimeType: string }
 export type StudyReaderContext = {
@@ -44,6 +47,7 @@ export type StudyReaderContext = {
   region: StudyRegion | null
   status: 'loading' | 'ready' | 'error'
   warning?: string
+  textRisk?: StudyTextExtractionRisk
   error?: string
 }
 type TextSpan = { text: string; region: StudyRegion; lineBreak: boolean }
@@ -279,6 +283,24 @@ export async function loadStudyMaterial(blob: Blob, signal?: AbortSignal, lang: 
   finally { await material.dispose() }
 }
 
+/** Detect observable extraction failures, not mathematical correctness or OCR quality. */
+export function studyTextExtractionRisk(text: string): StudyTextExtractionRisk | undefined {
+  if (!text.trim()) return 'empty'
+  for (const character of text) {
+    const code = character.codePointAt(0)!
+    const control = (code < 0x20 && ![0x09, 0x0a, 0x0d].includes(code)) || (code >= 0x7f && code <= 0x9f)
+    const privateUse = (code >= 0xe000 && code <= 0xf8ff) || (code >= 0xf0000 && code <= 0xffffd) || (code >= 0x100000 && code <= 0x10fffd)
+    const missingGlyph = code === 0xfffd || code === 0xfffc || (code >= 0xd800 && code <= 0xdfff) || (code >= 0xfdd0 && code <= 0xfdef) || (code & 0xffff) >= 0xfffe
+    if (control || privateUse || missingGlyph) return 'unmapped-glyphs'
+  }
+  // A normal-looking string can still lose fractions, exponents or reading order.
+  return undefined
+}
+
+export function studyTextExtractionNotice(risk: StudyTextExtractionRisk | undefined, lang: MaterialLanguage = 'zh'): string | undefined {
+  return risk ? message(risk === 'empty' ? 'emptySelection' : 'missingGlyphs', lang) : undefined
+}
+
 export function studyPageText(page: StudyPage, region: StudyRegion | null): string {
   const selection = normalizeStudyRegion(region)
   return page.spans.filter(span => !selection || (span.region.x + span.region.width >= selection.x && span.region.x <= selection.x + selection.width && span.region.y + span.region.height >= selection.y && span.region.y <= selection.y + selection.height)).map(span => span.text + (span.lineBreak ? '\n' : ' ')).join('').trim().slice(0, STUDY_MATERIAL_LIMITS.textCharacters)
@@ -298,7 +320,7 @@ export function studyPageImage(page: StudyPage, region: StudyRegion | null): str
       canvas.height = Math.max(1, Math.floor(sh * scale))
       context.drawImage(source, source.width * crop.x, source.height * crop.y, sw, sh, 0, 0, canvas.width, canvas.height)
       const dataUrl = canvas.toDataURL('image/png')
-      if (dataUrl.startsWith('data:image/png;base64,') && dataUrl.length * 0.75 <= STUDY_MATERIAL_LIMITS.contextImageBytes) return dataUrl
+      if (dataUrl.length * 0.75 <= STUDY_MATERIAL_LIMITS.contextImageBytes && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(dataUrl)) return dataUrl
       scale *= 0.7
     }
     return undefined
