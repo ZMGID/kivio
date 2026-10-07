@@ -11,9 +11,11 @@ export const STUDY_LIMITS = {
   maxPages: 10_000,
 } as const
 
+const STUDY_MODES = ['read', 'hint', 'explain', 'check', 'solution'] as const
+
 export interface StudyTurn {
   id: string
-  mode: 'hint' | 'explain' | 'check' | 'solution'
+  mode: typeof STUDY_MODES[number]
   question: string
   attempt: string
   sourceText: string
@@ -154,7 +156,7 @@ function snapshotDocument(value: unknown): StudyDocument {
       if (!id || turnIds.has(id)) invalid('Response IDs must be unique. Nothing was saved.')
       turnIds.add(id)
       if (integer(turn.page, 'Response page', 1, pageCount) !== pageNumber) invalid('The response belongs to another page. Nothing was saved.')
-      if (!['hint', 'explain', 'check', 'solution'].includes(String(turn.mode))) invalid('The Study mode is invalid. Nothing was saved.')
+      if (!STUDY_MODES.some(mode => mode === turn.mode)) invalid('The Study mode is invalid. Nothing was saved.')
       if (turn.sourceImageUsed !== undefined && typeof turn.sourceImageUsed !== 'boolean') invalid('The source image flag is invalid. Nothing was saved.')
       return {
         id,

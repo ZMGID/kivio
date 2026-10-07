@@ -9,8 +9,26 @@ The latest user direction supersedes the extraction/correction and structured-ou
 - PDF.js renders page pixels only. Study does not call PDF text-layer extraction or an OCR engine, and never reconstructs formula text automatically. Imported images use their displayed pixels. The preview is exactly the bounded raster page/crop attached to the request; rendering/downscaling limits remain explicit.
 - A configured image-capable model and a ready image are required. There is no checkbox or silent text-only fallback, no formula-confirmation gate, and no mandatory transcription/correction field. Questions, attempts and notes remain learner-authored.
 - Legacy manually added text and historical source text remain locally readable for compatibility, but are not copied into a new request or retry as material. A retry keeps the original question/attempt/page/region and sends that source image.
-- Ordinary hint, explanation and check responses stream directly. The strict JSON response envelope/parser and malformed-response disclosure workflow were removed. A small read-only compatibility adapter keeps previously saved structured replies readable and their previously withheld solutions hidden; it imposes no format on new model replies. The four simple learning-mode instructions remain; explicitly chosen full solutions retain their reveal control. Model correctness and hint restraint are still not guaranteed.
+- Ordinary reading, hint, explanation and check responses stream directly. The strict JSON response envelope/parser and malformed-response disclosure workflow were removed. A small read-only compatibility adapter keeps previously saved structured replies readable and their previously withheld solutions hidden; it imposes no format on new model replies. Optional math-learning instructions remain alongside the default Reading Q&A mode; explicitly chosen full solutions retain their reveal control. Model correctness and hint restraint are still not guaranteed.
 - The earlier live probes were text-only historical experiments, not evidence for this image-only flow or live image interpretation. Current browser acceptance checks the exact image payload and direct streaming with a clearly labelled simulated provider; native tests verify image/capability rejection and transport assembly.
+
+## Reading papers and English articles (2026-10-07)
+
+The later product request broadens Study from exercises to reading and learning. The minimum change is one general **Reading Q&A** default in the existing compact menu, rather than separate translation, paper and figure panels. The empty state and question prompt describe reading; the optional expandable field says “Additional context” in reading mode. Hint, concept explanation, checking an attempt and explicit full solutions remain available for exercises. Existing saved modes, drafts and history remain valid.
+
+Evidence and applied product inferences:
+
+- [Keshav, *How to Read a Paper*](https://web.stanford.edu/class/cs114/reading-keshav.pdf) describes staged, goal-directed reading. [Carey, Steiner & Petri, 2020](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1008032) recommends choosing a reading goal, separating motivation/methods/data/interpretation, and unpacking figure axes, legends and methods. These are reading guides, not controlled evidence that this UI improves learning. **Inference:** let the reader ask about the passage or figure they are viewing, without a prescribed task sequence.
+- [Amano et al., 2023](https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.3002184) surveyed 908 environmental-science researchers and documented additional English-related work for non-native speakers. That population does not establish a universal effect size across disciplines. **Inference:** useful reading help includes faithful translation and technical-term explanations while retaining numerals, units and hedging.
+- Scope is explicit: the model receives the current original page or selected region, not all pages in the document. The prompt separates visible source claims from explanation/inference, asks for missing or unreadable context, and forbids invented authors, DOIs, page numbers, p-values or causal conclusions from a chart alone. The deterministic source link returns to the actual saved PDF page/region; generated prose is not a verified citation system. These instructions cannot guarantee model compliance.
+
+Real-material acceptance uses Amano et al.'s openly available 27-page CC BY [original PDF](https://journals.plos.org/plosbiology/article/file?id=10.1371/journal.pbio.3002184&type=printable), SHA-256 `0012515e110c81d8fe0a739568c0c20c1521938595851e2b8acfe22be7ce2b8a`. The PDF is fetched during tests, not committed or bundled. Page 1 tests abstract translation/terms and an over-broad whole-paper request. Page 4 tests Figure 1 with axes/legend/full caption, an incomplete crop, source restoration, notes and narrow-layout navigation. The harness independently compares the sent PNG against the rendered page/crop; fixed replies remain visibly simulated and do not prove translation or figure comprehension. Existing real MIT exercise journeys remain regressions. No document-wide index, OCR, citation manager or extra persistent reading panel is added.
+
+### Bounded live image probes
+
+Two anonymous direct-API calls used the current `buildStudyPrompt`, original CC BY abstract/Figure 1 crops, and OpenCode Zen's documented free image-capable `space-bunny-free` model. Both returned HTTP 200, a completed response and reported cost 0; no credentials, retries or settings changes were used. Official [free-model documentation](https://opencode.ai/docs/zen/), [image/cost metadata](https://github.com/anomalyco/models.dev/blob/dev/providers/opencode/models/space-bunny-free.toml), and [terms applying through use](https://opencode.ai/legal/terms-of-service/) were checked. This was direct API prompt/image validation, not the native app's IPC-to-model end-to-end flow.
+
+Observed useful behavior: the abstract translation retained 908 and the environmental-science scope; the figure explanation identified the log10 publication-count axis, reading-time minutes, language/income encodings, 95% confidence bands and limits on causal inference. Observed failures are retained: the abstract response added self-assessment methodology not visible in its crop; the figure response changed “most recently read” into “recently published”; both omitted the requested page/region label. The application source anchor still identifies the actual supplied image. No further model tuning or calls were made. These two examples support limited feasibility only, not general translation accuracy, complete grounding or reliable citation compliance.
 
 ## Progressive disclosure after UI audit (2026-10-07)
 
@@ -20,9 +38,10 @@ The later UI review asked for a simpler, faster student workflow. The default co
 
 Study adds a material-centered workspace inside the existing Chat application. A learner imports a local PDF, PNG, JPEG, or WebP, reads a page, optionally selects a region, asks for help, and keeps page-bound drafts, attempts, notes, and response history. Reading and local notes do not require a model. Model answers use a provider/model already configured in Kivio. Browser-only preview reports that real answers require the desktop app; it does not substitute canned tutoring responses.
 
-The four modes deliberately have different prompts:
+The current modes deliberately have different prompts:
 
-- **One hint**, the initial default: one actionable next step or question, without the final answer or a full derivation.
+- **Reading Q&A**, the default: answer questions about visible passages, terms, translation, arguments, methods, figures and tables directly, without requiring an attempt. Optional learner context stays in the existing expandable field.
+- **One hint**, the original default and now an optional math mode: one actionable next step or question, without the final answer or a full derivation.
 - **Explain**: explain the underlying concept, optionally with a separate small example, without solving the selected exercise.
 - **Check my attempt**: require the learner's attempt; identify correct work and the first unsupported/incorrect step, then suggest one next step.
 - **Full solution**: an explicit selection and send action requests a worked solution. The answer is presented behind a reveal control.
@@ -57,7 +76,7 @@ A send follows:
 
 - `src/chat/study/studyWorkspaceStore.ts` owns page drafts, request identity, in-progress results, original-document updates, and persistence coordination. Navigation does not retarget a running response.
 - `studyStorage.ts` owns the IndexedDB schema and storage operations. Materials are identified by a SHA-256 content hash; questions and notes are bound to that document and page. Invalid records and save failures are surfaced rather than silently replaced with a successful-save claim. A persisted revision is checked atomically before every document save so a stale window cannot overwrite newer notes or replies. Conflict recovery keeps local drafts available to copy, then offers an explicitly confirmed reload of the saved version.
-- `studyMaterial.ts` owns file validation, local PDF/image loading, bounded rendering, text extraction, and cropped context images. `StudyReader` binds those operations to navigation and selection.
+- `studyMaterial.ts` owns file validation, local PDF/image loading, bounded rendering and cropped context images. `StudyReader` binds those operations to navigation and selection.
 - `studyRequest.ts` owns the teaching instructions, context assembly, and a synchronous snapshot of the input before asynchronous work. It supplies a bounded tail of the current page's discussion.
 - `src/api/study.ts` owns the request-local channel and cancellation lifecycle; it contains no tutoring policy or scripted answer.
 - `src-tauri/src/chat/study.rs` owns backend input/model checks, in-memory image conversion, request cancellation, and direct use of the existing provider adapters.
@@ -76,23 +95,22 @@ No imported CLI conversation, native session, or working directory is changed. T
 - The frontend stops applying deltas immediately on abort and rejects with `AbortError`. The workspace keeps partial output and the original question/source for retry.
 - Study adds no application-level automatic model retry. It uses the existing configured provider retry/failover mechanism, with the attempt count bounded to 1–3 for this call. A user-initiated retry is a new invocation and can incur another provider charge.
 
-## Source limits and honest extraction behavior
+## Current source limits
 
 - Import is local and limited to 25 MB per material. PDFs are limited to 1,000 pages; encrypted PDFs are rejected with an actionable message. Image dimensions are checked before decoding.
 - PDF rendering uses a bundled worker and local character-map/font assets. Imported documents do not supply remote asset URLs. Rendering and context images have separate size bounds.
-- PDF text extraction is best effort. Equations, reading order, text-span boundaries, and region intersections can be inaccurate. The visible reader pipeline limits source text to 16,000 characters and reports truncation.
-- **There is no OCR implementation.** A scanned page or imported image may have no extracted text. The learner can paste/correct the problem text or explicitly send a page/region image to a vision-capable model. Model image interpretation is not presented as verified OCR.
+- **There is no OCR or PDF text extraction in Study.** Scanned pages, digital PDFs and imported images all use original rendered pixels. There is no reconstructed formula or required correction workflow. The model can still misread small symbols; the reader can select a clearer region or ask about a larger image when context is missing.
 - The backend independently requires confirmed vision capability before sending an image. The reader emits a bounded PNG even for an imported WebP; the backend accepts validated PNG/JPEG data URLs and reuses existing model image preparation.
-- The prompt assembler has a defensive 40,000-character page-text cap and at most 12 history messages, each at most 4,000 characters. These are additional transport bounds, not a claim that every model's context window can hold the maximum.
+- The prompt assembler allows at most 12 history messages, each at most 4,000 characters, plus bounded learner-authored input. There is no page-text payload. These are transport bounds, not a claim that every model's context window can hold the maximum.
 - The model sees only supplied page/region context and same-page history. It is instructed to ask for missing or unreadable details rather than pretend to see other pages.
 
 ## Privacy and untrusted output
 
 Materials, drafts, notes, and history are kept in local application storage; this is not encrypted storage or a cloud backup. Clearing application data removes the stored work. Removing a material does not delete the original imported file.
 
-On Send, the selected provider receives the question, attempt, bounded page history, page number, supplied text, and any disclosed page/region image. Original filenames and document hashes are omitted from the provider prompt. Original PDF bytes and unselected PDF pages are not uploaded. Sending a whole-page or selected-region image shares that rendered image. The provider's own retention and usage policies still apply, and configured provider charges may apply.
+On Send, the selected provider receives the question, attempt, bounded page history, actual PDF page index, page/region scope, and the disclosed original page/region image. Original filenames and document hashes are omitted from the provider prompt. Original PDF bytes and unselected PDF pages are not uploaded. Sending a whole-page or selected-region image shares that rendered image. The provider's own retention and usage policies still apply, and configured provider charges may apply.
 
-Retry preserves the original question, attempt, source text, and image-inclusion decision. Its disclosure must describe that saved decision rather than a stale checkbox from a different draft. A confirmed vision model is still required when the original question included an image.
+Retry preserves the original question, optional context/attempt, mode, page and region. It always uses that original source image and requires a confirmed vision model. Historical extracted or manually corrected source text is not sent, including on retries.
 
 Existing Kivio provider accounting continues to run. If the user has enabled **Request Debug**, the reused provider adapters can capture request bodies and response details in the existing local bounded buffer and its disk mirror. Study does not switch this setting on or off. The UI discloses this conditional behavior. Removing a Study material does not implicitly clear those separate diagnostics.
 
@@ -112,7 +130,9 @@ Six backend tests cover tool-free request assembly, configured model/vision chec
 
 Before calling the change ready, inspect the macOS CI result for the **exact published commit**, including `cargo test`, the generated protocol check/typecheck, frontend tests, and applicable browser tests. A pending CI job is not a pass. Desktop validation should cover import/selection, scrolling and keyboard access, theme changes, provider failure, Stop, retry, navigating during a response, reopening persisted work, and save failure. Live model quality, image interpretation, and provider billing behavior remain separate authorized manual checks.
 
-## 2026-10-07: real calculus acceptance and safeguards
+## Historical calculus experiments (2026-10-07)
+
+This section preserves the observations and failed model probes from earlier revisions. The extraction/correction gate and structured-response implementation described here were subsequently removed at the user’s request; the current image-only flow above is authoritative. The real MIT browser journeys remain, adapted to current behavior.
 
 Used the actual public [MIT OCW 18.01SC Integration Techniques problem PDF](https://ocw.mit.edu/courses/18-01sc-single-variable-calculus-fall-2010/50d9ff5b7a30fe96bd69017ca5104d6e_MIT18_01SC_pset5prb.pdf) and its [official solutions](https://ocw.mit.edu/courses/18-01sc-single-variable-calculus-fall-2010/06979381db650b91c0de9d6755f03154_MIT18_01SC_pset5sol.pdf), Arthur Mattuck, Fall 2010. The PDF is fetched from the official URL during acceptance testing, SHA-256 `5015876951651a4f4695ccbbb74e22fdf1a43b1798d4859ed3324cdc9e90d23d`; it is not checked into this repository or bundled with the product. See [MIT source terms](https://ocw.mit.edu/pages/privacy-and-terms-of-use/).
 

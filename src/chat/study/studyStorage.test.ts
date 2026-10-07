@@ -158,6 +158,22 @@ describe('Study local persistence', () => {
     expect((await storage.loadStudyWorkspace()).documents[0].pages['2'].history[0].region).toBeNull()
   })
 
+  it('saves and reloads reading turns alongside every legacy math mode without changing their schema', async () => {
+    const { document } = await importPdf('journal.pdf')
+    addWork(document)
+    document.pages['2'].history = (['read', 'hint', 'explain', 'check', 'solution'] as const).map((mode, index) => turn({
+      id: `mode-${index}`, mode, question: mode === 'read' ? 'Translate this paragraph.' : 'Why?',
+      attempt: mode === 'read' ? '' : 'My attempt', sourceText: mode === 'read' ? '' : 'Legacy saved source',
+    }))
+    document.revision = await storage.saveStudyDocument(document)
+    vi.resetModules()
+    storage = await import('./studyStorage')
+    const restored = await storage.loadStudyWorkspace()
+    expect(restored.warnings).toEqual([])
+    expect(restored.documents[0]).toEqual(document)
+    expect(restored.documents[0].pages['2'].history.map(turn => turn.mode)).toEqual(['read', 'hint', 'explain', 'check', 'solution'])
+  })
+
   it('restores an unfinished stream as interrupted and retains the partial answer', async () => {
     const { document } = await importPdf()
     addWork(document)
@@ -383,6 +399,7 @@ describe('Study local persistence', () => {
     (document: StudyDocument) => { document.pages['2'].notes = 'x'.repeat(storage.STUDY_LIMITS.maxTextLength + 1) },
     (document: StudyDocument) => { document.pages['2'].region = { x: 0.9, y: 0, width: 0.5, height: 1 } },
     (document: StudyDocument) => { document.pages['2'].history[0].page = 1 },
+    (document: StudyDocument) => { document.pages['2'].history[0].mode = 'unknown' as StudyTurn['mode'] },
     (document: StudyDocument) => { document.pages['2'].history.push(turn()) },
     (document: StudyDocument) => { document.pageCount = 4 },
   ])('rejects invalid or mismatched work without overwriting the valid stored document', async (corrupt) => {

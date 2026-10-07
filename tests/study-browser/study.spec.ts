@@ -85,8 +85,8 @@ async function selectHelpMode(page: Page, name: string) {
 }
 async function showAttempt(page: Page) {
   await expect(page.locator('.kv-study-composer')).toBeVisible()
-  const field = page.getByRole('textbox', { name: /^(My attempt|我的解答或思路)$/ })
-  if (!await field.isVisible()) await page.locator('.kv-study-composer').getByRole('button', { name: /^(Add attempt|添加思路|My attempt|查看思路)$/ }).click()
+  const field = page.locator('#study-attempt')
+  if (!await field.isVisible()) await page.locator('.kv-study-composer').getByRole('button', { name: /^(Add attempt|Add context|添加思路|补充说明|My attempt|View context|查看思路|查看说明)$/ }).click()
   await expect(field).toBeVisible()
 }
 async function showLibrary(page: Page) {
@@ -102,7 +102,7 @@ async function showImageDetails(page: Page) {
   await expect(details.locator('img')).toBeVisible()
 }
 async function question(page: Page, value: string) { await page.getByLabel('Question about this page').fill(value) }
-async function screenshot(page: Page, path: string) { await page.screenshot({ path, fullPage: true }) }
+async function screenshot(page: Page, path: string) { await page.screenshot({ path, fullPage: true, animations: 'disabled' }) }
 
 test.beforeEach(async ({ page }) => { await page.goto('/tests/study-browser/index.html'); await expect(page.getByText('Start with the page that has you stuck')).toBeVisible() })
 
@@ -112,6 +112,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await page.locator('.kv-study-notes > summary').click()
   await page.getByLabel('Page notes', { exact: true }).fill('I need to track which variable changes.')
   await question(page, 'Why change the variable?')
+  await selectHelpMode(page, 'One hint')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByText('Simulated test reply: identify', { exact: false }).first()).toBeVisible()
   const first = await expectImageOnlyRequest(page, 0)
@@ -122,7 +123,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
   await selectHelpMode(page, 'Check my attempt')
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
-  await page.getByLabel('My attempt', { exact: true }).fill('I differentiated x squared and got x.')
+  await page.locator('#study-attempt').fill('I differentiated x squared and got x.')
   await question(page, 'Where did I go wrong?')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.locator('.kv-study-turn')).toHaveCount(2)
@@ -142,7 +143,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await page.locator('.kv-study-history-row').filter({ hasText: 'Where did I go wrong?' }).click()
   await showAttempt(page)
   await expect(page.locator('.kv-study-page-label')).toHaveText('Page 1')
-  await expect(page.getByLabel('My attempt', { exact: true })).toHaveValue('I differentiated x squared and got x.')
+  await expect(page.locator('#study-attempt')).toHaveValue('I differentiated x squared and got x.')
   await page.locator('.kv-study-notes > summary').click()
   await expect(page.getByLabel('Page notes', { exact: true })).toHaveValue('I need to track which variable changes.')
   await page.getByRole('button', { name: 'Toggle theme' }).click()
@@ -160,6 +161,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
 
 test('duplicates, same-name different bytes, corrupt import, cancellation and retry', async ({ page }, info) => {
   await importPdf(page)
+  await selectHelpMode(page, 'One hint')
   await page.getByLabel('Import PDF or image').setInputFiles(material())
   await expect(page.getByText(/already in your library/)).toBeVisible()
   await expect(page.locator('.kv-study-document-list button')).toHaveCount(1)
@@ -357,7 +359,7 @@ test('storage quota failure stays visible, keeps drafts and retries before reloa
   })
   await question(page, 'Keep this even when storage is full')
   await expect(page.locator('.kv-study-library')).toBeHidden()
-  await expect(page.getByLabel('My attempt', { exact: true })).toBeHidden()
+  await expect(page.locator('#study-attempt')).toBeHidden()
   await expect(page.getByRole('alert').filter({ hasText: 'Save failed.' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Retry save' })).toBeVisible()
   await expect(page.getByText('Not saved', { exact: true })).toBeVisible()
@@ -394,7 +396,7 @@ test('Study inputs autosize without drag handles, shrink and restore within boun
   await importPdf(page)
   await expectPdfInk(page)
   const questionInput = page.getByLabel('Question about this page')
-  const attemptInput = page.getByLabel('My attempt', { exact: true })
+  const attemptInput = page.locator('#study-attempt')
   const metrics = (locator: typeof questionInput) => locator.evaluate((node) => {
     const field = node as HTMLTextAreaElement
     const style = getComputedStyle(field)
@@ -471,7 +473,7 @@ test('hint and check show normal model text while streaming without a response e
   await page.evaluate(value => { window.__studyTest.rawReply = value; window.__studyTest.hold = true }, response)
   await question(page, 'Check the factor in my substitution')
   await selectHelpMode(page, 'Check my attempt')
-  await page.getByLabel('My attempt', { exact: true }).fill('u=x^3; integral=arctan(x^3)+C')
+  await page.locator('#study-attempt').fill('u=x^3; integral=arctan(x^3)+C')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stop reply' })).toBeVisible()
   await expect(page.getByText('Simulated direct response:', { exact: false })).toBeVisible()
@@ -480,7 +482,7 @@ test('hint and check show normal model text while streaming without a response e
   expect(check.systemPrompt).toContain('CHECK MODE')
   await page.evaluate(() => { window.__studyTest.hold = false })
   await expect(page.getByText(response, { exact: true })).toBeVisible()
-  await page.screenshot({ path: info.outputPath('study-direct-stream.png'), fullPage: true })
+  await page.screenshot({ path: info.outputPath('study-direct-stream.png'), fullPage: true, animations: 'disabled' })
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
   await page.reload()
   await expect(page.getByText(response, { exact: true })).toBeVisible()
@@ -504,10 +506,10 @@ test('compact mode and model menus dismiss without changing drafts or making req
   const input = page.getByLabel('Question about this page')
   await expect(page.getByRole('radio')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Model provider', exact: true })).toHaveCount(0)
-  await expect(mode).toContainText('One hint')
+  await expect(mode).toContainText('Reading Q&A')
   await expect(model).toHaveAttribute('title', /Simulated provider.*test-vision$/)
 
-  const addAttempt = page.getByRole('button', { name: 'Add attempt', exact: true })
+  const addAttempt = page.getByRole('button', { name: 'Add context', exact: true })
   const send = page.getByRole('button', { name: 'Send', exact: true })
   for (const { trigger, next, previousControl } of [
     { trigger: mode, next: addAttempt, previousControl: input },
@@ -558,14 +560,14 @@ test('compact mode and model menus dismiss without changing drafts or making req
   }
 
   await mode.click()
-  await expect(page.getByRole('option')).toHaveText(['One hint', 'Explain', 'Check my attempt', 'Full solution'])
+  await expect(page.getByRole('option')).toHaveText(['Reading Q&A', 'Explain', 'One hint', 'Check my attempt', 'Full solution'])
   await page.getByRole('option', { name: 'Explain', exact: true }).click()
   await expect(mode).toContainText('Explain')
   await expect(mode).toBeFocused()
   await model.click()
   await expect(page.getByRole('option')).toHaveCount(2)
   await expect(page.getByRole('option')).toHaveText(['test-vision · Simulated provider', 'test-vision-alt · Simulated provider'])
-  await page.screenshot({ path: info.outputPath('study-compact-model-menu.png'), fullPage: true })
+  await page.screenshot({ path: info.outputPath('study-compact-model-menu.png'), fullPage: true, animations: 'disabled' })
   await expect(page.getByRole('option', { name: /test-text/ })).toHaveCount(0)
   await page.getByRole('option', { name: /^test-vision-alt.*Simulated provider$/ }).click()
   await expect(model).toBeFocused()
@@ -580,14 +582,15 @@ test('compact mode and model menus dismiss without changing drafts or making req
 
 test('optional attempt opens on demand, retains collapsed drafts and opens for checking', async ({ page }) => {
   await importPdf(page)
-  const attempt = page.getByLabel('My attempt', { exact: true })
-  const add = page.locator('.kv-study-composer').getByRole('button', { name: /^(Add attempt|My attempt)$/ })
-  const hide = page.getByRole('button', { name: 'Hide attempt', exact: true })
+  const attempt = page.locator('#study-attempt')
+  const add = page.locator('.kv-study-composer').getByRole('button', { name: /^(Add attempt|Add context|My attempt|View context)$/ })
+  const hide = page.getByRole('button', { name: /^Hide (attempt|context)$/ })
   await expect(attempt).toBeHidden()
   await expect(add).toBeVisible()
   await question(page, 'First page question')
   await add.click()
   await expect(attempt).toBeFocused()
+  await expect(attempt).toHaveAccessibleName('Additional context')
   await attempt.fill('First page: I tried substitution.')
   await hide.click()
   await expect(attempt).toBeHidden()
@@ -611,6 +614,7 @@ test('optional attempt opens on demand, retains collapsed drafts and opens for c
   await expect(attempt).toBeVisible()
   await expect(attempt).toBeFocused()
   await expect(attempt).toHaveAttribute('aria-required', 'true')
+  await expect(attempt).toHaveAccessibleName('My attempt')
   await expect(attempt).toHaveValue('First page: I tried substitution.')
   await attempt.fill('')
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
@@ -731,9 +735,9 @@ test('fresh Chinese import keeps the laptop composer compact before typing', asy
   await expectPdfInk(page)
   await expect(page.locator('.kv-study-library')).toBeHidden()
   await expect(page.getByLabel('关于本页的问题')).toHaveValue('')
-  await expect(page.getByLabel('我的解答或思路')).toBeHidden()
-  await expect(page.getByRole('button', { name: '添加思路', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '帮助方式', exact: true })).toContainText('提示一步')
+  await expect(page.locator('#study-attempt')).toBeHidden()
+  await expect(page.getByRole('button', { name: '补充说明', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '帮助方式', exact: true })).toContainText('阅读问答')
   await expect(page.getByRole('button', { name: '学习模型', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '模型服务', exact: true })).toHaveCount(0)
   await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
@@ -743,8 +747,8 @@ test('fresh Chinese import keeps the laptop composer compact before typing', asy
   await screenshot(page, info.outputPath('study-chinese-first-import-laptop-dark.png'))
   await page.getByRole('button', { name: 'Toggle theme' }).click()
   await selectHelpMode(page, '检查我的解答')
-  await expect(page.getByLabel('我的解答或思路')).toBeFocused()
-  await expect(page.getByLabel('我的解答或思路')).toHaveAttribute('aria-required', 'true')
+  await expect(page.locator('#study-attempt')).toBeFocused()
+  await expect(page.locator('#study-attempt')).toHaveAttribute('aria-required', 'true')
   await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled()
   await screenshot(page, info.outputPath('study-chinese-check-attempt-expanded-laptop.png'))
   await selectHelpMode(page, '提示一步')
@@ -782,7 +786,7 @@ test('question and attempt keyboard shortcuts share send validation and do not d
   await input.press('ControlOrMeta+Enter')
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
-  const attempt = page.getByLabel('My attempt', { exact: true })
+  const attempt = page.locator('#study-attempt')
   await attempt.fill('u = x squared, so du = 2x dx')
   await page.evaluate(() => { window.__studyTest.hold = true })
   await attempt.press('ControlOrMeta+Enter')

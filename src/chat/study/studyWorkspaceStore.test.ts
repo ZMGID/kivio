@@ -33,7 +33,7 @@ afterEach(() => {
 })
 
 function response(input: StudyHelpInput, content = 'A helpful answer'): StudyHelpResponse {
-  return { requestId: input.requestId, documentId: input.documentId, pageNumber: input.pageNumber, mode: input.mode ?? 'hint', providerId: input.providerId, model: input.model, content }
+  return { requestId: input.requestId, documentId: input.documentId, pageNumber: input.pageNumber, mode: input.mode ?? 'read', providerId: input.providerId, model: input.model, content }
 }
 function context(page = 1, region: StudyReaderContext['region'] = null): StudyReaderContext {
   return { page, pageCount: 3, region, status: 'ready', imageDataUrl: 'data:image/png;base64,newImage' }
@@ -79,7 +79,7 @@ describe('Study workspace lifecycle', () => {
     await owner.sendStudyHelp({ ...options(document), context: legacyContext })
     await saved()
     const input = mocks.request.mock.calls[0][0]
-    expect(input).toMatchObject({ question: 'Why this equation?', attempt: 'My own attempt', imageDataUrl: legacyContext.imageDataUrl })
+    expect(input).toMatchObject({ question: 'Why this equation?', attempt: 'My own attempt', sourceScope: 'page', imageDataUrl: legacyContext.imageDataUrl })
     expect(JSON.stringify(input)).not.toMatch(/LEGACY_|pageText|correctedText|sourceText/)
     expect(current(document).pages['1']).toMatchObject({ correctedText: 'LEGACY_CORRECTED_FORMULA', history: [expect.objectContaining({ sourceText: '', sourceImageUsed: true })] })
   })
@@ -98,6 +98,29 @@ describe('Study workspace lifecycle', () => {
     expect(mocks.request).not.toHaveBeenCalled()
     expect(current(document).pages['1'].history).toEqual([])
     expect(owner.studyWorkspace.getSnapshot().activeRequest).toBeNull()
+  })
+
+  it('saves, reloads, and retries a reading request using its original page, region, and mode without an attempt', async () => {
+    const [document] = await seed()
+    const region = { x: 0.1, y: 0.2, width: 0.7, height: 0.3 }
+    owner.editStudyPage(document.id, 2, { question: 'Translate this English paragraph.', region })
+    await saved()
+    mocks.request.mockRejectedValueOnce(new Error('Temporary provider failure'))
+    await owner.sendStudyHelp({ ...options(document, 2), mode: 'read', context: context(2, region) })
+    await saved()
+    await owner.reloadStudyWorkspace()
+    const original = current(document).pages['2'].history[0]
+    expect(original).toMatchObject({ page: 2, mode: 'read', question: 'Translate this English paragraph.', attempt: '', region, status: 'error', sourceText: '', sourceImageUsed: true })
+    owner.editStudyPage(document.id, 2, { question: 'A newer question', attempt: 'New draft attempt', region: null })
+    await owner.sendStudyHelp({ ...options(document, 2), mode: 'check', retry: { ...original, mode: 'solution', region: null }, context: context(2, { ...region }) })
+    await saved()
+    expect(mocks.request).toHaveBeenCalledTimes(2)
+    for (const [input] of mocks.request.mock.calls) {
+      expect(input).toMatchObject({ pageNumber: 2, mode: 'read', sourceScope: 'region', question: 'Translate this English paragraph.', attempt: '', imageDataUrl: context().imageDataUrl })
+    }
+    const persisted = (await storage.loadStudyWorkspace()).documents[0].pages['2']
+    expect(persisted).toMatchObject({ question: 'A newer question', attempt: 'New draft attempt', region: null })
+    expect(persisted.history[1]).toMatchObject({ page: 2, mode: 'read', region, attempt: '', status: 'complete' })
   })
 
   it('keeps legacy saved source text out of prior discussion while retaining questions, attempts, and answers', async () => {
@@ -275,7 +298,7 @@ describe('Study workspace lifecycle', () => {
     owner.openStudyPage(document.id, 1, original.region, original.id)
     await owner.sendStudyHelp({ ...options(document), mode: 'check', retry: original, context: { ...context(), warning: 'New image warning' } })
     await saved()
-    expect(mocks.request.mock.calls[0][0]).toMatchObject({ question: 'Original question', attempt: 'Original attempt', imageDataUrl: 'data:image/png;base64,newImage', providerId: 'provider', model: 'model' })
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({ mode: 'check', sourceScope: 'page', question: 'Original question', attempt: 'Original attempt', imageDataUrl: 'data:image/png;base64,newImage', providerId: 'provider', model: 'model' })
     expect(current(document).pages['1'].history[1]).toMatchObject({ region: null, sourceText: '', sourceWarning: 'New image warning', sourceImageUsed: true })
   })
 
@@ -319,7 +342,7 @@ describe('Study workspace lifecycle', () => {
     const started = deferred()
     let delta!: (value: string) => void
     mocks.request.mockImplementationOnce((input: StudyHelpInput, onDelta: (value: string) => void, signal: AbortSignal) => {
-      expect(input).toMatchObject({ pageNumber: 1, question: 'Original crop question', imageDataUrl: 'data:image/png;base64,originalCrop' })
+      expect(input).toMatchObject({ pageNumber: 1, sourceScope: 'region', question: 'Original crop question', imageDataUrl: 'data:image/png;base64,originalCrop' })
       expect(JSON.stringify(input)).not.toContain('LEGACY_CROP_TEXT')
       delta = onDelta
       started.resolve()

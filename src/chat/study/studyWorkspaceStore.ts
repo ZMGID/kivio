@@ -213,8 +213,9 @@ export async function sendStudyHelp(options: {
   // Resolve the persisted snapshot, rather than trusting fields on a caller's old copy.
   const retry = options.retry && draft.history.find((turn) => turn.id === options.retry?.id)
   if (options.retry && (options.retry.page !== page || !retry)) throw new Error('This saved question belongs to another material or page.')
+  const selectedRegion = retry ? retry.region : draft.region
   if (draft.history.length >= STUDY_LIMITS.maxHistoryPerPage) throw new Error('This page has reached its 500-response history limit. Your question and notes are unchanged. Start on another page or material.')
-  if (context.status !== 'ready' || context.page !== page || !sameStudyRegion(context.region, retry ? retry.region : draft.region)) throw new Error('Wait for the selected page or region to finish loading.')
+  if (context.status !== 'ready' || context.page !== page || !sameStudyRegion(context.region, selectedRegion)) throw new Error('Wait for the selected page or region to finish loading.')
   if (!context.imageDataUrl?.trim()) throw new Error('Wait for the original page image to finish loading.')
   if (options.visionCapable !== true) throw new Error('Choose a vision-capable model to study the original page image.')
   const mode = retry?.mode ?? options.mode
@@ -224,11 +225,10 @@ export async function sendStudyHelp(options: {
   if (mode === 'check' && !attempt.trim()) throw new Error('Add your attempt before checking it. / 请先写出自己的解答或思路。')
   const turnId = crypto.randomUUID()
   const input: StudyHelpInput = { requestId: turnId, documentId, documentName: doc.name, pageNumber: page, mode,
-    question, attempt, imageDataUrl: context.imageDataUrl, visionCapable: options.visionCapable,
+    question, attempt, sourceScope: selectedRegion ? 'region' : 'page', imageDataUrl: context.imageDataUrl, visionCapable: options.visionCapable,
     providerId: options.providerId, model: options.model,
     history: draft.history.filter((turn) => turn.status === 'complete').slice(-6).flatMap((turn) => [{ role: 'user' as const, content: `${turn.question}\n${turn.attempt}` }, { role: 'assistant' as const, content: readLegacyStudyAnswer(turn.answer)?.visibleText ?? turn.answer }]),
   }
-  const selectedRegion = retry ? retry.region : draft.region
   const turn: StudyTurn = { id: turnId, page, mode, question, attempt, sourceText: '', region: selectedRegion ? { ...selectedRegion } : selectedRegion,
     answer: '', status: 'streaming', createdAt: Date.now(), providerId: options.providerId, model: options.model,
     sourceImageUsed: true, sourceWarning: context.warning,

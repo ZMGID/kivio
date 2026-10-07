@@ -6,7 +6,7 @@ vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: strin
 afterEach(cleanup)
 
 describe('Study direct model replies', () => {
-  it.each(['hint', 'check', 'explain'] as const)('streams ordinary %s replies without a structured-response protocol or extra reveal step', mode => {
+  it.each(['read', 'hint', 'check', 'explain'] as const)('streams ordinary %s replies without a structured-response protocol or extra reveal step', mode => {
     const view = render(<StudyAnswer turn={{ mode, answer: 'First streamed step', status: 'streaming' }} />)
     expect(screen.getByText('First streamed step')).toBeVisible()
     view.rerender(<StudyAnswer turn={{ mode, answer: 'First streamed step, then a question.', status: 'complete' }} />)
