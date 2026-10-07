@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { test, expect, type Page, type TestInfo } from '@playwright/test'
+import { test, expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 
 // Amano et al. (2023), The manifold costs of being a non-native English speaker
 // in science, PLOS Biology. CC BY; credit the authors and DOI with evidence.
@@ -78,32 +78,79 @@ async function selectSourceCrop(page: Page, region: Region) {
   await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
 }
 
+function imageHash(image: string | null | undefined) {
+  return image ? createHash('sha256').update(Buffer.from(image.split(',')[1], 'base64')).digest('hex') : null
+}
+
+async function expectImageSource(locator: Locator, expected: string) {
+  // Compare the exact string without putting a megabyte-long expected value in
+  // Playwright's retried assertion log and every trace snapshot.
+  await expect.poll(async () => {
+    const actual = await locator.getAttribute('src')
+    return { exactMatch: actual === expected, sha256: imageHash(actual) }
+  }, { message: 'The restored source PNG must match the original bytes exactly' }).toEqual({ exactMatch: true, sha256: imageHash(expected) })
+}
+
 async function originalImage(page: Page) {
-  // Independently crop the visible source canvas, rather than calling the
-  // production context-image function. Selection overlay tint is not source ink.
-  const expected = await page.locator('.kv-study-reader-paper').evaluate(node => {
+  await expect(page.getByText('保存在此设备', { exact: true })).toBeVisible()
+  const saved = await page.evaluate(id => new Promise<{ page: number; region: Region | null }>((resolve, reject) => {
+    const open = indexedDB.open('kivio-study')
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const request = db.transaction('documents', 'readonly').objectStore('documents').get(id)
+      request.onerror = () => { db.close(); reject(request.error) }
+      request.onsuccess = () => {
+        db.close()
+        const document = request.result?.document as { lastPage: number; pages: Record<string, { region?: Region | null }> } | undefined
+        if (!document) { reject(new Error('The imported source must be saved before comparing its crop.')); return }
+        resolve({ page: document.lastPage, region: document.pages[String(document.lastPage)]?.region ?? null })
+      }
+    }
+  }), SOURCE_SHA256)
+  expect(saved.page).toBe(Number(await page.getByRole('spinbutton', { name: '页码' }).inputValue()))
+  expect(Boolean(saved.region)).toBe(await page.locator('.kv-study-reader-region').count() > 0)
+  // Independently crop the visible canvas using the exact saved drag coordinates.
+  // CSS serializes percentages to limited precision (e.g. 31.3725%), which can
+  // change drawImage interpolation even when the crop dimensions are unchanged.
+  // Never call the production context-image function or use the tinted overlay.
+  const expected = await page.locator('.kv-study-reader-paper').evaluate((node, storedRegion) => {
     const source = node.querySelector('canvas')!
-    const selection = node.querySelector<HTMLElement>('.kv-study-reader-region')
-    const region = selection ? {
-      x: parseFloat(selection.style.left) / 100, y: parseFloat(selection.style.top) / 100,
-      width: parseFloat(selection.style.width) / 100, height: parseFloat(selection.style.height) / 100,
-    } : { x: 0, y: 0, width: 1, height: 1 }
+    const region = storedRegion ?? { x: 0, y: 0, width: 1, height: 1 }
     const width = source.width * region.width
     const height = source.height * region.height
     const scale = Math.min(1, 1600 / Math.max(width, height))
     const output = document.createElement('canvas')
     output.width = Math.max(1, Math.floor(width * scale)); output.height = Math.max(1, Math.floor(height * scale))
     output.getContext('2d')!.drawImage(source, source.width * region.x, source.height * region.y, width, height, 0, 0, output.width, output.height)
-    return output.toDataURL('image/png')
+    return {
+      image: output.toDataURL('image/png'), width: output.width, height: output.height,
+      sourceWidth: source.width, sourceHeight: source.height,
+      overlayStyle: node.querySelector<HTMLElement>('.kv-study-reader-region')?.getAttribute('style') ?? null,
+    }
+  }, saved.region)
+  const actual = await page.locator('.kv-study-reader-preview img').evaluate(async node => {
+    const image = node as HTMLImageElement
+    await image.decode()
+    return { image: image.src, width: image.naturalWidth, height: image.naturalHeight }
   })
-  expect(expected.length * 0.75).toBeLessThanOrEqual(1_500_000)
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', expected)
-  return expected
+  const diagnostics = {
+    page: saved.page, exactSavedRegion: saved.region, serializedOverlayStyle: expected.overlayStyle,
+    sourceSize: [expected.sourceWidth, expected.sourceHeight],
+    expectedSize: [expected.width, expected.height], actualSize: [actual.width, actual.height],
+    expectedSha256: imageHash(expected.image), actualSha256: imageHash(actual.image),
+  }
+  await test.info().attach(`source-crop-oracle-page-${saved.page}.json`, { body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json' })
+  expect(expected.image.length * 0.75).toBeLessThanOrEqual(1_500_000)
+  expect(actual.width).toBe(expected.width)
+  expect(actual.height).toBe(expected.height)
+  expect(actual.image === expected.image, JSON.stringify(diagnostics)).toBe(true)
+  return expected.image
 }
 
 async function readingRequest(page: Page, index: number, number: number, scope: 'page' | 'region', image: string) {
   const request = await page.evaluate(index => window.__studyTest.requests[index], index)
-  expect(request.imageDataUrl).toBe(image)
+  expect(request.imageDataUrl === image, `Sent PNG must match exactly: actual ${imageHash(request.imageDataUrl)}, expected ${imageHash(image)}`).toBe(true)
   expect(request.model).toBe('test-vision')
   expect(request.systemPrompt).toContain('READ MODE')
   expect(request.systemPrompt).toContain("Answer the reader's question directly")
@@ -173,7 +220,7 @@ test('English abstract translation uses default reading, exact images and honest
 
   await selectSourceCrop(page, ABSTRACT_REGION)
   const abstractImage = await originalImage(page)
-  expect(abstractImage).not.toBe(fullPage)
+  expect(abstractImage === fullPage, 'The abstract crop must differ from the full source page').toBe(false)
   await send(page, ABSTRACT_QUESTION, 'amano-abstract')
   const passage = await readingRequest(page, 1, 1, 'region', abstractImage)
   expect(passage.request.history).toHaveLength(2)
@@ -195,16 +242,16 @@ test('English abstract translation uses default reading, exact images and honest
   await page.getByRole('button', { name: '展开材料栏', exact: true }).click()
   await page.locator('.kv-study-history-row').filter({ hasText: WHOLE_PAPER_QUESTION }).click()
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('1')
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', abstractImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), abstractImage)
   await page.locator('.kv-study-turn').first().getByRole('button', { name: '来源：第 1 页', exact: true }).click()
   await expect(page.locator('.kv-study-reader-region')).toHaveCount(0)
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', fullPage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), fullPage)
   await page.locator('.kv-study-turn').last().getByRole('button', { name: '来源：第 1 页 · 选区', exact: true }).click()
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', abstractImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), abstractImage)
   await expect(page.getByText('保存在此设备', { exact: true })).toBeVisible()
   await page.reload()
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('1')
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', abstractImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), abstractImage)
   await expect(page.getByLabel('关于本页的问题')).toHaveValue(WHOLE_PAPER_QUESTION)
   await expect(page.locator('.kv-study-turn')).toHaveCount(3)
   await jumpToPage(page, 4)
@@ -233,13 +280,13 @@ test('paper figure keeps axes, legend and caption, restores its original source,
   // evidence; the fixture limitation is explicit rather than a claimed model test.
   await selectSourceCrop(page, PANEL_WITHOUT_LEGEND)
   const incompleteImage = await originalImage(page)
-  expect(incompleteImage).not.toBe(figureImage)
+  expect(incompleteImage === figureImage, 'The panel-only crop must differ from the complete figure').toBe(false)
   await send(page, '只看当前选区，这几条彩色线和阴影各代表什么？', 'amano-missing-legend')
   const incomplete = await readingRequest(page, 1, 4, 'region', incompleteImage)
   expect(incomplete.request.systemPrompt).toContain('ask for a clearer or larger image that includes it')
   await expect(page.locator('.kv-study-turn').last()).toContainText('缺少图例和完整图注')
   await page.locator('.kv-study-turn').first().getByRole('button', { name: '来源：第 4 页 · 选区', exact: true }).click()
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', figureImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), figureImage)
   await page.locator('.kv-study-notes > summary').click()
   await page.getByLabel('本页笔记', { exact: true }).fill('图 1：先核对轴、图例和图注；区分作者图示与自己的推断。')
   await jumpToPage(page, 1)
@@ -247,11 +294,11 @@ test('paper figure keeps axes, legend and caption, restores its original source,
   await page.getByRole('button', { name: '展开材料栏', exact: true }).click()
   await page.locator('.kv-study-history-row').filter({ hasText: FIGURE_QUESTION }).click()
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('4')
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', figureImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), figureImage)
   await expect(page.getByText('保存在此设备', { exact: true })).toBeVisible()
   await page.reload()
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('4')
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', figureImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), figureImage)
   await expect(page.locator('.kv-study-turn')).toHaveCount(2)
   await page.locator('.kv-study-notes > summary').click()
   await expect(page.getByLabel('本页笔记', { exact: true })).toHaveValue('图 1：先核对轴、图例和图注；区分作者图示与自己的推断。')
@@ -265,7 +312,7 @@ test('paper figure keeps axes, legend and caption, restores its original source,
   await page.getByRole('button', { name: '问这个区域', exact: true }).click()
   await expect(page.getByLabel('关于本页的问题')).toBeFocused()
   const anchor = page.getByRole('button', { name: '查看第 4 页选区', exact: true })
-  await expect(anchor.locator('img')).toHaveAttribute('src', figureImage)
+  await expectImageSource(anchor.locator('img'), figureImage)
   await expect(page.locator('#study-attempt')).toBeHidden()
   expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
   await capture(page, info, 'real-reading-mobile-figure-help-light.png')
@@ -275,7 +322,7 @@ test('paper figure keeps axes, legend and caption, restores its original source,
   await anchor.click()
   await expect(page.getByRole('tab', { name: '阅读', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(page.locator('.kv-study-reader-paper')).toBeFocused()
-  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', figureImage)
+  await expectImageSource(page.locator('.kv-study-reader-preview img'), figureImage)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
   await observations(info, { journey: 'Figure 1 with source navigation and missing-caption limitation', page: 4, region: FIGURE_REGION, missingLegendRegion: PANEL_WITHOUT_LEGEND, completeFigureIncludesAxesLegendCaption: true, originalSourceImageRestored: true, mobileAskDoesNotSend: true, notesAndHistoryRestored: true })
 })
