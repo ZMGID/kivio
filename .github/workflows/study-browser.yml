@@ -2,10 +2,12 @@ name: Study browser regression
 on:
   pull_request:
     paths:
-      - 'src/chat/study/**'
-      - 'src/api/study.ts'
+      - 'src/chat/**'
+      - 'src/api/**'
+      - 'src-tauri/src/chat/**'
+      - 'src/components/**'
+      - 'src/styles/**'
       - 'src/settings/components.tsx'
-      - 'src/styles/settings-02-pages.css'
       - 'tests/study-browser/**'
       - 'package.json'
       - 'package-lock.json'
@@ -23,6 +25,8 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci
+      - name: Verify the shared Chat fixture startup
+        run: npx vitest run --config tests/study-browser/vitest.config.ts
       - run: npx playwright install --with-deps chromium
       - name: Exercise real PDF, image, storage and responsive UI with simulated provider
         run: npm run test:study-browser

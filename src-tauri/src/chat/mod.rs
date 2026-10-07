@@ -36,7 +36,7 @@ pub(crate) mod route_contract;
 pub(crate) mod runtime_state;
 pub(crate) mod slash_commands;
 pub mod storage;
-pub(crate) mod study;
+pub(crate) mod study_context;
 pub mod sub_agent;
 pub mod todo;
 pub mod types;

@@ -93,6 +93,17 @@ pub fn session_uuid(conversation_id: Option<&str>) -> String {
     }
 }
 
+/// Source-bound catalog IDs contain a local material fingerprint. Keep the
+/// ordinary Chat wire contract, but never expose that fingerprint in headers
+/// or provider cache keys. This is also used by shared compaction requests.
+pub(crate) fn wire_session_key(conversation_id: &str) -> String {
+    if conversation_id.starts_with("conv_study_") {
+        session_uuid(Some(conversation_id))
+    } else {
+        conversation_id.to_string()
+    }
+}
+
 /// Codex CLI UA 里的系统段，如 `Mac OS 15.5.0; arm64`（对齐 codex 的 os_info 写法）。
 /// 报本机真实值：写死成 Ubuntu 却在 Mac 上跑，本身就是破绽。
 fn codex_os_segment() -> String {
@@ -327,7 +338,7 @@ pub fn header_pairs(
             !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("x-api-key")
         });
         if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-            upsert_pair(&mut pairs, "x-opencode-session".into(), id.into());
+            upsert_pair(&mut pairs, "x-opencode-session".into(), wire_session_key(id));
         }
     }
     pairs
@@ -356,8 +367,8 @@ pub fn model_header_pairs(
     // 上游会话；正经 provider 忽略未知头。
     if session_affinity {
         if let Some(id) = conversation_id.filter(|id| !id.is_empty()) {
-            pairs.push(("x-session-id".into(), id.into()));
-            pairs.push(("x-session-affinity".into(), id.into()));
+            pairs.push(("x-session-id".into(), wire_session_key(id)));
+            pairs.push(("x-session-affinity".into(), wire_session_key(id)));
         }
     }
     for (name, value) in header_pairs(provider, conversation_id) {
@@ -714,5 +725,29 @@ mod tests {
 
         let without_id = header_pairs(&provider, None);
         assert!(!without_id.iter().any(|(k, _)| k == "session_id"));
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+
+    #[test]
+    fn source_catalog_identity_is_opaque_on_provider_wires_only() {
+        let source_id = format!("conv_study_{}_7", "a".repeat(64));
+        let mut provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id":"provider", "name":"Mock", "baseUrl":"https://opencode.ai/zen/v1",
+            "apiKeys":[],"availableModels":[],"enabledModels":[],"enabled":true,"apiFormat":"openai_chat",
+        })).unwrap();
+        let key = wire_session_key(&source_id);
+        assert_eq!(key, session_uuid(Some(&source_id)));
+        assert_eq!(wire_session_key("conv_ordinary"), "conv_ordinary");
+        let headers = model_header_pairs(&provider, Some(&source_id), true, true);
+        assert!(headers.iter().any(|(name, value)| name == "x-session-id" && value == &key));
+        assert!(headers.iter().any(|(name, value)| name == "x-opencode-session" && value == &key));
+        assert!(headers.iter().all(|(_, value)| !value.contains(&"a".repeat(64))));
+        provider.request.cli_identity = "codex".into();
+        let headers = model_header_pairs(&provider, Some(&source_id), true, true);
+        assert!(headers.iter().any(|(name, value)| name == "session_id" && value == &key));
     }
 }

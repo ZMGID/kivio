@@ -250,6 +250,8 @@ mod tests {
 
     fn msg(calls: Vec<ToolCallRecord>) -> ChatMessage {
         ChatMessage {
+            study_source: None,
+            study_legacy_error: None,
             id: "m1".to_string(),
             role: "assistant".to_string(),
             content: String::new(),

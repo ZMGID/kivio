@@ -2,6 +2,22 @@
 
 Date: 2026-10-06. This note records the first Study implementation and the evidence behind its design. It does not introduce a second engineering standard; [the unified engineering rules](../engineering-standards.md) remain authoritative.
 
+## Current architecture: reuse the existing Chat flow (2026-10-07)
+
+The user's later direction is explicit: reuse the existing chat rather than maintain another conversation implementation. This section supersedes the original isolated-IPC architecture below.
+
+`Study material/page/region → Chat.tsx → ChatConversationPane / MessageList / InputBar → existing send controller / execution owner → chat_send_message → shared reply preparation / run_agent_loop → normal conversation repository and protocol`
+
+- `Chat.tsx` remains the single mounted conversation/execution/event owner. Normal Chat and Study use one keep-alive conversation slot, preventing competing composer listeners. Shared components expose a compact reading presentation; they retain the actual editor, draft owner, streaming, cancellation, error and regeneration paths. Ordinary Chat and sub-agent presentation keep their defaults.
+- Study owns material blobs, page/region, notes and restart-persistent source drafts only. Its former question/answer renderer, request/stream state, provider transport, two Tauri commands, cancellation map and response loop are removed. A small bridge saves the page PNG through the existing Chat attachment API, then passes immutable typed source metadata into the ordinary send controller. It never calls a model itself.
+- Every page has a durable source-bound normal Chat conversation. Each user message stores its own page/crop/mode/attempt metadata and original rendered image attachment. Regeneration uses that saved image and source, not the reader's newer selection. The existing optimistic user also carries the captured source so page labels and full-solution disclosure remain correct while streaming.
+- The shared backend derives reading instructions from typed source metadata. Its source-only preparation skips global memory, assistant/set/knowledge/project prompts, tools, hooks, slash-command interpretation, auxiliary vision substitution and built-in search. It then converges into the same Chat runtime and persistence, rather than adding a Study loop. Repository invariants block converting a source-bound conversation to another runtime or tool-bearing profile. Side-model work stays with the selected model; provider-facing cache/session identifiers do not expose material hashes.
+- Legacy migration is lazy and idempotent per material/page. Normal repository creation is committed first, then a separate IndexedDB receipt records the link. Retries after interrupted migration cannot duplicate or overwrite the conversation. Original legacy records remain unchanged in a read-only backup, including previously withheld answers and old manually added text. Partial/error turns, times, modes and model identity are retained. Old records did not store image bytes, so their retry is explicitly unavailable until the reader recaptures the source as a new question. A deleted linked conversation is not silently resurrected from backup.
+- Shared composer drafts remain authoritative while mounted; a scoped adapter persists their input through the material owner's existing save/CAS path across app restart. Bindings survive page switches so delayed acceptance/restoration updates the original page. Explicit confirmed saved-version recovery rehydrates the shared composer, rather than leaving stale editor text behind. Ordinary Chat drafts are untouched.
+- Opening a source-bound conversation from ordinary Chat routes back to its material/page; unavailable material leaves a safe shared transcript and an explicit recovery entry rather than enabling ordinary agent controls. Removing a material retains already-migrated Chat conversations and describes that distinction before confirmation.
+
+The source UI still sends original page/crop images, performs no OCR or PDF text extraction, and preserves the simple Reading Q&A default. The earlier two free vision probes tested the pre-refactor prompt/image shape at `dd6897b7`; they are historical feasibility evidence, **not** a live test of the new native shared-Chat path. Current acceptance must separately exercise ordinary Chat and the integrated reader with clearly simulated provider responses, and compile/test the exact published native head.
+
 ## Current flow: direct images, no extraction (2026-10-07)
 
 The latest user direction supersedes the extraction/correction and structured-output experiments recorded below: **send the original page/selected-region image plus the learner’s question and attempt directly to the model; keep the interaction simple.**
@@ -68,32 +84,15 @@ Khan Academy describes Khanmigo as guiding learners toward answers instead of im
 
 **Applied inference:** keep a small-hint route distinct from an intentional full-solution route. Full solutions remain available because the learner may be reviewing a worked example or checking finished work. No claim is made that this exact four-mode split is experimentally optimal.
 
-## Short implementation path and ownership
+## Original architecture decision (historical)
 
-A send follows:
-
-`StudyWorkspace UI → studyWorkspaceStore.sendStudyHelp → studyRequest.requestStudyHelp → api/study IPC → chat/study.rs → existing stream_with_chat_provider`
-
-- `src/chat/study/studyWorkspaceStore.ts` owns page drafts, request identity, in-progress results, original-document updates, and persistence coordination. Navigation does not retarget a running response.
-- `studyStorage.ts` owns the IndexedDB schema and storage operations. Materials are identified by a SHA-256 content hash; questions and notes are bound to that document and page. Invalid records and save failures are surfaced rather than silently replaced with a successful-save claim. A persisted revision is checked atomically before every document save so a stale window cannot overwrite newer notes or replies. Conflict recovery keeps local drafts available to copy, then offers an explicitly confirmed reload of the saved version.
-- `studyMaterial.ts` owns file validation, local PDF/image loading, bounded rendering and cropped context images. `StudyReader` binds those operations to navigation and selection.
-- `studyRequest.ts` owns the teaching instructions, context assembly, and a synchronous snapshot of the input before asynchronous work. It supplies a bounded tail of the current page's discussion.
-- `src/api/study.ts` owns the request-local channel and cancellation lifecycle; it contains no tutoring policy or scripted answer.
-- `src-tauri/src/chat/study.rs` owns backend input/model checks, in-memory image conversion, request cancellation, and direct use of the existing provider adapters.
-
-There was no prior Study flow to migrate or delete. Reusing the normal Chat conversation path was considered, but that path can discover tools and include memory even in the Chat runtime. Reusing the Lens global stream would couple Study cancellation and delivery to a separate feature. The small Study IPC boundary is justified by its isolated request lifecycle and real external-model seam; it does not duplicate provider-specific HTTP, credentials, OAuth resolution, or streaming protocol parsing.
-
-No imported CLI conversation, native session, or working directory is changed. The existing imported-session ADRs remain intact.
+The first revision used a separate Study workspace request owner, frontend Tauri channel and backend command over shared provider adapters. It reused Markdown and basic controls, but duplicated conversation orchestration, persistence and sidebar UI. Page-bound source isolation was the motivation; it did not require a permanently separate chat implementation. The user requested direct reuse, and that original request path has been removed in favor of the shared architecture above.
 
 ## Provider isolation and request identity
 
-- The backend resolves an enabled saved provider and enabled selected model. Credentials stay within the existing backend provider mechanism; Study does not accept frontend API keys or create new credentials.
-- Requests contain no agent tools, no built-in web search, no attached knowledge base, and no Chat memory. Study does not create an ordinary Chat conversation or modify provider settings.
-- Reserved model `extraBody` keys that could replace context/model, enable tools, or override streaming are rejected for Study. Harmless vendor-specific settings remain available. This does not assert control over a provider's undisclosed server-side behavior.
-- A dedicated Tauri `Channel` delivers only the correlated request's text. A fresh transport UUID distinguishes every attempt, including retries of the same logical question.
-- Backend active requests are scoped by window label and transport UUID. A started acknowledgement prevents Stop from being lost before registration; a guard removes request state on every exit. Cancellation drops the pending provider future, and the request also has a 180-second timeout.
-- The frontend stops applying deltas immediately on abort and rejects with `AbortError`. The workspace keeps partial output and the original question/source for retry.
-- Study adds no application-level automatic model retry. It uses the existing configured provider retry/failover mechanism, with the attempt count bounded to 1–3 for this call. A user-initiated retry is a new invocation and can incur another provider charge.
+The normal Chat reservation/execution/protocol owners now govern concurrency, cancellation, partial responses, retry and late results. A source snapshot is captured before asynchronous attachment storage, and shared send receives an explicit target conversation. Navigating cannot retarget a prepared source or an in-flight answer. Backend validation requires the durable source binding, original image and confirmed vision capability before a request or destructive retry mutation.
+
+Provider adapters, credential/OAuth resolution, accounting and request-debug behavior are the existing implementations. Study does not create credentials or modify settings. Reserved extra-body overrides cannot replace source context/model or enable tools. Source-bound preparation disables tools/search, memory, unrelated prompts and lifecycle hooks. Configured provider charges can still apply; the product has no automatic free-model substitution.
 
 ## Current source limits
 
@@ -101,14 +100,14 @@ No imported CLI conversation, native session, or working directory is changed. T
 - PDF rendering uses a bundled worker and local character-map/font assets. Imported documents do not supply remote asset URLs. Rendering and context images have separate size bounds.
 - **There is no OCR or PDF text extraction in Study.** Scanned pages, digital PDFs and imported images all use original rendered pixels. There is no reconstructed formula or required correction workflow. The model can still misread small symbols; the reader can select a clearer region or ask about a larger image when context is missing.
 - The backend independently requires confirmed vision capability before sending an image. The reader emits a bounded PNG even for an imported WebP; the backend accepts validated PNG/JPEG data URLs and reuses existing model image preparation.
-- The prompt assembler allows at most 12 history messages, each at most 4,000 characters, plus bounded learner-authored input. There is no page-text payload. These are transport bounds, not a claim that every model's context window can hold the maximum.
+- The normal Chat context/replay/compaction owner now bounds conversation history. Questions and attempts retain source-specific input limits; there is no extracted page-text payload. Each historical user turn retains its own source label instead of being relabeled with the latest selection.
 - The model sees only supplied page/region context and same-page history. It is instructed to ask for missing or unreadable details rather than pretend to see other pages.
 
 ## Privacy and untrusted output
 
-Materials, drafts, notes, and history are kept in local application storage; this is not encrypted storage or a cloud backup. Clearing application data removes the stored work. Removing a material does not delete the original imported file.
+Materials, source drafts and notes remain in local IndexedDB; new histories and original image attachments use normal local Chat persistence; this is not encrypted storage or a cloud backup. Clearing application data removes the stored work. Removing a material does not delete the original imported file.
 
-On Send, the selected provider receives the question, attempt, bounded page history, actual PDF page index, page/region scope, and the disclosed original page/region image. Original filenames and document hashes are omitted from the provider prompt. Original PDF bytes and unselected PDF pages are not uploaded. Sending a whole-page or selected-region image shares that rendered image. The provider's own retention and usage policies still apply, and configured provider charges may apply.
+On Send, the selected provider receives the question, attempt, the page conversation within normal Chat context bounds, actual PDF page index, page/region scope, and the disclosed original page/region image. Original filenames and document hashes are omitted from the provider prompt. Original PDF bytes and unselected PDF pages are not uploaded. Sending a whole-page or selected-region image shares that rendered image. The provider's own retention and usage policies still apply, and configured provider charges may apply.
 
 Retry preserves the original question, optional context/attempt, mode, page and region. It always uses that original source image and requires a confirmed vision model. Historical extracted or manually corrected source text is not sent, including on retries.
 
@@ -116,7 +115,7 @@ Existing Kivio provider accounting continues to run. If the user has enabled **R
 
 Document text, filenames, images, and prior messages are treated as untrusted source content in the prompt. The teaching-mode system instructions are not assembled from document text.
 
-Study uses the shared `ChatMarkdown` renderer's explicit `readOnly` profile. It keeps mathematical and text formatting, but renders links as text, omits media embeddings, escapes raw HTML before HTML parsing, and avoids HTML/SVG/Mermaid previews, artifact loading, and local-file controls. This closes an otherwise unintended disclosure path in which model-generated image URLs could issue network requests. Normal Chat rendering retains its existing interactive behavior.
+The shared Chat message components use `ChatMarkdown`'s explicit safe `readOnly` content profile in reading presentation (distinct from existing message-action read-only behavior). It keeps mathematical and text formatting, but renders links as text, omits media embeddings, escapes raw HTML before HTML parsing, and avoids HTML/SVG/Mermaid previews, artifact loading, and local-file controls. This closes an otherwise unintended disclosure path in which model-generated image URLs could issue network requests. Normal Chat rendering retains its existing interactive behavior.
 
 ## Verification and release boundaries
 

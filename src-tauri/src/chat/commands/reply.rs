@@ -149,6 +149,18 @@ pub(super) async fn complete_assistant_reply_inner(
     arm: Option<&ReplyArm>,
     probe: bool,
 ) -> Result<ArmReplyOutcome, String> {
+    // A durable source binding is checked before any external runtime can dispatch.
+    crate::chat::study_context::validate_conversation(conversation)?;
+    let study_mode = conversation.study_context.is_some();
+    let study_images = if study_mode {
+        Some(crate::chat::study_context::saved_image_paths(app, conversation)?)
+    } else {
+        None
+    };
+    let last_user_image_paths = study_images.as_deref().unwrap_or(last_user_image_paths);
+    if study_mode && active_skill_id.is_some() {
+        return Err("Skills are unavailable in Study conversations.".into());
+    }
     if conversation.agent_runtime.is_external() {
         // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
         // 让 `chat_runtime().has_active_reply` 在外部回复期间也能拒绝并发新发送（防回归）。
@@ -205,7 +217,7 @@ pub(super) async fn complete_assistant_reply_inner(
         });
     }
 
-    let settings = state.settings_read().clone();
+    let mut settings = state.settings_read().clone();
     // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
     // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
     let resolved_provider_id = arm
@@ -223,6 +235,13 @@ pub(super) async fn complete_assistant_reply_inner(
     }
     if resolved_model.trim().is_empty() {
         return Err(chat_missing_model_error());
+    }
+
+    if study_mode {
+        crate::chat::study_context::validate_provider(&provider, &resolved_model)?;
+        // Context compaction stays on the selected, validated service. Never mutate settings.
+        settings.default_models.compression = crate::settings::DefaultModelSelection::default();
+        settings.chat_memory.enabled = false;
     }
 
     let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
@@ -336,13 +355,13 @@ pub(super) async fn complete_assistant_reply_inner(
         });
     }
     let session = session_model_for_conversation(conversation);
-    let auxiliary_vision_model = auxiliary_vision_model_for_images(
+    let auxiliary_vision_model = if study_mode { None } else { auxiliary_vision_model_for_images(
         &settings,
         Some(&provider),
         &resolved_model,
         last_user_image_paths,
         Some(session),
-    );
+    ) };
     let mut auxiliary_tool_records = Vec::new();
     let auxiliary_vision_result = if let Some(auxiliary_vision_model) = auxiliary_vision_model {
         let mut record = auxiliary_vision_tool_record(
@@ -448,281 +467,300 @@ pub(super) async fn complete_assistant_reply_inner(
     let last_user_content_for_main = augmented_last_user_content
         .as_deref()
         .or(last_user_api_content);
-    let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
-        app,
-        conversation,
-        &settings.chat_tools.native_tools.working_directory,
-    )
-    .ok();
-    let skill_registry = skills::build_registry_in(
-        app,
-        &settings.chat_tools.skill_scan_paths,
-        skill_cwd.as_deref(),
-    )
-    .unwrap_or_default();
-    let mut effective_chat_tools = settings.chat_tools.clone();
-    // Read the stored text, before attachment/vision augmentation, so those
-    // documents never become slash arguments. This also covers edited retries.
-    let user_content = conversation
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.as_str())
-        .unwrap_or_default();
-    let (skill_id, active_skill_detail) = resolve_request_skill(
-        &skill_registry,
-        &mut effective_chat_tools,
-        conversation.assistant_snapshot.as_ref(),
-        if conversation.agent_runtime.is_chat() {
-            ""
-        } else {
-            user_content
-        },
-        active_skill_id.or(conversation.active_skill_id.as_deref()),
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
-    );
-    if skill_id.is_none() && conversation.active_skill_id.is_some() {
-        conversation.active_skill_id = None;
-    }
-    if arm.is_some() || probe {
-        // 多答 fan-out（决策 D1 注）：N 条并行 run 若各自弹工具审批会产生 N 倍弹窗、
-        // 且无法对应到具体列。多模型臂内一律自动批准（静默执行）。单模型保持原审批策略。
-        // probe（无头测试通道）同理：无 GUI 可应答审批，必须自动放行，否则挂起。
-        effective_chat_tools.approval_policy = "auto".to_string();
-    }
-    let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
-    if let Some(warning) = memory_warning.as_ref() {
-        conversation.context_state.warning = Some(warning.clone());
-    }
-    let tools_capable = agent_prepare::chat_tools_capable(
-        &effective_chat_tools,
-        settings.chat_memory.enabled,
-        crate::settings::chat_image_generation_enabled_for_session(
-            &settings,
-            Some(session_model_for_conversation(conversation)),
-        ),
-    ) || video_plan.model.is_some();
-    let tool_list = await_chat_tool_discovery(
-        state.inner(),
-        &conversation.id,
-        run_generation,
-        list_tools_for_chat(
+    let (skill_cwd, effective_chat_tools, skill_id, tools, blocked_tool_calls, web_search_mode, runtime_messages, provider_tools_fallback_system_prompt, workbench_dir) = if study_mode {
+        let source = conversation.messages.iter().rev()
+            .find(|message| message.role == "user")
+            .and_then(|message| message.study_source.as_ref())
+            .ok_or("Study needs the saved source selection for the last user turn.")?;
+        let system_prompt = crate::chat::study_context::system_prompt(source.mode);
+        let runtime_messages = build_chat_api_messages_with_video(
+            Some(app), &system_prompt, conversation, last_user_idx,
+            None, main_image_paths, false,
+        )?;
+        (
+            None, crate::settings::ChatToolsConfig::default(), None,
+            Vec::new(), Vec::new(), crate::chat::WebSearchMode::Off,
+            runtime_messages, system_prompt, None,
+        )
+    } else {
+        let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
             app,
-            state.inner(),
-            &settings,
-            Some(session_model_for_conversation(conversation)),
-            allowed_mcp_server_ids(conversation, &settings),
-        ),
-    )
-    .await;
-    let tool_list = match tool_list {
-        Ok(tools) => tools,
-        Err(error) => {
-            return finish_reply_failure(
-                app,
-                conversation,
-                &assistant_message_id,
-                &run_id,
-                arm.is_some(),
-                &mut protocol_guard,
-                error,
-            )
-            .await;
-        }
-    };
-    let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
-    let mut tools = tool_list.tools;
-    if video_plan.model.is_some() {
-        tools.push(crate::chat::video_analysis::tool_definition());
-    }
-    agent_prepare::apply_assistant_mcp_restrictions(
-        &mut tools,
-        conversation.assistant_snapshot.as_ref(),
-    );
-    let builder_mode = is_builder_conversation(conversation);
-    if builder_mode {
-        // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
-        tools.clear();
-        tools.push(crate::mcp::types::native_save_assistant_tool());
-    }
-    apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
-    let blocked_tool_calls = if chat_mode {
-        apply_chat_mode_tool_filter(&mut tools, true, &settings.chat.chat_mode)
-    } else {
-        apply_agent_plan_tool_filter(&mut tools, plan_mode)
-    };
-    // 会话级三态联网搜索（任务 07-23）：按有效模式收敛第三方 `search_web` 的暴露；
-    // 内置搜索走 `config.web_search_mode` → 各适配器请求体注入，不在工具列表里。
-    // builder 会话已清空工具（只留 save_assistant），不参与搜索门控。
-    let web_search_mode =
-        crate::chat::types::WebSearchMode::resolve(conversation.web_search_mode, &settings)
-            .for_provider(&provider);
-    if !builder_mode {
-        apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
-    }
-    crate::chat::plan_document::append_tools(
-        &mut tools,
-        plan_mode && !is_builder_conversation(conversation),
-    );
-    let user_tools_available = tools_capable && !tools.is_empty();
-    agent_prepare::apply_skill_fallback_when_tools_unavailable(
-        &mut effective_chat_tools,
-        skill_id.as_deref(),
-        user_tools_available,
-    );
-    let ask_user_tools_available = append_agent_ask_user_tools(&mut tools);
-    if !chat_mode && !plan_mode {
-        append_agent_todo_tools(&mut tools);
-    }
-    let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none() {
-        append_goal_tools(&mut tools, conversation.goal_state.as_ref())
-    } else {
-        false
-    };
-    if settings.chat_tools.native_tools.scheduled_tasks
-        && !plan_mode
-        && !builder_mode
-        && arm.is_none()
-    {
-        crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
-    }
-    // Resolved here (rather than further down with the other prompt context) so
-    // the sub-agent role registry below can reuse the project root instead of
-    // resolving the conversation's project a second time.
-    let project_prompt_context = project_prompt_context_for(app, conversation);
-    // Multi-agent spawn tool (P3): exposure is mode-controlled. Act and
-    // Orchestrate both expose the `agent` tool; Plan / Chat exclude it (spawn is a
-    // side-effecting, non-read-only capability).
-    if !plan_mode && !chat_mode && !builder_mode {
-        // Load the role registry (built-in + user + project) so the `agent`
-        // tool's schema lists the roles that actually exist for this
-        // conversation — the model must not have to guess role names.
-        let project_root = project_prompt_context
-            .as_ref()
-            .and_then(|context| context.root_path.as_deref())
-            .map(std::path::Path::new);
-        let agent_defs = crate::agents::load_agent_definitions(app, project_root);
-        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &agent_defs);
-    }
-    let runtime_tools_available = !tools.is_empty();
-    let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
-    let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
-    let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
-        chat_mode,
-        settings.chat.system_prompt.as_str(),
-        settings.chat.chat_mode.system_prompt.as_str(),
-        &conversation.agent_plan_state,
-    );
-    // Default workbench surfaced to the model. It is an ergonomic default, not
-    // a sandbox; explicit user paths continue to take precedence.
-    let workbench_dir = crate::chat::storage::resolve_conversation_working_directory(
-        app,
-        conversation,
-        &settings.chat_tools.native_tools.working_directory,
-    )
-    .ok()
-    .map(|path| path.display().to_string());
-    // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
-    let set_system_prompt = live_set_system_prompt(app, conversation);
-    let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
-        .then_some(settings.obsidian_vault_path.as_str());
-    let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
-        app,
-        &conversation.knowledge_base_ids,
-        conversation.force_knowledge_search,
-    );
-    let system_prompt = agent_prepare::build_chat_system_prompt(
-        &language,
-        !main_image_paths.is_empty(),
-        thinking_enabled,
-        &skill_registry,
-        &effective_chat_tools,
-        runtime_tools_available,
-        &available_builtin_tools,
-        skill_id.as_deref(),
-        active_skill_detail.as_ref(),
-        conversation.assistant_snapshot.as_ref(),
-        set_system_prompt.as_deref(),
-        runtime_prompts.custom_system_prompt.as_str(),
-        runtime_prompts.is_chat_runtime,
-        memory_prompt.as_deref(),
-        runtime_prompts.agent_plan_prompt.as_deref(),
-        Some(&agent_ask_user_prompt),
-        project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
-        knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
-        &conversation.additional_directories,
-    );
-    // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
-    // "配置了但连不上"，而不是回答"没有这个工具"。
-    let system_prompt =
-        match crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers) {
-            Some(note) => format!("{system_prompt}\n\n{note}"),
-            None => system_prompt,
-        };
-    let system_prompt = match crate::chat::goal::format_prompt(conversation.goal_state.as_ref()) {
-        Some(goal_prompt) if goal_tools_available => format!("{system_prompt}\n\n{goal_prompt}"),
-        _ => system_prompt,
-    };
-
-    let mut runtime_messages = match build_chat_api_messages_with_video(
-        Some(app),
-        &system_prompt,
-        conversation,
-        last_user_idx,
-        last_user_content_for_main,
-        main_image_paths,
-        video_plan.send_video,
-    ) {
-        Ok(messages) => messages,
-        Err(error) => {
-            if arm.is_some() {
-                protocol_guard.defer_terminal();
-                return Ok(ArmReplyOutcome {
-                    message: None,
-                    run_id: Some(run_id),
-                    error: Some(error),
-                });
-            }
-            return Err(error);
-        }
-    };
-    if !video_plan.send_video && !video_plan.reports.is_empty() {
-        crate::chat::video_analysis::apply_saved_reports(
-            &mut runtime_messages,
-            &video_plan.reports,
-            &language,
+            conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )
+        .ok();
+        let skill_registry = skills::build_registry_in(
+            app,
+            &settings.chat_tools.skill_scan_paths,
+            skill_cwd.as_deref(),
+        )
+        .unwrap_or_default();
+        let mut effective_chat_tools = settings.chat_tools.clone();
+        // Read the stored text, before attachment/vision augmentation, so those
+        // documents never become slash arguments. This also covers edited retries.
+        let user_content = conversation
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        let (skill_id, active_skill_detail) = resolve_request_skill(
+            &skill_registry,
+            &mut effective_chat_tools,
+            conversation.assistant_snapshot.as_ref(),
+            if conversation.agent_runtime.is_chat() {
+                ""
+            } else {
+                user_content
+            },
+            active_skill_id.or(conversation.active_skill_id.as_deref()),
+            crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
         );
-    }
-    let mut fallback_chat_tools = effective_chat_tools.clone();
-    if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
-        fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
-    }
-    let provider_tools_fallback_system_prompt = agent_prepare::build_chat_system_prompt(
-        &language,
-        !main_image_paths.is_empty(),
-        thinking_enabled,
-        &skill_registry,
-        &fallback_chat_tools,
-        false,
-        &[],
-        skill_id.as_deref(),
-        active_skill_detail.as_ref(),
-        conversation.assistant_snapshot.as_ref(),
-        set_system_prompt.as_deref(),
-        runtime_prompts.custom_system_prompt.as_str(),
-        runtime_prompts.is_chat_runtime,
-        memory_prompt.as_deref(),
-        runtime_prompts.agent_plan_prompt.as_deref(),
-        Some(&crate::chat::ask_user::format_prompt(false)),
-        project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
-        knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
-        &conversation.additional_directories,
-    );
+        if skill_id.is_none() && conversation.active_skill_id.is_some() {
+            conversation.active_skill_id = None;
+        }
+        if arm.is_some() || probe {
+            // 多答 fan-out（决策 D1 注）：N 条并行 run 若各自弹工具审批会产生 N 倍弹窗、
+            // 且无法对应到具体列。多模型臂内一律自动批准（静默执行）。单模型保持原审批策略。
+            // probe（无头测试通道）同理：无 GUI 可应答审批，必须自动放行，否则挂起。
+            effective_chat_tools.approval_policy = "auto".to_string();
+        }
+        let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
+        if let Some(warning) = memory_warning.as_ref() {
+            conversation.context_state.warning = Some(warning.clone());
+        }
+        let tools_capable = agent_prepare::chat_tools_capable(
+            &effective_chat_tools,
+            settings.chat_memory.enabled,
+            crate::settings::chat_image_generation_enabled_for_session(
+                &settings,
+                Some(session_model_for_conversation(conversation)),
+            ),
+        ) || video_plan.model.is_some();
+        let tool_list = await_chat_tool_discovery(
+            state.inner(),
+            &conversation.id,
+            run_generation,
+            list_tools_for_chat(
+                app,
+                state.inner(),
+                &settings,
+                Some(session_model_for_conversation(conversation)),
+                allowed_mcp_server_ids(conversation, &settings),
+            ),
+        )
+        .await;
+        let tool_list = match tool_list {
+            Ok(tools) => tools,
+            Err(error) => {
+                return finish_reply_failure(
+                    app,
+                    conversation,
+                    &assistant_message_id,
+                    &run_id,
+                    arm.is_some(),
+                    &mut protocol_guard,
+                    error,
+                )
+                .await;
+            }
+        };
+        let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
+        let mut tools = tool_list.tools;
+        if video_plan.model.is_some() {
+            tools.push(crate::chat::video_analysis::tool_definition());
+        }
+        agent_prepare::apply_assistant_mcp_restrictions(
+            &mut tools,
+            conversation.assistant_snapshot.as_ref(),
+        );
+        let builder_mode = is_builder_conversation(conversation);
+        if builder_mode {
+            // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
+            tools.clear();
+            tools.push(crate::mcp::types::native_save_assistant_tool());
+        }
+        apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
+        let blocked_tool_calls = if chat_mode {
+            apply_chat_mode_tool_filter(&mut tools, true, &settings.chat.chat_mode)
+        } else {
+            apply_agent_plan_tool_filter(&mut tools, plan_mode)
+        };
+        // 会话级三态联网搜索（任务 07-23）：按有效模式收敛第三方 `search_web` 的暴露；
+        // 内置搜索走 `config.web_search_mode` → 各适配器请求体注入，不在工具列表里。
+        // builder 会话已清空工具（只留 save_assistant），不参与搜索门控。
+        let web_search_mode =
+            crate::chat::types::WebSearchMode::resolve(conversation.web_search_mode, &settings)
+                .for_provider(&provider);
+        if !builder_mode {
+            apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
+        }
+        crate::chat::plan_document::append_tools(
+            &mut tools,
+            plan_mode && !is_builder_conversation(conversation),
+        );
+        let user_tools_available = tools_capable && !tools.is_empty();
+        agent_prepare::apply_skill_fallback_when_tools_unavailable(
+            &mut effective_chat_tools,
+            skill_id.as_deref(),
+            user_tools_available,
+        );
+        let ask_user_tools_available = append_agent_ask_user_tools(&mut tools);
+        if !chat_mode && !plan_mode {
+            append_agent_todo_tools(&mut tools);
+        }
+        let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none() {
+            append_goal_tools(&mut tools, conversation.goal_state.as_ref())
+        } else {
+            false
+        };
+        if settings.chat_tools.native_tools.scheduled_tasks
+            && !plan_mode
+            && !builder_mode
+            && arm.is_none()
+        {
+            crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
+        }
+        // Resolved here (rather than further down with the other prompt context) so
+        // the sub-agent role registry below can reuse the project root instead of
+        // resolving the conversation's project a second time.
+        let project_prompt_context = project_prompt_context_for(app, conversation);
+        // Multi-agent spawn tool (P3): exposure is mode-controlled. Act and
+        // Orchestrate both expose the `agent` tool; Plan / Chat exclude it (spawn is a
+        // side-effecting, non-read-only capability).
+        if !plan_mode && !chat_mode && !builder_mode {
+            // Load the role registry (built-in + user + project) so the `agent`
+            // tool's schema lists the roles that actually exist for this
+            // conversation — the model must not have to guess role names.
+            let project_root = project_prompt_context
+                .as_ref()
+                .and_then(|context| context.root_path.as_deref())
+                .map(std::path::Path::new);
+            let agent_defs = crate::agents::load_agent_definitions(app, project_root);
+            crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &agent_defs);
+        }
+        let runtime_tools_available = !tools.is_empty();
+        let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
+        let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
+        let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
+            chat_mode,
+            settings.chat.system_prompt.as_str(),
+            settings.chat.chat_mode.system_prompt.as_str(),
+            &conversation.agent_plan_state,
+        );
+        // Default workbench surfaced to the model. It is an ergonomic default, not
+        // a sandbox; explicit user paths continue to take precedence.
+        let workbench_dir = crate::chat::storage::resolve_conversation_working_directory(
+            app,
+            conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )
+        .ok()
+        .map(|path| path.display().to_string());
+        // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
+        let set_system_prompt = live_set_system_prompt(app, conversation);
+        let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
+            .then_some(settings.obsidian_vault_path.as_str());
+        let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
+            app,
+            &conversation.knowledge_base_ids,
+            conversation.force_knowledge_search,
+        );
+        let system_prompt = agent_prepare::build_chat_system_prompt(
+            &language,
+            !main_image_paths.is_empty(),
+            thinking_enabled,
+            &skill_registry,
+            &effective_chat_tools,
+            runtime_tools_available,
+            &available_builtin_tools,
+            skill_id.as_deref(),
+            active_skill_detail.as_ref(),
+            conversation.assistant_snapshot.as_ref(),
+            set_system_prompt.as_deref(),
+            runtime_prompts.custom_system_prompt.as_str(),
+            runtime_prompts.is_chat_runtime,
+            memory_prompt.as_deref(),
+            runtime_prompts.agent_plan_prompt.as_deref(),
+            Some(&agent_ask_user_prompt),
+            project_prompt_context.as_ref(),
+            workbench_dir.as_deref(),
+            knowledge_base_prompt.as_deref(),
+            obsidian_vault_path,
+            &conversation.additional_directories,
+        );
+        // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
+        // "配置了但连不上"，而不是回答"没有这个工具"。
+        let system_prompt =
+            match crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers) {
+                Some(note) => format!("{system_prompt}\n\n{note}"),
+                None => system_prompt,
+            };
+        let system_prompt = match crate::chat::goal::format_prompt(conversation.goal_state.as_ref()) {
+            Some(goal_prompt) if goal_tools_available => format!("{system_prompt}\n\n{goal_prompt}"),
+            _ => system_prompt,
+        };
+
+        let mut runtime_messages = match build_chat_api_messages_with_video(
+            Some(app),
+            &system_prompt,
+            conversation,
+            last_user_idx,
+            last_user_content_for_main,
+            main_image_paths,
+            video_plan.send_video,
+        ) {
+            Ok(messages) => messages,
+            Err(error) => {
+                if arm.is_some() {
+                    protocol_guard.defer_terminal();
+                    return Ok(ArmReplyOutcome {
+                        message: None,
+                        run_id: Some(run_id),
+                        error: Some(error),
+                    });
+                }
+                return Err(error);
+            }
+        };
+        if !video_plan.send_video && !video_plan.reports.is_empty() {
+            crate::chat::video_analysis::apply_saved_reports(
+                &mut runtime_messages,
+                &video_plan.reports,
+                &language,
+            );
+        }
+        let mut fallback_chat_tools = effective_chat_tools.clone();
+        if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
+            fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
+        }
+        let provider_tools_fallback_system_prompt = agent_prepare::build_chat_system_prompt(
+            &language,
+            !main_image_paths.is_empty(),
+            thinking_enabled,
+            &skill_registry,
+            &fallback_chat_tools,
+            false,
+            &[],
+            skill_id.as_deref(),
+            active_skill_detail.as_ref(),
+            conversation.assistant_snapshot.as_ref(),
+            set_system_prompt.as_deref(),
+            runtime_prompts.custom_system_prompt.as_str(),
+            runtime_prompts.is_chat_runtime,
+            memory_prompt.as_deref(),
+            runtime_prompts.agent_plan_prompt.as_deref(),
+            Some(&crate::chat::ask_user::format_prompt(false)),
+            project_prompt_context.as_ref(),
+            workbench_dir.as_deref(),
+            knowledge_base_prompt.as_deref(),
+            obsidian_vault_path,
+            &conversation.additional_directories,
+        );
+
+        (skill_cwd, effective_chat_tools, skill_id, tools, blocked_tool_calls, web_search_mode, runtime_messages, provider_tools_fallback_system_prompt, workbench_dir)
+    };
 
     let chat_host = ChatAgentHost {
         workflow_hooks: if chat_mode {
@@ -749,7 +787,7 @@ pub(super) async fn complete_assistant_reply_inner(
             && resolved_model == conversation.model),
         // 生命周期 Hooks：无启用条目时为 None，loop 完全不感知。先用 `any_enabled`
         // 短路，没配 Hook 时连下面这几个 id / model 字符串都不分配（验收 6）。
-        hooks: crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks)
+        hooks: (!study_mode && crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks))
             .then(|| {
                 crate::chat::hooks::HookDispatcher::new(
                     app.clone(),
@@ -991,7 +1029,7 @@ pub(super) async fn complete_assistant_reply_inner(
         result.api_messages,
         segments,
         skill_id.as_deref(),
-        title_from_first_user,
+        if study_mode { None } else { title_from_first_user },
         Some(run_entry),
         Some(result.stream_outcome.as_str()),
         result.usage,

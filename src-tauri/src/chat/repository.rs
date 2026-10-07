@@ -808,6 +808,7 @@ impl ConversationRepository {
         app: &AppHandle,
         conversation: Conversation,
     ) -> RepositoryResult<Conversation> {
+        super::study_context::validate_conversation(&conversation)?;
         let persisted = {
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {

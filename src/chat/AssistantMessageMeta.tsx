@@ -8,6 +8,7 @@ import { ReplyWithModelButton } from './ReplyWithModelButton'
 import type { MessageUsage, ModelRef } from './types'
 
 interface AssistantMessageMetaProps {
+  presentation?: 'chat' | 'reading'
   readOnly?: boolean
   content: string
   reasoning?: string
@@ -43,6 +44,7 @@ function realUsageTokens(usage?: MessageUsage | null): { total: number; label: s
 }
 
 export function AssistantMessageMeta({
+  presentation = 'chat',
   readOnly = false,
   content,
   reasoning,
@@ -57,6 +59,7 @@ export function AssistantMessageMeta({
   onFork,
   onSaveToNote,
 }: AssistantMessageMetaProps) {
+  const isReading = presentation === 'reading'
   const [copied, setCopied] = useState(false)
   const [saved, setSaved] = useState(false)
   // 优先显示 provider 报告的真实用量；provider 不报时回落到 chars 估算（带 ~ 前缀）。
@@ -118,29 +121,29 @@ export function AssistantMessageMeta({
         >
           {copied ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={13} strokeWidth={2} />}
         </IconButton>
-        {!readOnly && <><IconButton
+        {!readOnly && !isReading && <IconButton
           size="xs"
           onClick={() => void handleSaveToNote()}
           disabled={!onSaveToNote}
           label={saved ? '已存为笔记' : '存为笔记'}
         >
           {saved ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <NotebookPen size={13} strokeWidth={2} />}
-        </IconButton>
-        <IconButton
+        </IconButton>}
+        {!readOnly && (!isReading || onRegenerate) && <IconButton
           size="xs"
           onClick={onRegenerate}
           disabled={!onRegenerate}
           label="重新生成"
         >
           <RotateCcw size={13} strokeWidth={2} />
-        </IconButton>
-        {onReplyWithModel && (
+        </IconButton>}
+        {!readOnly && !isReading && onReplyWithModel && (
           <ReplyWithModelButton
             occupied={replyOccupiedModels}
             onSelect={onReplyWithModel}
           />
         )}
-        <IconButton
+        {!readOnly && !isReading && <IconButton
           size="xs"
           onClick={onFork}
           disabled={!onFork}
@@ -148,7 +151,7 @@ export function AssistantMessageMeta({
           title="从这里建分支（复制到新对话）"
         >
           <GitBranch size={13} strokeWidth={2} />
-        </IconButton></>}
+        </IconButton>}
       </div>
 
       {speed != null && (

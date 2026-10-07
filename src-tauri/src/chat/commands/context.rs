@@ -1107,12 +1107,24 @@ pub(crate) fn build_chat_api_messages_with_video(
         if snapshot_reports.contains(&message.id) {
             continue;
         }
+        if conversation.study_context.is_some() && message.role == "assistant"
+            && message.content.trim().is_empty()
+        {
+            // Empty legacy failures remain visible in Chat but are not empty
+            // assistant messages on provider wires that reject that shape.
+            continue;
+        }
         let content = if Some(idx) == last_user_idx {
             last_user_api_content.unwrap_or(message.content.as_str())
         } else {
             message.content.as_str()
         };
-        let sanitized_content = sanitize_image_payloads_for_model(content);
+        // Source selection belongs to every saved user turn. Ignore caller-built
+        // attachment prose here so filenames and local paths never become evidence.
+        let study_content = message.study_source.as_ref()
+            .filter(|_| conversation.study_context.is_some() && message.role == "user")
+            .map(|source| crate::chat::study_context::user_prompt(&message.content, source));
+        let sanitized_content = sanitize_image_payloads_for_model(study_content.as_deref().unwrap_or(content));
         if message.role == "assistant" && message.id.starts_with("subagent-result-") {
             messages.push(tag_ui_message_id(
                 crate::chat::sub_agent::control::report_input(&sanitized_content),

@@ -185,10 +185,47 @@ export interface ChatMessageSegment {
   toolCallId?: string | null
 }
 
+/** Immutable Study source snapshots travel through the ordinary Chat lifecycle. */
+export interface StudyMessageSource {
+  page: number
+  region?: { x: number; y: number; width: number; height: number } | null
+  mode: 'read' | 'hint' | 'explain' | 'check' | 'solution'
+  attempt: string
+}
+
+export interface StudyImportReceipt {
+  version: 1
+  fingerprint: string
+}
+
+export interface StudyConversationContext {
+  /** SHA-256 identity of the original material, independent of its filename. */
+  materialId: string
+  page: number
+  legacyImport?: StudyImportReceipt
+}
+
+export interface StudyConversationImport extends StudyImportReceipt {
+  messages: Array<{
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    timestamp: number
+    studySource?: StudyMessageSource
+    streamOutcome?: 'completed' | 'cancelled' | 'error' | 'interrupted'
+    providerId?: string
+    model?: string
+    error?: string
+  }>
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  study_source?: StudyMessageSource
+  /** Compatibility-only failure detail; never promoted into model text. */
+  study_legacy_error?: string
   attachments?: Attachment[]
   reasoning?: string
   artifacts?: ChatToolArtifact[]
@@ -528,6 +565,7 @@ export interface CliImportResult {
 
 export type { NativeProviderSummary, DetectedExternalAgent } from '../api/externalCliSettings'
 export interface Conversation {
+  study_context?: StudyConversationContext
   id: string
   revision: number
   title: string
@@ -623,6 +661,7 @@ export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type WebSearchMode = 'off' | 'builtin' | 'third_party'
 
 export interface ConversationListItem {
+  study_context?: StudyConversationContext
   id: string
   revision?: number
   title: string

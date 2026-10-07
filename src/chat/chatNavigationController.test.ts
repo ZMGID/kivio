@@ -103,6 +103,20 @@ function setup(withWindow = false) {
 }
 
 describe('chat navigation controller', () => {
+  it('selects embedded reading conversations through the same owner without replacing the reader route', async () => {
+    window.location.hash = '#chat/study'
+    const state = setup()
+    state.ownership.resolve(new Set())
+    const pending = state.controller.selectConversation('study-a', undefined, { preserveRoute: true })
+    await state.readStarted.promise
+    state.reads.get('study-a')!.resolve(conversation('study-a'))
+    await pending
+    expect(state.shown).toEqual(['study-a'])
+    expect(window.location.hash).toBe('#chat/study')
+    await state.controller.selectConversation('study-a')
+    expect(window.location.hash).toBe('#chat/study-a')
+  })
+
   it('allows a new page after A-B-A and an obsolete completion cannot unlock the newer request', async () => {
     const state = setup()
     const partial = { ...conversation('a'), history_start: 1, history_total: 2,

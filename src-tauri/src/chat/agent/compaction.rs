@@ -455,6 +455,18 @@ pub(crate) async fn compact_conversation(
     settings: &Settings,
     conversation: &mut Conversation,
 ) -> Result<bool, String> {
+    crate::chat::study_context::validate_conversation(conversation)?;
+    let source_settings;
+    let settings = if conversation.study_context.is_some() {
+        let mut selected = settings.clone();
+        selected.default_models.compression = crate::settings::DefaultModelSelection::default();
+        let provider = selected.get_provider(&conversation.provider_id).ok_or("Compression provider not found")?;
+        crate::chat::study_context::validate_provider(provider, &conversation.model)?;
+        source_settings = selected;
+        &source_settings
+    } else {
+        settings
+    };
     let (provider_id, model) =
         settings.effective_compression_model_for_session(Some(crate::settings::SessionModel {
             provider_id: &conversation.provider_id,
@@ -1221,6 +1233,8 @@ mod tests {
 
     fn chat_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            study_source: None,
+            study_legacy_error: None,
             id: id.to_string(),
             role: role.to_string(),
             content: content.to_string(),
@@ -1248,6 +1262,7 @@ mod tests {
     }
     fn test_conversation(messages: Vec<ChatMessage>) -> Conversation {
         Conversation {
+            study_context: None,
             id: "conv_test".to_string(),
             revision: 0,
             title: "t".to_string(),

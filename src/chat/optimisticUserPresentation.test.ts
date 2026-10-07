@@ -15,6 +15,17 @@ describe('optimistic user presentation', () => {
     expect(owner.overlay('a', [stored(token.message.id, 'hello', 100)])).toHaveLength(1)
   })
 
+  it('pins material source metadata on the existing optimistic user until its persisted twin arrives', () => {
+    const owner = createOptimisticUserPresentation()
+    const source = { page: 4, region: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }, mode: 'solution' as const, attempt: 'Original attempt' }
+    const pending = owner.begin('paper', 'Explain the figure', [], 100_000, source)
+    source.page = 9; source.region.x = 0.7; source.attempt = 'Later edit'
+    expect(owner.overlay('paper', [])[0].study_source).toEqual({ page: 4, region: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }, mode: 'solution', attempt: 'Original attempt' })
+    expect(owner.overlay('other', [])).toEqual([])
+    const saved = { ...pending.message }
+    expect(owner.overlay('paper', [saved])).toEqual([saved])
+  })
+
   it('does not let a late settle from a previous send clear the next send', () => {
     const owner = createOptimisticUserPresentation()
     const first = owner.begin('a', 'first', [], 100_000)

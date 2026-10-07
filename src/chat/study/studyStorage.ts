@@ -368,6 +368,11 @@ export async function importStudyDocument(input: { name: string; kind: StudyDocu
     checkCapacity(totalBytes, documentCount)
     await request(documents.add(record))
     await request(tx.objectStore(MATERIALS).add({ id, blob }))
+    const lifecycle = storedChatMaterialLifecycle(await request(tx.objectStore(META).get(chatMaterialKey(id))), id)
+    if (lifecycle) {
+      if (lifecycle.state !== 'removed') throw new StudyStorageError('corrupt', 'The Study material recovery marker is inconsistent. Existing conversations were kept.')
+      await request(tx.objectStore(META).put({ ...lifecycle, state: 'restored', createdAt: document.createdAt }))
+    }
     await request(tx.objectStore(META).put({ ...workspace, totalBytes, documentCount, selectedDocumentId: id }))
     return { document, duplicate: false }
   }, signal)
@@ -471,8 +476,116 @@ export async function deleteStudyDocument(id: string): Promise<void> {
     const previous = storedDocument(value)
     const workspace = await workspaceRecord(tx)
     if (workspace.totalBytes < previous.document.size + previous.metadataBytes) throw new StudyStorageError('corrupt', 'The Study library index is inconsistent. The material has not been deleted.')
+    // The explicit removal and its recovery marker commit together. Retained Chat receipts alone
+    // never authorize treating an unexpectedly empty legacy history as a fresh import.
+    await request(tx.objectStore(META).put({ key: chatMaterialKey(id), version: 1, materialId: id, generation: crypto.randomUUID(), state: 'removed' }))
     await request(documents.delete(id))
     await request(tx.objectStore(MATERIALS).delete(id))
     await request(tx.objectStore(META).put({ ...workspace, totalBytes: workspace.totalBytes - previous.document.size - previous.metadataBytes, documentCount: workspace.documentCount - 1, selectedDocumentId: workspace.selectedDocumentId === id ? null : workspace.selectedDocumentId }))
+  })
+}
+
+/** Kept separately from v1 documents so migration never rewrites legacy records or byte accounting. */
+export interface StudyChatReceipt {
+  version: 1
+  materialId: string
+  page: number
+  conversationId: string
+  /** The original immutable Chat import fingerprint, even after source material recovery. */
+  fingerprint: string
+  /** Current source-only legacy baseline after an explicitly removed material was reimported. */
+  sourceFingerprint?: string
+  sourceGeneration?: string
+}
+
+interface ChatMaterialLifecycle {
+  key: string
+  version: 1
+  materialId: string
+  generation: string
+  state: 'removed' | 'restored'
+  createdAt?: number
+}
+
+function chatMaterialKey(materialId: string): string { return `chat-material:${materialId}` }
+function storedChatMaterialLifecycle(value: unknown, materialId: string): ChatMaterialLifecycle | null {
+  if (value === undefined) return null
+  const record = object(value)
+  if (!record || record.key !== chatMaterialKey(materialId) || record.version !== 1 || record.materialId !== materialId
+    || typeof record.generation !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(record.generation)
+    || !['removed', 'restored'].includes(String(record.state))
+    || (record.state === 'restored' && (!Number.isSafeInteger(record.createdAt) || Number(record.createdAt) < 0))) {
+    throw new StudyStorageError('corrupt', 'The saved Study material recovery marker is damaged. Its conversations were preserved.')
+  }
+  return record as unknown as ChatMaterialLifecycle
+}
+function sourceRestoration(lifecycle: ChatMaterialLifecycle | null, document: StudyDocument): { generation: string } | null {
+  if (!lifecycle) return null
+  if (lifecycle.state !== 'restored' || lifecycle.createdAt !== document.createdAt) {
+    throw new StudyStorageError('corrupt', 'This Study material does not match its saved recovery marker. Existing work was preserved.')
+  }
+  return { generation: lifecycle.generation }
+}
+
+function chatReceiptKey(materialId: string, page: number): string { return `chat:${materialId}:${page}` }
+
+function storedChatReceipt(value: unknown, materialId: string, page: number): StudyChatReceipt | null {
+  if (value === undefined) return null
+  const record = object(value)
+  if (!record || record.key !== chatReceiptKey(materialId, page) || record.version !== 1
+    || record.materialId !== materialId || record.page !== page
+    || record.conversationId !== `conv_study_${materialId}_${page}`
+    || typeof record.fingerprint !== 'string' || !HASH.test(record.fingerprint)
+    || ((record.sourceFingerprint === undefined) !== (record.sourceGeneration === undefined))
+    || (record.sourceFingerprint !== undefined && (typeof record.sourceFingerprint !== 'string' || !HASH.test(record.sourceFingerprint)))
+    || (record.sourceGeneration !== undefined && (typeof record.sourceGeneration !== 'string' || !/^[a-zA-Z0-9-]{1,200}$/.test(record.sourceGeneration)))) {
+    throw new StudyStorageError('corrupt', 'The saved Study conversation link is damaged. Its material and history have been preserved.')
+  }
+  return { version: 1, materialId, page, conversationId: record.conversationId, fingerprint: record.fingerprint,
+    ...(record.sourceFingerprint === undefined ? {} : { sourceFingerprint: record.sourceFingerprint as string, sourceGeneration: record.sourceGeneration as string }),
+  }
+}
+
+/** A durable source snapshot and its import receipt are read together, never from a stale page component. */
+export async function readStudyChatSource(materialId: string, page: number): Promise<{ document: StudyDocument; receipt: StudyChatReceipt | null; restoration: { generation: string } | null }> {
+  return transaction([DOCUMENTS, MATERIALS, META], 'readonly', async tx => {
+    const value: unknown = await request(tx.objectStore(DOCUMENTS).get(materialId))
+    if (value === undefined) throw new StudyStorageError('not-found', 'This Study material is no longer saved.')
+    const document = restoreInterrupted(storedDocument(value).document)
+    integer(page, 'Conversation page', 1, document.pageCount)
+    materialBlob(await request(tx.objectStore(MATERIALS).get(materialId)), document)
+    const receipt = storedChatReceipt(await request(tx.objectStore(META).get(chatReceiptKey(materialId, page))), materialId, page)
+    const restoration = sourceRestoration(storedChatMaterialLifecycle(await request(tx.objectStore(META).get(chatMaterialKey(materialId))), materialId), document)
+    return { document, receipt, restoration }
+  })
+}
+
+/** Commit only after Chat acknowledges its durable import. A stale writer cannot claim newer legacy history was imported. */
+export async function saveStudyChatReceipt(receipt: StudyChatReceipt, expectedHistory: StudyTurn[]): Promise<void> {
+  const snapshot = { ...receipt }
+  const history = JSON.stringify(expectedHistory)
+  storedChatReceipt({ key: chatReceiptKey(snapshot.materialId, snapshot.page), ...snapshot }, snapshot.materialId, snapshot.page)
+  await transaction([DOCUMENTS, META], 'readwrite', async tx => {
+    const value: unknown = await request(tx.objectStore(DOCUMENTS).get(snapshot.materialId))
+    if (value === undefined) throw new StudyStorageError('not-found', 'This Study material was removed before its conversation link could be saved.')
+    const document = restoreInterrupted(storedDocument(value).document)
+    integer(snapshot.page, 'Conversation page', 1, document.pageCount)
+    if (JSON.stringify(document.pages[String(snapshot.page)]?.history ?? []) !== history) {
+      throw new StudyStorageError('conflict', 'Study history changed in another window during migration. Both saved versions were kept; reload before continuing.')
+    }
+    const key = chatReceiptKey(snapshot.materialId, snapshot.page)
+    const existing = storedChatReceipt(await request(tx.objectStore(META).get(key)), snapshot.materialId, snapshot.page)
+    if (existing && (existing.conversationId !== snapshot.conversationId || existing.fingerprint !== snapshot.fingerprint)) {
+      throw new StudyStorageError('conflict', 'This page already has a different saved conversation link. Both saved versions were kept.')
+    }
+    const changedBaseline = existing && (existing.sourceGeneration !== snapshot.sourceGeneration || existing.sourceFingerprint !== snapshot.sourceFingerprint)
+    if (snapshot.sourceGeneration || changedBaseline) {
+      const restoration = sourceRestoration(storedChatMaterialLifecycle(await request(tx.objectStore(META).get(chatMaterialKey(snapshot.materialId))), snapshot.materialId), document)
+      if (!restoration || snapshot.sourceGeneration !== restoration.generation
+        || (changedBaseline && (existing.sourceGeneration === snapshot.sourceGeneration || history !== '[]'))) {
+        throw new StudyStorageError('conflict', 'Study material recovery changed while reconnecting its conversation. Both saved versions were kept.')
+      }
+    }
+    if (!existing || changedBaseline) await request(tx.objectStore(META).put({ key, ...snapshot }))
   })
 }
