@@ -10,6 +10,23 @@ const SOURCE_SHA256 = '5015876951651a4f4695ccbbb74e22fdf1a43b1798d4859ed3324cdc9
 const SOLUTIONS = 'https://ocw.mit.edu/courses/18-01sc-single-variable-calculus-fall-2010/06979381db650b91c0de9d6755f03154_MIT18_01SC_pset5sol.pdf'
 const ATTEMPT = '令 u=x^3\ndu=3x^2 dx\n原积分 = ∫du/(1+u^2)\n= arctan(u)+C = arctan(x^3)+C'
 
+async function selectHelpMode(page: Page, name: string) {
+  const trigger = page.getByRole('button', { name: '帮助方式', exact: true })
+  await trigger.click()
+  await page.getByRole('option', { name, exact: true }).click()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+}
+async function showAttempt(page: Page) {
+  await expect(page.locator('.kv-study-composer')).toBeVisible()
+  if (!await page.getByLabel('我的解答或思路').isVisible()) await page.locator('.kv-study-composer').getByRole('button', { name: /^(添加思路|查看思路)$/ }).click()
+  await expect(page.getByLabel('我的解答或思路')).toBeVisible()
+}
+async function showImageDetails(page: Page) {
+  const details = page.locator('.kv-study-reader-preview')
+  if (!await details.evaluate(node => (node as HTMLDetailsElement).open)) await details.locator(':scope > summary').click()
+  await expect(details.locator('img')).toBeVisible()
+}
+
 async function jumpToPage(page: Page, number: number) {
   await page.getByRole('spinbutton', { name: '页码' }).fill(String(number))
   await page.getByRole('spinbutton', { name: '页码' }).press('Enter')
@@ -32,7 +49,7 @@ async function selectSourceCrop(page: Page, region: { x: number; y: number; widt
   await page.mouse.move(rect.x + rect.width * (region.x + region.width), rect.y + rect.height * (region.y + region.height), { steps: 12 })
   await page.mouse.up()
   await expect(page.locator('.kv-study-reader-region')).toBeVisible()
-  await expect(page.locator('.kv-study-reader-preview')).toHaveAttribute('open', '')
+  await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
   await expect(page.locator('.kv-study-reader-extracted')).toHaveCount(0)
   await expect(page.getByLabel('修正后的题目文字')).toHaveCount(0)
   await expect(page.getByRole('checkbox', { name: '同时发送页面 / 选区图片' })).toHaveCount(0)
@@ -41,7 +58,9 @@ async function selectSourceCrop(page: Page, region: { x: number; y: number; widt
 async function sentImageContext(page: Page, index: number) {
   const request = await page.evaluate(index => window.__studyTest.requests[index], index)
   expect(request.imageDataUrl).toMatch(/^data:image\/(png|jpeg);base64,/)
+  await showImageDetails(page)
   await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', request.imageDataUrl!)
+  await page.locator('.kv-study-reader-preview > summary').click()
   const context = JSON.parse(request.userPrompt.slice(request.userPrompt.indexOf('\n') + 1))
   for (const field of ['text', 'pageText', 'recognizedText', 'extractedText', 'correctedText', 'pageTextTruncated']) expect(context).not.toHaveProperty(field)
   expect(context.context).toMatch(/image/i)
@@ -66,6 +85,7 @@ test('student journey sends the original MIT calculus crop directly without extr
   // Coordinates come from visually inspecting the public PDF, not extracting math.
   await selectSourceCrop(page, { x: 0.18, y: 0.80, width: 0.31, height: 0.05 })
   await page.screenshot({ path: info.outputPath('real-calculus-source-selection.png'), fullPage: true })
+  await showImageDetails(page)
   await page.locator('.kv-study-reader-preview img').screenshot({ path: info.outputPath('real-calculus-original-crop.png') })
 
   // No hand-transcribed problem or correction is supplied as material context.
@@ -80,7 +100,7 @@ test('student journey sends the original MIT calculus crop directly without extr
   expect(first.request.userPrompt).not.toContain('u=x^3')
   await page.screenshot({ path: info.outputPath('real-calculus-hint.png'), fullPage: true })
 
-  await page.getByRole('radio', { name: '检查我的解答', exact: true }).click()
+  await selectHelpMode(page, '检查我的解答')
   await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled()
   await page.getByLabel('我的解答或思路').fill(ATTEMPT)
   await page.getByLabel('关于本页的问题').fill('5B-13：请检查我的换元，为什么答案不一样？')
@@ -95,13 +115,17 @@ test('student journey sends the original MIT calculus crop directly without extr
   await page.screenshot({ path: info.outputPath('real-calculus-check-attempt.png'), fullPage: true })
 
   await jumpToPage(page, 3)
+  await showAttempt(page)
   await expect(page.getByLabel('我的解答或思路')).toHaveValue('')
   await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
+  await page.getByRole('button', { name: '展开材料栏', exact: true }).click()
   await page.locator('.kv-study-history-row').filter({ hasText: '5B-13：请检查我的换元' }).click()
+  await showAttempt(page)
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('2')
   await expect(page.getByLabel('我的解答或思路')).toHaveValue(ATTEMPT)
   await expect(page.getByText('保存在此设备', { exact: true })).toBeVisible()
   await page.reload()
+  await showAttempt(page)
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('2')
   await expect(page.locator('.kv-study-reader-region')).toBeVisible()
   await expect(page.getByLabel('我的解答或思路')).toHaveValue(ATTEMPT)
@@ -111,7 +135,7 @@ test('student journey sends the original MIT calculus crop directly without extr
   await expect(page.getByLabel('本页笔记')).toHaveValue('换元时必须一起替换微分：x² dx = du/3。下次先验算导数。')
 
   await page.evaluate(() => { window.__studyTest.lesson = 'mit-5b-13'; window.__studyTest.failNext = true })
-  await page.getByRole('radio', { name: '检查我的解答', exact: true }).click()
+  await selectHelpMode(page, '检查我的解答')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.getByText('Simulated provider unavailable. Try again.')).toBeVisible()
   await expect(page.getByLabel('我的解答或思路')).toHaveValue(ATTEMPT)
@@ -144,8 +168,9 @@ test('a distinct original integration-by-parts crop uses direct image and attemp
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveAttribute('max', '7')
   await jumpToPage(page, 5)
   await selectSourceCrop(page, { x: 0.20, y: 0.86, width: 0.15, height: 0.031 })
+  await showImageDetails(page)
   await page.locator('.kv-study-reader-preview img').screenshot({ path: info.outputPath('real-calculus-second-original-crop.png') })
-  await page.getByRole('radio', { name: '检查我的解答', exact: true }).click()
+  await selectHelpMode(page, '检查我的解答')
   await page.getByLabel('关于本页的问题').fill('5F-2(a)：请检查分部积分的步骤。')
   const attempt = 'u=x, dv=e^x dx\ndu=dx, v=e^x\nI=x e^x+∫e^x dx\nI=(x+1)e^x+C'
   await page.getByLabel('我的解答或思路').fill(attempt)
@@ -160,6 +185,7 @@ test('a distinct original integration-by-parts crop uses direct image and attemp
   await expect(page.getByText('保存在此设备', { exact: true })).toBeVisible()
   await page.screenshot({ path: info.outputPath('real-calculus-second-exercise.png'), fullPage: true })
   await page.reload()
+  await showAttempt(page)
   await expect(page.getByRole('spinbutton', { name: '页码' })).toHaveValue('5')
   await expect(page.getByText('第三行的加号应为减号。', { exact: false })).toBeVisible()
   await expect(page.getByLabel('我的解答或思路')).toHaveValue(attempt)

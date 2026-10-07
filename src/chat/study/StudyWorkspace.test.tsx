@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LangContext } from '../../components/i18n'
 import { StudyWorkspace } from './StudyWorkspace'
@@ -13,9 +13,9 @@ vi.mock('./studyStorage', async (importOriginal) => ({ ...await importOriginal<t
 vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 vi.mock('./StudyReader', async () => {
   const { useEffect } = await import('react')
-  return { StudyReader: ({ onContextChange, page, region }: { onContextChange: (value: unknown) => void; page: number; region: unknown }) => {
+  return { StudyReader: ({ onContextChange, onAsk, page, region }: { onContextChange: (value: unknown) => void; onAsk?: () => void; page: number; region: unknown }) => {
     useEffect(() => { onContextChange({ status: 'ready', page, pageCount: 1, region, imageDataUrl: mocks.imageReady ? 'data:image/png;base64,AA==' : undefined }) }, [onContextChange, page, region])
-    return <p>Readable page fixture</p>
+    return <><p>Readable page fixture</p><button onClick={onAsk}>Ask about this page</button></>
   } }
 })
 vi.mock('./studyWorkspaceStore', async (importOriginal) => {
@@ -30,19 +30,23 @@ function setup(doc = makeDoc()) {
 }
 beforeEach(() => { vi.clearAllMocks(); mocks.providers = true; mocks.vision = true; mocks.imageReady = true; HTMLElement.prototype.scrollIntoView = vi.fn() })
 
+function chooseMode(name: string) { fireEvent.click(screen.getByRole('button', { name: 'Help mode' })); fireEvent.click(screen.getByRole('option', { name })) }
+
 describe('Study workspace image-only interaction', () => {
   it('defaults to one hint, selects an eligible vision model, requires an attempt for checking, and offers explicit solution', async () => {
     setup()
-    expect(screen.getByRole('radio', { name: 'One hint' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('button', { name: 'Help mode' })).toHaveTextContent('One hint')
+    expect(screen.queryByLabelText('My attempt')).not.toBeInTheDocument()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
     expect(screen.queryByLabelText('Include page / region image')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Corrected problem text')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ mode: 'hint', model: 'vision', visionCapable: true, context: expect.objectContaining({ imageDataUrl: 'data:image/png;base64,AA==' }) })))
-    fireEvent.click(screen.getByRole('radio', { name: 'Check my attempt' }))
+    chooseMode('Check my attempt')
     expect(screen.getByLabelText('My attempt')).toHaveAttribute('aria-required', 'true')
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('radio', { name: 'Full solution' }))
+    chooseMode('Full solution')
     fireEvent.click(screen.getByRole('button', { name: 'Get full solution' }))
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ mode: 'solution', documentId: 'a'.repeat(64), page: 1 })))
   })
@@ -52,7 +56,7 @@ describe('Study workspace image-only interaction', () => {
     setup(doc)
     fireEvent.click(await screen.findByRole('button', { name: 'Retry this question' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send retry' })).toBeEnabled())
-    expect(screen.getByText(/Sending shares.*page \/ region image.*Test provider/)).toBeInTheDocument()
+    expect(screen.getByText(/discussion and image go to Test provider/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Send retry' }))
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ visionCapable: true, model: 'vision', retry: expect.objectContaining({ id: 'failed' }) })))
   })
@@ -85,7 +89,57 @@ describe('Study workspace image-only interaction', () => {
   it('keeps user question, attempt and notes inputs bounded with no native resize', async () => {
     setup()
     await screen.findByText('Readable page fixture')
+    fireEvent.click(screen.getByRole('button', { name: 'Add attempt' }))
     for (const label of ['Question about this page', 'My attempt', 'Page notes']) expect(screen.getByLabelText(label)).toHaveStyle({ resize: 'none' })
+  })
+  it('keeps attempts saved while collapsed and opens/focuses them when checking', async () => {
+    const doc = makeDoc(); doc.pages['1'].attempt = 'Keep this draft'
+    setup(doc)
+    expect(screen.queryByLabelText('My attempt')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'My attempt' }))
+    expect(screen.getByLabelText('My attempt')).toHaveValue('Keep this draft')
+    fireEvent.click(screen.getByRole('button', { name: 'Hide attempt' }))
+    expect(screen.queryByLabelText('My attempt')).not.toBeInTheDocument()
+    expect(mocks.edit).not.toHaveBeenCalled()
+    chooseMode('Check my attempt')
+    await waitFor(() => expect(screen.getByLabelText('My attempt')).toHaveFocus())
+    expect(screen.getByLabelText('My attempt')).toHaveValue('Keep this draft')
+  })
+  it('starts a single material with its library collapsed and restores it without navigating', async () => {
+    const view = setup()
+    expect(view.container.querySelector('.kv-study-layout')).toHaveClass('is-library-closed')
+    fireEvent.click(screen.getByRole('button', { name: 'Expand library' }))
+    expect(view.container.querySelector('.kv-study-layout')).not.toHaveClass('is-library-closed')
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse library' }))
+    expect(view.container.querySelector('.kv-study-layout')).toHaveClass('is-library-closed')
+    expect(mocks.open).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Question about this page')).toHaveValue('Why subtract two?')
+  })
+  it('moves from reading to the focused question without sending and keeps a visible source link', async () => {
+    setup()
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask about this page' }))
+    expect(screen.getByRole('tab', { name: 'Help' })).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(screen.getByLabelText('Question about this page')).toHaveFocus())
+    expect(mocks.send).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'View page 1' }))
+    expect(screen.getByRole('tab', { name: 'Read' })).toHaveAttribute('aria-selected', 'true')
+  })
+  it('sends via Ctrl or Meta Enter without hijacking composition, repeats, or invalid checks', async () => {
+    setup()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+    const question = screen.getByLabelText('Question about this page')
+    fireEvent.keyDown(question, { key: 'Enter', ctrlKey: true, isComposing: true })
+    fireEvent.keyDown(question, { key: 'Enter', ctrlKey: true, repeat: true })
+    expect(mocks.send).not.toHaveBeenCalled()
+    fireEvent.keyDown(question, { key: 'Enter', ctrlKey: true })
+    expect(mocks.send).toHaveBeenCalledTimes(1)
+    chooseMode('Check my attempt')
+    fireEvent.keyDown(question, { key: 'Enter', metaKey: true })
+    expect(mocks.send).toHaveBeenCalledTimes(1)
+    chooseMode('One hint')
+    act(() => studyWorkspace.setState(state => ({ ...state, activeRequest: { documentId: 'a'.repeat(64), page: 1, turnId: 'active' } })))
+    fireEvent.keyDown(question, { key: 'Enter', metaKey: true })
+    expect(mocks.send).toHaveBeenCalledTimes(1)
   })
   it('shows save failures with a retry rather than a saved claim', async () => {
     setup()

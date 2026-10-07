@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { BookOpen, FileText, History, Lightbulb, MessageCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Send, Square, Trash2 } from 'lucide-react'
+import { BookOpen, ChevronUp, FileText, History, Lightbulb, MessageCircle, PanelLeftClose, PanelLeftOpen, Plus, RotateCcw, Send, Settings2, Square, Trash2 } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
 import { useLang } from '../../components/i18n'
@@ -30,25 +30,34 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
   const [settingsError, setSettingsError] = useState('')
   const [mode, setMode] = useState<StudyTurn['mode']>('hint')
   const [pane, setPane] = useState<Pane>('reader')
-  const [libraryOpen, setLibraryOpen] = useState(true)
+  const [libraryPreference, setLibraryPreference] = useState<boolean | null>(null)
+  const [attemptExpandedFor, setAttemptExpandedFor] = useState<string | null>(null)
   const [blobState, setBlobState] = useState<{ id: string; blob?: Blob; error?: string }>({ id: '' })
   const [context, setContext] = useState<{ documentId: string; value: StudyReaderContext } | null>(null)
   const [actionError, setActionError] = useState('')
   const [actionNotice, setActionNotice] = useState('')
   const [retryTurn, setRetryTurn] = useState<StudyTurn | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const focusFrame = useRef(0)
   const historyEnd = useRef<HTMLDivElement>(null)
   const doc = state.documents.find((item) => item.id === state.selectedDocumentId)
   const documentId = doc?.id
   const page = doc ? studyPage(doc) : null
+  const pageKey = `${documentId ?? ''}:${doc?.lastPage ?? 1}`
+  const attemptOpen = attemptExpandedFor === pageKey
+  const libraryOpen = libraryPreference ?? state.documents.length > 1
   const provider = providers.find((item) => item.id === providerId)
   const vision = Boolean(provider && resolveModelInfo(model, provider.modelOverrides, provider).capabilities?.vision)
   const currentContext = doc && context?.documentId === doc.id && context.value.page === doc.lastPage && sameStudyRegion(context.value.region, page?.region) ? context.value : null
   const activeHere = state.activeRequest?.documentId === doc?.id && state.activeRequest?.page === doc?.lastPage
   const canSend = Boolean(doc && currentContext?.status === 'ready' && currentContext.imageDataUrl && provider && model && vision && !state.activeRequest)
+  const canSubmit = canSend && Boolean(retryTurn || (page?.question.trim() && (mode !== 'check' || page?.attempt.trim())))
+  const modelOptions = providers.flatMap(item => item.enabledModels.map(name => ({ value: JSON.stringify([item.id, name]), label: `${item.name} · ${name}` })))
   const allTurns = doc ? Object.values(doc.pages).flatMap((item) => item.history).sort((a, b) => b.createdAt - a.createdAt) : []
 
   useEffect(() => { void initializeStudy() }, [])
+  useEffect(() => () => cancelAnimationFrame(focusFrame.current), [pageKey])
+  useEffect(() => { if (mode === 'check') setAttemptExpandedFor(pageKey) }, [mode, pageKey])
   useEffect(() => {
     let active = true
     const apply = (settings: Settings) => {
@@ -107,6 +116,22 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
       setRetryTurn(null)
     } catch (error) { setActionError(error instanceof Error ? error.message : String(error)) }
   }
+  const focusField = (id: string) => { cancelAnimationFrame(focusFrame.current); focusFrame.current = requestAnimationFrame(() => document.getElementById(id)?.focus()) }
+  const askCurrentSource = () => { setRetryTurn(null); setPane('help'); focusField('study-question') }
+  const showCurrentSource = () => { setPane('reader'); cancelAnimationFrame(focusFrame.current); focusFrame.current = requestAnimationFrame(() => document.querySelector<HTMLElement>('.kv-study-reader-paper')?.focus({ preventScroll: true })) }
+  const chooseMode = (next: string) => {
+    setMode(next as StudyTurn['mode']); setRetryTurn(null)
+    if (next === 'check') { setAttemptExpandedFor(pageKey); focusField('study-attempt') }
+  }
+  const chooseModel = (value: string) => {
+    const [nextProvider, nextModel] = JSON.parse(value) as [string, string]
+    setProviderId(nextProvider); setModel(nextModel)
+  }
+  const questionShortcut = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || (!event.ctrlKey && !event.metaKey) || event.nativeEvent.isComposing || event.repeat) return
+    event.preventDefault()
+    if (canSubmit && !state.activeRequest) void send()
+  }
   const keyTabs = (event: KeyboardEvent<HTMLButtonElement>, current: Pane) => {
     const tabs: Pane[] = ['library', 'reader', 'help']
     const step = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
@@ -159,20 +184,20 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
       <p className="kv-study-privacy">{text('材料与笔记保存在此设备的应用存储中。只有点击发送，选中的页面或区域图片才会交给你配置的模型服务。清除应用数据会删除学习记录。', 'Materials and notes are saved in this device’s app storage. The selected page or region image goes to your configured model service only when you send. Clearing app data removes this work.')}</p>
     </div> : <div className={`kv-study-layout ${libraryOpen ? '' : 'is-library-closed'}`} data-pane={pane}>
       <aside id="study-pane-library" className="kv-study-library custom-scrollbar" aria-label={text('材料与问题历史', 'Materials and question history')}>
-        <div className="kv-study-pane-heading"><h2>{text('我的材料', 'My materials')}</h2><IconButton label={text('收起材料栏', 'Collapse library')} variant="ghost" onClick={() => setLibraryOpen(false)}><PanelLeftClose size={16} /></IconButton></div>
+        <div className="kv-study-pane-heading"><h2>{text('我的材料', 'My materials')}</h2><IconButton className="kv-study-library-toggle" label={text('收起材料栏', 'Collapse library')} variant="ghost" onClick={() => setLibraryPreference(false)}><PanelLeftClose size={16} /></IconButton></div>
         <div className="kv-study-document-list">{state.documents.map((item) => <button className="kv-study-list-row" type="button" key={item.id} aria-current={item.id === doc?.id ? 'true' : undefined} onClick={() => { openStudyPage(item.id, item.lastPage); setPane('reader') }}><FileText size={16} /><span><strong>{item.name}</strong><small>{text(`第 ${item.lastPage} / ${item.pageCount} 页`, `Page ${item.lastPage} of ${item.pageCount}`)}</small></span></button>)}</div>
         <div className="kv-study-pane-heading"><h2>{text('问题足迹', 'Questions')}</h2><History size={15} /></div>
         {!allTurns.length && <p className="kv-study-muted">{text('每次提问都留在对应页面，随时回来接着想。', 'Each question stays with its page. Come back when you need it.')}</p>}
         {allTurns.map((turn) => <button type="button" key={turn.id} className="kv-study-list-row kv-study-history-row" aria-current={turn.id === state.selectedTurnId ? 'true' : undefined} onClick={() => selectHistory(turn)}><span><small>{text(`第 ${turn.page} 页`, `Page ${turn.page}`)} · {modeNames[turn.mode][zh ? 0 : 1]}</small><strong>{turn.question}</strong><small>{new Date(turn.createdAt).toLocaleDateString(zh ? 'zh-CN' : 'en-US')}{turn.status !== 'complete' && ` · ${turn.status}`}</small></span></button>)}
       </aside>
       <main id="study-pane-reader" className="kv-study-reading" aria-label={text('材料阅读器', 'Material reader')}>
-        <div className="kv-study-pane-heading"><div className="kv-study-reader-title">{!libraryOpen && <IconButton label={text('展开材料栏', 'Expand library')} variant="ghost" onClick={() => setLibraryOpen(true)}><PanelLeftOpen size={16} /></IconButton>}<h2 title={doc?.name}>{doc?.name}</h2></div><IconButton label={text('移除当前材料', 'Remove current material')} variant="ghost" disabled={Boolean(state.activeRequest?.documentId === doc?.id)} onClick={() => void remove()}><Trash2 size={15} /></IconButton></div>
+        <div className="kv-study-pane-heading"><div className="kv-study-reader-title">{!libraryOpen && <IconButton className="kv-study-library-toggle" label={text('展开材料栏', 'Expand library')} variant="ghost" onClick={() => setLibraryPreference(true)}><PanelLeftOpen size={16} /></IconButton>}<h2 title={doc?.name}>{doc?.name}</h2></div><IconButton label={text('移除当前材料', 'Remove current material')} variant="ghost" disabled={Boolean(state.activeRequest?.documentId === doc?.id)} onClick={() => void remove()}><Trash2 size={15} /></IconButton></div>
         {doc && blobState.id === doc.id && blobState.error && <p role="alert">{blobState.error}</p>}
-        {doc && blobState.id === doc.id && blobState.blob ? <StudyReader key={doc.id} blob={blobState.blob} page={doc.lastPage} onPageChange={(next) => { openStudyPage(doc.id, next); setRetryTurn(null) }} region={page?.region ?? null} onRegionChange={(region) => { edit({ region }); setRetryTurn(null) }} onContextChange={handleContext} /> : <p className="kv-study-muted" role="status">{text('正在打开材料…', 'Opening material…')}</p>}
+        {doc && blobState.id === doc.id && blobState.blob ? <StudyReader key={doc.id} blob={blobState.blob} page={doc.lastPage} onPageChange={(next) => { openStudyPage(doc.id, next); setRetryTurn(null) }} region={page?.region ?? null} onRegionChange={(region) => { edit({ region }); setRetryTurn(null) }} onContextChange={handleContext} onAsk={askCurrentSource} /> : <p className="kv-study-muted" role="status">{text('正在打开材料…', 'Opening material…')}</p>}
         {doc && page && <details className="kv-study-notes"><summary>{text(`第 ${doc.lastPage} 页笔记`, `Notes for page ${doc.lastPage}`)}{page.notes && ' ·'}</summary><TextArea aria-label={text('本页笔记', 'Page notes')} value={page.notes} onChange={(notes) => edit({ notes })} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={12000} placeholder={text('用自己的话记下关键一步，或者下次还想问的问题', 'Explain the key step in your own words, or leave a question for next time')} /></details>}
       </main>
       <section id="study-pane-help" className="kv-study-help" aria-label={text('学习助手', 'Study helper')}>
-        <div className="kv-study-pane-heading"><h2><MessageCircle size={16} />{text('一起想明白', 'Work it through')}</h2><span className="kv-study-page-label">{text(`第 ${doc?.lastPage ?? 1} 页`, `Page ${doc?.lastPage ?? 1}`)}</span></div>
+        <div className="kv-study-pane-heading"><h2><MessageCircle size={16} />{text('一起想明白', 'Work it through')}</h2><Button size="sm" variant="ghost" className="kv-study-context-link" aria-label={text(`查看第 ${doc?.lastPage ?? 1} 页${page?.region ? '选区' : ''}`, `View page ${doc?.lastPage ?? 1}${page?.region ? ' selection' : ''}`)} onClick={showCurrentSource}>{page?.region && currentContext?.imageDataUrl && <img className="kv-study-context-thumbnail" src={currentContext.imageDataUrl} alt="" />}<span className="kv-study-page-label">{text(`第 ${doc?.lastPage ?? 1} 页`, `Page ${doc?.lastPage ?? 1}`)}{page?.region && text(' · 选区', ' · selection')}</span></Button></div>
         <div className="kv-study-answers custom-scrollbar">
           {!page?.history.length && <div className="kv-study-help-empty"><Lightbulb size={25} strokeWidth={1.6} /><h3>{text('先给你一步，不急着给答案', 'One step before the answer')}</h3><p>{text('选中一道题或一段话，说说卡在哪里。也可以写出你的思路，让我检查第一处问题。', 'Select a problem or passage and say where you got stuck. Add your attempt to check the first step that needs attention.')}</p></div>}
           {page?.history.map((turn) => <article className="kv-study-turn" key={turn.id} id={`study-turn-${turn.id}`} aria-label={`${modeNames[turn.mode][zh ? 0 : 1]}: ${turn.question}`}>
@@ -186,33 +211,32 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
           <div ref={historyEnd} />
         </div>
         {doc && page && <div className="kv-study-composer">
-          <div className="kv-study-compose-heading"><span>{text('问这一页', 'Ask about this page')}</span><small>{page.region ? text('已选区域', 'Selected area') : text('整页上下文', 'Whole-page context')}</small></div>
-          <div className="kv-study-modes" role="radiogroup" aria-label={text('帮助方式', 'Help mode')}>
-            {MODES.map((item, index) => <button key={item} type="button" role="radio" aria-checked={mode === item} tabIndex={mode === item ? 0 : -1} onClick={() => { setMode(item); setRetryTurn(null) }} onKeyDown={(event) => { const offset = ['ArrowRight', 'ArrowDown'].includes(event.key) ? 1 : ['ArrowLeft', 'ArrowUp'].includes(event.key) ? -1 : 0; if (offset) { event.preventDefault(); const next = MODES[(index + offset + MODES.length) % MODES.length]; setMode(next); setRetryTurn(null); document.getElementById(`study-mode-${next}`)?.focus() } }} id={`study-mode-${item}`}>{modeNames[item][zh ? 0 : 1]}</button>)}
-          </div>
           <div className="kv-study-compose-fields custom-scrollbar">
             {state.activeRequest && !activeHere && <p role="status" className="kv-study-muted">{text('另一页正在回答，你可以继续阅读或写草稿。', 'Another page is getting a reply. You can keep reading or drafting.')}</p>}
             {retryTurn ? <div className="kv-panel kv-study-retry"><p>{text('将用原问题、原思路和原文重新回答：', 'Retrying the original question, attempt and source: ')}{retryTurn.question}</p><Button size="sm" variant="ghost" onClick={() => setRetryTurn(null)}>{text('取消重试', 'Cancel retry')}</Button></div> : <>
               <div className="kv-study-compose-field">
-                <label htmlFor="study-question" className="kv-study-field-label">{text('关于本页的问题', 'Question about this page')}</label>
-                <TextArea id="study-question" aria-required aria-label={text('关于本页的问题', 'Question about this page')} value={page.question} onChange={(question) => edit({ question })} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={6000} placeholder={text('哪一步不明白？例如：这里为什么要换元？', 'Where are you stuck? For example: why change the variable here?')} />
+                <label htmlFor="study-question" className="sr-only">{text('关于本页的问题', 'Question about this page')}</label>
+                <TextArea id="study-question" aria-required aria-label={text('关于本页的问题', 'Question about this page')} value={page.question} onChange={(question) => edit({ question })} onKeyDown={questionShortcut} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={6000} placeholder={text('哪一步不明白？例如：这里为什么要换元？', 'Where are you stuck? For example: why change the variable here?')} />
               </div>
-              <div className="kv-study-compose-field">
-                <div className="kv-study-field-heading"><label htmlFor="study-attempt" className="kv-study-field-label">{text('我的解答或思路', 'My attempt')}</label><small>{mode === 'check' ? text('检查解答时必填', 'Required for checking') : text('可选', 'Optional')}</small></div>
-                <TextArea id="study-attempt" aria-required={mode === 'check'} aria-label={text('我的解答或思路', 'My attempt')} value={page.attempt} onChange={(attempt) => edit({ attempt })} autoSize={{ minRows: mode === 'check' ? 3 : 2, maxRows: 6 }} maxLength={12000} placeholder={mode === 'check' ? text('写下你已经做到哪一步，或者你的推导过程', 'Write the steps you tried or the reasoning you used') : text('我试了……，但在这里卡住了', 'I tried… and got stuck when…')} />
-              </div>
+              {attemptOpen && <div className="kv-study-compose-field">
+                <div className="kv-study-field-heading"><label htmlFor="study-attempt" className="kv-study-field-label">{text('我的解答或思路', 'My attempt')}{mode === 'check' && text('（必填）', ' (required)')}</label><IconButton size="xs" variant="ghost" label={text('收起思路', 'Hide attempt')} onClick={() => { setAttemptExpandedFor(null); focusField('study-question') }}><ChevronUp size={14} /></IconButton></div>
+                <TextArea id="study-attempt" aria-required={mode === 'check'} aria-label={text('我的解答或思路', 'My attempt')} value={page.attempt} onChange={(attempt) => edit({ attempt })} onKeyDown={questionShortcut} autoSize={{ minRows: 2, maxRows: 6 }} maxLength={12000} placeholder={text('写下已经试过的步骤或卡住的地方', 'Add the steps you tried or where you got stuck')} />
+              </div>}
             </>}
             {page.correctedText && <details className="kv-study-legacy-source"><summary>{text('以前手动补充的文字（不会发送）', 'Earlier manually added text (not sent)')}</summary><p>{page.correctedText}</p></details>}
             {mode === 'check' && !page.attempt.trim() && !retryTurn && <small className="kv-study-mode-note">{text('先写下自己的思路，再检查第一处需要调整的地方。', 'Add your thinking first, then check the first step that needs attention.')}</small>}
             {mode === 'solution' && <small className="kv-study-mode-note">{text('完整解答会揭示答案。想继续自己试，可以切回“提示一步”。', 'A full solution reveals the answer. Choose One hint to keep trying yourself.')}</small>}
           </div>
           <div className="kv-study-compose-footer">
-            <div className="kv-study-models"><Select ariaLabel={text('模型服务', 'Model provider')} value={providerId} onChange={setProviderId} options={providers.map((item) => ({ value: item.id, label: item.name }))} disabled={!providers.length} /><Select ariaLabel={text('学习模型', 'Study model')} value={model} onChange={setModel} options={(provider?.enabledModels ?? []).map((item) => ({ value: item, label: item }))} disabled={!provider} /></div>
             {!providers.length && <div className="kv-study-no-provider"><span>{text('请在设置中选择支持图片的模型后提问。仍可阅读和记笔记。', 'Choose an image-capable model in Settings to ask about this page. Reading and notes still work.')}</span><Button size="sm" onClick={onOpenSettings}>{text('打开设置', 'Open settings')}</Button></div>}
             {currentContext?.status === 'ready' && !currentContext.imageDataUrl && <p className="kv-study-mode-note" role="status">{text('页面图片尚未准备好，请等待显示或缩小选区。', 'The page image is not ready. Wait for rendering or select a smaller area.')}</p>}
-            <div className="kv-study-send-row"><small>{text('AI 可能出错，请对照原文检查。', 'AI can make mistakes. Check against the source.')}</small>{state.activeRequest ? <Button onClick={cancelStudyHelp}><Square size={13} />{text('停止回答', 'Stop reply')}</Button> : <Button variant="primary" disabled={!canSend || (!retryTurn && (!page.question.trim() || (mode === 'check' && !page.attempt.trim())))} onClick={() => void send()}><Send size={14} />{retryTurn ? text('重新发送', 'Send retry') : mode === 'solution' ? text('获取完整解答', 'Get full solution') : text('发送', 'Send')}</Button>}</div>
-            <p className="kv-study-disclosure">{provider ? text(`发送时，你的问题、思路、此页历史与页面 / 选区图片将交给 ${provider.name}（${model}）。`, `Sending shares your question, attempt, this page’s history and page / region image with ${provider.name} (${model}).`) : ''}</p>
-            <details className="kv-study-privacy-details"><summary>{text('本机存储与调试信息', 'Local storage and diagnostics')}</summary><p>{text('草稿与笔记保存在此设备。如已启用请求调试，请求内容也会记录在本地调试日志。', 'Drafts and notes stay on this device. If Request Debug is enabled, request content is also recorded in local debug logs.')}</p></details>
+            <div className="kv-study-compose-tools">
+              <Select ariaLabel={text('帮助方式', 'Help mode')} value={mode} onChange={chooseMode} triggerLabel={modeNames[mode][zh ? 0 : 1]} options={MODES.map(item => ({ value: item, label: modeNames[item][zh ? 0 : 1] }))} />
+              {!attemptOpen && !retryTurn && <Button size="sm" variant="ghost" onClick={() => { setAttemptExpandedFor(pageKey); focusField('study-attempt') }}><Plus size={14} />{page.attempt ? text('查看思路', 'My attempt') : text('添加思路', 'Add attempt')}</Button>}
+              <Select ariaLabel={text('学习模型', 'Study model')} title={provider ? `${provider.name} · ${model}` : text('选择模型', 'Choose a model')} value={JSON.stringify([providerId, model])} onChange={chooseModel} triggerIcon={<Settings2 size={16} />} options={modelOptions} disabled={!providers.length} />
+              <div className="kv-study-submit">{state.activeRequest ? <Button onClick={cancelStudyHelp}><Square size={13} />{text('停止回答', 'Stop reply')}</Button> : <Button variant="primary" disabled={!canSubmit} aria-keyshortcuts="Control+Enter Meta+Enter" title={text('发送（Ctrl/⌘ + Enter）', 'Send (Ctrl/⌘ + Enter)')} onClick={() => void send()}><Send size={14} />{retryTurn ? text('重新发送', 'Send retry') : mode === 'solution' ? text('获取完整解答', 'Get full solution') : text('发送', 'Send')}</Button>}</div>
+            </div>
+            <p className="kv-study-disclosure">{provider ? text(`本页对话与图片将发送至 ${provider.name}。AI 可能出错。`, `This page’s discussion and image go to ${provider.name}. AI can make mistakes.`) : ''}</p>
           </div>
         </div>}
       </section>

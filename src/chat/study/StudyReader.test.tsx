@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StudyReader } from './StudyReader'
 import type { StudyMaterial, StudyPage, StudyReaderContext } from './studyMaterial'
@@ -44,7 +45,7 @@ describe('StudyReader lifecycle and accessibility', () => {
     expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('text')
     expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('textRisk')
     expect(screen.getByRole('img', { name: '材料第 1 页的渲染图像' })).toBeInTheDocument()
-    expect(screen.getByText(/不做 OCR、文字提取或公式转写/)).toBeInTheDocument()
+    expect(screen.getByText(/不做 OCR、文字提取或公式转写/)).not.toBeVisible()
     expect(screen.queryByText(/查看本页文字|查看框选区域文字|粘贴修正/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
     const page = screen.getByRole('group', { name: /第 1 页/ })
@@ -198,7 +199,7 @@ describe('StudyReader lifecycle and accessibility', () => {
 
 
 describe('StudyReader image-only context and preview', () => {
-  it.each(['zh', 'en'])('explains image sources without offering a text workflow in %s', async lang => {
+  it.each(['zh', 'en'])('keeps image technical details collapsed without offering a text workflow in %s', async lang => {
     locale.lang = lang
     materialMocks.openStudyMaterial.mockResolvedValue(material())
     const input = props()
@@ -207,7 +208,16 @@ describe('StudyReader image-only context and preview', () => {
     const context = input.onContextChange.mock.calls.at(-1)![0]
     expect(context).not.toHaveProperty('text')
     expect(context).not.toHaveProperty('textRisk')
-    expect(screen.getByText(lang === 'zh' ? /不做 OCR、文字提取或公式转写/ : /No OCR, text extraction, or formula transcription/)).toBeInTheDocument()
+    const sourceExplanation = screen.getByText(lang === 'zh' ? /不做 OCR、文字提取或公式转写/ : /No OCR, text extraction, or formula transcription/)
+    const renderWarning = screen.getByText('Rendered page size limits')
+    const imageDetails = view.container.querySelector('.kv-study-reader-preview')
+    expect(imageDetails).not.toHaveAttribute('open')
+    expect(sourceExplanation).not.toBeVisible()
+    expect(renderWarning).not.toBeVisible()
+    fireEvent.click(screen.getByText(lang === 'zh' ? '图片详情' : 'Image details'))
+    expect(imageDetails).toHaveAttribute('open')
+    expect(sourceExplanation).toBeVisible()
+    expect(renderWarning).toBeVisible()
     expect(view.container.querySelector('.kv-study-reader-extracted')).not.toBeInTheDocument()
     expect(screen.queryByText(/查看本页文字|查看框选区域文字|View page text|View selected text/)).not.toBeInTheDocument()
   })
@@ -220,30 +230,41 @@ describe('StudyReader image-only context and preview', () => {
     expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('text')
     expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
   })
-  it('previews the exact selected PNG from the outgoing context, updates it, and clears it during navigation', async () => {
+  it('keeps the exact outgoing PNG collapsed on selection changes and navigation', async () => {
     locale.lang = 'en'
     const source = material()
     materialMocks.openStudyMaterial.mockResolvedValue(source)
     const input = props()
     const region = { x: 0.18, y: 0.8, width: 0.31, height: 0.05 }
     const view = render(<StudyReader {...input} region={region} />)
-    const preview = await screen.findByRole('img', { name: 'Page 1 selected area image for question context' })
+    const preview = await screen.findByAltText('Page 1 selected area image for question context')
     const context = input.onContextChange.mock.calls.at(-1)![0]
     expect(preview).toHaveAttribute('src', context.imageDataUrl)
-    expect(preview.closest('details')).toHaveAttribute('open')
+    expect(preview.closest('details')).not.toHaveAttribute('open')
+    expect(preview).not.toBeVisible()
+    fireEvent.click(screen.getByText('Image details'))
+    expect(preview).toBeVisible()
     expect(screen.getByText(/same PNG.*question context/i)).toHaveTextContent(/sent with your question.*selected vision-capable model/i)
     expect(materialMocks.studyPageImage).toHaveBeenLastCalledWith(expect.anything(), region)
 
     materialMocks.studyPageImage.mockReturnValue('data:image/png;base64,Q1JPUFRXTw==')
     view.rerender(<StudyReader {...input} region={{ ...region, width: 0.2 }} />)
-    expect(preview).toHaveAttribute('src', 'data:image/png;base64,Q1JPUFRXTw==')
-    expect(input.onContextChange.mock.calls.at(-1)![0].imageDataUrl).toBe(preview.getAttribute('src'))
+    const updatedPreview = screen.getByAltText('Page 1 selected area image for question context')
+    expect(updatedPreview).toHaveAttribute('src', 'data:image/png;base64,Q1JPUFRXTw==')
+    expect(input.onContextChange.mock.calls.at(-1)![0].imageDataUrl).toBe(updatedPreview.getAttribute('src'))
+    expect(updatedPreview.closest('details')).not.toHaveAttribute('open')
+    expect(updatedPreview).not.toBeVisible()
+    fireEvent.click(screen.getByText('Image details'))
+    expect(updatedPreview).toBeVisible()
 
     view.rerender(<StudyReader {...input} page={2} />)
-    expect(screen.queryByRole('img', { name: /selected area image for question context/ })).not.toBeInTheDocument()
+    expect(view.container.querySelector('.kv-study-reader-preview img')).not.toBeInTheDocument()
     expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'loading', imageDataUrl: undefined }))
     await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'ready' })))
-    expect(screen.getByAltText('Page 2 full page image for question context').closest('details')).not.toHaveAttribute('open')
+    const nextPreview = screen.getByAltText('Page 2 full page image for question context')
+    expect(nextPreview.closest('details')).not.toHaveAttribute('open')
+    expect(nextPreview).not.toBeVisible()
+    expect(nextPreview).toHaveAttribute('src', input.onContextChange.mock.calls.at(-1)![0].imageDataUrl)
   })
   it('omits an unavailable image preview without claiming an image will be attached', async () => {
     locale.lang = 'en'
@@ -252,9 +273,79 @@ describe('StudyReader image-only context and preview', () => {
     source.renderPage.mockResolvedValue({ canvas: frame().canvas })
     materialMocks.openStudyMaterial.mockResolvedValue(source)
     const input = props()
-    const view = render(<StudyReader {...input} region={{ x: 0.1, y: 0.1, width: 0.3, height: 0.2 }} />)
+    const onAsk = vi.fn()
+    const view = render(<StudyReader {...input} onAsk={onAsk} region={{ x: 0.1, y: 0.1, width: 0.3, height: 0.2 }} />)
     await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', imageDataUrl: undefined })))
     expect(view.container.querySelector('.kv-study-reader-preview')).not.toBeInTheDocument()
-    expect(screen.getByText(/context image could not be generated within the size limit/i)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/context image could not be generated within the size limit.*Try a smaller selection/i)
+    expect(screen.getByRole('alert')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Ask about selection' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about selection' }))
+    expect(onAsk).not.toHaveBeenCalled()
+  })
+  it.each(['zh', 'en'])('offers a repeatable callback-only ask action for the current scope in %s', async lang => {
+    locale.lang = lang
+    const user = userEvent.setup()
+    const source = material()
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const onAsk = vi.fn()
+    const onSubmit = vi.fn(event => event.preventDefault())
+    const view = render(<form onSubmit={onSubmit}><StudyReader {...input} onAsk={onAsk} /></form>)
+    const askPage = await screen.findByRole('button', { name: lang === 'zh' ? '问这一页' : 'Ask about this page' })
+    await waitFor(() => expect(askPage).toBeEnabled())
+    expect(askPage.closest('.kv-study-reader-toolbar')).toBeInTheDocument()
+    expect(askPage.closest('.kv-study-reader-scroll')).toBeNull()
+    expect(screen.getAllByRole('button', { name: lang === 'zh' ? '问这一页' : 'Ask about this page' })).toHaveLength(1)
+    const originalContext = input.onContextChange.mock.calls.at(-1)![0]
+    askPage.focus()
+    await user.keyboard('{Enter} ')
+    await user.click(askPage)
+    expect(onAsk).toHaveBeenCalledTimes(3)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(input.onPageChange).not.toHaveBeenCalled()
+    expect(input.onRegionChange).not.toHaveBeenCalled()
+    expect(input.onContextChange.mock.calls.at(-1)![0]).toBe(originalContext)
+    expect(source.renderPage).toHaveBeenCalledOnce()
+    expect(view.container.querySelector('.kv-study-reader-preview')).not.toHaveAttribute('open')
+
+    const selection = { x: 0.2, y: 0.2, width: 0.6, height: 0.3 }
+    const replacement = vi.fn()
+    view.rerender(<form onSubmit={onSubmit}><StudyReader {...input} onAsk={replacement} region={selection} /></form>)
+    const askSelection = screen.getByRole('button', { name: lang === 'zh' ? '问这个区域' : 'Ask about selection' })
+    expect(askSelection.closest('.kv-study-reader-toolbar')).toBeInTheDocument()
+    await user.click(askSelection)
+    await user.click(askSelection)
+    expect(replacement).toHaveBeenCalledTimes(2)
+    expect(onAsk).toHaveBeenCalledTimes(3)
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(source.renderPage).toHaveBeenCalledOnce()
+    expect(input.onContextChange.mock.calls.at(-1)![0].region).toEqual(selection)
+  })
+  it('keeps the toolbar ask action disabled until the current page has a ready image', async () => {
+    const first = deferred<StudyPage>()
+    const second = deferred<StudyPage>()
+    const source = material()
+    source.renderPage.mockImplementation(page => page === 1 ? first.promise : second.promise)
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const onAsk = vi.fn()
+    const view = render(<StudyReader {...input} onAsk={onAsk} />)
+    const ask = screen.getByRole('button', { name: '问这一页' })
+    expect(ask).toBeDisabled()
+    fireEvent.click(ask)
+    expect(onAsk).not.toHaveBeenCalled()
+    await waitFor(() => expect(source.renderPage).toHaveBeenCalledWith(1, expect.any(AbortSignal)))
+    await act(async () => { first.resolve(frame()) })
+    expect(ask).toBeEnabled()
+
+    view.rerender(<StudyReader {...input} onAsk={onAsk} page={2} />)
+    expect(ask).toBeDisabled()
+    fireEvent.click(ask)
+    expect(onAsk).not.toHaveBeenCalled()
+    await act(async () => { second.reject(new Error('本页无法显示')) })
+    expect(screen.getByRole('alert')).toHaveTextContent('本页无法显示')
+    expect(ask).toBeDisabled()
+    expect(screen.getByRole('button', { name: '重新读取' })).toBeEnabled()
   })
 })
