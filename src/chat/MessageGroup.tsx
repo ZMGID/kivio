@@ -27,6 +27,8 @@ import { useT } from '../components/i18n'
 // 复用既有 KaTeX Shadow DOM / rAF 合帧（touchGroup）/ virtualizer 屏外卸载，不重复造轮子。
 
 interface MessageGroupProps {
+  presentation?: 'chat' | 'reading'
+  answerDisclosureLabel?: (message: ChatMessage) => string | undefined
   conversationId?: string | null
   conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   groupId: string
@@ -86,6 +88,8 @@ function ColumnScrollBody({ children }: { children: ReactNode }) {
 // 单列容器：并排模式（columns）和切换模式（tabs）共用同一个 MessageBubble 渲染，
 // 仅外层布局/边框/选中态不同（通过 props 控制）。
 function GroupColumnView({
+  presentation,
+  answerDisclosureLabel,
   column,
   conversationId,
   conversationArtifactsById,
@@ -106,6 +110,8 @@ function GroupColumnView({
   outlineEligible = false,
   onOutlineSourceChange,
 }: {
+  presentation?: 'chat' | 'reading'
+  answerDisclosureLabel?: (message: ChatMessage) => string | undefined
   column: GroupColumn
   conversationId?: string | null
   conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
@@ -127,6 +133,7 @@ function GroupColumnView({
   outlineEligible?: boolean
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
+  const isReading = presentation === 'reading'
   const { message, streaming } = column
   const wrapperClass = showColumnChrome
     ? `chat-message-group-col flex max-h-[min(560px,70vh)] min-w-[280px] flex-1 flex-col rounded-2xl border px-3 py-2 ${
@@ -176,6 +183,8 @@ function GroupColumnView({
       {showColumnChrome ? (
         <ColumnScrollBody>
           <MessageBubble
+            presentation={presentation}
+            answerDisclosureLabel={answerDisclosureLabel?.(message)}
             message={message}
             conversationId={conversationId}
             conversationArtifactsById={conversationArtifactsById}
@@ -190,7 +199,7 @@ function GroupColumnView({
             onReplyWithModel={!live ? onReplyWithModel : undefined}
             replyOccupiedModels={!live ? replyOccupiedModels : undefined}
             onForkMessage={!live ? onForkMessage : undefined}
-            onDeleteMessage={!live ? onDeleteMessage : undefined}
+            onDeleteMessage={!isReading && !live ? onDeleteMessage : undefined}
             onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
             outlineEligible={outlineEligible && !live}
             onOutlineSourceChange={onOutlineSourceChange}
@@ -198,6 +207,8 @@ function GroupColumnView({
         </ColumnScrollBody>
       ) : (
         <MessageBubble
+          presentation={presentation}
+          answerDisclosureLabel={answerDisclosureLabel?.(message)}
           message={message}
           conversationId={conversationId}
           conversationArtifactsById={conversationArtifactsById}
@@ -210,7 +221,7 @@ function GroupColumnView({
           onReplyWithModel={!live ? onReplyWithModel : undefined}
           replyOccupiedModels={!live ? replyOccupiedModels : undefined}
           onForkMessage={!live ? onForkMessage : undefined}
-          onDeleteMessage={!live ? onDeleteMessage : undefined}
+          onDeleteMessage={!isReading && !live ? onDeleteMessage : undefined}
           onSaveMessageToNote={!live ? onSaveMessageToNote : undefined}
           outlineEligible={outlineEligible && !live}
           onOutlineSourceChange={onOutlineSourceChange}
@@ -310,6 +321,8 @@ function GroupFooter({
 }
 
 function MessageGroupBase({
+  presentation = 'chat',
+  answerDisclosureLabel,
   conversationId,
   conversationArtifactsById,
   groupId,
@@ -326,6 +339,7 @@ function MessageGroupBase({
   outlineEligible = false,
   onOutlineSourceChange,
 }: MessageGroupProps) {
+  const isReading = presentation === 'reading'
   // 订阅 group store 版本号：流式列内容更新时驱动重渲。
   // 版本号还必须进下面 columns 的 memo deps —— store 是原地 mutate 列对象，
   // liveGroup 引用永不变，只靠 [live, liveGroup, messages] 会让 memo 冻结在首帧。
@@ -368,7 +382,7 @@ function MessageGroupBase({
   // footer chip 点击：tabs 模式切显示条；并落到续聊选中条（onSelectColumn，落库态才有意义）。
   const handleChipClick = (messageId: string) => {
     setTabMessageId(messageId)
-    if (!live && onSelectColumn) onSelectColumn(groupId, messageId)
+    if (!isReading && !live && onSelectColumn) onSelectColumn(groupId, messageId)
   }
 
   // footer 高亮的那条：tabs 看正显示的；columns 看续聊选中条（流式态无选中 → 不高亮）。
@@ -384,6 +398,8 @@ function MessageGroupBase({
         <div className="chat-message-group custom-scrollbar flex w-full gap-3 overflow-x-auto pb-1">
           {columns.map((column, index) => (
             <GroupColumnView
+              presentation={presentation}
+              answerDisclosureLabel={answerDisclosureLabel}
               key={column.message.id}
               column={column}
               conversationId={conversationId}
@@ -394,7 +410,7 @@ function MessageGroupBase({
               showColumnChrome
               groupId={groupId}
               onActivate={() => setFocusedIndex(index)}
-              onSelectColumn={onSelectColumn}
+              onSelectColumn={presentation === 'reading' ? undefined : onSelectColumn}
               onUpdateMessage={onUpdateMessage}
               onRegenerateMessage={onRegenerateMessage}
               onReplyWithModel={onReplyWithModel}
@@ -409,6 +425,8 @@ function MessageGroupBase({
         </div>
       ) : (
         <GroupColumnView
+          presentation={presentation}
+          answerDisclosureLabel={answerDisclosureLabel}
           key={tabColumn.message.id}
           column={tabColumn}
           conversationId={conversationId}
@@ -419,7 +437,7 @@ function MessageGroupBase({
           isFocused
           showColumnChrome={false}
           groupId={groupId}
-          onSelectColumn={onSelectColumn}
+          onSelectColumn={presentation === 'reading' ? undefined : onSelectColumn}
           onUpdateMessage={onUpdateMessage}
           onRegenerateMessage={onRegenerateMessage}
           onReplyWithModel={onReplyWithModel}
@@ -438,7 +456,7 @@ function MessageGroupBase({
         activeMessageId={footerActiveId}
         markContext={!live}
         onSelectChip={handleChipClick}
-        onDeleteMessage={!live ? onDeleteMessage : undefined}
+        onDeleteMessage={!isReading && !live ? onDeleteMessage : undefined}
       />
     </div>
   )

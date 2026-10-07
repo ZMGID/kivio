@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -16,6 +16,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
+import { ChatSurfaceActivityContext } from './chatSurfaceActivity'
 import { ChatAttachments } from './ChatAttachments'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
@@ -307,6 +308,15 @@ function readFileAsBase64(file: File, readError: string): Promise<string> {
 }
 
 export interface InputBarProps {
+  /** Reading reuses this editor and draft owner with only source/model controls. */
+  presentation?: 'chat' | 'reading'
+  placeholder?: string
+  readingContextSlot?: ReactNode
+  modelSlot?: ReactNode
+  /** Hidden keep-alive panes must not own insertion or focus listeners. */
+  active?: boolean
+  /** Increment to focus this mounted composer, without a global event listener. */
+  focusRequest?: number
   /**
    * 返回 false 表示发送未被接受；此时保留输入草稿和附件。
    * 长任务应在消息正式进入发送流程时调用 onAccepted，让输入框立即清空，无需等待整轮生成完成。
@@ -414,6 +424,12 @@ export interface InputBarProps {
 }
 
 export const InputBar = memo(function InputBar({
+  presentation = 'chat',
+  placeholder,
+  readingContextSlot,
+  modelSlot,
+  active: activeProp = true,
+  focusRequest = 0,
   onSend,
   disabled,
   onQueue,
@@ -481,7 +497,10 @@ export const InputBar = memo(function InputBar({
   onOpenGitPanel,
   usageSlot,
 }: InputBarProps) {
+  const surfaceActive = useContext(ChatSurfaceActivityContext)
+  const active = activeProp && surfaceActive
   const t = useT()
+  const isReading = presentation === 'reading'
   // 生成中的排队模式：Enter 改成入队，且只锁「要打后端」的入口。附件的选择 / 粘贴 / 拖入
   // 是纯本地状态，运行中做没有风险，所以走 composerLocked（比 disabled 宽）这道门。
   const queueMode = Boolean(disabled && onQueue)
@@ -546,6 +565,8 @@ export const InputBar = memo(function InputBar({
     })
     return () => { unsubscribe(); release() }
   }, [])
+  const activeRef = useRef(active)
+  activeRef.current = active
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
@@ -600,10 +621,10 @@ export const InputBar = memo(function InputBar({
     const id = window.setTimeout(() => setOptimizeMotion('idle'), reduced ? 0 : OPTIMIZE_IN_MS)
     return () => window.clearTimeout(id)
   }, [optimizeMotion])
-  const agentPlanMode = agentPlanState?.mode ?? 'act'
+  const agentPlanMode = isReading ? 'act' : agentPlanState?.mode ?? 'act'
   const agentPlanActive = agentPlanMode === 'plan'
   const agentOrchestrateActive = agentPlanMode === 'orchestrate'
-  const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
+  const projectEntryEnabled = Boolean(!isReading && showProjectEntry && onSelectProject)
   // 项目按钮的显示态：优先导航选中的项目；否则回退到当前会话自身的项目（有名才算），
   // 这样从「最近」打开一条属于项目的对话时，按钮仍能显示该项目。
   const effectiveProject: { id: string; name: string } | null =
@@ -613,8 +634,8 @@ export const InputBar = memo(function InputBar({
     effectiveProject ? null : (selectedSet ? { id: selectedSet.id, name: selectedSet.name } : null)
   // 专家入口:欢迎页与对话中都显示,未选时为「选择专家」图标,已选时高亮。
   const showAssistantEntry = Boolean(onOpenAssistantCenter)
-  const modeEntryEnabled = Boolean(onModeChange) && modeOptions.length > 0
-  const presetEntryEnabled = Boolean(onPresetChange) && presetOptions.length > 0
+  const modeEntryEnabled = !isReading && Boolean(onModeChange) && modeOptions.length > 0
+  const presetEntryEnabled = !isReading && Boolean(onPresetChange) && presetOptions.length > 0
   // 状态条只放「你在哪」—— 当前项目或集。Git 分支/diff 归下面的工具栏。
   const gitStatusEnabled = Boolean(gitWorkdir && gitLang && onOpenGitPanel)
   const todoBarVisible = (agentTodoState?.items?.length ?? 0) > 0
@@ -779,10 +800,10 @@ export const InputBar = memo(function InputBar({
     const trimmed = text.trim()
     if (!trimmed) return
     setQuotes((prev) => [...prev, trimmed])
-    requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
+    requestAnimationFrame(() => { if (activeRef.current) editorRef.current?.focus({ preventScroll: true }) })
   }, [])
 
-  useEffect(() => onComposerInsert(insertQuoteFromSelection), [insertQuoteFromSelection])
+  useEffect(() => active ? onComposerInsert(insertQuoteFromSelection) : undefined, [active, insertQuoteFromSelection])
 
   // Right Dock「插入 @ 引用」等：文本直接追加到输入框正文（与引用卡片信道并列）。
   const insertTextAtEnd = useCallback((text: string) => {
@@ -791,6 +812,7 @@ export const InputBar = memo(function InputBar({
     const draft = getComposerDraft(draftScopeRef.current.key)
     if (draft) setInput(draft.input)
     requestAnimationFrame(() => {
+      if (!activeRef.current) return
       const textarea = editorRef.current
       if (textarea) {
         textarea.focus({ preventScroll: true })
@@ -801,12 +823,12 @@ export const InputBar = memo(function InputBar({
   }, [])
 
   useEffect(
-    () => onComposerTextInsert(insertTextAtEnd, draftKeyValue),
-    [draftKeyValue, insertTextAtEnd],
+    () => active ? onComposerTextInsert(insertTextAtEnd, draftKeyValue) : undefined,
+    [active, draftKeyValue, insertTextAtEnd],
   )
 
   const syncSlashToken = useCallback((value: string, cursor: number) => {
-    const token = findActiveSlashToken(value, cursor)
+    const token = isReading ? null : findActiveSlashToken(value, cursor)
     setActiveSlashToken(token)
     if (token && !editorRef.current?.atCommand) {
       setSlashPanelOpen(true)
@@ -815,21 +837,22 @@ export const InputBar = memo(function InputBar({
     } else {
       setSlashPanelOpen(false)
     }
-  }, [closeProjectMenu])
+  }, [closeProjectMenu, isReading])
 
   const allSlashCommands = useMemo(
     () => {
+      if (isReading) return []
       if (usesExternalRuntime) return externalCliSlashCommands
       const local = usesChatRuntime
         ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'plan' && command.id !== 'orchestrate')
         : LOCAL_SLASH_COMMANDS
       return buildSlashCommands(local, usesChatRuntime ? [] : enabledSkills)
     },
-    [enabledSkills, externalCliSlashCommands, usesChatRuntime, usesExternalRuntime],
+    [enabledSkills, externalCliSlashCommands, isReading, usesChatRuntime, usesExternalRuntime],
   )
 
   useEffect(() => {
-    if (!usesExternalRuntime || !externalAgentName) {
+    if (isReading || !usesExternalRuntime || !externalAgentName) {
       setExternalCliSlashCommands([])
       setExternalCliSlashHint(null)
       setExternalCliSlashLoading(false)
@@ -858,10 +881,10 @@ export const InputBar = memo(function InputBar({
     return () => {
       cancelled = true
     }
-  }, [conversationId, externalAgentName, usesExternalRuntime, t])
+  }, [conversationId, externalAgentName, isReading, usesExternalRuntime, t])
 
   useEffect(() => {
-    if (!slashPanelOpen || !usesExternalRuntime || !externalAgentName) return
+    if (isReading || !slashPanelOpen || !usesExternalRuntime || !externalAgentName) return
     let cancelled = false
     void chatApi.listExternalCliSlashCommands(externalAgentName, conversationId)
       .then((result) => {
@@ -873,7 +896,7 @@ export const InputBar = memo(function InputBar({
     return () => {
       cancelled = true
     }
-  }, [slashPanelOpen, conversationId, externalAgentName, usesExternalRuntime])
+  }, [slashPanelOpen, conversationId, externalAgentName, isReading, usesExternalRuntime])
   const filteredSlashCommands = useMemo(
     () => allSlashCommands.filter((command) => (
       commandMatches(command, activeSlashToken?.query ?? '')
@@ -1182,7 +1205,7 @@ export const InputBar = memo(function InputBar({
 
   const handleSend = async () => {
     const trimmed = input.trim()
-    if (sendPending || (!trimmed && quotes.length === 0 && attachments.length === 0) || sendDisabledReason) return
+    if (sendPending || (!trimmed && quotes.length === 0 && (isReading || attachments.length === 0)) || sendDisabledReason) return
     const action = findComposerCommands(input, allSlashCommands).find(item => item.command.kind === 'action' && item.command.id !== 'goal')
     if (action) {
       if (disabled) return
@@ -1216,7 +1239,7 @@ export const InputBar = memo(function InputBar({
       ? (trimmed ? `${quotedBlock}\n\n${trimmed}` : quotedBlock)
       : trimmed
     if (disabled && onQueue) {
-      onQueue(content, attachments)
+      onQueue(content, isReading ? [] : attachments)
       clearSentDraft(draftScopeRef.current.key)
     } else {
       const sendingScope = beginComposerDraftOperation(draftScopeRef.current.key)
@@ -1247,7 +1270,7 @@ export const InputBar = memo(function InputBar({
         setAttachments(sentSnapshot.attachments)
       }
       try {
-        const accepted = await onSend(content, attachments, { onAccepted: notifyAccepted })
+        const accepted = await onSend(content, isReading ? [] : attachments, { onAccepted: notifyAccepted })
         if (accepted === false) {
           restoreRejectedDraft()
           return
@@ -1401,7 +1424,15 @@ export const InputBar = memo(function InputBar({
     knownNativePaths?: string[],
     operationScope?: AttachmentOperationScope,
   ) => {
-    if (composerLocked || optimizeBusy || (!isTauriRuntime() && !menuTarget)) return
+    if (composerLocked || optimizeBusy) return
+    if (isReading) {
+      // Keep pasted prose in the shared editor, including long selections. Never
+      // import files or convert reading questions into virtual attachments.
+      if (e.clipboardData.files.length > 0) e.preventDefault()
+      else menuTarget?.insertText(e.clipboardData.getData('text/plain'))
+      return
+    }
+    if (!isTauriRuntime() && !menuTarget) return
 
     const scope = operationScope ?? beginComposerAttachmentOperation(draftScopeRef.current.key)
     try {
@@ -1547,6 +1578,10 @@ export const InputBar = memo(function InputBar({
         const clipboard = new DataTransfer()
         if (isTauriRuntime()) {
           const content = await api.chatReadClipboard()
+          if (isReading) {
+            if (content.kind === 'text' && target.isCurrent()) target.insertText(content.text)
+            return
+          }
           if (content.kind === 'text' && !target.isCurrent()) return
           if (content.kind === 'files') nativePaths = content.paths
           if (content.kind === 'text') clipboard.setData('text/plain', content.text)
@@ -1560,6 +1595,10 @@ export const InputBar = memo(function InputBar({
             }
           }
           await handlePaste({ clipboardData: clipboard, preventDefault: () => {} }, target, nativePaths, scope)
+          return
+        }
+        if (isReading) {
+          if (navigator.clipboard?.readText) target.insertText(await navigator.clipboard.readText())
           return
         }
         if (!nativePaths.length) {
@@ -1600,8 +1639,8 @@ export const InputBar = memo(function InputBar({
   }
 
   useEffect(() => {
-    if (!autoFocus || disabled) return
-    requestAnimationFrame(() => {
+    if (!active || !autoFocus || disabled) return
+    const frame = requestAnimationFrame(() => {
       if (shouldComposerAutoFocus(document.activeElement)) {
         const el = editorRef.current
         el?.focus({ preventScroll: true })
@@ -1609,10 +1648,11 @@ export const InputBar = memo(function InputBar({
         if (el) el.selectionStart = el.selectionEnd = el.value.length
       }
     })
-  }, [autoFocus, disabled])
+    return () => cancelAnimationFrame(frame)
+  }, [active, autoFocus, disabled])
 
   useEffect(() => {
-    if (!autoFocus || !isTauriRuntime()) return
+    if (!active || !autoFocus || !isTauriRuntime()) return
     let cancelled = false
     let unlisten: (() => void) | undefined
 
@@ -1637,7 +1677,13 @@ export const InputBar = memo(function InputBar({
       cancelled = true
       unlisten?.()
     }
-  }, [autoFocus, disabled])
+  }, [active, autoFocus, disabled])
+
+  useEffect(() => {
+    if (!active || !focusRequest) return
+    const frame = requestAnimationFrame(() => editorRef.current?.focus({ preventScroll: true }))
+    return () => cancelAnimationFrame(frame)
+  }, [active, draftKeyValue, focusRequest])
 
   usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
   usePopoverMenu(modeMenuOpen, closeModeMenu, modeMenuRef)
@@ -1694,6 +1740,16 @@ export const InputBar = memo(function InputBar({
   }, [closeProjectMenu, disabled])
 
   useEffect(() => {
+    if (!isReading) return
+    setSlashPanelOpen(false)
+    setActiveSlashToken(null)
+    setToolPanelOpen(false)
+    closeProjectMenu()
+    closeModeMenu()
+    closePresetMenu()
+  }, [closeModeMenu, closePresetMenu, closeProjectMenu, isReading])
+
+  useEffect(() => {
     setSlashSelectedIndex(0)
   }, [activeSlashToken?.query])
 
@@ -1703,7 +1759,7 @@ export const InputBar = memo(function InputBar({
   }, [filteredSlashCommands.length, slashSelectedIndex])
 
   useEffect(() => {
-    if (!isTauriRuntime()) return
+    if (!active || isReading || !isTauriRuntime()) return
     let cancelled = false
     let unlisten: (() => void) | undefined
 
@@ -1743,9 +1799,9 @@ export const InputBar = memo(function InputBar({
       setDragActive(false)
       unlisten?.()
     }
-  }, [addAttachments, composerLocked, pendingFromPaths])
+  }, [active, addAttachments, composerLocked, isReading, pendingFromPaths])
 
-  const canSend = (Boolean(input.trim()) || attachments.length > 0)
+  const canSend = (Boolean(input.trim()) || (!isReading && attachments.length > 0))
     && !slashPanelOpen
     && (!disabled || queueMode)
     && !sendDisabledReason
@@ -1872,9 +1928,9 @@ export const InputBar = memo(function InputBar({
   )
 
   return (
-    <div className={wrapperClass}>
+    <div className={`${wrapperClass}${isReading ? ' chat-composer-footer--reading' : ''}`} data-composer-presentation={presentation}>
       <div ref={innerRef} className={`relative ${innerClass}`}>
-        {toolPanelOpen && (
+        {!isReading && toolPanelOpen && (
           <>
             <div className="fixed inset-0 z-30" onClick={() => setToolPanelOpen(false)} aria-hidden />
             <div
@@ -1928,7 +1984,7 @@ export const InputBar = memo(function InputBar({
             </div>
           </>
         )}
-        {slashPanelOpen && (
+        {!isReading && slashPanelOpen && (
           <div
             className={`chat-motion-popover absolute z-40 overflow-hidden kv-menu font-sans ${slashPanelPlacementClass}`}
             style={{
@@ -1990,7 +2046,7 @@ export const InputBar = memo(function InputBar({
           </div>
         )}
         {/* ① 状态条：「你在哪 + 在做什么 + 改了多少」—— 项目/集、当前 todo、diff 徽标。 */}
-        {(statusBarVisible || todoBarVisible || goalSlot || subAgentSlot || gitStatusEnabled) && (
+        {!isReading && (statusBarVisible || todoBarVisible || goalSlot || subAgentSlot || gitStatusEnabled) && (
           <div className="chat-composer-status" data-tauri-drag-region="false">
             {statusBarVisible && effectiveProject && (
               <div className="relative min-w-0">
@@ -2055,6 +2111,9 @@ export const InputBar = memo(function InputBar({
           </div>
         )}
 
+        {isReading && readingContextSlot && (
+          <div className="chat-composer-reading-context">{readingContextSlot}</div>
+        )}
         <div
           data-chat-composer="true"
           className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-xl border px-3 py-2 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
@@ -2072,7 +2131,7 @@ export const InputBar = memo(function InputBar({
               {t.chatDropToAttach}
             </div>
           )}
-          {attachments.length > 0 && (
+          {!isReading && attachments.length > 0 && (
             <div className="chat-motion-fade-up mb-2 px-1">
               <ChatAttachments
                 attachments={attachments}
@@ -2143,9 +2202,9 @@ export const InputBar = memo(function InputBar({
                 onAnimationEnd={(event) => {
                   if (event.animationName === 'chat-composer-optimize-in') setOptimizeMotion('idle')
                 }}
-                placeholder={usesExternalRuntime
+                placeholder={placeholder ?? (usesExternalRuntime
                   ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
-                  : t.chatComposerPlaceholder}
+                  : t.chatComposerPlaceholder)}
                 className={`${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
               />
               {composerContextMenu.menu}
@@ -2192,7 +2251,9 @@ export const InputBar = memo(function InputBar({
 
         {/* ③ 功能栏：移出输入框，裸露坐在窗口底色上（无背景无边框）。
             这样输入框高度只由文本决定，能收到单行 —— 原来图标在盒内，盒子被撑到 ~100px。 */}
-        <div className="chat-composer-tools" data-tauri-drag-region="false">
+        {isReading ? (
+          modelSlot && <div className="chat-composer-tools chat-composer-tools--reading" data-tauri-drag-region="false">{modelSlot}</div>
+        ) : <div className="chat-composer-tools" data-tauri-drag-region="false">
             <ComposerAddMenu
               onAddAttachment={() => void openAttachmentPicker()}
               directories={additionalDirectories}
@@ -2482,10 +2543,10 @@ export const InputBar = memo(function InputBar({
 
             {/* 发送 / 停止已移进输入框右端（见 textarea 同级的 chat-composer-send-slot）。 */}
             </div>
-          </div>
+          </div>}
 
           {/* 虚拟文本附件（粘贴长文本生成的 txt）编辑弹窗 */}
-          {editingAttachment?.content !== undefined && (
+          {!isReading && editingAttachment?.content !== undefined && (
             <PastedTextEditorModal
               name={editingAttachment.name}
               initialContent={editingAttachment.content}

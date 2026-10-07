@@ -1607,6 +1607,8 @@ fn normalize_segments_inserts_tool_segments_before_synthesis_text() {
 fn editing_assistant_reply_replaces_final_text_segments_only() {
     let tool_call = test_tool_record("call_blocked", "native", 1, ToolCallStatus::Skipped);
     let mut message = ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1704,6 +1706,8 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
 #[test]
 fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
     let mut message = ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1792,6 +1796,8 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
 
 fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> ChatMessage {
     ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: id.to_string(),
         role: role.to_string(),
         content: content.to_string(),
@@ -1820,6 +1826,7 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
 
 fn test_conversation_with_summary(stale: bool) -> Conversation {
     Conversation {
+        study_context: None,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2246,6 +2253,7 @@ fn stale_summary_is_ignored_by_message_builder() {
 #[test]
 fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
     let conversation = Conversation {
+        study_context: None,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2507,6 +2515,7 @@ fn apply_reply_with_model_result_groups_existing_answer() {
 #[test]
 fn build_chat_api_messages_replays_hidden_tool_transcript() {
     let conversation = Conversation {
+        study_context: None,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2514,6 +2523,8 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
         model: "model".to_string(),
         messages: vec![
             ChatMessage {
+                study_source: None,
+                study_legacy_error: None,
                 id: "msg_user_1".to_string(),
                 role: "user".to_string(),
                 content: "use a skill".to_string(),
@@ -2539,6 +2550,8 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 degraded: None,
             },
             ChatMessage {
+                study_source: None,
+                study_legacy_error: None,
                 id: "msg_assistant_1".to_string(),
                 role: "assistant".to_string(),
                 content: "visible answer".to_string(),
@@ -2676,6 +2689,7 @@ fn sanitize_image_payloads_replaces_raw_base64_lines() {
 #[test]
 fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
     let conversation = Conversation {
+            study_context: None,
             id: "conv_test".to_string(),
             revision: 0,
             title: "test".to_string(),
@@ -2684,6 +2698,8 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
             messages: vec![
                 test_chat_message("msg_user_1", "user", "make an image", 1),
                 ChatMessage {
+                    study_source: None,
+                    study_legacy_error: None,
                     id: "msg_assistant_1".to_string(),
                     role: "assistant".to_string(),
                     content: "![img](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)".to_string(),
@@ -2811,6 +2827,7 @@ fn image_token_estimates_follow_provider_dimension_rules() {
 
 fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
     Conversation {
+        study_context: None,
         id: "conv_multi".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -4107,3 +4124,72 @@ fn image_patch_estimates_fit_dimensions_before_budget_and_preserve_original() {
     assert_eq!(estimate_image_tokens(None, "gpt-5.5", Some((1, 100_000)), Some("high")), 77);
 }
 
+
+fn study_conversation_for_replay() -> Conversation {
+    serde_json::from_value(serde_json::json!({
+        "id":"conv_study_fixture", "title":"Study · Page 7", "provider_id":"p", "model":"m",
+        "created_at":10,"updated_at":20,
+        "study_context":{"materialId":"a".repeat(64),"page":7},
+        "agent_runtime":{"kind":"chat"},"web_search_mode":"off",
+        "messages":[
+            {"id":"u1","role":"user","content":"Explain the first crop","timestamp":10,
+             "study_source":{"page":7,"region":{"x":0.1,"y":0.1,"width":0.2,"height":0.3},"mode":"hint","attempt":""},
+             "attachments":[{"id":"img1","type":"image","name":"private-document.png","path":"original-crop.png"}]},
+            {"id":"a1","role":"assistant","content":"Earlier discussion, not source evidence","timestamp":11},
+            {"id":"u2","role":"user","content":"Translate this passage","timestamp":20,
+             "study_source":{"page":7,"mode":"read","attempt":""},
+             "attachments":[{"id":"img2","type":"image","name":"private-document.png","path":"original-page.png"}]},
+        ]
+    })).unwrap()
+}
+
+#[test]
+fn study_replay_labels_each_original_source_without_attachment_filenames_or_caller_prompts() {
+    let conversation = study_conversation_for_replay();
+    let messages = build_chat_api_messages(
+        None, &crate::chat::study_context::system_prompt(crate::chat::StudyMode::Read),
+        &conversation, Some(2), Some("FORGED attachment path /private/document.pdf"), &[],
+    ).unwrap();
+    assert_eq!(messages.len(), 4);
+    assert!(messages[1]["content"].as_str().unwrap().contains("Page 7, selected region"));
+    assert!(messages[1]["content"].as_str().unwrap().contains("Explain the first crop"));
+    assert!(messages[3]["content"].as_str().unwrap().contains("Translate this passage"));
+    let wire = serde_json::to_string(&messages).unwrap();
+    assert!(!wire.contains("FORGED"));
+    assert!(!wire.contains("private-document"));
+    assert!(!wire.contains("original-page.png"));
+    assert!(!wire.contains(&"a".repeat(64)));
+    assert!(messages[0]["content"].as_str().unwrap().contains("Prior discussion and summaries are not independent evidence"));
+}
+
+#[test]
+fn study_regeneration_retains_original_mode_region_and_image_attachment() {
+    let mut conversation = study_conversation_for_replay();
+    let original = conversation.messages[0].clone();
+    apply_regenerate_truncation(&mut conversation, 1, None).unwrap();
+    assert_eq!(conversation.messages.len(), 1);
+    assert_eq!(conversation.messages[0].study_source, original.study_source);
+    assert_eq!(conversation.messages[0].attachments[0].path, "original-crop.png");
+    assert_eq!(conversation.messages[0].timestamp, 10);
+}
+
+#[test]
+fn legacy_study_retry_without_original_image_keeps_every_saved_answer() {
+    let mut conversation = study_conversation_for_replay();
+    conversation.messages[0].attachments.clear();
+    let before = serde_json::to_value(&conversation).unwrap();
+    assert!(apply_regenerate_truncation(&mut conversation, 1, None)
+        .unwrap_err().contains("original Study image"));
+    assert_eq!(serde_json::to_value(&conversation).unwrap(), before);
+}
+
+#[test]
+fn ordinary_replay_still_uses_supplied_chat_content_without_study_labels() {
+    let mut conversation = study_conversation_for_replay();
+    conversation.study_context = None;
+    for message in &mut conversation.messages { message.study_source = None; }
+    let messages = build_chat_api_messages(None, "ordinary system", &conversation, Some(2), Some("ordinary attachment prose"), &[]).unwrap();
+    assert_eq!(messages[0]["content"], "ordinary system");
+    assert_eq!(messages[1]["content"], "Explain the first crop");
+    assert_eq!(messages[3]["content"], "ordinary attachment prose");
+}

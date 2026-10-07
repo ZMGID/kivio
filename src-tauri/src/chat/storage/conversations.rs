@@ -322,6 +322,7 @@ pub(super) fn reusable_blank_index_matches(
     // 归档对话只出现在对话库「归档」书架。复用它当新对话，侧栏会在乐观行剪掉后把它吃掉：
     // 用户只能在生成中看到这条会话，结束后找不到。
     !item.archived
+        && item.study_context.is_none()
         && item.message_count == 0
         && item.provider_id == provider_id
         && item.model == model
@@ -367,7 +368,8 @@ pub fn find_reusable_blank_conversation(
         if conversation.archived {
             continue;
         }
-        if conversation.messages.is_empty()
+        if conversation.study_context.is_none()
+            && conversation.messages.is_empty()
             && conversation.provider_id == provider_id
             && conversation.model == model
             && conversation.folder.as_deref() == folder
@@ -507,5 +509,32 @@ mod persistence_tests {
             None,
             None
         ));
+    }
+
+    #[test]
+    fn study_binding_sources_and_import_receipt_survive_disk_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conv_source.json");
+        let original: Conversation = serde_json::from_value(serde_json::json!({
+            "id":"conv_source", "revision":9, "title":"Study · Page 2",
+            "provider_id":"p", "model":"m", "created_at":11, "updated_at":17,
+            "agent_runtime":{"kind":"chat"}, "web_search_mode":"off",
+            "study_context":{"materialId":"a".repeat(64),"page":2,
+                "legacyImport":{"version":1,"fingerprint":"b".repeat(64)}},
+            "messages":[
+                {"id":"u","role":"user","content":"Explain this crop","timestamp":11,
+                 "study_source":{"page":2,"mode":"hint","attempt":"","region":{"x":0.0,"y":0.1,"width":0.3,"height":0.2}},
+                 "attachments":[{"id":"image","type":"image","name":"study-page.png","path":"original.png"}]},
+                {"id":"a","role":"assistant","content":"partial","timestamp":17,"stream_outcome":"interrupted","study_legacy_error":"connection lost"}
+            ]
+        })).unwrap();
+        crate::chat::study_context::validate_conversation(&original).unwrap();
+        let expected = serde_json::to_value(&original).unwrap();
+        write_conversation_file_at_path(&path, original).unwrap();
+        let reloaded = read_conversation_file(&path, "conv_source").unwrap();
+        assert_eq!(serde_json::to_value(&reloaded).unwrap(), expected);
+        let mut item = ConversationListItem::from(&reloaded);
+        item.message_count = 0;
+        assert!(!reusable_blank_index_matches(&item, "p", "m", None, None, None, None));
     }
 }

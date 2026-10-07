@@ -1,10 +1,17 @@
 import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
-import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
+import { cloneElement, lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { MediaStation } from './MediaStation'
+import { Button } from '../components/Button'
+import { ModelSelector } from './ModelSelector'
+import { resolveModelInfo } from '../data/modelMatching'
+import type { StudyReadingSurface } from './study/StudyWorkspace'
+import type { StudyDocument } from './study/studyStorage'
+import { bindStudyComposerDraft, ensureStudyConversation, prepareStudySourceAttachment, restoreStudyComposerDraft } from './study/studyChatBridge'
+import { editStudyPage, flushStudyDocument, initializeStudy, openStudyPage, studyPage, studyWorkspace } from './study/studyWorkspaceStore'
 import { ArtifactsCenter } from './ArtifactsCenter'
 import { MarketPage } from './market/MarketPage'
 import { marketUsePrompt } from './market/marketModel'
@@ -40,6 +47,7 @@ import {
   isChatNotesPath,
   isChatArtifactsPath,
   isChatMediaPath,
+  isChatStudyPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -117,6 +125,8 @@ import type {
   SkillMeta,
   ModelRef,
   WebSearchMode,
+  StudyMessageSource,
+  ChatMessage,
 } from './types'
 import {
   api,
@@ -152,7 +162,7 @@ import {
 } from './groupStreamingStore'
 import { onChatPerfProfiler, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
-import { ChatConversationPane } from './ChatConversationPane'
+import { ChatConversationPane, type ChatConversationPaneProps } from './ChatConversationPane'
 import { GoalCard } from './GoalCard'
 import { composerGoal, setGoalDraftMode, useGoalDraft } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
@@ -195,6 +205,10 @@ const McpCenter = lazy(() => import('./McpCenter').then((module) => ({
 
 const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => ({
   default: module.KnowledgeCenter,
+})))
+
+const StudyWorkspace = lazy(() => import('./study/StudyWorkspace').then((module) => ({
+  default: module.StudyWorkspace,
 })))
 
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
@@ -313,6 +327,7 @@ function setStreamError(error: string): void {
 }
 
 type SendMessageOptions = {
+  studySource?: StudyMessageSource
   planMessageId?: string
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
@@ -339,6 +354,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
     if (isChatNotesPath(path)) return 'notes'
+    if (isChatStudyPath(path)) return 'study'
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
@@ -1896,7 +1912,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const attachmentSkillId = resolveSendSkillId(
+    const attachmentSkillId = options.studySource ? null : resolveSendSkillId(
       attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
@@ -1927,7 +1943,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         providerOAuthTypes,
       },
       attachmentSkillId,
-      disabledReason: sendDisabledReason,
+      ...(options.studySource ? { studySource: options.studySource } : {}),
+      disabledReason: options.studySource ? '' : sendDisabledReason,
       planMessageId: options.planMessageId,
       onPartialConversation: options.onPartialConversation,
       onAccepted: options.onAccepted,
@@ -2866,6 +2883,183 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resolvePendingSessionConsent, resolvePendingToolConfirm,
   ])
 
+  const [studyVisionModels, setStudyVisionModels] = useState<ReadonlySet<string>>(() => new Set())
+  useEffect(() => {
+    let active = true
+    const apply = (settings: Awaited<ReturnType<typeof getSettingsCached>>) => {
+      if (!active) return
+      setStudyVisionModels(new Set(settings.providers.filter(provider => provider.enabled).flatMap(provider => provider.enabledModels
+        .filter(model => resolveModelInfo(model, provider.modelOverrides, provider).capabilities?.vision)
+        .map(model => JSON.stringify([provider.id, model])))))
+    }
+    void getSettingsCached().then(apply).catch(() => {})
+    const unsubscribe = subscribeSettings(apply)
+    return () => { active = false; unsubscribe() }
+  }, [])
+  const studyBindings = useRef(new Map<string, () => void>())
+  const studyOpenSequence = useRef(0)
+  useEffect(() => () => { for (const dispose of studyBindings.current.values()) dispose(); studyBindings.current.clear() }, [])
+  const handleOpenStudyPage = useCallback(async (document: StudyDocument, page: number) => {
+    const sequence = ++studyOpenSequence.current
+    navigation.leaveConversation()
+    const route = hashPath()
+    await flushStudyDocument(document.id)
+    const settings = await getSettingsCached()
+    const preferred = newConversationDefaultsRef.current
+    const choices = settings.providers.filter(provider => provider.enabled).flatMap(provider => provider.enabledModels
+      .filter(model => resolveModelInfo(model, provider.modelOverrides, provider).capabilities?.vision)
+      .map(model => ({ providerId: provider.id, model })))
+    const selected = choices.find(item => item.providerId === preferred.activeProviderId && item.model === preferred.activeModel) ?? choices[0]
+    const conversation = await ensureStudyConversation({ documentId: document.id, page, ...selected })
+    if (!studyBindings.current.has(conversation.id)) {
+      studyBindings.current.set(conversation.id, bindStudyComposerDraft({
+        conversationId: conversation.id,
+        read: () => {
+          const current = studyWorkspace.getSnapshot().documents.find(item => item.id === document.id)
+          return current ? studyPage(current, page).question : ''
+        },
+        write: question => editStudyPage(document.id, page, { question }),
+      }))
+    }
+    if (sequence !== studyOpenSequence.current || hashPath() !== route || !isChatStudyPath(route)) throw new Error('Opening interrupted. Return to this page and retry.')
+    await navigation.selectConversation(conversation.id, undefined, { preserveRoute: true })
+  }, [navigation])
+
+  const handleStudyMaterialRemoved = useCallback((materialId: string) => {
+    for (const [id, dispose] of studyBindings.current) {
+      if (!id.startsWith(`conv_study_${materialId}_`)) continue
+      dispose(); studyBindings.current.delete(id)
+      restoreStudyComposerDraft(id, '')
+    }
+  }, [])
+  const handleReloadStudyDrafts = useCallback(() => {
+    const documents = studyWorkspace.getSnapshot().documents
+    for (const id of studyBindings.current.keys()) {
+      const binding = /^conv_study_([a-f0-9]{64})_(\d+)$/.exec(id)
+      if (!binding) continue
+      const document = documents.find(item => item.id === binding[1])
+      restoreStudyComposerDraft(id, document ? studyPage(document, Number(binding[2])).question : '')
+    }
+  }, [])
+  const [missingStudySource, setMissingStudySource] = useState('')
+  const boundMaterialId = currentConversation?.study_context?.materialId
+  const boundPage = currentConversation?.study_context?.page
+  useEffect(() => {
+    if (chatView !== 'conversation' || !boundMaterialId || !boundPage) return
+    let active = true
+    setMissingStudySource('')
+    void initializeStudy().then(() => {
+      if (!active) return
+      const saved = studyWorkspace.getSnapshot()
+      const document = saved.documents.find(item => item.id === boundMaterialId)
+      if (document) {
+        openStudyPage(document.id, boundPage)
+        setChatView('study'); setHash('#chat/study')
+      } else {
+        setMissingStudySource(saved.error || (uiLang === 'zh' ? '材料当前不可用。聊天记录已保留，请在 Study 中重新导入原材料后继续。' : 'The material is unavailable. Chat history is retained; reimport the original material in Study to continue.'))
+      }
+    })
+    return () => { active = false }
+  }, [chatView, boundMaterialId, boundPage, uiLang])
+  const readingAnswerDisclosure = (message: ChatMessage) => {
+    if (message.role !== 'assistant') return undefined
+    const index = displayMessages.findIndex(item => item.id === message.id)
+    const preceding = index < 0 ? displayMessages : displayMessages.slice(0, index)
+    const source = [...preceding].reverse().find(item => item.role === 'user')?.study_source
+    return source?.mode === 'solution' ? (uiLang === 'zh' ? '展开完整解答' : 'Reveal full solution') : undefined
+  }
+
+  const conversationPane = <ChatConversationPane
+            titlebarControls={conversationTitlebarControls}
+            usesNativeTitlebar={usesNativeTitlebar}
+            sidebarCollapsed={sidebarCollapsed}
+            titlebarRowClass={chatTitlebarRowClass}
+            titlebarMacInsetClass={chatTitlebarMacInsetClass}
+            onToggleSidebar={handleTitlebarToggleSidebar}
+            onNewConversation={handleTitlebarNewConversation}
+            protocolVersionMismatch={protocolVersionMismatch}
+            showEmptyHero={showEmptyHero}
+            currentAssistantName={currentAssistantSnapshot?.name ?? null}
+            selectedProjectName={selectedProject?.name ?? null}
+            selectedSetName={selectedSet?.name ?? null}
+            inputBarProps={inputBarProps}
+            messageListProps={messageListProps}
+            hookWarning={hookWarning}
+            currentConversationId={currentConversation?.id ?? null}
+            onDismissHookWarning={handleDismissHookWarning}
+            forkOrigin={forkOrigin}
+            onSelectConversation={handleSelectConversation}
+            importedHistoryStale={importedHistoryStale}
+            pendingSlot={pendingSlot}
+            subAgentSlot={currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}
+            goalSlot={visibleGoal ? (
+              <GoalCard
+                goal={visibleGoal}
+                onEdit={handleEditGoal}
+                onPause={handlePauseGoal}
+                onResume={handleResumeGoal}
+                onCancel={handleCancelGoal}
+              />
+            ) : null}
+            queuedMessages={currentQueuedMessages}
+            canSteerQueuedMessages={canSteerCurrentConversation}
+            onSteerQueuedMessage={handleSteerQueuedMessage}
+            onRemoveQueuedMessage={handleRemoveQueuedMessage}
+            onRestoreQueuedMessage={handleRestoreQueuedMessage}
+            lang={uiLang}
+            imageViewerItem={imageViewerItem}
+            onCloseImageViewer={handleCloseImageViewer}
+            onRender={onChatPerfProfiler}
+          />
+  const renderStudyChat = (surface: StudyReadingSurface) => {
+    const target = currentConversation
+    if (!target || target.study_context?.materialId !== surface.document.id || target.study_context.page !== surface.page) return null
+    const ready = surface.context?.status === 'ready' && Boolean(surface.context.imageDataUrl)
+    const disabledReason = !ready ? (uiLang === 'zh' ? '请等待原图准备好' : 'Wait for the original image')
+      : !studyVisionModels.has(JSON.stringify([target.provider_id, target.model])) ? (uiLang === 'zh' ? '请先选择支持图片的模型' : 'Choose an image-capable model first')
+      : surface.source.mode === 'check' && !surface.source.attempt.trim() ? (uiLang === 'zh' ? '请先补充自己的解答或思路' : 'Add your attempt first') : ''
+    return cloneElement<ChatConversationPaneProps>(conversationPane, {
+      presentation: 'reading', usesNativeTitlebar: false, showEmptyHero: target.messages.length === 0,
+      emptyStateSlot: surface.emptyState, titlebarControls: null, hookWarning: null, forkOrigin: null,
+      pendingSlot: null, goalSlot: null, subAgentSlot: null, queuedMessages: NO_QUEUED_MESSAGES,
+      inputBarProps: {
+        ...inputBarProps, presentation: 'reading', autoFocus: false, active: chatView === 'study', focusRequest: surface.focusRequest,
+        placeholder: uiLang === 'zh' ? '想了解这页的什么？也可以问图表或翻译英文' : 'What would you like to understand, explain or translate on this page?',
+        readingContextSlot: <div className="flex min-w-0 w-full flex-col gap-1">{surface.controls}<small className="kv-study-disclosure">{uiLang === 'zh' ? '本页对话与原图会发送给所选模型。AI 可能出错。' : 'This page’s discussion and original image go to the selected model. AI can make mistakes.'}</small></div>,
+        modelSlot: <ModelSelector currentProviderId={target.provider_id} currentModel={target.model} onModelChange={handleModelChange} visionOnly placement="up" preserveLabel />,
+        sendDisabledReason: disabledReason, onQueue: undefined,
+        onSend: async (content, _attachments, options) => {
+          // Capture the conversation and source before the generic attachment save awaits.
+          try {
+            if (!studyVisionModels.has(JSON.stringify([target.provider_id, target.model]))) throw new Error(uiLang === 'zh' ? '请先选择支持图片的模型' : 'Choose an image-capable model first')
+            if (!surface.context) throw new Error(uiLang === 'zh' ? '请等待原图准备好' : 'Wait for the original image')
+            const prepared = await prepareStudySourceAttachment({ documentId: surface.document.id, page: surface.page, context: surface.context, source: surface.source, conversation: target })
+            if (!studyWorkspace.getSnapshot().documents.some(document => document.id === surface.document.id)) throw new Error(uiLang === 'zh' ? '材料已移除，问题未发送' : 'The material was removed; the question was not sent')
+            return await handleSendMessage(content, [prepared.attachment], { ...options, conversationOverride: target, studySource: prepared.source, skillId: null })
+          } catch (error) {
+            setStreamErrorForConversation(target.id, error instanceof Error ? error.message : String(error))
+            return false
+          }
+        },
+      },
+      messageListProps: {
+        ...messageListProps, presentation: 'reading',
+        renderMessageAnnotation: message => message.study_source ? <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500"><Button size="sm" variant="ghost" onClick={() => surface.showSource(message.study_source!)}>{uiLang === 'zh' ? `来源：第 ${message.study_source.page} 页${message.study_source.region ? ' · 选区' : ''}` : `Source: page ${message.study_source.page}${message.study_source.region ? ' · region' : ''}`}</Button>{!message.attachments?.some(item => item.type === 'image') && <span>{uiLang === 'zh' ? '旧记录未保存原图；请重新选择后发送新问题' : 'Legacy record has no saved image. Select its source and send a new question.'}</span>}</div> : message.study_legacy_error ? <p role="status">{message.study_legacy_error}</p> : null,
+        answerDisclosureLabel: readingAnswerDisclosure,
+      },
+    })
+  }
+
+  const standaloneConversationPane = currentConversation?.study_context ? cloneElement<ChatConversationPaneProps>(conversationPane, {
+    presentation: 'reading', titlebarControls: null, pendingSlot: null, goalSlot: null, subAgentSlot: null,
+    hookWarning: null, forkOrigin: null, queuedMessages: NO_QUEUED_MESSAGES, showEmptyHero: currentConversation.messages.length === 0,
+    inputBarProps: { ...inputBarProps, presentation: 'reading', active: chatView === 'conversation', onQueue: undefined,
+      sendDisabledReason: missingStudySource || (uiLang === 'zh' ? '正在打开材料…' : 'Opening material…'),
+      readingContextSlot: <div className="text-xs"><p role="status">{missingStudySource || (uiLang === 'zh' ? '正在打开材料…' : 'Opening material…')}</p><Button size="sm" onClick={() => { setChatView('study'); setHash('#chat/study') }}>{uiLang === 'zh' ? '打开 Study' : 'Open Study'}</Button></div>,
+    },
+    messageListProps: { ...messageListProps, presentation: 'reading', answerDisclosureLabel: readingAnswerDisclosure },
+  }) : conversationPane
+
   return (
     <LangContext.Provider value={uiLang}>
     <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
@@ -2927,7 +3121,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         ) : null}
 
         <ChatRouteKeepAlive
-          activeKey={chatView === 'conversation' || chatView === 'settings' ? chatView : 'center'}
+          activeKey={chatView === 'conversation' || chatView === 'settings' || chatView === 'study' ? chatView : 'center'}
         >
         {chatView === 'onboarding' ? (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -2983,6 +3177,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <KnowledgeCenter />
+            </Suspense>
+          </div>
+        ) : chatView === 'study' ? (
+          <div key="center" className={worksPageClass}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}>
+              <StudyWorkspace conversation={currentConversation} busy={streamCoarse.streaming} onOpenPage={handleOpenStudyPage} onReloadSaved={handleReloadStudyDrafts} onMaterialRemoved={handleStudyMaterialRemoved} renderChat={renderStudyChat} />
             </Suspense>
           </div>
         ) : chatView === 'media' ? (
@@ -3050,48 +3251,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onNewConversation={handleTitlebarNewConversation}
           />
         ) : (
-          <ChatConversationPane
-            titlebarControls={conversationTitlebarControls}
-            usesNativeTitlebar={usesNativeTitlebar}
-            sidebarCollapsed={sidebarCollapsed}
-            titlebarRowClass={chatTitlebarRowClass}
-            titlebarMacInsetClass={chatTitlebarMacInsetClass}
-            onToggleSidebar={handleTitlebarToggleSidebar}
-            onNewConversation={handleTitlebarNewConversation}
-            protocolVersionMismatch={protocolVersionMismatch}
-            showEmptyHero={showEmptyHero}
-            currentAssistantName={currentAssistantSnapshot?.name ?? null}
-            selectedProjectName={selectedProject?.name ?? null}
-            selectedSetName={selectedSet?.name ?? null}
-            inputBarProps={inputBarProps}
-            messageListProps={messageListProps}
-            hookWarning={hookWarning}
-            currentConversationId={currentConversation?.id ?? null}
-            onDismissHookWarning={handleDismissHookWarning}
-            forkOrigin={forkOrigin}
-            onSelectConversation={handleSelectConversation}
-            importedHistoryStale={importedHistoryStale}
-            pendingSlot={pendingSlot}
-            subAgentSlot={currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}
-            goalSlot={visibleGoal ? (
-              <GoalCard
-                goal={visibleGoal}
-                onEdit={handleEditGoal}
-                onPause={handlePauseGoal}
-                onResume={handleResumeGoal}
-                onCancel={handleCancelGoal}
-              />
-            ) : null}
-            queuedMessages={currentQueuedMessages}
-            canSteerQueuedMessages={canSteerCurrentConversation}
-            onSteerQueuedMessage={handleSteerQueuedMessage}
-            onRemoveQueuedMessage={handleRemoveQueuedMessage}
-            onRestoreQueuedMessage={handleRestoreQueuedMessage}
-            lang={uiLang}
-            imageViewerItem={imageViewerItem}
-            onCloseImageViewer={handleCloseImageViewer}
-            onRender={onChatPerfProfiler}
-          />
+          standaloneConversationPane
         )}
         </ChatRouteKeepAlive>
         {chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && (

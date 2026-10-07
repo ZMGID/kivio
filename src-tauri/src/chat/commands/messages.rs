@@ -212,6 +212,8 @@ pub(super) fn build_assistant_message(
     };
 
     ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: message_id,
         role: "assistant".to_string(),
         content: stored_content,
@@ -506,6 +508,8 @@ pub(super) async fn persist_partial_assistant_snapshot(
         &tool_records,
     );
     let draft = ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: message_id.to_string(),
         role: "assistant".to_string(),
         content,

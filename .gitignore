@@ -63,3 +63,7 @@ MEMORY.md
 
 # 本地手测用的外部仓库克隆（不入库）
 /test-ZMGID/
+
+# Browser regression output
+playwright-study-report/
+test-results/

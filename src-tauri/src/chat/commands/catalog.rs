@@ -29,6 +29,29 @@ pub(crate) struct ExternalConversationMessage {
     pub content: String,
 }
 
+/// One-time snapshot from the old local Study store; never a provider request.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StudyConversationImport {
+    version: u32,
+    fingerprint: String,
+    messages: Vec<StudyImportMessage>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StudyImportMessage {
+    id: String,
+    role: String,
+    content: String,
+    timestamp: i64,
+    study_source: Option<crate::chat::StudyMessageSource>,
+    stream_outcome: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    error: Option<String>,
+}
+
 pub(super) fn chat_memory_prompt_for_request(
     app: &AppHandle,
     settings: &Settings,
@@ -469,7 +492,21 @@ pub(crate) async fn chat_create_conversation(
     project_id: Option<String>,
     set_id: Option<String>,
     assistant_id: Option<String>,
+    study_context: Option<crate::chat::StudyConversationContext>,
+    study_import: Option<StudyConversationImport>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(binding) = study_context {
+        if folder.is_some() || project_id.is_some() || set_id.is_some() || assistant_id.is_some() {
+            return Err("Study conversations cannot be assigned assistants, projects or sets.".into());
+        }
+        let conversation = create_source_bound_conversation(
+            &app, state.inner(), provider_id, model, binding, study_import,
+        ).await?;
+        return Ok(serde_json::json!({"success": true, "conversation": conversation}));
+    }
+    if study_import.is_some() {
+        return Err("Study history import requires a material/page binding.".into());
+    }
     let conversation = create_chat_conversation_internal(
         &app,
         state.inner(),
@@ -487,6 +524,86 @@ pub(crate) async fn chat_create_conversation(
         "success": true,
         "conversation": conversation,
     }))
+}
+
+async fn create_source_bound_conversation(
+    app: &AppHandle,
+    state: &AppState,
+    provider_id: Option<String>,
+    model: Option<String>,
+    mut binding: crate::chat::StudyConversationContext,
+    import: Option<StudyConversationImport>,
+) -> Result<Conversation, String> {
+    crate::chat::study_context::validate_binding(&binding)?;
+    if binding.legacy_import.is_some() {
+        return Err("The Study import receipt is created by Chat, not supplied as a binding.".into());
+    }
+    let messages = if let Some(import) = import {
+        binding.legacy_import = Some(crate::chat::StudyImportReceipt {
+            version: import.version, fingerprint: import.fingerprint,
+        });
+        crate::chat::study_context::validate_binding(&binding)?;
+        import_study_messages(import.messages)?
+    } else {
+        Vec::new()
+    };
+    let id = crate::chat::study_context::conversation_id(&binding);
+    let _create_guard = state.chat_runtime().lock_conversation_creation().await;
+    let repository = crate::chat::repository::repository(app);
+    if crate::chat::storage::conversation_file_path(app, &id)?.exists() {
+        let existing = repository.get(app, &id).await.map_err(crate::chat::repository::repository_error)?;
+        let saved = existing.study_context.as_ref().ok_or("Study conversation identity conflicts with an existing conversation.")?;
+        if saved.material_id != binding.material_id || saved.page != binding.page
+            || (binding.legacy_import.is_some() && saved.legacy_import != binding.legacy_import)
+        {
+            return Err("Study history changed since it was imported. The saved Chat conversation was kept unchanged.".into());
+        }
+        crate::chat::study_context::validate_conversation(&existing)?;
+        return Ok(existing);
+    }
+    let (provider_id, model) = {
+        let settings = state.settings_read();
+        let (default_provider, default_model) = settings.effective_chat_model();
+        (provider_id.and_then(non_empty_string).unwrap_or(default_provider),
+         model.and_then(non_empty_string).unwrap_or(default_model))
+    };
+    let now = chrono::Local::now().timestamp();
+    let created_at = messages.iter().map(|message| message.timestamp).min().unwrap_or(now);
+    let updated_at = messages.iter().map(|message| message.timestamp).max().unwrap_or(now);
+    let conversation: Conversation = serde_json::from_value(serde_json::json!({
+        "id": id, "title": format!("Study · Page {}", binding.page),
+        "provider_id": provider_id, "model": model,
+        "study_context": binding, "messages": messages,
+        "agent_runtime": {"kind":"chat"}, "web_search_mode": "off",
+        "created_at": created_at, "updated_at": updated_at,
+    })).map_err(|error| error.to_string())?;
+    repository.create(app, conversation).await.map_err(crate::chat::repository::repository_error)
+}
+
+fn import_study_messages(messages: Vec<StudyImportMessage>) -> Result<Vec<ChatMessage>, String> {
+    if messages.len() > 1_000 {
+        return Err("Study history exceeds the import limit.".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut bytes = 0usize;
+    messages.into_iter().map(|message| {
+        bytes = bytes.saturating_add(message.content.len()).saturating_add(message.error.as_ref().map_or(0, String::len));
+        if bytes > 8 * 1024 * 1024 || message.id.len() > 120
+            || !message.id.starts_with("msg_study_")
+            || !message.id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            || !ids.insert(message.id.clone()) || message.timestamp < 0
+            || !matches!(message.role.as_str(), "user" | "assistant")
+            || message.stream_outcome.as_deref().is_some_and(|outcome| !matches!(outcome, "completed" | "cancelled" | "error" | "interrupted"))
+        {
+            return Err("Invalid Study history snapshot. The original local history was kept.".into());
+        }
+        serde_json::from_value(serde_json::json!({
+            "id":message.id, "role":message.role, "content":message.content,
+            "timestamp":message.timestamp, "study_source":message.study_source,
+            "study_legacy_error":message.error, "stream_outcome":message.stream_outcome,
+            "provider_id":message.provider_id, "model":message.model,
+        })).map_err(|error| error.to_string())
+    }).collect()
 }
 
 /// `reuse_blank`: hand back a matching untouched blank conversation instead of
@@ -604,6 +721,7 @@ pub(crate) async fn create_chat_conversation_internal(
         } else {
             let now = chrono::Local::now().timestamp();
             let conversation = Conversation {
+                study_context: None,
                 id: format!("conv_{}", Uuid::new_v4()),
                 revision: 0,
                 title: super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string(),
@@ -711,6 +829,8 @@ pub(crate) async fn chat_import_external_conversation(
             }
         }
         conversation.messages.push(ChatMessage {
+            study_source: None,
+            study_legacy_error: None,
             id: format!("msg_{}", Uuid::new_v4()),
             role: role.to_string(),
             content: entry.content,
@@ -977,6 +1097,7 @@ pub(crate) async fn chat_create_builder_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        study_context: None,
         id: format!("conv_{}", Uuid::new_v4()),
         revision: 0,
         title: "搭建新专家".to_string(),
@@ -1258,4 +1379,55 @@ pub(crate) async fn chat_delete_set(
 ) -> Result<serde_json::Value, String> {
     delete_set(&app, &set_id).await?;
     Ok(serde_json::json!({ "success": true }))
+}
+
+#[cfg(test)]
+mod study_import_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_history_import_keeps_partial_errors_mode_crop_and_original_timestamps() {
+        let input: StudyConversationImport = serde_json::from_value(json!({
+            "version":1,"fingerprint":"b".repeat(64),"messages":[
+                {"id":"msg_study_1_user","role":"user","content":"Explain /plan as quoted source text","timestamp":17,
+                 "studySource":{"page":7,"mode":"hint","attempt":"my attempt","region":{"x":0.1,"y":0.2,"width":0.3,"height":0.4}}},
+                {"id":"msg_study_1_assistant","role":"assistant","content":"partial answer","timestamp":19,
+                 "streamOutcome":"interrupted","providerId":"old-provider","model":"old-model","error":"connection lost"},
+                {"id":"msg_study_2_user","role":"user","content":"Question","timestamp":21,
+                 "studySource":{"page":7,"mode":"check","attempt":""}},
+                {"id":"msg_study_2_assistant","role":"assistant","content":"","timestamp":22,
+                 "streamOutcome":"error","error":"image unavailable"}
+            ]
+        })).unwrap();
+        let messages = import_study_messages(input.messages).unwrap();
+        assert_eq!(messages.len(),4);
+        assert_eq!(messages[0].timestamp,17);
+        assert_eq!(messages[0].study_source.as_ref().unwrap().mode,crate::chat::StudyMode::Hint);
+        assert!(messages[0].study_source.as_ref().unwrap().region.is_some());
+        assert_eq!(messages[1].content,"partial answer");
+        assert_eq!(messages[1].stream_outcome.as_deref(),Some("interrupted"));
+        assert_eq!(messages[1].study_legacy_error.as_deref(),Some("connection lost"));
+        assert_eq!(messages[1].provider_id.as_deref(),Some("old-provider"));
+        assert!(messages[3].content.is_empty());
+        let conversation: Conversation = serde_json::from_value(json!({
+            "id":"conv_import_test", "title":"Study", "provider_id":"p", "model":"m",
+            "created_at":17,"updated_at":22,"messages":messages,
+            "study_context":{"materialId":"a".repeat(64),"page":7,"legacyImport":{"version":1,"fingerprint":"b".repeat(64)}},
+            "agent_runtime":{"kind":"chat"},"web_search_mode":"off",
+        })).unwrap();
+        // New-send rules must not reject a readable, immutable legacy snapshot.
+        assert!(crate::chat::study_context::validate_conversation(&conversation).is_ok());
+        assert_eq!(crate::chat::ConversationListItem::from(&conversation).study_context,conversation.study_context);
+    }
+
+    #[test]
+    fn import_rejects_duplicate_ids_and_untyped_provider_instructions() {
+        let message = json!({"id":"msg_study_dup","role":"assistant","content":"answer","timestamp":1});
+        let duplicate: Vec<StudyImportMessage> = serde_json::from_value(json!([message.clone(),message.clone()])).unwrap();
+        assert!(import_study_messages(duplicate).is_err());
+        let mut untyped = message;
+        untyped["systemPrompt"] = json!("run tools");
+        assert!(serde_json::from_value::<StudyImportMessage>(untyped).is_err());
+    }
 }

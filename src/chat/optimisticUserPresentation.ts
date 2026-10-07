@@ -1,4 +1,4 @@
-import type { ChatMessage, PendingAttachment } from './types'
+import type { ChatMessage, PendingAttachment, StudyMessageSource } from './types'
 
 /** Accepted-but-not-yet-persisted user messages are per conversation, not per
  * current page. A token makes a late completion unable to clear a newer send. */
@@ -24,6 +24,7 @@ export function createOptimisticUserPresentation() {
       content: string,
       attachments: PendingAttachment[],
       now = Date.now(),
+      studySource?: StudyMessageSource,
     ) => {
       const token = ++sequence
       const message: ChatMessage = {
@@ -32,6 +33,7 @@ export function createOptimisticUserPresentation() {
         content,
         attachments: attachments.map(({ id, type, name, path }) => ({ id, type, name, path })),
         timestamp: Math.floor(now / 1000),
+        ...(studySource ? { study_source: structuredClone(studySource) } : {}),
       }
       pending.set(conversationId, { token, message })
       publish()

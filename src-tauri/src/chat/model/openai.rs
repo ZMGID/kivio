@@ -568,7 +568,7 @@ impl OpenAiChatProvider<'_> {
                 .as_deref()
                 .filter(|id| !id.is_empty())
             {
-                body["prompt_cache_key"] = Value::String(conversation_id.to_string());
+                body["prompt_cache_key"] = Value::String(crate::provider_request::wire_session_key(conversation_id));
                 if matches!(
                     self.provider.cache_retention(),
                     crate::settings::CacheRetention::Long
@@ -1647,6 +1647,12 @@ mod tests {
         assert!(body.get("promptCacheKey").is_none());
         assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["tool_choice"], "auto");
+
+        let source_id = format!("conv_study_{}_7", "a".repeat(64));
+        request.metadata.conversation_id = Some(source_id.clone());
+        let source_body = adapter.request_body(&request, true);
+        assert_eq!(source_body["prompt_cache_key"], crate::provider_request::session_uuid(Some(&source_id)));
+        assert!(!source_body.to_string().contains(&"a".repeat(64)));
 
         // 非流式：不带 stream_options；无会话 id：不带缓存键；无工具：不带 tool_choice。
         request.metadata.conversation_id = None;

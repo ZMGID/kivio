@@ -37,6 +37,16 @@ function intent(overrides: Record<string, unknown> = {}) {
 }
 
 describe('prepare conversation for send', () => {
+  it('keeps a source-bound conversation intact instead of copying ordinary composer runtime or tools', async () => {
+    const bound = { ...conversation('study'), provider_id: 'source-provider', model: 'source-vision', study_context: { materialId: 'a'.repeat(64), page: 2 }, agent_runtime: { kind: 'chat' as const } }
+    const persistence = { createConversation: vi.fn(), setAgentRuntime: vi.fn(), updateConversation: vi.fn() }
+    const result = await prepareConversationForSend(intent({ conversation: bound }), persistence, vi.fn())
+    expect(result).toEqual({ ok: true, conversation: bound, created: false })
+    expect(persistence.createConversation).not.toHaveBeenCalled()
+    expect(persistence.setAgentRuntime).not.toHaveBeenCalled()
+    expect(persistence.updateConversation).not.toHaveBeenCalled()
+  })
+
   it('returns a created partial conversation and recoverable error when a draft patch fails', async () => {
     const created = conversation('new-a')
     const onProgress = vi.fn()

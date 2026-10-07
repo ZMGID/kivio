@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { FieldBlock, Select, TextArea, Toggle } from './components'
+import { FieldBlock, Select, SuggestInput, TextArea, Toggle } from './components'
 
 describe('Toggle', () => {
   it('reflects checked state and toggles on click', async () => {
@@ -37,8 +37,145 @@ describe('Select', () => {
       expect(within(screen.getByRole('button', { name: 'Option A' })).getByText('Current option')).toBeVisible()
     }
     await user.click(screen.getByRole('button', { name: /Option A/i }))
+    expect(screen.getByRole('button', { name: /Option A/i })).toHaveFocus()
     await user.click(screen.getByRole('option', { name: 'Option B' }))
     expect(onChange).toHaveBeenCalledWith('b')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Option A/i })).toHaveFocus()
+  })
+
+  it.each(['text', 'icon', 'labeled-icon'])('focuses the selected option on keyboard open and selects with Enter (%s trigger)', async (mode) => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Select
+      ariaLabel="Choose option"
+      triggerIcon={mode !== 'text' ? <span aria-hidden>+</span> : undefined}
+      triggerLabel={mode === 'labeled-icon' ? 'Current option' : undefined}
+      value="b"
+      onChange={onChange}
+      options={[
+        { value: 'a', label: 'Option A' },
+        { value: 'b', label: 'Option B' },
+        { value: 'c', label: 'Option C' },
+      ]}
+    />)
+    const trigger = screen.getByRole('button', { name: 'Choose option' })
+    trigger.focus()
+    await user.keyboard('{Enter}')
+    expect(screen.getByRole('option', { name: 'Option B', selected: true })).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+    await user.keyboard('{ArrowDown}{Enter}')
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('c')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+  })
+
+  it.each([' ', '{ArrowDown}', '{ArrowUp}'])('focuses the first option when the current value is unavailable (%s)', async (key) => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Select ariaLabel="Choose option" value="missing" onChange={onChange} options={[
+      { value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' },
+    ]} />)
+    const trigger = screen.getByRole('button', { name: 'Choose option' })
+    trigger.focus()
+    await user.keyboard(key)
+    expect(screen.getByRole('option', { name: 'Option A' })).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+    await user.keyboard(' ')
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('a')
+    expect(trigger).toHaveFocus()
+  })
+
+  it('navigates enabled options with arrows, Home and End without changing the value, then cancels with Escape', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Select ariaLabel="Choose option" value="b" onChange={onChange} options={[
+      { value: 'a', label: 'Option A' },
+      { value: 'b', label: 'Option B' },
+      { value: 'c', label: 'Option C' },
+      { value: 'd', label: 'Option D' },
+    ]} />)
+    const trigger = screen.getByRole('button', { name: 'Choose option' })
+    trigger.focus()
+    await user.keyboard('{ArrowDown}')
+    const optionA = screen.getByRole('option', { name: 'Option A' })
+    const optionB = screen.getByRole('option', { name: 'Option B' })
+    const optionC = screen.getByRole('option', { name: 'Option C' }) as HTMLButtonElement
+    const optionD = screen.getByRole('option', { name: 'Option D' })
+    optionC.disabled = true
+    expect(optionB).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(optionD).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(optionA).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    expect(optionD).toHaveFocus()
+    await user.keyboard('{Home}')
+    expect(optionA).toHaveFocus()
+    await user.keyboard('{End}')
+    expect(optionD).toHaveFocus()
+    await user.keyboard('{ArrowUp}')
+    expect(optionB).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+    await user.keyboard('{ArrowUp}')
+    expect(screen.getByRole('option', { name: 'Option B', selected: true })).toHaveFocus()
+  })
+
+  it.each([false, true])('closes on Tab and continues from the trigger in document order (reverse: %s)', async (shift) => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<>
+      <button>Before</button>
+      <Select ariaLabel="Choose option" value="b" onChange={onChange} options={[
+        { value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' },
+      ]} />
+      <button>After</button>
+    </>)
+    const trigger = screen.getByRole('button', { name: 'Choose option' })
+    trigger.focus()
+    await user.keyboard('{ArrowDown}')
+    const option = screen.getByRole('option', { name: 'Option B' })
+    expect(option).toHaveFocus()
+    // user-event v14 snapshots the key target for Tab rather than using the
+    // focus moved by the handler. Assert that handoff before native traversal.
+    expect(fireEvent.keyDown(option, { key: 'Tab', shiftKey: shift })).toBe(true)
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(trigger).toHaveFocus()
+    await user.tab({ shift })
+    expect(screen.getByRole('button', { name: shift ? 'Before' : 'After' })).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('toggles on repeated trigger clicks, cancels outside, and closes when tabbing from a mouse-opened menu', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<>
+      <Select ariaLabel="Choose option" value="a" onChange={onChange} options={[
+        { value: 'a', label: 'Option A' }, { value: 'b', label: 'Option B' },
+      ]} />
+      <button>Outside</button>
+    </>)
+    const trigger = screen.getByRole('button', { name: 'Choose option' })
+    const outside = screen.getByRole('button', { name: 'Outside' })
+    await user.click(trigger)
+    expect(screen.getByRole('listbox')).toBeInTheDocument()
+    await user.click(trigger)
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    await user.click(trigger)
+    await user.click(outside)
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(outside).toHaveFocus()
+    await user.click(trigger)
+    await user.tab()
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(outside).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it.each(['text', 'icon', 'labeled-icon'])('cannot open or change an option while its fieldset is disabled (%s trigger)', (mode) => {
@@ -53,10 +190,29 @@ describe('Select', () => {
     view.rerender(<fieldset disabled><Select {...triggerProps} value="a" onChange={onChange} options={options} /></fieldset>)
     expect(trigger).toBeDisabled()
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
-    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    for (const key of ['ArrowDown', 'ArrowUp', 'Enter', ' ']) fireEvent.keyDown(trigger, { key })
     fireEvent.click(trigger)
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('SuggestInput', () => {
+  it('keeps text navigation keys in its input while suggestions are open', async () => {
+    const user = userEvent.setup()
+    render(<SuggestInput ariaLabel="Model" value="model-name" onChange={vi.fn()} options={[
+      { value: 'model-name', label: 'Model name' }, { value: 'another', label: 'Another model' },
+    ]} />)
+    await user.click(screen.getByRole('button', { name: 'Model list' }))
+    const input = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement
+    await user.click(input)
+    await user.keyboard('{Home}')
+    expect(input).toHaveFocus()
+    expect(input.selectionStart).toBe(0)
+    await user.keyboard('{End}')
+    expect(input.selectionStart).toBe('model-name'.length)
+    expect(input).toHaveFocus()
+    expect(screen.getByRole('listbox')).toBeInTheDocument()
   })
 })
 
