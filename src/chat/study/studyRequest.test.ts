@@ -39,6 +39,15 @@ describe('Study teaching prompts', () => {
     expect(buildStudyPrompt(input({ mode: 'solution' })).systemPrompt).toContain('learner explicitly selected a full solution')
   })
 
+  it('requires independent verification before a check verdict and permits uncertainty', () => {
+    const check = buildStudyPrompt(input({ mode: 'check', attempt: 'u=x^3; du=3x^2 dx; integral=arctan(x^3)+C' }))
+    expect(check.systemPrompt).toContain('Before stating a verdict, independently verify')
+    expect(check.systemPrompt).toContain('differentiate a proposed antiderivative')
+    expect(check.systemPrompt).toContain('If you cannot verify it, say so')
+    expect(check.systemPrompt).toContain('Do not label the attempt correct')
+    expect(check.systemPrompt).not.toContain('arctan') // No exercise-specific answer is hard-coded.
+  })
+
   it('requires an original document/page and configured model before any transport work', async () => {
     for (const overrides of [
       { documentId: '' }, { pageNumber: 0 }, { providerId: '' }, { model: '' }, { pageText: '' },
