@@ -38,6 +38,7 @@ describe('Study workspace interaction', () => {
     expect(screen.getByRole('radio', { name: 'One hint' })).toHaveAttribute('aria-checked', 'true')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
     fireEvent.click(screen.getByRole('radio', { name: 'Check my attempt' }))
+    expect(screen.getByLabelText('My attempt')).toHaveAttribute('aria-required', 'true')
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.click(screen.getByRole('radio', { name: 'Full solution' }))
     fireEvent.click(screen.getByRole('button', { name: 'Get full solution' }))
