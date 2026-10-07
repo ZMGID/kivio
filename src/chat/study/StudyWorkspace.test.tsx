@@ -4,17 +4,17 @@ import { LangContext } from '../../components/i18n'
 import { StudyWorkspace } from './StudyWorkspace'
 import { createEmptyStudyPage, type StudyDocument } from './studyStorage'
 
-const mocks = vi.hoisted(() => ({ send: vi.fn(), edit: vi.fn(), open: vi.fn(), providers: true, vision: true, textRisk: false }))
+const mocks = vi.hoisted(() => ({ send: vi.fn(), edit: vi.fn(), open: vi.fn(), providers: true, vision: true, imageReady: true }))
 vi.mock('../../api/settingsCache', () => ({
   subscribeSettings: () => () => {},
-  getSettingsCached: async () => ({ providers: mocks.providers ? [{ id: 'test', name: 'Test provider', enabled: true, enabledModels: ['text', 'vision'], modelOverrides: { text: { capabilities: { vision: false } }, vision: { capabilities: { vision: true } } } }] : [], defaultModels: { chat: { providerId: 'test', model: mocks.vision ? 'vision' : 'text' } } }),
+  getSettingsCached: async () => ({ providers: mocks.providers ? [{ id: 'test', name: 'Test provider', enabled: true, enabledModels: mocks.vision ? ['text', 'vision'] : ['text'], modelOverrides: { text: { capabilities: { vision: false } }, vision: { capabilities: { vision: true } } } }] : [], defaultModels: { chat: { providerId: 'test', model: 'text' } } }),
 }))
 vi.mock('./studyStorage', async (importOriginal) => ({ ...await importOriginal<typeof import('./studyStorage')>(), readStudyDocumentBlob: async () => new Blob(['fake image']) }))
 vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 vi.mock('./StudyReader', async () => {
   const { useEffect } = await import('react')
   return { StudyReader: ({ onContextChange, page, region }: { onContextChange: (value: unknown) => void; page: number; region: unknown }) => {
-    useEffect(() => { onContextChange({ status: 'ready', page, pageCount: 1, region, text: 'x + 2 = 5', textRisk: mocks.textRisk ? 'unmapped-glyphs' : undefined, imageDataUrl: 'data:image/png;base64,AA==' }) }, [onContextChange, page, region])
+    useEffect(() => { onContextChange({ status: 'ready', page, pageCount: 1, region, imageDataUrl: mocks.imageReady ? 'data:image/png;base64,AA==' : undefined }) }, [onContextChange, page, region])
     return <p>Readable page fixture</p>
   } }
 })
@@ -23,20 +23,22 @@ vi.mock('./studyWorkspaceStore', async (importOriginal) => {
   return { ...original, initializeStudy: vi.fn(), sendStudyHelp: mocks.send, editStudyPage: mocks.edit, openStudyPage: mocks.open }
 })
 import { studyWorkspace } from './studyWorkspaceStore'
-
 const makeDoc = (): StudyDocument => ({ id: 'a'.repeat(64), revision: 0, name: 'Worksheet.pdf', kind: 'pdf', pageCount: 1, createdAt: 1, updatedAt: 1, size: 10, lastPage: 1, pages: { 1: { ...createEmptyStudyPage(), question: 'Why subtract two?' } } })
 function setup(doc = makeDoc()) {
   studyWorkspace.setState({ documents: [doc], selectedDocumentId: doc.id, selectedTurnId: null, loaded: true, importing: false, error: '', notice: '', dirtyIds: [], saveError: '', activeRequest: null })
   return render(<LangContext.Provider value="en"><StudyWorkspace onOpenSettings={vi.fn()} /></LangContext.Provider>)
 }
+beforeEach(() => { vi.clearAllMocks(); mocks.providers = true; mocks.vision = true; mocks.imageReady = true; HTMLElement.prototype.scrollIntoView = vi.fn() })
 
-beforeEach(() => { vi.clearAllMocks(); mocks.providers = true; mocks.vision = true; mocks.textRisk = false; HTMLElement.prototype.scrollIntoView = vi.fn() })
-
-describe('Study workspace interaction', () => {
-  it('defaults to one hint, requires an attempt for checking, and uses explicit solution action', async () => {
+describe('Study workspace image-only interaction', () => {
+  it('defaults to one hint, selects an eligible vision model, requires an attempt for checking, and offers explicit solution', async () => {
     setup()
     expect(screen.getByRole('radio', { name: 'One hint' })).toHaveAttribute('aria-checked', 'true')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+    expect(screen.queryByLabelText('Include page / region image')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Corrected problem text')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ mode: 'hint', model: 'vision', visionCapable: true, context: expect.objectContaining({ imageDataUrl: 'data:image/png;base64,AA==' }) })))
     fireEvent.click(screen.getByRole('radio', { name: 'Check my attempt' }))
     expect(screen.getByLabelText('My attempt')).toHaveAttribute('aria-required', 'true')
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
@@ -44,17 +46,15 @@ describe('Study workspace interaction', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Get full solution' }))
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ mode: 'solution', documentId: 'a'.repeat(64), page: 1 })))
   })
-  it('sends immutable image disclosure for retry even when current checkbox was unchecked', async () => {
+  it('uses an image for legacy text-only retries and discloses it without an opt-out fallback', async () => {
     const doc = makeDoc()
-    doc.pages['1'].history.push({ id: 'failed', page: 1, mode: 'hint', question: 'Original question', attempt: 'My attempt', sourceText: 'Original text', sourceImageUsed: true, answer: '', status: 'error', error: 'Provider failure', providerId: 'test', model: 'vision', createdAt: 1 })
+    doc.pages['1'].history.push({ id: 'failed', page: 1, mode: 'hint', question: 'Original question', attempt: 'My attempt', sourceText: 'Old extracted text', sourceImageUsed: false, answer: '', status: 'error', error: 'Provider failure', providerId: 'test', model: 'text', createdAt: 1 })
     setup(doc)
-    const imageCheckbox = await screen.findByLabelText('Include page / region image')
-    fireEvent.click(imageCheckbox)
-    expect(imageCheckbox).not.toBeChecked()
-    fireEvent.click(screen.getByRole('button', { name: 'Retry this question' }))
-    expect(imageCheckbox).toBeChecked()
-    expect(imageCheckbox).toBeDisabled()
-    expect(screen.getByText(/Sending shares.*page text and image.*Test provider/)).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry this question' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send retry' })).toBeEnabled())
+    expect(screen.getByText(/Sending shares.*page \/ region image.*Test provider/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Send retry' }))
+    await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ visionCapable: true, model: 'vision', retry: expect.objectContaining({ id: 'failed' }) })))
   })
   it('preserves page-bound edits and keyboard pane navigation', async () => {
     setup()
@@ -63,41 +63,29 @@ describe('Study workspace interaction', () => {
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Read' }), { key: 'ArrowRight' })
     expect(screen.getByRole('tab', { name: 'Help' })).toHaveAttribute('aria-selected', 'true')
   })
-  it('does not invent a model when none is configured and keeps reading available', async () => {
-    mocks.providers = false
+  it.each([false, true])('does not silently use a text-only or absent provider (providers=%s)', providers => {
+    mocks.providers = providers; mocks.vision = false
     setup()
-    await screen.findByText('Readable page fixture')
-    expect(screen.getByText(/Configure a model to ask for help/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    expect(mocks.send).not.toHaveBeenCalled()
+    return waitFor(() => {
+      expect(screen.getByText(/Choose an image-capable model in Settings/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+      expect(mocks.send).not.toHaveBeenCalled()
+    })
   })
-  it('disables native resize on all Study text areas while preserving their labels', async () => {
-    setup()
-    await screen.findByText('Readable page fixture')
-    for (const label of ['Question about this page', 'My attempt', 'Corrected problem text', 'Page notes']) {
-      expect(screen.getByLabelText(label)).toHaveStyle({ resize: 'none' })
-    }
-  })
-  it('requires correction or an included image for visibly damaged source text', async () => {
-    mocks.vision = false; mocks.textRisk = true
-    setup()
-    await screen.findByText(/Extracted text is missing or has unmapped symbols/)
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Correct the source text' }))
-    expect(screen.getByLabelText('Corrected problem text')).toHaveFocus()
-    expect(screen.getByLabelText('Corrected problem text').closest('details')).toHaveAttribute('open')
-    expect(mocks.send).not.toHaveBeenCalled()
-  })
-  it('requires leaving a damaged historical retry before correcting its source', async () => {
-    const doc = makeDoc()
-    doc.pages['1'].history.push({ id: 'old-damaged', page: 1, mode: 'hint', question: 'Old question', attempt: '', sourceText: '\uFFFDx2', sourceImageUsed: false, answer: '', status: 'error', error: 'Old failure', providerId: 'test', model: 'text', createdAt: 1 })
+  it('requires a rendered image even when a legacy manual source draft exists', async () => {
+    mocks.imageReady = false
+    const doc = makeDoc(); doc.pages['1'].correctedText = 'My old manually added formula'
     setup(doc)
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry this question' }))
-    expect(screen.getByRole('button', { name: 'Send retry' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel retry and correct source' }))
-    expect(screen.queryByRole('button', { name: 'Send retry' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Corrected problem text')).toHaveFocus()
-    expect(mocks.send).not.toHaveBeenCalled()
+    await screen.findByText('The page image is not ready. Wait for rendering or select a smaller area.')
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(screen.getByText('Earlier manually added text (not sent)')).toBeInTheDocument()
+    expect(screen.getByText('My old manually added formula')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Corrected problem text')).not.toBeInTheDocument()
+  })
+  it('keeps user question, attempt and notes inputs bounded with no native resize', async () => {
+    setup()
+    await screen.findByText('Readable page fixture')
+    for (const label of ['Question about this page', 'My attempt', 'Page notes']) expect(screen.getByLabelText(label)).toHaveStyle({ resize: 'none' })
   })
   it('shows save failures with a retry rather than a saved claim', async () => {
     setup()

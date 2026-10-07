@@ -7,7 +7,6 @@ export const STUDY_MATERIAL_LIMITS = {
   imagePixels: 16_000_000,
   renderPixels: 4_000_000,
   renderEdge: 2400,
-  textCharacters: 16_000,
   contextImageBytes: 1_500_000,
 } as const
 
@@ -18,17 +17,11 @@ const materialMessages = {
   types: ['仅支持有效的 PDF、PNG、JPEG 和 WebP 文件', 'Choose a valid PDF, PNG, JPEG, or WebP file.'],
   imageSize: ['无法读取图片尺寸，请重新导出为 PNG、JPEG 或 WebP', 'Image dimensions are unreadable. Export it again as PNG, JPEG, or WebP.'],
   imageLimit: ['图片过大，请缩小到 1600 万像素以内', 'Image is too large. Resize it to 16 megapixels or less.'],
-  canvas: ['当前环境无法显示材料，请使用文字输入', 'This environment cannot display the material. Use the text input.'],
+  canvas: ['当前环境无法显示材料图像', 'This environment cannot display the material image.'],
   decode: ['图片无法解码，请重新导出', 'The image cannot be decoded. Export it again.'],
-  noImageText: ['图片没有可提取的文字。当前不提供 OCR；请粘贴或修正题目文字，或选择支持图片的模型。', 'Images have no extractable text. OCR is not available. Paste or correct the problem text, or choose a vision-capable model.'],
   pageRange: ['页码超出材料范围', 'The page number is outside this material.'],
-  extraction: ['PDF 文字为尽力提取，公式、阅读顺序和框选范围可能不准确；请核对并修正。当前不提供 OCR。', 'PDF text extraction is best-effort. Formulas, reading order, and crop boundaries may be inaccurate; check and correct them. OCR is not available.'],
-  truncated: [' 本页文字已截取前 16000 字。', ' Page text is limited to the first 16,000 characters.'],
-  renderLimit: [' 为控制内存，超过 1600 万像素的内嵌图片可能不显示。', ' To limit memory use, embedded images above 16 megapixels may be omitted.'],
-  noPdfText: ['这一页没有可提取的文字，可能是扫描件。当前不提供 OCR；请粘贴或修正题目文字，或选择支持图片的模型。', 'This page has no extractable text and may be scanned. OCR is not available. Paste or correct the problem text, or choose a vision-capable model.'],
-  missingGlyphs: ['提取文字中发现缺失或未映射字符，公式可能不完整。请对照页面核对公式，再粘贴修正文字，或使用支持图片的模型发送选区图片。', 'Extracted text contains missing or unmapped characters; formulas may be incomplete. Check formulas against the page, then paste corrected text or send the selected image with a vision-capable model.'],
-  emptySelection: ['当前页面或选区没有可提取的文字。请对照页面核对公式，再粘贴修正文字，或使用支持图片的模型发送选区图片。当前不提供 OCR。', 'No text could be extracted from this page or selection. Check formulas against the page, then paste corrected text or send the selected image with a vision-capable model. OCR is not available.'],
-  extractionFailed: ['本页文字提取失败。当前不提供 OCR；请粘贴或修正题目文字，或选择支持图片的模型。', 'Text extraction failed for this page. OCR is not available. Paste or correct the problem text, or choose a vision-capable model.'],
+  renderSize: ['页面渲染图像最长边不超过 2400 像素、总像素不超过 400 万；较大页面会缩小显示。', 'Page images are rendered at up to 2,400 pixels on the longest edge and 4 megapixels; larger pages are downscaled.'],
+  renderLimit: ['为控制内存，超过 1600 万像素的 PDF 内嵌图片可能不显示。', 'To limit memory use, embedded PDF images above 16 megapixels may be omitted.'],
   imagePage: ['图片只有一页', 'An image has only one page.'],
   pageLimit: ['PDF 最多支持 1000 页，请拆分后导入', 'PDFs support up to 1000 pages. Split the file before importing.'],
   encrypted: ['暂不支持加密 PDF，请解锁后重新导入', 'Encrypted PDFs are not supported. Unlock the file before importing.'],
@@ -36,24 +29,19 @@ const materialMessages = {
 } as const
 const message = (key: keyof typeof materialMessages, lang: MaterialLanguage) => materialMessages[key][lang === 'zh' ? 0 : 1]
 
-export type StudyTextExtractionRisk = 'empty' | 'unmapped-glyphs'
 export type StudyRegion = { x: number; y: number; width: number; height: number }
 export type StudyMaterialInfo = { kind: 'pdf' | 'image'; pageCount: number; mimeType: string }
 export type StudyReaderContext = {
   page: number
   pageCount: number
-  text: string
   imageDataUrl?: string
   region: StudyRegion | null
   status: 'loading' | 'ready' | 'error'
   warning?: string
-  textRisk?: StudyTextExtractionRisk
   error?: string
 }
-type TextSpan = { text: string; region: StudyRegion; lineBreak: boolean }
 export type StudyPage = {
   canvas: HTMLCanvasElement
-  spans: TextSpan[]
   warning?: string
 }
 export type StudyMaterial = StudyMaterialInfo & {
@@ -181,7 +169,7 @@ async function renderImage(blob: Blob, signal: AbortSignal, lang: MaterialLangua
     context.fillStyle = '#fff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     context.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return { canvas, spans: [], warning: message('noImageText', lang) }
+    return { canvas, warning: message('renderSize', lang) }
   } finally {
     signal.removeEventListener('abort', cancel)
     image.onload = null
@@ -206,39 +194,7 @@ async function renderPdfPage(pdf: PDFDocumentProxy, pageNumber: number, signal: 
     signal.addEventListener('abort', cancel, { once: true })
     try { await task.promise } finally { signal.removeEventListener('abort', cancel) }
     checkAbort(signal)
-    const spans: TextSpan[] = []
-    let warning = message('extraction', lang)
-    try {
-      const reader = page.streamTextContent().getReader()
-      const abortText = () => { void reader.cancel().catch(() => undefined) }
-      signal.addEventListener('abort', abortText, { once: true })
-      let count = 0
-      try {
-        while (count <= STUDY_MATERIAL_LIMITS.textCharacters) {
-          const chunk = await reader.read()
-          if (chunk.done) break
-          checkAbort(signal)
-          for (const item of chunk.value.items) {
-            if (!('str' in item)) continue
-            const [x1, y1, x2, y2] = viewport.convertToViewportRectangle([item.transform[4], item.transform[5], item.transform[4] + item.width, item.transform[5] + item.height])
-            spans.push({ text: item.str.slice(0, STUDY_MATERIAL_LIMITS.textCharacters - count), lineBreak: item.hasEOL, region: { x: Math.min(x1, x2) / viewport.width, y: Math.min(y1, y2) / viewport.height, width: Math.abs(x2 - x1) / viewport.width, height: Math.abs(y2 - y1) / viewport.height } })
-            count += item.str.length
-            if (count > STUDY_MATERIAL_LIMITS.textCharacters) break
-          }
-        }
-        if (count > STUDY_MATERIAL_LIMITS.textCharacters) warning += message('truncated', lang)
-      } finally {
-        signal.removeEventListener('abort', abortText)
-        await reader.cancel().catch(() => undefined)
-        reader.releaseLock()
-      }
-      if (!spans.some(span => span.text.trim())) warning = message('noPdfText', lang)
-    } catch (error) {
-      checkAbort(signal)
-      warning = message('extractionFailed', lang)
-    }
-    checkAbort(signal)
-    return { canvas, spans, warning: warning + message('renderLimit', lang) }
+    return { canvas, warning: `${message('renderSize', lang)} ${message('renderLimit', lang)}` }
   } finally { page?.cleanup() }
 }
 
@@ -281,29 +237,6 @@ export async function loadStudyMaterial(blob: Blob, signal?: AbortSignal, lang: 
     return { kind: material.kind, pageCount: material.pageCount, mimeType: material.mimeType }
   }
   finally { await material.dispose() }
-}
-
-/** Detect observable extraction failures, not mathematical correctness or OCR quality. */
-export function studyTextExtractionRisk(text: string): StudyTextExtractionRisk | undefined {
-  if (!text.trim()) return 'empty'
-  for (const character of text) {
-    const code = character.codePointAt(0)!
-    const control = (code < 0x20 && ![0x09, 0x0a, 0x0d].includes(code)) || (code >= 0x7f && code <= 0x9f)
-    const privateUse = (code >= 0xe000 && code <= 0xf8ff) || (code >= 0xf0000 && code <= 0xffffd) || (code >= 0x100000 && code <= 0x10fffd)
-    const missingGlyph = code === 0xfffd || code === 0xfffc || (code >= 0xd800 && code <= 0xdfff) || (code >= 0xfdd0 && code <= 0xfdef) || (code & 0xffff) >= 0xfffe
-    if (control || privateUse || missingGlyph) return 'unmapped-glyphs'
-  }
-  // A normal-looking string can still lose fractions, exponents or reading order.
-  return undefined
-}
-
-export function studyTextExtractionNotice(risk: StudyTextExtractionRisk | undefined, lang: MaterialLanguage = 'zh'): string | undefined {
-  return risk ? message(risk === 'empty' ? 'emptySelection' : 'missingGlyphs', lang) : undefined
-}
-
-export function studyPageText(page: StudyPage, region: StudyRegion | null): string {
-  const selection = normalizeStudyRegion(region)
-  return page.spans.filter(span => !selection || (span.region.x + span.region.width >= selection.x && span.region.x <= selection.x + selection.width && span.region.y + span.region.height >= selection.y && span.region.y <= selection.y + selection.height)).map(span => span.text + (span.lineBreak ? '\n' : ' ')).join('').trim().slice(0, STUDY_MATERIAL_LIMITS.textCharacters)
 }
 
 /** Context PNGs are separate from the full reading canvas and always bounded. */

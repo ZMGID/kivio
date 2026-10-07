@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Crop, Maximize2, Minus, Plus } from 'lucide-
 import { Button, IconButton } from '../../components/Button'
 import { useLang } from '../../components/i18n'
 import { Input } from '../../settings/public/controls'
-import { normalizeStudyRegion, openStudyMaterial, studyPageImage, studyPageText, studyTextExtractionRisk, studyTextExtractionNotice, studyRegionFromPoints, type StudyMaterial, type StudyPage, type StudyReaderContext, type StudyRegion } from './studyMaterial'
+import { normalizeStudyRegion, openStudyMaterial, studyPageImage, studyRegionFromPoints, type StudyMaterial, type StudyPage, type StudyReaderContext, type StudyRegion } from './studyMaterial'
 import './StudyReader.css'
 
 type StudyReaderProps = {
@@ -36,19 +36,16 @@ export function StudyReader({ blob, page, onPageChange, region, onRegionChange, 
   const frame = current?.rendered
   const error = (loaded?.blob === blob && loaded.error) || current?.error || undefined
   const selection = useMemo(() => normalizeStudyRegion(region), [region])
-  const text = useMemo(() => frame ? studyPageText(frame, selection) : '', [frame, selection])
   const imageDataUrl = useMemo(() => frame ? studyPageImage(frame, selection) : undefined, [frame, selection])
-  const textRisk = frame && material?.kind === 'pdf' ? studyTextExtractionRisk(text) : undefined
-  const riskNotice = studyTextExtractionNotice(textRisk, lang)
   const displayedRegion = draftRegion ?? selection
-  const warning = frame?.warning && `${frame.warning}${!imageDataUrl ? (zh ? ' 图片过大，未附加到问题上下文。' : ' The image is too large to attach as question context.') : ''}`
+  const warning = frame ? [frame.warning, !imageDataUrl ? (zh ? '无法生成大小合适的上下文图片；请尝试较小选区。' : 'A context image could not be generated within the size limit. Try a smaller selection.') : undefined].filter(Boolean).join(' ') || undefined : undefined
 
   useLayoutEffect(() => { contextCallback.current = onContextChange }, [onContextChange])
   // Publish empty context at the same commit as a page/file change, before a stale
   // page can be sent. A late asynchronous render never owns the current context.
   useLayoutEffect(() => {
-    contextCallback.current({ page, pageCount, text, imageDataUrl, region: selection, status: error ? 'error' : frame ? 'ready' : 'loading', warning, textRisk, error })
-  }, [blob, page, pageCount, text, imageDataUrl, selection, frame, warning, textRisk, error])
+    contextCallback.current({ page, pageCount, imageDataUrl, region: selection, status: error ? 'error' : frame ? 'ready' : 'loading', warning, error })
+  }, [blob, page, pageCount, imageDataUrl, selection, frame, warning, error])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -158,25 +155,24 @@ export function StudyReader({ blob, page, onPageChange, region, onRegionChange, 
       {error ? <div className="kv-study-reader-status" role="alert"><p>{error}</p><Button size="sm" onClick={() => { setLoaded(null); setRendered(null); setRetry(value => value + 1) }}>{zh ? '重新读取' : 'Retry'}</Button></div> : !frame ? <p className="kv-study-reader-status" role="status">{zh ? `正在读取第 ${page} 页…` : `Reading page ${page}…`}</p> : <>
         <div className="kv-study-reader-paper-wrap" style={{ width: `${zoom * 100}%` }}>
           <div className={`kv-study-reader-paper${selecting ? ' is-selecting' : ''}`} role="group" aria-label={zh ? `第 ${page} 页。Page Up / Page Down 翻页；框选后方向键移动，Shift 加方向键调整大小，Escape 清除` : `Page ${page}. Page Up / Page Down to navigate. Arrow keys move a selected area; Shift and arrow keys resize; Escape clears it.`} tabIndex={0} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={() => { dragRef.current = null; setDraftRegion(null) }}>
-            <canvas ref={canvasRef} role="img" aria-label={zh ? `材料第 ${page} 页；可提取的文字见下方文字视图` : `Material page ${page}; extracted text is available below`} />
+            <canvas ref={canvasRef} role="img" aria-label={zh ? `材料第 ${page} 页的渲染图像` : `Rendered image of material page ${page}`} />
             {displayedRegion && <div className="kv-study-reader-region" aria-hidden="true" style={{ left: `${displayedRegion.x * 100}%`, top: `${displayedRegion.y * 100}%`, width: `${displayedRegion.width * 100}%`, height: `${displayedRegion.height * 100}%` }} />}
           </div>
         </div>
-        <div className="kv-study-reader-text">
+        <div className="kv-study-reader-source">
           {selecting && <p role="status">{zh ? '在页面上拖动框选；也可用下方按钮创建键盘可调整的选区' : 'Drag to select an area, or use the button below to create a keyboard-adjustable selection'}</p>}
-          <div className="kv-study-reader-text-actions"><span>{selection ? (zh ? '当前范围：框选区域' : 'Scope: selected area') : (zh ? '当前范围：整页' : 'Scope: full page')}</span><Button size="sm" variant="ghost" onClick={() => { onRegionChange({ x: 0.2, y: 0.2, width: 0.6, height: 0.3 }); setSelecting(false); canvasRef.current?.parentElement?.focus() }}>{zh ? '键盘框选' : 'Select with keyboard'}</Button></div>
-          {riskNotice && <p className="kv-study-reader-risk" role="status">{riskNotice}</p>}
-          <p className="kv-study-reader-notice">{warning}</p>
+          <div className="kv-study-reader-source-actions"><span>{selection ? (zh ? '当前范围：框选区域' : 'Scope: selected area') : (zh ? '当前范围：整页' : 'Scope: full page')}</span><Button size="sm" variant="ghost" onClick={() => { onRegionChange({ x: 0.2, y: 0.2, width: 0.6, height: 0.3 }); setSelecting(false); canvasRef.current?.parentElement?.focus({ preventScroll: true }) }}>{zh ? '键盘框选' : 'Select with keyboard'}</Button></div>
+          <p className="kv-study-reader-notice">{zh ? '直接显示材料的页面图像，并使用整页或框选图片作为来源；不做 OCR、文字提取或公式转写。' : 'Read the rendered source page and use a full-page or selected image as context. No OCR, text extraction, or formula transcription is performed.'}</p>
+          {warning && <p className="kv-study-reader-notice">{warning}</p>}
           {imageDataUrl && <details className="kv-study-reader-preview" key={`${page}-${Boolean(selection)}`} open={Boolean(selection)}>
             <summary>{selection ? (zh ? '预览框选图片' : 'Preview selected image') : (zh ? '预览整页图片' : 'Preview full page image')}</summary>
             <figure>
               <div className="kv-study-reader-preview-scroll custom-scrollbar">
                 <img src={imageDataUrl} alt={zh ? `第 ${page} 页${selection ? '框选区域' : '整页'}的问题上下文图片` : `Page ${page} ${selection ? 'selected area' : 'full page'} image for question context`} />
               </div>
-              <figcaption>{zh ? '这是问题上下文使用的同一张图片；仅在选择支持图片的模型并开启图片发送后，随问题一起发送。' : 'This is the same image used in question context. It is only sent when you choose a vision-capable model and enable image sending.'}</figcaption>
+              <figcaption>{zh ? '这是问题上下文使用的同一张 PNG 图片，由当前页面渲染图像裁切生成；最长边不超过 1600 像素，并可能进一步缩小以满足大小限制。发送问题时，这张图片会一起发送给所选的视觉模型。' : 'This is the same PNG used in question context, cropped from the rendered page. Its longest edge is at most 1,600 pixels and it may be downscaled further to fit the size limit. This image is sent with your question to the selected vision-capable model.'}</figcaption>
             </figure>
           </details>}
-          <details><summary>{selection ? (zh ? '查看框选区域文字（尽力提取）' : 'View selected text (best-effort)') : (zh ? '查看本页文字（可复制）' : 'View page text (copyable)')}</summary><p className="kv-study-reader-extracted">{text || (zh ? '没有可提取的文字。请在问题区补充题目文字。' : 'No extractable text. Add the problem text in the question area.')}</p></details>
         </div>
       </>}
     </div>

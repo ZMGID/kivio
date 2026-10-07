@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import type { StudyCompletionInput } from '../../src/api/study'
 
 function pdf(pages: string[]) {
   const objects = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${pages.map((_, i) => `${4 + i * 2} 0 R`).join(' ')}] /Count ${pages.length} >>`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
@@ -11,6 +12,51 @@ function pdf(pages: string[]) {
   const xref = Buffer.byteLength(result)
   result += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`
   return Buffer.from(result)
+}
+// An image-only PDF deliberately has no font or text-content stream.
+function scannedPdf(jpeg: Buffer) {
+  const content = 'q 612 0 0 792 0 0 cm /Scan Do Q'
+  const objects = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from('<< /Type /Pages /Kids [3 0 R] /Count 1 >>'),
+    Buffer.from('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Scan 5 0 R >> >> /Contents 4 0 R >>'),
+    Buffer.from(`<< /Length ${content.length} >>\nstream\n${content}\nendstream`),
+    Buffer.concat([Buffer.from(`<< /Type /XObject /Subtype /Image /Width 720 /Height 900 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>\nstream\n`), jpeg, Buffer.from('\nendstream')]),
+  ]
+  const chunks = [Buffer.from('%PDF-1.4\n')]
+  const offsets: number[] = []
+  let length = chunks[0].length
+  objects.forEach((object, index) => {
+    offsets.push(length)
+    const chunk = Buffer.concat([Buffer.from(`${index + 1} 0 obj\n`), object, Buffer.from('\nendobj\n')])
+    chunks.push(chunk); length += chunk.length
+  })
+  chunks.push(Buffer.from(`xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${length}\n%%EOF`))
+  return Buffer.concat(chunks)
+}
+async function scanImage(page: Page, mimeType = 'image/png') {
+  return page.evaluate(type => {
+    const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = 900
+    const ctx = canvas.getContext('2d')!; ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 720, 900)
+    ctx.fillStyle = '#111'; ctx.font = '24px sans-serif'; ctx.fillText('Handwritten problem: x + 2 = 5', 45, 90)
+    return canvas.toDataURL(type).split(',')[1]
+  }, mimeType)
+}
+async function expectImageOnlyRequest(page: Page, index: number): Promise<StudyCompletionInput> {
+  const request = await page.evaluate(index => window.__studyTest.requests[index], index)
+  expect(request.imageDataUrl).toMatch(/^data:image\/(png|jpeg);base64,/)
+  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', request.imageDataUrl!)
+  const context = JSON.parse(request.userPrompt.slice(request.userPrompt.indexOf('\n') + 1))
+  for (const field of ['text', 'pageText', 'recognizedText', 'extractedText', 'correctedText', 'pageTextTruncated']) expect(context).not.toHaveProperty(field)
+  expect(context.context).toMatch(/image/i)
+  expect(request.systemPrompt).not.toContain('RESPONSE FORMAT')
+  return request
+}
+async function expectNoTextWorkflow(page: Page) {
+  await expect(page.locator('.kv-study-reader-extracted')).toHaveCount(0)
+  await expect(page.getByLabel('Corrected problem text')).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: 'Include page / region image' })).toHaveCount(0)
+  await expect(page.getByText('Paste or correct problem text', { exact: true })).toHaveCount(0)
 }
 const material = (name = 'Calculus handout.pdf', pages = ['1. Why does substitution work?', '2. Differentiate x squared.', '3. Explain the chain rule.']) => ({ name, mimeType: 'application/pdf', buffer: pdf(pages) })
 async function importPdf(page: Page, name?: string, pages?: string[]) {
@@ -42,7 +88,12 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await question(page, 'Why change the variable?')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByText('Simulated test reply: identify', { exact: false }).first()).toBeVisible()
-  expect(await page.evaluate(() => window.__studyTest.requests[0].systemPrompt)).toContain('HINT MODE')
+  const first = await expectImageOnlyRequest(page, 0)
+  expect(first.systemPrompt).toContain('HINT MODE')
+  expect(first.model).toBe('test-vision')
+  expect(first.userPrompt).not.toContain('1. Why does substitution work?')
+  await expectNoTextWorkflow(page)
+  await expect(page.locator('.kv-study-reader-preview')).not.toHaveAttribute('open', '')
   await page.getByRole('radio', { name: 'Check my attempt' }).click()
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
   await page.getByLabel('My attempt', { exact: true }).fill('I differentiated x squared and got x.')
@@ -50,7 +101,7 @@ test('real PDF import, hint, attempt, source history and reload restoration', as
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.locator('.kv-study-turn')).toHaveCount(2)
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
-  expect(await page.evaluate(() => window.__studyTest.requests[1].systemPrompt)).toContain('CHECK MODE')
+  expect((await expectImageOnlyRequest(page, 1)).systemPrompt).toContain('CHECK MODE')
   await expectPdfInk(page)
   await screenshot(page, info.outputPath('study-desktop.png'))
   await page.getByRole('button', { name: /下一页|Next page/ }).click()
@@ -97,6 +148,9 @@ test('duplicates, same-name different bytes, corrupt import, cancellation and re
   await page.getByRole('button', { name: 'Send retry' }).click()
   await expect(page.locator('.kv-study-turn')).toHaveCount(2)
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
+  const failed = await expectImageOnlyRequest(page, 0)
+  const retried = await expectImageOnlyRequest(page, 1)
+  expect(retried.imageDataUrl).toBe(failed.imageDataUrl)
   await page.evaluate(() => { window.__studyTest.hold = true })
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stop reply' })).toBeVisible()
@@ -106,37 +160,52 @@ test('duplicates, same-name different bytes, corrupt import, cancellation and re
   await screenshot(page, info.outputPath('study-failure-retry.png'))
 })
 
-test('region selection, scanned image fallback, explicit solution and keyboard narrow panes', async ({ page }, info) => {
-  const image = await page.evaluate(() => {
-    const canvas = document.createElement('canvas'); canvas.width = 720; canvas.height = 900
-    const ctx = canvas.getContext('2d')!; ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 720, 900); ctx.fillStyle = '#111'; ctx.font = '24px sans-serif'; ctx.fillText('Handwritten problem: x + 2 = 5', 45, 90)
-    return canvas.toDataURL('image/png').split(',')[1]
-  })
-  await page.getByLabel('Import PDF or image').setInputFiles({ name: 'scanned-problem.png', mimeType: 'image/png', buffer: Buffer.from(image, 'base64') })
+test('image-only scanned PDF sends the page directly without a text layer', async ({ page }) => {
+  const jpeg = Buffer.from(await scanImage(page, 'image/jpeg'), 'base64')
+  await page.getByLabel('Import PDF or image').setInputFiles({ name: 'scan-without-text.pdf', mimeType: 'application/pdf', buffer: scannedPdf(jpeg) })
   await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await expectPdfInk(page)
+  await expectNoTextWorkflow(page)
+  await question(page, 'What should I try first?')
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
+  const request = await expectImageOnlyRequest(page, 0)
+  expect(request.model).toBe('test-vision')
+  expect(request.userPrompt).not.toContain('Handwritten problem')
+})
+
+test('image import and region selection send exact previews, with explicit solution and keyboard narrow panes', async ({ page }, info) => {
+  await page.getByLabel('Import PDF or image').setInputFiles({ name: 'scanned-problem.png', mimeType: 'image/png', buffer: Buffer.from(await scanImage(page), 'base64') })
+  await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await expectNoTextWorkflow(page)
   await question(page, 'Help me with this equation')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
-  await expect(page.getByRole('alert')).toContainText('no readable text')
-  await page.getByText('Paste or correct problem text', { exact: true }).click()
-  await page.getByLabel('Corrected problem text').fill('Solve x + 2 = 5.')
+  await expect(page.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
+  const fullPage = await expectImageOnlyRequest(page, 0)
+  expect(fullPage.userPrompt).not.toContain('Handwritten problem')
   await page.getByRole('button', { name: /键盘框选|Select with keyboard/ }).click()
   const paper = page.locator('.kv-study-reader-paper')
-  await paper.press('ArrowRight'); await paper.press('Shift+ArrowDown')
+  for (let step = 0; step < 8; step += 1) await paper.press('ArrowLeft')
+  for (let step = 0; step < 7; step += 1) await paper.press('ArrowUp')
+  await paper.press('Shift+ArrowDown')
   await expect(page.locator('.kv-study-reader-region')).toBeVisible()
-  await page.getByRole('button', { name: 'Study model', exact: true }).click()
-  await page.getByRole('option', { name: 'test-vision', exact: true }).click()
+  await expect(page.locator('.kv-study-reader-preview')).toHaveAttribute('open', '')
   await page.getByRole('radio', { name: 'Full solution', exact: true }).click()
   await page.getByRole('button', { name: 'Get full solution', exact: true }).click()
-  await expect(page.getByText('Reveal full solution', { exact: true })).toBeVisible()
-  await expect(page.getByText('Simulated test reply: identify', { exact: false })).not.toBeVisible()
-  await page.getByText('Reveal full solution', { exact: true }).click()
-  await expect(page.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
-  expect(await page.evaluate(() => window.__studyTest.requests[0].systemPrompt)).toContain('FULL SOLUTION MODE')
-  expect(await page.evaluate(() => window.__studyTest.requests[0].imageDataUrl)).toMatch(/^data:image\/png;base64,/)
+  const solution = page.locator('.kv-study-turn').last()
+  await expect(solution.getByRole('button', { name: 'Reveal full solution', exact: true })).toBeVisible()
+  await expect(solution.getByText('Simulated test reply: identify', { exact: false })).toHaveCount(0)
+  await solution.getByRole('button', { name: 'Reveal full solution', exact: true }).click()
+  await expect(solution.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
+  const region = await expectImageOnlyRequest(page, 1)
+  expect(region.systemPrompt).toContain('FULL SOLUTION MODE')
+  expect(region.imageDataUrl).not.toBe(fullPage.imageDataUrl)
   await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
   await page.reload()
   await expect(page.locator('.kv-study-reader-region')).toBeVisible()
-  await expect(page.getByLabel('Corrected problem text')).toHaveValue('Solve x + 2 = 5.')
+  await expect(page.getByLabel('Question about this page')).toHaveValue('Help me with this equation')
+  await expect(page.locator('.kv-study-reader-preview img')).toHaveAttribute('src', region.imageDataUrl!)
+  await expect(page.locator('.kv-study-turn').last().getByRole('button', { name: 'Reveal full solution', exact: true })).toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole('tab', { name: 'Read', exact: true }).click()
   await page.getByRole('tab', { name: 'Read', exact: true }).press('ArrowRight')
@@ -148,18 +217,37 @@ test('region selection, scanned image fallback, explicit solution and keyboard n
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy()
 })
 
+test('a text-only provider cannot silently send an image request without a vision model', async ({ page }) => {
+  await page.goto('/tests/study-browser/index.html?models=text-only')
+  await importPdf(page)
+  await question(page, 'Help me understand this page')
+  await expect(page.getByText('Choose an image-capable model in Settings to ask about this page. Reading and notes still work.', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Study model', exact: true })).toBeDisabled()
+  expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
+  await page.getByRole('button', { name: 'Open settings', exact: true }).click()
+  await expect(page.locator('body')).toHaveAttribute('data-settings-opened', 'true')
+  await page.locator('.kv-study-notes > summary').click()
+  await page.getByLabel('Page notes', { exact: true }).fill('I can keep reading while configuring a model.')
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
+})
+
 test('late reply stays on original document while drafts and model selection change', async ({ page }) => {
   await importPdf(page, 'First.pdf')
   await question(page, 'Original first document question')
   await page.evaluate(() => { window.__studyTest.hold = true })
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stop reply' })).toBeVisible()
+  const originalRequest = await expectImageOnlyRequest(page, 0)
   await page.getByLabel('Import PDF or image').setInputFiles(material('Second.pdf', ['A different topic.']))
   await expect(page.getByRole('heading', { name: 'Second.pdf', exact: true })).toBeVisible()
   await question(page, 'Second document unsent draft')
   await page.getByRole('button', { name: 'Study model', exact: true }).click()
-  await page.getByRole('option', { name: 'test-vision', exact: true }).click()
-  expect(await page.evaluate(() => window.__studyTest.requests[0].model)).toBe('test-text')
+  await expect(page.getByRole('option', { name: 'test-text', exact: true })).toHaveCount(0)
+  await page.getByRole('option', { name: 'test-vision-alt', exact: true }).click()
+  expect(await page.evaluate(() => window.__studyTest.requests[0].model)).toBe('test-vision')
+  expect(await page.evaluate(() => window.__studyTest.requests[0].imageDataUrl)).toBe(originalRequest.imageDataUrl)
+  await expect(page.locator('.kv-study-reader-preview img')).not.toHaveAttribute('src', originalRequest.imageDataUrl!)
   await page.evaluate(() => { window.__studyTest.hold = false })
   await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
   await expect(page.locator('.kv-study-turn')).toHaveCount(0)
@@ -168,6 +256,60 @@ test('late reply stays on original document while drafts and model selection cha
   await expect(page.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
   await page.locator('.kv-study-document-list button').filter({ hasText: 'Second.pdf' }).click()
   await expect(page.getByLabel('Question about this page')).toHaveValue('Second document unsent draft')
+})
+
+test('legacy source text and manual drafts stay local while retry sends the original page image', async ({ page }) => {
+  await importPdf(page)
+  await question(page, 'Retry my original question')
+  await page.evaluate(() => { window.__studyTest.failNext = true })
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByText('Simulated provider unavailable. Try again.')).toBeVisible()
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
+  // Simulate a persisted pre-image-only record. Recompute accounting so this is
+  // a valid legacy library, not a corrupt-record test or a production backdoor.
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open('kivio-study')
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['documents', 'meta'], 'readwrite')
+      tx.onerror = () => { db.close(); reject(tx.error) }
+      tx.oncomplete = () => { db.close(); resolve() }
+      const documents = tx.objectStore('documents')
+      const all = documents.getAll()
+      all.onsuccess = () => {
+        const record = all.result[0]
+        const previousBytes = record.metadataBytes
+        const draft = record.document.pages['1']
+        draft.correctedText = 'LEGACY_MANUAL_DRAFT_NOT_FOR_REQUESTS'
+        draft.history[0].sourceText = 'LEGACY_EXTRACTED_SOURCE_NOT_FOR_REQUESTS'
+        draft.history[0].sourceImageUsed = false
+        draft.history[0].model = 'test-text'
+        record.metadataBytes = new TextEncoder().encode(JSON.stringify(record.document)).byteLength
+        documents.put(record)
+        const meta = tx.objectStore('meta')
+        const workspace = meta.get('workspace')
+        workspace.onsuccess = () => meta.put({ ...workspace.result, totalBytes: workspace.result.totalBytes - previousBytes + record.metadataBytes })
+      }
+    }
+  }))
+  await page.reload()
+  await expect(page.locator('.kv-study-reader-paper canvas')).toBeVisible()
+  await expectNoTextWorkflow(page)
+  await page.getByText('Earlier manually added text (not sent)', { exact: true }).click()
+  await expect(page.getByText('LEGACY_MANUAL_DRAFT_NOT_FOR_REQUESTS', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Retry this question', exact: true }).click()
+  await page.getByRole('button', { name: 'Send retry', exact: true }).click()
+  await expect(page.getByText('Simulated test reply: identify', { exact: false })).toBeVisible()
+  const retried = await expectImageOnlyRequest(page, 0)
+  expect(retried.model).toBe('test-vision')
+  expect(JSON.stringify(retried)).not.toContain('LEGACY_')
+  expect(JSON.parse(retried.userPrompt.slice(retried.userPrompt.indexOf('\n') + 1)).question).toBe('Retry my original question')
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
+  await page.reload()
+  await page.getByText('Earlier manually added text (not sent)', { exact: true }).click()
+  await expect(page.getByText('LEGACY_MANUAL_DRAFT_NOT_FOR_REQUESTS', { exact: true })).toBeVisible()
+  await expect(page.locator('.kv-study-turn')).toHaveCount(2)
 })
 
 test('storage quota failure stays visible, keeps drafts and retries before reload', async ({ page }, info) => {
@@ -250,17 +392,7 @@ test('Study inputs autosize without drag handles, shrink and restore within boun
   await expect.poll(async () => (await metrics(attemptInput)).height).toBeCloseTo(attemptHeight, 0)
   await attemptInput.fill('I tried substituting u = x + 2, but I am not sure how du changes the integral.')
   await expect.poll(async () => (await metrics(attemptInput)).height).toBeLessThan(attemptHeight)
-  await page.getByText('Paste or correct problem text', { exact: true }).click()
-  const corrected = page.getByLabel('Corrected problem text')
-  await corrected.fill(long)
-  const correctedSize = await metrics(corrected)
-  expect(correctedSize.resize).toBe('none')
-  expect(correctedSize.height).toBeLessThanOrEqual(correctedSize.line * 7 + correctedSize.padding + 2)
-  await page.locator('.kv-study-correction > summary').click()
-  await page.locator('.kv-study-correction > summary').click()
-  await expect.poll(async () => (await metrics(corrected)).height).toBeCloseTo(correctedSize.height, 0)
-  await corrected.fill('')
-  await page.locator('.kv-study-correction > summary').click()
+  await expectNoTextWorkflow(page)
   await page.locator('.kv-study-notes > summary').click()
   const notes = page.getByLabel('Page notes', { exact: true })
   await notes.fill(long)
@@ -294,39 +426,33 @@ test('Study inputs autosize without drag handles, shrink and restore within boun
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
 })
 
-test('hint and check replies never expose raw streaming or unstructured solutions without consent', async ({ page }, info) => {
+test('hint and check show normal model text while streaming without a response envelope', async ({ page }, info) => {
   await importPdf(page)
-  const observedFullAnswer = "你的换元 \\(u=x^3\\) 是对的，但替换时漏掉了系数 \\(\\frac13\\)。\n\n因为\n\\[\ndu=3x^2\\,dx\\quad\\Rightarrow\\quad x^2\\,dx=\\frac13\\,du,\n\\]\n所以原积分应为\n\\[\n\\int\\frac{x^2}{1+x^6}\\,dx\n=\\frac13\\int\\frac{du}{1+u^2}\n=\\frac13\\arctan(u)+C\n=\\boxed{\\frac13\\arctan(x^3)+C}.\n\\]\n\n检验：你写的 \\(\\arctan(x^3)\\) 求导得到\n\\[\n\\frac{d}{dx}\\arctan(x^3)=\\frac{3x^2}{1+x^6},\n\\]\n比原函数多了 \\(3\\) 倍。因此第一处错误是把 \\(\\frac13\\,du\\) 写成了 \\(du\\)。下次换元时先把 \\(x^2dx\\) 单独写成 \\(\\frac13du\\)，再替换。"
-  await page.evaluate(value => { window.__studyTest.rawReply = value; window.__studyTest.hold = true }, observedFullAnswer)
+  const response = 'Simulated direct response: compare the substitution with your next line. Then explain which factor changes.'
+  await page.evaluate(value => { window.__studyTest.rawReply = value; window.__studyTest.hold = true }, response)
   await question(page, 'Check the factor in my substitution')
   await page.getByRole('radio', { name: 'Check my attempt' }).click()
   await page.getByLabel('My attempt', { exact: true }).fill('u=x^3; integral=arctan(x^3)+C')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Stop reply' })).toBeVisible()
-  await expect(page.getByText('你的换元', { exact: false })).toHaveCount(0)
+  await expect(page.getByText('Simulated direct response:', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'View original reply (may reveal the answer)' })).toHaveCount(0)
+  const check = await expectImageOnlyRequest(page, 0)
+  expect(check.systemPrompt).toContain('CHECK MODE')
   await page.evaluate(() => { window.__studyTest.hold = false })
-  const reveal = page.getByRole('button', { name: 'View original reply (may reveal the answer)' })
-  await expect(reveal).toBeVisible()
-  await expect(page.getByText('你的换元', { exact: false })).toHaveCount(0)
-  await page.screenshot({ path: info.outputPath('study-spoiler-guard.png'), fullPage: true })
-  await reveal.focus()
-  await page.keyboard.press('Enter')
-  await expect(page.getByText('你的换元', { exact: false }).first()).toBeVisible()
+  await expect(page.getByText(response, { exact: true })).toBeVisible()
+  await page.screenshot({ path: info.outputPath('study-direct-stream.png'), fullPage: true })
+  await expect(page.getByText('Saved on this device', { exact: true })).toBeVisible()
   await page.reload()
-  await expect(page.getByRole('button', { name: 'View original reply (may reveal the answer)' })).toBeVisible()
-  await expect(page.getByText('你的换元', { exact: false })).toHaveCount(0)
+  await expect(page.getByText(response, { exact: true })).toBeVisible()
 
-  await page.evaluate(() => { window.__studyTest.rawReply = JSON.stringify({ version: 1, mode: 'hint', hint: 'Review the sign in the rule.', withheldSolution: 'EXPLICIT SPOILER: final answer goes here.' }) })
+  await page.evaluate(() => { window.__studyTest.rawReply = 'Simulated hint: review the sign in the rule.'; window.__studyTest.hold = true })
   await page.getByRole('radio', { name: 'One hint' }).click()
   await question(page, 'Give one step only')
   await page.getByRole('button', { name: 'Send', exact: true }).click()
-  await expect(page.getByText('Review the sign in the rule.', { exact: true })).toBeVisible()
-  await expect(page.getByText('EXPLICIT SPOILER', { exact: false })).toHaveCount(0)
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.getByRole('tab', { name: 'Help', exact: true }).click()
-  const extra = page.getByRole('button', { name: 'Reveal extra explanation (may include the answer)' })
-  await extra.scrollIntoViewIfNeeded()
-  await page.screenshot({ path: info.outputPath('study-spoiler-guard-mobile.png'), fullPage: true })
-  await extra.click()
-  await expect(page.getByText('EXPLICIT SPOILER', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop reply' })).toBeVisible()
+  await expect(page.getByText('Simulated hint:', { exact: false })).toBeVisible()
+  expect((await expectImageOnlyRequest(page, 0)).systemPrompt).toContain('HINT MODE')
+  await page.evaluate(() => { window.__studyTest.hold = false })
+  await expect(page.getByText('Simulated hint: review the sign in the rule.', { exact: true })).toBeVisible()
 })

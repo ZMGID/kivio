@@ -2,6 +2,16 @@
 
 Date: 2026-10-06. This note records the first Study implementation and the evidence behind its design. It does not introduce a second engineering standard; [the unified engineering rules](../engineering-standards.md) remain authoritative.
 
+## Current flow: direct images, no extraction (2026-10-07)
+
+The latest user direction supersedes the extraction/correction and structured-output experiments recorded below: **send the original page/selected-region image plus the learner’s question and attempt directly to the model; keep the interaction simple.**
+
+- PDF.js renders page pixels only. Study does not call PDF text-layer extraction or an OCR engine, and never reconstructs formula text automatically. Imported images use their displayed pixels. The preview is exactly the bounded raster page/crop attached to the request; rendering/downscaling limits remain explicit.
+- A configured image-capable model and a ready image are required. There is no checkbox or silent text-only fallback, no formula-confirmation gate, and no mandatory transcription/correction field. Questions, attempts and notes remain learner-authored.
+- Legacy manually added text and historical source text remain locally readable for compatibility, but are not copied into a new request or retry as material. A retry keeps the original question/attempt/page/region and sends that source image.
+- Ordinary hint, explanation and check responses stream directly. The strict JSON response envelope/parser and malformed-response disclosure workflow were removed. A small read-only compatibility adapter keeps previously saved structured replies readable and their previously withheld solutions hidden; it imposes no format on new model replies. The four simple learning-mode instructions remain; explicitly chosen full solutions retain their reveal control. Model correctness and hint restraint are still not guaranteed.
+- The earlier live probes were text-only historical experiments, not evidence for this image-only flow or live image interpretation. Current browser acceptance checks the exact image payload and direct streaming with a clearly labelled simulated provider; native tests verify image/capability rejection and transport assembly.
+
 ## Product scope
 
 Study adds a material-centered workspace inside the existing Chat application. A learner imports a local PDF, PNG, JPEG, or WebP, reads a page, optionally selects a region, asks for help, and keeps page-bound drafts, attempts, notes, and response history. Reading and local notes do not require a model. Model answers use a provider/model already configured in Kivio. Browser-only preview reports that real answers require the desktop app; it does not substitute canned tutoring responses.

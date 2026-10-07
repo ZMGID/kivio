@@ -133,6 +133,9 @@ fn validate_input(input: &StudyCompletionInput) -> Result<(), String> {
     {
         return Err("Study context is empty or too large. Select a smaller part to study.".into());
     }
+    if input.image_data_url.as_deref().is_none_or(|image| image.trim().is_empty()) {
+        return Err("Study requires the original page or selected-region image. Wait for it to finish loading.".into());
+    }
     Ok(())
 }
 
@@ -189,7 +192,7 @@ fn build_request(
         return Err("Sign in to the selected model provider in Settings first.".into());
     }
     if model_can_generate_images_directly(provider, &input.model) {
-        return Err("Choose a text or vision model for study help, not an image-generation model.".into());
+        return Err("Choose a vision-capable model for study help, not an image-generation model.".into());
     }
     // OpenAI Chat merges user model extraBody after the generated request. Reject
     // overrides that could replace the selected context/model or enable server tools.
@@ -209,6 +212,10 @@ fn build_request(
             return Err(format!("Study cannot use the model's extra-body override '{key}'. Choose a model configuration without context, tool, or streaming overrides."));
         }
     }
+    if model_supports_vision(Some(provider), &input.model) != Some(true) {
+        return Err("This model has no confirmed image-input support. Choose a vision-capable model for the original page image.".into());
+    }
+    let image = input.image_data_url.as_deref().ok_or("Study requires the original page image.")?;
     let mut messages: Vec<ModelMessage> = input
         .history
         .iter()
@@ -220,13 +227,7 @@ fn build_request(
             message.content.clone(),
         ))
         .collect();
-    let mut content = vec![MessagePart::Text { text: input.user_prompt.clone() }];
-    if let Some(image) = input.image_data_url.as_deref() {
-        if model_supports_vision(Some(provider), &input.model) != Some(true) {
-            return Err("This model has no confirmed image-input support. Choose a vision model or use extracted page text.".into());
-        }
-        content.push(image_part(image)?);
-    }
+    let content = vec![MessagePart::Text { text: input.user_prompt.clone() }, image_part(image)?];
     messages.push(ModelMessage { role: ModelRole::User, content });
     let (thinking_enabled, thinking_level) = super::commands::reasoning::resolve_thinking(
         None, true, Some(provider), &input.model,
@@ -324,6 +325,12 @@ pub(crate) async fn study_request_help(
 mod tests {
     use super::*;
 
+    fn page_image() -> String {
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes.into_inner()))
+    }
+
     fn input() -> StudyCompletionInput {
         StudyCompletionInput {
             request_id: "original-study-request".into(),
@@ -333,7 +340,7 @@ mod tests {
             system_prompt: "Give one hint, never the final answer.".into(),
             user_prompt: "Page 2: x + 3 = 5".into(),
             history: vec![],
-            image_data_url: None,
+            image_data_url: Some(page_image()),
         }
     }
 
@@ -341,7 +348,8 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": "test-provider", "name": "Mock provider", "apiKeys": [],
             "baseUrl": "http://localhost:1/v1", "availableModels": ["study-test-model"],
-            "enabledModels": ["study-test-model"], "enabled": true, "apiFormat": "openai_chat"
+            "enabledModels": ["study-test-model"], "enabled": true, "apiFormat": "openai_chat",
+            "modelOverrides": { "study-test-model": { "capabilities": { "vision": true } } }
         })).unwrap()
     }
 
@@ -357,6 +365,8 @@ mod tests {
         assert_eq!(request.messages[0].role, ModelRole::Assistant);
         assert_eq!(request.messages[1].role, ModelRole::User);
         assert_eq!(request.system, input.system_prompt);
+        assert_eq!(request.messages[1].content.len(), 2);
+        assert!(matches!(request.messages[1].content[1], MessagePart::Image { path: None, .. }));
     }
 
     #[test]
@@ -365,16 +375,28 @@ mod tests {
         provider.enabled = false;
         assert!(build_request(&input(), &provider).unwrap_err().contains("enabled model"));
         provider.enabled = true;
-        let mut input = input();
-        input.image_data_url = Some("data:image/png;base64,AAAA".into());
-        assert!(build_request(&input, &provider).unwrap_err().contains("image-input support"));
+        provider.model_overrides.clear();
+        assert!(build_request(&input(), &provider).unwrap_err().contains("image-input support"));
+        provider.model_overrides.insert("study-test-model".into(), serde_json::from_value(serde_json::json!({ "capabilities": { "vision": false } })).unwrap());
+        assert!(build_request(&input(), &provider).unwrap_err().contains("image-input support"));
+    }
+
+    #[test]
+    fn rejects_missing_image_even_when_text_and_vision_are_available() {
+        for image in [None, Some(String::new()), Some("   ".into())] {
+            let mut input = input();
+            input.image_data_url = image;
+            assert!(validate_input(&input).unwrap_err().contains("original page"));
+            assert!(build_request(&input, &provider()).unwrap_err().contains("original page"));
+        }
     }
 
     #[test]
     fn rejects_extra_body_context_and_tool_bypasses_without_changing_settings() {
         let mut provider = provider();
         let settings: crate::settings::ModelInfo = serde_json::from_value(serde_json::json!({
-            "extraBody": { "tools": [{ "type": "web_search" }] }
+            "extraBody": { "tools": [{ "type": "web_search" }] },
+            "capabilities": { "vision": true }
         })).unwrap();
         provider.model_overrides.insert("study-test-model".into(), settings);
         assert!(build_request(&input(), &provider).unwrap_err().contains("extra-body override 'tools'"));

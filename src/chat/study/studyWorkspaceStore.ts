@@ -1,6 +1,7 @@
 import { createWindowStore } from '../../utils/windowStore'
-import { loadStudyMaterial, studyTextExtractionRisk, type StudyReaderContext, type StudyRegion } from './studyMaterial'
+import { loadStudyMaterial, type StudyReaderContext, type StudyRegion } from './studyMaterial'
 import { requestStudyHelp, type StudyHelpInput } from './studyRequest'
+import { readLegacyStudyAnswer } from './studyLegacyAnswer'
 import {
   createEmptyStudyPage, deleteStudyDocument, importStudyDocument, loadStudyWorkspace,
   saveStudyDocument, setSelectedStudyDocument, validateStudyDocument, STUDY_LIMITS, type StudyDocument, type StudyPageState, type StudyTurn,
@@ -200,38 +201,37 @@ function patchTurn(documentId: string, page: number, turnId: string, patch: Part
 export function sameStudyRegion(a?: StudyRegion | null, b?: StudyRegion | null) {
   return (!a && !b) || Boolean(a && b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height)
 }
-function draftContainsTurn(doc: StudyDocument, page: number, id: string) { return studyPage(doc, page).history.some((turn) => turn.id === id) }
 export async function sendStudyHelp(options: {
   documentId: string; page: number; mode: StudyTurn['mode']; providerId: string; model: string
-  context: StudyReaderContext; includeImage: boolean; retry?: StudyTurn
+  context: StudyReaderContext; visionCapable: boolean; retry?: StudyTurn
 }) {
-  const { documentId, page, context, retry } = options
+  const { documentId, page, context } = options
   const doc = documentById(documentId)
   if (!doc || removing.has(documentId) || studyWorkspace.getSnapshot().activeRequest) return
   if (!Number.isInteger(page) || page < 1 || page > doc.pageCount) throw new Error('Select a valid document page.')
-  if (retry && (retry.page !== page || !draftContainsTurn(doc, page, retry.id))) throw new Error('This saved question belongs to another material or page.')
   const draft = studyPage(doc, page)
+  // Resolve the persisted snapshot, rather than trusting fields on a caller's old copy.
+  const retry = options.retry && draft.history.find((turn) => turn.id === options.retry?.id)
+  if (options.retry && (options.retry.page !== page || !retry)) throw new Error('This saved question belongs to another material or page.')
   if (draft.history.length >= STUDY_LIMITS.maxHistoryPerPage) throw new Error('This page has reached its 500-response history limit. Your question and notes are unchanged. Start on another page or material.')
   if (context.status !== 'ready' || context.page !== page || !sameStudyRegion(context.region, retry ? retry.region : draft.region)) throw new Error('Wait for the selected page or region to finish loading.')
+  if (!context.imageDataUrl?.trim()) throw new Error('Wait for the original page image to finish loading.')
+  if (options.visionCapable !== true) throw new Error('Choose a vision-capable model to study the original page image.')
+  const mode = retry?.mode ?? options.mode
   const question = retry?.question ?? draft.question.trim()
   const attempt = retry?.attempt ?? draft.attempt.trim()
   if (!question) throw new Error('Write a question about this page first. / 请先写下问题。')
-  if (options.mode === 'check' && !attempt.trim()) throw new Error('Add your attempt before checking it. / 请先写出自己的解答或思路。')
-  const sourceText = retry?.sourceText ?? (draft.correctedText.trim() || context.text)
-  const includeImage = retry?.sourceImageUsed ?? options.includeImage
-  if (includeImage && !context.imageDataUrl) throw new Error('The page image is not ready. Try again or use corrected problem text.')
-  if (retry && !includeImage && studyTextExtractionRisk(retry.sourceText)) throw new Error('The saved source text is damaged. Cancel retry, correct the source, and send a new question. / 保存的原文有缺失或乱码，请取消重试、修正原文后重新提问。')
-  if (!retry && context.textRisk && !draft.correctedText.trim() && !includeImage) throw new Error('Extracted symbols are missing or unreadable. Correct the problem text or include a readable page image. / 提取文字有缺失或乱码，请修正题目文字或附上清晰图片。')
-  if (!sourceText.trim() && !includeImage) throw new Error('This page has no readable text. Paste or correct the problem text, or choose an image-capable model. / 无可读文字，请补充题目文字或选择视觉模型。')
+  if (mode === 'check' && !attempt.trim()) throw new Error('Add your attempt before checking it. / 请先写出自己的解答或思路。')
   const turnId = crypto.randomUUID()
-  const input: StudyHelpInput = { requestId: turnId, documentId, documentName: doc.name, pageNumber: page, mode: options.mode,
-    question, attempt, pageText: sourceText, imageDataUrl: includeImage ? context.imageDataUrl : undefined,
+  const input: StudyHelpInput = { requestId: turnId, documentId, documentName: doc.name, pageNumber: page, mode,
+    question, attempt, imageDataUrl: context.imageDataUrl, visionCapable: options.visionCapable,
     providerId: options.providerId, model: options.model,
-    history: draft.history.filter((turn) => turn.status === 'complete').slice(-6).flatMap((turn) => [{ role: 'user' as const, content: `${turn.question}\n${turn.attempt}` }, { role: 'assistant' as const, content: turn.answer }]),
+    history: draft.history.filter((turn) => turn.status === 'complete').slice(-6).flatMap((turn) => [{ role: 'user' as const, content: `${turn.question}\n${turn.attempt}` }, { role: 'assistant' as const, content: readLegacyStudyAnswer(turn.answer)?.visibleText ?? turn.answer }]),
   }
-  const turn: StudyTurn = { id: turnId, page, mode: options.mode, question, attempt, sourceText, region: retry ? retry.region : draft.region,
+  const selectedRegion = retry ? retry.region : draft.region
+  const turn: StudyTurn = { id: turnId, page, mode, question, attempt, sourceText: '', region: selectedRegion ? { ...selectedRegion } : selectedRegion,
     answer: '', status: 'streaming', createdAt: Date.now(), providerId: options.providerId, model: options.model,
-    sourceImageUsed: includeImage, sourceWarning: retry?.sourceWarning ?? context.warning,
+    sourceImageUsed: true, sourceWarning: context.warning,
   }
   // Leave room for a bounded error/terminal status even if the provider fills the response budget.
   const terminalReserve = 4096

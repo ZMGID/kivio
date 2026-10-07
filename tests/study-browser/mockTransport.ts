@@ -17,11 +17,15 @@ export async function streamStudyCompletion(input: StudyCompletionInput, onDelta
   const lesson = window.__studyTest.lesson
   const generic = 'Simulated test reply: identify the variable that changes, then explain why that step is valid.'
   // Fixed teaching examples prove interface behavior, not live-model quality.
-  const content = window.__studyTest.rawReply ?? (check ? JSON.stringify({ version: 1, mode: 'check',
-    verification: lesson === 'mit-5b-13' ? '演示核对：你写的反导数求导后是被积函数的三倍。' : lesson === 'mit-5f-2a' ? '演示核对：你写的结果求导后比被积函数多 $2e^x$。' : 'Simulated verification only.',
-    firstIssue: lesson === 'mit-5b-13' ? '演示检查（非真实模型调用）：第一处问题在第三行，换元时漏掉了系数 $\\frac{1}{3}$。' : lesson === 'mit-5f-2a' ? '演示检查（非真实模型调用）：第三行的加号应为减号。' : generic,
-    nextStep: lesson === 'mit-5b-13' ? '由 $du=3x^2\\,dx$，先把 $x^2\\,dx$ 改写成 $\\frac{1}{3}du$，再继续。' : lesson === 'mit-5f-2a' ? '对照 $\\int u\\,dv=uv-\\int v\\,du$，自己修正第三行。' : 'Try that step in your own words.',
-  }) : hint ? JSON.stringify({ version: 1, mode: 'hint', hint: lesson ? '演示提示（非真实模型调用）：题目已经提示 $u=x^3$。下一步先写出 $du$ 与 $x^2\\,dx$ 的关系。' : generic }) : generic)
+  const content = window.__studyTest.rawReply ?? (check
+    ? lesson === 'mit-5b-13'
+      ? '演示检查（非真实模型调用）：第一处问题在第三行，换元时漏掉了系数 $\\frac{1}{3}$。由 $du=3x^2\\,dx$，先把 $x^2\\,dx$ 改写成 $\\frac{1}{3}du$，再继续。'
+      : lesson === 'mit-5f-2a'
+        ? '演示检查（非真实模型调用）：第三行的加号应为减号。对照 $\\int u\\,dv=uv-\\int v\\,du$，自己修正第三行。'
+        : generic
+    : hint && lesson === 'mit-5b-13'
+      ? '演示提示（非真实模型调用）：题目已经提示 $u=x^3$。下一步先写出 $du$ 与 $x^2\\,dx$ 的关系。'
+      : generic)
   const split = Math.max(1, Math.floor(content.length / 2))
   onDelta(content.slice(0, split))
   while (window.__studyTest.hold) await wait()

@@ -36,10 +36,10 @@ function response(input: StudyHelpInput, content = 'A helpful answer'): StudyHel
   return { requestId: input.requestId, documentId: input.documentId, pageNumber: input.pageNumber, mode: input.mode ?? 'hint', providerId: input.providerId, model: input.model, content }
 }
 function context(page = 1, region: StudyReaderContext['region'] = null): StudyReaderContext {
-  return { page, pageCount: 3, text: 'Original page text', region, status: 'ready', imageDataUrl: 'data:image/png;base64,newImage' }
+  return { page, pageCount: 3, region, status: 'ready', imageDataUrl: 'data:image/png;base64,newImage' }
 }
 function options(document: StudyDocument, page = 1) {
-  return { documentId: document.id, page, mode: 'hint' as const, providerId: 'provider', model: 'model', includeImage: false, context: context(page) }
+  return { documentId: document.id, page, mode: 'hint' as const, providerId: 'provider', model: 'model', visionCapable: true, context: context(page) }
 }
 async function seed(count = 1) {
   const documents: StudyDocument[] = []
@@ -71,18 +71,56 @@ function holdNextSave() {
 }
 
 describe('Study workspace lifecycle', () => {
-  it('will not send damaged extraction alone, but accepts corrected text or the exact region image', async () => {
+  it('always sends the image and learner text, never extracted or corrected source text', async () => {
     const [document] = await seed()
     await question(document)
-    const damaged = { ...options(document), context: { ...context(), text: '\uFFFDx2', textRisk: 'unmapped-glyphs' as const } }
-    await expect(owner.sendStudyHelp(damaged)).rejects.toThrow('Extracted symbols')
+    owner.editStudyPage(document.id, 1, { attempt: 'My own attempt', correctedText: 'LEGACY_CORRECTED_FORMULA' })
+    const legacyContext = { ...context(), text: 'LEGACY_EXTRACTED_FORMULA', textRisk: 'unmapped-glyphs' }
+    await owner.sendStudyHelp({ ...options(document), context: legacyContext })
+    await saved()
+    const input = mocks.request.mock.calls[0][0]
+    expect(input).toMatchObject({ question: 'Why this equation?', attempt: 'My own attempt', imageDataUrl: legacyContext.imageDataUrl })
+    expect(JSON.stringify(input)).not.toMatch(/LEGACY_|pageText|correctedText|sourceText/)
+    expect(current(document).pages['1']).toMatchObject({ correctedText: 'LEGACY_CORRECTED_FORMULA', history: [expect.objectContaining({ sourceText: '', sourceImageUsed: true })] })
+  })
+
+  it('rejects absent images and text-only or unconfirmed models before saving or calling the provider', async () => {
+    const [document] = await seed()
+    await question(document)
+    owner.editStudyPage(document.id, 1, { correctedText: 'Legacy corrected source is no fallback' })
+    await saved()
+    for (const imageDataUrl of [undefined, '', '  ']) {
+      await expect(owner.sendStudyHelp({ ...options(document), context: { ...context(), imageDataUrl } })).rejects.toThrow('page image')
+    }
+    for (const visionCapable of [false, undefined]) {
+      await expect(owner.sendStudyHelp({ ...options(document), visionCapable: visionCapable as boolean })).rejects.toThrow('vision-capable model')
+    }
     expect(mocks.request).not.toHaveBeenCalled()
-    owner.editStudyPage(document.id, 1, { correctedText: 'Integral of x squared.' })
-    await owner.sendStudyHelp(damaged)
-    expect(mocks.request).toHaveBeenLastCalledWith(expect.objectContaining({ pageText: 'Integral of x squared.', imageDataUrl: undefined }), expect.any(Function), expect.any(AbortSignal))
-    owner.editStudyPage(document.id, 1, { correctedText: '' })
-    await owner.sendStudyHelp({ ...damaged, includeImage: true })
-    expect(mocks.request).toHaveBeenLastCalledWith(expect.objectContaining({ imageDataUrl: damaged.context.imageDataUrl }), expect.any(Function), expect.any(AbortSignal))
+    expect(current(document).pages['1'].history).toEqual([])
+    expect(owner.studyWorkspace.getSnapshot().activeRequest).toBeNull()
+  })
+
+  it('keeps legacy saved source text out of prior discussion while retaining questions, attempts, and answers', async () => {
+    const [document] = await seed()
+    const original: StudyTurn = { id: 'legacy-complete', page: 1, mode: 'hint', question: 'Earlier question', attempt: 'Earlier attempt', sourceText: 'LEGACY_SAVED_FORMULA', sourceImageUsed: false, answer: 'Earlier AI answer', status: 'complete', createdAt: 1, providerId: 'provider', model: 'model' }
+    owner.editStudyPage(document.id, 1, { question: 'Next question', correctedText: 'LEGACY_CORRECTED_FORMULA', history: [original] })
+    await owner.sendStudyHelp(options(document))
+    expect(mocks.request.mock.calls[0][0].history).toEqual([{ role: 'user', content: 'Earlier question\nEarlier attempt' }, { role: 'assistant', content: 'Earlier AI answer' }])
+    expect(JSON.stringify(mocks.request.mock.calls[0][0])).not.toContain('LEGACY_')
+    expect(current(document).pages['1'].history[0].sourceText).toBe('LEGACY_SAVED_FORMULA')
+  })
+
+  it.each([false, true])('keeps legacy structured history readable without resending its protocol or withheld answer (fenced=%s)', async fenced => {
+    const [document] = await seed()
+    const encoded = JSON.stringify({ version: 1, mode: 'hint', hint: 'Try substitution.', withheldSolution: 'OLD HIDDEN ANSWER' })
+    const answer = fenced ? '```\n' + encoded + '\n```' : encoded
+    const original: StudyTurn = { id: 'old-envelope', page: 1, mode: 'hint', question: 'Original', attempt: '', sourceText: 'OLD EXTRACTED SOURCE', answer, status: 'complete', createdAt: 1, providerId: 'provider', model: 'model' }
+    owner.editStudyPage(document.id, 1, { question: 'Next question', history: [original] })
+    await owner.sendStudyHelp(options(document))
+    const request = mocks.request.mock.calls[0][0]
+    expect(request.history).toContainEqual({ role: 'assistant', content: 'Try substitution.' })
+    expect(JSON.stringify(request)).not.toMatch(/OLD HIDDEN ANSWER|OLD EXTRACTED SOURCE|withheldSolution/)
+    expect(current(document).pages['1'].history[0].answer).toBe(answer)
   })
 
   it('can retry initialization after a transient storage failure', async () => {
@@ -235,19 +273,26 @@ describe('Study workspace lifecycle', () => {
     owner.editStudyPage(document.id, 1, { question: 'Changed question', attempt: 'Changed attempt', correctedText: 'Changed source', region: { x: 0, y: 0, width: 0.5, height: 0.5 }, history: [original] })
     await saved()
     owner.openStudyPage(document.id, 1, original.region, original.id)
-    await owner.sendStudyHelp({ ...options(document), mode: 'check', retry: original, context: { ...context(), warning: 'New extraction warning' } })
+    await owner.sendStudyHelp({ ...options(document), mode: 'check', retry: original, context: { ...context(), warning: 'New image warning' } })
     await saved()
-    expect(mocks.request.mock.calls[0][0]).toMatchObject({ question: 'Original question', attempt: 'Original attempt', pageText: 'Original corrected text', imageDataUrl: 'data:image/png;base64,newImage', providerId: 'provider', model: 'model' })
-    expect(current(document).pages['1'].history[1]).toMatchObject({ region: null, sourceWarning: 'Original OCR warning', sourceImageUsed: true })
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({ question: 'Original question', attempt: 'Original attempt', imageDataUrl: 'data:image/png;base64,newImage', providerId: 'provider', model: 'model' })
+    expect(current(document).pages['1'].history[1]).toMatchObject({ region: null, sourceText: '', sourceWarning: 'New image warning', sourceImageUsed: true })
   })
 
-  it('blocks damaged pre-upgrade retry snapshots without replacing their original source', async () => {
+  it('retries legacy text-only snapshots using the original image without changing saved text or newer drafts', async () => {
     const [document] = await seed()
-    const original: StudyTurn = { id: 'old-damaged', page: 1, mode: 'hint', question: 'Original', attempt: '', sourceText: '\uFFFDx2', answer: '', status: 'error', createdAt: 1, providerId: 'provider', model: 'model', sourceImageUsed: false }
-    owner.editStudyPage(document.id, 1, { correctedText: 'New readable source', history: [original] })
-    await expect(owner.sendStudyHelp({ ...options(document), retry: original })).rejects.toThrow('Cancel retry')
+    const original: StudyTurn = { id: 'old-damaged', page: 1, mode: 'hint', question: 'Original', attempt: 'Original attempt', sourceText: '\uFFFDLEGACY_FORMULA', answer: '', status: 'error', createdAt: 1, providerId: 'provider', model: 'model', sourceImageUsed: false }
+    owner.editStudyPage(document.id, 1, { question: 'New question', correctedText: 'New readable source', history: [original] })
+    await expect(owner.sendStudyHelp({ ...options(document), retry: original, context: { ...context(), imageDataUrl: undefined } })).rejects.toThrow('page image')
+    await expect(owner.sendStudyHelp({ ...options(document), retry: original, visionCapable: false })).rejects.toThrow('vision-capable model')
     expect(mocks.request).not.toHaveBeenCalled()
-    expect(current(document).pages['1'].history[0].sourceText).toBe('\uFFFDx2')
+    await owner.sendStudyHelp({ ...options(document), retry: { ...original, question: 'Mutated caller question', attempt: 'Mutated caller attempt', sourceText: 'New caller source' } })
+    await saved()
+    expect(mocks.request.mock.calls[0][0]).toMatchObject({ question: 'Original', attempt: 'Original attempt', imageDataUrl: context().imageDataUrl })
+    expect(JSON.stringify(mocks.request.mock.calls[0][0])).not.toMatch(/LEGACY_|pageText|New readable source|New caller source/)
+    expect(current(document).pages['1']).toMatchObject({ question: 'New question', correctedText: 'New readable source' })
+    expect(current(document).pages['1'].history[0].sourceText).toBe('\uFFFDLEGACY_FORMULA')
+    expect(current(document).pages['1'].history[1]).toMatchObject({ sourceText: '', sourceImageUsed: true })
   })
 
   it('rejects a retry from another page or document and waits for its exact region', async () => {
@@ -260,6 +305,39 @@ describe('Study workspace lifecycle', () => {
     await expect(owner.sendStudyHelp({ ...options(document, 2), retry: original })).rejects.toThrow('another material or page')
     await expect(owner.sendStudyHelp({ ...options(document), retry: original })).rejects.toThrow('region to finish loading')
     expect(mocks.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps a retried region image bound to its original selection through edits and cancellation', async () => {
+    const [document] = await seed()
+    const region = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
+    const original: StudyTurn = { id: 'region-retry', page: 1, mode: 'hint', question: 'Original crop question', attempt: 'Original attempt', sourceText: 'LEGACY_CROP_TEXT', region, answer: '', status: 'cancelled', createdAt: 1, providerId: 'provider', model: 'model', sourceImageUsed: false }
+    owner.editStudyPage(document.id, 1, { question: 'New draft', region, history: [original] })
+    await saved()
+    await expect(owner.sendStudyHelp({ ...options(document), retry: { ...original, region: null } })).rejects.toThrow('region to finish loading')
+    const selectedContext = context(1, { ...region })
+    selectedContext.imageDataUrl = 'data:image/png;base64,originalCrop'
+    const started = deferred()
+    let delta!: (value: string) => void
+    mocks.request.mockImplementationOnce((input: StudyHelpInput, onDelta: (value: string) => void, signal: AbortSignal) => {
+      expect(input).toMatchObject({ pageNumber: 1, question: 'Original crop question', imageDataUrl: 'data:image/png;base64,originalCrop' })
+      expect(JSON.stringify(input)).not.toContain('LEGACY_CROP_TEXT')
+      delta = onDelta
+      started.resolve()
+      return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Stopped', 'AbortError')), { once: true }))
+    })
+    const sending = owner.sendStudyHelp({ ...options(document), retry: original, context: selectedContext })
+    selectedContext.imageDataUrl = 'data:image/png;base64,newCrop'
+    selectedContext.region!.x = 0.6
+    owner.editStudyPage(document.id, 1, { question: 'Later draft', region: null })
+    await started.promise
+    delta('Keep this original-crop hint')
+    owner.cancelStudyHelp()
+    delta('Ignore late output')
+    await sending
+    await saved()
+    expect(current(document).pages['1']).toMatchObject({ question: 'Later draft', region: null })
+    expect(current(document).pages['1'].history[1]).toMatchObject({ region, sourceText: '', sourceImageUsed: true, status: 'cancelled', answer: 'Keep this original-crop hint' })
+    expect(current(document).pages['1'].history[0]).toMatchObject({ sourceText: 'LEGACY_CROP_TEXT', region })
   })
 
   it('locks out edits and new requests before waiting for a deletion and never resurrects the document', async () => {
@@ -459,7 +537,7 @@ describe('Study workspace lifecycle', () => {
   it('preflights request metadata without leaving an oversized placeholder in history', async () => {
     const [document] = await seed()
     for (let page = 1; page <= 3; page++) {
-      owner.editStudyPage(document.id, page, { question: 'A question', notes: 'n'.repeat(500_000), correctedText: 's'.repeat(500_000), attempt: 'a'.repeat(300_000) })
+      owner.editStudyPage(document.id, page, { question: 'A question', notes: 'n'.repeat(500_000), correctedText: 's'.repeat(500_000), attempt: 'a'.repeat(340_000) })
     }
     await saved()
     await expect(owner.sendStudyHelp(options(document))).rejects.toMatchObject({ code: 'limit' })

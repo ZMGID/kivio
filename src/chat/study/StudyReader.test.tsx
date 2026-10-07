@@ -6,7 +6,7 @@ import type { StudyMaterial, StudyPage, StudyReaderContext } from './studyMateri
 const locale = vi.hoisted(() => ({ lang: 'zh' }))
 vi.mock('../../components/i18n', () => ({ useLang: () => locale.lang }))
 
-const materialMocks = vi.hoisted(() => ({ openStudyMaterial: vi.fn(), studyPageImage: vi.fn<() => string | undefined>(() => 'data:image/png;base64,AAAA'), studyPageText: vi.fn((page: { label: string }) => page.label) }))
+const materialMocks = vi.hoisted(() => ({ openStudyMaterial: vi.fn(), studyPageImage: vi.fn<() => string | undefined>(() => 'data:image/png;base64,AAAA') }))
 vi.mock('./studyMaterial', async importOriginal => ({ ...await importOriginal<typeof import('./studyMaterial')>(), ...materialMocks }))
 
 function deferred<T>() {
@@ -15,14 +15,14 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-function frame(label: string): StudyPage {
+function frame(): StudyPage {
   const canvas = document.createElement('canvas')
   canvas.width = 600
   canvas.height = 800
-  return Object.assign({ canvas, spans: [], warning: '当前不提供 OCR' }, { label })
+  return { canvas, warning: 'Rendered page size limits' }
 }
 function material() {
-  return { kind: 'pdf' as const, mimeType: 'application/pdf', pageCount: 3, dispose: vi.fn().mockResolvedValue(undefined), renderPage: vi.fn().mockImplementation(async (page: number, signal: AbortSignal) => frame(`Page ${page}${signal.aborted ? " cancelled" : ""}`)) }
+  return { kind: 'pdf' as const, mimeType: 'application/pdf', pageCount: 3, dispose: vi.fn().mockResolvedValue(undefined), renderPage: vi.fn<(page: number, signal: AbortSignal) => Promise<StudyPage>>().mockImplementation(async () => frame()) }
 }
 const blob = new Blob(['PDF'])
 function props() { return { blob, page: 1, region: null, onPageChange: vi.fn(), onRegionChange: vi.fn(), onContextChange: vi.fn<(context: StudyReaderContext) => void>() } }
@@ -31,19 +31,21 @@ beforeEach(() => {
   vi.clearAllMocks()
   locale.lang = 'zh'
   materialMocks.studyPageImage.mockReturnValue('data:image/png;base64,AAAA')
-  materialMocks.studyPageText.mockImplementation((page: { label: string }) => page.label)
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D)
 })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('StudyReader lifecycle and accessibility', () => {
-  it('publishes only the requested page, exposes a readable text alternative, and supports page keys', async () => {
+  it('publishes only the requested page image without extracted text and supports page keys', async () => {
     materialMocks.openStudyMaterial.mockResolvedValue(material())
     const input = props()
     render(<StudyReader {...input} />)
-    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, text: 'Page 1', status: 'ready' })))
-    expect(screen.getByText('Page 1')).toBeInTheDocument()
-    expect(screen.getByText(/当前不提供 OCR/)).toBeInTheDocument()
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, imageDataUrl: 'data:image/png;base64,AAAA', status: 'ready' })))
+    expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('text')
+    expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('textRisk')
+    expect(screen.getByRole('img', { name: '材料第 1 页的渲染图像' })).toBeInTheDocument()
+    expect(screen.getByText(/不做 OCR、文字提取或公式转写/)).toBeInTheDocument()
+    expect(screen.queryByText(/查看本页文字|查看框选区域文字|粘贴修正/)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
     const page = screen.getByRole('group', { name: /第 1 页/ })
     fireEvent.keyDown(page, { key: 'PageDown' })
@@ -52,6 +54,21 @@ describe('StudyReader lifecycle and accessibility', () => {
     fireEvent.change(screen.getByRole('spinbutton', { name: '页码' }), { target: { value: '9' } })
     fireEvent.keyDown(screen.getByRole('spinbutton', { name: '页码' }), { key: 'Enter' })
     expect(input.onPageChange).toHaveBeenCalledTimes(1)
+  })
+  it('zooms the reading view without rerendering or changing the context image', async () => {
+    const source = material()
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
+    const input = props()
+    const view = render(<StudyReader {...input} />)
+    await screen.findByRole('group', { name: /第 1 页/ })
+    expect(screen.getByRole('button', { name: '缩小页面' })).toBeDisabled()
+    const context = input.onContextChange.mock.calls.at(-1)![0]
+    fireEvent.click(screen.getByRole('button', { name: '放大页面，当前 100%' }))
+    expect(view.container.querySelector('.kv-study-reader-paper-wrap')).toHaveStyle({ width: '125%' })
+    expect(input.onContextChange.mock.calls.at(-1)![0]).toBe(context)
+    expect(source.renderPage).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: '缩小页面' }))
+    expect(view.container.querySelector('.kv-study-reader-paper-wrap')).toHaveStyle({ width: '100%' })
   })
   it('clears context immediately on page navigation and ignores a late old-page render', async () => {
     const first = deferred<StudyPage>()
@@ -65,11 +82,14 @@ describe('StudyReader lifecycle and accessibility', () => {
     const previousSignal = source.renderPage.mock.calls[0][1] as AbortSignal
     view.rerender(<StudyReader {...input} page={2} />)
     expect(previousSignal.aborted).toBe(true)
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, text: '', imageDataUrl: undefined, status: 'loading' }))
-    await act(async () => { second.resolve(frame('Current page 2')) })
-    await act(async () => { first.resolve(frame('Late page 1')) })
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, text: 'Current page 2', status: 'ready' }))
-    expect(screen.queryByText('Late page 1')).not.toBeInTheDocument()
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, imageDataUrl: undefined, status: 'loading' }))
+    const currentFrame = frame()
+    const oldFrame = frame()
+    await act(async () => { second.resolve(currentFrame) })
+    await act(async () => { first.resolve(oldFrame) })
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, imageDataUrl: 'data:image/png;base64,AAAA', status: 'ready' }))
+    expect(materialMocks.studyPageImage).toHaveBeenLastCalledWith(currentFrame, null)
+    expect(oldFrame.canvas.width).toBe(0)
   })
   it('does not publish a late source after replacing the file and disposes resources on unmount', async () => {
     const first = deferred<StudyMaterial>()
@@ -95,7 +115,7 @@ describe('StudyReader lifecycle and accessibility', () => {
     const input = props()
     const view = render(<StudyReader {...input} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('材料损坏')
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'error', text: '' }))
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'error', imageDataUrl: undefined }))
     fireEvent.click(screen.getByRole('button', { name: '重新读取' }))
     await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready' })))
     const replacement = vi.fn()
@@ -103,7 +123,7 @@ describe('StudyReader lifecycle and accessibility', () => {
     expect(replacement).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', region: { x: 0.2, y: 0.2, width: 0.3, height: 0.3 } }))
     expect(materialMocks.openStudyMaterial).toHaveBeenCalledTimes(2)
   })
-  it('follows the application language for navigation and extraction controls', async () => {
+  it('follows the application language for navigation and image-source controls', async () => {
     locale.lang = 'en'
     materialMocks.openStudyMaterial.mockResolvedValue(material())
     render(<StudyReader {...props()} />)
@@ -177,46 +197,28 @@ describe('StudyReader lifecycle and accessibility', () => {
 })
 
 
-describe('StudyReader source confidence and image preview', () => {
-  it.each(['zh', 'en'])('warns about observable missing glyphs with actionable %s fallback guidance', async lang => {
+describe('StudyReader image-only context and preview', () => {
+  it.each(['zh', 'en'])('explains image sources without offering a text workflow in %s', async lang => {
     locale.lang = lang
-    const source = material()
-    source.renderPage.mockResolvedValue(frame('� \nx 2 dx \n5B-13. Hint: Try u = x 3 \n1 + x 6'))
+    materialMocks.openStudyMaterial.mockResolvedValue(material())
+    const input = props()
+    const view = render(<StudyReader {...input} />)
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', imageDataUrl: 'data:image/png;base64,AAAA' })))
+    const context = input.onContextChange.mock.calls.at(-1)![0]
+    expect(context).not.toHaveProperty('text')
+    expect(context).not.toHaveProperty('textRisk')
+    expect(screen.getByText(lang === 'zh' ? /不做 OCR、文字提取或公式转写/ : /No OCR, text extraction, or formula transcription/)).toBeInTheDocument()
+    expect(view.container.querySelector('.kv-study-reader-extracted')).not.toBeInTheDocument()
+    expect(screen.queryByText(/查看本页文字|查看框选区域文字|View page text|View selected text/)).not.toBeInTheDocument()
+  })
+  it('uses the same image-only contract for an imported image', async () => {
+    const source = { ...material(), kind: 'image' as const, mimeType: 'image/png', pageCount: 1 }
     materialMocks.openStudyMaterial.mockResolvedValue(source)
     const input = props()
     render(<StudyReader {...input} />)
-    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', textRisk: 'unmapped-glyphs' })))
-    const notice = screen.getByRole('status')
-    expect(notice).toHaveTextContent(lang === 'zh' ? '核对公式' : 'Check formulas against the page')
-    expect(notice).toHaveTextContent(lang === 'zh' ? '粘贴修正文字' : 'paste corrected text')
-    expect(notice).toHaveTextContent(lang === 'zh' ? '支持图片的模型' : 'vision-capable model')
-  })
-  it('updates risk for the active crop and clears it for clean text without certifying the math', async () => {
-    const source = material()
-    source.renderPage.mockResolvedValue(frame('� garbled elsewhere on the page'))
-    materialMocks.openStudyMaterial.mockResolvedValue(source)
-    const input = props()
-    const view = render(<StudyReader {...input} />)
-    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: 'unmapped-glyphs' })))
-    materialMocks.studyPageText.mockReturnValue('∫ x²/(1+x⁶) dx')
-    view.rerender(<StudyReader {...input} region={{ x: 0.2, y: 0.2, width: 0.3, height: 0.1 }} />)
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: undefined, text: '∫ x²/(1+x⁶) dx' }))
-    expect(view.container.querySelector('.kv-study-reader-risk')).not.toBeInTheDocument()
-    expect(screen.queryByText(/verified|validated|correct extraction/i)).not.toBeInTheDocument()
-    materialMocks.studyPageText.mockReturnValue('')
-    view.rerender(<StudyReader {...input} region={{ x: 0.1, y: 0.1, width: 0.1, height: 0.1 }} />)
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ textRisk: 'empty' }))
-    expect(screen.getByRole('status')).toHaveTextContent('当前页面或选区没有可提取的文字')
-  })
-  it('keeps images as image-only sources rather than claiming damaged PDF extraction', async () => {
-    const source = { ...material(), kind: 'image' as const, mimeType: 'image/png', pageCount: 1 }
-    source.renderPage.mockResolvedValue(frame(''))
-    materialMocks.openStudyMaterial.mockResolvedValue(source)
-    const input = props()
-    const view = render(<StudyReader {...input} />)
-    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', textRisk: undefined, text: '', imageDataUrl: 'data:image/png;base64,AAAA' })))
-    expect(view.container.querySelector('.kv-study-reader-risk')).not.toBeInTheDocument()
-    expect(screen.getByText('当前不提供 OCR')).toBeInTheDocument()
+    await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', pageCount: 1, imageDataUrl: 'data:image/png;base64,AAAA' })))
+    expect(input.onContextChange.mock.calls.at(-1)![0]).not.toHaveProperty('text')
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
   })
   it('previews the exact selected PNG from the outgoing context, updates it, and clears it during navigation', async () => {
     locale.lang = 'en'
@@ -229,7 +231,7 @@ describe('StudyReader source confidence and image preview', () => {
     const context = input.onContextChange.mock.calls.at(-1)![0]
     expect(preview).toHaveAttribute('src', context.imageDataUrl)
     expect(preview.closest('details')).toHaveAttribute('open')
-    expect(screen.getByText(/same image.*question context/i)).toHaveTextContent(/only sent.*vision-capable model/i)
+    expect(screen.getByText(/same PNG.*question context/i)).toHaveTextContent(/sent with your question.*selected vision-capable model/i)
     expect(materialMocks.studyPageImage).toHaveBeenLastCalledWith(expect.anything(), region)
 
     materialMocks.studyPageImage.mockReturnValue('data:image/png;base64,Q1JPUFRXTw==')
@@ -239,18 +241,20 @@ describe('StudyReader source confidence and image preview', () => {
 
     view.rerender(<StudyReader {...input} page={2} />)
     expect(screen.queryByRole('img', { name: /selected area image for question context/ })).not.toBeInTheDocument()
-    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'loading', imageDataUrl: undefined, textRisk: undefined }))
+    expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'loading', imageDataUrl: undefined }))
     await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, status: 'ready' })))
     expect(screen.getByAltText('Page 2 full page image for question context').closest('details')).not.toHaveAttribute('open')
   })
   it('omits an unavailable image preview without claiming an image will be attached', async () => {
     locale.lang = 'en'
     materialMocks.studyPageImage.mockReturnValue(undefined)
-    materialMocks.openStudyMaterial.mockResolvedValue(material())
+    const source = material()
+    source.renderPage.mockResolvedValue({ canvas: frame().canvas })
+    materialMocks.openStudyMaterial.mockResolvedValue(source)
     const input = props()
     const view = render(<StudyReader {...input} region={{ x: 0.1, y: 0.1, width: 0.3, height: 0.2 }} />)
     await waitFor(() => expect(input.onContextChange).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready', imageDataUrl: undefined })))
     expect(view.container.querySelector('.kv-study-reader-preview')).not.toBeInTheDocument()
-    expect(screen.getByText(/image is too large to attach/)).toBeInTheDocument()
+    expect(screen.getByText(/context image could not be generated within the size limit/i)).toBeInTheDocument()
   })
 })

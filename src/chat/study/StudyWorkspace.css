@@ -61,15 +61,9 @@
 .kv-study-field-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kv-study-field-label { font-size: 11px; font-weight: 500; color: var(--text); }
 .kv-study-field-heading small { font-size: 10px; color: var(--text-muted); }
-.kv-study-correction { flex: none; font-size: 11px; color: var(--text-muted); }
-.kv-study-correction summary { cursor: pointer; padding: 2px 0; }
-.kv-study-correction p { margin: 7px 0; line-height: 1.6; }
-.kv-study-source-active { margin-left: 6px; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--text); font-size: 10px; }
 .kv-study-mode-note { flex: none; font-size: 11px; color: var(--text-muted); line-height: 1.55; }
 .kv-study-compose-footer { display: flex; flex: none; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .kv-study-models { display: grid; grid-template-columns: minmax(90px, .7fr) minmax(120px, 1fr); gap: 8px; }
-.kv-study-vision { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
-.kv-study-vision input { accent-color: var(--accent); }
 .kv-study-no-provider { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-muted); }
 .kv-study-send-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .kv-study-send-row small { font-size: 10px; color: var(--text-muted); }
@@ -116,10 +110,9 @@
   .kv-study-compose-fields { overflow: visible; flex-shrink: 0; }
 }
 
-.kv-study-teaching-response { display: grid; gap: 10px; padding-top: 8px; }
-.kv-study-teaching-response h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--text-muted); }
 .kv-study-answer-reveal { display: grid; gap: 8px; justify-items: start; }
-.kv-study-answer-guard { padding-top: 6px; }
 
-.kv-study-source-repair { font-size: 11px; line-height: 1.55; color: var(--text-muted); }
-.kv-study-source-repair p { margin: 0 0 4px; }
+
+.kv-study-legacy-source { font-size: 11px; color: var(--text-muted); }
+.kv-study-legacy-source summary { cursor: pointer; }
+.kv-study-legacy-source p { white-space: pre-wrap; line-height: 1.6; }
