@@ -52,7 +52,7 @@ export function StudyWorkspace({ onOpenSettings }: { onOpenSettings: () => void 
   const activeHere = state.activeRequest?.documentId === doc?.id && state.activeRequest?.page === doc?.lastPage
   const canSend = Boolean(doc && currentContext?.status === 'ready' && currentContext.imageDataUrl && provider && model && vision && !state.activeRequest)
   const canSubmit = canSend && Boolean(retryTurn || (page?.question.trim() && (mode !== 'check' || page?.attempt.trim())))
-  const modelOptions = providers.flatMap(item => item.enabledModels.map(name => ({ value: JSON.stringify([item.id, name]), label: `${item.name} · ${name}` })))
+  const modelOptions = providers.flatMap(item => item.enabledModels.map(name => ({ value: JSON.stringify([item.id, name]), label: `${name} · ${item.name}`, title: `${item.name} · ${name}` })))
   const allTurns = doc ? Object.values(doc.pages).flatMap((item) => item.history).sort((a, b) => b.createdAt - a.createdAt) : []
 
   useEffect(() => { void initializeStudy() }, [])

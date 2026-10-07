@@ -50,6 +50,17 @@ describe('Study workspace image-only interaction', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Get full solution' }))
     await waitFor(() => expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({ mode: 'solution', documentId: 'a'.repeat(64), page: 1 })))
   })
+  it('puts model identity first in the compact model menu while retaining the service name', async () => {
+    setup()
+    const trigger = await screen.findByRole('button', { name: 'Study model' })
+    await waitFor(() => expect(trigger).toBeEnabled())
+    fireEvent.click(trigger)
+    const option = screen.getByRole('option', { name: 'vision · Test provider' })
+    expect(option).toHaveAttribute('title', 'Test provider · vision')
+    expect(screen.queryByRole('button', { name: 'Model provider' })).not.toBeInTheDocument()
+    fireEvent.click(option)
+    expect(trigger).toHaveFocus()
+  })
   it('uses an image for legacy text-only retries and discloses it without an opt-out fallback', async () => {
     const doc = makeDoc()
     doc.pages['1'].history.push({ id: 'failed', page: 1, mode: 'hint', question: 'Original question', attempt: 'My attempt', sourceText: 'Old extracted text', sourceImageUsed: false, answer: '', status: 'error', error: 'Provider failure', providerId: 'test', model: 'text', createdAt: 1 })

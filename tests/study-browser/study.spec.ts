@@ -276,7 +276,7 @@ test('late reply stays on original document while drafts and model selection cha
   await question(page, 'Second document unsent draft')
   await page.getByRole('button', { name: 'Study model', exact: true }).click()
   await expect(page.getByRole('option', { name: /test-text/ })).toHaveCount(0)
-  await page.getByRole('option', { name: /Simulated provider.*test-vision-alt$/ }).click()
+  await page.getByRole('option', { name: /^test-vision-alt.*Simulated provider$/ }).click()
   expect(await page.evaluate(() => window.__studyTest.requests[0].model)).toBe('test-vision')
   expect(await page.evaluate(() => window.__studyTest.requests[0].imageDataUrl)).toBe(originalRequest.imageDataUrl)
   await expect(page.locator('.kv-study-reader-preview img')).not.toHaveAttribute('src', originalRequest.imageDataUrl!)
@@ -496,7 +496,7 @@ test('hint and check show normal model text while streaming without a response e
   await expect(page.getByText('Simulated hint: review the sign in the rule.', { exact: true })).toBeVisible()
 })
 
-test('compact mode and model menus dismiss without changing drafts or making requests', async ({ page }) => {
+test('compact mode and model menus dismiss without changing drafts or making requests', async ({ page }, info) => {
   await importPdf(page)
   await question(page, 'Keep this draft while choosing how to help')
   const mode = page.getByRole('button', { name: 'Help mode', exact: true })
@@ -531,7 +531,10 @@ test('compact mode and model menus dismiss without changing drafts or making req
 
     await trigger.click()
     await expect(page.getByRole('option', { selected: true })).toHaveText(previous!)
-    await input.click()
+    // Click a visible part of the field outside the upward-opening popup, not
+    // its covered center (which correctly belongs to a menu option).
+    const inputBox = (await input.boundingBox())!
+    await input.click({ position: { x: inputBox.width - 12, y: 12 } })
     await expect(page.getByRole('listbox')).toHaveCount(0)
     await expect(input).toBeFocused()
     await expect(input).toHaveValue('Keep this draft while choosing how to help')
@@ -561,8 +564,10 @@ test('compact mode and model menus dismiss without changing drafts or making req
   await expect(mode).toBeFocused()
   await model.click()
   await expect(page.getByRole('option')).toHaveCount(2)
+  await expect(page.getByRole('option')).toHaveText(['test-vision · Simulated provider', 'test-vision-alt · Simulated provider'])
+  await page.screenshot({ path: info.outputPath('study-compact-model-menu.png'), fullPage: true })
   await expect(page.getByRole('option', { name: /test-text/ })).toHaveCount(0)
-  await page.getByRole('option', { name: /Simulated provider.*test-vision-alt$/ }).click()
+  await page.getByRole('option', { name: /^test-vision-alt.*Simulated provider$/ }).click()
   await expect(model).toBeFocused()
   await expect(model).toHaveAttribute('title', /Simulated provider.*test-vision-alt$/)
   expect(await page.evaluate(() => window.__studyTest.requests)).toHaveLength(0)
