@@ -3,14 +3,14 @@ use super::super::types::{
     StreamFormat,
 };
 
-/// Probe 失败时的静态兜底：与 desktop-cc-gui builtin catalog 同 id/label，
+/// Probe 失败时的静态兜底：与 claude_init 的当前家族目录同 id/label，
 /// 另加 Kivio 的 `default`（Auto / 不传 `--model`）。
 const FALLBACK_MODELS: &[(&str, &str)] = &[
     ("default", "Default"),
     ("claude-fable-5-1", "Fable 5.1"),
     ("claude-opus-5-5", "Opus 5.5"),
     ("claude-sonnet-5-5", "Sonnet 5.5"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
 ];
 
 /// Claude Code 的思考档位。大部分走 `--effort <level>`，两个例外见 `claude_thinking_args`。

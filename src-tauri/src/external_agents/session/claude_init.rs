@@ -10,8 +10,8 @@ use crate::external_agents::slash::is_claude_init;
 use crate::external_agents::spawn::{parse_json_line, spawn_agent, write_probe_stdin};
 use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, RuntimeModelOption};
 
-/// Built-in Claude Code model catalog — **ported from desktop-cc-gui**
-/// (`engine/status.rs::get_builtin_claude_models`).
+/// Built-in Claude Code model catalog, initially ported from desktop-cc-gui
+/// (`engine/status.rs::get_builtin_claude_models`), updated for Claude Code 2.1.293.
 ///
 /// Claude CLI 没有 list-models RPC。cc-gui 的做法是：
 /// 1. 只暴露 4 个家族档位（Fable / Opus / Sonnet / Haiku），catalog id 钉死当前代
@@ -19,18 +19,23 @@ use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, Runtime
 ///    每档的 runtime model + 展示名（tier id 不变，所以四行不会因映射到同一模型而折叠）
 /// 3. **不起进程**探测模型列表
 ///
-/// 这里 id / label 与 cc-gui 字面一致；Kivio 额外在列表头保留 `default`（Auto / 不传
+/// 保留家族档位结构；Kivio 额外在列表头保留 `default`（Auto / 不传
 /// `--model`），这是本应用胶囊语义，cc-gui 没有这一行。
 const CLAUDE_BUILTIN_TIERS: &[(&str, &str)] = &[
     ("claude-fable-5-1", "Fable 5.1"),
     ("claude-opus-5-5", "Opus 5.5"),
     ("claude-sonnet-5-5", "Sonnet 5.5"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+    ("claude-haiku-5-5", "Haiku 5.5"),
 ];
 
 /// 上一代 catalog id。旧会话可能还存着它们；仍按家族走 settings/env 覆盖，
 /// 没有覆盖时原样透传（用户当初显式选的就是这一代）。
-const LEGACY_CLAUDE_TIERS: &[&str] = &["claude-fable-5", "claude-opus-5", "claude-sonnet-5"];
+const LEGACY_CLAUDE_TIERS: &[&str] = &[
+    "claude-fable-5",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5-20251001",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaudeInitInfo {
@@ -446,7 +451,7 @@ pub fn map_claude_config_to_catalog_id(raw: &str) -> Option<String> {
         Some("fable") => Some("claude-fable-5-1".to_string()),
         Some("opus") => Some("claude-opus-5-5".to_string()),
         Some("sonnet") => Some("claude-sonnet-5-5".to_string()),
-        Some("haiku") => Some("claude-haiku-4-5-20251001".to_string()),
+        Some("haiku") => Some("claude-haiku-5-5".to_string()),
         _ => None,
     }
 }
@@ -648,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_catalog_matches_cc_gui() {
+    fn builtin_catalog_matches_supported_claude_tiers() {
         assert_eq!(
             &crate::external_agents::defs::claude::CLAUDE_AGENT_DEF.fallback_models[1..],
             CLAUDE_BUILTIN_TIERS,
@@ -662,7 +667,7 @@ mod tests {
             map_claude_config_to_catalog_id("claude-fable-5-1").as_deref(),
             Some("claude-fable-5-1")
         );
-        // 与 desktop-cc-gui `get_builtin_claude_models` 字面一致。
+        // Current family tiers, including Haiku 5.5 from Claude Code 2.1.293.
         assert_eq!(CLAUDE_BUILTIN_TIERS.len(), 4);
         assert_eq!(
             CLAUDE_BUILTIN_TIERS,
@@ -670,7 +675,7 @@ mod tests {
                 ("claude-fable-5-1", "Fable 5.1"),
                 ("claude-opus-5-5", "Opus 5.5"),
                 ("claude-sonnet-5-5", "Sonnet 5.5"),
-                ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+                ("claude-haiku-5-5", "Haiku 5.5"),
             ]
         );
         // 不提供裸别名 / 冷门 / 历史版本堆。
@@ -749,6 +754,26 @@ mod tests {
             assert_eq!(models[i + 1].id, *id);
             assert_eq!(models[i + 1].label, *label);
         }
+        assert!(models
+            .iter()
+            .any(|model| model.id == "claude-haiku-5-5" && model.label == "Haiku 5.5"));
+        assert_eq!(
+            map_claude_config_to_catalog_id("haiku").as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        assert_eq!(
+            map_claude_config_to_catalog_id("claude-haiku-5-5").as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        // Explicit old selections stay on the old model and retain provider overrides.
+        assert_eq!(
+            map_claude_config_to_catalog_id("claude-haiku-4-5-20251001").as_deref(),
+            Some("claude-haiku-4-5-20251001")
+        );
+        assert_eq!(
+            resolve_claude_cli_model("claude-haiku-4-5-20251001"),
+            "claude-haiku-4-5-20251001"
+        );
         // 裸别名不得出现。
         assert!(!models.iter().any(|m| m.id == "sonnet" || m.id == "opus"));
         restore_claude_config(dir, prev);
@@ -800,10 +825,7 @@ mod tests {
         assert_eq!(opus.label, "MiniMax-M4[1m]");
         let sonnet = models.iter().find(|m| m.id == "claude-sonnet-5-5").unwrap();
         assert_eq!(sonnet.label, "GLM-5.1");
-        let haiku = models
-            .iter()
-            .find(|m| m.id == "claude-haiku-4-5-20251001")
-            .unwrap();
+        let haiku = models.iter().find(|m| m.id == "claude-haiku-5-5").unwrap();
         assert_eq!(haiku.label, "deepseek-v4-flash");
         // 四档都在，不会因映射折叠。
         assert_eq!(
@@ -824,6 +846,14 @@ mod tests {
             "MiniMax-M4[1m]"
         );
         assert_eq!(resolve_claude_cli_model("claude-sonnet-5-5"), "GLM-5.1");
+        assert_eq!(
+            resolve_claude_cli_model("claude-haiku-5-5"),
+            "deepseek-v4-flash"
+        );
+        assert_eq!(
+            resolve_claude_cli_model("claude-haiku-4-5-20251001"),
+            "deepseek-v4-flash"
+        );
         // 非 catalog id 原样透传。
         assert_eq!(resolve_claude_cli_model("already-custom"), "already-custom");
         assert_eq!(resolve_claude_cli_model("default"), "default");
