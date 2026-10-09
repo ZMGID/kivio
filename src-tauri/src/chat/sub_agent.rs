@@ -984,7 +984,7 @@ pub fn handle_agent_spawn<'a>(
                 settings.chat.thinking_enabled,
                 Some(&provider),
                 &model,
-            ),
+            )?,
             None => (settings.chat.thinking_enabled, None),
         };
         if !provider.authentication_ready() {

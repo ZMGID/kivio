@@ -589,14 +589,24 @@ impl OpenAiChatProvider<'_> {
         //   （其 reasoning_effort 只认 low/high/max，没有 none）。开思考也显式
         //   `enabled`：官方样例都带；省略目前靠默认 enabled，默认一旦改掉就会
         //   和 GPT 没要 summary 一样空等无思维链。
+        // - Hyper 的 DeepSeek 也使用原生开关；实测 none 仍返回 reasoning_content。
         // - 其余 OpenAI 兼容端（含代理 / OpenAI 自家）：`reasoning_effort: "none"`。
+        let model_id = request.model.to_ascii_lowercase();
+        let model_id = model_id.rsplit('/').next().unwrap_or(&model_id);
+        let kimi_always_on = model_id.starts_with("kimi-k3") || model_id.starts_with("kimi-k2.7");
+        let native_thinking_switch =
+            (utils::provider_supports_thinking_field(&self.provider.base_url) && !kimi_always_on)
+                || (model_id.starts_with("deepseek-")
+                    && reqwest::Url::parse(&self.provider.base_url)
+                        .ok()
+                        .is_some_and(|url| url.host_str() == Some("hyper.charm.land")));
         if !request.options.thinking_enabled {
-            if utils::provider_supports_thinking_field(&self.provider.base_url) {
+            if native_thinking_switch {
                 body["thinking"] = serde_json::json!({ "type": "disabled" });
             } else {
                 body["reasoning_effort"] = Value::String("none".to_string());
             }
-        } else if utils::provider_supports_thinking_field(&self.provider.base_url) {
+        } else if native_thinking_switch {
             body["thinking"] = serde_json::json!({ "type": "enabled" });
         }
         // 思考等级 → OpenAI Chat `reasoning_effort`，原样下发（档位由模型库 reasoningEfforts 门控）。
@@ -1321,6 +1331,15 @@ mod tests {
         thinking_enabled: bool,
         base_url: &str,
     ) -> Value {
+        build_openai_model_body(thinking_level, thinking_enabled, base_url, "gpt-5")
+    }
+
+    fn build_openai_model_body(
+        thinking_level: Option<&str>,
+        thinking_enabled: bool,
+        base_url: &str,
+        model: &str,
+    ) -> Value {
         let state =
             AppState::new_headless(crate::settings::Settings::default(), std::env::temp_dir());
         let provider = ModelProvider {
@@ -1340,7 +1359,7 @@ mod tests {
         };
         let adapter = OpenAiChatProvider::new(&state, &provider, 1);
         let request = GenerateRequest {
-            model: "gpt-5".into(),
+            model: model.into(),
             system: "sys".into(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
@@ -1434,6 +1453,20 @@ mod tests {
     }
 
     #[test]
+    fn hyper_deepseek_uses_native_thinking_switch() {
+        let base = "https://hyper.charm.land/v1";
+        let off = build_openai_model_body(None, false, base, "deepseek-v4-flash");
+        assert_eq!(off["thinking"]["type"], "disabled", "body: {off}");
+        assert!(off.get("reasoning_effort").is_none(), "body: {off}");
+        let on = build_openai_model_body(Some("high"), true, base, "deepseek-v4-flash");
+        assert_eq!(on["thinking"]["type"], "enabled", "body: {on}");
+        assert_eq!(on["reasoning_effort"], "high", "body: {on}");
+        let other = build_openai_model_body(None, false, base, "gpt-5");
+        assert_eq!(other["reasoning_effort"], "none", "body: {other}");
+        assert!(other.get("thinking").is_none(), "body: {other}");
+    }
+
+    #[test]
     fn thinking_off_uses_thinking_disabled_on_deepseek_and_kimi() {
         // DeepSeek / Kimi 官方 Chat Completions：开关是 thinking.type，不是
         // reasoning_effort:"none"（官方 schema 的 effort 只有 low/high/max）。
@@ -1447,6 +1480,19 @@ mod tests {
         let kimi = build_openai_body_with(None, false, "https://api.moonshot.cn/v1");
         assert_eq!(kimi["thinking"]["type"], "disabled", "body: {kimi}");
         assert!(kimi.get("reasoning_effort").is_none(), "body: {kimi}");
+    }
+
+    #[test]
+    fn kimi_international_endpoint_respects_model_thinking_contract() {
+        let base = "https://api.moonshot.ai/v1";
+        let off = build_openai_model_body(None, false, base, "kimi-k2.6");
+        assert_eq!(off["thinking"]["type"], "disabled", "body: {off}");
+        assert!(off.get("reasoning_effort").is_none());
+        let k3 = build_openai_model_body(Some("low"), true, base, "kimi-k3");
+        assert!(k3.get("thinking").is_none(), "body: {k3}");
+        assert_eq!(k3["reasoning_effort"], "low");
+        let code = build_openai_model_body(None, true, base, "kimi-k2.7-code");
+        assert!(code.get("thinking").is_none(), "body: {code}");
     }
 
     #[test]

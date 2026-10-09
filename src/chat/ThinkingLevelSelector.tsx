@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Brain, Check, ChevronDown } from 'lucide-react'
-import { api } from '../api/tauri'
-import { useT } from '../components/i18n'
+import { api, type ThinkingCapabilities } from '../api/tauri'
+import { useLang, useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
 import type { ThinkingLevel } from './types'
 import { usePopoverMenu } from './usePopoverMenu'
@@ -39,42 +39,33 @@ function ThinkingLevelSelectorBase({
   onChange,
 }: ThinkingLevelSelectorProps) {
   const t = useT()
+  const lang = useLang()
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   usePopoverMenu(open, () => setOpen(false), menuRef)
-  const [levels, setLevels] = useState<string[]>(FALLBACK_LEVELS)
-  const [levelsLoaded, setLevelsLoaded] = useState(false)
+  const capabilityKey = JSON.stringify([currentProviderId, currentModel])
+  const [snapshot, setSnapshot] = useState<{ key: string; capabilities: ThinkingCapabilities } | null>(null)
+  const levelsLoaded = snapshot?.key === capabilityKey
+  const { levels, offMode } = levelsLoaded
+    ? snapshot.capabilities
+    : { levels: FALLBACK_LEVELS, offMode: 'unknown' as const }
 
-  // 思考等级清单来自后端（用户在模型详情里的覆盖 → 模型库 reasoningEfforts → 家族兜底）。
   useEffect(() => {
     let alive = true
-    setLevelsLoaded(false)
     void (async () => {
       if (!currentModel) {
-        if (alive) {
-          setLevels(FALLBACK_LEVELS)
-          setLevelsLoaded(true)
-        }
+        setSnapshot({ key: capabilityKey, capabilities: { levels: FALLBACK_LEVELS, offMode: 'unknown' } })
         return
       }
       try {
-        const got = await api.reasoningEffortsForModel(currentModel, currentProviderId)
-        // 空列表是有意义的答案（该模型没有 effort 旋钮），不能再兜底成 FALLBACK_LEVELS。
-        if (alive) {
-          setLevels(got)
-          setLevelsLoaded(true)
-        }
+        const capabilities = await api.thinkingCapabilitiesForModel(currentModel, currentProviderId)
+        if (alive) setSnapshot({ key: capabilityKey, capabilities })
       } catch {
-        if (alive) {
-          setLevels(FALLBACK_LEVELS)
-          setLevelsLoaded(true)
-        }
+        // Failed/stale capability lookups must never rewrite the saved choice.
       }
     })()
-    return () => {
-      alive = false
-    }
-  }, [currentProviderId, currentModel])
+    return () => { alive = false }
+  }, [capabilityKey, currentProviderId, currentModel])
 
   // null（未显式设置）按默认档处理；存的档若不在当前模型的支持列表里（换模型最常见：
   // 在 gpt-5.6 选了 xhigh 再切回 gpt-5）就地收敛，UI 永远高亮一个真实存在的等级。
@@ -92,29 +83,43 @@ function ThinkingLevelSelectorBase({
 
   const options = useMemo<Array<{ value: ThinkingLevel; label: string }>>(
     () => [
-      { value: 'off', label: LABELS.off },
+      ...(offMode !== 'unsupported' || value === 'off' ? [{ value: 'off' as const, label: offMode === 'upfront_only' ? 'Off (up-front)' : LABELS.off }] : []),
+      ...(levels.length === 0 && (offMode === 'supported' || value === 'off') ? [{ value: 'high' as const, label: 'On' }] : []),
       ...levels.map((l) => ({ value: l as ThinkingLevel, label: LABELS[l] ?? l })),
     ],
-    [levels],
+    [levels, offMode, value],
   )
 
-  // 该模型没有思考等级可调（Claude 3.5 / GLM-4.7 / Kimi K2.x…）→ 不显示这个旋钮。
-  if (levels.length === 0) return null
+  // Toggle-only models remain editable; stale Off choices must remain visible.
+  if (offMode === 'not_applicable' || (levels.length === 0 && offMode !== 'supported' && value !== 'off')) return null
+
+  const notice = offMode === 'unsupported'
+    ? (lang === 'zh' ? '此模型不支持关闭思考；请选择支持的强度。' : 'This model cannot turn thinking off. Select a supported effort.')
+    : offMode === 'upfront_only'
+      ? (lang === 'zh' ? 'Off 仅关闭回答前的思考，工具调用之间仍可能思考。' : 'Off disables up-front thinking; thinking between tool calls may continue.')
+      : offMode === 'unknown'
+        ? (lang === 'zh' ? '尚未确认此模型是否支持关闭思考。' : 'Thinking-off support has not been verified for this model.')
+        : null
+  const effectiveLabel = effective === 'off' && offMode === 'unsupported'
+    ? (lang === 'zh' ? 'Off 不可用' : 'Off unavailable')
+    : options.find(option => option.value === effective)?.label ?? labelFor(effective)
 
   return (
     <div className="relative max-w-full min-w-0" data-tauri-drag-region="false">
       <button
         type="button"
+        disabled={!levelsLoaded}
+        aria-busy={!levelsLoaded}
         onClick={() => setOpen(!open)}
         aria-haspopup="menu"
         aria-expanded={open}
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
-        title={t.chatThinkingLevel.replace('{level}', labelFor(effective))}
-        aria-label={t.chatThinkingLevel.replace('{level}', labelFor(effective))}
+        title={notice ?? t.chatThinkingLevel.replace('{level}', effectiveLabel)}
+        aria-label={t.chatThinkingLevel.replace('{level}', effectiveLabel)}
       >
         <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
         <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800">
-          {labelFor(effective)}
+          {effectiveLabel}
         </span>
         <ChevronDown
           size={15}
@@ -126,6 +131,7 @@ function ThinkingLevelSelectorBase({
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
           <div role="menu" ref={menuRef} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[160px] overflow-y-auto kv-menu">
+            {notice && <p className="px-3 py-2 text-xs text-neutral-500" role="note">{notice}</p>}
             {options.map((opt) => {
               const active = opt.value === effective
               return (
@@ -133,6 +139,7 @@ function ThinkingLevelSelectorBase({
                   key={opt.value}
                   role="menuitemradio"
                   aria-checked={active}
+                  disabled={!levelsLoaded || (opt.value === 'off' && offMode === 'unsupported')}
                   type="button"
                   onClick={() => {
                     onChange(opt.value)

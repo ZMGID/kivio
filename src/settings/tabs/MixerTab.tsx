@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type SubAgentModelSelection } from '../../api/tauri'
+import { api, type SubAgentModelSelection, type ThinkingCapabilities } from '../../api/tauri'
 import { Select } from '../public/controls'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
@@ -243,29 +243,30 @@ function SubAgentRoleSelect({ value, providers, lang, role, inheritLabel, onChan
   inheritLabel: string
   onChange: (value: SubAgentModelSelection) => void
 }) {
-  const [capability, setCapability] = useState<{ key: string; levels: string[] } | null>(null)
+  const [capability, setCapability] = useState<{ key: string; capabilities: ThinkingCapabilities } | null>(null)
   const key = JSON.stringify([value.providerId, value.model, providers])
   useEffect(() => {
     let active = true
     if (value.providerId && value.model) {
-      void api.reasoningEffortsForModel(value.model, value.providerId).then((levels) => {
-        if (active) setCapability({ key, levels })
+      void api.thinkingCapabilitiesForModel(value.model, value.providerId).then((capabilities) => {
+        if (active) setCapability({ key, capabilities })
       }).catch(() => {
         if (active) setCapability(null)
       })
     }
     return () => { active = false }
   }, [key, value.providerId, value.model])
-  const levels = capability?.key === key ? capability.levels : null
+  const current = capability?.key === key ? capability.capabilities : null
+  const levels = current?.levels
+  const supportsOff = current && current.offMode !== 'unsupported' && current.offMode !== 'not_applicable'
+  const canClearOverride = Boolean(current && value.thinkingLevel)
   const selected = Boolean(value.providerId && value.model)
   const options = [
     { value: '', label: lang === 'zh' ? '模型设置' : 'Model setting' },
-    ...(levels?.length ? [
-      { value: 'off', label: 'Off' },
-      ...levels.map((level) => ({ value: level, label: level })),
-    ] : []),
+    ...(supportsOff ? [{ value: 'off', label: current.offMode === 'upfront_only' ? 'Off (up-front)' : 'Off' }] : []),
+    ...(levels ?? []).map((level) => ({ value: level, label: level })),
   ]
-  if (value.thinkingLevel && !options.some((option) => option.value === value.thinkingLevel)) {
+  if (value.thinkingLevel && !(value.thinkingLevel === 'off' && !supportsOff) && !options.some((option) => option.value === value.thinkingLevel)) {
     options.push({ value: value.thinkingLevel, label: value.thinkingLevel })
   }
   return (
@@ -282,9 +283,10 @@ function SubAgentRoleSelect({ value, providers, lang, role, inheritLabel, onChan
           className="w-32"
           ariaLabel={`${role} ${lang === 'zh' ? '推理强度' : 'reasoning effort'}`}
           value={value.thinkingLevel ?? ''}
+          triggerLabel={value.thinkingLevel === 'off' && current?.offMode === 'unsupported' ? 'Off (unavailable)' : undefined}
           options={options}
-          disabled={!levels?.length}
-          title={levels?.length === 0 ? (lang === 'zh' ? '此模型不支持调整推理强度' : 'This model has no adjustable reasoning effort') : undefined}
+          disabled={!levels?.length && !supportsOff && !canClearOverride}
+          title={levels?.length === 0 && !supportsOff ? (lang === 'zh' ? '此模型不支持调整推理强度' : 'This model has no adjustable reasoning effort') : undefined}
           onChange={(thinkingLevel) => onChange({ ...value, thinkingLevel: thinkingLevel || null })}
         />
       )}

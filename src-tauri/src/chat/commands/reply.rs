@@ -235,13 +235,13 @@ pub(super) async fn complete_assistant_reply_inner(
         }
     }
     let language = crate::settings::resolve_chat_language(&settings);
-    // 思考：每对话等级覆盖全局开关。None=跟随全局（现状）；"off"=强制关；low/medium/high=按家族注入。
+    // Validate the conversation choice against model capabilities before generating.
     let (thinking_enabled, thinking_level) = resolve_thinking(
         conversation.thinking_level.as_deref(),
         settings.chat.thinking_enabled,
         Some(&provider),
         &resolved_model,
-    );
+    )?;
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {

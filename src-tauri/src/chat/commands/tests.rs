@@ -116,7 +116,9 @@ fn history_window_bounds_payload_and_keeps_oversized_message_reachable() {
 fn resolve_thinking_maps_levels_and_defaults_to_high() {
     // 有 effort 旋钮的模型（gpt-5.6 支持 low/medium/high/xhigh/max）。模型库里查得到，
     // 不需要 provider（provider 只用于读 model_overrides + Anthropic 家族兜底）。
-    let r = |level: Option<&str>, global: bool| resolve_thinking(level, global, None, "gpt-5.6");
+    let r = |level: Option<&str>, global: bool| {
+        resolve_thinking(level, global, None, "gpt-5.6").unwrap()
+    };
     // 未设置 → 默认档 high，不再跟随全局（全局只服务 lens / 翻译）。
     assert_eq!(r(None, true), (true, Some("high".to_string())));
     assert_eq!(r(None, false), (true, Some("high".to_string())));
@@ -177,7 +179,7 @@ fn video_analysis_tool_is_available_in_chat_and_plan_without_extra_approval() {
 fn resolve_thinking_drops_level_for_models_without_effort_knob() {
     // 模型库里 `reasoningEfforts: []` = 没有思考深度旋钮。
     assert_eq!(
-        resolve_thinking(Some("high"), true, None, "claude-3.5-haiku"),
+        resolve_thinking(Some("high"), true, None, "claude-3.5-haiku").unwrap(),
         (true, None)
     );
     // Claude 4：UI 档位会下发（适配器再映射成 budget_tokens / adaptive+effort）。
@@ -188,19 +190,19 @@ fn resolve_thinking_drops_level_for_models_without_effort_knob() {
         "claude-sonnet-4.5",
     ] {
         assert_eq!(
-            resolve_thinking(Some("high"), true, None, model),
+            resolve_thinking(Some("high"), true, None, model).unwrap(),
             (true, Some("high".to_string())),
             "{model}"
         );
     }
     // 4.6+ 反过来必须带上。
     assert_eq!(
-        resolve_thinking(Some("max"), true, None, "claude-opus-4.7"),
+        resolve_thinking(Some("max"), true, None, "claude-opus-4.7").unwrap(),
         (true, Some("max".to_string()))
     );
     // off 仍然优先：关思考就是关思考。
     assert_eq!(
-        resolve_thinking(Some("off"), true, None, "claude-opus-4.7"),
+        resolve_thinking(Some("off"), true, None, "claude-opus-4.7").unwrap(),
         (false, None)
     );
 }
@@ -4107,3 +4109,53 @@ fn image_patch_estimates_fit_dimensions_before_budget_and_preserve_original() {
     assert_eq!(estimate_image_tokens(None, "gpt-5.5", Some((1, 100_000)), Some("high")), 77);
 }
 
+
+#[test]
+fn resolve_thinking_rejects_off_for_always_on_models() {
+    for model in [
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "gemini-2.5-pro",
+        "gemini-3.8-flash",
+        "claude-opus-5.5",
+        "grok-4.6",
+    ] {
+        let error = resolve_thinking(Some("off"), true, None, model).unwrap_err();
+        assert!(error.contains("不支持关闭思考"), "{model}: {error}");
+    }
+    assert_eq!(
+        resolve_thinking(Some("off"), true, None, "kimi-k2.6").unwrap(),
+        (false, None)
+    );
+    assert_eq!(
+        resolve_thinking(Some("high"), true, None, "kimi-k2.6").unwrap(),
+        (true, None)
+    );
+}
+
+#[test]
+fn resolve_thinking_checks_stored_levels_and_uses_an_available_default() {
+    assert_eq!(
+        resolve_thinking(Some("off"), true, None, "gpt-4o").unwrap(),
+        (true, None)
+    );
+    let mut provider = test_provider("test", "Test", vec!["custom"]);
+    provider.model_overrides.insert(
+        "custom".into(),
+        crate::settings::ModelInfo {
+            reasoning_efforts: Some(vec!["low".into()]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        resolve_thinking(None, true, Some(&provider), "custom").unwrap(),
+        (true, Some("low".into()))
+    );
+    assert!(
+        resolve_thinking(Some("max"), true, Some(&provider), "custom")
+            .unwrap_err()
+            .contains("不支持思考强度")
+    );
+}

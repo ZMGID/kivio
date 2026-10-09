@@ -2147,6 +2147,16 @@ mod tests {
     }
 
     #[test]
+    fn haiku_55_uses_adaptive_thinking_and_can_disable_it() {
+        let on = build_anthropic_body_for("claude-haiku-5.5", Some("high"), None, None);
+        assert_eq!(on["thinking"]["type"], "adaptive", "body: {on}");
+        assert_eq!(on["output_config"]["effort"], "high");
+        let off = build_anthropic_body_with("claude-haiku-5.5", None, false, None, None);
+        assert_eq!(off["thinking"]["type"], "disabled", "body: {off}");
+        assert!(off.get("output_config").is_none());
+    }
+
+    #[test]
     fn always_on_models_omit_thinking_when_off() {
         let body = build_anthropic_body_with("claude-fable-5", None, false, None, None);
         assert!(body.get("thinking").is_none(), "body: {body}");

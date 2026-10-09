@@ -25,8 +25,12 @@ pub fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
 /// 目前只有 DeepSeek 官方 API 和 Kimi 支持该字段；
 /// 第三方代理（OpenRouter / 反代）做严格校验时会以 400 拒绝整个请求。
 pub fn provider_supports_thinking_field(base_url: &str) -> bool {
-    let lower = base_url.to_ascii_lowercase();
-    lower.contains("deepseek.com") || lower.contains("moonshot.cn")
+    reqwest::Url::parse(base_url).ok().is_some_and(|url| {
+        matches!(
+            url.host_str(),
+            Some("api.deepseek.com" | "api.moonshot.cn" | "api.moonshot.ai")
+        )
+    })
 }
 
 /// 是否官方 DeepSeek API 主机（`api.deepseek.com`）。

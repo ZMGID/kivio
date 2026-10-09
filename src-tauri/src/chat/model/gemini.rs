@@ -431,19 +431,27 @@ impl GeminiProvider<'_> {
         if !tools_arr.is_empty() {
             body["tools"] = Value::Array(tools_arr);
         }
-        // 思考等级 → thinkingConfig，原样下发（档位由模型库 reasoningEfforts 门控）。
+        // 思考等级 → thinkingConfig（档位由模型能力门控）。
         // 版本分叉:Gemini 3.x 用 `thinkingLevel`(字符串档位),2.5 系只认 `thinkingBudget`(数值),
-        // 两者互斥、传错会 400。故 thinkingLevel 只对 3.x 下发;其余(2.5/未知)回退到仅 `includeThoughts`
-        // (开思维输出、不强加档位)。开思考但无档（空 reasoningEfforts / 副调用）仍要
+        // 两者互斥、传错会 400。2.5 使用应用预算预设，未知版本仅下发 includeThoughts。
+        // 开思考但无档（空 reasoningEfforts / 副调用）仍要
         // includeThoughts，否则思维摘要整段丢掉。
         if request.options.thinking_enabled {
             let mut thinking = serde_json::json!({ "includeThoughts": true });
             if let Some(level) = request.options.thinking_level.as_deref() {
                 if gemini_supports_thinking_level(&request.model) {
                     thinking["thinkingLevel"] = Value::String(level.to_string());
+                } else if let Some(budget) =
+                    crate::chat::model_metadata::gemini_thinking_budget(&request.model, level)
+                {
+                    thinking["thinkingBudget"] = serde_json::json!(budget);
                 }
             }
             body["generationConfig"]["thinkingConfig"] = thinking;
+        } else if crate::chat::model_metadata::gemini_thinking_profile(&request.model)
+            .is_some_and(|profile| profile.supports_off)
+        {
+            body["generationConfig"]["thinkingConfig"] = serde_json::json!({ "thinkingBudget": 0 });
         }
         if let Some(overrides) = request.options.provider_options.as_object() {
             for (key, value) in overrides {
@@ -1493,6 +1501,39 @@ mod tests {
         assert_eq!(
             g25["generationConfig"]["thinkingConfig"]["includeThoughts"], true,
             "body: {g25}"
+        );
+    }
+
+    #[test]
+    fn gemini_25_off_disables_thinking_and_levels_set_a_budget() {
+        let mut req = GenerateRequest {
+            model: "gemini-2.5-flash".into(),
+            system: String::new(),
+            messages: vec![ModelMessage::text(ModelRole::User, "hi")],
+            tools: vec![],
+            options: GenerateOptions {
+                thinking_enabled: false,
+                ..Default::default()
+            },
+            metadata: Default::default(),
+        };
+        let off = body_for(&req, false);
+        assert_eq!(
+            off["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            0
+        );
+        req.options.thinking_enabled = true;
+        req.options.thinking_level = Some("high".into());
+        let on = body_for(&req, false);
+        assert_eq!(
+            on["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            24576
+        );
+        req.model = "gemini-2.5-pro".into();
+        let pro = body_for(&req, false);
+        assert_eq!(
+            pro["generationConfig"]["thinkingConfig"]["thinkingBudget"],
+            32768
         );
     }
 

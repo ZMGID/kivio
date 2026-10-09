@@ -678,7 +678,7 @@ pub fn run() {
             chat::commands::prompt_optimize::chat_optimize_prompt,
             chat::commands::mutations::chat_bulk_update_conversations,
             chat::commands::mutations::chat_bulk_delete_conversations,
-            chat::commands::reasoning::chat_reasoning_efforts_for_model,
+            chat::commands::reasoning::chat_thinking_capabilities_for_model,
             chat::commands::mutations::chat_update_message,
             chat::commands::mutations::chat_delete_message,
             chat::commands::mutations::chat_set_group_selection,

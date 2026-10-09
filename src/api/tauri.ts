@@ -25,6 +25,12 @@ import type { ThemeDefinition } from '../theme/types'
 
 // ========== 类型定义 ==========
 
+export interface ThinkingCapabilities {
+  levels: string[]
+  offMode: 'supported' | 'upfront_only' | 'not_applicable' | 'unsupported' | 'unknown'
+}
+
+
 /** 是否运行在 Tauri 运行时(而非纯浏览器/SSR) */
 export const isTauriRuntime = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
@@ -1836,8 +1842,8 @@ export const api = {
   onKivioSettingsChanged: (listener: (event: SettingsChangedEvent) => void) =>
     on<SettingsChangedEvent>('kivio-settings-changed', listener),
   // 某模型可选的思考等级列表（用户覆盖 modelOverrides → 模型库 reasoningEfforts → 家族兜底）。
-  reasoningEffortsForModel: (model: string, providerId?: string) =>
-    invoke<string[]>('chat_reasoning_efforts_for_model', { model, providerId }),
+  thinkingCapabilitiesForModel: (model: string, providerId?: string) =>
+    invoke<ThinkingCapabilities>('chat_thinking_capabilities_for_model', { model, providerId }),
   getDefaultPromptTemplates: () => invoke<DefaultPromptTemplates>('get_default_prompt_templates'),
   listSystemFonts: () => invoke<string[]>('list_system_fonts').catch(() => [] as string[]),
   saveSettings: async (settings: Settings, expectedVersion: SettingsVersion) =>

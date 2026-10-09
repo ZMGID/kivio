@@ -337,6 +337,13 @@ pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str
     {
         return sanitize_efforts(list.iter().filter_map(Value::as_str));
     }
+    let id = normalize_model_name(provider_model_database_id(provider, model));
+    if id.contains("gemini-3.1-flash-lite-image") {
+        return vec!["high".into()];
+    }
+    if id.contains("gemini-3-pro") {
+        return vec!["low".into(), "high".into()];
+    }
     if provider.map(ModelProvider::api_format_kind)
         == Some(crate::settings::ProviderApiFormat::AnthropicMessages)
     {
@@ -345,6 +352,149 @@ pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str
         }
     }
     vec!["low".into(), "medium".into(), "high".into()]
+}
+
+/// Whether an Off choice can actually be honored, independently of effort levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ThinkingOffMode {
+    Supported,
+    UpfrontOnly,
+    NotApplicable,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThinkingCapabilities {
+    pub levels: Vec<String>,
+    pub off_mode: ThinkingOffMode,
+}
+
+pub(crate) fn thinking_capabilities_for_model(
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> ThinkingCapabilities {
+    let reasoning = provider
+        .and_then(|p| override_model_info(p, model))
+        .and_then(|info| info.capabilities.as_ref())
+        .and_then(|caps| caps.reasoning)
+        .or_else(|| {
+            model_database_entry(provider_model_database_id(provider, model))
+                .and_then(|entry| entry.get("capabilities"))
+                .and_then(|caps| caps.get("reasoning"))
+                .and_then(Value::as_bool)
+        });
+    if reasoning == Some(false) {
+        return ThinkingCapabilities {
+            levels: vec![],
+            off_mode: ThinkingOffMode::NotApplicable,
+        };
+    }
+    let levels = reasoning_efforts_for_model(provider, model);
+    let id = normalize_model_name(provider_model_database_id(provider, model));
+    let kimi_code = id.starts_with("kimi-code/");
+    let id = id.rsplit('/').next().unwrap_or(&id);
+    let off_mode = if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
+        && crate::provider_oauth::antigravity::model_includes_effort(model)
+    {
+        ThinkingOffMode::Unsupported
+    } else if let Some(mode) = model_database_entry(id)
+        .and_then(|entry| entry.get("thinkingOff"))
+        .and_then(Value::as_bool)
+    {
+        if mode {
+            ThinkingOffMode::Supported
+        } else {
+            ThinkingOffMode::Unsupported
+        }
+    } else if let Some(profile) = claude_thinking_profile(id) {
+        if profile.off_thinking_type == Some("between_tools") {
+            ThinkingOffMode::UpfrontOnly
+        } else if profile.kind == ClaudeThinkingKind::Unsupported
+            || id.contains("fable")
+            || id.contains("mythos")
+            || normalize_model_sep(id).contains("opus-5-5")
+        {
+            ThinkingOffMode::Unsupported
+        } else {
+            ThinkingOffMode::Supported
+        }
+    } else if let Some(profile) = gemini_thinking_profile(id) {
+        if profile.supports_off {
+            ThinkingOffMode::Supported
+        } else {
+            ThinkingOffMode::Unsupported
+        }
+    } else if kimi_code
+        || id.starts_with("kimi-k3")
+        || id.starts_with("kimi-k2.7")
+        || id.starts_with("kimi-k2-thinking")
+        || id.starts_with("deepseek-r1")
+        || id.starts_with("grok-")
+        || id == "gpt-5"
+        || id.starts_with("gpt-5-")
+        || id.starts_with("gpt-5.4-pro")
+        || id.starts_with("gpt-5.5-pro")
+        || id.starts_with("gpt-6-astra")
+        || id.starts_with("gpt-6.1-sol")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+    {
+        ThinkingOffMode::Unsupported
+    } else if id.starts_with("deepseek-")
+        || id.starts_with("kimi-k2.5")
+        || id.starts_with("kimi-k2.6")
+        || id.starts_with("gpt-5.")
+        || id.starts_with("gpt-6-")
+    {
+        ThinkingOffMode::Supported
+    } else {
+        ThinkingOffMode::Unknown
+    };
+    ThinkingCapabilities { levels, off_mode }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GeminiThinkingProfile {
+    pub supports_off: bool,
+    pub budget_max: Option<i64>,
+}
+
+pub(crate) fn gemini_thinking_profile(model: &str) -> Option<GeminiThinkingProfile> {
+    let id = normalize_model_name(model);
+    if id.contains("gemini-2.5-pro") {
+        Some(GeminiThinkingProfile {
+            supports_off: false,
+            budget_max: Some(32768),
+        })
+    } else if id.contains("gemini-2.5-flash") {
+        Some(GeminiThinkingProfile {
+            supports_off: true,
+            budget_max: Some(24576),
+        })
+    } else if id.contains("gemini-3") {
+        Some(GeminiThinkingProfile {
+            supports_off: false,
+            budget_max: None,
+        })
+    } else {
+        None
+    }
+}
+
+// Product mapping for the shared Low/Medium/High control, within Google's 2.5 budgets.
+// These are application presets, not native Gemini effort levels.
+pub(crate) fn gemini_thinking_budget(model: &str, level: &str) -> Option<i64> {
+    let max = gemini_thinking_profile(model)?.budget_max?;
+    match level {
+        "low" => Some(1024),
+        "medium" => Some(8192),
+        "high" => Some(max),
+        _ => None,
+    }
 }
 
 /// Claude 思考线格式。对照官方 per-model 表：
@@ -537,14 +687,14 @@ fn profile_for_claude_version(
     major: u32,
     minor: u32,
 ) -> ClaudeThinkingProfile {
-    // 官方表没有 Haiku 4.6+，也没有任何 Haiku 在 effort 名单里。
-    if family == ClaudeFamily::Haiku {
+    // Haiku 5.5 adds adaptive thinking and output effort; older Haiku uses budgets.
+    if family == ClaudeFamily::Haiku && !version_at_least(major, minor, 5, 5) {
         return extended_budget_only();
     }
     let adaptive = match family {
         ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
         ClaudeFamily::Opus | ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
-        _ => false,
+        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
     };
     let kind = if adaptive {
         ClaudeThinkingKind::Adaptive
@@ -554,19 +704,19 @@ fn profile_for_claude_version(
     let supports_output_effort = match family {
         ClaudeFamily::Opus => version_at_least(major, minor, 4, 5),
         ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
+        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
         ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-        _ => false,
     };
     let supports_xhigh = match family {
         ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
         ClaudeFamily::Opus => version_at_least(major, minor, 4, 7),
         ClaudeFamily::Sonnet => major >= 5,
-        _ => false,
+        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
     };
     let supports_max = match family {
         ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
         ClaudeFamily::Opus | ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
-        _ => false,
+        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
     };
     ClaudeThinkingProfile {
         kind,
@@ -574,6 +724,7 @@ fn profile_for_claude_version(
         supports_xhigh,
         supports_max,
         off_thinking_type: match family {
+            ClaudeFamily::Haiku if version_at_least(major, minor, 5, 5) => Some("disabled"),
             ClaudeFamily::Sonnet if version_at_least(major, minor, 5, 5) => Some("between_tools"),
             ClaudeFamily::Sonnet if major >= 5 => Some("disabled"),
             ClaudeFamily::Opus if major >= 5 && !version_at_least(major, minor, 5, 5) => {
@@ -585,7 +736,7 @@ fn profile_for_claude_version(
             ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
             ClaudeFamily::Opus => version_at_least(major, minor, 4, 7),
             ClaudeFamily::Sonnet => major >= 5,
-            _ => false,
+            ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
         },
     }
 }
@@ -900,6 +1051,49 @@ pub(crate) fn pricing_for_model(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn thinking_capabilities_separate_toggle_effort_and_upfront_only() {
+        use ThinkingOffMode::*;
+        for (model, mode) in [
+            ("gpt-4o", NotApplicable),
+            ("kimi-k2.6", Supported),
+            ("kimi-k3", Unsupported),
+            ("kimi-k2.7-code", Unsupported),
+            ("gemini-2.5-flash", Supported),
+            ("gemini-2.5-pro", Unsupported),
+            ("gemini-3.8-flash", Unsupported),
+            ("claude-opus-4.7", Supported),
+            ("claude-opus-5.5", Unsupported),
+            ("claude-sonnet-5.5", UpfrontOnly),
+            ("claude-haiku-5.5", Supported),
+            ("gpt-6-astra", Unsupported),
+            ("gpt-6.1-sol", Unsupported),
+            ("gpt-5.4-pro", Unsupported),
+            ("gpt-5.5-pro", Unsupported),
+            ("gpt-6-sol", Supported),
+            ("grok-4.6", Unsupported),
+        ] {
+            assert_eq!(
+                thinking_capabilities_for_model(None, model).off_mode,
+                mode,
+                "{model}"
+            );
+        }
+        assert!(thinking_capabilities_for_model(None, "kimi-k2.6")
+            .levels
+            .is_empty());
+        let mut provider = test_provider_with_overrides(Default::default());
+        provider.base_url = "https://api.kimi.com/coding/v1".into();
+        assert_eq!(
+            thinking_capabilities_for_model(Some(&provider), "k3").off_mode,
+            Unsupported
+        );
+        assert_eq!(
+            thinking_capabilities_for_model(None, "k3").off_mode,
+            Unknown
+        );
+    }
+
     use std::collections::HashMap;
 
     use crate::settings::{ModelInfo, ModelProvider};

@@ -9,7 +9,7 @@ import { i18n } from '../../components/i18n'
 
 vi.mock('../../api/tauri', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/tauri')>(),
-  api: { reasoningEffortsForModel: vi.fn().mockResolvedValue(['low', 'medium', 'high']) },
+  api: { thinkingCapabilitiesForModel: vi.fn().mockResolvedValue({ levels: ['low', 'medium', 'high'], offMode: 'supported' }) },
 }))
 
 const t = i18n.zh
@@ -72,12 +72,40 @@ describe('MixerTab', () => {
   })
 
   it('模型没有可调推理档位时禁用推理选择', async () => {
-    vi.mocked(api.reasoningEffortsForModel).mockResolvedValueOnce([])
+    vi.mocked(api.thinkingCapabilitiesForModel).mockResolvedValueOnce({ levels: [], offMode: 'unsupported' })
     const settings = makeSettings()
     render(<MixerTab settings={settings} t={t} lang="zh" hasChatProvider
       chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'fixed' } } }}
       onUpdateChatTools={vi.fn()} onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()} />)
     expect(await screen.findByTitle('此模型不支持调整推理强度')).toBeDisabled()
+  })
+
+  it('子代理模型不能关闭思考时不提供 Off 选项', async () => {
+    vi.mocked(api.thinkingCapabilitiesForModel).mockResolvedValueOnce({ levels: ['low', 'high', 'max'], offMode: 'unsupported' })
+    const settings = makeSettings({ providers: [makeProvider({ id: 'p1', enabledModels: ['kimi-k3'], availableModels: ['kimi-k3'] })] })
+    render(<MixerTab settings={settings} t={t} lang="zh" hasChatProvider
+      chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'kimi-k3' } } }}
+      onUpdateChatTools={vi.fn()} onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()} />)
+    const select = await screen.findByRole('button', { name: /TASK.*推理强度/ })
+    await userEvent.click(select)
+    expect(screen.queryByRole('option', { name: 'Off' })).not.toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'low' })).toBeInTheDocument()
+  })
+
+  it('固定思考模型保存了旧 Off 时仍可恢复模型设置', async () => {
+    vi.mocked(api.thinkingCapabilitiesForModel).mockResolvedValueOnce({ levels: [], offMode: 'unsupported' })
+    const settings = makeSettings()
+    const update = vi.fn()
+    render(<MixerTab settings={settings} t={t} lang="zh" hasChatProvider
+      chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'fixed', thinkingLevel: 'off' } } }}
+      onUpdateChatTools={update} onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()} />)
+    const select = await screen.findByText('Off (unavailable)')
+    expect(select.closest('button')).toBeEnabled()
+    await userEvent.click(select)
+    await userEvent.click(screen.getByRole('option', { name: '模型设置' }))
+    const change = update.mock.lastCall?.[0]
+    const next = typeof change === 'function' ? change(settings.chatTools) : change
+    expect(next.subAgentModels.task.thinkingLevel).toBeNull()
   })
 
   it('可以关闭视频分析，且不清空已选模型', async () => {
