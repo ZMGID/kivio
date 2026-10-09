@@ -1071,6 +1071,11 @@ where
     // Special RPC commands can finish on their response while Pi still flushes a late
     // `agent_settled`. A reused reader must not let that stale boundary finish the next prompt.
     let mut current_turn_seen = manual_compact;
+    // A handled input starts no run. Keep waiting only if the extension already started
+    // independent work, or /btw still needs its persisted entry for display.
+    let mut prompt_handled = false;
+    let mut run_started = false;
+    let mut run_aborted = false;
     // agent_end 后等待 pi flush + 自行退出的宽限期。带 --session-id 时 pi 收尾要落盘会话，
     // 可能不再因 stdin EOF 立即退出——宽限期一到就主动 break，不再无限等 EOF（否则 UI 转圈不止）。
     let mut ended_at: Option<std::time::Instant> = None;
@@ -1100,17 +1105,34 @@ where
         if line.trim().is_empty() {
             continue;
         }
-        // One-shot callers stop at `agent_end` and only keep draining Pi's shutdown tail. A
-        // persistent actor must continue until `agent_settled`, because retry/compaction/queued
-        // continuations may legally follow the low-level end event.
-        if agent_ended && !persistent {
-            continue;
-        }
-
         let value: Value = match serde_json::from_str(line.trim()) {
             Ok(v) => v,
             Err(_) => continue,
         };
+
+        // One-shot callers only drain shutdown events after `agent_end`, but Pi 1.1's
+        // final settlement still carries the authoritative cancellation result.
+        // Persistent actors also consume retry/compaction/queued continuations.
+        if agent_ended && !persistent {
+            if value.get("type").and_then(Value::as_str) == Some("agent_settled") {
+                run_aborted = value.get("aborted").and_then(Value::as_bool) == Some(true);
+                break;
+            }
+            continue;
+        }
+
+        if matches!(
+            value.get("type").and_then(Value::as_str),
+            Some(
+                "agent_start"
+                    | "turn_start"
+                    | "message_start"
+                    | "compaction_start"
+                    | "auto_retry_start"
+            )
+        ) {
+            run_started = true;
+        }
 
         if !current_turn_seen {
             let kind = value
@@ -1222,6 +1244,16 @@ where
                             }
                         }
                         if let Some((kind, id, text)) = waiter.injection {
+                            // Keep the original queue receipt: returning false would resend an
+                            // input the extension already consumed. Explain its disposition
+                            // separately rather than claiming it was queued for the model.
+                            if value.pointer("/data/disposition").and_then(Value::as_str)
+                                == Some("handled")
+                            {
+                                sink(UnifiedAgentEvent::StatusNote {
+                                    text: "Pi 扩展已处理这条消息，未加入模型消息队列。".to_string(),
+                                });
+                            }
                             match kind {
                                 MessageInjectionKind::Steer => {
                                     sink(UnifiedAgentEvent::UserSteer { id, text });
@@ -1278,6 +1310,9 @@ where
                     ended_at = Some(std::time::Instant::now());
                     shutdown_rpc_writer(stdin).await;
                 }
+                if prompt_handled && !run_started {
+                    break;
+                }
                 continue;
             }
             if value.get("success").and_then(|v| v.as_bool()) == Some(false) {
@@ -1312,6 +1347,9 @@ where
             if !btw_entries_requested
                 && value.get("command").and_then(Value::as_str) == Some("prompt")
             {
+                prompt_handled = value.get("id").and_then(Value::as_i64) == Some(1)
+                    && value.pointer("/data/disposition").and_then(Value::as_str)
+                        == Some("handled");
                 if let Some(command) = btw_command {
                     if command.question.is_some() && !btw_entry_emitted {
                         let request = json!({
@@ -1322,6 +1360,9 @@ where
                         btw_entries_requested = true;
                     }
                 }
+            }
+            if prompt_handled && !run_started && !btw_entries_requested {
+                break;
             }
             continue;
         }
@@ -1348,6 +1389,11 @@ where
             PiRpcOutcome::AgentSettled => {
                 if persistent && !current_turn_seen {
                     continue;
+                }
+                run_aborted = value.get("aborted").and_then(Value::as_bool) == Some(true);
+                run_started = false;
+                if run_aborted {
+                    pending_error = None;
                 }
                 if btw_entries_requested {
                     continue;
@@ -1382,7 +1428,7 @@ where
         sink(UnifiedAgentEvent::Error { message });
     }
 
-    if persistent && cancel_check() {
+    if run_aborted || (persistent && cancel_check()) {
         Err("cancelled".to_string())
     } else {
         Ok(())
@@ -2426,7 +2472,7 @@ mod tests {
         let (stdout_reader, mut stdout_writer) = duplex(8192);
         let writer = tokio::spawn(async move {
             for line in [
-                r#"{"id":1,"type":"response","command":"prompt","success":true}"#,
+                r#"{"id":1,"type":"response","command":"prompt","success":true,"data":{"disposition":"handled"}}"#,
                 r#"{"id":"kivio-btw-entries","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"custom","id":"e9","customType":"btw-thread-entry","data":{"question":"side question","answer":"side answer","provider":"p","model":"m"}}]}}"#,
             ] {
                 stdout_writer.write_all(line.as_bytes()).await?;
@@ -3162,6 +3208,284 @@ mod tests {
             [UnifiedAgentEvent::QueuedTextsRestored { texts }]
                 if texts == &["Change direction".to_string(), "Summarize".to_string()]
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires live Pi >=0.99 on PATH; no model or persisted session"]
+    async fn live_handled_inputs_finish_and_reuse_the_same_rpc_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let extension = dir.path().join("handled.ts");
+        fs::write(
+            &extension,
+            r#"export default function(pi) {
+            pi.on("input", async (event, ctx) => {
+                ctx.ui.notify("handled: " + event.text, "info");
+                return { action: "handled" };
+            });
+        }"#,
+        )
+        .unwrap();
+        let mut child = crate::external_agents::spawn::cli_command("pi")
+            .args([
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--no-context-files",
+                "--no-skills",
+                "--no-extensions",
+                "-e",
+            ])
+            .arg(&extension)
+            .env("PI_OFFLINE", "1")
+            .env("PI_TELEMETRY", "0")
+            .current_dir(dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn Pi RPC");
+        let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
+        let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+        for prompt in ["first handled input", "second handled input"] {
+            let mut notes = Vec::new();
+            timeout(
+                Duration::from_secs(20),
+                run_pi_rpc_io(
+                    &mut reader,
+                    &stdin,
+                    prompt,
+                    &[],
+                    &mut |event| {
+                        if let UnifiedAgentEvent::StatusNote { text } = event {
+                            notes.push(text);
+                        }
+                    },
+                    None,
+                    None,
+                    || false,
+                    true,
+                ),
+            )
+            .await
+            .expect("handled input must finish")
+            .expect("handled input succeeded");
+            assert!(
+                notes.contains(&format!("handled: {prompt}")),
+                "real extension did not handle input: {notes:?}"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "RPC process must remain reusable"
+            );
+        }
+        shutdown_rpc_writer(&stdin).await;
+        drop(stdin); // ChildStdin must be dropped to actually close its pipe.
+        let status = timeout(Duration::from_secs(5), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn prompt_disposition_preserves_session_for_the_next_turn() {
+        // A handled prompt has no lifecycle; started/queued prompts still need settlement.
+        // An extension may also start independent work before acknowledging handled input.
+        for (disposition, independent_run) in [
+            ("handled", false),
+            ("handled", true),
+            ("started", false),
+            ("queued", false),
+        ] {
+            let (client_stdin, server_stdin) = duplex(4096);
+            let (client_stdout, mut server_stdout) = duplex(4096);
+            let server = tokio::spawn(async move {
+                let mut requests = BufReader::new(server_stdin).lines();
+                for turn in 0..2 {
+                    let request: Value =
+                        serde_json::from_str(&requests.next_line().await.unwrap().unwrap())
+                            .unwrap();
+                    assert_eq!(request["message"], format!("prompt {turn}"));
+                    if turn == 0 && independent_run {
+                        server_stdout
+                            .write_all(b"{\"type\":\"agent_start\"}\n")
+                            .await
+                            .unwrap();
+                    }
+                    let current = if turn == 0 { disposition } else { "started" };
+                    let response = json!({"type":"response","id":request["id"],"command":"prompt","success":true,"data":{"disposition":current}});
+                    server_stdout
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if current != "handled" || independent_run {
+                        for event in [
+                            json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":format!("answer {turn}")}}),
+                            json!({"type":"agent_end"}),
+                            json!({"type":"agent_settled","aborted":false}),
+                        ] {
+                            server_stdout
+                                .write_all(format!("{event}\n").as_bytes())
+                                .await
+                                .unwrap();
+                        }
+                    }
+                }
+            });
+            let stdin = Arc::new(Mutex::new(client_stdin));
+            let mut reader = BufReader::new(client_stdout).lines();
+            let mut text = String::new();
+            for turn in 0..2 {
+                timeout(
+                    Duration::from_secs(1),
+                    run_pi_rpc_io(
+                        &mut reader,
+                        &stdin,
+                        &format!("prompt {turn}"),
+                        &[],
+                        &mut |event| {
+                            if let UnifiedAgentEvent::TextDelta { delta } = event {
+                                text.push_str(&delta);
+                            }
+                        },
+                        None,
+                        None,
+                        || false,
+                        true,
+                    ),
+                )
+                .await
+                .expect("prompt must finish without closing the session")
+                .expect("prompt succeeded");
+            }
+            server.await.unwrap();
+            assert_eq!(
+                text,
+                if disposition == "handled" && !independent_run {
+                    "answer 1"
+                } else {
+                    "answer 0answer 1"
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn pi_side_abort_returns_cancelled_and_keeps_next_turn_usable() {
+        for persistent in [true, false] {
+            let (client_stdin, server_stdin) = duplex(4096);
+            let (client_stdout, mut server_stdout) = duplex(4096);
+            let server = tokio::spawn(async move {
+                let mut requests = BufReader::new(server_stdin).lines();
+                let outcomes: &[bool] = if persistent { &[true, false] } else { &[true] };
+                for aborted in outcomes {
+                    if persistent {
+                        server_stdout
+                            .write_all(b"{\"type\":\"agent_settled\",\"aborted\":true}\n")
+                            .await
+                            .unwrap();
+                    }
+                    let request: Value =
+                        serde_json::from_str(&requests.next_line().await.unwrap().unwrap())
+                            .unwrap();
+                    for event in [
+                        json!({"type":"response","id":request["id"],"command":"prompt","success":true,"data":{"disposition":"started"}}),
+                        json!({"type":"agent_end"}),
+                        json!({"type":"agent_settled","aborted":aborted}),
+                    ] {
+                        server_stdout
+                            .write_all(format!("{event}\n").as_bytes())
+                            .await
+                            .unwrap();
+                    }
+                }
+            });
+            let stdin = Arc::new(Mutex::new(client_stdin));
+            let mut reader = BufReader::new(client_stdout).lines();
+            let outcomes = if persistent {
+                vec![Err("cancelled".to_string()), Ok(())]
+            } else {
+                vec![Err("cancelled".to_string())]
+            };
+            for expected in outcomes {
+                let result = run_pi_rpc_io(
+                    &mut reader,
+                    &stdin,
+                    "prompt",
+                    &[],
+                    &mut |_| {},
+                    None,
+                    None,
+                    || false,
+                    persistent,
+                )
+                .await;
+                assert_eq!(result, expected);
+            }
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn handled_injection_is_acknowledged_without_being_resent() {
+        for kind in [MessageInjectionKind::Steer, MessageInjectionKind::FollowUp] {
+            let (stdout_reader, mut stdout_writer) = duplex(2048);
+            let stdin = Arc::new(Mutex::new(sink()));
+            let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+            let command = match kind {
+                MessageInjectionKind::Steer => "steer",
+                MessageInjectionKind::FollowUp => "follow_up",
+            };
+            let response = issue_control_command(
+                &stdin,
+                &waiters,
+                "injection".into(),
+                Some((kind, "frontend-id".into(), "input".into())),
+                json!({"type":command,"message":"input"}),
+            )
+            .await
+            .unwrap();
+            for event in [
+                json!({"type":"response","id":"injection","command":command,"success":true,"data":{"disposition":"handled"}}),
+                json!({"type":"agent_settled","aborted":false}),
+            ] {
+                stdout_writer
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let mut events = Vec::new();
+            drain_pi_rpc_lines(
+                &mut BufReader::new(stdout_reader).lines(),
+                &stdin,
+                &mut |event| events.push(event),
+                None,
+                Some(&waiters),
+                || false,
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(response.await, Ok(Ok(()))),
+                "consumed inputs must not be retried"
+            );
+            assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::StatusNote { text } if text.contains("扩展已处理"))));
+            assert!(
+                events.iter().any(|event| match (kind, event) {
+                    (MessageInjectionKind::Steer, UnifiedAgentEvent::UserSteer { id, text })
+                    | (
+                        MessageInjectionKind::FollowUp,
+                        UnifiedAgentEvent::UserFollowUp { id, text },
+                    ) => id == "frontend-id" && text == "input",
+                    _ => false,
+                }),
+                "the original queue ID must be acknowledged"
+            );
+        }
     }
 
     #[tokio::test]
