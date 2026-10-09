@@ -103,6 +103,16 @@ pub struct ScheduledTask {
     pub source: TaskSource,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Definition revision, unchanged by scheduler/counter updates.
+    #[serde(default)]
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledTasksSnapshot {
+    pub tasks: Vec<ScheduledTask>,
+    pub live_runs: Vec<TaskRun>,
 }
 
 /// Create (no id) or full update (id) request.
@@ -134,7 +144,7 @@ pub enum RunStatus {
     Running,
     Succeeded,
     Failed,
-    /// Not sent (missed while asleep/closed, or a previous run still queued).
+    /// Not sent (missed, duplicate queue, or cancelled before sending).
     Skipped,
     /// The app exited before the run finished.
     Interrupted,

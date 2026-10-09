@@ -383,7 +383,7 @@ pub fn run() {
                     .app_data_dir()
                     .map_err(|err| format!("app_data_dir unavailable: {err}"))?
                     .join("scheduled_tasks"),
-            ));
+            )?);
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
 
@@ -792,7 +792,7 @@ pub fn run() {
             automation::commands::automation_import,
             automation::commands::automation_runs_list,
             automation::commands::automation_run_get,
-            scheduled_tasks::commands::scheduled_tasks_list,
+            scheduled_tasks::commands::scheduled_tasks_snapshot,
             scheduled_tasks::commands::scheduled_task_save,
             scheduled_tasks::commands::scheduled_task_delete,
             scheduled_tasks::commands::scheduled_task_set_enabled,

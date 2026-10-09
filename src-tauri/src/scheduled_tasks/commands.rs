@@ -1,13 +1,14 @@
 use tauri::AppHandle;
 
 use super::types::{
-    RunTrigger, ScheduleRule, ScheduledTask, ScheduledTaskInput, TaskRun, TaskSource,
+    RunTrigger, ScheduleRule, ScheduledTask, ScheduledTaskInput, ScheduledTasksSnapshot, TaskRun,
+    TaskSource,
 };
 use super::{emit_changed, now_secs, service, start_run};
 
 #[tauri::command]
-pub fn scheduled_tasks_list(app: AppHandle) -> Vec<ScheduledTask> {
-    service(&app).list()
+pub fn scheduled_tasks_snapshot(app: AppHandle) -> ScheduledTasksSnapshot {
+    service(&app).snapshot()
 }
 
 #[tauri::command]
@@ -47,11 +48,11 @@ pub fn scheduled_task_set_enabled(
 #[tauri::command]
 pub fn scheduled_task_run_now(app: AppHandle, id: String) -> Result<TaskRun, String> {
     let task = service(&app).get(&id)?;
-    Ok(start_run(&app, task, RunTrigger::Manual, None))
+    start_run(&app, task, RunTrigger::Manual, None)
 }
 
 #[tauri::command]
-pub fn scheduled_task_runs(app: AppHandle, id: String) -> Vec<TaskRun> {
+pub fn scheduled_task_runs(app: AppHandle, id: String) -> Result<Vec<TaskRun>, String> {
     service(&app).runs(&id)
 }
 

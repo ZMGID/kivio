@@ -1,5 +1,6 @@
 //! Next-fire computation. Pure functions over unix seconds; calendar rules use
-//! the machine's local time zone.
+//! the machine's local time zone. A civil time deleted by a DST spring-forward
+//! is skipped; the next real weekday, month-day, or leap day is returned.
 
 use std::str::FromStr;
 
@@ -60,6 +61,14 @@ pub fn validate(rule: &ScheduleRule) -> Result<(), String> {
 
 /// First fire time strictly after `after`, or None when the rule is exhausted.
 pub fn next_after(rule: &ScheduleRule, after: i64) -> Result<Option<i64>, String> {
+    next_after_in(rule, after, &Local)
+}
+
+fn next_after_in<Tz: TimeZone>(
+    rule: &ScheduleRule,
+    after: i64,
+    zone: &Tz,
+) -> Result<Option<i64>, String> {
     validate(rule)?;
     Ok(match rule {
         ScheduleRule::Once { at } => (*at > after).then_some(*at),
@@ -72,18 +81,20 @@ pub fn next_after(rule: &ScheduleRule, after: i64) -> Result<Option<i64>, String
                 Some(anchor + ((after - anchor) / step + 1) * step)
             }
         }
-        ScheduleRule::Daily { hour, minute } => next_calendar(after, *hour, *minute, 8, |_| true),
+        ScheduleRule::Daily { hour, minute } => {
+            next_calendar(after, *hour, *minute, 8, zone, |_| true)
+        }
         ScheduleRule::Weekly {
             weekdays,
             hour,
             minute,
-        } => next_calendar(after, *hour, *minute, 8, |date| {
+        } => next_calendar(after, *hour, *minute, 8, zone, |date| {
             let day = date.weekday().num_days_from_sunday() as u8;
             weekdays.contains(&day)
         }),
         // Jan 31 → Mar 31 is the longest gap between two months that have a given day.
         ScheduleRule::Monthly { days, hour, minute } => {
-            next_calendar(after, *hour, *minute, 64, |date| {
+            next_calendar(after, *hour, *minute, 64, zone, |date| {
                 days.contains(&(date.day() as u8))
             })
         }
@@ -93,12 +104,12 @@ pub fn next_after(rule: &ScheduleRule, after: i64) -> Result<Option<i64>, String
             day,
             hour,
             minute,
-        } => next_calendar(after, *hour, *minute, 366 * 8 + 2, |date| {
+        } => next_calendar(after, *hour, *minute, 366 * 8 + 2, zone, |date| {
             date.month() == u32::from(*month) && date.day() == u32::from(*day)
         }),
         ScheduleRule::Cron { expr } => {
             let cron = parse_cron(expr)?;
-            let start = local(after)?;
+            let start = in_zone(zone, after)?;
             cron.find_next_occurrence(&start, false)
                 .ok()
                 .map(|next| next.timestamp())
@@ -135,37 +146,52 @@ fn parse_cron(expr: &str) -> Result<Cron, String> {
     Cron::from_str(expr).map_err(|err| format!("Cron 表达式无效：{err}"))
 }
 
-fn local(timestamp: i64) -> Result<DateTime<Local>, String> {
-    Local
-        .timestamp_opt(timestamp, 0)
+fn in_zone<Tz: TimeZone>(zone: &Tz, timestamp: i64) -> Result<DateTime<Tz>, String> {
+    zone.timestamp_opt(timestamp, 0)
         .single()
         .ok_or_else(|| "时间超出范围".to_string())
 }
 
-fn next_calendar(
+fn next_calendar<Tz: TimeZone>(
     after: i64,
     hour: u8,
     minute: u8,
     horizon_days: i64,
+    zone: &Tz,
     day_matches: impl Fn(chrono::NaiveDate) -> bool,
 ) -> Option<i64> {
-    let start = local(after).ok()?.date_naive();
+    let start = in_zone(zone, after).ok()?.date_naive();
     let time = NaiveTime::from_hms_opt(u32::from(hour), u32::from(minute), 0)?;
-    // The horizon covers the rule's longest gap plus one day for a DST gap.
-    (0..horizon_days).find_map(|offset| {
+    // `horizon_days` spans the rule's longest calendar gap. A DST spring-forward
+    // can delete that gap's civil time; one extra gap still reaches the next
+    // real weekday, month-day, or leap day. Months without the day stay skipped.
+    let mut limit = horizon_days;
+    let mut crossed_gap = false;
+    let mut offset = 0i64;
+    while offset < limit {
         let date = start + Duration::days(offset);
+        offset += 1;
         if !day_matches(date) {
-            return None;
+            continue;
         }
-        let candidate = match Local.from_local_datetime(&date.and_time(time)) {
+        let candidate = match zone.from_local_datetime(&date.and_time(time)) {
             LocalResult::Single(value) => value,
-            LocalResult::Ambiguous(first, _) => first,
-            // Skipped by a DST jump: this day has no such wall-clock time.
-            LocalResult::None => return None,
+            // Fall back repeats the civil time; keep the earlier instant.
+            LocalResult::Ambiguous(earlier, _) => earlier,
+            LocalResult::None => {
+                if !crossed_gap {
+                    crossed_gap = true;
+                    limit = limit.saturating_add(horizon_days);
+                }
+                continue;
+            }
         };
         let timestamp = candidate.timestamp();
-        (timestamp > after).then_some(timestamp)
-    })
+        if timestamp > after {
+            return Some(timestamp);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -315,5 +341,54 @@ mod tests {
     fn preview_stops_when_rule_is_exhausted() {
         let rule = ScheduleRule::Once { at: 2_000 };
         assert_eq!(preview(&rule, 0, 5).unwrap(), vec![2_000]);
+    }
+
+    fn civil<Tz: TimeZone>(zone: &Tz, y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
+        zone.with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .single()
+            .unwrap_or_else(|| {
+                panic!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02} is not a single civil time")
+            })
+            .timestamp()
+    }
+
+    #[test]
+    fn weekly_sunday_0230_skips_new_york_spring_forward() {
+        // 2026-03-08 02:30 does not exist in America/New_York (02:00 jumps to 03:00).
+        // The next Sunday 02:30 is 2026-03-15, outside the 8-day horizon.
+        use chrono_tz::America::New_York;
+        let rule = ScheduleRule::Weekly {
+            weekdays: vec![0],
+            hour: 2,
+            minute: 30,
+        };
+        assert_eq!(
+            next_after_in(&rule, civil(&New_York, 2026, 3, 1, 2, 30), &New_York).unwrap(),
+            Some(civil(&New_York, 2026, 3, 15, 2, 30))
+        );
+        assert_eq!(
+            next_after_in(&rule, civil(&New_York, 2026, 3, 15, 2, 30), &New_York).unwrap(),
+            Some(civil(&New_York, 2026, 3, 22, 2, 30))
+        );
+    }
+
+    #[test]
+    fn monthly_31st_0230_skips_berlin_spring_forward_and_short_months() {
+        // 2024-03-31 02:30 does not exist in Europe/Berlin. February (including
+        // leap day) and April have no 31st, so the next civil time is 2024-05-31.
+        use chrono_tz::Europe::Berlin;
+        let rule = ScheduleRule::Monthly {
+            days: vec![31],
+            hour: 2,
+            minute: 30,
+        };
+        assert_eq!(
+            next_after_in(&rule, civil(&Berlin, 2024, 1, 31, 2, 30), &Berlin).unwrap(),
+            Some(civil(&Berlin, 2024, 5, 31, 2, 30))
+        );
+        assert_eq!(
+            next_after_in(&rule, civil(&Berlin, 2024, 5, 31, 2, 30), &Berlin).unwrap(),
+            Some(civil(&Berlin, 2024, 7, 31, 2, 30))
+        );
     }
 }

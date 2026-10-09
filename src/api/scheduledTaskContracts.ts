@@ -27,6 +27,8 @@ export interface ScheduledTask {
   source: 'user' | 'chat'
   createdAt: number
   updatedAt: number
+  /** Definition counter from the backend. Older payloads omit it; the client does not compare it. */
+  revision?: number
 }
 
 export interface ScheduledTaskInput {
@@ -54,4 +56,10 @@ export interface ScheduledTaskRun {
 export interface ScheduledTasksChangedEvent {
   taskId: string
   run: ScheduledTaskRun | null
+}
+
+/** Tasks plus every queued or running run that still belongs to one of them. Not the saved history. */
+export interface ScheduledTasksSnapshot {
+  tasks: ScheduledTask[]
+  liveRuns: ScheduledTaskRun[]
 }

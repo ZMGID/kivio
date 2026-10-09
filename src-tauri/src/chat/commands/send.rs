@@ -103,19 +103,45 @@ pub(crate) async fn chat_send_message(
     .await
 }
 
+pub(crate) enum QueuedSendOutcome {
+    Sent,
+    Cancelled,
+}
+
+struct SendCompletion<'a>(&'a (dyn Fn() + Send + Sync));
+
+impl Drop for SendCompletion<'_> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
 /// Backend-initiated user send (scheduled tasks). Unlike the command it does
 /// not reject a busy conversation: it waits until every reply has finished,
-/// then runs the normal send transaction. `on_user_message_saved` runs once the
-/// user message is committed, before the reply starts.
+/// then runs the normal send transaction. Cancellation applies only while waiting.
+/// `on_send_ready` admits the send after reservation; `on_user_message_saved`
+/// runs once the user message is committed, before the reply starts.
 pub(crate) async fn send_user_message_when_idle(
     app: &AppHandle,
     conversation_id: &str,
     content: String,
+    mut cancelled: tokio::sync::watch::Receiver<bool>,
+    on_send_ready: &(dyn Fn() -> bool + Send + Sync),
     on_user_message_saved: &(dyn Fn() + Send + Sync),
-) -> Result<(), String> {
+    on_send_finished: &(dyn Fn() + Send + Sync),
+) -> Result<QueuedSendOutcome, String> {
     let state = app.state::<AppState>();
-    let _send_reservation =
-        ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
+    let _send_reservation = tokio::select! {
+        biased;
+        _ = cancelled.wait_for(|value| *value) => return Ok(QueuedSendOutcome::Cancelled),
+        reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id) => reservation,
+    };
+    let was_cancelled = *cancelled.borrow();
+    if was_cancelled || !on_send_ready() {
+        return Ok(QueuedSendOutcome::Cancelled);
+    }
+    // Clear the scheduled-turn guard before releasing Chat's send reservation.
+    let _completion = SendCompletion(on_send_finished);
     let outcome = send_reserved(
         app.clone(),
         app.state::<AppState>(),
@@ -130,7 +156,7 @@ pub(crate) async fn send_user_message_when_idle(
     )
     .await?;
     if outcome.get("success").and_then(|value| value.as_bool()) == Some(true) {
-        Ok(())
+        Ok(QueuedSendOutcome::Sent)
     } else {
         Err(outcome
             .get("error")

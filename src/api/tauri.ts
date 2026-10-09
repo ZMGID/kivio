@@ -18,7 +18,7 @@ import type {
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
 import type { Automation, AutomationChangedEvent, AutomationMeta, AutomationRun, AutomationRunEvent, AutomationRunStarted, AutomationRunSummary, NodeOutput, ValidationIssue } from './automationContracts'
-import type { ScheduleRule, ScheduledTask, ScheduledTaskInput, ScheduledTaskRun, ScheduledTasksChangedEvent } from './scheduledTaskContracts'
+import type { ScheduleRule, ScheduledTask, ScheduledTaskInput, ScheduledTaskRun, ScheduledTasksChangedEvent, ScheduledTasksSnapshot } from './scheduledTaskContracts'
 import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 import type { ThemeDefinition } from '../theme/types'
@@ -1987,7 +1987,7 @@ export const api = {
   onAutomationChanged: (listener: (payload: AutomationChangedEvent) => void) =>
     on<AutomationChangedEvent>('automation-changed', listener),
 
-  scheduledTasksList: () => invoke<ScheduledTask[]>('scheduled_tasks_list'),
+  scheduledTasksSnapshot: () => invoke<ScheduledTasksSnapshot>('scheduled_tasks_snapshot'),
   scheduledTaskSave: (task: ScheduledTaskInput) =>
     invoke<ScheduledTask>('scheduled_task_save', { task }),
   scheduledTaskDelete: (id: string) => invoke<void>('scheduled_task_delete', { id }),

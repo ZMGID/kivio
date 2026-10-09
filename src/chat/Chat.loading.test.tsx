@@ -23,7 +23,7 @@ it('keeps sidebar reads idle while the open conversation receives context update
     }
   }
   vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
-  vi.spyOn(api, 'scheduledTasksList').mockResolvedValue([])
+  vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
   let contextEvent!: (payload: ChatContextPayload) => void
   vi.spyOn(api, 'onChatContext').mockImplementation(async handler => {
     contextEvent = handler
