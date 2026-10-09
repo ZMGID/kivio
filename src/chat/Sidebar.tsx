@@ -18,6 +18,8 @@ import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, Notes
 import { ConversationList } from './ConversationList'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
+import { BotRoster } from './BotRoster'
+import type { SidebarView } from './persistence'
 import { ProjectContextMenu } from './ProjectContextMenu'
 import { ProjectDialog } from './ProjectDialog'
 import { CliImportDialog } from './CliImportDialog'
@@ -204,6 +206,7 @@ export interface SidebarProps {
     scope?: ConversationSelectionScope,
   ) => void
   onNewConversation: () => void
+  onEditBot?: (assistant: ChatAssistant) => void
   onOpenInPopout?: (conversationId: string) => void | Promise<void>
   onConversationDeleted?: (id: string) => void
   onForceDropConversation?: (id: string) => void
@@ -227,6 +230,7 @@ export interface SidebarProps {
 }
 
 function SidebarUserFooter({
+  compact = false,
   profile,
   lang,
   settingsActive,
@@ -234,6 +238,7 @@ function SidebarUserFooter({
   onSelectLang,
   onOpenUsage,
 }: {
+  compact?: boolean
   profile: ChatUserProfile
   lang: Lang
   settingsActive: boolean
@@ -257,7 +262,7 @@ function SidebarUserFooter({
 
   return (
     <div
-      className="shrink-0 border-t border-neutral-200/60 p-1.5"
+      className={compact ? 'shrink-0' : 'shrink-0 border-t border-neutral-200/60 p-1.5'}
       data-tauri-drag-region="false"
     >
       <div
@@ -275,7 +280,7 @@ function SidebarUserFooter({
           aria-haspopup="menu"
           aria-expanded={menuRect !== null}
         >
-          <UserAvatar profile={profile} size={22} />
+          <UserAvatar profile={profile} size={compact ? 28 : 22} />
           <span
             className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700"
             title={profile.displayName || undefined}
@@ -283,7 +288,7 @@ function SidebarUserFooter({
             {profile.displayName || 'Kivio'}
           </span>
         </button>
-        <IconButton
+        {!compact && <IconButton
           size="xs"
           label={`${t.settings} (${isMac ? '⌘,' : 'Ctrl+,'})`}
           onClick={() => {
@@ -292,7 +297,7 @@ function SidebarUserFooter({
           }}
         >
           <Settings strokeWidth={1.75} />
-        </IconButton>
+        </IconButton>}
       </div>
 
       {menuRect && (
@@ -614,6 +619,7 @@ export const Sidebar = memo(function Sidebar({
   onSelectSet,
   onSelectConversation,
   onNewConversation,
+  onEditBot,
   onOpenInPopout,
   onConversationDeleted,
   onForceDropConversation,
@@ -716,11 +722,17 @@ export const Sidebar = memo(function Sidebar({
   const [activeTab, setActiveTab] = useState<'conversations' | 'sets' | 'projects'>('conversations')
   const [sidebarView, setSidebarView] = useState(getRememberedSidebarView)
   const flatView = sidebarView === 'flat'
+  const botView = sidebarView === 'bot'
+  const switchSidebarView = (view: SidebarView) => {
+    setSidebarView(view)
+    rememberSidebarView(view)
+    onSearchOpenChange(false)
+    setSectionMenuAnchor(null)
+  }
   const [flatScope, setFlatScope] = useState('all')
   const toggleSidebarView = () => {
     const next = flatView ? 'classic' : 'flat'
-    setSidebarView(next)
-    rememberSidebarView(next)
+    switchSidebarView(next)
   }
 
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
@@ -858,12 +870,12 @@ export const Sidebar = memo(function Sidebar({
   useEffect(() => {
     // Initial state already shows the skeleton. Subsequent invalidations keep
     // the current rows visible, including after a StrictMode effect restart.
-    void loadSidebarData({ silent: true })
-  }, [loadSidebarData, refreshKey])
+    if (!botView) void loadSidebarData({ silent: true })
+  }, [botView, loadSidebarData, refreshKey])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (settingsActive) return
+      if (settingsActive || botView) return
       const mod = e.metaKey || e.ctrlKey
       if (!mod || e.key.toLowerCase() !== 'p') return
       e.preventDefault()
@@ -871,7 +883,7 @@ export const Sidebar = memo(function Sidebar({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [settingsActive])
+  }, [settingsActive, botView])
 
   const handleRenameConversation = async (id: string, title: string) => {
     try {
@@ -1488,7 +1500,7 @@ export const Sidebar = memo(function Sidebar({
         )}
         {/* 侧栏内顶栏行只在 macOS 存在：那两枚按钮要贴着系统交通灯排。
             Windows / Linux 已把它们常驻到全宽标题栏带（见 ChatTitlebar），此处渲染会重复。 */}
-        {usesNativeTitlebar && (
+        {usesNativeTitlebar && !botView && (
           <div
             className={`chat-titlebar-row chat-sidebar-titlebar-row flex shrink-0 gap-2 ${chatTitlebarMacInsetClass} pr-3`}
             data-tauri-drag-region
@@ -1502,7 +1514,13 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
 
-      <nav
+      {botView && <div className={`chat-titlebar-row chat-sidebar-titlebar-row flex shrink-0 items-center gap-2 ${usesNativeTitlebar ? chatTitlebarMacInsetClass : 'pl-3'} pr-3`} data-tauri-drag-region>
+        <div className="min-w-0 flex-1" data-tauri-drag-region />
+        <IconButton size="lg" shape="circle" variant="outline" label={t.chatBotSearch} aria-expanded={searchOpen} onClick={() => onSearchOpenChange(!searchOpen)}><Search size={20} strokeWidth={1.75} /></IconButton>
+        <IconButton size="lg" shape="circle" variant="outline" label={t.chatBotNew} onClick={onNewConversation}><Plus size={22} strokeWidth={1.75} /></IconButton>
+      </div>}
+
+      {!botView && <><nav
         className={`shrink-0 space-y-0.5 px-2 pb-2 ${usesNativeTitlebar ? '' : 'pt-2'}`}
         data-tauri-drag-region="false"
       >
@@ -1551,7 +1569,9 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="mx-2 border-t border-neutral-200/90" />
 
-      <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
+      </>}
+
+      {botView ? <BotRoster lang={lang} currentConversationId={currentConversationId} generatingConversationIds={generatingConversationIds} optimisticConversations={optimisticConversations} refreshKey={refreshKey} searchOpen={searchOpen} onSelectConversation={onSelectConversation} onOpenSettings={onOpenSettings} onOpenExtensionsItem={onOpenExtensionsItem} onEditBot={onEditBot} onSwitchView={switchSidebarView} onNewBot={onNewConversation} footer={<SidebarUserFooter compact profile={userProfile} lang={lang} settingsActive={settingsActive} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />} /> : <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
         {loading ? (
           <div className="space-y-2 px-2 py-3" aria-label={t.chatLoading} aria-busy="true">
             {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -2023,6 +2043,7 @@ export const Sidebar = memo(function Sidebar({
                   onOpenSearch={() => onSearchOpenChange(true)}
                   flatView={flatView}
                   onToggleView={toggleSidebarView}
+                  onUseBot={() => switchSidebarView('bot')}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}
@@ -2070,16 +2091,16 @@ export const Sidebar = memo(function Sidebar({
             </div>
           </>
         )}
-      </div>
+      </div>}
 
-      <SidebarUserFooter
+      {!botView && <SidebarUserFooter
         profile={userProfile}
         lang={lang}
         settingsActive={settingsActive}
         onOpenSettings={onOpenSettings}
         onSelectLang={onSelectLang}
         onOpenUsage={onOpenUsage}
-      />
+      />}
 
       {projectMenuState && menuProject && (
         <ProjectContextMenu
@@ -2145,7 +2166,7 @@ export const Sidebar = memo(function Sidebar({
       )}
     </aside>
 
-    {searchOpen && (
+    {searchOpen && !botView && (
       <SearchDialog
         query={searchQuery}
         results={searchResults}

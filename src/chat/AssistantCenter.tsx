@@ -1,3 +1,4 @@
+import { assistantColors } from './assistantColors'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   ArrowLeft,
@@ -32,6 +33,7 @@ import {
   assistantDraftStore,
   assistantSaveLanded,
   beginAssistantEdit,
+  createBlankAssistant,
   blockAssistantSave,
   forgetAssistantLanding,
   joinAssistantSave,
@@ -51,11 +53,6 @@ type AssistantDraft = ChatAssistant
 type CenterView = 'list' | 'detail' | 'edit'
 type SuiteTab = 'plaza' | 'installed' | 'mine'
 
-const assistantColors = ['#6A8FBD', '#2f6ff0', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
-
-function nowSeconds() {
-  return Math.floor(Date.now() / 1000)
-}
 
 function listFromMaybe<T>(snake?: T[], camel?: T[]): T[] {
   return Array.isArray(snake) ? snake : Array.isArray(camel) ? camel : []
@@ -73,28 +70,6 @@ function toggleId(list: string[], id: string): string[] {
   return list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
 }
 
-function createBlankAssistant(): AssistantDraft {
-  const now = nowSeconds()
-  return {
-    id: `asst_${crypto.randomUUID()}`,
-    name: '新助手',
-    description: '',
-    icon: 'bot',
-    color: '#6A8FBD',
-    source: 'user',
-    system_prompt: '',
-    provider_id: '',
-    model: '',
-    mcp_server_ids: [],
-    skill_ids: [],
-    enabled: true,
-    installed: true,
-    archived: false,
-    built_in: false,
-    created_at: now,
-    updated_at: now,
-  }
-}
 
 function assistantMatches(assistant: ChatAssistant, query: string) {
   if (!query) return true

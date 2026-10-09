@@ -1,3 +1,4 @@
+import { botAssistantId, botConversationId } from './botIdentity'
 // Chat API 调用封装
 import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
@@ -247,6 +248,8 @@ function toListItem(conversation: Conversation): ConversationListItem {
     created_at: conversation.created_at,
     updated_at: conversation.updated_at,
     pinned: conversation.pinned,
+    archived: conversation.archived,
+    revision: conversation.revision,
     folder: conversation.folder,
     project_id: conversation.project_id ?? conversation.projectId ?? null,
     projectId: conversation.project_id ?? conversation.projectId ?? null,
@@ -394,16 +397,28 @@ const mockChatApi = {
     folder?: string,
     projectId?: string | null,
     assistantId?: string | null,
+    botId?: string,
   ): Promise<Conversation> {
+    if (botId) {
+      const existing = loadMockConversations().find(item => item.id === botId)
+      if (existing) {
+        if (existing.archived) {
+          existing.archived = false; existing.revision += 1; existing.updated_at = nowSeconds()
+          saveMockConversations(loadMockConversations().map(item => item.id === botId ? existing : item))
+        }
+        return existing
+      }
+    }
     const now = nowSeconds()
     const assistant = assistantId
       ? loadMockAssistants().find((item) => item.id === assistantId && !item.archived && item.enabled !== false)
       : undefined
+    if (botId && !assistant) throw new Error('Bot not found')
     const snapshot = assistant ? assistantSnapshot(assistant) : null
     const conversation: Conversation = {
-      id: `conv_dev_${crypto.randomUUID()}`,
+      id: botId ?? `conv_dev_${crypto.randomUUID()}`,
       revision: 0,
-      title: '新对话',
+      title: botId ? assistant!.name : '新对话',
       provider_id: providerId?.trim() || snapshot?.provider_id || snapshot?.providerId || 'dev-provider',
       model: model?.trim() || snapshot?.model || 'dev-model',
       messages: [],
@@ -551,6 +566,18 @@ const mockChatApi = {
     }
     assistants[index] = next
     saveMockAssistants(assistants)
+    const conversations = loadMockConversations()
+    const bot = conversations.find(item => botAssistantId(item.id) === next.id)
+    if (bot) {
+      const snapshot = assistantSnapshot(next)
+      const previous = bot.assistant_snapshot ?? bot.assistantSnapshot
+      if (previous?.provider_id !== snapshot.provider_id || previous?.model !== snapshot.model) {
+        bot.provider_id = snapshot.provider_id || 'dev-provider'; bot.model = snapshot.model || 'dev-model'
+      }
+      bot.assistant_snapshot = snapshot; bot.assistantSnapshot = snapshot; bot.title = next.name
+      bot.revision += 1
+      saveMockConversations(conversations)
+    }
     return next
   },
 
@@ -739,6 +766,7 @@ const mockChatApi = {
     conversationId: string,
     updates: {
       title?: string
+      archived?: boolean
       pinned?: boolean
       folder?: string
       projectId?: string | null
@@ -752,6 +780,8 @@ const mockChatApi = {
     const conversations = loadMockConversations()
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
+    const botId = botAssistantId(conversationId)
+    if (botId && 'assistantId' in updates && updates.assistantId !== botId) throw new Error('Bot 的助手身份不能更换')
     const hasFolderUpdate = 'folder' in updates
     const hasProjectUpdate = 'projectId' in updates
     const project = hasProjectUpdate && updates.projectId
@@ -761,6 +791,7 @@ const mockChatApi = {
       ...conversations[index],
       title: updates.title ?? conversations[index].title,
       pinned: updates.pinned ?? conversations[index].pinned,
+      archived: updates.archived ?? conversations[index].archived,
       folder: hasProjectUpdate
         ? project?.name
         : hasFolderUpdate
@@ -1099,6 +1130,25 @@ const mockChatApi = {
 }
 
 export const chatApi = {
+  async getBotConversations(): Promise<ConversationListItem[]> {
+    if (!isTauriRuntime()) return loadMockConversations().filter(c => botAssistantId(c.id)).map(toListItem)
+    const result = await invoke<{ success: boolean; conversations: ConversationListItem[] }>('chat_get_bot_conversations')
+    if (!result.success) throw new Error('Failed to load Bots')
+    return result.conversations
+  },
+
+  /** Open the same durable chat; history is read through the existing paged endpoint. */
+  async openBot(assistantId: string): Promise<Conversation> {
+    let id: string
+    if (isTauriRuntime()) {
+      id = await invoke<string>('chat_open_bot', { assistantId })
+    } else {
+      id = botConversationId(assistantId)
+      await mockChatApi.createConversation(undefined, undefined, undefined, null, assistantId, id)
+    }
+    return chatApi.getConversationWindow(id)
+  },
+
   // 获取对话列表
   async getConversations(
     offset = 0,
@@ -1119,13 +1169,20 @@ export const chatApi = {
   },
 
   // 全量索引搜索对话（覆盖所有对话，不止侧栏默认加载的前 N 个）
-  async searchConversations(query: string, limit = 30): Promise<ConversationSearchHit[]> {
-    if (!isTauriRuntime()) return []
+  async searchConversations(query: string, limit = 30, botOnly = false): Promise<ConversationSearchHit[]> {
+    if (!isTauriRuntime()) {
+      const needle = query.trim().toLowerCase()
+      if (!needle) return []
+      return loadMockConversations().filter(c => !botOnly || botAssistantId(c.id))
+        .filter(c => [c.title, ...c.messages.map(m => m.content)].some(text => text.toLowerCase().includes(needle)))
+        .sort((a, b) => b.updated_at - a.updated_at).slice(0, limit)
+        .map(c => ({ ...toListItem(c), match_field: 'content', match_message_id: null, match_snippet: null }))
+    }
     const trimmed = query.trim()
     if (!trimmed) return []
     const result = await invoke<{ success: boolean; conversations: ConversationSearchHit[] }>(
       'chat_search_conversations',
-      { query: trimmed, limit }
+      { query: trimmed, limit, botOnly }
     )
     return result.success ? result.conversations : []
   },

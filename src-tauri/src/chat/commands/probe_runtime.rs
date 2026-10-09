@@ -346,7 +346,7 @@ async fn new_probe_conversation(
         project_id,
         None,
         None,
-        true,
+        super::catalog::ConversationCreation::ReuseBlank,
     )
     .await?;
     conversation.title = {

@@ -760,7 +760,8 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
-.kv-input::placeholder { color: var(--text-faint); }
+.kv-input::placeholder,
+.kv-textarea::placeholder { color: var(--text-muted); opacity: 1; }
 /* Windows WebView2 (Edge) 给 password 框注入原生的 reveal/clear 眼睛图标，
    会和我们自定义的显示切换按钮叠成两个眼睛。全局隐藏原生的。 */
 input[type="password"]::-ms-reveal,
@@ -803,7 +804,7 @@ input[type="password"]::-ms-clear {
   line-height: 1.65;
   box-shadow: none;
 }
-.kv-textarea.plain::placeholder { color: var(--text-faint); }
+.kv-textarea.plain::placeholder { color: var(--text-muted); }
 .kv-textarea.plain:focus,
 .kv-textarea.plain:focus-visible {
   border-color: transparent;
@@ -900,6 +901,12 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn.md { width: 32px; height: 32px; border-radius: 7px; }
 .kv-icon-btn.lg { width: 36px; height: 36px; border-radius: 8px; }
 .kv-icon-btn.circle { border-radius: 9999px; }
+.kv-icon-btn.is-outlined {
+  border: 1px solid var(--border, var(--color-border));
+  background: var(--bg, var(--color-background));
+  color: var(--text);
+}
+.kv-icon-btn.is-outlined:hover:not(:disabled) { background: var(--bg-hover, var(--theme-surface-hover)); }
 .kv-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv-icon-btn.sm svg,
 .kv-icon-btn.md svg,

@@ -1012,6 +1012,11 @@ pub(crate) async fn chat_update_conversation(
     web_search_mode: Option<String>,
     reply_models: Option<Vec<crate::chat::ModelRef>>,
 ) -> Result<serde_json::Value, String> {
+    if let Some(bot_assistant_id) = conversation_id.strip_prefix(crate::chat::types::BOT_CONVERSATION_PREFIX) {
+        if assistant_id.as_deref().is_some_and(|id| id.trim() != bot_assistant_id) {
+            return Err("Bot 的身份固定，请打开另一个 Bot，或编辑这个 Bot 的助手配置".into());
+        }
+    }
     let pauses_goal = project_id.is_some()
         || set_id.is_some()
         || provider_id.is_some()

@@ -252,6 +252,22 @@ pub(super) fn remove_conversation_side_artifacts(
 }
 
 /// 获取对话列表（分页）。**默认排除已归档**（侧栏工作台不应出现归档对话）。
+/// Include hidden Bots so the contact list can restore them without recreating history.
+pub(crate) fn get_bot_conversations(app: &AppHandle) -> Result<Vec<ConversationListItem>, String> {
+    let mut items = load_index_or_scan(app)?.conversations;
+    items.retain(|item| {
+        item.id
+            .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+    });
+    items.sort_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then(b.updated_at.cmp(&a.updated_at))
+            .then(a.id.cmp(&b.id))
+    });
+    Ok(items)
+}
+
 pub fn get_conversations(
     app: &AppHandle,
     offset: usize,
@@ -319,6 +335,13 @@ pub(super) fn reusable_blank_index_matches(
     set_id: Option<&str>,
     assistant_id: Option<&str>,
 ) -> bool {
+    if item
+        .id
+        .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+    {
+        return false;
+    }
+
     // 归档对话只出现在对话库「归档」书架。复用它当新对话，侧栏会在乐观行剪掉后把它吃掉：
     // 用户只能在生成中看到这条会话，结束后找不到。
     !item.archived
@@ -488,7 +511,7 @@ mod persistence_tests {
     }
 
     #[test]
-    fn reusable_blank_skips_archived_index_entries() {
+    fn reusable_blank_skips_archived_and_bot_index_entries() {
         assert!(super::reusable_blank_index_matches(
             &blank_item(false),
             "p",
@@ -506,6 +529,11 @@ mod persistence_tests {
             None,
             None,
             None
+        ));
+        let mut bot = blank_item(false);
+        bot.id = "conv_bot_research".to_string();
+        assert!(!super::reusable_blank_index_matches(
+            &bot, "p", "m", None, None, None, None
         ));
     }
 }

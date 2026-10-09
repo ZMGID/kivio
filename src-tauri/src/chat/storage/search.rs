@@ -206,6 +206,7 @@ pub fn search_conversations(
     app: &AppHandle,
     query: &str,
     limit: usize,
+    bot_only: bool,
 ) -> Result<Vec<ConversationSearchHit>, String> {
     // Keep empty/disabled searches side-effect free: the legacy entry point returned before
     // touching the repository, so a missing/corrupt index must not turn an empty query into an
@@ -213,7 +214,15 @@ pub fn search_conversations(
     if query.trim().is_empty() || limit == 0 {
         return Ok(vec![]);
     }
-    let index = load_index_or_scan(app)?;
+    let mut index = load_index_or_scan(app)?;
+    if bot_only {
+        // Filter before ranking/limiting, so ordinary chat hits cannot crowd
+        // an older Bot history out of the contact search results.
+        index.conversations.retain(|item| {
+            item.id
+                .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+        });
+    }
     Ok(search_ranked_items(
         index.conversations,
         query,

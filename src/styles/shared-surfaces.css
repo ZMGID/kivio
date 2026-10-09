@@ -219,6 +219,13 @@ dialog.kv-modal {
   margin: auto;
 }
 
+/* Wider forms retain the shared dialog surface and controls. */
+.kv-modal.kv-modal--wide {
+  max-width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
 /* 焦点环只在键盘操作时出现。data-focus-source 由 index.html 按最近输入来源维护：
    鼠标/触控操作期间，脚本聚焦（确认框默认按钮、菜单关闭还焦点等）也不画环，
    覆盖原生 outline 与各处 focus-visible:ring / outline 写法。文本输入框照常显示聚焦态。 */

@@ -87,9 +87,10 @@ pub(crate) async fn chat_search_conversations(
     app: AppHandle,
     query: String,
     limit: usize,
+    bot_only: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let conversations = crate::chat::repository::repository(&app)
-        .search(&app, &query, limit)
+        .search(&app, &query, limit, bot_only.unwrap_or(false))
         .await
         .map_err(crate::chat::repository::repository_error)?;
     Ok(serde_json::json!({
@@ -479,7 +480,7 @@ pub(crate) async fn chat_create_conversation(
         project_id,
         set_id,
         assistant_id,
-        true,
+        ConversationCreation::ReuseBlank,
     )
     .await?;
 
@@ -489,9 +490,52 @@ pub(crate) async fn chat_create_conversation(
     }))
 }
 
-/// `reuse_blank`: hand back a matching untouched blank conversation instead of
-/// creating another one (UI "new chat"). Background creators that must own a
-/// fresh conversation pass false.
+/// A Bot owns one durable conversation; its ID is independent of model, title,
+/// pagination and the currently selected project.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConversationCreation {
+    New,
+    ReuseBlank,
+    Bot,
+}
+
+use crate::chat::types::BOT_CONVERSATION_PREFIX;
+
+#[tauri::command]
+pub(crate) async fn chat_open_bot(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    assistant_id: String,
+) -> Result<String, String> {
+    let conversation = create_chat_conversation_internal(
+        &app,
+        state.inner(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(assistant_id),
+        ConversationCreation::Bot,
+    )
+    .await?;
+    // Navigation loads the existing paged history endpoint, not the entire
+    // lifetime of the Bot over IPC on every click.
+    Ok(conversation.id)
+}
+
+#[tauri::command]
+pub(crate) async fn chat_get_bot_conversations(
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    let conversations = crate::chat::repository::repository(&app)
+        .list_bots(&app)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+    Ok(serde_json::json!({ "success": true, "conversations": conversations }))
+}
+
+/// All creators share the same creation lock and repository write boundary.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_chat_conversation_internal(
     app: &AppHandle,
@@ -502,7 +546,7 @@ pub(crate) async fn create_chat_conversation_internal(
     project_id: Option<String>,
     set_id: Option<String>,
     assistant_id: Option<String>,
-    reuse_blank: bool,
+    creation: ConversationCreation,
 ) -> Result<Conversation, String> {
     let settings = state.settings_read().clone();
     let set_id = set_id.and_then(non_empty_string);
@@ -583,7 +627,35 @@ pub(crate) async fn create_chat_conversation_internal(
 
     let conversation = {
         let _create_guard = state.chat_runtime().lock_conversation_creation().await;
-        let reusable = if reuse_blank {
+        let bot_id = if creation == ConversationCreation::Bot {
+            let assistant = assistant_snapshot.as_ref().ok_or("Bot 需要指定助手")?;
+            Some(format!("{BOT_CONVERSATION_PREFIX}{}", assistant.id))
+        } else {
+            None
+        };
+        if let Some(id) = bot_id.as_deref() {
+            // An unreadable existing file is an error, never permission to
+            // replace a Bot's history with a blank conversation.
+            if crate::chat::storage::conversation_file_path(app, id)?.exists() {
+                let repository = crate::chat::repository::repository(app);
+                let existing = repository
+                    .get(app, id)
+                    .await
+                    .map_err(crate::chat::repository::repository_error)?;
+                return if existing.archived {
+                    repository
+                        .mutate(app, id, |conversation| {
+                            conversation.archived = false;
+                            Ok(())
+                        })
+                        .await
+                        .map_err(crate::chat::repository::repository_error)
+                } else {
+                    Ok(existing)
+                };
+            }
+        }
+        let reusable = if creation == ConversationCreation::ReuseBlank {
             crate::chat::repository::repository(app)
                 .find_reusable_blank(
                     app,
@@ -604,9 +676,13 @@ pub(crate) async fn create_chat_conversation_internal(
         } else {
             let now = chrono::Local::now().timestamp();
             let conversation = Conversation {
-                id: format!("conv_{}", Uuid::new_v4()),
+                id: bot_id.unwrap_or_else(|| format!("conv_{}", Uuid::new_v4())),
                 revision: 0,
-                title: super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string(),
+                title: if creation == ConversationCreation::Bot {
+                    assistant_snapshot.as_ref().unwrap().name.clone()
+                } else {
+                    super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string()
+                },
                 provider_id,
                 model,
                 messages: vec![],
@@ -680,7 +756,7 @@ pub(crate) async fn chat_import_external_conversation(
         project_id,
         None,
         None,
-        true,
+        ConversationCreation::ReuseBlank,
     )
     .await?;
     // create 可能复用了一个空白会话；这里清空以确保从干净状态写入历史。
@@ -791,11 +867,41 @@ pub(crate) fn chat_create_assistant(
 }
 
 #[tauri::command]
-pub(crate) fn chat_update_assistant(
+pub(crate) async fn chat_update_assistant(
     app: AppHandle,
+    state: State<'_, AppState>,
     assistant: ChatAssistant,
 ) -> Result<serde_json::Value, String> {
     let assistant = update_assistant(&app, assistant)?;
+    // Ordinary chats keep their frozen persona. A Bot's own durable chat follows
+    // explicit edits to that Bot; repository mutation preserves concurrent messages.
+    let bot_id = format!("{BOT_CONVERSATION_PREFIX}{}", assistant.id);
+    if crate::chat::storage::conversation_file_path(&app, &bot_id)?.exists() {
+        let snapshot = crate::chat::ChatAssistantSnapshot::from(&assistant);
+        let name = assistant.name.clone();
+        let (default_provider, default_model) = state.settings_read().effective_chat_model();
+        crate::chat::repository::repository(&app)
+            .mutate(&app, &bot_id, move |conversation| {
+                let previous = conversation.assistant_snapshot.as_ref();
+                let model_changed = previous
+                    .map(|old| {
+                        old.provider_id != snapshot.provider_id || old.model != snapshot.model
+                    })
+                    .unwrap_or(true);
+                if model_changed {
+                    conversation.provider_id =
+                        non_empty_string(snapshot.provider_id.clone()).unwrap_or(default_provider);
+                    conversation.model =
+                        non_empty_string(snapshot.model.clone()).unwrap_or(default_model);
+                }
+                conversation.assistant_snapshot = Some(snapshot);
+                conversation.title = name;
+                Ok(())
+            })
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+    }
+    let _ = app.emit("chat-assistants-changed", &assistant.id);
     Ok(serde_json::json!({
         "success": true,
         "assistant": assistant,

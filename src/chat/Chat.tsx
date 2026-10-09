@@ -1,3 +1,7 @@
+import { BotDialog } from './BotDialog'
+import { BotConversationHeader } from './BotConversationHeader'
+import { useBotActions } from './hooks/useBotActions'
+import { botAssistantId } from './botIdentity'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
@@ -134,6 +138,7 @@ import { i18n, LangContext, type Lang } from '../components/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
   forgetRememberedChatRoute,
+  getRememberedSidebarView,
 } from './persistence'
 import { RightDock } from './dock/RightDock'
 import { useRightDock } from './hooks/useRightDock'
@@ -1659,22 +1664,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     })
   }, [])
 
-  const handleNewConversation = useCallback(async () => {
-    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
-    navigation.startNewConversation()
-  }, [navigation, requestTasksLeave])
-
-  // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule_create / automation_upsert 完成。
-  const handleCreateTaskByChat = useCallback(async (prompt: string) => {
-    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
-    navigation.startNewConversation()
-    updateComposerDraft(draftKey(null), (draft) => ({ ...draft, input: prompt }))
-  }, [navigation, requestTasksLeave])
-
-  const handleClearChat = useCallback(async () => {
-    await navigation.clearCurrentChat()
-  }, [navigation])
-
   const assistantIdentity = useMemo(() => ({
     activeProviderId,
     activeModel,
@@ -1698,6 +1687,29 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setStreamErrorForConversation,
     setAssistantStreamStatsByMessageId,
   })
+
+  const { beginNewBot, ...botActions } = useBotActions({ lang: uiLang, currentConversationRef, navigation,
+    refreshSidebar, refreshContextStats, applyConversationIfCurrent, setStreamErrorForConversation,
+    setAssistantStreamStatsByMessageId, runAfterLeavingEditors, openAssistantCenter,
+    startAssistantChat: handleStartAssistantChat,
+  })
+
+  const handleNewConversation = useCallback(async () => {
+    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
+    if (getRememberedSidebarView() === 'bot') beginNewBot()
+    else navigation.startNewConversation()
+  }, [beginNewBot, navigation, requestTasksLeave])
+
+  // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule_create / automation_upsert 完成。
+  const handleCreateTaskByChat = useCallback(async (prompt: string) => {
+    if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
+    navigation.startNewConversation()
+    updateComposerDraft(draftKey(null), (draft) => ({ ...draft, input: prompt }))
+  }, [navigation, requestTasksLeave])
+
+  const handleClearChat = useCallback(async () => {
+    await navigation.clearCurrentChat()
+  }, [navigation])
 
   const ensureConversationForAgentPlan = useCallback(async (
     creation: ReturnType<typeof navigation.beginConversationCreation> | null,
@@ -2595,6 +2607,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // 会话页顶栏控件。非 mac 渲染进全宽标题栏带（单行 chrome），mac 仍留在主区 52px 顶栏。
   const conversationTitlebarControls = useMemo(() => (
     <ConversationTitlebarControls
+      compact={Boolean(botAssistantId(currentConversation?.id))}
       activeAgentRuntime={activeAgentRuntime}
       conversationId={currentConversation?.id ?? null}
       runtimeLocked={
@@ -2689,7 +2702,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     selectedSet,
     onSelectSet: handleSidebarSelectSet,
     currentAssistant: composerCurrentAssistant,
-    onOpenAssistantCenter: openAssistantCenter,
+    onOpenAssistantCenter: botAssistantId(currentConversation?.id) ? undefined : openAssistantCenter,
     onSelectAssistant: handleSelectAssistant,
     autoFocus: true,
     usesExternalRuntime,
@@ -2883,7 +2896,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
         >
-          {chatView === 'conversation' ? conversationTitlebarControls : null}
+          {chatView === 'conversation' && !botAssistantId(currentConversation?.id) ? conversationTitlebarControls : null}
         </ChatTitlebar>
       )}
       <div className="flex min-h-0 w-full flex-1">
@@ -2905,6 +2918,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onSelectSet={handleSidebarSelectSet}
           onSelectConversation={handleSidebarSelectConversation}
           onNewConversation={handleSidebarNewConversation}
+          onEditBot={botActions.editBot}
           onOpenInPopout={handleOpenConversationPopout}
           onConversationDeleted={handleSidebarConversationDeleted}
           onForceDropConversation={handleSidebarForceDropConversation}
@@ -2972,9 +2986,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               <AssistantCenter
                 skills={enabledSkills}
                 currentAssistantId={currentAssistantId}
-                onStartAssistantChat={(assistant) => void handleStartAssistantChat(assistant)}
+                onStartAssistantChat={botActions.startAssistant}
                 onStartBuilder={() => void handleStartBuilderChat()}
-                onApplyAssistant={currentConversation ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
+                onApplyAssistant={currentConversation && !botAssistantId(currentConversation.id) ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
               />
             </Suspense>
           </div>
@@ -3063,6 +3077,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             currentAssistantName={currentAssistantSnapshot?.name ?? null}
             selectedProjectName={selectedProject?.name ?? null}
             selectedSetName={selectedSet?.name ?? null}
+            botHeader={<BotConversationHeader conversation={currentConversation} onEdit={botActions.editCurrentBot} controls={conversationTitlebarControls} />}
             inputBarProps={inputBarProps}
             messageListProps={messageListProps}
             hookWarning={hookWarning}
@@ -3123,6 +3138,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       </div>
     </Profiler>
     </AsyncQuestionsContext.Provider>
+    {botActions.dialogOpen && <BotDialog onSaved={botActions.finishEdit}
+      onClose={botActions.closeDialog} onAdvanced={botActions.openAdvanced} />}
     <AppDialogHost />
     </LangContext.Provider>
   )

@@ -104,6 +104,15 @@ function draftPayload(draft: ChatAssistant): ChatAssistant {
   }
 }
 
+export function createBlankAssistant(name = '新助手'): ChatAssistant {
+  const now = Math.floor(Date.now() / 1000)
+  return normalizeAssistantForDraft({
+    id: `asst_${crypto.randomUUID()}`, name, description: '', icon: 'bot',
+    color: '#6A8FBD', source: 'user', enabled: true, installed: true,
+    archived: false, built_in: false, created_at: now, updated_at: now,
+  })
+}
+
 export function beginAssistantEdit(assistant: ChatAssistant, persisted: boolean) {
   const current = assistantDraftStore.getSnapshot()
   if (current.editing && current.draft?.id === assistant.id) return

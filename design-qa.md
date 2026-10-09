@@ -77,3 +77,12 @@ final result: passed
 先以本地多清单回归复现原有拒绝错误，再修复并验证 57 项后端测试通过。联网临时存储验证 data-agent-kit-starter-pack 的预览与停用安装成功，识别 33 技能；其 userConfig 不支持及 MCP 环境变量缺失诊断仍保留。另批量调用真实详情入口覆盖 52 个仓库内条目和 AlloyDB、Superpowers、Atomic Agents、Zilliz，共 56 项完成。code-modernization 的 modernize.md 和 pr-review-toolkit 的 silent-failure-hunter.md 存在上游 YAML 错误，保留部分读取提示，未声称所有组件完整或运行能力均受支持。
 
 桌面构建通过并已重新启动；实机窗口成功展示插件页面。用户正在浏览 TypeScript LSP，未继续改变其当前浏览位置。LSP 运行能力仍不受支持，本次未新增 LSP 支持。目录清单审计明细保存为本任务可视化目录 `plugin-market/manifest-audit.json`。
+
+
+## 2026-10-10 Bot 模式 Impeccable 重做
+
+- 按用户选定的联系人参考重排：顶部搜索/新增、76px 联系人行、底部账号与全局功能、单一 Bot 标题及贴底输入；模型和权限等原控件收入聊天设置，聊天工具按需展开。创建与资料表单复用共享 wide modal 和公共输入控件。实现拆分在 BotRoster、BotConversationHeader、BotDialog 等组件，Chat.tsx 负责接线。
+- 完成两轮有限原生视觉检查及独立 finish review。初审唯一 material fix 为占位提示对比度，已在共享 composer / Input / TextArea 样式负责人修正为 text-muted。重新构建并捕获六个相同状态后，独立 verdict 为 resolved，disposition ship；源颜色 #737373 对 #fdfcfa 约 4.62:1。
+- 当前证据：`.impeccable/review/bot/desktop.png`、`narrow-sidebar.png`、`create.png`、`profile.png`、`functions.png`、`settings.png`；审查与修复评分分别见 `finish-review.md` 和 `contrast-verdict.md`。DESIGN.md 与 design.json 已记录新增共享能力，保留既有系统。
+- 验证：83 项相关前端测试通过；架构检查 12 项通过、零违规；定向 ESLint 与补充 ES2022 lib 的类型检查通过；macOS 原生 bundle 构建成功并已打开。默认项目类型检查仍有现存 ES2020 lib 与 .at/replaceAll 不匹配问题，没有改动其配置。
+- 视觉范围为 macOS 浅色空对话、最窄 200px 侧栏、创建、资料和两个菜单。未宣称深色、Windows、已有消息历史或实时生成完成视觉验收；公共搜索 Input 与 plain TextArea 的占位色由源码确认。

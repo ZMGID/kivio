@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use crate::chat::model::ModelMessage;
 use crate::mcp::types::ChatToolArtifact;
 
+/// Durable direct conversation identity, distinct from a model runtime session.
+pub(crate) const BOT_CONVERSATION_PREFIX: &str = "conv_bot_";
+
 fn default_context_usage_status() -> String {
     "unknown".to_string()
 }

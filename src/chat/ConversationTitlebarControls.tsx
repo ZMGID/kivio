@@ -10,6 +10,7 @@ import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import type { AgentRuntimeConfig, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
+  compact?: boolean
   activeAgentRuntime: AgentRuntimeConfig
   conversationId: string | null
   /** 有消息、或主窗已被弹出占住：锁死 kind / agent。 */
@@ -34,6 +35,7 @@ export interface ConversationTitlebarControlsProps {
 
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
 export const ConversationTitlebarControls = memo(function ConversationTitlebarControls({
+  compact = false,
   activeAgentRuntime,
   conversationId,
   runtimeLocked,
@@ -56,7 +58,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
 }: ConversationTitlebarControlsProps) {
   return (
     <>
-      <div className="flex min-w-0 items-center gap-1">
+      <div className={`flex min-w-0 items-center gap-1 ${compact ? 'flex-wrap gap-y-2' : ''}`}>
         <div className="shrink-0" data-tauri-drag-region="false">
           <RuntimePicker
             agentRuntime={activeAgentRuntime}
@@ -106,7 +108,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           </div>
         )}
       </div>
-      <div className="min-w-5 flex-1" data-tauri-drag-region />
+      {!compact && <div className="min-w-5 flex-1" data-tauri-drag-region />}
       <div className="flex min-w-0 shrink items-center justify-end gap-1">
         {conversationId && (
           <div className="shrink-0" data-tauri-drag-region="false">

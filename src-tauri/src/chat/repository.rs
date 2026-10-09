@@ -379,6 +379,18 @@ impl ConversationRepository {
     ///
     /// 共享 barrier 依然挡住 `bulk_mutate_loaded`（它拿独占），所以"批量迁移期间读到半套数据"
     /// 这条不变式没变。加锁顺序仍是 barrier → conversation → index，没有新的环。
+    pub async fn list_bots(&self, app: &AppHandle) -> RepositoryResult<Vec<ConversationListItem>> {
+        let _barrier = self.barrier.read().await;
+        let app_for_read = app.clone();
+        let items = Self::spawn_storage(
+            move || super::storage::get_bot_conversations(&app_for_read),
+            "list Bot conversations",
+        )
+        .await?;
+        self.persist_healed_index_if_needed(app).await;
+        Ok(items)
+    }
+
     pub async fn list(
         &self,
         app: &AppHandle,
@@ -413,12 +425,13 @@ impl ConversationRepository {
         app: &AppHandle,
         query: &str,
         limit: usize,
+        bot_only: bool,
     ) -> RepositoryResult<Vec<super::ConversationSearchHit>> {
         let _barrier = self.barrier.read().await;
         let app_for_read = app.clone();
         let query = query.to_string();
         let hits = Self::spawn_storage(
-            move || super::storage::search_conversations(&app_for_read, &query, limit),
+            move || super::storage::search_conversations(&app_for_read, &query, limit, bot_only),
             "search conversations",
         )
         .await?;

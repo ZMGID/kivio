@@ -30,8 +30,8 @@ mod conversations;
 mod index;
 mod migration;
 mod projects;
-mod sets;
 pub(crate) mod set_backup;
+mod sets;
 
 #[allow(unused_imports)]
 pub(crate) use assistants::merge_builtin_definitions;
@@ -46,8 +46,8 @@ pub use conversations::{
     load_conversation, load_conversation_pins, set_conversation_pins,
 };
 pub(crate) use conversations::{
-    delete_conversation, read_conversation_file, restart_goal_candidates, write_conversation_file,
-    RestartGoal,
+    delete_conversation, get_bot_conversations, read_conversation_file, restart_goal_candidates,
+    write_conversation_file, RestartGoal,
 };
 pub use index::load_index;
 pub(crate) use index::{

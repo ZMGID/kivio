@@ -44,7 +44,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   )
 })
 
-type IconButtonVariant = 'default' | 'ghost' | 'danger'
+type IconButtonVariant = 'default' | 'ghost' | 'danger' | 'outline'
 type IconButtonSize = 'xs' | 'sm' | 'md' | 'lg'
 type IconButtonShape = 'square' | 'circle'
 
@@ -76,7 +76,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
     'kv-icon-btn',
     size !== 'xs' && size,
     shape === 'circle' && 'circle',
-    variant !== 'default' && variant,
+    variant !== 'default' && (variant === 'outline' ? 'is-outlined' : variant),
     className,
   ]
     .filter(Boolean)

@@ -370,7 +370,7 @@
 }
 .chat-composer-editor[data-empty="true"]::before {
   content: attr(data-placeholder);
-  color: var(--text-faint);
+  color: var(--text-muted);
   pointer-events: none;
   position: absolute;
 }

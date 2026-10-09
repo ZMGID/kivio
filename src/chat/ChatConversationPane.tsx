@@ -16,6 +16,7 @@ import type { ChatImageViewerItem } from './imageViewer'
 import type { ChatHookPayload } from '../api/tauri'
 import type { Lang } from '../components/i18n'
 import { i18n } from '../components/i18n'
+import { botAssistantId } from './botIdentity'
 
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
@@ -73,6 +74,7 @@ function EmptyHeroHeading({
 }
 
 export interface ChatConversationPaneProps {
+  botHeader?: ReactNode
   titlebarControls: ReactNode
   usesNativeTitlebar: boolean
   sidebarCollapsed: boolean
@@ -114,6 +116,7 @@ export interface ChatConversationPaneProps {
  * 侧栏/设置切换不再让 Chat.tsx 直接重建这段巨型 JSX。
  */
 export const ChatConversationPane = memo(function ChatConversationPane({
+  botHeader,
   titlebarControls,
   usesNativeTitlebar,
   sidebarCollapsed,
@@ -149,6 +152,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 }: ChatConversationPaneProps) {
   const transition = useConversationTransition()
   const conversationLoading = transition.loading
+  const botMode = Boolean(botAssistantId(currentConversationId))
   return (
     <div className="chat-motion-pane-in chat-main-pane relative flex min-w-0 flex-1 flex-col">
       {usesNativeTitlebar && (
@@ -167,9 +171,11 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               onNewConversation={onNewConversation}
             />
           )}
-          {titlebarControls}
+          {botMode ? botHeader : titlebarControls}
         </header>
       )}
+
+      {!usesNativeTitlebar && botMode && <header className="flex h-14 shrink-0 items-center px-6" data-tauri-drag-region>{botHeader}</header>}
 
       {protocolVersionMismatch && (
         <div
@@ -182,7 +188,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
       )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {showEmptyHero ? (
+        {showEmptyHero && !botMode ? (
           <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading
@@ -248,7 +254,12 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
-                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} />
+                {showEmptyHero && botMode ? <div className="flex min-h-0 flex-1 items-center justify-center px-8">
+                  <div className="max-w-sm text-center">
+                    <p className="text-[16px] font-medium text-neutral-900">{i18n[lang].chatBotStartPrompt.replace('{name}', currentAssistantName ?? 'Bot')}</p>
+                    <p className="mt-2 text-[13px] leading-relaxed text-neutral-500">{i18n[lang].chatBotContinuity}</p>
+                  </div>
+                </div> : <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} />}
               </Profiler>
             </Suspense>
 
@@ -269,7 +280,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
-            <InputBar {...inputBarProps} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
+            <InputBar {...inputBarProps} botMode={botMode} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
           </>
         )}
         {conversationLoading && (

@@ -814,7 +814,7 @@ async fn create_task_conversation(
         project_id,
         None,
         None,
-        false,
+        crate::chat::commands::catalog::ConversationCreation::New,
     )
     .await?;
     let title = name.to_string();

@@ -74,11 +74,14 @@ export function rememberTasksTab(tab: TasksTab) {
   setLocalStorageItem(CHAT_TASKS_TAB_KEY, tab)
 }
 
-export function getRememberedSidebarView(): 'classic' | 'flat' {
-  return getLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY) === 'flat' ? 'flat' : 'classic'
+export type SidebarView = 'classic' | 'flat' | 'bot'
+
+export function getRememberedSidebarView(): SidebarView {
+  const view = getLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY)
+  return view === 'flat' || view === 'bot' ? view : 'classic'
 }
 
-export function rememberSidebarView(view: 'classic' | 'flat') {
+export function rememberSidebarView(view: SidebarView) {
   setLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY, view)
 }
 

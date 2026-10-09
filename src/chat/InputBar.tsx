@@ -11,6 +11,7 @@ import {
   Layers,
   Plus,
   Search,
+  SlidersHorizontal,
   Square,
   TextQuote,
   WandSparkles,
@@ -360,6 +361,8 @@ export interface InputBarProps {
   autoFocus?: boolean
   /** footer：贴底（有消息时）；inline：嵌入居中区域（空对话欢迎页） */
   layout?: 'footer' | 'inline'
+  /** Contact-style chat keeps secondary controls behind one disclosure. */
+  botMode?: boolean
   /** 外部 CLI 模式：斜杠命令直通 Agent，不展示 Kivio 弹层 */
   usesExternalRuntime?: boolean
   /** Kivio Chat：不提供 /plan /orchestrate / 技能斜杠（那些是 Agent 能力） */
@@ -447,6 +450,7 @@ export const InputBar = memo(function InputBar({
   onSelectAssistant,
   autoFocus,
   layout = 'footer',
+  botMode = false,
   usesExternalRuntime = false,
   usesChatRuntime = false,
   externalAgentName = null,
@@ -1756,6 +1760,8 @@ export const InputBar = memo(function InputBar({
   const stopOwnsSendSlot = Boolean(cancelVisible && onCancel) && !(queueMode && canSend)
   const cliAgentLabel = externalCliAgentLabel(externalAgentName)
 
+  const [botToolsExpanded, setBotToolsExpanded] = useState(false)
+
   const wrapperClass =
     layout === 'inline'
       ? 'w-full'
@@ -2145,7 +2151,7 @@ export const InputBar = memo(function InputBar({
                 }}
                 placeholder={usesExternalRuntime
                   ? t.chatCliCommandPlaceholder.replace('{agent}', cliAgentLabel)
-                  : t.chatComposerPlaceholder}
+                  : botMode && currentAssistant ? t.chatBotComposerPlaceholder.replace('{name}', currentAssistant.name) : t.chatComposerPlaceholder}
                 className={`${optimizing ? 'is-optimizing' : ''} ${optimizeMotion === 'out' ? 'is-optimize-out' : ''} ${optimizeMotion === 'in' ? 'is-optimize-reveal' : ''}`}
               />
               {composerContextMenu.menu}
@@ -2226,6 +2232,9 @@ export const InputBar = memo(function InputBar({
               }
               sourcesActive={knowledgeBaseIds.length > 0 || webSearchMode !== 'off'}
             />
+            {botMode && <IconButton size="sm" shape="circle" label={t.chatBotComposerTools} aria-expanded={botToolsExpanded}
+              onClick={() => setBotToolsExpanded(value => !value)}><SlidersHorizontal size={16} /></IconButton>}
+            <div className={botMode && !botToolsExpanded ? 'hidden' : 'contents'}>
             {showAssistantEntry && onOpenAssistantCenter && (
               <AssistantPicker
                 currentAssistant={currentAssistant}
@@ -2481,6 +2490,7 @@ export const InputBar = memo(function InputBar({
               : contextSlot}
 
             {/* 发送 / 停止已移进输入框右端（见 textarea 同级的 chat-composer-send-slot）。 */}
+            </div>
             </div>
           </div>
 
