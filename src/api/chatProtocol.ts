@@ -349,6 +349,9 @@ function applySnapshot(snapshot: ChatRunSnapshot) {
   for (const warning of snapshot.warnings) {
     dispatch(syntheticEnvelope(snapshot, warning), restored)
   }
+  if (snapshot.statusNote) {
+    dispatch(syntheticEnvelope(snapshot, { type: 'status_note_updated', note: snapshot.statusNote }), restored)
+  }
   if (snapshot.terminal) dispatch(syntheticEnvelope(snapshot, snapshot.terminal), restored)
 }
 

@@ -55,6 +55,19 @@ pub trait AgentHost: Send + Sync {
         segment: Option<&ChatMessageSegment>,
     );
 
+    /// Only the current model attempt is rolled back; completed tool rounds stay intact.
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        _text_chars: u32,
+        _reasoning_chars: u32,
+        _segment_ids: Vec<String>,
+        _tool_ids: Vec<String>,
+    ) {
+    }
+
+    fn emit_status_note(&self, _run_id: &str, _note: Option<String>) {}
+
     fn emit_tool_record(
         &self,
         conversation_id: &str,

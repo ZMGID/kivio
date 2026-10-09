@@ -291,6 +291,22 @@ impl AgentHost for SubAgentHost {
         self.emit_progress("running", false);
     }
 
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        text_chars: u32,
+        _reasoning_chars: u32,
+        _segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            crate::chat::protocol::truncate_stream_tail(&mut progress.text, text_chars);
+            progress.tools.retain(|tool| !tool_ids.contains(&tool.id));
+        }
+        self.emit_progress("running", true);
+    }
+
     fn emit_tool_record(
         &self,
         _conversation_id: &str,

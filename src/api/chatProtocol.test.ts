@@ -380,6 +380,13 @@ describe('chat protocol sequencing', () => {
     ))).toEqual(['reasoning', 'tool', 'text'])
   })
 
+  it('restores retry progress when returning to a running conversation', () => {
+    const seen: ChatRunEventEnvelope[] = []
+    chatProtocolTesting.subscribe((item) => { if (item.scope === 'run') seen.push(item) })
+    chatProtocolTesting.applySnapshot(snapshot({ statusNote: '重连 2/4' }))
+    expect(seen.at(-1)).toMatchObject({ type: 'status_note_updated', note: '重连 2/4' })
+  })
+
   it('marks snapshot events as restored deliveries', () => {
     const sources: string[] = []
     chatProtocolTesting.subscribe((_item, delivery) => sources.push(delivery.source))

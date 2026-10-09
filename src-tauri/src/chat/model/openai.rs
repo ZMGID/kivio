@@ -255,7 +255,13 @@ impl OpenAiChatProvider<'_> {
         let mut images: Vec<GeneratedImageData> = Vec::new();
 
         loop {
-            let chunk = response.chunk().await.map_err(|err| {
+            let chunk_result = response.chunk().await;
+            // finish_reason commits this model response. Losing the optional
+            // usage/DONE tail must not replay an already completed request.
+            if chunk_result.is_err() && finish_reason.is_some() {
+                break;
+            }
+            let chunk = chunk_result.map_err(|err| {
                 let model_error = stream_read_error(&label, &err);
                 self.record_usage_failure(
                     &request,
@@ -329,10 +335,18 @@ impl OpenAiChatProvider<'_> {
                     Ok(value) => value,
                     Err(_) => continue,
                 };
+                if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+                    let message = format!("{label} stream error: {error}");
+                    sink.emit(StreamPart::Error {
+                        message: message.clone(),
+                    })?;
+                    return Err(ModelError::provider_stream_error(message));
+                }
                 if let Some(next_usage) = model_usage_from_stream_value(&value) {
                     if let Some(input_tokens) = next_usage.input_tokens {
                         sink.emit(StreamPart::ContextUsage {
-                            input_tokens, output_tokens: next_usage.output_tokens.unwrap_or(0),
+                            input_tokens,
+                            output_tokens: next_usage.output_tokens.unwrap_or(0),
                         })?;
                     }
                     usage = Some(next_usage);
@@ -365,6 +379,25 @@ impl OpenAiChatProvider<'_> {
             }
         }
 
+        if finish_reason.is_none() {
+            let err = ModelError::stream_ended_early(&label);
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.to_string(),
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.to_string(),
+                started_at,
+                started.elapsed(),
+            );
+            return Err(err);
+        }
         let tool_calls = finish_tool_call_partials(&mut tool_partials, sink)?;
         let reason = finish_reason.unwrap_or_else(|| "done".to_string());
         sink.emit(StreamPart::Finish {

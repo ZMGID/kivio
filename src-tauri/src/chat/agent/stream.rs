@@ -285,6 +285,7 @@ pub struct AgentStreamSink<'a> {
     web_search_tracker: Option<WebSearchCardTracker>,
     text_buffer: String,
     text_suppressed: bool,
+    emitted_text_chars: u32,
 }
 
 impl<'a> AgentStreamSink<'a> {
@@ -313,6 +314,7 @@ impl<'a> AgentStreamSink<'a> {
             web_search_tracker,
             text_buffer: String::new(),
             text_suppressed: false,
+            emitted_text_chars: 0,
         }
     }
 
@@ -321,7 +323,8 @@ impl<'a> AgentStreamSink<'a> {
         (snapshot.content, snapshot.reasoning)
     }
 
-    fn emit_text_delta(&self, delta: &str) {
+    fn emit_text_delta(&mut self, delta: &str) {
+        self.emitted_text_chars += delta.chars().count() as u32;
         self.host.emit_stream_delta(
             &self.conversation_id,
             &self.run_id,
@@ -329,6 +332,46 @@ impl<'a> AgentStreamSink<'a> {
             delta,
             None,
             self.text_segment.as_ref(),
+        );
+    }
+
+    pub fn discard_attempt(&mut self) {
+        let mut segment_ids: Vec<String> = self
+            .text_segment
+            .iter()
+            .chain(self.reasoning_segment.iter())
+            .map(|s| s.id.clone())
+            .collect();
+        let mut tool_ids = Vec::new();
+        if let Some(tracker) = &self.tool_draft_tracker {
+            let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(order) = state.drafts.iter().map(|d| d.segment.order).min() {
+                state.next_order = order;
+            }
+            for draft in state.drafts.drain(..) {
+                segment_ids.push(draft.segment.id);
+                tool_ids.push(draft.record.id);
+            }
+        }
+        if let Some(tracker) = &self.web_search_tracker {
+            let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(segment) = state.segment.take() {
+                segment_ids.push(segment.id);
+            }
+            if let Some(record) = state.record.take() {
+                tool_ids.push(record.id);
+            }
+            state.started = false;
+            state.queries.clear();
+            state.citations.clear();
+        }
+        let (_, reasoning) = self.snapshot();
+        self.host.discard_stream_attempt(
+            &self.run_id,
+            self.emitted_text_chars,
+            reasoning.chars().count() as u32,
+            segment_ids,
+            tool_ids,
         );
     }
 
@@ -619,7 +662,9 @@ impl StreamSink for AgentStreamSink<'_> {
                     self.reasoning_segment.as_ref(),
                 );
             }
-            StreamPart::Error { message } => return Err(ModelError::new(message)),
+            StreamPart::Error { message } => {
+                return Err(ModelError::provider_stream_error(message))
+            }
             StreamPart::ToolCallStart { id, name } => self.emit_tool_call_start(id, name),
             StreamPart::ToolCallDelta { id, delta } => self.emit_tool_call_delta(id, delta)?,
             StreamPart::ToolCallDone { call } => self.emit_tool_call_done(&call)?,

@@ -719,6 +719,14 @@ pub enum ChatRunEvent {
         delta: String,
         segment: Option<ChatSegmentPayload>,
     },
+    /// Remove only uncommitted output from the model request being retried.
+    /// Counts are Unicode scalar values, not UTF-8 bytes or UTF-16 code units.
+    StreamAttemptDiscarded {
+        text_chars: u32,
+        reasoning_chars: u32,
+        segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    },
     ToolUpdated {
         tool: ChatToolPayload,
     },
@@ -817,6 +825,7 @@ impl ChatRunEvent {
             self,
             Self::TextDelta { .. }
                 | Self::ReasoningDelta { .. }
+                | Self::StreamAttemptDiscarded { .. }
                 | Self::ToolUpdated { .. }
                 | Self::SubagentUpdated { .. }
                 | Self::ContextUsageUpdated { .. }
@@ -1651,17 +1660,45 @@ impl ChatProtocolHub {
     }
 }
 
+pub(crate) fn truncate_stream_tail(text: &mut String, chars: u32) {
+    let keep = text.chars().count().saturating_sub(chars as usize);
+    let end = text
+        .char_indices()
+        .nth(keep)
+        .map_or(text.len(), |(index, _)| index);
+    text.truncate(end);
+}
+
 fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
     match event {
         ChatRunEvent::TextDelta { delta, segment } => {
+            if !delta.is_empty() {
+                snapshot.status_note = None;
+            }
             snapshot.content.push_str(delta);
             cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
             upsert_segment(&mut snapshot.segments, segment, delta);
         }
         ChatRunEvent::ReasoningDelta { delta, segment } => {
+            if !delta.is_empty() {
+                snapshot.status_note = None;
+            }
             snapshot.reasoning.push_str(delta);
             cap_text_tail(&mut snapshot.reasoning, SNAPSHOT_TEXT_MAX_BYTES);
             upsert_segment(&mut snapshot.segments, segment, delta);
+        }
+        ChatRunEvent::StreamAttemptDiscarded {
+            text_chars,
+            reasoning_chars,
+            segment_ids,
+            tool_ids,
+        } => {
+            truncate_stream_tail(&mut snapshot.content, *text_chars);
+            truncate_stream_tail(&mut snapshot.reasoning, *reasoning_chars);
+            snapshot
+                .segments
+                .retain(|segment| !segment_ids.contains(&segment.id));
+            snapshot.tools.retain(|tool| !tool_ids.contains(&tool.id));
         }
         ChatRunEvent::ToolUpdated { tool } => {
             if let Some(existing) = snapshot.tools.iter_mut().find(|item| item.id == tool.id) {
@@ -2840,6 +2877,60 @@ mod tests {
         assert_eq!(segments[0].tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(segments[1].id, "text");
         assert_eq!(hub.runs["run"].snapshot.content, "answer");
+    }
+
+    #[test]
+    fn retry_rollback_preserves_prior_output_in_replay_snapshot() {
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "run", "message", 0).unwrap();
+        hub.push(
+            "run",
+            ChatRunEvent::TextDelta {
+                delta: "prior🌱失败".into(),
+                segment: None,
+            },
+        )
+        .unwrap();
+        hub.push(
+            "run",
+            ChatRunEvent::ReasoningDelta {
+                delta: "thought🌱".into(),
+                segment: None,
+            },
+        )
+        .unwrap();
+        hub.push(
+            "run",
+            ChatRunEvent::StreamAttemptDiscarded {
+                text_chars: 2,
+                reasoning_chars: 1,
+                segment_ids: vec![],
+                tool_ids: vec![],
+            },
+        )
+        .unwrap();
+        hub.push(
+            "run",
+            ChatRunEvent::StatusNoteUpdated {
+                note: Some("重连 1/4".into()),
+            },
+        )
+        .unwrap();
+        let snapshot = &hub.runs["run"].snapshot;
+        assert_eq!(snapshot.content, "prior🌱");
+        assert_eq!(snapshot.reasoning, "thought");
+        assert_eq!(snapshot.status_note.as_deref(), Some("重连 1/4"));
+        hub.push(
+            "run",
+            ChatRunEvent::TextDelta {
+                delta: "recovered".into(),
+                segment: None,
+            },
+        )
+        .unwrap();
+        let snapshot = &hub.runs["run"].snapshot;
+        assert_eq!(snapshot.content, "prior🌱recovered");
+        assert!(snapshot.status_note.is_none());
     }
 
     #[test]

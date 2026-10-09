@@ -366,7 +366,7 @@ impl OpenAiResponsesProvider<'_> {
             ..Default::default()
         };
 
-        loop {
+        'stream: loop {
             let chunk = response.chunk().await.map_err(|err| {
                 let model_error = stream_read_error(&label, &err);
                 self.record_usage_failure(
@@ -408,11 +408,35 @@ impl OpenAiResponsesProvider<'_> {
                         started_at,
                         started.elapsed(),
                     );
-                    return Err(ModelError::new(err));
+                    return Err(ModelError::provider_stream_error(err));
+                }
+                // response.completed/incomplete includes final usage and is
+                // authoritative even if a proxy never closes the HTTP body.
+                if state.finish_reason.is_some() {
+                    break 'stream;
                 }
             }
         }
 
+        if state.finish_reason.is_none() {
+            let err = ModelError::stream_ended_early(&label);
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.to_string(),
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.to_string(),
+                started_at,
+                started.elapsed(),
+            );
+            return Err(err);
+        }
         let output = state.finish(sink)?;
         self.record_usage_success(
             &request,
@@ -860,13 +884,6 @@ struct ResponsesStreamState {
 }
 
 impl ResponsesStreamState {
-    fn has_usable_output(&self) -> bool {
-        !self.text.trim().is_empty()
-            || !self.reasoning.trim().is_empty()
-            || !self.tool_calls.is_empty()
-            || !self.images.is_empty()
-    }
-
     fn partial_mut(&mut self, item_id: &str) -> Option<&mut ResponsesToolPartial> {
         self.tool_calls
             .iter_mut()
@@ -1352,11 +1369,6 @@ fn handle_responses_stream_event(
         }
         "response.failed" | "error" => {
             let message = responses_stream_error_text(value);
-            // Gemini 等上游常不发 response.completed；中转会在正文已经流完后补一条
-            // 「缺终态」error。有可用输出时当成功收尾，别把已经生成的回答整轮作废。
-            if super::is_missing_stream_terminal_error(&message) && state.has_usable_output() {
-                return Ok(None);
-            }
             return Ok(Some(message));
         }
         _ => {}
@@ -1410,7 +1422,7 @@ fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
     let mut sink = DiscardSink;
     for line in body.split('\n') {
         if let Some(err) = process_sse_line(line, &mut state, &mut sink)? {
-            return Err(ModelError::new(err));
+            return Err(ModelError::provider_stream_error(err));
         }
     }
     state.finish(&mut sink)
@@ -1759,7 +1771,7 @@ fn responses_error_message(error: &Value) -> String {
 
 /// `response.failed` 把原因放在 `response.error`；OpenAI 的 `type: error` 事件把
 /// `message` 放在顶层；部分中转把 `error` 直接写成字符串。三条都要读到，否则缺终态
-/// 的那条文案会变成笼统的 "Responses stream failed"，后面的 salvage 对不上。
+/// 的那条文案会变成笼统的 "Responses stream failed"，无法正确识别可重试错误。
 fn responses_stream_error_text(value: &Value) -> String {
     let nested = value
         .get("response")
@@ -1769,14 +1781,25 @@ fn responses_stream_error_text(value: &Value) -> String {
         if let Some(text) = error.as_str().map(str::trim).filter(|s| !s.is_empty()) {
             return text.to_string();
         }
-        return responses_error_message(error);
+        let message = responses_error_message(error);
+        return match error
+            .get("code")
+            .or_else(|| error.get("type"))
+            .and_then(Value::as_str)
+        {
+            Some(code) => format!("{message} ({code})"),
+            None => message,
+        };
     }
     value
         .get("message")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(|message| match value.get("code").and_then(Value::as_str) {
+            Some(code) => format!("{message} ({code})"),
+            None => message.to_string(),
+        })
         .unwrap_or_else(|| "Responses stream failed".to_string())
 }
 
@@ -2932,40 +2955,48 @@ mod tests {
         assert_eq!(output.finish_reason.as_deref(), Some("stop"));
     }
 
-    /// A terminal `response.failed` event in the SSE body surfaces as a `ModelError`.
+    /// Both official top-level error codes and nested relay codes preserve
+    /// their retryability; unknown errors remain failures without auto-replay.
     #[test]
     fn sse_body_fallback_surfaces_provider_error() {
-        let body = concat!(
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"boom\"}}}\n",
-        );
-        let err = output_from_sse_body(body).expect_err("should error");
-        assert!(err.to_string().contains("boom"));
+        for (event, retryable) in [
+            (
+                serde_json::json!({"type":"response.failed","response":{"error":{"message":"boom"}}}),
+                false,
+            ),
+            (
+                serde_json::json!({"type":"error","code":"server_error","message":"boom"}),
+                true,
+            ),
+            (
+                serde_json::json!({"type":"response.failed","response":{"error":{"code":"server_error","message":"boom"}}}),
+                true,
+            ),
+            (
+                serde_json::json!({"type":"error","code":"invalid_api_key","message":"boom"}),
+                false,
+            ),
+        ] {
+            let err =
+                output_from_sse_body(&format!("data: {event}\n")).expect_err("provider failure");
+            assert!(err.to_string().contains("boom"));
+            assert_eq!(err.is_stream_read_interrupted(), retryable, "{event}");
+        }
     }
 
-    /// 中转在正文已经流完后补一条「缺 response.completed」error：token 是真的，当成功收尾。
+    /// Partial text cannot prove completion; relay missing-terminal errors must retry.
     #[test]
-    fn missing_completed_event_after_text_is_success() {
-        let nested = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"error\",\"error\":{\"message\":\"stream ended without terminal event or completed response\"}}\n",
-        );
-        let nested_output = output_from_sse_body(nested).expect("should keep streamed text");
-        assert_eq!(nested_output.text, "你好");
-        assert_eq!(nested_output.finish_reason.as_deref(), Some("stop"));
-
-        let top_level = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"error\",\"message\":\"stream ended without terminal event or completed response\"}\n",
-        );
-        let top_level_output = output_from_sse_body(top_level).expect("top-level error message");
-        assert_eq!(top_level_output.text, "你好");
-
-        let failed = concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n",
-            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"stream ended without terminal event or completed response\"}}}\n",
-        );
-        let failed_output = output_from_sse_body(failed).expect("response.failed after text");
-        assert_eq!(failed_output.text, "你好");
+    fn missing_completed_event_after_text_is_interrupted() {
+        for error in [
+            serde_json::json!({"type":"error","error":{"message":"stream ended without terminal event or completed response"}}),
+            serde_json::json!({"type":"error","message":"stream ended without terminal event or completed response"}),
+            serde_json::json!({"type":"response.failed","response":{"error":{"message":"stream ended without terminal event or completed response"}}}),
+        ] {
+            let body = format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\ndata: {error}\n");
+            let err =
+                output_from_sse_body(&body).expect_err("partial stream must not count as success");
+            assert!(err.is_stream_read_interrupted(), "{err}");
+        }
     }
 
     /// 没有可用输出时，同一条缺终态 error 仍是失败——不能把空流当成成功。

@@ -195,6 +195,19 @@ impl AgentHost for WorkflowAgentHost {
         }
     }
 
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        text_chars: u32,
+        _reasoning_chars: u32,
+        _segment_ids: Vec<String>,
+        _tool_ids: Vec<String>,
+    ) {
+        if let Ok(mut text) = self.text.lock() {
+            crate::chat::protocol::truncate_stream_tail(&mut text, text_chars);
+        }
+    }
+
     fn emit_tool_record(
         &self,
         _conversation_id: &str,

@@ -9,8 +9,7 @@ use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessage
 use crate::mcp::ChatToolDefinition;
 
 use super::finalize::{
-    cancelled_run_result_from_state, cancelled_tool_round_run_result,
-    tool_planning_failed_run_result, RunResultBuilder,
+    cancelled_tool_round_run_result, tool_planning_failed_run_result, RunResultBuilder,
 };
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
@@ -29,24 +28,6 @@ pub(crate) struct ChatPlanningStep {
     pub(crate) message: Value,
     pub(crate) streamed: bool,
 }
-
-/// 流式响应中途断包后，重连**同一条流式请求**的次数上限。
-///
-/// 为什么不是降级到非流式（这是本常量取代的旧行为）：
-/// - 非流式意味着彻底丢掉已经流出来的部分，还要从头重新生成完整回答；
-/// - 非流式带总超时，长思考模型（high reasoning + 大 max_output_tokens）结构性跑不完
-///   —— 实测流式跑 135s 断包后回落非流式，3 次 60s 全超，白等 195s（现已放宽到
-///   `api::CHAT_COMPLETION_REQUEST_TIMEOUT`，但方向仍然是错的）；
-/// - 官方客户端的做法就是重连流式：Codex CLI 断流后重连最多 5 次，且在 0.130.0
-///   直接删掉了非流式（`wire_api = "chat"`）这条回退路径。
-///
-/// SSE 没有续传能力（无 offset / sequence），所以"重连"必然等于"重跑"——业界共识是
-/// 对话客户端做有界重试 + 退避就够，不值得为此上 Redis buffer / Last-Event-ID 那套。
-/// 取 2 次而非 Codex 的 5 次：每次重试都要重传整个请求体，2 次已覆盖偶发断包。
-const STREAM_INTERRUPT_RETRIES: u32 = 2;
-
-/// 断流重连前的退避基数（第 n 次重试等 n × 该值）。
-const STREAM_INTERRUPT_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct PlannedToolRound {
     pub(crate) message: Value,
@@ -172,7 +153,6 @@ pub(crate) async fn planning_step(
         None
     };
     // 内置搜索由实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
-    let mut interrupt_attempt = 0u32;
     let mut overflow_attempted = false;
     let planning_result = loop {
         match config
@@ -267,7 +247,7 @@ pub(crate) async fn planning_step(
             }
             Err(err) if planning_tool_drafts.has_started() => {
                 eprintln!(
-                    "Chat tools planning stream interrupted while generating tool arguments; surfacing tool draft error without retry: {}",
+                    "Chat tools planning failed after stream recovery; surfacing tool draft error: {}",
                     err
                 );
                 return Ok(PlanningStepOutcome::DraftFailed(
@@ -293,25 +273,6 @@ pub(crate) async fn planning_step(
                 send_messages = super::compaction::compact_send_view(env, state, true).await;
                 if previous == send_messages {
                     break Err(err.to_string());
-                }
-                continue;
-            }
-            Err(err)
-                if err.is_stream_read_interrupted()
-                    && interrupt_attempt < STREAM_INTERRUPT_RETRIES =>
-            {
-                interrupt_attempt += 1;
-                eprintln!(
-                    "Chat tools planning stream interrupted; reconnecting the stream ({interrupt_attempt}/{STREAM_INTERRUPT_RETRIES}): {err}"
-                );
-                // 退避必须接取消：否则用户点停止后要等满退避 + 下一次完整流。
-                tokio::select! {
-                    _ = tokio::time::sleep(STREAM_INTERRUPT_BACKOFF * interrupt_attempt) => {}
-                    _ = host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
-                        return Ok(PlanningStepOutcome::Cancelled(
-                            cancelled_run_result_from_state(env, state),
-                        ));
-                    }
                 }
                 continue;
             }
@@ -702,73 +663,87 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         label,
         GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
     );
-    let mut sink = AgentStreamSink::new(
-        host,
-        conversation_id,
-        run_id,
-        message_id,
-        matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools),
-        text_segment,
-        reasoning_segment,
-        tool_draft_tracker.clone(),
-        web_search_tracker,
-    );
-    let output = tokio::select! {
-        result = stream_with_chat_provider(
-            state,
-            provider,
-            retry_attempts,
-            request,
-            &mut sink,
-        ) => match result {
-            Ok(output) => output,
-            Err(err)
-                if crate::chat::model::is_missing_stream_terminal_error(&err.to_string()) =>
-            {
-                let (content, reasoning) = sink.snapshot();
-                if content.trim().is_empty() && reasoning.trim().is_empty() {
-                    return Err(err);
-                }
-                GenerateOutput {
-                    text: content,
-                    reasoning: if reasoning.trim().is_empty() {
-                        None
-                    } else {
-                        Some(reasoning)
-                    },
-                    tool_calls: Vec::new(),
-                    usage: None,
-                    finish_reason: Some("stop".to_string()),
-                    provider_messages: Vec::new(),
-                    cancelled: false,
-                    web_search: None,
-                    images: Vec::new(),
-                    reasoning_items: Vec::new(),
+    let reconnect_max = retry_attempts.max(1).saturating_sub(1);
+    for reconnect in 0..=reconnect_max {
+        let mut sink = AgentStreamSink::new(
+            host,
+            conversation_id,
+            run_id,
+            message_id,
+            matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools),
+            text_segment.clone(),
+            reasoning_segment.clone(),
+            tool_draft_tracker.clone(),
+            web_search_tracker.clone(),
+        );
+        let result = {
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            let stream_future = crate::api::RETRY_PROGRESS.scope(
+                progress_tx,
+                stream_with_chat_provider(
+                    state,
+                    provider,
+                    retry_attempts,
+                    request.clone(),
+                    &mut sink,
+                ),
+            );
+            tokio::pin!(stream_future);
+            loop {
+                tokio::select! {
+                    result = &mut stream_future => break Some(result),
+                    Some(note) = progress_rx.recv() => host.emit_status_note(run_id, Some(note)),
+                    _ = host.wait_for_generation_inactive(conversation_id, generation) => break None,
                 }
             }
-            Err(err) => return Err(err),
-        },
-        _ = host.wait_for_generation_inactive(conversation_id, generation) => {
+        };
+        let Some(result) = result else {
             let (content, reasoning) = sink.snapshot();
             return Ok(ChatStreamOutput::new(
                 content.trim().to_string(),
                 reasoning.trim().to_string(),
                 true,
             ));
+        };
+        let output = match result {
+            Ok(output) => output,
+            Err(err) if err.is_stream_read_interrupted() && reconnect < reconnect_max => {
+                sink.discard_attempt();
+                let attempt = reconnect + 1;
+                eprintln!("{label} stream interrupted; reconnect {attempt}/{reconnect_max}: {err}");
+                let delay = std::time::Duration::from_secs((attempt as u64 * 2).min(30));
+                host.emit_status_note(
+                    run_id,
+                    Some(format!(
+                        "重连 {attempt}/{reconnect_max} · {}s",
+                        delay.as_secs()
+                    )),
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {},
+                    _ = host.wait_for_generation_inactive(conversation_id, generation) => {
+                        return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
+                    }
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
+        host.emit_status_note(run_id, None);
+        sink.flush_pending_text();
+        // 内置搜索实时卡定稿：流成功结束 ⇒ 翻 Success 并发终态记录（取消路径已在上面的
+        // select 分支 return，不会到这里，故取消时实时卡不落 Success，与 draft 行为一致）。
+        if let Some(record) = sink.finish_web_search_card() {
+            host.emit_tool_record(conversation_id, run_id, message_id, &record);
         }
-    };
-    sink.flush_pending_text();
-    // 内置搜索实时卡定稿：流成功结束 ⇒ 翻 Success 并发终态记录（取消路径已在上面的
-    // select 分支 return，不会到这里，故取消时实时卡不落 Success，与 draft 行为一致）。
-    if let Some(record) = sink.finish_web_search_card() {
-        host.emit_tool_record(conversation_id, run_id, message_id, &record);
+        let (snapshot_content, snapshot_reasoning) = sink.snapshot();
+        let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
+            output,
+            snapshot_content,
+            snapshot_reasoning,
+        );
+        validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
+        return Ok(stream_output);
     }
-    let (snapshot_content, snapshot_reasoning) = sink.snapshot();
-    let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
-        output,
-        snapshot_content,
-        snapshot_reasoning,
-    );
-    validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
-    Ok(stream_output)
+    unreachable!("bounded reconnect loop always returns")
 }

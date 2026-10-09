@@ -75,7 +75,7 @@ export type ChatStreamSegment = GeneratedChatSegmentPayload
 
 export type ChatStreamPayload = Extract<
   ChatRunEventEnvelope,
-  { type: 'run_started' | 'text_delta' | 'reasoning_delta' | 'run_completed' | 'run_cancelled' | 'run_failed' }
+  { type: 'run_started' | 'text_delta' | 'reasoning_delta' | 'stream_attempt_discarded' | 'run_completed' | 'run_cancelled' | 'run_failed' }
 > & { restoredFromSnapshot?: boolean }
 
 export type ChatExternalSendAttachment = {
@@ -2065,6 +2065,7 @@ export const api = {
         event.type === 'run_started'
         || event.type === 'text_delta'
         || event.type === 'reasoning_delta'
+        || event.type === 'stream_attempt_discarded'
         || event.type === 'run_completed'
         || event.type === 'run_cancelled'
         || event.type === 'run_failed'

@@ -20,6 +20,22 @@ export function applyConversationStreamEvent(
   if (!acceptStreamRun(snapshot, payload.runId)) return false
   if (payload.messageId) snapshot.messageId = payload.messageId
   if (streamTextDelta(payload) || streamReasoningDelta(payload)) snapshot.statusNote = null
+  if (payload.type === 'stream_attempt_discarded') {
+    const trimTail = (text: string, count: number) => {
+      const chars = Array.from(text)
+      return chars.slice(0, Math.max(0, chars.length - count)).join('')
+    }
+    snapshot.content = trimTail(snapshot.content, payload.textChars)
+    snapshot.reasoning = trimTail(snapshot.reasoning, payload.reasoningChars)
+    snapshot.segments = snapshot.segments.filter((segment) => !payload.segmentIds.includes(segment.id))
+    snapshot.toolCalls = snapshot.toolCalls.filter((tool) => !payload.toolIds.includes(tool.id))
+    for (const id of payload.segmentIds) {
+      delete snapshot.reasoningStartedAtBySegmentId[id]
+      delete snapshot.reasoningDurationMsBySegmentId[id]
+    }
+    snapshot.reasoningStreaming = false
+    return true
+  }
   applyStreamDeltaToSnapshot(snapshot, payload, streamPayloadToSegment(payload), now)
   if (isStreamTerminal(payload)) finalizeReasoningDurationOnDone(snapshot, now)
   return true

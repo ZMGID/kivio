@@ -538,6 +538,41 @@ impl ModelError {
         }
     }
 
+    /// Errors reported inside an established SSE stream. HTTP failures are
+    /// already retried by api.rs and must not acquire another retry multiplier.
+    pub fn provider_stream_error(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let lower = message.to_ascii_lowercase();
+        let transient = is_missing_stream_terminal_error(&message)
+            || [
+                "overloaded_error",
+                "server_error",
+                "rate_limit_error",
+                "rate_limit_exceeded",
+                "service_unavailable",
+                "internal_server_error",
+                "unavailable",
+                "resource_exhausted",
+            ]
+            .iter()
+            .any(|code| lower.contains(code));
+        Self::with_kind(
+            message,
+            if transient {
+                ModelErrorKind::StreamReadInterrupted
+            } else {
+                ModelErrorKind::Other
+            },
+        )
+    }
+
+    pub fn stream_ended_early(label: &str) -> Self {
+        Self::with_kind(
+            format!("{label} 流式响应读取中断：stream ended without terminal event"),
+            ModelErrorKind::StreamReadInterrupted,
+        )
+    }
+
     pub fn is_stream_read_interrupted(&self) -> bool {
         self.kind == ModelErrorKind::StreamReadInterrupted
     }
@@ -565,9 +600,8 @@ pub fn stream_read_error(label: &str, err: &reqwest::Error) -> ModelError {
     )
 }
 
-/// 中转把 Gemini 等上游包成 Responses 时，常在正文已经流完后再发一条
-/// 「缺 `response.completed` / terminal event」的 error。token 是真的，
-/// 当成硬失败会把已经生成的回答整轮作废。
+/// Recognize relay errors that explicitly say no completion marker arrived.
+/// Partial text alone is not proof of completion; the stream owner may retry.
 pub fn is_missing_stream_terminal_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("without terminal")

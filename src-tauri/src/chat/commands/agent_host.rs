@@ -79,6 +79,34 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         emit_chat_stream_delta(&self.app, run_id, delta, reasoning_delta, segment);
     }
 
+    fn discard_stream_attempt(
+        &self,
+        run_id: &str,
+        text_chars: u32,
+        reasoning_chars: u32,
+        segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
+                text_chars,
+                reasoning_chars,
+                segment_ids,
+                tool_ids,
+            },
+        );
+    }
+
+    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+        );
+    }
+
     fn emit_tool_record(
         &self,
         _conversation_id: &str,
@@ -396,6 +424,34 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         _reasoning_delta: Option<&str>,
         _segment: Option<&ChatMessageSegment>,
     ) {
+    }
+
+    fn discard_stream_attempt(
+        &self,
+        run_id: &str,
+        text_chars: u32,
+        reasoning_chars: u32,
+        segment_ids: Vec<String>,
+        tool_ids: Vec<String>,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
+                text_chars,
+                reasoning_chars,
+                segment_ids,
+                tool_ids,
+            },
+        );
+    }
+
+    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+        );
     }
 
     fn emit_tool_record(

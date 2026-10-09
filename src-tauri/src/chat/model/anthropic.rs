@@ -500,20 +500,32 @@ impl AnthropicMessagesProvider<'_> {
                         sink.emit(StreamPart::Error {
                             message: err.clone(),
                         })?;
-                        return Err(ModelError::new(format!("Anthropic stream error: {err}")));
+                        return Err(ModelError::provider_stream_error(format!(
+                            "Anthropic stream error: {err}"
+                        )));
                     }
                     None => {}
                 }
             }
         }
 
-        sink.emit(StreamPart::Finish {
-            reason: finish_reason.clone(),
-            full: full.clone(),
-        })?;
-        let mut output = stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
-        output.web_search = web_search;
-        Ok(output)
+        let err = ModelError::stream_ended_early(&label);
+        self.record_usage_failure(
+            &request,
+            &label,
+            started_at,
+            started.elapsed(),
+            &err.to_string(),
+        );
+        self.record_debug_failure(
+            &request,
+            &label,
+            true,
+            &err.to_string(),
+            started_at,
+            started.elapsed(),
+        );
+        Err(err)
     }
 
     fn messages_url(&self) -> String {
@@ -1370,8 +1382,9 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
         .and_then(|value| value.as_str())
         .unwrap_or_default()
     {
-        "message_start" => model_usage_from_anthropic_value(value.get("message")?)
-            .map(AnthropicSseEvent::Usage),
+        "message_start" => {
+            model_usage_from_anthropic_value(value.get("message")?).map(AnthropicSseEvent::Usage)
+        }
         "content_block_start" => {
             let block = value.get("content_block")?;
             match block.get("type").and_then(|value| value.as_str()) {
@@ -1456,14 +1469,16 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
             })
         }
         "message_stop" => Some(AnthropicSseEvent::MessageStop),
-        "error" => Some(AnthropicSseEvent::Error(
-            value
-                .get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("Unknown Anthropic error")
-                .to_string(),
-        )),
+        "error" => Some(AnthropicSseEvent::Error({
+            let error = &value["error"];
+            let message = error["message"]
+                .as_str()
+                .unwrap_or("Unknown Anthropic error");
+            match error["type"].as_str() {
+                Some(kind) => format!("{message} ({kind})"),
+                None => message.to_string(),
+            }
+        })),
         _ => None,
     }
 }

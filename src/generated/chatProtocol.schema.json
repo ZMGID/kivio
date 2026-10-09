@@ -1133,6 +1133,80 @@
         },
         {
           "additionalProperties": false,
+          "description": "Remove only uncommitted output from the model request being retried.\nCounts are Unicode scalar values, not UTF-8 bytes or UTF-16 code units.",
+          "properties": {
+            "baseRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "reasoningChars": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "run",
+              "type": "string"
+            },
+            "segmentIds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "textChars": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "toolIds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "stream_attempt_discarded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "textChars",
+            "reasoningChars",
+            "segmentIds",
+            "toolIds",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "runId",
+            "messageId",
+            "seq",
+            "baseRevision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "baseRevision": {
               "format": "uint64",

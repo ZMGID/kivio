@@ -216,7 +216,7 @@ impl GeminiProvider<'_> {
         // 模型生成的图片：逐 chunk 的 inlineData part 累积，finish 后并入 output。
         let mut images: Vec<GeneratedImageData> = Vec::new();
 
-        loop {
+        'stream: loop {
             let chunk = response.chunk().await.map_err(|err| {
                 let model_error = stream_read_error(&label, &err);
                 self.record_usage_failure(
@@ -259,18 +259,12 @@ impl GeminiProvider<'_> {
                     value = antigravity::unwrap_response(value);
                 }
                 if let Some(err) = gemini_error_message(&value) {
-                    if super::is_missing_stream_terminal_error(&err)
-                        && (!full.trim().is_empty()
-                            || !reasoning_full.trim().is_empty()
-                            || !tool_calls.is_empty()
-                            || !images.is_empty())
-                    {
-                        continue;
-                    }
                     sink.emit(StreamPart::Error {
                         message: err.clone(),
                     })?;
-                    return Err(ModelError::new(format!("Gemini stream error: {err}")));
+                    return Err(ModelError::provider_stream_error(format!(
+                        "Gemini stream error: {err}"
+                    )));
                 }
                 // 逐 part：text/thought → 增量；functionCall → 完整工具调用。
                 // 先整块预扫一个候选签名（thoughtSignature 可能在 functionCall 兄弟 part 上、
@@ -333,15 +327,30 @@ impl GeminiProvider<'_> {
                     }
                 }
                 merge_gemini_web_search(&mut web_search, chunk_ws);
+                if saw_terminal {
+                    break 'stream;
+                }
             }
         }
 
-        if antigravity::is_provider(self.provider) && !saw_terminal {
-            let error =
-                "Antigravity stream ended before a finish reason was received; retry the request";
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), error);
-            self.record_debug_failure(&request, &label, true, error, started_at, started.elapsed());
-            return Err(ModelError::new(error));
+        if !saw_terminal {
+            let err = ModelError::stream_ended_early(&label);
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.to_string(),
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.to_string(),
+                started_at,
+                started.elapsed(),
+            );
+            return Err(err);
         }
         // 有工具调用则结束原因归一为 tool_calls（Gemini 常仍返回 STOP）。
         let finish_reason = normalize_finish_reason(&finish_reason, !tool_calls.is_empty());
@@ -1264,11 +1273,12 @@ fn gemini_usage(value: &Value) -> Option<ModelUsage> {
 }
 
 fn gemini_error_message(value: &Value) -> Option<String> {
-    value
-        .get("error")
-        .and_then(|err| err.get("message"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let error = value.get("error")?;
+    let message = error.get("message")?.as_str()?;
+    Some(match error.get("status").and_then(Value::as_str) {
+        Some(status) => format!("{message} ({status})"),
+        None => message.to_string(),
+    })
 }
 
 fn openai_compatible_message(

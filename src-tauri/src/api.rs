@@ -245,6 +245,20 @@ impl Utf8StreamDecoder {
     }
 }
 
+tokio::task_local! {
+    pub(crate) static RETRY_PROGRESS: tokio::sync::mpsc::UnboundedSender<String>;
+}
+
+fn report_retry_progress(attempt: usize, max: usize, delay_ms: u64) {
+    let _ = RETRY_PROGRESS.try_with(|tx| {
+        let _ = tx.send(format!(
+            "请求重试 {attempt}/{} · {}s",
+            max.saturating_sub(1),
+            delay_ms.div_ceil(1000)
+        ));
+    });
+}
+
 // ===== Retry / Failover =====
 
 /// 重试延迟基础值（毫秒）。暂时性错误起步退避 ~5s。
@@ -288,9 +302,9 @@ fn is_immediate_failover_status(status: StatusCode) -> bool {
 }
 
 /// 判断请求错误是否可重试
-/// 包括超时和连接错误
+/// 包括建立连接失败、超时，以及发送请求时连接被代理/上游切断。
 fn is_retryable_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect()
+    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
 }
 
 /// 把 reqwest 错误展开成完整 source 链文本。reqwest 的 `Display` 常年只有一句
@@ -656,6 +670,7 @@ where
                     if is_cancelled() {
                         return Err(format!("{} cancelled", label));
                     }
+                    report_retry_progress(attempt, shown_max, delay);
                     sleep_with_cancel(label, delay, is_cancelled).await?;
                     continue;
                 }
@@ -674,6 +689,7 @@ where
                     if is_cancelled() {
                         return Err(format!("{} cancelled", label));
                     }
+                    report_retry_progress(attempt, attempts, delay);
                     sleep_with_cancel(label, delay, is_cancelled).await?;
                     continue;
                 }

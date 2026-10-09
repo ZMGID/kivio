@@ -62,6 +62,8 @@ struct TestHost {
     auto_compact_failures: Mutex<u32>,
     /// Compaction phases emitted, in order.
     compaction_phases: Mutex<Vec<String>>,
+    retry_notes: Mutex<Vec<Option<String>>>,
+    discarded_attempts: Mutex<Vec<(u32, u32, Vec<String>, Vec<String>)>>,
 }
 
 impl TestHost {
@@ -266,6 +268,24 @@ impl AgentHost for TestHost {
                 segment: segment.cloned(),
                 context_input_tokens: self.context_ticks.lock().last().map(|tick| tick.0),
             });
+    }
+
+    fn discard_stream_attempt(
+        &self,
+        _run_id: &str,
+        text: u32,
+        reasoning: u32,
+        segments: Vec<String>,
+        tools: Vec<String>,
+    ) {
+        self.discarded_attempts
+            .lock()
+            .unwrap()
+            .push((text, reasoning, segments, tools));
+    }
+
+    fn emit_status_note(&self, _run_id: &str, note: Option<String>) {
+        self.retry_notes.lock().unwrap().push(note);
     }
 
     fn emit_tool_record(
@@ -502,6 +522,8 @@ enum MockResponse {
     /// Chunked SSE that drops the connection without the chunked terminator,
     /// producing a reqwest decode error (StreamReadInterrupted).
     SseInterrupt(Vec<String>),
+    /// Connection closes after receiving the request, before response headers.
+    DropBeforeHeaders,
     /// Chunked SSE that writes the given events then keeps the connection open,
     /// simulating a hung provider so cancellation paths can win the select.
     SseThenHang(Vec<String>),
@@ -594,6 +616,9 @@ fn sse_body(events: &[String]) -> String {
 
 fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
     match response {
+        MockResponse::DropBeforeHeaders => {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
         MockResponse::Status(code, body) => {
             let _ = write!(
                     stream,
@@ -1777,6 +1802,200 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
             .and_then(Value::as_str),
         Some(fallback.as_str())
     );
+}
+
+/// A transient disconnect retries only the current model request, keeping completed
+/// tool results and never executing an incomplete tool draft.
+#[tokio::test]
+async fn run_loop_reconnects_current_request_without_replaying_tools() {
+    for (interrupt_planning, clean_eof, upstream_error) in [
+        (true, false, false),
+        (false, false, false),
+        (true, true, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut broken = if interrupt_planning {
+            planning_tool_call_sse_events()[..1].to_vec()
+        } else {
+            vec![serde_json::json!({"choices":[{"delta":{"content":"discarded partial 🌱", "reasoning_content":"partial thought"}}]}).to_string()]
+        };
+        let failed = if upstream_error {
+            broken.push(
+                serde_json::json!({"error":{"type":"server_error","message":"try later"}})
+                    .to_string(),
+            );
+            MockResponse::Sse(broken)
+        } else if clean_eof {
+            MockResponse::Sse(broken)
+        } else {
+            MockResponse::SseInterrupt(broken)
+        };
+        let answer = sse_from_completion_json(
+            r#"{"choices":[{"message":{"role":"assistant","content":"recovered answer"},"finish_reason":"stop"}]}"#,
+        );
+        let responses = if interrupt_planning {
+            vec![
+                failed,
+                MockResponse::Sse(planning_tool_call_sse_events()),
+                MockResponse::Sse(answer),
+            ]
+        } else {
+            vec![
+                MockResponse::Sse(planning_tool_call_sse_events()),
+                failed,
+                MockResponse::Sse(answer),
+            ]
+        };
+        let server = MockModelServer::start(responses);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.retry_attempts = 3;
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("reconnect must recover");
+        assert_eq!(
+            result.content, "recovered answer",
+            "planning={interrupt_planning}"
+        );
+        assert_eq!(result.stream_outcome, "completed");
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(
+            executor.events(),
+            vec!["start:read", "finish:read"],
+            "completed tools must not replay"
+        );
+        let discarded = host.discarded_attempts.lock().unwrap();
+        assert_eq!(discarded.len(), 1);
+        if interrupt_planning {
+            assert_eq!(discarded[0].3, vec!["call_read"]);
+        } else {
+            assert_eq!(
+                discarded[0].0,
+                "discarded partial 🌱".chars().count() as u32
+            );
+            assert_eq!(discarded[0].1, "partial thought".chars().count() as u32);
+            assert!(discarded[0].3.is_empty(), "prior tools must remain");
+        }
+        let notes = host.retry_notes.lock().unwrap();
+        assert!(notes.iter().flatten().any(|note| note.contains("重连 1/2")));
+        assert_eq!(notes.last(), Some(&None));
+        let bodies = server.captured_bodies();
+        assert_eq!(bodies.len(), 3);
+        let retry_index = if interrupt_planning { 0 } else { 1 };
+        assert_eq!(
+            bodies[retry_index],
+            bodies[retry_index + 1],
+            "retry must keep current context"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stream_reconnect_is_bounded_and_cancelable_during_backoff() {
+    for cancel in [false, true] {
+        let server = MockModelServer::start(
+            (0..if cancel { 1 } else { 3 })
+                .map(|_| MockResponse::SseInterrupt(planning_tool_call_sse_events()[..1].to_vec()))
+                .collect(),
+        );
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.retry_attempts = 3;
+        let host = if cancel {
+            TestHost::cancelling_after(Duration::from_millis(100))
+        } else {
+            TestHost::default()
+        };
+        let started = std::time::Instant::now();
+        let executor = RecordingExecutor::default();
+        let result = run_agent_loop(config, &host, &executor)
+            .await
+            .expect("terminal result");
+        assert!(executor.events().is_empty());
+        assert_eq!(server.captured_bodies().len(), if cancel { 1 } else { 3 });
+        assert_eq!(
+            result.stream_outcome,
+            if cancel { "cancelled" } else { "error" }
+        );
+        if cancel {
+            assert!(started.elapsed() < Duration::from_secs(1));
+        }
+    }
+}
+
+#[tokio::test]
+async fn http_backoff_reports_progress_without_restarting_the_run() {
+    for drop_before_headers in [false, true] {
+        let answer = sse_from_completion_json(
+            r#"{"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}"#,
+        );
+        let server = MockModelServer::start(vec![
+            if drop_before_headers {
+                MockResponse::DropBeforeHeaders
+            } else {
+                MockResponse::Status(503, "temporarily unavailable".into())
+            },
+            MockResponse::Sse(answer),
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.tools.clear();
+        config.retry_attempts = 2;
+        let host = TestHost::default();
+        let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+            .await
+            .expect("HTTP backoff recovers");
+        assert_eq!(result.content, "recovered");
+        let bodies = server.captured_bodies();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0], bodies[1]);
+        assert!(host.discarded_attempts.lock().unwrap().is_empty());
+        let notes = host.retry_notes.lock().unwrap();
+        assert!(notes
+            .iter()
+            .flatten()
+            .any(|note| note.contains("请求重试 1/1")));
+        assert_eq!(notes.last(), Some(&None));
+    }
+}
+
+/// Once the provider has declared completion, a proxy dropping the transport
+/// must not turn a complete answer into a failed/replayed request.
+#[tokio::test]
+async fn completed_stream_survives_proxy_disconnect_without_replay() {
+    for (format, events) in [
+        ("openai_chat", vec![serde_json::json!({"error":null,"choices":[{"delta":{"content":"complete"},"finish_reason":"stop"}]}).to_string()]),
+        ("openai_responses", vec![
+            serde_json::json!({"type":"response.output_text.delta","delta":"complete"}).to_string(),
+            serde_json::json!({"type":"response.completed","response":{"status":"completed","output":[]}}).to_string(),
+        ]),
+        ("gemini", vec![serde_json::json!({"candidates":[{"content":{"parts":[{"text":"complete"}]},"finishReason":"STOP"}]}).to_string()]),
+        ("anthropic_messages", vec![
+            serde_json::json!({"type":"content_block_delta","delta":{"type":"text_delta","text":"complete"}}).to_string(),
+            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"}}).to_string(),
+        ]),
+    ] {
+        for hang_after_terminal in [false, true] {
+        if hang_after_terminal && !matches!(format, "openai_responses" | "gemini") { continue; }
+        let response = if hang_after_terminal { MockResponse::SseThenHang(events.clone()) } else { MockResponse::SseInterrupt(events.clone()) };
+        let server = MockModelServer::start(vec![response]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.tools.clear();
+        config.provider.api_format = format.into();
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+        let result = tokio::time::timeout(Duration::from_secs(1), run_agent_loop(config, &host, &executor)).await.expect("completed stream must not wait for HTTP close")
+            .unwrap_or_else(|err| panic!("{format}: completed response failed: {err}"));
+        assert_eq!(result.content, "complete", "{format}");
+        assert_eq!(result.stream_outcome, "completed", "{format}");
+        assert_eq!(server.captured_bodies().len(), 1, "{format}");
+        assert!(host.discarded_attempts.lock().unwrap().is_empty(), "{format}");
+        }
+    }
 }
 
 /// Fallback B: streamed synthesis request fails (HTTP 400) after a successful
