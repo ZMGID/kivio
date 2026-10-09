@@ -21,7 +21,8 @@ export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAlivePr
   if (keep) cacheRef.current.set(activeKey, children)
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    // 页面自身会淡入/位移；阅读底色留在常驻层，避免半透明窗口在切换时露出原生材质。
+    <div className="chat-themed-surface flex min-h-0 min-w-0 flex-1">
       {[...cacheRef.current.entries()].map(([key, node]) => {
         const active = key === activeKey
         return (
