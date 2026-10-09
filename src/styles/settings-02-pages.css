@@ -716,6 +716,13 @@
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
+.kv-select-menu.sm .kv-select-option {
+  height: 24px;
+  padding: 0 6px;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
 
 /* 选中态：macOS 原生下拉是「勾 + 轻底」，不是实心蓝条（那是 Win98 观感）。 */
 .kv-select-option.is-active {
@@ -783,6 +790,25 @@ input[type="password"]::-ms-clear {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 无框正文编辑器：保留共享输入行为，适用于轻量浮层。 */
+.kv-textarea.plain {
+  display: block;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 1.65;
+  box-shadow: none;
+}
+.kv-textarea.plain::placeholder { color: var(--text-faint); }
+.kv-textarea.plain:focus,
+.kv-textarea.plain:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
 .kv-hotkey {

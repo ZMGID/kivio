@@ -1,3 +1,4 @@
+import { getTranslationLanguageOptions } from '../public/translationLanguages'
 import { Select, SettingRow, SettingsGroup } from '../components'
 import { ModelPairSelect } from '../ModelPairSelect'
 import { PromptField } from '../ScreenshotTranslationSettings'
@@ -35,16 +36,7 @@ export function TranslateTab({
             className="w-40"
             value={settings.targetLang}
             onChange={(v) => onUpdateSettings({ targetLang: v })}
-            options={[
-              { value: 'auto', label: t.langAuto },
-              { value: 'en', label: t.langEn },
-              { value: 'zh', label: t.langZh },
-              { value: 'zh-Hant', label: t.langZhTw },
-              { value: 'ja', label: t.langJa },
-              { value: 'ko', label: t.langKo },
-              { value: 'fr', label: t.langFr },
-              { value: 'de', label: t.langDe },
-            ]}
+            options={getTranslationLanguageOptions(t)}
           />
         </SettingRow>
       </SettingsGroup>

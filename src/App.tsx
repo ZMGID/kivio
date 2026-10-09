@@ -1,9 +1,9 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
-import { Settings as SettingsIcon, Cpu } from 'lucide-react'
+import { Select, TextArea } from './settings/public/controls'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { api, isTauriRuntime } from './api/tauri'
-import { getSettingsCached, subscribeSettings } from './api/settingsCache'
+import { getSettingsCached, subscribeSettings, updateSettingsCached } from './api/settingsCache'
 import { applyThemeSettings, disposeTheme } from './theme/theme'
 import { i18n, type Lang } from './components/i18n'
 import { useWindowInteractionFocus } from './api/windowFocus'
@@ -22,6 +22,8 @@ import {
 import { isChatPopoutPath } from './chat/popout/popoutRoutes'
 import { ChatErrorBoundary } from './chat/ChatErrorBoundary'
 import './styles/app.css'
+import './styles/translator.css'
+import { getTranslationLanguageOptions } from './settings/public/translationLanguages'
 
 const Lens = lazy(() => import('./Lens'))
 const Chat = lazy(() => import('./chat/Chat'))
@@ -29,38 +31,84 @@ const ChatPopout = lazy(() => import('./chat/popout/ChatPopout'))
 
 /**
  * 翻译器主组件
- * 磨砂玻璃风格悬浮窗：顶部 drag bar、输入与结果分层级、底部提示与模型芯片。
+ * 轻量翻译浮层：上方多行原文，下方译文；随正文增长并保留紧凑上限。
  */
 function Translator({
   translateSource,
   lang,
-  onOpenSettings,
+  targetLang,
+  onTargetLangChange,
 }: {
   translateSource: string
   lang: Lang
-  onOpenSettings: () => void
+  targetLang: string | null
+  onTargetLangChange: (value: string) => Promise<void>
 }) {
   const [input, setInput] = useState('')
   const [result, setResult] = useState('')
   const [resultInput, setResultInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [savingLanguage, setSavingLanguage] = useState(false)
+  const [languageError, setLanguageError] = useState('')
+  const [resolvedTargetLang, setResolvedTargetLang] = useState('')
+  const savingLanguageRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
+  // 同一帧内重复回车也必须被拦住，不能只等待 React 更新状态。
+  const submittingRef = useRef(false)
   const resultRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   const translateSeq = useRef(0)
+  const previousTargetLang = useRef<string | null>(null)
   const requestWindowFocus = useWindowInteractionFocus()
   const t = i18n[lang]
+  const languageOptions = getTranslationLanguageOptions(t)
+  const targetName = languageOptions.find(option => option.value === (targetLang === 'auto' ? resolvedTargetLang : targetLang))?.label
+  const targetLabel = targetLang === 'auto'
+    ? (targetName ? `${lang === 'zh' ? '自动' : 'Auto'} → ${targetName}` : t.langAuto)
+    : `${lang === 'zh' ? '译为' : 'To '}${targetName ?? ''}`
 
-  // 输入防抖翻译：600ms 延迟后发送翻译请求
+  // 自动模式的预览也由后端解析，避免界面和实际翻译维护两套语言规则。
+  useEffect(() => {
+    setResolvedTargetLang('')
+    if (targetLang !== 'auto' || !input.trim() || savingLanguage) return
+    let cancelled = false
+    void api.resolveTranslationTargetLang(input).then(value => {
+      if (!cancelled) setResolvedTargetLang(value)
+    }).catch(err => console.error('[Translator] Failed to resolve target language:', err))
+    return () => { cancelled = true }
+  }, [input, targetLang, savingLanguage])
+
+  const changeTargetLang = async (value: string) => {
+    if (value === targetLang || savingLanguageRef.current || submittingRef.current) return
+    savingLanguageRef.current = true
+    translateSeq.current += 1
+    setSavingLanguage(true)
+    setLanguageError('')
+    try {
+      await onTargetLangChange(value)
+    } catch (err) {
+      setLanguageError(err instanceof Error ? err.message : String(err))
+    } finally {
+      savingLanguageRef.current = false
+      setSavingLanguage(false)
+      contentRef.current?.querySelector('textarea')?.focus()
+    }
+  }
+
+  // 输入防抖 600ms；切换已保存的语言后立即重译。
   useEffect(() => {
     const seq = ++translateSeq.current
     setResult('')
     setResultInput('')
+    setError('')
+    setLoading(false)
     const trimmed = input.trim()
-    if (!trimmed) {
-      setLoading(false)
-      return
-    }
+    if (targetLang === null || savingLanguage) return
 
+    const languageChanged = previousTargetLang.current !== null && previousTargetLang.current !== targetLang
+    previousTargetLang.current = targetLang
+    if (!trimmed) return
     const timer = setTimeout(async () => {
       if (seq !== translateSeq.current) return
       setLoading(true)
@@ -72,19 +120,21 @@ function Translator({
       } catch (e) {
         if (seq !== translateSeq.current) return
         console.error(e)
-        setResult(typeof e === 'string' ? e : (e as Error).message || 'Error')
-        setResultInput(input)
+        setError(e instanceof Error ? e.message : String(e))
       } finally {
         if (seq === translateSeq.current) setLoading(false)
       }
-    }, 600)
-    return () => clearTimeout(timer)
-  }, [input])
+    }, languageChanged ? 0 : 600)
+    return () => {
+      clearTimeout(timer)
+      translateSeq.current += 1
+    }
+  }, [input, targetLang, savingLanguage])
 
   // Esc 键关闭输入翻译窗口，释放不常用的 main WebView。
   useEffect(() => {
     const handler = async (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
         try {
           await api.closeTranslatorWindow()
         } catch (err) {
@@ -92,36 +142,50 @@ function Translator({
         }
       }
     }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // 结果区域自动滚动到底部
-  useEffect(() => {
-    if (resultRef.current) {
-      resultRef.current.scrollTop = resultRef.current.scrollHeight
+  // 窗口随正文增长，达到上限后由输入和译文区域分别滚动。
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!content || !isTauriRuntime()) return
+    let lastHeight = 0
+    const resize = () => {
+      const height = Math.min(360, Math.max(220, Math.ceil(content.getBoundingClientRect().height) + 34))
+      if (height === lastHeight) return
+      lastHeight = height
+      void api.resizeWindow(460, height).catch(err => console.error('[Translator] Failed to resize:', err))
     }
-  }, [result])
-
-  // 输入框自动滚动到右侧（显示最新输入）
-  useEffect(() => {
-    if (inputRef.current) {
-      inputRef.current.scrollLeft = inputRef.current.scrollWidth
-    }
-  }, [input])
+    resize()
+    const observer = new ResizeObserver(resize)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [])
 
   // Enter 键提交翻译结果
   // IME 合成中（中/日/韩输入法选词按回车）不要触发：isComposing 是组合事件官方标志，
   // keyCode === 229 是浏览器在 IME 拦截 keydown 时的兜底信号，两个条件并查更稳。
-  const handleKeyDown = async (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== 'Enter') return
+  const handleKeyDown = async (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Enter' || e.shiftKey) return
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
-    if (loading || !result || resultInput !== input) return
-    const textToCommit = result
-    await api.commitTranslation(textToCommit)
-    setInput('')
-    setResult('')
-    setResultInput('')
+    e.preventDefault()
+    if (submittingRef.current || savingLanguageRef.current || loading || !result || resultInput !== input) return
+    submittingRef.current = true
+    setSubmitting(true)
+    setError('')
+    try {
+      await api.commitTranslation(result)
+      setInput('')
+      setResult('')
+      setResultInput('')
+    } catch (e) {
+      console.error('[Translator] Failed to commit translation:', e)
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -131,76 +195,57 @@ function Translator({
       onPointerMove={requestWindowFocus}
       onPointerDownCapture={requestWindowFocus}
     >
-      {/* 卡片：填满外壳 padding 内区域；圆角 + 阴影都在这层 */}
-      <div className="window-frosted h-full w-full flex flex-col select-none overflow-hidden relative group">
-        {/* 顶部隐形 drag bar */}
-        <div
-          className="absolute top-0 left-0 right-0 h-6 z-10"
-          data-tauri-drag-region
-        />
-
-        {/* 设置按钮（悬浮右上角） */}
-        <button
-          onClick={onOpenSettings}
-          className="absolute top-1.5 right-2 z-20 p-1 text-[var(--text-faint)] hover:text-[var(--text)] rounded-md hover:bg-[var(--theme-surface-hover)] opacity-60 hover:opacity-100 transition-all duration-150"
-          title={t.translatorSettings}
-        >
-          <SettingsIcon size={13} strokeWidth={1.75} />
-        </button>
-
-        {/* 主内容区 */}
-        <div className="relative z-0 flex-1 flex flex-col justify-center px-3.5 pt-3 pb-2.5">
-        {/* 翻译结果展示（微渐变背景 + 柔光内描边） */}
-        {(result || loading) && (
-          <div
-            ref={resultRef}
-            className="mb-2 px-3 py-2 rounded-xl max-h-14 overflow-y-auto custom-scrollbar bg-[var(--theme-surface-soft)] ring-1 ring-[var(--theme-surface-border)] shadow-sm"
-          >
+      <div className="window-frosted translator-panel">
+        <div ref={contentRef} className="translator-content">
+          <header className="translator-header" data-tauri-drag-region>
+            <span data-tauri-drag-region>{t.tabTranslate}</span>
+            {translateSource && <span className="translator-model" title={translateSource} data-tauri-drag-region>{translateSource}</span>}
+          </header>
+          <div className="translator-source">
+            <TextArea
+              variant="plain"
+              rows={2}
+              maxRows={4}
+              autoFocus
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={t.translatorPlaceholder}
+              value={input}
+              readOnly={submitting}
+              aria-label={t.translatorPlaceholder}
+              aria-busy={loading || submitting}
+              onChange={setInput}
+              onKeyDown={handleKeyDown}
+            />
+          </div>
+          <div className="translator-language-row">
+            <div className="translator-divider" />
+            <Select
+              size="sm"
+              ariaLabel={t.targetLang}
+              value={targetLang ?? 'auto'}
+              triggerLabel={targetLabel}
+              options={languageOptions}
+              disabled={targetLang === null || savingLanguage || submitting}
+              onChange={value => { void changeTargetLang(value) }}
+            />
+          </div>
+          <div ref={resultRef} className="translator-result custom-scrollbar" aria-live="polite" aria-busy={loading}>
             {loading ? (
-              <div className="flex items-center gap-2 text-[var(--text-muted)]">
-                <span className="flex gap-0.5">
-                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse" />
-                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse [animation-delay:0.2s]" />
-                  <span className="w-1 h-1 rounded-full bg-[var(--text-faint)] animate-pulse [animation-delay:0.4s]" />
-                </span>
-                <span className="text-[11px]">{t.translatorTranslating}</span>
-              </div>
-            ) : (
-              <p className="text-[var(--text)] text-[14.5px] font-normal select-text leading-[1.5]">
-                {result}
-              </p>
-            )}
+              <p className="translator-status">{t.translatorTranslating}</p>
+            ) : result ? (
+              <p className="translator-translation">{result}</p>
+            ) : !error ? (
+              <p className="translator-status">{lang === 'zh' ? '译文会显示在这里' : 'Translation appears here'}</p>
+            ) : null}
+            {(error || languageError) && <p role="alert" className="translator-error">{languageError || error}</p>}
           </div>
-        )}
-
-        {/* 输入框（更精致的圆角 + focus 渐变） */}
-        <input
-          ref={inputRef}
-          autoFocus
-          autoCapitalize="off"
-          autoCorrect="off"
-          autoComplete="off"
-          spellCheck={false}
-          className="w-full px-3.5 py-2 bg-[var(--theme-surface)] ring-1 ring-[var(--theme-surface-border)] rounded-xl text-[14.5px] text-[var(--text)] placeholder-[var(--text-faint)] focus:outline-none focus:ring-[var(--accent)] transition-all"
-          placeholder={t.translatorPlaceholder}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-        />
-
-        {/* 底部提示 */}
-        <div className="mt-1.5 flex justify-between items-center text-[10px] text-[var(--text-faint)]">
-          <div className="flex items-center gap-2">
-            <span>{t.translatorHintEnter}</span>
-            <span>{t.translatorHintEsc}</span>
-          </div>
-          {translateSource && (
-            <span className="flex items-center gap-1 opacity-70 max-w-[140px] truncate">
-              <Cpu size={9} strokeWidth={1.5} className="shrink-0" />
-              <span className="truncate">{translateSource}</span>
-            </span>
-          )}
-        </div>
+          <footer className="translator-footer">
+            <span>{t.translatorHintEnter} · {t.translatorHintEsc}</span>
+            <span>{lang === 'zh' ? '⇧ ↵ 换行' : '⇧ ↵ New line'}</span>
+          </footer>
         </div>
       </div>
     </div>
@@ -240,6 +285,7 @@ function App() {
   const [translucentSidebar, setTranslucentSidebar] = useState(false)
   const [translateSource, setTranslateSource] = useState<string>('')
   const [lang, setLang] = useState<Lang>('zh')
+  const [targetLang, setTargetLang] = useState<string | null>(null)
 
   useLayoutEffect(() => {
     const root = document.documentElement
@@ -303,6 +349,7 @@ function App() {
           : UI_MONO_FALLBACK_STACK,
       )
     }
+    setTargetLang(settings.targetLang || 'auto')
     setTranslateSource(settings.translatorModel || 'AI')
     setLang((settings.settingsLanguage as Lang) || 'zh')
     // 首次应用主题后（下一帧）再开启主题色过渡，避免初始 light↔dark 闪烁；
@@ -499,26 +546,6 @@ function App() {
     }
   }, [mode, persistChatWindowGeometry])
 
-  // 根据当前模式调整窗口大小
-  useEffect(() => {
-    const resize = async () => {
-      if (mode === '' || mode === 'translator') {
-        await api.resizeWindow(392, 152)
-      }
-    }
-    resize()
-  }, [mode])
-
-  // 打开设置页
-  const openSettings = async () => {
-    try {
-      await api.openSettingsWindow()
-      await api.closeTranslatorWindow()
-    } catch (err) {
-      console.error('[App] Error opening settings window:', err)
-    }
-  }
-
   // 根据当前模式渲染对应视图
   if (mode === 'lens') {
     return (
@@ -554,7 +581,15 @@ function App() {
       </ChatWindowHost>
     )
   }
-  return <Translator translateSource={translateSource} lang={lang} onOpenSettings={openSettings} />
+  return <Translator
+    translateSource={translateSource}
+    lang={lang}
+    targetLang={targetLang}
+    onTargetLangChange={async value => {
+      const saved = await updateSettingsCached(current => ({ ...current, targetLang: value }))
+      setTargetLang(saved.targetLang)
+    }}
+  />
 }
 
 export default App

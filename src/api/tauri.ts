@@ -1894,6 +1894,7 @@ export const api = {
   closeTranslatorWindow: () => invoke<void>('close_translator_window'),
 
   // 文本翻译
+  resolveTranslationTargetLang: (text: string) => invoke<string>('resolve_translation_target_lang', { text }),
   translateText: (text: string) => invoke<string>('translate_text', { text }),
   commitTranslation: (text: string) => invoke<void>('commit_translation', { text }),
 

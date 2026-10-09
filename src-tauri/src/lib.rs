@@ -544,6 +544,7 @@ pub fn run() {
             commands::import_settings,
             commands::open_settings_window,
             commands::close_translator_window,
+            commands::resolve_translation_target_lang,
             commands::translate_text,
             commands::commit_translation,
             commands::open_external,

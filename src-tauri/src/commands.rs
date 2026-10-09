@@ -362,6 +362,15 @@ pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState
     }
 }
 
+/// 输入翻译浮窗展示实际目标语言，复用翻译请求的同一解析规则。
+#[tauri::command]
+pub(crate) fn resolve_translation_target_lang(
+    state: State<'_, AppState>,
+    text: String,
+) -> String {
+    resolve_target_lang(&state.settings_read().target_lang, text.trim())
+}
+
 /// 翻译文本命令
 /// 根据设置中的翻译供应商和模型进行翻译；OAuth 模式仍需先登录
 #[tauri::command]
@@ -380,10 +389,10 @@ pub(crate) async fn translate_text(
         .ok_or_else(|| "Translator provider not found".to_string())?;
 
     if !provider.authentication_ready() {
-        return Ok("Please log in to the provider first".to_string());
+        return Err("Please log in to the provider first".to_string());
     }
     if settings.translator_model.trim().is_empty() {
-        return Ok("Please select a model first".to_string());
+        return Err("Please select a model first".to_string());
     }
 
     let target_lang = resolve_target_lang(&settings.target_lang, trimmed);

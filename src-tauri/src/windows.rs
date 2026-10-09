@@ -249,8 +249,8 @@ pub fn apply_frameless_window_chrome(window: &WebviewWindow) {
 
 pub const TRANSLATOR_WINDOW_LABEL: &str = "translator";
 const TRANSLATOR_WINDOW_TITLE: &str = "Translator";
-const TRANSLATOR_WINDOW_WIDTH: f64 = 392.0;
-const TRANSLATOR_WINDOW_HEIGHT: f64 = 152.0;
+const TRANSLATOR_WINDOW_WIDTH: f64 = 460.0;
+const TRANSLATOR_WINDOW_HEIGHT: f64 = 220.0;
 
 pub fn get_translator_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(TRANSLATOR_WINDOW_LABEL)

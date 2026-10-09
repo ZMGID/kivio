@@ -16,6 +16,36 @@ describe('Toggle', () => {
 })
 
 describe('Select', () => {
+  it.each([
+    { width: 460, height: 243, x: 300, y: 108 },
+    { width: 180, height: 120, x: 60, y: 60 },
+  ])('keeps compact menus inside the viewport and aligned to the trigger ($width × $height)', ({ width, height, x, y }) => {
+    vi.stubGlobal('innerWidth', width)
+    vi.stubGlobal('innerHeight', height)
+    try {
+      render(<Select size="sm" triggerLabel="Language" value="en" onChange={() => undefined}
+        options={[{ value: 'en', label: 'English' }, { value: 'ja', label: 'Japanese' }]} />)
+      const trigger = screen.getByRole('button')
+      vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(x, y, 120, 22))
+      fireEvent.click(trigger)
+      const menu = screen.getByRole('listbox')
+      const left = Number.parseFloat(menu.style.left)
+      const menuWidth = Number.parseFloat(menu.style.width)
+      const maxHeight = Number.parseFloat(menu.style.maxHeight)
+      const bottom = Number.parseFloat(menu.style.bottom)
+      expect(left).toBeGreaterThanOrEqual(8)
+      expect(left + menuWidth).toBeLessThanOrEqual(Math.min(width - 8, x + 120))
+      if (Number.isFinite(bottom)) {
+        expect(height - bottom - maxHeight).toBeGreaterThanOrEqual(8)
+      } else {
+        expect(Number.parseFloat(menu.style.top) + maxHeight).toBeLessThanOrEqual(height - 8)
+      }
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
   it.each(['text', 'icon', 'labeled-icon'])('opens menu and selects an option (%s trigger)', async (mode) => {
     const user = userEvent.setup()
     const onChange = vi.fn()

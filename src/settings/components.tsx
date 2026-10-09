@@ -16,6 +16,7 @@ function useSelectMenuRect(
   optionsLength: number,
   triggerRef: RefObject<HTMLElement | null>,
   minWidth = 0,
+  compact = false,
 ) {
   const [menuRect, setMenuRect] = useState<{
     left: number
@@ -30,21 +31,23 @@ function useSelectMenuRect(
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
     const width = minWidth ? Math.min(Math.max(rect.width, minWidth), window.innerWidth - MENU_MARGIN * 2) : rect.width
-    const left = minWidth ? Math.max(MENU_MARGIN, Math.min(rect.left, window.innerWidth - width - MENU_MARGIN)) : rect.left
+    const anchorLeft = compact ? rect.right - width : rect.left
+    const left = minWidth ? Math.max(MENU_MARGIN, Math.min(anchorLeft, window.innerWidth - width - MENU_MARGIN)) : rect.left
     const viewportH = window.innerHeight
     const spaceBelow = viewportH - rect.bottom - MENU_GAP - MENU_MARGIN
     const spaceAbove = rect.top - MENU_GAP - MENU_MARGIN
     // 默认向下展开；下方空间不足且上方更宽裕时向上翻转。
-    const flipUp = spaceBelow < MENU_MAX_HEIGHT && spaceAbove > spaceBelow
+    const desiredHeight = Math.min(MENU_MAX_HEIGHT, optionsLength * (compact ? 24 : 28) + 10)
+    const flipUp = spaceBelow < desiredHeight && spaceAbove > spaceBelow
     const available = Math.max(flipUp ? spaceAbove : spaceBelow, 0)
-    const maxHeight = Math.max(Math.min(MENU_MAX_HEIGHT, available), 80)
+    const maxHeight = Math.min(MENU_MAX_HEIGHT, available)
     if (flipUp) {
       // 用 bottom 定位让菜单底边贴着按钮向上生长，避免 top 计算后恒等于 MENU_MARGIN 导致飞到窗口顶部。
       setMenuRect({ left, bottom: viewportH - rect.top + MENU_GAP, width, maxHeight })
     } else {
       setMenuRect({ left, top: rect.bottom + MENU_GAP, width, maxHeight })
     }
-  }, [triggerRef, minWidth])
+  }, [triggerRef, minWidth, compact, optionsLength])
 
   useLayoutEffect(() => {
     if (open) updateMenuRect()
@@ -117,6 +120,7 @@ function SelectMenuPortal({
   options,
   value,
   onPick,
+  compact = false,
 }: {
   open: boolean
   triggerRef: RefObject<HTMLElement | null>
@@ -125,13 +129,23 @@ function SelectMenuPortal({
   options: SelectOption[]
   value: string
   onPick: (value: string) => void
+  compact?: boolean
 }) {
+  useLayoutEffect(() => {
+    if (!open) return
+    const menu = menuRef.current
+    const selected = menu?.querySelector<HTMLElement>('[aria-selected="true"]')
+    if (menu && selected) {
+      menu.scrollTop = Math.max(0, selected.offsetTop - (menu.clientHeight - selected.offsetHeight) / 2)
+    }
+  }, [open, value, menuRect.maxHeight, menuRef])
+
   if (!open) return null
   return createPortal(
     <div
       ref={menuRef as React.RefObject<HTMLDivElement>}
       role="listbox"
-      className="kv-select-menu fixed z-[1000] overflow-y-auto custom-scrollbar"
+      className={`kv-select-menu ${compact ? 'sm' : ''} fixed z-[1000] overflow-y-auto custom-scrollbar`}
       style={{ left: menuRect.left, top: menuRect.top, bottom: menuRect.bottom, width: menuRect.width, maxHeight: menuRect.maxHeight }}
       data-tauri-drag-region="false"
     >
@@ -162,7 +176,7 @@ function SelectMenuPortal({
 /**
  * 下拉选择 — 自绘菜单，避免 macOS 原生 select 的系统高亮/勾选反馈和受控状态不同步。
  */
-export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel, triggerIcon, triggerLabel }: {
+export function Select({ value, onChange, options, className = '', disabled: disabledProp = false, title, ariaLabel, triggerIcon, triggerLabel, size = 'md' }: {
   value: string
   onChange: (v: string) => void
   options: SelectOption[]
@@ -172,6 +186,8 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   triggerIcon?: ReactNode
   /** 图标工具栏同时显示当前范围时使用；菜单保留完整选项名称。 */
   triggerLabel?: string
+  /** 文本工具栏触发器及其菜单的尺寸；小号菜单右侧对齐。 */
+  size?: 'md' | 'sm'
   /** 覆盖触发按钮的原生 tooltip（默认显示当前选中项）。 */
   title?: string
   /** 无可关联原生 label 时，为触发按钮提供可访问名称。 */
@@ -184,7 +200,8 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   const displayLabel = selected?.label || value
   const displayTitle = selected?.title || displayLabel
   const disabled = disabledProp || options.length === 0
-  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef, triggerIcon || triggerLabel !== undefined ? 200 : 0)
+  const compact = size === 'sm'
+  const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef, triggerIcon || triggerLabel !== undefined ? (compact ? 156 : 200) : 0, compact)
   useSelectMenuOpen(open, setOpen, triggerRef, menuRef, updateMenuRect)
 
   const triggerProps = {
@@ -213,7 +230,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   return (
     <div className={`relative ${className}`}>
       {triggerLabel !== undefined ? (
-        <Button {...triggerProps} variant="ghost" className="max-w-full min-w-0" aria-label={ariaLabel}>
+        <Button {...triggerProps} variant="ghost" size={size} className="max-w-full min-w-0" aria-label={ariaLabel}>
           {triggerIcon && <span className="flex shrink-0 items-center">{triggerIcon}</span>}
           <span className="min-w-0 truncate">{triggerLabel}</span>
           <ChevronDown size={14} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
@@ -239,6 +256,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
       )}
 
       <SelectMenuPortal
+        compact={compact}
         open={open}
         triggerRef={triggerRef}
         menuRef={menuRef}
@@ -365,6 +383,8 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
  * 多行文本输入 — 默认 sans
  */
 export function TextArea({
+  variant = 'default',
+  maxRows,
   value,
   onChange,
   placeholder = '',
@@ -379,6 +399,9 @@ export function TextArea({
   placeholder?: string
   rows?: number
   mono?: boolean
+  variant?: 'default' | 'plain'
+  /** 设置后随内容增长，rows 为最小行数，maxRows 为上限。 */
+  maxRows?: number
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const caretRef = useRef<{ start: number; end: number } | null>(null)
@@ -392,6 +415,30 @@ export function TextArea({
     el.focus()
     el.setSelectionRange(caret.start, caret.end)
   }, [value])
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || maxRows === undefined) return
+    const resize = () => {
+      const style = getComputedStyle(el)
+      const line = parseFloat(style.lineHeight)
+      const inset = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+        + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)
+      el.style.height = '0px'
+      const height = Math.max(line * rows + inset, Math.min(el.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth), line * Math.max(rows, maxRows) + inset))
+      el.style.height = `${height}px`
+    }
+    resize()
+    if (typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      resize()
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [value, rows, maxRows])
 
   const applyEdit = (next: string, start: number, end: number) => {
     const el = ref.current
@@ -413,7 +460,8 @@ export function TextArea({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className={`kv-textarea custom-scrollbar w-full ${mono ? 'mono' : ''} ${className}`}
+        className={`kv-textarea custom-scrollbar w-full ${variant === 'plain' ? 'plain' : ''} ${mono ? 'mono' : ''} ${className}`}
+        style={{ ...props.style, ...(maxRows === undefined ? {} : { resize: 'none' }) }}
         data-tauri-drag-region="false"
         onContextMenu={(event) => {
           onContextMenu?.(event)
