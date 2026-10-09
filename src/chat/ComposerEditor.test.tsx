@@ -30,6 +30,20 @@ function setup(initial = '') {
 }
 
 describe('ComposerEditor', () => {
+  it.each(['Backspace', 'Delete'])('clears a select-all selection with %s and supports undo/redo', (key) => {
+    const text = '安师大换手机大手大脚莫古斯了回家'
+    const { editor, textbox, change } = setup(text)
+    act(() => editor.current!.select())
+    fireEvent.keyDown(textbox, { key, keyCode: key === 'Backspace' ? 8 : 46 })
+    expect(editor.current!.value).toBe('')
+    expect(textbox.textContent).toBe('')
+    expect(change).toHaveBeenLastCalledWith('')
+    act(() => editor.current!.undo())
+    expect(editor.current!.value).toBe(text)
+    act(() => editor.current!.redo())
+    expect(editor.current!.value).toBe('')
+  })
+
   it('renders every command kind inline with icons and preserves plain-text serialization', () => {
     const text = '先 /plan 然后请用/review 最后 /compact '
     const { editor, textbox } = setup(text)

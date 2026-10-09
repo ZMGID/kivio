@@ -5,7 +5,7 @@ import { EditorState, Plugin, TextSelection } from '@milkdown/prose/state'
 import { EditorView } from '@milkdown/prose/view'
 import { history, undo, redo, undoDepth, redoDepth, closeHistory } from '@milkdown/prose/history'
 import { keymap } from '@milkdown/prose/keymap'
-import { selectAll } from '@milkdown/prose/commands'
+import { deleteSelection, selectAll } from '@milkdown/prose/commands'
 import { findComposerCommands, type SlashCommandDefinition } from './slashCommands'
 import { SlashCommandIcon } from './SlashCommandIcon'
 
@@ -171,6 +171,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       doc: documentFromText(value, current.current.commands),
       plugins: [history(), normalize, keymap({
         'Mod-z': undo, 'Mod-Shift-z': redo, 'Mod-y': redo, 'Mod-a': selectAll,
+        // AllSelection cannot use the browser's native deletion fallback.
+        'Backspace': deleteSelection, 'Delete': deleteSelection,
         'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.insertText('\n')); return true },
       })],
     })
