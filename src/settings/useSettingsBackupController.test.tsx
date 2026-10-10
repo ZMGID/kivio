@@ -29,7 +29,7 @@ describe('useSettingsBackupController', () => {
     expect(imported).toHaveBeenCalledOnce()
     pending.resolve()
     await act(async () => { await first })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup imported and applied.' })
+    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Imported. MCP and hooks are disabled, local CLI configuration is retained, and tool execution requires approval. Review settings before enabling them.' })
   })
 
   it('keeps import failure visible and allows a later retry', async () => {
@@ -44,6 +44,24 @@ describe('useSettingsBackupController', () => {
     await act(async () => { await result.current.importBackup() })
     expect(result.current.status).toEqual({ kind: 'err', msg: 'Import failed: version conflict' })
     await act(async () => { await result.current.importBackup() })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup imported and applied.' })
+    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Imported. MCP and hooks are disabled, local CLI configuration is retained, and tool execution requires approval. Review settings before enabling them.' })
   })
+  it('requires an explicit trusted restore action to preserve executable configuration', async () => {
+    const imported = vi.fn(async () => {})
+    const exported = vi.fn(async () => {})
+    const port: SettingsBackupPort = {
+      pickImport: async () => 'backup.json', pickExport: async () => 'share.json',
+      import: imported, export: exported,
+    }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    await act(async () => { await result.current.importBackup() })
+    expect(imported).toHaveBeenLastCalledWith('backup.json')
+    await act(async () => { await result.current.restoreBackup() })
+    expect(imported).toHaveBeenLastCalledWith('backup.json', true)
+    expect(result.current.status?.msg).toContain('execution permissions')
+    await act(async () => { await result.current.shareBackup() })
+    expect(exported).toHaveBeenLastCalledWith('share.json', true)
+    expect(result.current.status?.msg).toContain('Review sets')
+  })
+
 })

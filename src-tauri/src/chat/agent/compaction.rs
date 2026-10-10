@@ -35,6 +35,26 @@ pub(crate) fn auto_compact_budget(window: usize) -> usize {
     window.saturating_sub(reserve)
 }
 
+fn request_context_budget(window: usize, max_output_tokens: u32) -> usize {
+    let window = if window == 0 { 200_000 } else { window };
+    auto_compact_budget(window).min(window.saturating_sub(max_output_tokens as usize))
+}
+
+fn estimate_request_tokens(
+    messages: &[Value],
+    provider: &crate::settings::ModelProvider,
+    model: &str,
+) -> usize {
+    estimate_messages_tokens(messages).saturating_add(
+        messages
+            .iter()
+            .map(|message| {
+                crate::chat::commands::context::request_image_tokens(message, Some(provider), model)
+            })
+            .sum::<usize>(),
+    )
+}
+
 /// Groups begin at assistant messages, keeping every tool call beside its results.
 /// A synthetic previous summary belongs to the history, never to the immutable prefix
 /// (replayed summaries are user messages; the system-role check stays defensive).
@@ -192,7 +212,6 @@ const MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES: u32 = 3;
 const RAPID_REFILL_TOOL_BATCHES: u32 = 3;
 const MAX_CONSECUTIVE_RAPID_REFILLS: u32 = 3;
 
-
 /// Keep whole recent assistant/tool groups, not an arbitrary message count.
 /// The newest group always survives, even when it alone exceeds the budget.
 fn initial_kept_groups(messages: &[Value], groups: &[usize], budget: usize) -> usize {
@@ -247,11 +266,15 @@ pub(crate) async fn summarize_history(
     };
     let enough = |kept: usize| kept < groups.len();
     let window = context_window_for_model(Some(provider), model).0;
-    let budget = auto_compact_budget(window);
+    let budget = request_context_budget(window, max_output);
     let reserve = (if window == 0 { 200_000 } else { window }).saturating_sub(budget);
-    let max_output = (if max_output == 0 { SUMMARY_OUTPUT_TOKENS } else { max_output })
-        .min(SUMMARY_OUTPUT_TOKENS)
-        .min((reserve.saturating_mul(4) / 5).max(1) as u32);
+    let max_output = (if max_output == 0 {
+        SUMMARY_OUTPUT_TOKENS
+    } else {
+        max_output
+    })
+    .min(SUMMARY_OUTPUT_TOKENS)
+    .min((reserve.saturating_mul(4) / 5).max(1) as u32);
     let initial_kept = initial_kept_groups(messages, &groups, KEEP_RECENT_TOKENS.min(budget / 2));
     let before = estimate_messages_tokens(messages);
     if !enough(initial_kept) {
@@ -329,7 +352,9 @@ pub(crate) async fn summarize_history(
                     }
                     // Read reminders are optional; never let them undo compression.
                     compacted.extend(read_reminders(
-                        &messages[prefix..end], kept, 2_000usize.min((before - after) / 4),
+                        &messages[prefix..end],
+                        kept,
+                        2_000usize.min((before - after) / 4),
                     ));
                     return CompactOutcome::Compacted(compacted, text);
                 } else {
@@ -698,6 +723,7 @@ fn estimate_model_messages_tokens(messages: &[ModelMessage]) -> usize {
                 .iter()
                 .map(|part| match part {
                     MessagePart::Text { text } => estimate_tokens(text),
+                    MessagePart::AnthropicThinking { thinking, .. } => estimate_tokens(thinking),
                     MessagePart::Reasoning { text } => {
                         if native_reasoning == 0 {
                             estimate_tokens(text)
@@ -711,13 +737,19 @@ fn estimate_model_messages_tokens(messages: &[ModelMessage]) -> usize {
                         ..
                     } => estimate_tokens(name) + estimate_tokens(arguments_raw),
                     MessagePart::ToolResult { content, .. } => estimate_tokens(content),
+                    MessagePart::AnthropicNativeBlock { block, .. } => block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(estimate_tokens)
+                        .unwrap_or(0),
                     // 图片部件记 0（与 estimate_value_tokens 同口径，不把 base64 算进 token）。
                     // reasoning item 同理：encrypted_content 是密文 base64，按字符估算会
                     // 数倍虚高；其真实占用由 usage 锚点覆盖。
                     MessagePart::Image { .. }
                     | MessagePart::Video { .. }
                     | MessagePart::ImageUrl { .. }
-                    | MessagePart::ReasoningItem { .. } => 0,
+                    | MessagePart::ReasoningItem { .. }
+                    | MessagePart::AnthropicRedactedThinking { .. } => 0,
                 })
                 .sum();
             parts + native_reasoning + 4
@@ -789,18 +821,19 @@ pub(crate) async fn compact_send_view(
     let config = env.config;
     let trigger = if force { "reactive" } else { "agent_loop" };
     // 先做无条件的图片收敛：与 token 预算无关，重复上传同一张图、以及无上限堆积的历史
-    // 图片，任何情况下都是纯浪费，而 token 估算看不见它们（详见 `prune_image_parts`）。
+    // 图片，任何情况下都是纯浪费；随后请求预算仍计入保留图片的 token（详见 `prune_image_parts`）。
     let saved_bytes = prune_image_parts(&mut state.runtime_messages, IMAGE_BYTES_BUDGET);
     if saved_bytes > 0 {
         state.last_step_usage = None;
         state.initial_anchor_valid = false;
-        env.host.emit_context_usage_live(&config.conversation_id, 0, None, None, None);
+        env.host
+            .emit_context_usage_live(&config.conversation_id, 0, None, None, None);
         eprintln!("Chat context: pruned {saved_bytes} bytes of image data from the send view");
     }
     let window = context_window_for_model(Some(&config.provider), &config.model).0;
     // The main meter is provider-only. Safety budgeting is deliberately separate:
     // keep a local floor so a stale/under-reported anchor cannot hide context growth.
-    let budget = auto_compact_budget(window);
+    let budget = request_context_budget(window, config.max_output_tokens);
     // Include the schemas actually sent with each request in the local safety floor.
     // 按「工具名集合哈希」做轮间缓存：每轮为上百个工具重建整份 schema JSON 只为估个
     // token 数太浪费；工具集只在 Skill 激活时变（同名工具的 schema run 内稳定）。
@@ -825,7 +858,8 @@ pub(crate) async fn compact_send_view(
         }
     };
     let estimate_full =
-        estimate_messages_tokens(&state.runtime_messages).saturating_add(tool_schema_tokens);
+        estimate_request_tokens(&state.runtime_messages, &config.provider, &config.model)
+            .saturating_add(tool_schema_tokens);
     let (anchor_prompt, trailing) = if let Some(usage) = &state.last_step_usage {
         // 本轮已发生过模型调用：锚点 = 上次调用 usage（含 output）；trailing = 那次**响应之后**新增。
         let start = state
@@ -883,8 +917,9 @@ pub(crate) async fn compact_send_view(
         .host
         .wait_for_generation_inactive(&config.conversation_id, config.generation);
     let runtime_before_compact = state.runtime_messages.clone();
-    let (compression_provider_id, compression_model) =
-        config.settings.effective_compression_model_for_session(Some(crate::settings::SessionModel {
+    let (compression_provider_id, compression_model) = config
+        .settings
+        .effective_compression_model_for_session(Some(crate::settings::SessionModel {
             provider_id: &config.provider.id,
             model: &config.model,
         }));
@@ -895,8 +930,10 @@ pub(crate) async fn compact_send_view(
     };
     let Some(compression_provider) = compression_provider else {
         state.auto_compact_failures = state.auto_compact_failures.saturating_add(1);
-        env.host.set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
-        env.host.emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
+        env.host
+            .set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
+        env.host
+            .emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
         return state.runtime_messages.clone();
     };
     let compacted = config
@@ -926,11 +963,20 @@ pub(crate) async fn compact_send_view(
 
     match compacted {
         CompactOutcome::Compacted(compacted, summary_text) => {
-            let after = estimate_messages_tokens(&compacted).saturating_add(tool_schema_tokens);
+            let after = estimate_request_tokens(&compacted, &config.provider, &config.model)
+                .saturating_add(tool_schema_tokens);
             if after >= estimate_full || after > budget.saturating_mul(9) / 10 {
                 state.auto_compact_failures = state.auto_compact_failures.saturating_add(1);
-                env.host.set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
-                env.host.emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
+                env.host.set_auto_compact_failures(
+                    &config.conversation_id,
+                    state.auto_compact_failures,
+                );
+                env.host.emit_compaction_status(
+                    &config.conversation_id,
+                    "failed",
+                    Some(trigger),
+                    None,
+                );
                 return state.runtime_messages.clone();
             }
             state.tool_batches_since_compact = 0;
@@ -944,7 +990,13 @@ pub(crate) async fn compact_send_view(
             // 压缩后消息序列已变，旧锚点失真——清空，回落纯估算直到下次模型调用产生新 usage。
             state.last_step_usage = None;
             state.initial_anchor_valid = false;
-            env.host.emit_context_usage_live(&config.conversation_id, 0, None, Some(window as u64), None);
+            env.host.emit_context_usage_live(
+                &config.conversation_id,
+                0,
+                None,
+                Some(window as u64),
+                None,
+            );
             if let Some(source_until_message_id) = runtime_before_compact
                 .iter()
                 .rev()
@@ -1070,6 +1122,20 @@ mod tests {
             assert!(budget < window);
             assert!(window == 1 || budget > 0);
         }
+        assert!(request_context_budget(8_000, 4_096) + 4_096 <= 8_000);
+    }
+
+    #[test]
+    fn fresh_request_budget_includes_images_without_usage_anchor() {
+        let provider: crate::settings::ModelProvider = serde_json::from_value(json!({
+            "id":"fixture", "name":"fixture", "baseUrl":"https://api.openai.com/v1", "apiKeys":[], "apiFormat":"openai_chat"
+        })).unwrap();
+        let text = json!({"role":"user", "content":[{"type":"text","text":"look"}]});
+        let images = json!({"role":"user", "content":[{"type":"text","text":"look"}, {"type":"image_url", "image_url":{"url":"https://example.org/image.png", "detail":"low"}}]});
+        assert!(
+            estimate_request_tokens(&[images], &provider, "gpt-4o")
+                >= estimate_request_tokens(&[text], &provider, "gpt-4o") + 85
+        );
     }
 
     #[test]

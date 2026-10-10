@@ -40,6 +40,7 @@
 //! **当前选择的模型不写进 patch**。provider 的模型目录在 patch 中，但每轮实际 route/model
 //! 仍由 `initialize` RPC 决定（见 `session::dsh_jsonrpc`）。
 
+use crate::external_agents::spawn::CliProcessOutput;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -520,7 +521,7 @@ async fn dsh_core_version(bin: &Path) -> Result<String, String> {
     }
     let output = crate::external_agents::spawn::cli_probe_command(bin)
         .arg("--version")
-        .output()
+        .group_output()
         .await
         .map_err(|err| format!("无法读取 dsh 版本：{err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);

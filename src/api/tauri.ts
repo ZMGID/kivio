@@ -1,7 +1,7 @@
 // Tauri 前端与 Rust 后端的桥接模块
 // 所有 invoke 调用和事件监听都集中在这里，作为前后端的统一接口层
 
-import { Channel, invoke } from '@tauri-apps/api/core'
+import { Channel, convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
@@ -1854,9 +1854,14 @@ export const api = {
   /** 轻量持久化快速翻译卡宽度（拖拽缩放记忆；高度始终自动）。 */
   setTranslateCardSize: (width: number) =>
     invoke<SettingsSnapshot>('set_translate_card_size', { width }).then(normalizeSettingsSnapshot),
-  exportSettings: (path: string) => invoke<void>('export_settings', { path }),
-  importSettings: async (path: string, expectedVersion: SettingsVersion) =>
-    normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion })),
+  createHtmlPreview: async (html: string) => {
+    const id = await invoke<string>('create_html_preview', { html })
+    return { id, url: convertFileSrc(id, 'kivio-preview') }
+  },
+  releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
+  exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
+  importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
+    normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),
   usageGetStats: (query?: UsageStatsQuery) =>
     invoke<UsageStatsResponse>('usage_get_stats', { query }),
   usageGetConversationCost: (conversationId: string) =>

@@ -17,6 +17,82 @@ use super::{
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+struct AnthropicContinuationSink<'a> {
+    sink: &'a mut (dyn StreamSink + Send),
+    prefix: &'a str,
+}
+
+impl StreamSink for AnthropicContinuationSink<'_> {
+    fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
+        match part {
+            StreamPart::Finish { reason, .. } if reason == "pause_turn" => Ok(()),
+            StreamPart::Finish { reason, full } => self.sink.emit(StreamPart::Finish {
+                reason,
+                full: format!("{}{full}", self.prefix),
+            }),
+            other => self.sink.emit(other),
+        }
+    }
+}
+
+fn merge_anthropic_continuation(
+    mut previous: GenerateOutput,
+    mut next: GenerateOutput,
+) -> GenerateOutput {
+    previous.text.push_str(&next.text);
+    if let Some(reasoning) = next.reasoning.take() {
+        previous
+            .reasoning
+            .get_or_insert_with(String::new)
+            .push_str(&reasoning);
+    }
+    let next_message = next
+        .canonical_message
+        .take()
+        .unwrap_or_else(|| ModelMessage::text(ModelRole::Assistant, &next.text));
+    if let Some(message) = &mut previous.canonical_message {
+        message.content.extend(next_message.content);
+    } else {
+        previous.canonical_message = Some(next_message);
+    }
+    previous.tool_calls.extend(next.tool_calls);
+    previous.billing_usage = previous.billing_usage.take().or(previous.usage.take());
+    if let Some(next_usage) = next.billing_usage.take().or_else(|| next.usage.clone()) {
+        let usage = previous
+            .billing_usage
+            .get_or_insert_with(ModelUsage::default);
+        let add = |target: &mut Option<u64>, value: Option<u64>| {
+            if let Some(value) = value {
+                *target = Some(target.unwrap_or(0).saturating_add(value));
+            }
+        };
+        add(&mut usage.input_tokens, next_usage.input_tokens);
+        add(&mut usage.output_tokens, next_usage.output_tokens);
+        add(&mut usage.total_tokens, next_usage.total_tokens);
+        add(
+            &mut usage.cached_input_tokens,
+            next_usage.cached_input_tokens,
+        );
+        add(
+            &mut usage.cache_creation_input_tokens,
+            next_usage.cache_creation_input_tokens,
+        );
+        add(&mut usage.reasoning_tokens, next_usage.reasoning_tokens);
+        usage.context_window_tokens = next_usage
+            .context_window_tokens
+            .or(usage.context_window_tokens);
+    }
+    previous.usage = next.usage;
+    if let Some(search) = next.web_search {
+        merge_anthropic_web_search(&mut previous.web_search, search);
+    }
+    previous.images.extend(next.images);
+    previous.finish_reason = next.finish_reason;
+    previous.cancelled = next.cancelled;
+    previous.provider_messages = vec![previous.to_openai_compatible_message()];
+    previous
+}
 /// 1 小时缓存的 beta 开关；不带这个头时 `ttl: "1h"` 会被拒。
 const EXTENDED_CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
 /// Claude 4 手动预算思考（`type: enabled`）要在工具调用之间继续思考，必须声明这个 beta；
@@ -198,7 +274,7 @@ impl<'a> AnthropicMessagesProvider<'a> {
 
 impl LanguageModelProvider for AnthropicMessagesProvider<'_> {
     fn generate<'a>(&'a self, request: GenerateRequest) -> ModelFuture<'a, GenerateOutput> {
-        Box::pin(async move { self.generate_inner(request).await })
+        Box::pin(async move { self.complete_turn(request, None).await })
     }
 
     fn stream<'a>(
@@ -206,11 +282,68 @@ impl LanguageModelProvider for AnthropicMessagesProvider<'_> {
         request: GenerateRequest,
         sink: &'a mut (dyn StreamSink + Send),
     ) -> ModelFuture<'a, GenerateOutput> {
-        Box::pin(async move { self.stream_inner(request, sink).await })
+        Box::pin(async move { self.complete_turn(request, Some(sink)).await })
     }
 }
 
 impl AnthropicMessagesProvider<'_> {
+    async fn complete_turn(
+        &self,
+        mut request: GenerateRequest,
+        mut sink: Option<&mut (dyn StreamSink + Send)>,
+    ) -> Result<GenerateOutput, ModelError> {
+        const MAX_SERVER_TOOL_CONTINUATIONS: usize = 8;
+        let mut accumulated: Option<GenerateOutput> = None;
+        for continuation in 0..=MAX_SERVER_TOOL_CONTINUATIONS {
+            let output = if let Some(sink) = sink.as_mut() {
+                let mut continuation_sink = AnthropicContinuationSink {
+                    sink: &mut **sink,
+                    prefix: accumulated
+                        .as_ref()
+                        .map_or("", |output| output.text.as_str()),
+                };
+                self.stream_inner(request.clone(), &mut continuation_sink)
+                    .await?
+            } else {
+                self.generate_inner(request.clone()).await?
+            };
+            let paused = output.finish_reason.as_deref() == Some("pause_turn");
+            if paused {
+                if !output.tool_calls.is_empty() {
+                    return Err(ModelError::new(
+                        "Anthropic pause_turn contains unresolved client tool calls",
+                    ));
+                }
+                let native = output
+                    .canonical_message
+                    .as_ref()
+                    .filter(|message| !message.content.is_empty())
+                    .ok_or_else(|| {
+                        ModelError::new(
+                            "Anthropic pause_turn has no complete native content to continue",
+                        )
+                    })?;
+                // Continue the same assistant turn; do not execute server tools locally
+                // or manufacture a new user prompt/result for completed server work.
+                request.messages.push(native.clone());
+            }
+            let output = match accumulated.take() {
+                Some(previous) => merge_anthropic_continuation(previous, output),
+                None => output,
+            };
+            if !paused {
+                return Ok(output);
+            }
+            accumulated = Some(output);
+            if continuation == MAX_SERVER_TOOL_CONTINUATIONS {
+                return Err(ModelError::new(
+                    "Anthropic server tools exceeded the pause_turn continuation limit (8)",
+                ));
+            }
+        }
+        unreachable!("bounded continuation loop always returns")
+    }
+
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
         crate::chat::video::reject_unimplemented_transport(&request, "Anthropic Messages")?;
         let label = request_label(&request, "Anthropic Messages API");
@@ -277,8 +410,9 @@ impl AnthropicMessagesProvider<'_> {
             );
             ModelError::new(message)
         })?;
-        let output =
+        let mut output =
             output_from_anthropic_message(&self.with_declared_tool_names(value, &request), &label)?;
+        self.bind_output_provenance(&mut output, &request);
         self.record_usage_success(
             &request,
             &label,
@@ -340,8 +474,8 @@ impl AnthropicMessagesProvider<'_> {
             ModelError::new(err)
         })?;
 
-        let mut buffer = String::new();
-        let mut utf8 = crate::api::Utf8StreamDecoder::default();
+        let mut sse = super::sse::SseDecoder::default();
+        let mut content_blocks = AnthropicContentAccumulator::default();
         let mut full = String::new();
         let mut reasoning_full = String::new();
         let mut tool_calls = Vec::new();
@@ -376,11 +510,9 @@ impl AnthropicMessagesProvider<'_> {
             let Some(chunk) = chunk else {
                 break;
             };
-            buffer.push_str(&utf8.push(&chunk));
-
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..=pos).collect();
-                match parse_anthropic_sse_event(&line) {
+            for data in sse.push(&chunk) {
+                content_blocks.push(&data);
+                match parse_anthropic_sse_event(&format!("data: {data}")) {
                     Some(AnthropicSseEvent::Usage(next)) => {
                         merge_stream_usage(&mut usage, next, sink)?;
                     }
@@ -441,6 +573,16 @@ impl AnthropicMessagesProvider<'_> {
                         })?;
                         let mut output =
                             stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
+                        let mut message = content_blocks.message();
+                        for part in &mut message.content {
+                            if let MessagePart::ToolCall { name, .. } = part {
+                                *name = self.declared_tool_name(name, &request);
+                            }
+                        }
+                        if !message.content.is_empty() {
+                            output.canonical_message = Some(message);
+                        }
+                        self.bind_output_provenance(&mut output, &request);
                         output.web_search = web_search;
                         self.record_usage_success(
                             &request,
@@ -477,6 +619,16 @@ impl AnthropicMessagesProvider<'_> {
                         })?;
                         let mut output =
                             stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
+                        let mut message = content_blocks.message();
+                        for part in &mut message.content {
+                            if let MessagePart::ToolCall { name, .. } = part {
+                                *name = self.declared_tool_name(name, &request);
+                            }
+                        }
+                        if !message.content.is_empty() {
+                            output.canonical_message = Some(message);
+                        }
+                        self.bind_output_provenance(&mut output, &request);
                         output.web_search = web_search;
                         self.record_usage_success(
                             &request,
@@ -528,6 +680,34 @@ impl AnthropicMessagesProvider<'_> {
         Err(err)
     }
 
+    fn bind_output_provenance(&self, output: &mut GenerateOutput, request: &GenerateRequest) {
+        if let Some(message) = &mut output.canonical_message {
+            for part in &mut message.content {
+                match part {
+                    MessagePart::AnthropicThinking {
+                        source_model,
+                        source_provider_id,
+                        ..
+                    }
+                    | MessagePart::AnthropicNativeBlock {
+                        source_model,
+                        source_provider_id,
+                        ..
+                    }
+                    | MessagePart::AnthropicRedactedThinking {
+                        source_model,
+                        source_provider_id,
+                        ..
+                    } => {
+                        *source_model = Some(request.model.clone());
+                        *source_provider_id = Some(self.provider.id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn messages_url(&self) -> String {
         anthropic_messages_url(&self.provider.base_url)
     }
@@ -536,7 +716,8 @@ impl AnthropicMessagesProvider<'_> {
         let max_tokens = anthropic_required_max_tokens(request.options.max_tokens);
         let mut body = serde_json::json!({
             "model": request.model,
-            "messages": anthropic_messages_from_generate_request(request),
+            "messages": anthropic_messages_with_unsigned_thinking(request,
+                crate::utils::is_official_deepseek_anthropic_api(&self.provider.base_url), Some(&self.provider.id)),
             "max_tokens": max_tokens,
         });
         let profile = crate::chat::model_metadata::claude_thinking_profile(&request.model);
@@ -1032,115 +1213,100 @@ fn anthropic_messages_url(base_url: &str) -> String {
 }
 
 pub fn anthropic_messages_from_generate_request(request: &GenerateRequest) -> Vec<Value> {
+    anthropic_messages_with_unsigned_thinking(request, false, None)
+}
+
+fn anthropic_messages_with_unsigned_thinking(
+    request: &GenerateRequest,
+    allow_unsigned: bool,
+    provider_id: Option<&str>,
+) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
-    for message in &request.messages {
+    for message in super::types::paired_model_messages(&request.messages).iter() {
         match message.role {
             ModelRole::User => messages.push(serde_json::json!({
                 "role": "user",
-                "content": anthropic_content_blocks(message, ModelRole::User),
+                "content": anthropic_content_blocks(message, ModelRole::User, allow_unsigned, &request.model, provider_id),
             })),
             ModelRole::Assistant => messages.push(serde_json::json!({
                 "role": "assistant",
-                "content": anthropic_content_blocks(message, ModelRole::Assistant),
+                "content": anthropic_content_blocks(message, ModelRole::Assistant, allow_unsigned, &request.model, provider_id),
             })),
             ModelRole::Tool => messages.push(serde_json::json!({
                 "role": "user",
-                "content": anthropic_content_blocks(message, ModelRole::Tool),
+                "content": anthropic_content_blocks(message, ModelRole::Tool, allow_unsigned, &request.model, provider_id),
             })),
         }
     }
+    messages.retain(|m| {
+        m["content"]
+            .as_array()
+            .is_some_and(|parts| !parts.is_empty())
+    });
+    normalize_anthropic_tool_ids(&mut messages);
     merge_consecutive_anthropic_roles(&mut messages);
-    ensure_tool_result_pairing(&mut messages);
     messages
 }
 
-/// Anthropic 强约束:每个 assistant `tool_use` 的**下一条**消息必须含配对 `tool_result`,
-/// 且 `tool_result` 必须引用紧邻前一条 assistant 的 `tool_use`。历史 replay 存档可能因某回合
-/// 被中断(停止/报错/崩溃/工具 pending)而留下未闭合的 `tool_use`(OpenAI 兼容端宽容,Anthropic 会 400)。
-/// 这里在发送前兜底:给缺失结果的 `tool_use` 注入合成中断态结果,并丢弃无前置 `tool_use` 的反向孤儿 `tool_result`。
-/// ponytail: 只处理"assistant→其后 user"这一相邻对;无前置 assistant 的游离 tool_result 属更深层损坏,不在此覆盖。
-fn ensure_tool_result_pairing(messages: &mut Vec<Value>) {
-    let is_role = |m: &Value, role: &str| m.get("role").and_then(Value::as_str) == Some(role);
-    let synthetic = |id: &str| {
-        serde_json::json!({
-            "type": "tool_result",
-            "tool_use_id": id,
-            "content": "Tool call was interrupted; no result was recorded.",
-            "is_error": true,
-        })
+/// Client ids must match ^[a-zA-Z0-9_-]+$. Reserve every valid id before
+/// encoding foreign ids so a literal id cannot collide with an encoded one.
+fn normalize_anthropic_tool_ids(messages: &mut [Value]) {
+    let mut used = std::collections::HashSet::new();
+    let valid = |id: &str| {
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     };
-
-    let mut i = 0;
-    while i < messages.len() {
-        if !is_role(&messages[i], "assistant") {
-            i += 1;
+    let ids: Vec<String> = messages
+        .iter()
+        .flat_map(|m| m["content"].as_array().into_iter().flatten())
+        .filter(|b| b["type"] == "tool_use" || b["type"] == "tool_result")
+        .filter_map(|b| {
+            b.get("id")
+                .or_else(|| b.get("tool_use_id"))?
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect();
+    for id in &ids {
+        if valid(id) {
+            used.insert(id.clone());
+        }
+    }
+    let mut mapping = std::collections::HashMap::new();
+    for id in ids {
+        if valid(&id) || mapping.contains_key(&id) {
             continue;
         }
-        let tool_use_ids: Vec<String> = messages[i]
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|blocks| {
-                blocks
-                    .iter()
-                    .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
-                    .filter_map(|b| b.get("id").and_then(Value::as_str).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if tool_use_ids.is_empty() {
-            i += 1;
-            continue;
+        let encoded = format!(
+            "toolu_kivio_{}",
+            id.as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        let mut candidate = encoded.clone();
+        let mut suffix = 0;
+        while !used.insert(candidate.clone()) {
+            suffix += 1;
+            candidate = format!("{encoded}_{suffix}");
         }
-
-        if messages.get(i + 1).map(|m| is_role(m, "user")) != Some(true) {
-            // 下一条不存在或不是 user:插入一条含全部合成结果的 user 消息。
-            let blocks: Vec<Value> = tool_use_ids.iter().map(|id| synthetic(id)).collect();
-            messages.insert(
-                i + 1,
-                serde_json::json!({ "role": "user", "content": blocks }),
-            );
-            i += 2;
-            continue;
-        }
-
-        // 重排下一条 user:先放已配对的 tool_result(原序),补齐缺失的合成结果,再接非 tool_result 块。
-        let existing = messages[i + 1]
-            .get("content")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let is_tool_result =
-            |b: &Value| b.get("type").and_then(Value::as_str) == Some("tool_result");
-        let matched_ids: std::collections::HashSet<&str> = existing
-            .iter()
-            .filter(|b| is_tool_result(b))
-            .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
-            .filter(|id| tool_use_ids.iter().any(|expected| expected == id))
-            .collect();
-
-        let mut rebuilt: Vec<Value> = Vec::with_capacity(existing.len() + tool_use_ids.len());
-        // 已配对的结果(丢弃反向孤儿:tool_use_id 不在本 assistant tool_use 集合内)。
-        for block in existing.iter().filter(|b| is_tool_result(b)) {
-            if block
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .map(|id| tool_use_ids.iter().any(|expected| expected == id))
-                .unwrap_or(false)
-            {
-                rebuilt.push(block.clone());
+        mapping.insert(id, candidate);
+    }
+    for message in messages {
+        if let Some(blocks) = message["content"].as_array_mut() {
+            for block in blocks {
+                let key = match block["type"].as_str() {
+                    Some("tool_use") => "id",
+                    Some("tool_result") => "tool_use_id",
+                    _ => continue,
+                };
+                if let Some(mapped) = block[key].as_str().and_then(|id| mapping.get(id)) {
+                    block[key] = Value::String(mapped.clone());
+                }
             }
         }
-        // 缺失结果补合成占位(保持 tool_use 顺序)。
-        for id in &tool_use_ids {
-            if !matched_ids.contains(id.as_str()) {
-                rebuilt.push(synthetic(id));
-            }
-        }
-        // 非 tool_result 块(text/image 等)原序接在后面。
-        rebuilt.extend(existing.into_iter().filter(|b| !is_tool_result(b)));
-
-        messages[i + 1]["content"] = Value::Array(rebuilt);
-        i += 2;
     }
 }
 
@@ -1183,6 +1349,17 @@ pub fn output_from_anthropic_message(
         Some(&finish_reason),
     );
     Ok(GenerateOutput {
+        billing_usage: None,
+        canonical_message: Some(ModelMessage {
+            role: ModelRole::Assistant,
+            content: anthropic_model_parts(
+                value
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            ),
+        }),
         text: parsed.content,
         reasoning: parsed.reasoning,
         tool_calls: parsed.tool_calls,
@@ -1194,6 +1371,77 @@ pub fn output_from_anthropic_message(
         images: Vec::new(),
         reasoning_items: Vec::new(),
     })
+}
+
+fn anthropic_model_parts(blocks: &[Value]) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    for block in blocks {
+        match block["type"].as_str().unwrap_or_default() {
+            "thinking" => {
+                if let Some(thinking) = block["thinking"].as_str() {
+                    parts.push(MessagePart::AnthropicThinking {
+                        thinking: thinking.to_string(),
+                        source_model: None,
+                        source_provider_id: None,
+                        signature: block["signature"]
+                            .as_str()
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_string),
+                    });
+                }
+            }
+            "redacted_thinking" => {
+                if let Some(data) = block["data"].as_str() {
+                    parts.push(MessagePart::AnthropicRedactedThinking {
+                        data: data.to_string(),
+                        source_model: None,
+                        source_provider_id: None,
+                    });
+                }
+            }
+            "text" if block.get("citations").is_some() => {
+                parts.push(MessagePart::AnthropicNativeBlock {
+                    block: block.clone(),
+                    source_model: None,
+                    source_provider_id: None,
+                })
+            }
+            "server_tool_use"
+            | "web_search_tool_result"
+            | "web_fetch_tool_result"
+            | "code_execution_tool_result"
+            | "bash_code_execution_tool_result"
+            | "text_editor_code_execution_tool_result"
+            | "tool_search_tool_result"
+            | "container_upload" => parts.push(MessagePart::AnthropicNativeBlock {
+                block: block.clone(),
+                source_model: None,
+                source_provider_id: None,
+            }),
+            "text" => {
+                if let Some(text) = block["text"].as_str() {
+                    parts.push(MessagePart::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "tool_use" => {
+                let input = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                parts.push(MessagePart::ToolCall {
+                    id: block["id"].as_str().unwrap_or_default().to_string(),
+                    name: block["name"].as_str().unwrap_or_default().to_string(),
+                    arguments_raw: input.to_string(),
+                    arguments: input,
+                    signature: None,
+                });
+            }
+            _ => {}
+        }
+    }
+    parts
 }
 
 struct AnthropicParsedResponse {
@@ -1346,6 +1594,89 @@ fn parse_anthropic_response(response: &Value) -> AnthropicParsedResponse {
     }
 }
 
+/// Owns wire block assembly. Only stopped blocks can become immutable replay content.
+#[derive(Default)]
+struct AnthropicContentAccumulator {
+    blocks: std::collections::BTreeMap<u64, Value>,
+    completed: std::collections::BTreeSet<u64>,
+    tool_input: std::collections::BTreeMap<u64, String>,
+}
+
+impl AnthropicContentAccumulator {
+    fn push(&mut self, data: &str) {
+        let Ok(value) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        let Some(index) = value["index"].as_u64() else {
+            return;
+        };
+        match value["type"].as_str().unwrap_or_default() {
+            "content_block_start" => {
+                if let Some(block) = value.get("content_block") {
+                    self.blocks.insert(index, block.clone());
+                }
+            }
+            "content_block_delta" => {
+                let Some(block) = self.blocks.get_mut(&index) else {
+                    return;
+                };
+                let delta = &value["delta"];
+                let key = match delta["type"].as_str().unwrap_or_default() {
+                    "text_delta" => "text",
+                    "thinking_delta" => "thinking",
+                    "signature_delta" => "signature",
+                    "citations_delta" => {
+                        if let Some(citation) = delta.get("citation") {
+                            if !block["citations"].is_array() {
+                                block["citations"] = serde_json::json!([]);
+                            }
+                            block["citations"]
+                                .as_array_mut()
+                                .unwrap()
+                                .push(citation.clone());
+                        }
+                        return;
+                    }
+                    "input_json_delta" => {
+                        if let Some(partial) = delta["partial_json"].as_str() {
+                            self.tool_input.entry(index).or_default().push_str(partial);
+                        }
+                        return;
+                    }
+                    _ => return,
+                };
+                if let Some(partial) = delta[key].as_str() {
+                    let mut text = block[key].as_str().unwrap_or_default().to_string();
+                    text.push_str(partial);
+                    block[key] = Value::String(text);
+                }
+            }
+            "content_block_stop" => {
+                if let Some(raw) = self.tool_input.remove(&index) {
+                    if let Some(block) = self.blocks.get_mut(&index) {
+                        block["input"] = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    }
+                }
+                self.completed.insert(index);
+            }
+            _ => {}
+        }
+    }
+
+    fn message(&self) -> ModelMessage {
+        let blocks: Vec<Value> = self
+            .blocks
+            .iter()
+            .filter(|(index, _)| self.completed.contains(index))
+            .map(|(_, block)| block.clone())
+            .collect();
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content: anthropic_model_parts(&blocks),
+        }
+    }
+}
+
 enum AnthropicSseEvent {
     Usage(ModelUsage),
     TextDelta(String),
@@ -1494,16 +1825,20 @@ fn merge_stream_usage(
     current.input_tokens = next.input_tokens.or(current.input_tokens);
     current.output_tokens = next.output_tokens.or(current.output_tokens);
     current.cached_input_tokens = next.cached_input_tokens.or(current.cached_input_tokens);
-    current.cache_creation_input_tokens =
-        next.cache_creation_input_tokens.or(current.cache_creation_input_tokens);
-    current.total_tokens = current.input_tokens.zip(current.output_tokens)
+    current.cache_creation_input_tokens = next
+        .cache_creation_input_tokens
+        .or(current.cache_creation_input_tokens);
+    current.total_tokens = current
+        .input_tokens
+        .zip(current.output_tokens)
         .map(|(input, output)| input.saturating_add(output));
     if let Some(input_tokens) = current.input_tokens {
         let input_tokens = input_tokens
             .saturating_add(current.cached_input_tokens.unwrap_or(0))
             .saturating_add(current.cache_creation_input_tokens.unwrap_or(0));
         sink.emit(StreamPart::ContextUsage {
-            input_tokens, output_tokens: current.output_tokens.unwrap_or(0),
+            input_tokens,
+            output_tokens: current.output_tokens.unwrap_or(0),
         })?;
     }
     Ok(())
@@ -1531,17 +1866,64 @@ fn assemble_tool_call_from_stream(
     }
 }
 
-fn anthropic_content_blocks(message: &ModelMessage, role: ModelRole) -> Vec<Value> {
+fn anthropic_content_blocks(
+    message: &ModelMessage,
+    role: ModelRole,
+    allow_unsigned: bool,
+    model: &str,
+    provider_id: Option<&str>,
+) -> Vec<Value> {
     let mut blocks = Vec::new();
     for part in &message.content {
+        let origin = match part {
+            MessagePart::AnthropicThinking {
+                source_model,
+                source_provider_id,
+                ..
+            }
+            | MessagePart::AnthropicNativeBlock {
+                source_model,
+                source_provider_id,
+                ..
+            }
+            | MessagePart::AnthropicRedactedThinking {
+                source_model,
+                source_provider_id,
+                ..
+            } => {
+                source_model
+                    .as_deref()
+                    .map_or(true, |source| source == model)
+                    && provider_id.map_or(true, |provider| {
+                        source_provider_id
+                            .as_deref()
+                            .map_or(true, |source| source == provider)
+                    })
+            }
+            _ => true,
+        };
+        if !origin {
+            if let MessagePart::AnthropicNativeBlock { block, .. } = part {
+                if block["type"] == "text" {
+                    if let Some(text) = block["text"]
+                        .as_str()
+                        .filter(|text| !text.trim().is_empty())
+                    {
+                        blocks.push(serde_json::json!({"type":"text", "text":text}));
+                    }
+                }
+            }
+            continue;
+        }
         match part {
             MessagePart::Video { .. } => {
                 blocks.push(serde_json::json!({"type":"text", "text":"[视频输入不受此协议支持]"}))
             }
-            MessagePart::Text { text } => blocks.push(serde_json::json!({
-                "type": "text",
-                "text": text,
-            })),
+            MessagePart::Text { text } => {
+                if !text.trim().is_empty() {
+                    blocks.push(serde_json::json!({"type":"text", "text":text}));
+                }
+            }
             MessagePart::Image {
                 mime_type, data, ..
             } => {
@@ -1605,23 +1987,49 @@ fn anthropic_content_blocks(message: &ModelMessage, role: ModelRole) -> Vec<Valu
                     "is_error": is_error,
                 }));
             }
-            MessagePart::Reasoning { text } => {
-                if matches!(role, ModelRole::Assistant) {
-                    blocks.push(serde_json::json!({
-                        "type": "thinking",
-                        "thinking": text,
-                    }));
+            MessagePart::AnthropicThinking {
+                thinking,
+                signature,
+                ..
+            } => {
+                if role == ModelRole::Assistant && (signature.is_some() || allow_unsigned) {
+                    let mut block = serde_json::json!({"type":"thinking", "thinking":thinking});
+                    if let Some(signature) = signature {
+                        block["signature"] = Value::String(signature.clone());
+                    }
+                    blocks.push(block);
                 }
             }
-            // OpenAI Responses 专属的原生推理项：其它协议不识别，回放时忽略。
+            MessagePart::AnthropicNativeBlock { block, .. } => {
+                if block["type"] != "text"
+                    || block["text"]
+                        .as_str()
+                        .is_some_and(|text| !text.trim().is_empty())
+                {
+                    blocks.push(block.clone());
+                }
+            }
+            MessagePart::AnthropicRedactedThinking { data, .. } => {
+                if role == ModelRole::Assistant {
+                    blocks.push(serde_json::json!({"type":"redacted_thinking", "data":data}));
+                }
+            }
+            // Display reasoning from old history/other protocols cannot become a signed block.
+            MessagePart::Reasoning { text } => {
+                if role == ModelRole::Assistant && allow_unsigned {
+                    blocks.push(serde_json::json!({"type":"thinking", "thinking":text}));
+                }
+            }
             MessagePart::ReasoningItem { .. } => {}
         }
     }
-    if blocks.is_empty() {
-        blocks.push(serde_json::json!({
-            "type": "text",
-            "text": "",
-        }));
+    if allow_unsigned
+        && message
+            .content
+            .iter()
+            .any(|part| matches!(part, MessagePart::Reasoning { .. }))
+    {
+        blocks.sort_by_key(|block| usize::from(block["type"] != "thinking"));
     }
     blocks
 }
@@ -1755,6 +2163,8 @@ fn stream_output(
         Some(&finish_reason),
     );
     GenerateOutput {
+        canonical_message: None,
+        billing_usage: None,
         text,
         reasoning,
         tool_calls,
@@ -1788,6 +2198,7 @@ fn finish_reason_from_anthropic_stop_reason(reason: &str) -> String {
         "end_turn" => "stop",
         "tool_use" => "tool_calls",
         "max_tokens" => "length",
+        "pause_turn" => "pause_turn",
         _ => "stop",
     }
     .to_string()
@@ -1817,6 +2228,127 @@ mod tests {
     use super::*;
     use crate::chat::model::GenerateOptions;
     use crate::settings::ModelInfo;
+
+    #[test]
+    fn signed_thinking_survives_tool_round_and_storage_reload() {
+        let blocks = serde_json::json!([
+            {"type":"thinking", "thinking":" plan ", "signature":"sig-one"},
+            {"type":"redacted_thinking", "data":"opaque-redacted"},
+            {"type":"thinking", "thinking":"", "signature":"sig-empty"},
+            {"type":"server_tool_use", "id":"srvtoolu_search", "name":"web_search", "input":{"query":"fixture"}},
+            {"type":"web_search_tool_result", "tool_use_id":"srvtoolu_search", "content":[{"type":"web_search_result", "url":"https://example.org", "title":"Evidence", "encrypted_content":"opaque"}]},
+            {"type":"text", "text":"Checking", "citations":[{"type":"web_search_result_location", "url":"https://example.org", "title":"Evidence", "encrypted_index":"opaque-index", "cited_text":"Evidence"}]},
+            {"type":"tool_use", "id":"toolu_1", "name":"read", "input":{"path":"a"}}
+        ]);
+        let output = output_from_anthropic_message(
+            &serde_json::json!({
+                "content": blocks, "stop_reason":"tool_use"
+            }),
+            "fixture",
+        )
+        .unwrap();
+        let stream =
+            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
+                output,
+                String::new(),
+                String::new(),
+            );
+        assert_eq!(
+            stream.to_openai_compatible_message()["finish_reason"],
+            "tool_calls"
+        );
+        let mut history = crate::chat::model::model_messages_from_openai_messages(vec![
+            stream.to_openai_compatible_message(),
+            serde_json::json!({"role":"tool", "tool_call_id":"toolu_1", "content":"found"}),
+        ]);
+        // Real storage format is serde canonical messages; reload must preserve opaque bytes.
+        history = serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
+        let mut request = cache_test_request();
+        request.messages = history;
+        let replay = anthropic_messages_from_generate_request(&request);
+        assert_eq!(replay[0]["content"], blocks);
+        assert_eq!(replay[1]["content"][0]["tool_use_id"], "toolu_1");
+        let truncated = output_from_anthropic_message(
+            &serde_json::json!({
+                "content":blocks, "stop_reason":"max_tokens"
+            }),
+            "fixture",
+        )
+        .unwrap();
+        assert_eq!(
+            truncated.to_openai_compatible_message()["finish_reason"],
+            "length"
+        );
+        let truncated_stream =
+            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
+                truncated,
+                String::new(),
+                String::new(),
+            );
+        assert_eq!(
+            truncated_stream.to_openai_compatible_message()["finish_reason"],
+            "length"
+        );
+    }
+
+    #[test]
+    fn unsigned_legacy_reasoning_is_display_only_and_native_blocks_stay_provider_local() {
+        let legacy =
+            crate::chat::model::model_messages_from_openai_messages(vec![serde_json::json!({
+                "role":"assistant", "content":"answer", "reasoning_content":"unsigned legacy plan"
+            })]);
+        let mut request = cache_test_request();
+        request.messages = legacy;
+        assert_eq!(
+            anthropic_messages_from_generate_request(&request)[0]["content"],
+            serde_json::json!([{"type":"text", "text":"answer"}])
+        );
+        let compatible = anthropic_messages_with_unsigned_thinking(&request, true, None);
+        assert_eq!(
+            compatible[0]["content"][0],
+            serde_json::json!({"type":"thinking", "thinking":"unsigned legacy plan"})
+        );
+        let unsigned_native = output_from_anthropic_message(
+            &serde_json::json!({"content":[
+                {"type":"thinking", "thinking":"gateway plan"}, {"type":"text", "text":"answer"}
+            ]}),
+            "fixture",
+        )
+        .unwrap();
+        let mut unsigned_request = cache_test_request();
+        unsigned_request.messages = vec![unsigned_native.canonical_message.unwrap()];
+        assert_eq!(
+            anthropic_messages_with_unsigned_thinking(&unsigned_request, true, None)[0]["content"]
+                [0],
+            serde_json::json!({"type":"thinking", "thinking":"gateway plan"})
+        );
+        assert_eq!(
+            anthropic_messages_from_generate_request(&unsigned_request)[0]["content"],
+            serde_json::json!([{"type":"text", "text":"answer"}])
+        );
+        let output = output_from_anthropic_message(
+            &serde_json::json!({"content":[
+                {"type":"thinking", "thinking":"native", "signature":"opaque"},
+                {"type":"redacted_thinking", "data":"redacted"},
+                {"type":"text", "text":"answer"}
+            ]}),
+            "fixture",
+        )
+        .unwrap();
+        request.messages = vec![output.canonical_message.unwrap()];
+        let openai = crate::chat::model::openai_messages_from_generate_request(&request);
+        assert!(openai
+            .iter()
+            .all(|message| message.get("anthropic_content").is_none()));
+        let responses =
+            crate::chat::model::responses_input_from_model_messages(&request.messages, None);
+        assert!(!serde_json::to_string(&responses)
+            .unwrap()
+            .contains("opaque"));
+        assert!(!serde_json::to_string(&responses)
+            .unwrap()
+            .contains("redacted"));
+    }
 
     #[test]
     fn strips_top_level_combinators_from_object_schema() {
@@ -1873,81 +2405,6 @@ mod tests {
     }
 
     #[test]
-    fn dangling_tool_use_gets_synthetic_result_injected() {
-        // A prior interrupted turn left an assistant tool_use with no paired
-        // tool_result in the next message — Anthropic 400s on this.
-        let mut messages = vec![
-            serde_json::json!({
-                "role": "assistant",
-                "content": [{ "type": "tool_use", "id": "toolu_x", "name": "read", "input": {} }]
-            }),
-            serde_json::json!({ "role": "user", "content": [{ "type": "text", "text": "and then?" }] }),
-        ];
-        ensure_tool_result_pairing(&mut messages);
-
-        // The synthetic result is injected into the following user turn, before its text.
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1]["role"], "user");
-        let injected = messages[1]["content"].as_array().unwrap();
-        assert_eq!(injected[0]["type"], "tool_result");
-        assert_eq!(injected[0]["tool_use_id"], "toolu_x");
-        assert_eq!(injected[0]["is_error"], true);
-        assert!(
-            injected.iter().any(|b| b["type"] == "text"),
-            "user text preserved"
-        );
-    }
-
-    #[test]
-    fn missing_result_appended_reverse_orphan_dropped() {
-        // Two tool_use ids; next user has a result for one plus a stray result
-        // referencing an unrelated id (reverse orphan) and a text block.
-        let mut messages = vec![
-            serde_json::json!({
-                "role": "assistant",
-                "content": [
-                    { "type": "tool_use", "id": "a", "name": "read", "input": {} },
-                    { "type": "tool_use", "id": "b", "name": "read", "input": {} }
-                ]
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": [
-                    { "type": "tool_result", "tool_use_id": "a", "content": "ok" },
-                    { "type": "tool_result", "tool_use_id": "ghost", "content": "stray" },
-                    { "type": "text", "text": "follow" }
-                ]
-            }),
-        ];
-        ensure_tool_result_pairing(&mut messages);
-
-        assert_eq!(messages.len(), 2);
-        let blocks = messages[1]["content"].as_array().unwrap();
-        let result_ids: Vec<&str> = blocks
-            .iter()
-            .filter(|b| b["type"] == "tool_result")
-            .map(|b| b["tool_use_id"].as_str().unwrap())
-            .collect();
-        assert_eq!(result_ids, vec!["a", "b"], "ghost dropped, b synthesized");
-        // Non-tool_result content preserved.
-        assert!(blocks.iter().any(|b| b["type"] == "text"));
-    }
-
-    #[test]
-    fn trailing_tool_use_gets_new_user_turn() {
-        // Dangling tool_use as the very last message (no following turn at all).
-        let mut messages = vec![serde_json::json!({
-            "role": "assistant",
-            "content": [{ "type": "tool_use", "id": "z", "name": "read", "input": {} }]
-        })];
-        ensure_tool_result_pairing(&mut messages);
-
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1]["role"], "user");
-        assert_eq!(messages[1]["content"][0]["tool_use_id"], "z");
-    }
-
-    #[test]
     fn end_to_end_openai_dangling_history_becomes_paired_wire() {
         // Real entry point: an OpenAI-format history where an assistant tool_call
         // was never answered (interrupted turn), followed by the next user prompt.
@@ -1958,10 +2415,10 @@ mod tests {
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [{
-                    "id": "toolu_bdrk_dangling",
+                    "id": "functions.x:0",
                     "type": "function",
                     "function": { "name": "read", "arguments": "{}" }
-                }]
+                }, {"id":"toolu_kivio_66756e6374696f6e732e783a30", "type":"function", "function":{"name":"read", "arguments":"{}"}}]
             }),
             serde_json::json!({ "role": "user", "content": "never mind, do this instead" }),
         ];
@@ -1974,6 +2431,25 @@ mod tests {
             Default::default(),
         );
         let wire = anthropic_messages_from_generate_request(&request);
+        let mapped = wire[1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["type"] == "tool_use")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap();
+        assert!(mapped
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+        assert_ne!(
+            mapped, "toolu_kivio_66756e6374696f6e732e783a30",
+            "encoded foreign id must not collide with an existing valid id"
+        );
+        assert!(wire
+            .iter()
+            .flat_map(|m| m["content"].as_array().unwrap())
+            .all(|b| b["type"] != "text" || !b["text"].as_str().unwrap().trim().is_empty()));
 
         // Every tool_use id must have a tool_result in the immediately following turn.
         for (i, msg) in wire.iter().enumerate() {
@@ -2657,8 +3133,19 @@ mod tests {
             "test",
         )
         .expect("tool calls");
-        let names: Vec<&str> = output.tool_calls.iter().map(|call| call.function_name.as_str()).collect();
-        assert_eq!(names, ["mcp__server__read", "mcp__server__Read", "mcp__server__READ"]);
+        let names: Vec<&str> = output
+            .tool_calls
+            .iter()
+            .map(|call| call.function_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "mcp__server__read",
+                "mcp__server__Read",
+                "mcp__server__READ"
+            ]
+        );
         assert_eq!(
             output.to_openai_compatible_message()["tool_calls"][1]["function"]["name"],
             "mcp__server__Read"
@@ -2811,6 +3298,16 @@ mod tests {
                     ],
                 },
                 ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![MessagePart::ToolCall {
+                        id: "toolu_1".to_string(),
+                        name: "read".to_string(),
+                        arguments: serde_json::json!({}),
+                        arguments_raw: "{}".to_string(),
+                        signature: None,
+                    }],
+                },
+                ModelMessage {
                     role: ModelRole::Tool,
                     content: vec![MessagePart::ToolResult {
                         tool_call_id: "toolu_1".to_string(),
@@ -2827,12 +3324,16 @@ mod tests {
 
         let messages = anthropic_messages_from_generate_request(&request);
 
-        assert_eq!(messages.len(), 1);
+        assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["role"], "user");
         let content = messages[0]["content"].as_array().expect("content");
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["source"]["type"], "base64");
-        assert_eq!(content[2]["type"], "tool_result");
+        assert_eq!(messages[1]["content"][0]["type"], "tool_use");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "toolu_1");
+        assert_eq!(messages[2]["content"][0]["content"], "done");
+        assert_eq!(messages[2]["content"][0]["is_error"], false);
     }
 
     #[test]

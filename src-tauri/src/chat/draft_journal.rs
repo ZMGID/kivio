@@ -11,7 +11,7 @@
 //!   日志立即失效,尽力删;删不掉也无害,恢复端对「主文件已有同 id 消息」会跳过。
 //! - **恢复**(`recover_orphan_drafts`):启动时扫残留日志,按**每个 message_id 的最后一行**
 //!   合并回会话文件(一次日志可能叠着多条 run 的草稿——panic 后同会话又跑了新 run)。
-//!   跑在 setup 的 spawn 里,此时不可能有活跃 run,无并发写冲突。
+//!   在 setup 返回前完成恢复，UI run 不会与日志读取/删除并发。
 //!
 //! 扩展名刻意是 `.jsonl` 而非 `.json`:`storage::conversation_file_ids_in_dir` 的目录
 //! 扫描按扩展名过滤,不会把日志当成会话文件。
@@ -49,11 +49,15 @@ pub(crate) fn append_draft(
     let mut line =
         serde_json::to_string(&draft).map_err(|e| format!("serialize draft message: {e}"))?;
     line.push('\n');
+    append_line(&path, &line)
+}
+
+fn append_line(path: &Path, line: &str) -> Result<(), String> {
     let oversized = fs::metadata(&path)
         .map(|meta| meta.len() > DRAFT_JOURNAL_MAX_BYTES)
         .unwrap_or(false);
     if oversized {
-        fs::write(&path, line.as_bytes()).map_err(|e| format!("reset draft journal: {e}"))
+        storage::atomic_write(path, line, "draft journal")
     } else {
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -161,6 +165,31 @@ fn latest_drafts_per_message(content: &str) -> Vec<ChatMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn capped_journal_replaces_read_only_snapshot_without_truncating_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kivio-journal-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fixture.draft.jsonl");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(DRAFT_JOURNAL_MAX_BYTES + 1).unwrap();
+        drop(file);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        let line = format!(
+            "{}\n",
+            serde_json::to_string(&draft("new", "recoverable")).unwrap()
+        );
+        let result = append_line(&path, &line);
+        assert!(
+            result.is_ok(),
+            "replace complete snapshot rather than opening old file for truncation: {result:?}"
+        );
+        let recovered = latest_drafts_per_message(&fs::read_to_string(&path).unwrap());
+        assert_eq!(recovered[0].content, "recoverable");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn draft(id: &str, content: &str) -> ChatMessage {
         ChatMessage {

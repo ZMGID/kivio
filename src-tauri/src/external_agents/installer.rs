@@ -6,6 +6,7 @@
 //! `npm.cmd` 只会丢「找不到文件」。
 //! npm / pnpm / yarn / bun 的安装命令一律钉死 `registry.npmjs.org`：国内镜像经常
 //! 缺 `@deepseek-ai/*` 这类新包，用户自己的 `.npmrc` 不能把安装带跑偏。
+use crate::external_agents::spawn::CliProcessOutput;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1025,7 +1026,7 @@ async fn verify_cli_version(
         .args(def.version_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let output = tokio::time::timeout(timeout, command.output())
+    let output = tokio::time::timeout(timeout, command.group_output())
         .await
         .map_err(|_| format!("{} --version 超时，安装未通过启动验证", def.bin))?
         .map_err(|e| format!("无法启动 {}：{e}", def.name))?;

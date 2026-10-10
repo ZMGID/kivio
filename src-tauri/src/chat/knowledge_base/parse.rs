@@ -176,6 +176,35 @@ fn parse_xlsx(path: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deeply_nested_pdf_is_rejected_without_aborting_process() {
+        const CHILD_PATH: &str = "KIVIO_NESTED_PDF_REGRESSION";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            assert!(super::parse_file(std::path::Path::new(&path)).is_err());
+            return;
+        }
+        // Isolate the parser: the vulnerable dependency aborts on stack overflow,
+        // which catch_unwind cannot contain inside the parent test process.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested.pdf");
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let first = bytes.len();
+        bytes.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /X ");
+        bytes.extend_from_slice("[".repeat(10_380).as_bytes());
+        bytes.extend_from_slice(b"0");
+        bytes.extend_from_slice("]".repeat(10_380).as_bytes());
+        bytes.extend_from_slice(b" >>\nendobj\n");
+        let second = bytes.len();
+        bytes.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let xref = bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 3\n0000000000 65535 f \n{first:010} 00000 n \n{second:010} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        std::fs::write(&path, bytes).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact").arg("chat::knowledge_base::parse::tests::deeply_nested_pdf_is_rejected_without_aborting_process")
+            .arg("--nocapture").env(CHILD_PATH, &path).status().unwrap();
+        assert!(status.success(), "nested PDF parser aborted: {status}");
+    }
+
     use super::*;
 
     #[test]

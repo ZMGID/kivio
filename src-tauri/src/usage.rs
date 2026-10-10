@@ -430,9 +430,19 @@ fn conversation_cost(
         ids.insert(format!("subagent-{}", child.id));
     }
     let (records, skipped_records) = read_records(dir, None);
-    let mut result = ConversationCost { skipped_records, ..Default::default() };
-    for record in records.iter().filter(|record| record.conversation_id.as_ref().is_some_and(|id| ids.contains(id))) {
-        match record.cost_usd.filter(|cost| cost.is_finite() && *cost >= 0.0)
+    let mut result = ConversationCost {
+        skipped_records,
+        ..Default::default()
+    };
+    for record in records.iter().filter(|record| {
+        record
+            .conversation_id
+            .as_ref()
+            .is_some_and(|id| ids.contains(id))
+    }) {
+        match record
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
             .filter(|_| record.usage_source != "missing")
         {
             Some(cost) => *result.cost_usd.get_or_insert(0.0) += cost,
@@ -1068,12 +1078,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let children_dir = dir.path().join("children");
         let runtime = Runtime::open(children_dir.clone()).unwrap();
-        let child = runtime.start("parent", "run", "key", "child", Profile::default(), "work").unwrap();
-        let unrelated = runtime.start("other", "run-other", "key-other", "other", Profile::default(), "work").unwrap();
+        let child = runtime
+            .start("parent", "run", "key", "child", Profile::default(), "work")
+            .unwrap();
+        let unrelated = runtime
+            .start(
+                "other",
+                "run-other",
+                "key-other",
+                "other",
+                Profile::default(),
+                "work",
+            )
+            .unwrap();
         let child_id = format!("subagent-{}", child.id);
         let unrelated_id = format!("subagent-{}", unrelated.id);
-        runtime.finish("parent", &child.id, &child.current().id, Ok(("done".into(), None))).unwrap();
-        let (continued, _) = runtime.resume("parent", &child.id, "next-run", "next-key", "user", "continue").unwrap();
+        runtime
+            .finish(
+                "parent",
+                &child.id,
+                &child.current().id,
+                Ok(("done".into(), None)),
+            )
+            .unwrap();
+        let (continued, _) = runtime
+            .resume(
+                "parent", &child.id, "next-run", "next-key", "user", "continue",
+            )
+            .unwrap();
         assert_eq!(continued.runs.len(), 2);
         let usage_dir = dir.path().join("usage");
         for (id, cost) in [
@@ -1098,7 +1130,8 @@ mod tests {
     #[test]
     fn conversation_cost_covers_all_recorded_requests_without_conflating_unknown_and_free() {
         let dir = tempfile::tempdir().unwrap();
-        let children = crate::chat::sub_agent::runtime::Runtime::open(dir.path().join("children")).unwrap();
+        let children =
+            crate::chat::sub_agent::runtime::Runtime::open(dir.path().join("children")).unwrap();
         for (id, age_days, cost, usage_source) in [
             ("a", 400, Some(0.125), "provider_reported"),
             ("a", 0, Some(0.25), "provider_reported"),
@@ -1118,8 +1151,18 @@ mod tests {
         assert_eq!(cost.cost_usd, Some(0.375));
         assert_eq!(cost.unpriced_requests, 2);
         assert_eq!(cost.skipped_records, 0);
-        assert_eq!(conversation_cost(dir.path(), "free", &children).unwrap().cost_usd, Some(0.0));
-        assert_eq!(conversation_cost(dir.path(), "absent", &children).unwrap().cost_usd, None);
+        assert_eq!(
+            conversation_cost(dir.path(), "free", &children)
+                .unwrap()
+                .cost_usd,
+            Some(0.0)
+        );
+        assert_eq!(
+            conversation_cost(dir.path(), "absent", &children)
+                .unwrap()
+                .cost_usd,
+            None
+        );
     }
 
     #[test]

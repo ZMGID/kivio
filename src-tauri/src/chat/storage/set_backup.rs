@@ -631,11 +631,14 @@ fn commit_import(
     let result = (|| {
         for (path, bytes) in files {
             fs::create_dir_all(path.parent().ok_or("无效路径")?).map_err(|e| e.to_string())?;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|e| e.to_string())?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(path).map_err(|e| e.to_string())?;
             created.push(path.clone());
             file.write_all(bytes)
                 .and_then(|_| file.sync_all())

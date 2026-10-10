@@ -13,6 +13,7 @@ pub mod desktop_pet;
 pub mod dock;
 pub mod external_agents;
 pub mod fonts;
+mod html_preview;
 pub mod lens;
 pub mod lens_commands;
 #[cfg(any(target_os = "macos", test))]
@@ -154,6 +155,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol("kivio-preview", |_context, request| html_preview::serve(request))
         .plugin(init_single_instance(|app, _args, _cwd| {
             if let Err(err) = open_settings_window_for_activation(app) {
                 eprintln!("Single-instance activation failed: {err}");
@@ -388,13 +390,14 @@ pub fn run() {
             app.manage(connectors::OAuthFlows::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
-            // setup 阶段不可能有活跃 run,没有并发写冲突。
+            // setup 返回前完成草稿恢复，确保 UI run 不与日志恢复/删除并发。
             // 必须放在 ConversationRepository manage 之后：恢复路径要取仓库状态，
             // 曾在 manage 之前 spawn，有草稿残留且调度赶巧时直接 state() panic、启动即崩。
             {
                 let handle = app.handle().clone();
+                // Recovery only awaits filesystem/repository work, never the UI event loop.
+                tauri::async_runtime::block_on(chat::draft_journal::recover_orphan_drafts(&handle));
                 tauri::async_runtime::spawn(async move {
-                    chat::draft_journal::recover_orphan_drafts(&handle).await;
                     if let Err(error) = chat::goal::pause_unfinished_after_restart(&handle).await {
                         eprintln!("Failed to pause unfinished Goals after restart: {error}");
                     }
@@ -513,6 +516,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            html_preview::create_html_preview,
+            html_preview::release_html_preview,
             desktop_pet::desktop_pet_get_enabled,
             desktop_pet::desktop_pet_set_enabled,
             provider_oauth::provider_oauth_start,

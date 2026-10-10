@@ -25,7 +25,7 @@ use std::{
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::{
     model::{
-        CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo,
+        CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig,
         ClientRequest, Implementation, PingRequest, ProtocolVersion, ServerResult,
     },
     service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService},
@@ -124,8 +124,8 @@ impl KivioClientHandler {
 }
 
 impl ClientHandler for KivioClientHandler {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
             ClientCapabilities::default(),
             Implementation::new("Kivio", env!("CARGO_PKG_VERSION")),
         )
@@ -332,7 +332,23 @@ fn build_stdio(server: &ChatMcpServer) -> Result<(TokioChildProcess, Option<Chil
     command.kill_on_drop(true);
     command.no_console_window();
 
-    TokioChildProcess::builder(command)
+    // The SDK owns this wrapper for the server lifetime, including handshake
+    // failure and disconnect. Cancelling an individual tools/call keeps it alive.
+    let mut wrapped = process_wrap::tokio::CommandWrap::from(command);
+    #[cfg(unix)]
+    wrapped.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        // JobObject overwrites raw Command flags; its CreationFlags wrapper
+        // preserves CREATE_NO_WINDOW while adding temporary CREATE_SUSPENDED.
+        // Assign the public u32 to avoid coupling the two windows crate versions.
+        let mut flags = process_wrap::tokio::CreationFlags(Default::default());
+        flags.0 .0 = crate::proc::CREATE_NO_WINDOW;
+        wrapped.wrap(flags).wrap(process_wrap::tokio::JobObject);
+    }
+    wrapped.wrap(process_wrap::tokio::KillOnDrop);
+
+    TokioChildProcess::builder(wrapped)
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("Failed to start MCP server {}: {err}", server.name))

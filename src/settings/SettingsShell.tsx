@@ -214,12 +214,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
       return typeof selected === 'string' ? selected : null
     },
-    pickExport: () => save({
-      defaultPath: 'kivio-backup.json',
+    pickExport: (share) => save({
+      defaultPath: share ? 'kivio-share.json' : 'kivio-backup.json',
       filters: [{ name: 'JSON', extensions: ['json'] }],
     }),
-    import: (path) => editorController.import(path),
-    export: (path) => api.exportSettings(path),
+    import: (path, trusted) => editorController.import(path, trusted),
+    export: (path, share) => api.exportSettings(path, share),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),
@@ -1086,8 +1086,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   <FieldBlock
                     label={lang === 'zh' ? '数据备份' : 'Data backup'}
                     description={lang === 'zh'
-                      ? '一起备份和恢复全部设置（含 API Key）与集。'
-                      : 'Back up and restore all settings (including API keys) and sets together.'}
+                      ? '完整备份含 API Key、OAuth 和集，请仅保存在可信位置。普通导入会禁用 MCP 和 hooks，保留本机外部 CLI 配置；可信恢复会保留执行权限。'
+                      : 'Full backups include API keys, OAuth and sets. Keep them private. Import disables MCP and hooks and keeps local CLI configuration. Trusted restore preserves execution permissions.'}
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
@@ -1107,6 +1107,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       >
                         <Upload size={11} />
                         {lang === 'zh' ? '导入备份' : 'Import'}
+                      </Button>
+                      <Button size="sm" onClick={settingsBackup.shareBackup} disabled={settingsBackup.busy}>
+                        {lang === 'zh' ? '导出分享配置' : 'Export for sharing'}
+                      </Button>
+                      <Button size="sm" onClick={settingsBackup.restoreBackup} disabled={settingsBackup.busy}>
+                        {lang === 'zh' ? '恢复可信备份（保留权限）' : 'Restore trusted backup (keep permissions)'}
                       </Button>
                       {settingsBackup.status && (
                         <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>

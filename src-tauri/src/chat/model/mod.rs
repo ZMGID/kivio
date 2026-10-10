@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod gemini;
 pub mod openai;
 pub mod responses;
+mod sse;
 pub mod types;
 
 pub use anthropic::AnthropicMessagesProvider;
@@ -166,6 +167,7 @@ mod anonymous_http_tests {
 
     async fn endpoint(
         responses: Vec<(&'static str, String)>,
+        hold_open: bool,
     ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -200,7 +202,7 @@ mod anonymous_http_tests {
                 let body: serde_json::Value =
                     serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
                 assert!(body.is_object());
-                captured.push(headers);
+                captured.push(String::from_utf8(request[..header_end + length].to_vec()).unwrap());
                 let content_type = if response.starts_with("data:") {
                     "text/event-stream"
                 } else {
@@ -208,9 +210,14 @@ mod anonymous_http_tests {
                 };
                 let wire = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                    response.len()
+                    response.len() + usize::from(hold_open)
                 );
                 socket.write_all(wire.as_bytes()).await.unwrap();
+                if hold_open {
+                    // Advertise one more byte but never send it: completion must
+                    // release the body without waiting for transport EOF.
+                    assert_eq!(socket.read(&mut buffer).await.unwrap(), 0);
+                }
             }
             captured
         });
@@ -273,10 +280,18 @@ mod anonymous_http_tests {
 
     fn success(format: &str, stream: bool) -> String {
         let json = match format {
-            "openai_chat" => r#"{"choices":[{"message":{"role":"assistant","content":"anonymous ok"},"finish_reason":"stop"}]}"#,
-            "openai_responses" | "xai_responses" => r#"{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"anonymous ok"}]}]}"#,
-            "anthropic_messages" => r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"anonymous ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
-            "gemini" => r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"anonymous ok"}]},"finishReason":"STOP"}]}"#,
+            "openai_chat" => {
+                r#"{"choices":[{"message":{"role":"assistant","content":"anonymous ok"},"finish_reason":"stop"}]}"#
+            }
+            "openai_responses" | "xai_responses" => {
+                r#"{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"anonymous ok"}]}]}"#
+            }
+            "anthropic_messages" => {
+                r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"anonymous ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#
+            }
+            "gemini" => {
+                r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"anonymous ok"}]},"finishReason":"STOP"}]}"#
+            }
             _ => unreachable!(),
         };
         if !stream {
@@ -313,11 +328,332 @@ mod anonymous_http_tests {
     }
 
     #[tokio::test]
+    async fn anthropic_server_pause_continues_native_history_and_accumulates_usage() {
+        let before = serde_json::json!([
+            {"type":"thinking", "thinking":"plan", "signature":"opaque-signature"},
+            {"type":"server_tool_use", "id":"srvtoolu_search", "name":"web_search", "input":{"query":"fixture"}},
+            {"type":"web_search_tool_result", "tool_use_id":"srvtoolu_search", "content":[]},
+            {"type":"text", "text":"Before "}
+        ]);
+        let after = serde_json::json!([{"type":"text", "text":"After"}]);
+        for streaming in [false, true] {
+            let response = |blocks: &serde_json::Value, reason: &str, input: u64, output: u64| {
+                if !streaming {
+                    return serde_json::json!({"content":blocks, "stop_reason":reason, "usage":{"input_tokens":input, "output_tokens":output}}).to_string();
+                }
+                let mut events = vec![
+                    serde_json::json!({"type":"message_start", "message":{"usage":{"input_tokens":input, "output_tokens":0}}}),
+                ];
+                for (index, block) in blocks.as_array().unwrap().iter().enumerate() {
+                    let mut start = block.clone();
+                    if block["type"] == "text" {
+                        start["text"] = serde_json::json!("");
+                    }
+                    events.push(serde_json::json!({"type":"content_block_start", "index":index, "content_block":start}));
+                    if block["type"] == "text" {
+                        events.push(serde_json::json!({"type":"content_block_delta", "index":index, "delta":{"type":"text_delta", "text":block["text"]}}));
+                    }
+                    events.push(serde_json::json!({"type":"content_block_stop", "index":index}));
+                }
+                events.push(serde_json::json!({"type":"message_delta", "delta":{"stop_reason":reason}, "usage":{"output_tokens":output}}));
+                events
+                    .iter()
+                    .map(|event| format!("data: {event}\n\n"))
+                    .collect::<String>()
+            };
+            let (url, server) = endpoint(
+                vec![
+                    ("200 OK", response(&before, "pause_turn", 3, 1)),
+                    ("200 OK", response(&after, "end_turn", 5, 2)),
+                ],
+                false,
+            )
+            .await;
+            let provider = provider("anthropic_messages", url, Vec::new());
+            let state = crate::state::test_app_state();
+            #[derive(Default)]
+            struct RecordingSink(Vec<StreamPart>);
+            impl StreamSink for RecordingSink {
+                fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
+                    self.0.push(part);
+                    Ok(())
+                }
+            }
+            let mut sink = RecordingSink::default();
+            let output = if streaming {
+                let request = GenerateRequest {
+                    model: "local-model".into(),
+                    system: String::new(),
+                    messages: vec![ModelMessage::text(ModelRole::User, "hello")],
+                    tools: Vec::new(),
+                    options: Default::default(),
+                    metadata: Default::default(),
+                };
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    stream_with_chat_provider(&state, &provider, 1, request, &mut sink),
+                )
+                .await
+                .expect("local continuation timed out")
+                .unwrap()
+            } else {
+                call(&state, &provider, false).await.unwrap()
+            };
+            if streaming {
+                let finishes: Vec<_> = sink
+                    .0
+                    .iter()
+                    .filter_map(|part| match part {
+                        StreamPart::Finish { reason, full } => {
+                            Some((reason.as_str(), full.as_str()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(finishes, vec![("stop", "Before After")]);
+                let usage: Vec<_> = sink
+                    .0
+                    .iter()
+                    .filter_map(|part| match part {
+                        StreamPart::ContextUsage {
+                            input_tokens,
+                            output_tokens,
+                        } => Some((*input_tokens, *output_tokens)),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(usage.contains(&(3, 1)));
+                assert_eq!(usage.last(), Some(&(5, 2)));
+                assert!(
+                    !usage.contains(&(8, 3)),
+                    "billing must not become live context usage"
+                );
+            }
+            assert_eq!(output.text, "Before After");
+            assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+            assert_eq!(output.usage.as_ref().unwrap().input_tokens, Some(5));
+            assert_eq!(output.usage.as_ref().unwrap().output_tokens, Some(2));
+            assert_eq!(output.billing_usage.as_ref().unwrap().input_tokens, Some(8));
+            assert_eq!(
+                output.billing_usage.as_ref().unwrap().output_tokens,
+                Some(3)
+            );
+            let requests = server.await.unwrap();
+            assert_eq!(requests.len(), 2);
+            let second: serde_json::Value =
+                serde_json::from_str(requests[1].split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(second["messages"][1]["content"], before);
+            assert_eq!(output.canonical_message.as_ref().unwrap().content.len(), 5);
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_signatures_reach_the_next_tool_round_after_reload() {
+        let expected = serde_json::json!([
+            {"type":"thinking", "thinking":" plan ", "signature":"sig-part-one"},
+            {"type":"redacted_thinking", "data":"opaque-redacted"},
+            {"type":"thinking", "thinking":"", "signature":"sig-empty"},
+            {"type":"text", "text":"Checking", "citations":[{"type":"web_search_result_location", "url":"https://example.test/source", "title":"Source", "encrypted_index":"opaque-citation"}]},
+            {"type":"tool_use", "id":"toolu_1", "name":"read", "input":{"path":"a"}}
+        ]);
+        let mut events = Vec::new();
+        for (index, block) in expected.as_array().unwrap().iter().enumerate() {
+            let mut start = block.clone();
+            match block["type"].as_str().unwrap() {
+                "thinking" => {
+                    start["thinking"] = serde_json::json!("");
+                    start["signature"] = serde_json::json!("");
+                }
+                "text" => {
+                    start["text"] = serde_json::json!("");
+                    start["citations"] = serde_json::json!([]);
+                }
+                "tool_use" => start["input"] = serde_json::json!({}),
+                _ => {}
+            }
+            events.push(serde_json::json!({"type":"content_block_start", "index":index, "content_block":start}));
+            let deltas = match block["type"].as_str().unwrap() {
+                "thinking" => vec![
+                    serde_json::json!({"type":"thinking_delta", "thinking":block["thinking"]}),
+                    serde_json::json!({"type":"signature_delta", "signature":"sig-"}),
+                    serde_json::json!({"type":"signature_delta", "signature":block["signature"].as_str().unwrap().strip_prefix("sig-").unwrap()}),
+                ],
+                "text" => vec![
+                    serde_json::json!({"type":"text_delta", "text":block["text"]}),
+                    serde_json::json!({"type":"citations_delta", "citation":block["citations"][0]}),
+                ],
+                "tool_use" => vec![
+                    serde_json::json!({"type":"input_json_delta", "partial_json":block["input"].to_string()}),
+                ],
+                _ => Vec::new(),
+            };
+            for delta in deltas {
+                events.push(
+                    serde_json::json!({"type":"content_block_delta", "index":index, "delta":delta}),
+                );
+            }
+            events.push(serde_json::json!({"type":"content_block_stop", "index":index}));
+        }
+        events
+            .push(serde_json::json!({"type":"message_delta", "delta":{"stop_reason":"tool_use"}}));
+        let body = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>();
+        let (url, server) = endpoint(
+            vec![
+                ("200 OK", body),
+                ("200 OK", success("anthropic_messages", false)),
+                ("200 OK", success("anthropic_messages", false)),
+                ("200 OK", success("anthropic_messages", false)),
+            ],
+            false,
+        )
+        .await;
+        let provider = provider("anthropic_messages", url, Vec::new());
+        let state = crate::state::test_app_state();
+        let output = call(&state, &provider, true).await.unwrap();
+        let stream =
+            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
+                output,
+                String::new(),
+                String::new(),
+            );
+        let mut messages = model_messages_from_openai_messages(vec![
+            stream.to_openai_compatible_message(),
+            serde_json::json!({"role":"tool", "tool_call_id":"toolu_1", "content":"found"}),
+        ]);
+        messages = serde_json::from_slice(&serde_json::to_vec(&messages).unwrap()).unwrap();
+        generate_with_chat_provider(
+            &state,
+            &provider,
+            1,
+            GenerateRequest {
+                model: "local-model".into(),
+                system: String::new(),
+                messages: messages.clone(),
+                tools: Vec::new(),
+                options: Default::default(),
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+        for (model, provider_id) in [
+            ("changed-model", provider.id.as_str()),
+            ("local-model", "changed-provider"),
+        ] {
+            let mut changed_provider = provider.clone();
+            changed_provider.id = provider_id.to_string();
+            generate_with_chat_provider(
+                &state,
+                &changed_provider,
+                1,
+                GenerateRequest {
+                    model: model.to_string(),
+                    system: String::new(),
+                    messages: messages.clone(),
+                    tools: Vec::new(),
+                    options: Default::default(),
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let captured = server.await.unwrap();
+        let (_, body) = captured[1].split_once("\r\n\r\n").unwrap();
+        let request: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(request["messages"][0]["content"], expected);
+        assert_eq!(
+            request["messages"][1]["content"][0]["tool_use_id"],
+            "toolu_1"
+        );
+        for captured in &captured[2..] {
+            let (_, body) = captured.split_once("\r\n\r\n").unwrap();
+            let request: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(request["messages"][0]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|block| !matches!(
+                    block["type"].as_str(),
+                    Some("thinking" | "redacted_thinking")
+                )));
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupted_anthropic_thinking_is_not_a_replayable_completed_output() {
+        let partial = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"unfinished\"}}\n\n"
+        );
+        let (url, server) = endpoint(
+            vec![
+                ("200 OK", partial.into()),
+                ("200 OK", success("anthropic_messages", true)),
+            ],
+            false,
+        )
+        .await;
+        let provider = provider("anthropic_messages", url, Vec::new());
+        let state = crate::state::test_app_state();
+        let error = call(&state, &provider, true).await.unwrap_err();
+        assert!(error.is_stream_read_interrupted());
+        let fresh = call(&state, &provider, true).await.unwrap();
+        assert_eq!(fresh.text, "anonymous ok");
+        assert!(fresh.reasoning.is_none());
+        assert!(!fresh
+            .to_openai_compatible_message()
+            .to_string()
+            .contains("unfinished"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn model_streams_complete_multiline_events_without_transport_eof() {
+        for format in FORMATS {
+            let wire = if format == "openai_chat" {
+                success(format, true).replace("data: [DONE]", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\ndata: [DONE]")
+            } else {
+                success(format, true)
+            };
+            let body = wire
+                .lines()
+                .map(|line| {
+                    if let Some((prefix, suffix)) = line.split_once(',') {
+                        format!("{prefix},\r\ndata: {suffix}\r\n")
+                    } else {
+                        format!("{line}\r\n")
+                    }
+                })
+                .collect::<String>();
+            let (url, server) = endpoint(vec![("200 OK", body)], true).await;
+            let provider = provider(format, url, Vec::new());
+            let state = crate::state::test_app_state();
+            let output = call(&state, &provider, true).await.unwrap();
+            assert_eq!(output.text, "anonymous ok", "{format}");
+            if format == "openai_chat" {
+                assert_eq!(
+                    output.usage.as_ref().and_then(|usage| usage.input_tokens),
+                    Some(7)
+                );
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .expect("terminal model response must close the pending body")
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn anonymous_model_protocols_reach_endpoint_and_return_response() {
         for format in FORMATS {
             for keys in [Vec::new(), vec!["".into(), " \t ".into()]] {
                 for stream in [false, true] {
-                    let (url, server) = endpoint(vec![("200 OK", success(format, stream))]).await;
+                    let (url, server) =
+                        endpoint(vec![("200 OK", success(format, stream))], false).await;
                     let provider = provider(format, url, keys.clone());
                     let state = crate::state::test_app_state();
                     let output = call(&state, &provider, stream).await.unwrap();
@@ -335,10 +671,13 @@ mod anonymous_http_tests {
         for format in FORMATS {
             for (status, code) in [("401 Unauthorized", 401), ("403 Forbidden", 403)] {
                 for stream in [false, true] {
-                    let (url, server) = endpoint(vec![(
-                        status,
-                        r#"{"error":{"message":"server requires authentication"}}"#.into(),
-                    )])
+                    let (url, server) = endpoint(
+                        vec![(
+                            status,
+                            r#"{"error":{"message":"server requires authentication"}}"#.into(),
+                        )],
+                        false,
+                    )
                     .await;
                     let provider = provider(format, url, Vec::new());
                     let state = crate::state::test_app_state();
@@ -356,14 +695,23 @@ mod anonymous_http_tests {
     #[tokio::test]
     async fn model_protocols_keep_nonempty_key_auth_and_failover() {
         for format in FORMATS {
-            let (url, server) = endpoint(vec![
-                ("401 Unauthorized", r#"{"error":{"message":"invalid key"}}"#.into()),
-                ("200 OK", success(format, false)),
-            ])
+            let (url, server) = endpoint(
+                vec![
+                    (
+                        "401 Unauthorized",
+                        r#"{"error":{"message":"invalid key"}}"#.into(),
+                    ),
+                    ("200 OK", success(format, false)),
+                ],
+                false,
+            )
             .await;
             let provider = provider(format, url, vec!["invalid-key".into(), "valid-key".into()]);
             let state = crate::state::test_app_state();
-            assert_eq!(call(&state, &provider, false).await.unwrap().text, "anonymous ok");
+            assert_eq!(
+                call(&state, &provider, false).await.unwrap().text,
+                "anonymous ok"
+            );
             let captured = server.await.unwrap();
             assert_eq!(captured.len(), 2);
             for (headers, key) in captured.iter().zip(["invalid-key", "valid-key"]) {

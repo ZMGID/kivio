@@ -177,7 +177,14 @@ pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<()
         // 断电后 conv_x.json 会变成 0 字节或被截断——load_conversation 硬报错,而列表扫描
         // 又会静默跳过它,用户看到的就是"这条对话没了"。
         let write_result = (|| {
-            let mut file = fs::File::create(&tmp_path)?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&tmp_path)?;
             file.write_all(content.as_bytes())?;
             file.sync_all()?;
             drop(file);

@@ -39,21 +39,28 @@ pub async fn rerank(
         "top_n": top_n,
     });
 
-    let response = send_with_failover(state, "Rerank API", attempts, &provider.id, &provider.api_keys, |key| {
-        with_standard_request_timeout(
-            crate::provider_request::apply(
-                crate::provider_request::apply_api_key_auth(
-                    state.client_for(provider).post(url.clone()),
-                    crate::settings::ProviderApiFormat::OpenAiChat,
-                    key,
-                ),
-                provider,
-                None,
+    let response = send_with_failover(
+        state,
+        "Rerank API",
+        attempts,
+        &provider.id,
+        &provider.api_keys,
+        |key| {
+            with_standard_request_timeout(
+                crate::provider_request::apply(
+                    crate::provider_request::apply_api_key_auth(
+                        state.client_for(provider).post(url.clone()),
+                        crate::settings::ProviderApiFormat::OpenAiChat,
+                        key,
+                    ),
+                    provider,
+                    None,
+                )
+                .json(&body),
             )
-            .json(&body),
-        )
-        .send()
-    })
+            .send()
+        },
+    )
     .await?;
 
     let value: Value = response

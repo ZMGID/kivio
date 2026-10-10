@@ -1523,7 +1523,9 @@ pub(crate) async fn lens_translate(
         }
     };
     if !ocr_provider.authentication_ready() {
-        return Ok(serde_json::json!({ "success": false, "error": "Please log in to the provider first" }));
+        return Ok(
+            serde_json::json!({ "success": false, "error": "Please log in to the provider first" }),
+        );
     }
     if settings.screenshot_translation.model.trim().is_empty() {
         return Ok(serde_json::json!({

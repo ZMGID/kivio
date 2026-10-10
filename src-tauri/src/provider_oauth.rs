@@ -21,7 +21,7 @@ pub struct OAuthConfig {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
-    /// Runtime-only account project, loaded from the native credential store.
+    /// Runtime-only account project, loaded from the local JSON credential store.
     #[serde(skip)]
     pub project_id: Option<String>,
 }
@@ -124,14 +124,25 @@ fn device_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         let id = uuid::Uuid::new_v4().to_string();
-        let Ok(entry) = keyring::Entry::new("Kivio.ModelOAuth", "device-id") else {
+        let Ok(root) = credential_root() else {
             return id;
         };
-        if let Ok(saved) = entry.get_password() {
-            return saved;
+        let path = root.join("device-id.json");
+        if let Ok(data) = std::fs::read(&path) {
+            if let Ok(saved) = serde_json::from_slice::<String>(&data) {
+                return saved;
+            }
         }
-        let _ = entry.set_password(&id);
-        id
+        let saved = keyring::Entry::new("Kivio.ModelOAuth", "device-id")
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
+            .unwrap_or(id);
+        if std::fs::create_dir_all(&root).is_ok() {
+            if let Ok(json) = serde_json::to_string(&saved) {
+                let _ = crate::chat::storage::atomic_write(&path, &json, "OAuth device ID");
+            }
+        }
+        saved
     })
 }
 
@@ -221,9 +232,10 @@ fn chunk_entry(id: &str, version: &str, index: usize) -> Result<keyring::Entry, 
         .map_err(|_| "System credential store is unavailable".into())
 }
 fn manifest(id: &str) -> Result<CredentialManifest, String> {
-    let data = entry(id)?
-        .get_secret()
-        .map_err(|_| "OAuth session is missing; sign in again".to_string())?;
+    let data = entry(id)?.get_secret().map_err(|error| match error {
+        keyring::Error::NoEntry => "OAuth session is missing; sign in again".to_string(),
+        _ => "Cannot read legacy OAuth credential store".to_string(),
+    })?;
     let m: CredentialManifest = serde_json::from_slice(&data)
         .map_err(|_| "Invalid OAuth credential metadata".to_string())?;
     if m.chunks == 0 || m.chunks > 64 {
@@ -238,49 +250,219 @@ fn delete_chunks(id: &str, m: &CredentialManifest) {
         }
     }
 }
-fn save_tokens(id: &str, tokens: &Tokens) -> Result<(), String> {
-    let data =
-        serde_json::to_vec(tokens).map_err(|_| "Cannot encode OAuth credentials".to_string())?;
-    let chunks: Vec<&[u8]> = data.chunks(2000).collect();
-    if chunks.len() > 64 {
-        return Err("OAuth credentials exceed supported size".into());
+fn credential_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(Default::default)
+}
+fn credential_root() -> Result<std::path::PathBuf, String> {
+    crate::app_data::app_data_dir()
+        .map(|root| root.join("provider-oauth"))
+        .ok_or_else(|| "OAuth data directory is unavailable".into())
+}
+fn credential_path(root: &std::path::Path, id: &str) -> Result<std::path::PathBuf, String> {
+    uuid::Uuid::parse_str(id).map_err(|_| "Invalid OAuth credential reference".to_string())?;
+    Ok(root.join(format!("{id}.json")))
+}
+fn save_tokens_in(root: &std::path::Path, id: &str, tokens: &Tokens) -> Result<(), String> {
+    use std::io::Write;
+    let path = credential_path(root, id)?;
+    let data = serde_json::to_vec(tokens).map_err(|_| "Cannot encode OAuth credentials")?;
+    std::fs::create_dir_all(root).map_err(|_| "Cannot create OAuth data directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "Cannot restrict OAuth directory permissions")?;
     }
-    let next = CredentialManifest {
-        version: uuid::Uuid::new_v4().to_string(),
-        chunks: chunks.len(),
-    };
-    let previous = manifest(id).ok();
-    for (i, bytes) in chunks.iter().enumerate() {
-        if chunk_entry(id, &next.version, i)?
-            .set_secret(bytes)
-            .is_err()
+    let temporary = root.join(format!(".{id}-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
         {
-            delete_chunks(id, &next);
-            return Err("Cannot save OAuth credentials to the system credential store".into());
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
-    }
-    let encoded =
-        serde_json::to_vec(&next).map_err(|_| "Cannot encode credential metadata".to_string())?;
-    if entry(id)?.set_secret(&encoded).is_err() {
-        delete_chunks(id, &next);
-        return Err("Cannot commit OAuth credentials to the system credential store".into());
-    }
-    if let Some(previous) = previous {
-        delete_chunks(id, &previous);
+        let mut file = options.open(&temporary)?;
+        file.write_all(&data)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, &path)?;
+        #[cfg(unix)]
+        std::fs::File::open(root)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return Err("Cannot save OAuth credentials to local JSON".into());
     }
     Ok(())
 }
-fn read_tokens(id: &str) -> Result<Tokens, String> {
+fn save_tokens(id: &str, tokens: &Tokens) -> Result<(), String> {
+    let _guard = credential_lock()
+        .lock()
+        .map_err(|_| "OAuth credential store unavailable")?;
+    save_tokens_in(&credential_root()?, id, tokens)
+}
+fn read_tokens_in(root: &std::path::Path, id: &str) -> Result<Tokens, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            credential_path(root, id)?,
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .map_err(|_| "Cannot restrict OAuth credential permissions")?;
+    }
+    let data = std::fs::read(credential_path(root, id)?).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "OAuth session is missing; sign in again"
+        } else {
+            "Cannot read OAuth credential JSON"
+        }
+    })?;
+    serde_json::from_slice(&data).map_err(|_| "OAuth session is invalid; sign in again".into())
+}
+fn read_legacy_tokens(id: &str) -> Result<(Tokens, CredentialManifest), String> {
     let m = manifest(id)?;
     let mut data = Vec::new();
     for i in 0..m.chunks {
         data.extend(
             chunk_entry(id, &m.version, i)?
                 .get_secret()
-                .map_err(|_| "OAuth session is incomplete; sign in again".to_string())?,
+                .map_err(|_| "OAuth session is incomplete; sign in again")?,
         );
     }
-    serde_json::from_slice(&data).map_err(|_| "OAuth session is invalid; sign in again".into())
+    let tokens =
+        serde_json::from_slice(&data).map_err(|_| "OAuth session is invalid; sign in again")?;
+    Ok((tokens, m))
+}
+fn read_or_migrate_tokens_in(
+    root: &std::path::Path,
+    id: &str,
+    legacy: impl FnOnce() -> Result<(Tokens, CredentialManifest), String>,
+    cleanup: impl FnOnce(&CredentialManifest),
+) -> Result<Tokens, String> {
+    let _guard = credential_lock()
+        .lock()
+        .map_err(|_| "OAuth credential store unavailable")?;
+    let path = credential_path(root, id)?;
+    match std::fs::metadata(path) {
+        Ok(_) => read_tokens_in(root, id),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (tokens, previous) = legacy()?;
+            save_tokens_in(root, id, &tokens)?;
+            cleanup(&previous);
+            Ok(tokens)
+        }
+        Err(_) => Err("Cannot access OAuth credential JSON".into()),
+    }
+}
+fn read_tokens(id: &str) -> Result<Tokens, String> {
+    read_or_migrate_tokens_in(
+        &credential_root()?,
+        id,
+        || read_legacy_tokens(id),
+        |previous| {
+            if entry(id)
+                .and_then(|entry| {
+                    entry
+                        .delete_credential()
+                        .map_err(|_| "Cannot remove legacy credential".into())
+                })
+                .is_ok()
+            {
+                delete_chunks(id, previous);
+            }
+        },
+    )
+}
+
+pub(crate) fn export_credentials(settings: &crate::settings::Settings) -> Result<Value, String> {
+    let mut entries = serde_json::Map::new();
+    for provider in &settings.providers {
+        if let Some(id) = provider
+            .request
+            .oauth
+            .as_ref()
+            .and_then(|auth| auth.credential_id.as_ref())
+        {
+            let tokens = match read_tokens(id) {
+                Ok(tokens) => tokens,
+                Err(error) if error == "OAuth session is missing; sign in again" => continue,
+                Err(error) => return Err(error),
+            };
+            entries.insert(
+                id.clone(),
+                serde_json::to_value(tokens).map_err(|_| "Cannot encode OAuth backup")?,
+            );
+        }
+    }
+    Ok(Value::Object(entries))
+}
+/// Import under fresh IDs: a failed settings commit cannot replace an existing account's token.
+pub(crate) fn import_credentials(
+    settings: &mut crate::settings::Settings,
+    value: &Value,
+) -> Result<Vec<String>, String> {
+    import_credentials_in(&credential_root()?, settings, value)
+}
+fn import_credentials_in(
+    root: &std::path::Path,
+    settings: &mut crate::settings::Settings,
+    value: &Value,
+) -> Result<Vec<String>, String> {
+    let _guard = credential_lock()
+        .lock()
+        .map_err(|_| "OAuth credential store unavailable")?;
+    let entries: HashMap<String, Tokens> =
+        serde_json::from_value(value.clone()).map_err(|_| "Invalid OAuth backup credentials")?;
+    let mut imported = Vec::new();
+    let mut remapped: HashMap<String, String> = HashMap::new();
+    let result = (|| {
+        for provider in &mut settings.providers {
+            let Some(auth) = &mut provider.request.oauth else {
+                continue;
+            };
+            let Some(old_id) = &auth.credential_id else {
+                continue;
+            };
+            let Some(tokens) = entries.get(old_id) else {
+                auth.credential_id = None;
+                continue;
+            };
+            if tokens.provider != auth.provider {
+                return Err("OAuth backup provider mismatch".into());
+            }
+            if let Some(id) = remapped.get(old_id) {
+                auth.credential_id = Some(id.clone());
+                continue;
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            save_tokens_in(root, &id, tokens)?;
+            remapped.insert(old_id.clone(), id.clone());
+            imported.push(id.clone());
+            auth.credential_id = Some(id);
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        discard_credentials_in(root, &imported);
+        return Err(error);
+    }
+    Ok(imported)
+}
+fn discard_credentials_in(root: &std::path::Path, ids: &[String]) {
+    for id in ids {
+        if let Ok(path) = credential_path(root, id) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+pub(crate) fn discard_imported_credentials(ids: &[String]) {
+    if let Ok(root) = credential_root() {
+        discard_credentials_in(&root, ids);
+    }
 }
 
 #[tauri::command]
@@ -482,17 +664,24 @@ pub async fn provider_oauth_cancel(login_id: String) {
 #[tauri::command]
 pub async fn provider_oauth_disconnect(credential_id: String) -> Result<(), String> {
     let _guard = refresh_lock().lock().await;
-    let previous = manifest(&credential_id).ok();
-    let result = match entry(&credential_id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err("Cannot remove OAuth session from the system credential store".into()),
-    };
-    if result.is_ok() {
-        if let Some(previous) = previous {
-            delete_chunks(&credential_id, &previous);
-        }
+    let _file_guard = credential_lock()
+        .lock()
+        .map_err(|_| "OAuth credential store unavailable")?;
+    let root = credential_root()?;
+    let path = credential_path(&root, &credential_id)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Cannot remove OAuth credential JSON".into()),
     }
-    result
+    // Best-effort cleanup of a pre-migration entry; JSON-only installations need no keyring.
+    if let Ok(previous) = manifest(&credential_id) {
+        entry(&credential_id)?
+            .delete_credential()
+            .map_err(|_| "Cannot remove legacy OAuth session")?;
+        delete_chunks(&credential_id, &previous);
+    }
+    Ok(())
 }
 
 pub fn validate_provider(provider: &ModelProvider) -> Result<(), String> {
@@ -793,33 +982,188 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "User-Agent" && v.starts_with("Kivio/")));
     }
-    #[tokio::test]
-    #[ignore = "Uses temporary synthetic credentials in the native OS credential store"]
-    async fn native_credential_store_roundtrip_and_rotation() {
+    #[test]
+    fn json_credentials_migrate_durably_and_preserve_legacy_on_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("credentials");
         let id = uuid::Uuid::new_v4().to_string();
-        let mut tokens = Tokens {
+        let make_legacy = || {
+            Ok((
+                Tokens {
+                    provider: "codex".into(),
+                    access_token: "synthetic-access".repeat(400),
+                    refresh_token: "synthetic-refresh".into(),
+                    expires_at: 42,
+                    project_id: None,
+                },
+                CredentialManifest {
+                    version: uuid::Uuid::new_v4().to_string(),
+                    chunks: 2,
+                },
+            ))
+        };
+        let deleted = std::sync::atomic::AtomicBool::new(false);
+        let blocked = directory.path().join("blocked");
+        assert!(read_or_migrate_tokens_in(
+            &blocked,
+            &id,
+            || {
+                // Fail the replacement write only after the legacy authority was retrieved.
+                std::fs::write(&blocked, "original").unwrap();
+                make_legacy()
+            },
+            |_| {
+                deleted.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        )
+        .is_err());
+        assert!(!deleted.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "original");
+        let tokens = read_or_migrate_tokens_in(&root, &id, make_legacy, |_| {
+            // The native entry must survive until the complete replacement is independently readable.
+            assert_eq!(
+                read_tokens_in(&root, &id).unwrap().refresh_token,
+                "synthetic-refresh"
+            );
+            deleted.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .unwrap();
+        assert!(deleted.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(tokens.access_token, "synthetic-access".repeat(400));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(credential_path(&root, &id).unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let mut updated = tokens;
+        updated.refresh_token = "rotated".into();
+        save_tokens_in(&root, &id, &updated).unwrap();
+        assert_eq!(
+            read_or_migrate_tokens_in(
+                &root,
+                &id,
+                || Err("legacy has already been deleted".into()),
+                |_| panic!("unexpected cleanup")
+            )
+            .unwrap()
+            .refresh_token,
+            "rotated"
+        );
+        std::fs::write(credential_path(&root, &id).unwrap(), "invalid-json").unwrap();
+        assert!(
+            read_or_migrate_tokens_in(&root, &id, make_legacy, |_| panic!(
+                "revived stale credentials"
+            ))
+            .is_err()
+        );
+    }
+    #[test]
+    fn oauth_backup_preserves_shared_credential_rotation_without_overwriting_existing_accounts() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = provider();
+        let mut second = first.clone();
+        second.id = "second-provider".into();
+        let old_id = first
+            .request
+            .oauth
+            .as_ref()
+            .unwrap()
+            .credential_id
+            .as_ref()
+            .unwrap()
+            .clone();
+        let tokens = Tokens {
             provider: "codex".into(),
-            access_token: "synthetic-test-token".repeat(400),
+            access_token: "synthetic-access".into(),
             refresh_token: "synthetic-refresh".into(),
-            expires_at: now() + 3600,
+            expires_at: 42,
             project_id: None,
         };
-        save_tokens(&id, &tokens).unwrap();
-        let original = manifest(&id).unwrap();
-        assert!(original.chunks > 1);
-        assert_eq!(read_tokens(&id).unwrap().access_token, tokens.access_token);
-        tokens.refresh_token = "rotated-synthetic-refresh".into();
-        save_tokens(&id, &tokens).unwrap();
-        assert_eq!(
-            read_tokens(&id).unwrap().refresh_token,
-            tokens.refresh_token
-        );
-        assert!(chunk_entry(&id, &original.version, 0)
+        save_tokens_in(directory.path(), &old_id, &tokens).unwrap();
+        let backup = json!({ old_id.clone(): serde_json::to_value(&tokens).unwrap() });
+        let mut settings = crate::settings::Settings::default();
+        settings.providers = vec![first, second];
+        let imported = import_credentials_in(directory.path(), &mut settings, &backup).unwrap();
+        let first_id = settings.providers[0]
+            .request
+            .oauth
+            .as_ref()
             .unwrap()
-            .get_secret()
-            .is_err());
-        provider_oauth_disconnect(id.clone()).await.unwrap();
-        assert!(read_tokens(&id).is_err());
+            .credential_id
+            .as_ref()
+            .unwrap();
+        let second_id = settings.providers[1]
+            .request
+            .oauth
+            .as_ref()
+            .unwrap()
+            .credential_id
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            first_id, second_id,
+            "One account must have one refresh authority after restore"
+        );
+        assert_ne!(first_id, &old_id);
+        assert_eq!(imported.len(), 1);
+        let mut restored = read_tokens_in(directory.path(), first_id).unwrap();
+        restored.refresh_token = "rotated-restored-refresh".into();
+        save_tokens_in(directory.path(), first_id, &restored).unwrap();
+        assert_eq!(
+            read_tokens_in(directory.path(), second_id)
+                .unwrap()
+                .refresh_token,
+            "rotated-restored-refresh"
+        );
+        assert_eq!(
+            read_tokens_in(directory.path(), &old_id)
+                .unwrap()
+                .refresh_token,
+            "synthetic-refresh"
+        );
+    }
+    #[test]
+    fn concurrent_json_migration_reads_one_legacy_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    let tokens = read_or_migrate_tokens_in(
+                        directory.path(),
+                        &id,
+                        || {
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            Ok((
+                                Tokens {
+                                    provider: "kimi".into(),
+                                    access_token: "synthetic".into(),
+                                    refresh_token: "synthetic-refresh".into(),
+                                    expires_at: 42,
+                                    project_id: None,
+                                },
+                                CredentialManifest {
+                                    version: uuid::Uuid::new_v4().to_string(),
+                                    chunks: 1,
+                                },
+                            ))
+                        },
+                        |_| {},
+                    )
+                    .unwrap();
+                    assert_eq!(tokens.refresh_token, "synthetic-refresh");
+                });
+            }
+        });
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
     #[test]
     fn oauth_tokens_require_refresh_and_preserve_rotation() {

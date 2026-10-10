@@ -314,7 +314,7 @@ pub(crate) fn finalize_planning_final(
             None,
         );
     }
-    if !state.generated_api_messages.is_empty() {
+    if !state.generated_api_messages.is_empty() || message.get("anthropic_content").is_some() {
         state.generated_api_messages.push(message);
     }
     Ok(AgentRunResult {

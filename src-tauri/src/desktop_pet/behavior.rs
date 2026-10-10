@@ -133,9 +133,14 @@ impl DesktopBehavior {
         }
         if motion.delta[0].abs() > 0.0 && !reduced_motion {
             let step = (now * std::f64::consts::TAU * 2.0).sin();
-            for (i, foot) in visual.props[..visual.prop_count.min(2)].iter_mut().enumerate() {
+            for (i, foot) in visual.props[..visual.prop_count.min(2)]
+                .iter_mut()
+                .enumerate()
+            {
                 let lift = (step * if i == 0 { 1.0 } else { -1.0 }).max(0.0) * 1.8;
-                for point in &mut foot.points[..foot.len] { point[1] -= lift; }
+                for point in &mut foot.points[..foot.len] {
+                    point[1] -= lift;
+                }
             }
         }
         motion.active = !reduced_motion && (env.dragging || self.stroll_left > 0.0 || settling);

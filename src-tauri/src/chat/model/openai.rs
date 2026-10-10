@@ -108,7 +108,8 @@ impl OpenAiChatProvider<'_> {
                 .map_err(|e| e.to_string())?;
             crate::chat::video::validate_body(body).map_err(|e| e.to_string())?;
         }
-        if self.provider.is_opencode_free() && !crate::opencode_free::is_free_model(&request.model) {
+        if self.provider.is_opencode_free() && !crate::opencode_free::is_free_model(&request.model)
+        {
             return Err("OpenCode Free only supports free models; refresh the model list".into());
         }
         send_with_failover(
@@ -243,8 +244,7 @@ impl OpenAiChatProvider<'_> {
                 ModelError::new(err)
             })?;
 
-        let mut buffer = String::new();
-        let mut utf8 = crate::api::Utf8StreamDecoder::default();
+        let mut sse = super::sse::SseDecoder::default();
         let mut full = String::new();
         let mut reasoning_full = String::new();
         let mut tool_partials: Vec<PartialToolCall> = Vec::new();
@@ -283,14 +283,8 @@ impl OpenAiChatProvider<'_> {
             let Some(chunk) = chunk else {
                 break;
             };
-            buffer.push_str(&utf8.push(&chunk));
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..=pos).collect();
-                let line = line.trim();
-                if !line.starts_with("data:") {
-                    continue;
-                }
-                let data = line.trim_start_matches("data:").trim();
+            for data in sse.push(&chunk) {
+                let data = data.trim();
                 if data.is_empty() {
                     continue;
                 }
@@ -312,6 +306,8 @@ impl OpenAiChatProvider<'_> {
                         web_search: None,
                         images,
                         reasoning_items: Vec::new(),
+                        canonical_message: None,
+                        billing_usage: None,
                     };
                     self.record_usage_success(
                         &request,
@@ -415,6 +411,8 @@ impl OpenAiChatProvider<'_> {
             web_search: None,
             images,
             reasoning_items: Vec::new(),
+            canonical_message: None,
+            billing_usage: None,
         };
         self.record_usage_success(
             &request,
@@ -790,6 +788,8 @@ pub fn output_from_chat_completion(
         web_search: None,
         images,
         reasoning_items: Vec::new(),
+        canonical_message: None,
+        billing_usage: None,
     })
 }
 

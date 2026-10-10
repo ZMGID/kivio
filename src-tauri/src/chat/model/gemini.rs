@@ -201,8 +201,7 @@ impl GeminiProvider<'_> {
             ModelError::new(err)
         })?;
 
-        let mut buffer = String::new();
-        let mut utf8 = crate::api::Utf8StreamDecoder::default();
+        let mut sse = super::sse::SseDecoder::default();
         let mut full = String::new();
         let mut reasoning_full = String::new();
         let mut tool_calls: Vec<PendingToolCall> = Vec::new();
@@ -239,16 +238,8 @@ impl GeminiProvider<'_> {
             let Some(chunk) = chunk else {
                 break;
             };
-            buffer.push_str(&utf8.push(&chunk));
-
-            // Gemini `alt=sse`：每个 `data:` 行是一整段 GenerateContentResponse 片段。
-            while let Some(pos) = buffer.find('\n') {
-                let line: String = buffer.drain(..=pos).collect();
-                let line = line.trim();
-                if !line.starts_with("data:") {
-                    continue;
-                }
-                let data = line.trim_start_matches("data:").trim();
+            for data in sse.push(&chunk) {
+                let data = data.trim();
                 if data.is_empty() {
                     continue;
                 }
@@ -310,7 +301,8 @@ impl GeminiProvider<'_> {
                 if let Some(next_usage) = gemini_usage(&value) {
                     if let Some(input_tokens) = next_usage.input_tokens {
                         sink.emit(StreamPart::ContextUsage {
-                            input_tokens, output_tokens: next_usage.output_tokens.unwrap_or(0),
+                            input_tokens,
+                            output_tokens: next_usage.output_tokens.unwrap_or(0),
                         })?;
                     }
                     usage = Some(next_usage);
@@ -690,7 +682,7 @@ pub fn gemini_contents_from_generate_request(request: &GenerateRequest) -> Vec<V
 fn contents_with_tool_ids(request: &GenerateRequest, include_ids: bool) -> Vec<Value> {
     let id_to_name = tool_call_id_to_name(&request.messages);
     let mut contents: Vec<Value> = Vec::new();
-    for message in &request.messages {
+    for message in super::types::paired_model_messages(&request.messages).iter() {
         let role = match message.role {
             ModelRole::Assistant => "model",
             // Gemini contents 只有 user/model；Tool 结果作为 user 载体。
@@ -823,8 +815,17 @@ fn gemini_parts_from_message(
             MessagePart::Reasoning { .. } => {
                 // 思维文本回放时丢弃（thoughtSignature 未保存；对连续性影响可接受）。
             }
+            MessagePart::AnthropicNativeBlock { block, .. } => {
+                if block["type"] == "text" {
+                    if let Some(text) = block["text"].as_str() {
+                        parts.push(serde_json::json!({"text":text}));
+                    }
+                }
+            }
             // OpenAI Responses 专属的原生推理项：其它协议不识别，回放时忽略。
-            MessagePart::ReasoningItem { .. } => {}
+            MessagePart::ReasoningItem { .. }
+            | MessagePart::AnthropicThinking { .. }
+            | MessagePart::AnthropicRedactedThinking { .. } => {}
         }
     }
     parts
@@ -1018,6 +1019,8 @@ pub fn output_from_gemini_response(
         web_search: web_search_from_gemini_value(value),
         images,
         reasoning_items: Vec::new(),
+        canonical_message: None,
+        billing_usage: None,
     })
 }
 
@@ -1344,6 +1347,8 @@ fn stream_output(
         web_search: None,
         images: Vec::new(),
         reasoning_items: Vec::new(),
+        canonical_message: None,
+        billing_usage: None,
     }
 }
 

@@ -1,3 +1,4 @@
+use crate::external_agents::spawn::CliProcessOutput;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
@@ -1035,7 +1036,7 @@ async fn probe_version(def: &RuntimeAgentDef, path: Option<&std::path::Path>) ->
     let output = crate::external_agents::spawn::agent_probe_command(def, bin)
         .args(def.version_args)
         .no_console_window()
-        .output()
+        .group_output()
         .await
         .ok()?;
     if !output.status.success() {
@@ -1058,7 +1059,7 @@ async fn probe_auth(def: &RuntimeAgentDef, path: Option<&std::path::Path>) -> Op
         crate::external_agents::spawn::agent_probe_command(def, bin)
             .args(args)
             .no_console_window()
-            .output(),
+            .group_output(),
     )
     .await
     .ok()?
@@ -1214,7 +1215,7 @@ async fn probe_models(
             .current_dir(cwd)
             .no_console_window()
             .kill_on_drop(true)
-            .output(),
+            .group_output(),
     )
     .await
     .map_err(|_| format!("列模型命令超时（{timeout_secs}s）"))?
@@ -1273,7 +1274,7 @@ async fn probe_codex_debug_models(
             .args(["debug", "models"])
             .current_dir(cwd)
             .no_console_window()
-            .output(),
+            .group_output(),
     )
     .await
     .ok()?
@@ -1379,7 +1380,7 @@ async fn probe_opencode_models(
             .arg("models")
             .current_dir(cwd)
             .no_console_window()
-            .output(),
+            .group_output(),
     )
     .await
     .ok()?

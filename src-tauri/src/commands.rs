@@ -287,23 +287,115 @@ async fn apply_settings(
 /// 设置备份文件格式版本。结构变化不兼容时递增。
 const SETTINGS_BACKUP_VERSION: u32 = 1;
 
+/// Backup files carry data, never implicit authorization to start foreign processes.
+fn prepare_imported_settings(
+    settings: &mut Settings,
+    trusted: bool,
+    local_cli: &std::collections::HashMap<String, crate::settings::ExternalCliAgentConfig>,
+) {
+    if trusted {
+        return;
+    }
+    settings.chat.external_cli_agents = local_cli.clone();
+    for server in &mut settings.chat_tools.servers {
+        server.enabled = false;
+    }
+    for hook in &mut settings.chat_tools.hooks {
+        hook.enabled = false;
+    }
+    settings.chat_tools.approval_policy = "always_confirm".into();
+}
+/// Sharing is deliberately separate from a complete local recovery backup. Free-form executable
+/// configuration may embed credentials, so omit it together with credential-bearing fields.
+fn redact_shared_backup(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.retain(|key, _| {
+                !key.ends_with("ApiKey")
+                    && !key.ends_with("ApiKeys")
+                    && !matches!(
+                        key.as_str(),
+                        "apiKey"
+                            | "apiKeys"
+                            | "accessToken"
+                            | "refreshToken"
+                            | "clientSecret"
+                            | "credentialId"
+                            | "providerOAuth"
+                            | "playwrightExtensionToken"
+                            | "env"
+                            | "headers"
+                            | "customHeaders"
+                            | "script"
+                            | "command"
+                            | "args"
+                            | "systemPrompt"
+                            | "prompt"
+                            | "customSystemPrompt"
+                            | "externalCliAgents"
+                            | "authJson"
+                            | "configJson"
+                            | "configToml"
+                    )
+            });
+            for (key, child) in fields.iter_mut() {
+                if key.eq_ignore_ascii_case("url")
+                    || key.ends_with("Url")
+                    || key.ends_with("Uri")
+                    || key.ends_with("Endpoint")
+                {
+                    if let Some(raw) = child.as_str() {
+                        *child = match url::Url::parse(raw) {
+                            Ok(mut parsed) => {
+                                let _ = parsed.set_username("");
+                                let _ = parsed.set_password(None);
+                                parsed.set_query(None);
+                                parsed.set_fragment(None);
+                                serde_json::Value::String(parsed.into())
+                            }
+                            Err(_) => serde_json::Value::String(String::new()),
+                        };
+                    }
+                }
+                redact_shared_backup(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_shared_backup(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 导出全部设置（含供应商/模型配置与 API Key）到指定路径的 JSON 备份文件。
 #[tauri::command]
 pub(crate) fn export_settings(
     app: AppHandle,
     state: State<AppState>,
     path: String,
+    share: Option<bool>,
 ) -> Result<(), String> {
     let settings = sanitize_settings(state.settings_read().clone());
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let sets = crate::chat::storage::set_backup::export_catalog_in(&root)?;
-    let backup = serde_json::json!({
+    let oauth = if share.unwrap_or(false) {
+        serde_json::json!({})
+    } else {
+        crate::provider_oauth::export_credentials(&settings)?
+    };
+    let mut backup = serde_json::json!({
         "app": "kivio",
         "type": "settings-backup",
         "version": SETTINGS_BACKUP_VERSION,
         "settings": serde_json::to_value(&settings).map_err(|e| e.to_string())?,
         "sets": sets,
+        "providerOAuth": oauth,
     });
+    if share.unwrap_or(false) {
+        redact_shared_backup(&mut backup);
+    }
     let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
     crate::chat::storage::atomic_write(std::path::Path::new(&path), &json, "backup")?;
     Ok(())
@@ -316,6 +408,7 @@ pub(crate) async fn import_settings(
     state: State<'_, AppState>,
     path: String,
     expected_version: SettingsVersion,
+    trusted: Option<bool>,
 ) -> Result<SettingsSnapshot, SettingsError> {
     let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
     let value: serde_json::Value =
@@ -326,14 +419,30 @@ pub(crate) async fn import_settings(
     let settings_value = value
         .get("settings")
         .ok_or_else(|| "备份文件缺少 settings 字段".to_string())?;
-    let settings: Settings = serde_json::from_value(settings_value.clone())
+    let mut settings: Settings = serde_json::from_value(settings_value.clone())
         .map_err(|e| format!("备份内容无法解析: {e}"))?;
     let sets: Option<crate::chat::storage::set_backup::SetCatalogBackup> = value
         .get("sets")
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
         .map_err(|e| format!("集备份无法解析: {e}"))?;
-    let snapshot = apply_settings(&app, &state, settings, expected_version, false).await?;
+    prepare_imported_settings(
+        &mut settings,
+        trusted.unwrap_or(false),
+        &state.settings_read().chat.external_cli_agents,
+    );
+    // Legacy backups do not contain portable provider OAuth secrets; never trust arbitrary IDs.
+    let imported = crate::provider_oauth::import_credentials(
+        &mut settings,
+        value.get("providerOAuth").unwrap_or(&serde_json::json!({})),
+    )?;
+    let snapshot = match apply_settings(&app, &state, settings, expected_version, false).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            crate::provider_oauth::discard_imported_credentials(&imported);
+            return Err(error);
+        }
+    };
     if let Some(sets) = sets {
         let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
         crate::chat::storage::set_backup::import_catalog_in(&root, sets)?;
@@ -364,10 +473,7 @@ pub(crate) fn close_translator_window(app: AppHandle, _state: State<'_, AppState
 
 /// 输入翻译浮窗展示实际目标语言，复用翻译请求的同一解析规则。
 #[tauri::command]
-pub(crate) fn resolve_translation_target_lang(
-    state: State<'_, AppState>,
-    text: String,
-) -> String {
+pub(crate) fn resolve_translation_target_lang(state: State<'_, AppState>, text: String) -> String {
     resolve_target_lang(&state.settings_read().target_lang, text.trim())
 }
 
@@ -797,7 +903,6 @@ fn effective_request_provider(
         .retain(crate::provider_request::is_usable_header);
     provider
 }
-
 
 fn resolve_api_format(
     settings: &Settings,
@@ -1276,6 +1381,77 @@ pub(crate) fn open_permission_settings(kind: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn backup_import_requires_explicit_trust_and_shared_export_omits_credentials() {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        settings
+            .chat_tools
+            .servers
+            .push(crate::settings::ChatMcpServer {
+                enabled: true,
+                command: "foreign-process".into(),
+                ..Default::default()
+            });
+        settings.chat_tools.hooks.push(crate::settings::HookDef {
+            enabled: true,
+            script: "foreign-script".into(),
+            ..Default::default()
+        });
+        let mut trusted = settings.clone();
+        let local_cli = std::collections::HashMap::from([(
+            "local-cli".into(),
+            crate::settings::ExternalCliAgentConfig::default(),
+        )]);
+        settings.chat.external_cli_agents.insert(
+            "foreign-cli".into(),
+            crate::settings::ExternalCliAgentConfig::default(),
+        );
+        trusted.chat.external_cli_agents = settings.chat.external_cli_agents.clone();
+        super::prepare_imported_settings(&mut settings, false, &local_cli);
+        assert!(settings.chat.external_cli_agents.contains_key("local-cli"));
+        assert!(!settings
+            .chat
+            .external_cli_agents
+            .contains_key("foreign-cli"));
+        assert!(!settings.chat_tools.servers[0].enabled);
+        assert!(!settings.chat_tools.hooks[0].enabled);
+        assert_eq!(settings.chat_tools.approval_policy, "always_confirm");
+        super::prepare_imported_settings(&mut trusted, true, &local_cli);
+        assert!(trusted.chat.external_cli_agents.contains_key("foreign-cli"));
+        assert!(!trusted.chat.external_cli_agents.contains_key("local-cli"));
+        assert!(trusted.chat_tools.servers[0].enabled);
+        assert!(trusted.chat_tools.hooks[0].enabled);
+        assert_eq!(trusted.chat_tools.approval_policy, "auto");
+        let mut backup = serde_json::json!({ "settings": { "providers": [{ "name": "sample", "apiKeys": ["synthetic-secret"], "request": { "customHeaders": [{"value":"secret"}], "oauth": {"credentialId":"old"} } }], "chatTools": { "servers": [{ "env": {"TOKEN":"secret"}, "auth": { "accessToken":"secret", "refreshToken":"secret", "clientSecret":"secret" } }], "hooks": [{"script":"embedded-secret"}] } }, "providerOAuth": { "old": {"access_token":"secret"} } });
+        // Exercise actual settings field names, including provider-prefixed search credentials.
+        let mut actual = crate::settings::Settings::default();
+        actual.lens.web_search.tavily_api_key = "synthetic-tavily-secret".into();
+        actual.lens.web_search.tinyfish_api_key = "synthetic-tinyfish-secret".into();
+        actual.chat_tools.servers.push(crate::settings::ChatMcpServer {
+            url: "https://account:synthetic-url-secret@example.com/mcp?api_key=synthetic-query-secret#synthetic-fragment-secret".into(),
+            ..Default::default()
+        });
+        let mut actual = serde_json::to_value(actual).unwrap();
+        actual["ordinaryProse"] =
+            serde_json::json!("Read https://example.com/doc?page=2 for background.");
+        super::redact_shared_backup(&mut actual);
+        assert!(!serde_json::to_string(&actual)
+            .unwrap()
+            .contains("synthetic-"));
+        assert_eq!(
+            actual["chatTools"]["servers"][0]["url"],
+            "https://example.com/mcp"
+        );
+        assert_eq!(
+            actual["ordinaryProse"],
+            "Read https://example.com/doc?page=2 for background."
+        );
+        super::redact_shared_backup(&mut backup);
+        let encoded = serde_json::to_string(&backup).unwrap();
+        assert!(!encoded.contains("secret"));
+        assert_eq!(backup["settings"]["providers"][0]["name"], "sample");
+    }
+    #[test]
     fn launch_at_startup_policy_respects_system_overrides() {
         use super::should_apply_launch_at_startup;
         for enabled in [false, true] {
@@ -1309,18 +1485,24 @@ mod tests {
             "apiFormat": "openai_responses",
             "apiKeys": ["old-api-key"],
             "request": {"oauth": {"provider": "codex"}}
-        })).unwrap();
-        let error = super::fetch_models_with_state(
-            &state, "codex".into(), Some(input.clone()), None,
-        ).await.unwrap_err();
+        }))
+        .unwrap();
+        let error =
+            super::fetch_models_with_state(&state, "codex".into(), Some(input.clone()), None)
+                .await
+                .unwrap_err();
         assert_eq!(error, "Sign in to the model provider first");
-        let result = super::test_provider_connection_with_state(
-            &state, "codex".into(), Some(input),
-        ).await.unwrap();
-        assert_eq!(result, json!({
-            "success": false,
-            "error": "Sign in to the model provider first"
-        }));
+        let result =
+            super::test_provider_connection_with_state(&state, "codex".into(), Some(input))
+                .await
+                .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "success": false,
+                "error": "Sign in to the model provider first"
+            })
+        );
     }
 
     async fn provider_http_response(
@@ -1344,11 +1526,14 @@ mod tests {
                 bytes.extend_from_slice(&buffer[..count]);
                 if let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
                     let headers = String::from_utf8_lossy(&bytes[..header_end]);
-                    let length = headers.lines().find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().unwrap())
-                    }).unwrap_or(0);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
                     if bytes.len() >= header_end + 4 + length {
                         break;
                     }
@@ -1360,20 +1545,31 @@ mod tests {
         (format!("http://{address}/v1"), server)
     }
 
-    fn anonymous_input(base_url: &str, format: ProviderApiFormat) -> crate::api::ProviderConnectionInput {
+    fn anonymous_input(
+        base_url: &str,
+        format: ProviderApiFormat,
+    ) -> crate::api::ProviderConnectionInput {
         serde_json::from_value(json!({
             "id": "anonymous",
             "baseUrl": base_url,
             "apiFormat": format.as_str(),
             "apiKeys": [" ", "\t"],
             "activeKeyIndex": 42
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     fn assert_anonymous_request(request: &str) {
-        let headers = request.split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
+        let headers = request
+            .split("\r\n\r\n")
+            .next()
+            .unwrap()
+            .to_ascii_lowercase();
         for name in ["authorization:", "x-api-key:", "x-goog-api-key:"] {
-            assert!(!headers.lines().any(|line| line.starts_with(name)), "{request}");
+            assert!(
+                !headers.lines().any(|line| line.starts_with(name)),
+                "{request}"
+            );
         }
     }
 
@@ -1391,27 +1587,31 @@ mod tests {
             let (base, server) = provider_http_response(
                 "200 OK",
                 r#"{"data":[{"id":"paid-model"},{"id":"demo-free"}]}"#,
-            ).await;
+            )
+            .await;
             let mut input = anonymous_input(&base, format);
             input.api_keys.clear();
-            let models = fetch_models_with_state(
-                &state, "anonymous".into(), Some(input), None,
-            ).await.unwrap();
+            let models = fetch_models_with_state(&state, "anonymous".into(), Some(input), None)
+                .await
+                .unwrap();
             assert_eq!(models, json!(["paid-model", "demo-free"]));
             let request = server.await.unwrap();
             assert!(request.starts_with("GET /v1/models"));
             assert_anonymous_request(&request);
             if format == ProviderApiFormat::AnthropicMessages {
-                assert!(request.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("anthropic-version: 2023-06-01"));
             }
 
             for model in [None, Some("paid-model")] {
                 let (base, server) = provider_http_response("200 OK", "{}").await;
                 let mut input = anonymous_input(&base, format);
                 input.model = model.map(str::to_string);
-                let result = test_provider_connection_with_state(
-                    &state, "anonymous".into(), Some(input),
-                ).await.unwrap();
+                let result =
+                    test_provider_connection_with_state(&state, "anonymous".into(), Some(input))
+                        .await
+                        .unwrap();
                 assert_eq!(result, json!({"success": true}));
                 let request = server.await.unwrap();
                 if model.is_some() {
@@ -1429,26 +1629,43 @@ mod tests {
     async fn anonymous_model_commands_report_server_authentication_failures() {
         let state = crate::state::test_app_state();
         let (base, server) = provider_http_response(
-            "401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#,
-        ).await;
+            "401 Unauthorized",
+            r#"{"error":{"message":"server requires authentication"}}"#,
+        )
+        .await;
         let error = super::fetch_models_with_state(
-            &state, "anonymous".into(),
-            Some(anonymous_input(&base, ProviderApiFormat::OpenAiChat)), None,
-        ).await.unwrap_err();
+            &state,
+            "anonymous".into(),
+            Some(anonymous_input(&base, ProviderApiFormat::OpenAiChat)),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("401"), "{error}");
         assert!(error.contains("server requires authentication"), "{error}");
         assert_anonymous_request(&server.await.unwrap());
 
         let (base, server) = provider_http_response(
-            "401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#,
-        ).await;
+            "401 Unauthorized",
+            r#"{"error":{"message":"server requires authentication"}}"#,
+        )
+        .await;
         let result = super::test_provider_connection_with_state(
-            &state, "anonymous".into(),
+            &state,
+            "anonymous".into(),
             Some(anonymous_input(&base, ProviderApiFormat::OpenAiChat)),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         assert_eq!(result["success"], false);
-        assert!(result["error"].as_str().unwrap().contains("401"), "{result}");
-        assert!(result["error"].as_str().unwrap().contains("server requires authentication"));
+        assert!(
+            result["error"].as_str().unwrap().contains("401"),
+            "{result}"
+        );
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .contains("server requires authentication"));
         assert_anonymous_request(&server.await.unwrap());
     }
 

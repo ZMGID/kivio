@@ -23,9 +23,10 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -717,6 +718,7 @@ impl ClaudeStreamJsonSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .map_err(|e| format!("spawn: {e}"))?;
         let stderr_tail = spawn_stderr_tail(child.stderr.take());
 

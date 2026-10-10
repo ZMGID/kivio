@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -280,6 +281,7 @@ impl AntigravitySession {
         command.process_group(0);
         let mut child = command
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .map_err(|e| format!("Start Antigravity CLI: {e}"))?;
         let stdin = child.stdin.take().ok_or("Antigravity stdin unavailable")?;
         let stdout = child

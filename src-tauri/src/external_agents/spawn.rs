@@ -11,8 +11,124 @@ use tokio::time::timeout;
 use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
 use crate::proc::NoConsoleWindow;
 
+/// Owns the Unix CLI process group through normal exit, error and cancellation.
+/// On Windows, taskkill /T is best effort while the leader is still live;
+/// descendants surviving a normal leader exit need a separately validated Job
+/// owner. Tokio's kill_on_drop alone only kills the direct child.
+pub struct AgentChild {
+    child: Option<Child>,
+    group: Option<u32>,
+}
+
+impl From<Child> for AgentChild {
+    fn from(child: Child) -> Self {
+        let group = child.id();
+        Self {
+            child: Some(child),
+            group,
+        }
+    }
+}
+
+impl std::ops::Deref for AgentChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        self.child.as_ref().expect("live CLI child")
+    }
+}
+impl std::ops::DerefMut for AgentChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("live CLI child")
+    }
+}
+impl AgentChild {
+    pub async fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
+        use tokio::io::AsyncReadExt;
+        let stdout = self.stdout.take();
+        let stderr = self.stderr.take();
+        self.stdin.take();
+        let read = |pipe: Option<tokio::process::ChildStdout>| async move {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                pipe.read_to_end(&mut bytes).await?;
+            }
+            Ok::<_, std::io::Error>(bytes)
+        };
+        let read_stderr = async move {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = stderr {
+                pipe.read_to_end(&mut bytes).await?;
+            }
+            Ok::<_, std::io::Error>(bytes)
+        };
+        // Keep the Child inside its owner for the whole capture. In particular,
+        // a cancelled Windows probe kills the tree before dropping its leader.
+        let (status, stdout, stderr) = tokio::try_join!(self.wait(), read(stdout), read_stderr)?;
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+    fn retire_group(&mut self) {
+        if let Some(pid) = self.group.take() {
+            #[cfg(windows)]
+            if self.child.as_ref().and_then(Child::id) != Some(pid) {
+                // A reaped leader no longer identifies its tree, and its PID may
+                // be reused. Do not taskkill another process after normal exit.
+                return;
+            }
+            crate::native_tools::kill_process_group(pid);
+        }
+    }
+    pub fn start_kill(&mut self) -> std::io::Result<()> {
+        self.retire_group();
+        self.child.as_mut().expect("live CLI child").start_kill()
+    }
+    pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let result = self.child.as_mut().expect("live CLI child").wait().await;
+        if result.is_ok() {
+            self.retire_group();
+        }
+        result
+    }
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let result = self.child.as_mut().expect("live CLI child").try_wait();
+        if matches!(result, Ok(Some(_))) {
+            self.retire_group();
+        }
+        result
+    }
+}
+impl Drop for AgentChild {
+    fn drop(&mut self) {
+        self.retire_group();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
+}
+
+/// Output capture with the same lifecycle owner as a persistent session.
+/// Kept as a Command extension so existing probe argument/env builders remain.
+pub trait CliProcessOutput {
+    fn group_output(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::io::Result<std::process::Output>> + Send;
+}
+impl CliProcessOutput for Command {
+    async fn group_output(&mut self) -> std::io::Result<std::process::Output> {
+        #[cfg(unix)]
+        self.process_group(0);
+        self.stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        AgentChild::from(self.spawn()?).wait_with_output().await
+    }
+}
+
 pub struct SpawnedAgent {
-    pub child: Child,
+    pub child: AgentChild,
     pub resolved_bin: PathBuf,
 }
 
@@ -141,6 +257,8 @@ fn finish_codex_home(
 pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
     let mut command = command_for_program(program);
+    #[cfg(unix)]
+    command.process_group(0);
     strip_parent_session_env(&mut command);
     // 设置页里针对这个 CLI 填的环境变量覆盖（`ANTHROPIC_BASE_URL` 之类），按二进制名反查。
     // 必须用原始路径（UNC 的 file_stem 仍是 `claude`），不能用改写后的 `wsl.exe`。
@@ -161,6 +279,8 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
 pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
     let mut command = command_for_program(program);
+    #[cfg(unix)]
+    command.process_group(0);
     strip_parent_session_env(&mut command);
     let mut has_codex_home = false;
     for (key, value) in def.env {
@@ -208,8 +328,8 @@ pub fn agent_probe_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) ->
 /// 复用 `native_tools::kill_process_group`（unix `killpg` SIGTERM→SIGKILL、
 /// Windows `taskkill /T /F`），不写第二份（spec 第 2 条）。两步都做，缺一不可：
 /// - Windows 的 `taskkill /T` 按父子关系遍历整棵树，能覆盖子进程；
-/// - unix 的 `killpg(-pid)` 要求目标是**进程组组长**，而 `spawn_agent` 没有 `setsid`，
-///   命中不了时只是无害的 ESRCH —— 所以仍要 `start_kill()` 兜住直接子进程本身。
+/// - Unix CLI commands create an independent process group, so killpg reaches
+///   descendants too; start_kill also covers the direct child.
 ///
 /// 副作用提醒：杀进程导致的退出码在 Windows 上恒为 1（`TerminateProcess`），
 /// 出口的「非零退出 = 失败」规则必须靠协议层完成标志豁免（spec 第 8b 条），
@@ -493,7 +613,7 @@ async fn probe_executable(path: &Path, version_args: &[&str]) -> (bool, Option<S
         .stderr(Stdio::null())
         .no_console_window()
         .kill_on_drop(true);
-    let child = match command.spawn() {
+    let child = match command.spawn().map(AgentChild::from) {
         Ok(child) => child,
         // spawn 失败 = 这个候选不是个能跑的可执行文件（EACCES / ENOEXEC / ENOENT）。
         Err(_) => return (false, None),
@@ -584,7 +704,7 @@ pub async fn spawn_agent(
         .spawn()
         .map_err(|e| format!("spawn {}: {e}", def.id))?;
     Ok(SpawnedAgent {
-        child,
+        child: AgentChild::from(child),
         resolved_bin: resolved_bin.to_path_buf(),
     })
 }
@@ -776,6 +896,46 @@ mod tests {
         std::env::remove_var("CLAUDE_CODE_HOST_AUTH_ENV_VAR");
         std::env::remove_var("KIVIO_SPAWN_TEST_KEEP");
         std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_cli_owner_stops_descendant_process() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut command = cli_command("/bin/sh");
+        command
+            .args(["-c", "sleep 60 & echo $!; wait"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = AgentChild::from(command.spawn().unwrap());
+        let pid = child.id().unwrap();
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let descendant: i32 = line.trim().parse().unwrap();
+        // Check the actual spawn boundary, not a helper's configuration.
+        assert_eq!(unsafe { libc::getpgid(pid as i32) }, pid as i32);
+        drop(child);
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let status = std::process::Command::new("ps")
+                    .args(["-p", &descendant.to_string(), "-o", "stat="])
+                    .output()
+                    .unwrap();
+                let state = String::from_utf8_lossy(&status.stdout);
+                if state.trim().is_empty() || state.trim().starts_with('Z') {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if stopped.is_err() {
+            unsafe {
+                libc::kill(descendant, libc::SIGKILL);
+            }
+        }
+        stopped.expect("dropping the owner must stop CLI descendants");
     }
 
     #[test]

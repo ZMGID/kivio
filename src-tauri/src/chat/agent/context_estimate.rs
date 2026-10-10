@@ -91,7 +91,6 @@ pub(crate) fn effective_context_tokens(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,7 +181,6 @@ mod tests {
     fn effective_no_anchor_uses_estimate() {
         assert_eq!(effective_context_tokens(None, 0, 42_000), (42_000, false));
     }
-
 
     #[test]
     fn prompt_tokens_excludes_output_and_sums_anthropic_cache() {

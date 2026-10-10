@@ -485,10 +485,10 @@ pub(super) async fn complete_assistant_reply_inner(
     if skill_id.is_none() && conversation.active_skill_id.is_some() {
         conversation.active_skill_id = None;
     }
-    if arm.is_some() || probe {
-        // 多答 fan-out（决策 D1 注）：N 条并行 run 若各自弹工具审批会产生 N 倍弹窗、
-        // 且无法对应到具体列。多模型臂内一律自动批准（静默执行）。单模型保持原审批策略。
-        // probe（无头测试通道）同理：无 GUI 可应答审批，必须自动放行，否则挂起。
+    if probe {
+        // Explicitly requested headless probes have no GUI approval channel.
+        // Ordinary multi-answer arms retain the user's policy; the execution owner blocks
+        // operations requiring interactive approval instead of silently granting them.
         effective_chat_tools.approval_policy = "auto".to_string();
     }
     let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
@@ -745,8 +745,10 @@ pub(super) async fn complete_assistant_reply_inner(
         // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
         // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
         suppress_partial_persist: arm.is_some(),
-        context_owner: arm.is_none() || (resolved_provider_id == conversation.provider_id
-            && resolved_model == conversation.model),
+        interactive_approval: arm.is_none(),
+        context_owner: arm.is_none()
+            || (resolved_provider_id == conversation.provider_id
+                && resolved_model == conversation.model),
         // 生命周期 Hooks：无启用条目时为 None，loop 完全不感知。先用 `any_enabled`
         // 短路，没配 Hook 时连下面这几个 id / model 字符串都不分配（验收 6）。
         hooks: crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks)
@@ -807,7 +809,9 @@ pub(super) async fn complete_assistant_reply_inner(
     let (initial_anchor_total_tokens, initial_anchor_trailing_estimate) =
         resolve_usage_anchor(conversation, Some(&provider));
     state.chat_runtime().seed_context_measurement(
-        &conversation.id, conversation.context_state.lifecycle_id, conversation.context_state.measurement_seq,
+        &conversation.id,
+        conversation.context_state.lifecycle_id,
+        conversation.context_state.measurement_seq,
         conversation.context_state.request_measurement.as_ref(),
     );
     let result = crate::chat::agent::run_agent_loop(

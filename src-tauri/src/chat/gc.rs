@@ -531,7 +531,8 @@ mod tests {
         let referenced: HashSet<String> =
             ["msgimg-referenced.png".to_string()].into_iter().collect();
 
-        let mut orphans = unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
+        let mut orphans =
+            unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
         orphans.sort();
         assert_eq!(orphans, vec!["artifact-orphan.png", "msgimg-orphan.png"]);
     }
@@ -541,12 +542,10 @@ mod tests {
     #[test]
     fn unreferenced_returns_nothing_when_reference_set_is_empty() {
         let files = vec!["msgimg-a.png".to_string(), "artifact-b.png".to_string()];
-        assert!(unreferenced_attachment_names(
-            Path::new("attachments"),
-            &files,
-            &HashSet::new(),
-        )
-        .is_empty());
+        assert!(
+            unreferenced_attachment_names(Path::new("attachments"), &files, &HashSet::new(),)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -555,7 +554,11 @@ mod tests {
         let dir = root.join("conv_alive_attachments");
         let retained = "artifact-retained.pdf";
         let orphan = "artifact-orphan.pdf";
-        let files = vec![retained.to_string(), orphan.to_string(), "att_user.pdf".to_string()];
+        let files = vec![
+            retained.to_string(),
+            orphan.to_string(),
+            "att_user.pdf".to_string(),
+        ];
         for reference in [
             retained.to_string(),
             format!("./{retained}"),
@@ -563,12 +566,18 @@ mod tests {
             dir.join(".").join(retained).to_string_lossy().into_owned(),
         ] {
             let references = HashSet::from([reference]);
-            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+            assert_eq!(
+                unreferenced_attachment_names(&dir, &files, &references),
+                vec![orphan]
+            );
         }
         for reference in [
             root.join(orphan).to_string_lossy().into_owned(),
             dir.join("..").join(orphan).to_string_lossy().into_owned(),
-            dir.join("nested").join(orphan).to_string_lossy().into_owned(),
+            dir.join("nested")
+                .join(orphan)
+                .to_string_lossy()
+                .into_owned(),
             format!("../{orphan}"),
             format!("C:\\outside\\{orphan}"),
             format!("\\\\server\\outside\\{orphan}"),
@@ -578,7 +587,10 @@ mod tests {
             assert!(unreferenced_attachment_names(&dir, &files, &references).is_empty());
             // Nor may its basename protect a different, genuinely orphaned managed file.
             let references = HashSet::from([retained.to_string(), reference]);
-            assert_eq!(unreferenced_attachment_names(&dir, &files, &references), vec![orphan]);
+            assert_eq!(
+                unreferenced_attachment_names(&dir, &files, &references),
+                vec![orphan]
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -587,12 +599,27 @@ mod tests {
     #[test]
     fn attachment_lookup_accepts_windows_drive_unc_and_forward_slash_paths() {
         for (dir, reference) in [
-            (r"C:\data\conv_a_attachments", r"C:\data\conv_a_attachments\artifact-a.pdf"),
-            (r"C:\data\conv_a_attachments", "C:/data/conv_a_attachments/artifact-a.pdf"),
-            (r"\\server\data\conv_a_attachments", r"\\server\data\conv_a_attachments\artifact-a.pdf"),
-            (r"\\?\C:\data\conv_a_attachments", r"\\?\C:\data\conv_a_attachments\artifact-a.pdf"),
+            (
+                r"C:\data\conv_a_attachments",
+                r"C:\data\conv_a_attachments\artifact-a.pdf",
+            ),
+            (
+                r"C:\data\conv_a_attachments",
+                "C:/data/conv_a_attachments/artifact-a.pdf",
+            ),
+            (
+                r"\\server\data\conv_a_attachments",
+                r"\\server\data\conv_a_attachments\artifact-a.pdf",
+            ),
+            (
+                r"\\?\C:\data\conv_a_attachments",
+                r"\\?\C:\data\conv_a_attachments\artifact-a.pdf",
+            ),
         ] {
-            let files = vec!["artifact-a.pdf".to_string(), "artifact-orphan.pdf".to_string()];
+            let files = vec![
+                "artifact-a.pdf".to_string(),
+                "artifact-orphan.pdf".to_string(),
+            ];
             let references = HashSet::from([reference.to_string()]);
             assert_eq!(
                 unreferenced_attachment_names(Path::new(dir), &files, &references),
