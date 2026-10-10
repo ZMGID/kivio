@@ -17,7 +17,20 @@
 
 最终验证：Rust lib **2846 passed / 0 failed / 55 ignored**；前端 **328 files / 2736 tests passed**。Mac `cargo clippy --all-targets`、全仓 fmt、协议生成物、lint、架构、UI 生产构建、图标与打包检查均通过。Rust binary/三 integration 目标也通过，包括隔离目录的真实设置/会话读写与 AppKit 组件生命周期。完整 TS 检查仍有 **26 项既有 ES lib 声明错误**（`.at` / `replaceAll`）；Clippy 存量 warnings 保留。cargo audit 漏洞命中为 **0**，另有 11 unmaintained / 7 unsound / 1 yanked warnings，未忽略这些警告。首次全量 Rust 发现六个失败后，保留有效断言修正不完整协议/授权调度夹具，并恢复实际 bash 日志/整行尾部行为，再全量通过。
 
-保留范围边界：完整 runtime `Vec<Value>` 类型迁移未做；会话已有 revision/CAS，不新增版本字段；journal 生命周期复活假说未复现。内网直接访问仍允许，因此不是全面 SSRF/DNS-rebinding 防护。Windows CLI 正常退出后遗留孙进程仍需要独立 JobObject 验证，不能用 Mac 组测试证明。完整原生应用、官方 Anthropic 和真实 Windows 验收尚缺。修改未提交或 push；已保留其他并行 dirty 改动。
+保留范围边界：完整 runtime `Vec<Value>` 类型迁移未做；会话已有 revision/CAS，不新增版本字段；journal 生命周期复活假说未复现。内网直接访问仍允许，因此不是全面 SSRF/DNS-rebinding 防护。Windows CLI 正常退出后遗留孙进程仍需要独立 JobObject 验证，不能用 Mac 组测试证明。完整原生应用、官方 Anthropic 和真实 Windows 验收尚缺。修复已本地提交为 `fceb0d68`，未 push；已保留其他并行 dirty 改动。
+
+### 提交后独立审查（2026-10-11）
+
+从 `fceb0d68` 创建独立工作树，未混入 Bot、原生窗口、工作区及前端工具链的并行改动。该提交 Rust lib **2841 passed / 0 failed / 55 ignored**；前端 **325 files / 2725 tests passed**；fmt、lint、TypeScript、UI 构建、架构、资源与打包检查通过；Rust audit 漏洞命中 **0**。上文 2846/2736 和 26 项 TS 错误来自此前混合工作树，不能作为独立提交的验证结果。
+
+提交后审查确认两项遗漏，并追加最小修复：
+
+- **P2，Unix MCP 正常断开遗留孙进程**：真实 rmcp `graceful_shutdown()` 返回成功后，leader 已退出但 `sleep` 孙进程仍运行。新增生命周期 owner，在正常 wait/try_wait 完成时立即清理所属进程组，Drop 兜底；真实 transport 回归保留 transport 并检查后代停止，Windows Job 路径保持原有实现。
+- **P3，HTML 预览过期 URL 仍可访问**：仅创建新预览时清扫，旧 URL 超过一小时仍返回 200。新增请求时 TTL 校验和移除，返回空 404。新回归在原实现上已实际失败（200，预期 404）。
+
+协议、审批、备份、凭据、输出与重定向其余分配范围未确认新的阻断缺陷。静态审查与本机回归仍不能代替官方 Anthropic、Windows 或完整原生应用验收。
+
+补修后独立树 Rust lib **2843 passed / 0 failed / 55 ignored**，包含新增预览过期与 MCP 正常关闭孙进程回归；两项补丁均已由对应审查者复审通过。最终 `cargo clippy --locked --all-targets`、fmt 和协议生成物检查通过；保留现有 clippy warnings。
 
 ## 对用户 17 项的结论
 
