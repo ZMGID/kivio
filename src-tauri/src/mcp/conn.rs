@@ -316,6 +316,95 @@ pub async fn call_tool_once(
     .await
 }
 
+// rmcp drops the wrapper after a successful graceful wait. ProcessGroup itself
+// does not kill surviving descendants then; KillOnDrop only owns the leader.
+#[cfg(unix)]
+#[derive(Debug)]
+struct CleanupProcessGroup;
+
+#[cfg(unix)]
+impl process_wrap::tokio::CommandWrapper for CleanupProcessGroup {
+    fn wrap_child(
+        &mut self,
+        inner: Box<dyn process_wrap::tokio::ChildWrapper>,
+        _core: &process_wrap::tokio::CommandWrap,
+    ) -> std::io::Result<Box<dyn process_wrap::tokio::ChildWrapper>> {
+        Ok(Box::new(CleanupProcessGroupChild {
+            inner: Some(inner),
+            cleaned: false,
+        }))
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct CleanupProcessGroupChild {
+    inner: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+    cleaned: bool,
+}
+
+#[cfg(unix)]
+impl CleanupProcessGroupChild {
+    fn cleanup(&mut self) {
+        if self.cleaned {
+            return;
+        }
+        // The inner ProcessGroupChild retains its PGID after the leader is
+        // reaped. Clean immediately at wait completion, never via a dead PID.
+        if let Some(inner) = &self.inner {
+            if let Err(err) = inner.signal(libc::SIGKILL) {
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    eprintln!("Failed to clean MCP process group: {err}");
+                }
+            }
+        }
+        self.cleaned = true;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for CleanupProcessGroupChild {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+#[cfg(unix)]
+impl process_wrap::tokio::ChildWrapper for CleanupProcessGroupChild {
+    fn inner(&self) -> &dyn process_wrap::tokio::ChildWrapper {
+        self.inner.as_deref().expect("owned MCP child")
+    }
+
+    fn inner_mut(&mut self) -> &mut dyn process_wrap::tokio::ChildWrapper {
+        self.inner.as_deref_mut().expect("owned MCP child")
+    }
+
+    fn into_inner(mut self: Box<Self>) -> Box<dyn process_wrap::tokio::ChildWrapper> {
+        self.cleanup();
+        self.inner.take().expect("owned MCP child")
+    }
+
+    fn wait(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = std::io::Result<std::process::ExitStatus>> + Send + '_>,
+    > {
+        Box::pin(async {
+            let status = self.inner_mut().wait().await?;
+            self.cleanup();
+            Ok(status)
+        })
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.inner_mut().try_wait()?;
+        if status.is_some() {
+            self.cleanup();
+        }
+        Ok(status)
+    }
+}
+
 fn build_stdio(server: &ChatMcpServer) -> Result<(TokioChildProcess, Option<ChildStderr>), String> {
     if server.command.trim().is_empty() {
         return Err("MCP server command is empty".to_string());
@@ -336,7 +425,9 @@ fn build_stdio(server: &ChatMcpServer) -> Result<(TokioChildProcess, Option<Chil
     // failure and disconnect. Cancelling an individual tools/call keeps it alive.
     let mut wrapped = process_wrap::tokio::CommandWrap::from(command);
     #[cfg(unix)]
-    wrapped.wrap(process_wrap::tokio::ProcessGroup::leader());
+    wrapped
+        .wrap(process_wrap::tokio::ProcessGroup::leader())
+        .wrap(CleanupProcessGroup);
     #[cfg(windows)]
     {
         // JobObject overwrites raw Command flags; its CreationFlags wrapper
@@ -602,6 +693,71 @@ mod tests {
     use std::error::Error as StdError;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_graceful_shutdown_terminates_descendants_after_leader_exits_on_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("descendant.pid");
+        let server = ChatMcpServer {
+            command: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "sleep 60 </dev/null >/dev/null 2>&1 & echo $! > \"$1\"; while read line; do :; done; exit 0".into(),
+                "sh".into(),
+                pid_file.to_string_lossy().into_owned(),
+            ],
+            ..Default::default()
+        };
+        let (mut transport, _) = build_stdio(&server).unwrap();
+        struct Cleanup(i32);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if self.0 > 0 {
+                    unsafe { libc::kill(-self.0, libc::SIGKILL) };
+                }
+            }
+        }
+        let mut cleanup = Cleanup(transport.id().unwrap() as i32);
+        let descendant = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = pid.trim().parse::<u32>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(4), transport.graceful_shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        // Keep the transport alive: cleanup belongs to graceful shutdown, not a
+        // later Conn/transport drop. A reparented zombie is no longer executing.
+        let exited = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let state = std::process::Command::new("ps")
+                    .args(["-p", &descendant.to_string(), "-o", "stat="])
+                    .output()
+                    .unwrap();
+                let state = String::from_utf8_lossy(&state.stdout);
+                let state = state.trim();
+                if state.is_empty() || state.starts_with('Z') {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            exited.is_ok(),
+            "graceful shutdown left a running descendant"
+        );
+        cleanup.0 = 0;
+    }
 
     type TestHttpError = StreamableHttpError<std::io::Error>;
 

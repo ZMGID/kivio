@@ -6,6 +6,7 @@ use std::{
 };
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PREVIEWS: usize = 32;
+const PREVIEW_TTL: Duration = Duration::from_secs(3600);
 const PREVIEW_CSP: &str = "default-src 'none'; script-src 'unsafe-inline' https:; style-src 'unsafe-inline' https:; img-src https: data: blob:; font-src https: data:; connect-src https:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts";
 struct Preview {
     html: String,
@@ -21,7 +22,7 @@ pub(crate) fn create_html_preview(html: String) -> Result<String, String> {
         return Err("HTML preview exceeds 2 MiB".into());
     }
     let mut previews = previews().lock().map_err(|_| "HTML preview unavailable")?;
-    previews.retain(|_, preview| preview.created.elapsed() < Duration::from_secs(3600));
+    previews.retain(|_, preview| preview.created.elapsed() < PREVIEW_TTL);
     if previews.len() >= MAX_PREVIEWS {
         return Err("Too many HTML previews are open".into());
     }
@@ -44,10 +45,14 @@ pub(crate) fn release_html_preview(id: String) {
 pub(crate) fn serve(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
     let id = request.uri().path().trim_start_matches('/');
     let body = if request.method() == tauri::http::Method::GET {
-        previews()
-            .lock()
-            .ok()
-            .and_then(|previews| previews.get(id).map(|preview| preview.html.clone()))
+        previews().lock().ok().and_then(|mut previews| {
+            if previews.get(id)?.created.elapsed() >= PREVIEW_TTL {
+                previews.remove(id);
+                None
+            } else {
+                previews.get(id).map(|preview| preview.html.clone())
+            }
+        })
     } else {
         None
     };
@@ -63,6 +68,30 @@ pub(crate) fn serve(request: tauri::http::Request<Vec<u8>>) -> tauri::http::Resp
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_get_rejects_and_evicts_expired_html_without_creating_another_preview() {
+        let html = "<p>private preview</p>";
+        let id = super::create_html_preview(html.into()).unwrap();
+        let request = || {
+            tauri::http::Request::builder()
+                .uri(format!("kivio-preview://localhost/{id}"))
+                .body(Vec::new())
+                .unwrap()
+        };
+        assert_eq!(super::serve(request()).body(), html.as_bytes());
+        super::previews()
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .created = std::time::Instant::now() - std::time::Duration::from_secs(3601);
+
+        let response = super::serve(request());
+        assert_eq!(response.status(), 404);
+        assert!(response.body().is_empty());
+        assert!(!super::previews().lock().unwrap().contains_key(&id));
+    }
+
     #[test]
     fn preview_serves_scripts_only_from_an_isolated_revocable_origin() {
         let html = "<script>document.body.textContent='interactive'</script>";
