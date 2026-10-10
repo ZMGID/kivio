@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type MutableRefObject } from 'react'
+import { peekSettings, subscribeSettings } from '../../api/settingsCache'
 import type { AgentRuntimeConfig } from '../api'
 import { dockApi } from '../dock/api'
 import {
@@ -47,6 +48,12 @@ export function useRightDock({
   const [width, setWidthState] = useState(() => getRememberedDockWidth())
   const [tab, setTabState] = useState<DockTab>(() => getRememberedDockTab())
   const [workdir, setWorkdir] = useState('')
+  const [workingRoot, setWorkingRoot] = useState(() =>
+    peekSettings()?.chatTools.nativeTools.workingDirectory,
+  )
+  useEffect(() => subscribeSettings((settings) => {
+    setWorkingRoot(settings.chatTools.nativeTools.workingDirectory)
+  }), [])
   const [treeExpanded, setTreeExpandedState] = useState<string[]>([])
   const [reveal, setReveal] = useState<DockRevealRequest>(null)
   const [subAgentRequest, setSubAgentRequest] = useState<DockSubAgentRequest>(null)
@@ -54,10 +61,6 @@ export function useRightDock({
 
   // 工作目录跟随当前会话 / 选中项目 / agent runtime 变化，由后端 dock_resolve_cwd 解析。
   useEffect(() => {
-    if (!conversationId && !projectId) {
-      setWorkdir('')
-      return
-    }
     let cancelled = false
     dockApi
       .resolveCwd(conversationId, projectId)
@@ -70,7 +73,7 @@ export function useRightDock({
     return () => {
       cancelled = true
     }
-  }, [conversationId, projectId, agentRuntimeKind])
+  }, [conversationId, projectId, agentRuntimeKind, workingRoot])
 
   // 文件树展开状态按 workdir 持久化，workdir 切换时重新载入。
   useEffect(() => {

@@ -121,6 +121,32 @@ impl NativeToolWorkspace {
     }
 }
 
+/// Shared working directory for ordinary chats. Resolving it never creates it.
+pub fn default_working_directory(working_directory: &str) -> Result<PathBuf, String> {
+    let configured = working_directory.trim();
+    let fallback = crate::settings::default_chat_working_directory();
+    let root = candidate_path(if configured.is_empty() {
+        &fallback
+    } else {
+        configured
+    })?;
+    fs_canonicalize_existing_or_self(&root)
+}
+
+/// Keep existing per-chat files in place; new chats share the configured directory.
+pub fn ordinary_workspace_directory(
+    working_directory: &str,
+    conversation_id: &str,
+) -> Result<PathBuf, String> {
+    let legacy = conversation_workspace_directory(working_directory, conversation_id)?;
+    if legacy.exists() {
+        Ok(legacy)
+    } else {
+        default_working_directory(working_directory)
+    }
+}
+
+/// Legacy owned directory only: migration and deletion must never use the shared root.
 pub fn conversation_workspace_directory(
     working_directory: &str,
     conversation_id: &str,
@@ -133,8 +159,7 @@ pub fn conversation_workspace_directory(
     if !valid {
         return Err(format!("Invalid conversation id: {conversation_id}"));
     }
-    let root = candidate_path(working_directory)?;
-    let root = fs_canonicalize_existing_or_self(&root)?;
+    let root = default_working_directory(working_directory)?;
     Ok(root.join(conversation_id))
 }
 
@@ -385,6 +410,55 @@ fn fs_canonicalize_existing_or_self(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_tools_reject_missing_roots_without_creating_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        for root in [None, Some(String::new()), Some(missing.display().to_string())] {
+            let workspace = NativeToolWorkspace::project("project_test".into(), "Test".into(), root);
+            assert!(resolve_tool_existing_dir(&workspace, None).is_err());
+            assert!(!missing.exists());
+        }
+        let workspace = NativeToolWorkspace::project(
+            "project_test".into(), "Test".into(), Some(dir.path().display().to_string()),
+        );
+        assert_eq!(resolve_tool_existing_dir(&workspace, None).unwrap(), dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn ordinary_chats_share_files_without_creating_chat_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let configured = root.to_str().unwrap();
+        let first = NativeToolWorkspace::conversation(
+            ordinary_workspace_directory(configured, "conv_first").unwrap(),
+        );
+        assert!(!root.exists(), "resolving a directory must not create it");
+        write_file(
+            &first,
+            &serde_json::json!({"path":"report.txt", "content":"shared report"}),
+        )
+        .unwrap();
+        let second = NativeToolWorkspace::conversation(
+            ordinary_workspace_directory(configured, "conv_second").unwrap(),
+        );
+        let report = read_file(&second, &serde_json::json!({"path":"report.txt"})).unwrap();
+        assert!(report.content.contains("shared report"));
+        assert!(!root.join("conv_first").exists());
+        assert!(!root.join("conv_second").exists());
+
+        let legacy = root.join("conv_old");
+        fs::create_dir(&legacy).unwrap();
+        fs::write(legacy.join("report.txt"), "old report").unwrap();
+        let old = NativeToolWorkspace::conversation(
+            ordinary_workspace_directory(configured, "conv_old").unwrap(),
+        );
+        assert!(read_file(&old, &serde_json::json!({"path":"report.txt"}))
+            .unwrap()
+            .content
+            .contains("old report"));
+    }
 
     #[test]
     fn parent_dir_traversal_is_allowed_no_boundary() {

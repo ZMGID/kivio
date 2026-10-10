@@ -14,31 +14,63 @@ pub fn resolve_effective_cwd(
     conversation_id: &str,
     project_id: Option<&str>,
 ) -> Result<PathBuf, String> {
-    if let Some(path) = project_cli_root_for_conversation(app, conversation_id, project_id) {
+    if let Some(path) = project_cli_root_for_conversation(app, conversation_id, project_id)? {
         return Ok(path);
     }
 
-    conversation_workspace_path(app, conversation_id)
+    // Native sessions keep their original cwd when resumed, even if the default changes.
+    if let Some(handle) = crate::external_agents::session::load_live_handle(app, conversation_id) {
+        if !handle.cwd.trim().is_empty() {
+            return Ok(strip_windows_verbatim_prefix(PathBuf::from(handle.cwd)));
+        }
+    }
+    let legacy = conversation_workspace_path(app, conversation_id)?;
+    if legacy.exists() {
+        return Ok(legacy);
+    }
+    let settings = crate::settings::load_settings(app);
+    crate::native_tools::ordinary_workspace_directory(
+        &settings.chat_tools.native_tools.working_directory,
+        conversation_id,
+    )
+    .map(strip_windows_verbatim_prefix)
 }
 
 fn project_cli_root_for_conversation(
     app: &AppHandle,
     conversation_id: &str,
     project_id: Option<&str>,
-) -> Option<PathBuf> {
+) -> Result<Option<PathBuf>, String> {
     if let Ok(conversation) = load_conversation(app, conversation_id) {
-        if let Ok(Some(project)) = resolve_conversation_project(app, &conversation) {
-            return cli_dir_if_exists_from_project(project);
+        if let Some(project) = resolve_conversation_project(app, &conversation)? {
+            return project_cli_root(project).map(Some);
         }
-        return None;
+        return Ok(None);
     }
-    let project_id = project_id.filter(|id| !id.trim().is_empty())?;
-    cli_dir_if_exists_from_project(find_project_by_id(app, project_id).ok()?)
+    let Some(project_id) = project_id.filter(|id| !id.trim().is_empty()) else {
+        return Ok(None);
+    };
+    project_cli_root(find_project_by_id(app, project_id)?).map(Some)
 }
 
-fn cli_dir_if_exists_from_project(project: ChatProject) -> Option<PathBuf> {
-    let root = project.root_path.filter(|path| !path.trim().is_empty())?;
-    cli_dir_if_exists(PathBuf::from(root))
+pub(crate) fn project_cli_root(project: ChatProject) -> Result<PathBuf, String> {
+    let root = project
+        .root_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "Project {} has no working directory configured",
+                project.name
+            )
+        })?;
+    cli_dir_if_exists(PathBuf::from(root)).ok_or_else(|| {
+        format!(
+            "Project {} working directory does not exist or is not a directory: {root}",
+            project.name
+        )
+    })
 }
 
 /// Project roots are stored via `fs::canonicalize` (`\\?\E:\...` on Windows).
@@ -77,26 +109,22 @@ pub fn ensure_effective_cwd(
     Ok(path)
 }
 
-/// 检测（模型/斜杠命令探测）用的 cwd。与会话执行 cwd（`resolve_effective_cwd`，每会话独立
-/// workspace）不同：探测结果按 `(agent, cwd)` 缓存，若沿用每会话目录，**每个新会话都是新缓存键**
-/// → 必然冷探测 15-25s，下拉框长时间只有 Default。因此非项目会话统一用一个全局稳定 scope
-/// （参照 Paseo 的 GLOBAL_PROVIDER_SNAPSHOT_KEY）：首次探测后全 App 命中热缓存。
-/// 只有绑定项目的会话才用项目根（opencode 等模型目录随项目配置变化的场景）。
-/// 会话未落盘/不存在时也落到全局 scope，绝不硬失败。
+/// 模型/斜杠命令探测按项目根或默认目录缓存，普通对话共用稳定 scope。
+/// 与新对话的执行目录一致，以便发现该目录下的 CLI 配置。
 pub fn resolve_detection_cwd(
     app: &AppHandle,
     conversation_id: Option<&str>,
 ) -> Result<PathBuf, String> {
     if let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) {
-        if let Some(path) = project_cli_root_for_conversation(app, conversation_id, None) {
+        if let Some(path) = project_cli_root_for_conversation(app, conversation_id, None)? {
             return Ok(path);
         }
     }
-    let base = conversations_dir(app)?
-        .parent()
-        .ok_or_else(|| "chat data root unavailable".to_string())?
-        .join("chat-workspaces")
-        .join("__global__");
+    let settings = crate::settings::load_settings(app);
+    let base = crate::native_tools::default_working_directory(
+        &settings.chat_tools.native_tools.working_directory,
+    )?;
+    let base = strip_windows_verbatim_prefix(base);
     std::fs::create_dir_all(&base).map_err(|e| format!("create detection workspace: {e}"))?;
     Ok(base)
 }
@@ -117,8 +145,39 @@ pub fn extra_allowed_dirs_for_agent(
 
 #[cfg(test)]
 mod tests {
-    use super::cli_dir_if_exists;
+    use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn bound_project_requires_an_existing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "not a directory").unwrap();
+        let project = |root: Option<String>| ChatProject {
+            id: "project_test".into(),
+            name: "Test".into(),
+            description: None,
+            color: None,
+            root_path: root,
+            created_at: 0,
+            updated_at: 0,
+        };
+        for root in [
+            None,
+            Some(" ".into()),
+            Some(dir.path().join("missing").display().to_string()),
+            Some(file.display().to_string()),
+        ] {
+            assert!(
+                project_cli_root(project(root.clone())).is_err(),
+                "invalid bound project must fail instead of falling back: {root:?}"
+            );
+        }
+        assert_eq!(
+            project_cli_root(project(Some(dir.path().display().to_string()))).unwrap(),
+            dir.path().to_path_buf()
+        );
+    }
 
     #[test]
     fn cli_dir_if_exists_rejects_missing_paths() {

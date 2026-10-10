@@ -147,8 +147,8 @@ export function ChatTab({
             </div>
             <p className="kv-row-desc">
               {lang === 'zh'
-                ? '未绑定项目的 Agent 对话会在此目录下按对话 ID 使用独立工作台；用户明确指定的其他路径不受限制。'
-                : 'Agent chats get a per-conversation workbench here. Explicit paths chosen by the user remain unrestricted.'}
+                ? '新建的非项目 Agent 对话共用此目录，内置与外部 Agent 均适用；已有独立目录继续保留。'
+                : 'New non-project chats share this directory across built-in and external agents. Existing separate directories are preserved.'}
             </p>
           </div>
         </SettingRow>

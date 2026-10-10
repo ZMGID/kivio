@@ -173,7 +173,7 @@ pub fn resolve_conversation_working_directory(
             })?;
         return Ok(PathBuf::from(root));
     }
-    crate::native_tools::conversation_workspace_directory(ordinary_working_root, &conversation.id)
+    crate::native_tools::ordinary_workspace_directory(ordinary_working_root, &conversation.id)
 }
 
 pub fn resolve_conversation_project(

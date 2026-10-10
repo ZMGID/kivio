@@ -1,5 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { subscribeSettings } from '../../api/settingsCache'
+import type { Settings } from '../../api/tauri'
 import { dockApi } from '../dock/api'
 import {
   requestDockDiffPreview,
@@ -9,6 +11,11 @@ import {
 } from '../dock/dockPreview'
 import { insertTextIntoComposer } from '../composerInsert'
 import { useRightDock } from './useRightDock'
+
+vi.mock('../../api/settingsCache', () => ({
+  peekSettings: () => null,
+  subscribeSettings: vi.fn(() => () => {}),
+}))
 
 vi.mock('../dock/api', () => ({
   dockApi: { resolveCwd: vi.fn() },
@@ -42,17 +49,40 @@ beforeEach(() => {
 })
 
 describe('useRightDock: workdir', () => {
-  it('resolves the workdir from the conversation and clears it when nothing is selected', async () => {
+  it('uses the default workdir when opening a new non-project chat', async () => {
     const { result, rerender } = setup()
     await act(async () => {})
     expect(mockResolveCwd).toHaveBeenCalledWith('c1', null)
     expect(result.current.workdir).toBe('C:/work/proj')
 
+    mockResolveCwd.mockResolvedValue('/default/work')
     rerender({
       conversationId: null, projectId: null, agentRuntimeKind: 'builtin',
       currentConversationIdRef: { current: null },
     })
-    expect(result.current.workdir).toBe('')
+    await act(async () => {})
+    expect(result.current.workdir).toBe('/default/work')
+  })
+
+  it.each(['builtin', 'external'] as const)('refreshes %s workdir on settings changes and ignores older results', async (kind) => {
+    let changed: ((settings: Settings) => void) | undefined
+    vi.mocked(subscribeSettings).mockImplementationOnce((listener) => {
+      changed = listener
+      return () => { changed = undefined }
+    })
+    const { result, unmount } = setup({ agentRuntimeKind: kind })
+    await act(async () => {})
+    let finishOld: (cwd: string) => void = () => {}
+    mockResolveCwd.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+    const settings = (root: string) => ({ chatTools: { nativeTools: { workingDirectory: root } } }) as Settings
+    await act(async () => { changed?.(settings('/work/b')) })
+    mockResolveCwd.mockResolvedValueOnce('/work/c')
+    await act(async () => { changed?.(settings('/work/c')) })
+    expect(result.current.workdir).toBe('/work/c')
+    await act(async () => { finishOld('/work/b') })
+    expect(result.current.workdir).toBe('/work/c')
+    unmount()
+    expect(changed).toBeUndefined()
   })
 
   it('re-resolves when the agent runtime kind changes (built-in vs external write dirs differ)', async () => {

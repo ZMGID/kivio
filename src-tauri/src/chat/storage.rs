@@ -1084,6 +1084,30 @@ mod index_self_heal_tests {
 mod delete_side_artifact_tests {
     use super::*;
 
+    #[test]
+    fn deleting_chat_side_artifacts_preserves_shared_working_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("work");
+        let configured = root.to_str().unwrap();
+        let workspace = crate::native_tools::NativeToolWorkspace::conversation(
+            crate::native_tools::ordinary_workspace_directory(configured, "conv_one").unwrap(),
+        );
+        crate::native_tools::write_file(
+            &workspace,
+            &serde_json::json!({"path":"report.txt","content":"keep"}),
+        )
+        .unwrap();
+        let attachments = dir.path().join("conv_one_attachments");
+        fs::create_dir(&attachments).unwrap();
+        fs::write(attachments.join("upload.txt"), "attachment").unwrap();
+        // The deletion owner only supplies the legacy, conversation-owned path.
+        let owned =
+            crate::native_tools::conversation_workspace_directory(configured, "conv_one").unwrap();
+        assert!(remove_conversation_side_artifacts(Some(&owned), Some(&attachments)).is_empty());
+        assert_eq!(fs::read_to_string(root.join("report.txt")).unwrap(), "keep");
+        assert!(!attachments.exists());
+    }
+
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("kivio_del_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();

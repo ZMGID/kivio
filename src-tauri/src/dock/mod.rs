@@ -9,11 +9,8 @@ pub mod terminal;
 pub mod watch;
 
 /// 解析 Dock 显示的工作目录。关键约束：必须与 agent 实际写文件的目录一致——
-/// - 外部 Agent（claude/codex/kimi…）：`resolve_effective_cwd` → 项目根，否则
-///   `chat-workspaces/<conversation_id>`；
-/// - 内置 runtime：`resolve_conversation_working_directory` → 项目根，否则
-///   `<nativeTools.workingDirectory>/<conversation_id>`（默认 `~/Kivio/workspace/<id>`）。
-/// 一律走前者会让内置 runtime 的无项目会话盯着一个 agent 从不写入的目录（树永远为空）。
+/// 项目使用项目根，新普通对话共用默认工作目录；已有会话保留原目录。
+/// 外部 CLI 还需遵守原生会话绑定的目录。
 #[tauri::command]
 pub async fn dock_resolve_cwd(
     app: tauri::AppHandle,
@@ -62,33 +59,16 @@ pub async fn dock_resolve_cwd(
             .map(str::trim)
             .filter(|id| !id.is_empty())
         {
-            if let Ok(project) = crate::chat::storage::find_project_by_id(&app, project_id) {
-                if let Some(root) = project.root_path.filter(|p| !p.trim().is_empty()) {
-                    if let Some(path) = crate::external_agents::workspace::cli_dir_if_exists(
-                        std::path::PathBuf::from(root),
-                    ) {
-                        return Ok(path.to_string_lossy().to_string());
-                    }
-                }
-            }
+            let project = crate::chat::storage::find_project_by_id(&app, project_id)?;
+            let path = crate::external_agents::workspace::project_cli_root(project)?;
+            return Ok(path.to_string_lossy().to_string());
         }
 
-        // 无项目草稿：内置 runtime 工作根下的会话目录（默认 ~/Kivio/workspace/<id>）。
+        // 无项目草稿直接展示默认工作目录，不再创建会话子目录。
         let settings = crate::settings::load_settings(&app);
-        let configured = settings.chat_tools.native_tools.working_directory;
-        let working_root = {
-            let raw = configured.trim();
-            if raw.is_empty() {
-                crate::settings::default_chat_working_directory()
-            } else {
-                raw.to_string()
-            }
-        };
-        let conv_id = conversation_id.unwrap_or_else(|| "__global__".to_string());
-        // conversation_workspace_directory 只接受 conv_ 前缀 id；其余（如 __global__）
-        // 手动拼到工作根下。
-        let path = crate::native_tools::conversation_workspace_directory(&working_root, &conv_id)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&working_root).join(&conv_id));
+        let path = crate::native_tools::default_working_directory(
+            &settings.chat_tools.native_tools.working_directory,
+        )?;
         std::fs::create_dir_all(&path).map_err(|e| format!("create dock workspace: {e}"))?;
         Ok(path.to_string_lossy().to_string())
     })

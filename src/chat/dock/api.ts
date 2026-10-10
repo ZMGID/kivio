@@ -66,7 +66,6 @@ export const dockApi = {
   /** 解析当前会话/项目的有效工作目录。 */
   async resolveCwd(conversationId: string | null | undefined, projectId?: string | null): Promise<string> {
     if (!isTauriRuntime()) return ''
-    if (!conversationId && !projectId) return ''
     return invoke<string>('dock_resolve_cwd', {
       conversationId: conversationId ?? null,
       projectId: projectId ?? null,
