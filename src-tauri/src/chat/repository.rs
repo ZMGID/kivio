@@ -677,11 +677,15 @@ impl ConversationRepository {
             .map_err(Into::into);
         }
 
-        let target = crate::native_tools::conversation_workspace_directory(
-            ordinary_working_root,
-            &latest.id,
-        )?;
         let legacy = crate::native_tools::legacy_outputs_dir(&latest.id)?;
+        let target = if legacy.exists() {
+            crate::native_tools::conversation_workspace_directory(
+                ordinary_working_root,
+                &latest.id,
+            )?
+        } else {
+            crate::native_tools::ordinary_workspace_directory(ordinary_working_root, &latest.id)?
+        };
         if legacy.exists() {
             crate::native_tools::merge_directory_without_overwrite(&legacy, &target)?;
             if super::storage::rewrite_conversation_artifact_paths(

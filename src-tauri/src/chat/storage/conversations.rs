@@ -178,7 +178,8 @@ pub(crate) fn delete_conversation(app: &AppHandle, id: &str) -> Result<Vec<Strin
     } else {
         false
     };
-    // 工作区路径要在删文件之前解析（解析只读 settings，不碰磁盘），失败也只是不清工作区。
+    // 只清理旧版对话独占目录；不能用运行时目录解析器，否则会删除共享工作目录。
+    // 路径在删文件之前解析，失败只是不清工作区。
     let workspace = if remove_workspace {
         let state = app.state::<crate::state::AppState>();
         let settings = state.settings_read();
