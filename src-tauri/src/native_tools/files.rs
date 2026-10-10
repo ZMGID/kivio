@@ -817,22 +817,31 @@ fn atomic_write_bytes(
         }
     }
     let _ = existing_text;
-    #[cfg(target_os = "windows")]
-    if target.exists() {
-        // std::fs::rename cannot replace an existing file on Windows. This
-        // fallback has a tiny non-atomic gap, but still guarantees chunks are
-        // never streamed directly into the target. A future Windows API
-        // ReplaceFileW path can tighten this last commit step.
-        fs::remove_file(target)
-            .map_err(|err| format!("Remove existing target failed before replace: {err}"))?;
-    }
-    match fs::rename(&tmp, target) {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            let _ = fs::remove_file(&tmp);
-            Err(format!("Rename temp file failed: {err}"))
+    // rename replaces existing files on Windows and Unix. Never unlink the
+    // target first: failed commits must leave the previous content intact.
+    for attempt in 0..3 {
+        match fs::rename(&tmp, target) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                // Windows antivirus/open handles can briefly deny replacement.
+                // Retry only those errors, using the same fully synced file.
+                let retryable = matches!(
+                    err.kind(),
+                    std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
+                ) || (cfg!(windows)
+                    && matches!(err.raw_os_error(), Some(5 | 32 | 33)));
+                if retryable && attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+                    continue;
+                }
+                return Err(format!(
+                    "Replace file failed: {err}. Replacement content retained at {}",
+                    tmp.display()
+                ));
+            }
         }
     }
+    unreachable!()
 }
 
 fn planned_file_result(
@@ -2730,6 +2739,28 @@ mod tests {
         );
         assert_eq!((result.additions, result.removals), (30, 20));
         assert_eq!(result.diff.matches("@@ -").count(), 6);
+    }
+
+    #[test]
+    fn failed_file_commit_preserves_target_and_reports_recovery_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), "original").unwrap();
+        let error = atomic_write_bytes(&target, b"replacement", None).unwrap_err();
+        assert_eq!(fs::read_to_string(target.join("keep")).unwrap(), "original");
+        let recovery = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".kivio-tmp-")
+            })
+            .expect("failed commit must retain the complete replacement");
+        assert_eq!(fs::read(recovery.path()).unwrap(), b"replacement");
+        assert!(error.contains(recovery.path().to_string_lossy().as_ref()));
     }
 
     #[test]

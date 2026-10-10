@@ -600,7 +600,7 @@ async fn generate(
             provider,
             None,
         )
-            .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(60))
     };
     let task_id = match &job.provider_task_id {
         Some(id) => id.clone(),

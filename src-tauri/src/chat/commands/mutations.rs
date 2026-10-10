@@ -1084,8 +1084,12 @@ pub(crate) async fn chat_update_conversation(
                     conversation.folder = None;
                 }
             }
-            let model_changed = provider_id.as_ref().is_some_and(|id| id != &conversation.provider_id)
-                || model.as_ref().is_some_and(|model| model != &conversation.model);
+            let model_changed = provider_id
+                .as_ref()
+                .is_some_and(|id| id != &conversation.provider_id)
+                || model
+                    .as_ref()
+                    .is_some_and(|model| model != &conversation.model);
             if let Some(provider_id) = provider_id {
                 conversation.provider_id = provider_id;
             }
@@ -1383,7 +1387,8 @@ pub(super) fn apply_group_selection(
     message_id: String,
 ) -> Result<(), String> {
     let valid = conversation.messages.iter().any(|message| {
-        message.id == message_id && message.role == "assistant"
+        message.id == message_id
+            && message.role == "assistant"
             && message.group_id.as_deref() == Some(group_id.as_str())
     });
     if !valid {
@@ -1425,7 +1430,12 @@ pub(crate) async fn chat_set_group_selection(
         .await
         .map_err(crate::chat::repository::repository_error)?;
 
-    emit_chat_context_state(&app, &conversation.id, conversation.revision, &conversation.context_state);
+    emit_chat_context_state(
+        &app,
+        &conversation.id,
+        conversation.revision,
+        &conversation.context_state,
+    );
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,

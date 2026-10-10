@@ -436,7 +436,12 @@ pub async fn run_command(
 
     let timeout_ms = bash_foreground_timeout_ms(arguments);
     let output = run_shell_command(&command, cwd, timeout_ms, state).await?;
-    let formatted = offload_large_output(format_command_output(&output));
+    let formatted = format_command_output(&output);
+    let formatted = if output.stdout_offloaded || output.stderr_offloaded {
+        formatted
+    } else {
+        offload_large_output(formatted)
+    };
     if let Some(code) = output.status_code {
         if code != 0 {
             return Err(formatted);
@@ -490,7 +495,18 @@ fn offload_large_output(formatted: String) -> String {
     let lines = formatted.lines().count();
     let bytes = formatted.len();
     let path = std::env::temp_dir().join(format!("kivio-bash-{}.log", uuid::Uuid::new_v4()));
-    let log_note = match std::fs::write(&path, &formatted) {
+    let write = (|| {
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&path)?.write_all(formatted.as_bytes())
+    })();
+    let log_note = match write {
         Ok(()) => Some(format!(
             "[full output: {lines} lines, {bytes} bytes — complete log saved to {}. Read it with the `read` tool (use offset/limit or grep it) if the tail below is not enough.]",
             path.display()
@@ -732,7 +748,15 @@ async fn run_shell_command_background(
 
     // Open the per-job log for stdout+stderr capture. Two independent handles so
     // both streams write concurrently (the OS interleaves appends).
-    let stdout_file = std::fs::File::create(&log_path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let stdout_file = options
+        .open(&log_path)
         .map_err(|err| format!("Failed to create background log file: {err}"))?;
     let stderr_file = stdout_file
         .try_clone()
@@ -869,13 +893,63 @@ fn snapshot_bash_output(
         )
     };
 
-    let bytes = std::fs::read(&log_path).unwrap_or_default();
-    let start = (since_offset as usize).min(bytes.len());
-    let new_text = redact_shell_output(
-        String::from_utf8_lossy(&bytes[start..]).into_owned(),
-        Some(state),
-    );
-    let new_offset = bytes.len() as u64;
+    use std::io::{Read, Seek, SeekFrom};
+    let secret = state
+        .settings_read()
+        .chat_tools
+        .playwright_extension_token
+        .as_bytes()
+        .to_vec();
+    let overlap = secret.len().saturating_sub(1) as u64;
+    let (bytes, start, prefix, length) = match std::fs::File::open(&log_path) {
+        Ok(mut file) => {
+            let length = file
+                .metadata()
+                .map_err(|err| format!("Read background log: {err}"))?
+                .len();
+            let start = since_offset.min(length);
+            let read_start = start.saturating_sub(overlap);
+            file.seek(SeekFrom::Start(read_start))
+                .map_err(|err| format!("Seek background log: {err}"))?;
+            let mut bytes = Vec::new();
+            file.take(MAX_INLINE_COMMAND_OUTPUT_BYTES as u64 + 2 * overlap)
+                .read_to_end(&mut bytes)
+                .map_err(|err| format!("Read background log: {err}"))?;
+            (bytes, start, (start - read_start) as usize, length)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            (Vec::new(), since_offset, 0, since_offset)
+        }
+        Err(err) => return Err(format!("Read background log: {err}")),
+    };
+    let prefix = prefix.min(bytes.len());
+    let mut count = bytes
+        .len()
+        .saturating_sub(prefix)
+        .min(MAX_INLINE_COMMAND_OUTPUT_BYTES);
+    if let Err(err) = std::str::from_utf8(&bytes[prefix..prefix + count]) {
+        if err.error_len().is_none() && start + (count as u64) < length {
+            count = err.valid_up_to();
+        }
+    }
+    let end = prefix + count;
+    let mut output = Vec::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if !secret.is_empty() && bytes[cursor..].starts_with(&secret) {
+            if cursor < end && cursor + secret.len() > prefix {
+                output.extend_from_slice(b"[redacted]");
+            }
+            cursor += secret.len();
+        } else {
+            if cursor >= prefix && cursor < end {
+                output.push(bytes[cursor]);
+            }
+            cursor += 1;
+        }
+    }
+    let new_offset = start + count as u64;
+    let new_text = String::from_utf8_lossy(&output).into_owned();
     Ok((status, new_text, new_offset, command))
 }
 
@@ -1019,6 +1093,131 @@ struct CommandOutput {
     status_code: Option<i32>,
     stdout: String,
     stderr: String,
+    stdout_offloaded: bool,
+    stderr_offloaded: bool,
+}
+
+struct PipeOutput {
+    text: String,
+    offloaded: bool,
+}
+
+/// Byte-based overlap keeps a secret split across reads out of both the
+/// retained tail and the complete log. No newline-sized allocation is used.
+struct OutputRedactor {
+    secret: Vec<u8>,
+    pending: Vec<u8>,
+}
+impl OutputRedactor {
+    fn push(&mut self, chunk: &[u8], eof: bool) -> Vec<u8> {
+        if self.secret.is_empty() {
+            return chunk.to_vec();
+        }
+        self.pending.extend_from_slice(chunk);
+        let mut output = Vec::new();
+        let mut offset = 0;
+        while self.pending.len().saturating_sub(offset) >= self.secret.len() {
+            if self.pending[offset..].starts_with(&self.secret) {
+                output.extend_from_slice(b"[redacted]");
+                offset += self.secret.len();
+            } else {
+                output.push(self.pending[offset]);
+                offset += 1;
+            }
+        }
+        self.pending.drain(..offset);
+        if eof {
+            output.append(&mut self.pending);
+        }
+        output
+    }
+}
+
+async fn capture_pipe<R: tokio::io::AsyncRead + Unpin>(
+    mut pipe: R,
+    secret: Vec<u8>,
+) -> Result<PipeOutput, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let path = std::env::temp_dir().join(format!("kivio-bash-{}.log", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|err| format!("Create output log {}: {err}", path.display()))?;
+    let mut file = tokio::io::BufWriter::new(tokio::fs::File::from_std(file));
+    let mut redactor = OutputRedactor {
+        secret,
+        pending: Vec::new(),
+    };
+    let mut tail = Vec::new();
+    let mut total = 0usize;
+    let mut newlines = 0usize;
+    let mut last_byte = None;
+    let mut starts_at_line_boundary = true;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = pipe
+            .read(&mut chunk)
+            .await
+            .map_err(|err| format!("Read output: {err}"))?;
+        let bytes = redactor.push(&chunk[..count], count == 0);
+        file.write_all(&bytes)
+            .await
+            .map_err(|err| format!("Write output log {}: {err}", path.display()))?;
+        total = total.saturating_add(bytes.len());
+        newlines = newlines.saturating_add(bytes.iter().filter(|&&byte| byte == b'\n').count());
+        if let Some(&byte) = bytes.last() {
+            last_byte = Some(byte);
+        }
+        tail.extend_from_slice(&bytes);
+        if tail.len() > TAIL_MAX_BYTES {
+            let cut = tail.len() - TAIL_MAX_BYTES;
+            starts_at_line_boundary = tail[cut - 1] == b'\n';
+            tail.drain(..cut);
+        }
+        if count == 0 {
+            break;
+        }
+    }
+    file.flush()
+        .await
+        .map_err(|err| format!("Flush output log {}: {err}", path.display()))?;
+    drop(file);
+    if !starts_at_line_boundary {
+        // Byte eviction may leave a fragment of an earlier line. Keep the
+        // original whole-line contract without buffering a giant line.
+        let cut = tail
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(tail.len(), |index| index + 1);
+        tail.drain(..cut);
+    }
+    let tail = String::from_utf8_lossy(&tail);
+    if total <= MAX_INLINE_COMMAND_OUTPUT_BYTES {
+        let _ = tokio::fs::remove_file(&path).await;
+        Ok(PipeOutput {
+            text: tail.into_owned(),
+            offloaded: false,
+        })
+    } else {
+        let lines = newlines + usize::from(last_byte.is_some_and(|byte| byte != b'\n'));
+        let (tail, _) = tail_truncate(&tail);
+        let dropped = lines.saturating_sub(tail.lines().count());
+        let omission = if dropped > 0 {
+            format!("[... {dropped} earlier lines truncated ...]\n")
+        } else {
+            String::new()
+        };
+        Ok(PipeOutput {
+            text: format!("[full output: {lines} lines, {total} bytes — complete log saved to {}]\n{omission}{tail}", path.display()),
+            offloaded: true,
+        })
+    }
 }
 
 async fn run_shell_command(
@@ -1069,11 +1268,41 @@ async fn exec_shell_command(
         });
     }
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|err| format!("Failed to start command: {err}"))?;
     let child_pid = child.id();
-    let wait = child.wait_with_output();
+    let stdout = child.stdout.take().ok_or("Command stdout unavailable")?;
+    let stderr = child.stderr.take().ok_or("Command stderr unavailable")?;
+    let secret = state
+        .map(|state| {
+            state
+                .settings_read()
+                .chat_tools
+                .playwright_extension_token
+                .as_bytes()
+                .to_vec()
+        })
+        .unwrap_or_default();
+    let wait = async {
+        let (status, stdout, stderr) = tokio::try_join!(
+            async {
+                child
+                    .wait()
+                    .await
+                    .map_err(|err| format!("Command failed: {err}"))
+            },
+            capture_pipe(stdout, secret.clone()),
+            capture_pipe(stderr, secret)
+        )?;
+        Ok::<_, String>(CommandOutput {
+            status_code: status.code(),
+            stdout_offloaded: stdout.offloaded,
+            stderr_offloaded: stderr.offloaded,
+            stdout: stdout.text,
+            stderr: stderr.text,
+        })
+    };
     tokio::pin!(wait);
     // Declared after `wait` so cancel-drop kills the tree before Child drop.
     let mut kill_on_cancel = KillProcessGroupOnDrop {
@@ -1084,8 +1313,9 @@ async fn exec_shell_command(
     let output = if let Some(timeout_ms) = timeout_ms {
         tokio::select! {
             result = &mut wait => {
+                let output = result.map_err(|err| format!("Command failed: {err}"))?;
                 kill_on_cancel.disarm();
-                result.map_err(|err| format!("Command failed: {err}"))?
+                output
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
                 if let Some(pid) = child_pid {
@@ -1109,20 +1339,11 @@ async fn exec_shell_command(
         result
     };
 
-    Ok(CommandOutput {
-        status_code: output.status.code(),
-        stdout: redact_shell_output(String::from_utf8_lossy(&output.stdout).into_owned(), state),
-        stderr: redact_shell_output(String::from_utf8_lossy(&output.stderr).into_owned(), state),
-    })
+    Ok(output)
 }
 
-fn format_timeout_with_partial(timeout_ms: u64, output: &std::process::Output) -> String {
-    let partial = CommandOutput {
-        status_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    };
-    let body = format_command_output(&partial);
+fn format_timeout_with_partial(timeout_ms: u64, output: &CommandOutput) -> String {
+    let body = format_command_output(output);
     if body.trim().is_empty() {
         format!("Command timed out after {timeout_ms}ms and was killed.")
     } else {
@@ -1131,34 +1352,197 @@ fn format_timeout_with_partial(timeout_ms: u64, output: &std::process::Output) -
 }
 
 fn format_command_output(output: &CommandOutput) -> String {
+    let mut notes = Vec::new();
+    let mut stream = |text: &str, offloaded: bool| -> String {
+        if offloaded {
+            if let Some((note, body)) = text.split_once('\n') {
+                notes.push(note.to_string());
+                return body.to_string();
+            }
+        }
+        text.to_string()
+    };
+    let stdout = stream(&output.stdout, output.stdout_offloaded);
+    let stderr = stream(&output.stderr, output.stderr_offloaded);
     let mut out = String::new();
     if let Some(code) = output.status_code {
         out.push_str(&format!("exit_code: {code}\n"));
     }
-    if !output.stdout.is_empty() {
+    if !stdout.is_empty() {
         out.push_str("stdout:\n");
-        out.push_str(&output.stdout);
-        if !output.stdout.ends_with('\n') {
+        out.push_str(&stdout);
+        if !stdout.ends_with('\n') {
             out.push('\n');
         }
     }
-    if !output.stderr.is_empty() {
+    if !stderr.is_empty() {
         out.push_str("stderr:\n");
-        out.push_str(&output.stderr);
-        if !output.stderr.ends_with('\n') {
+        out.push_str(&stderr);
+        if !stderr.ends_with('\n') {
             out.push('\n');
         }
     }
     if out.trim().is_empty() {
         out.push_str("(no output)\n");
     }
-    out
+    if notes.is_empty() {
+        return out;
+    }
+    let (tail, dropped) = tail_truncate(&out);
+    let omission = if dropped > 0 {
+        format!("[... {dropped} earlier lines truncated ...]\n")
+    } else {
+        String::new()
+    };
+    format!("{}\n{omission}{tail}", notes.join("\n"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::native_tools::user_home_dir;
+
+    #[tokio::test]
+    async fn captured_log_redacts_secret_across_pipe_reads() {
+        use tokio::io::AsyncWriteExt;
+        let secret = "synthetic-private-token";
+        let body = format!("{}{}{}", "x".repeat(8190), secret, "y".repeat(20000));
+        let expected = body.replace(secret, "[redacted]");
+        let (reader, mut writer) = tokio::io::duplex(8192);
+        let producer = tokio::spawn(async move {
+            writer.write_all(&body.as_bytes()[..8192]).await.unwrap();
+            tokio::task::yield_now().await;
+            writer.write_all(&body.as_bytes()[8192..]).await.unwrap();
+        });
+        let captured = capture_pipe(reader, secret.as_bytes().to_vec())
+            .await
+            .unwrap()
+            .text;
+        producer.await.unwrap();
+        let path = captured
+            .lines()
+            .next()
+            .unwrap()
+            .split_once("complete log saved to ")
+            .map(|(_, path)| path)
+            .unwrap()
+            .strip_suffix("]")
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), expected);
+        assert!(captured.ends_with(&"y".repeat(100)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn background_page_budget_preserves_offsets_and_secret_boundaries() {
+        let state = bg_test_state();
+        let secret = "synthetic-page-token";
+        state.update_settings_for_test(|settings| {
+            settings.chat_tools.playwright_extension_token = secret.into()
+        });
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let log_path = std::env::temp_dir().join(format!("{BG_CMD_LOG_PREFIX}{job_id}.log"));
+        let body = format!(
+            "{}{}{}",
+            "x".repeat(MAX_INLINE_COMMAND_OUTPUT_BYTES - 2),
+            secret,
+            "y".repeat(30000)
+        );
+        std::fs::write(&log_path, &body).unwrap();
+        state
+            .background_commands_handle()
+            .register(BackgroundCommand {
+                job_id: job_id.clone(),
+                conversation_id: None,
+                pid: None,
+                command: "fixture".into(),
+                cwd: ".".into(),
+                log_path: log_path.clone(),
+                status: BackgroundCommandStatus::Exited { code: Some(0) },
+                started_at: SystemTime::now(),
+                kill_tx: None,
+            });
+        let (_, first, offset, _) = snapshot_bash_output(&state, &job_id, 0, None).unwrap();
+        assert_eq!(offset, MAX_INLINE_COMMAND_OUTPUT_BYTES as u64);
+        assert!(first.ends_with("[redacted]"));
+        let (_, second, next, _) = snapshot_bash_output(&state, &job_id, offset, None).unwrap();
+        assert_eq!(next, offset + MAX_INLINE_COMMAND_OUTPUT_BYTES as u64);
+        assert!(second.starts_with("[redacted]"));
+        assert!(second.len() < MAX_INLINE_COMMAND_OUTPUT_BYTES + 100);
+        assert!(!second.contains("nthetic-page-token"));
+        std::fs::remove_file(log_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_stream_preserves_line_budget_and_original_log_notice() {
+        let output = run_shell_command(
+            "i=0; while [ $i -lt 4000 ]; do printf 'r%04d\n' $i; i=$((i+1)); done",
+            std::env::temp_dir(),
+            Some(5000),
+            None,
+        )
+        .await
+        .unwrap();
+        let formatted = format_command_output(&output);
+        assert!(formatted.contains("complete log saved to"));
+        let rows: Vec<_> = formatted
+            .lines()
+            .filter(|line| line.starts_with('r'))
+            .collect();
+        assert_eq!(rows.len(), TAIL_MAX_LINES);
+        assert_eq!(rows.first().copied(), Some("r2000"));
+        assert_eq!(rows.last().copied(), Some("r3999"));
+        let note = formatted.lines().next().unwrap();
+        let path = note
+            .split_once("complete log saved to ")
+            .unwrap()
+            .1
+            .strip_suffix("]")
+            .unwrap();
+        let full = std::fs::read_to_string(path).unwrap();
+        assert_eq!(full.lines().count(), 4000);
+        assert_eq!(full.lines().next(), Some("r0000"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_large_output_keeps_bounded_tail_and_complete_log() {
+        let output = run_shell_command(
+            "printf 'START\n'; head -c 200000 /dev/zero | tr '\\000' x; printf '\nEND\n'",
+            std::env::temp_dir(),
+            Some(5000),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            output.stdout.len() < 100000,
+            "foreground capture must stay bounded"
+        );
+        assert!(output.stdout.trim_end().ends_with("END"));
+        let note = output.stdout.lines().next().unwrap();
+        let path = note
+            .split_once("complete log saved to ")
+            .map(|(_, path)| path)
+            .unwrap()
+            .strip_suffix("]")
+            .unwrap();
+        let full = std::fs::read_to_string(path).unwrap();
+        assert!(full.starts_with("START"));
+        assert!(full.ends_with("END\n"));
+        assert_eq!(full.len(), 200011);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn default_cwd_uses_first_workspace_root_when_configured() {
@@ -1218,6 +1602,8 @@ mod tests {
             status_code: Some(1),
             stdout: String::new(),
             stderr: "boom\n".to_string(),
+            stdout_offloaded: false,
+            stderr_offloaded: false,
         };
 
         let formatted = format_command_output(&output);

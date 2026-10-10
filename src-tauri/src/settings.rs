@@ -1,7 +1,6 @@
 use chrono::{Datelike, Local};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
-use tauri_plugin_store::StoreBuilder;
 
 // 设置存储文件名
 const SETTINGS_STORE: &str = "settings.json";
@@ -170,7 +169,7 @@ pub struct ProviderCustomHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProviderRequestConfig {
-    /// OAuth metadata only; secrets live in the operating system credential store.
+    /// OAuth metadata only; secrets live in the local JSON credential store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<crate::provider_oauth::OAuthConfig>,
     /// 附加到该供应商所有请求上的自定义头。同名时覆盖 CLI 身份预设。
@@ -1403,15 +1402,13 @@ fn default_max_tool_output_chars() -> Option<usize> {
 }
 
 fn default_chat_approval_policy() -> String {
-    // Green-light by default: file/shell tools run without a per-conversation
-    // prompt. The consent mechanism stays available — the UI can switch this to
-    // "always_confirm" or the per-conversation prompt for cautious users.
-    "auto".to_string()
+    // Commands, file writes and remote tools require explicit user approval by default.
+    "always_confirm".to_string()
 }
 
 /// The pre-green-light default. `sanitize_settings`' one-shot migration only
-/// flips an existing install to "auto" when its stored policy still equals this
-/// string, so a user who deliberately chose another policy is never stomped.
+/// preserves this policy on older installs; explicit auto choices also survive.
+#[cfg(test)]
 const LEGACY_DEFAULT_APPROVAL_POLICY: &str = "readonly_auto_sensitive_confirm";
 
 /// Hook 超时的合法区间与默认值。
@@ -1726,8 +1723,18 @@ impl Default for ScreenshotAnnotateConfig {
 }
 
 const BUILTIN_THEME_IDS: &[&str] = &[
-    "neutral", "warm", "cool", "graphite", "blossom", "grove", "ocean", "ember", "iris",
-    "white", "nord", "solarized",
+    "neutral",
+    "warm",
+    "cool",
+    "graphite",
+    "blossom",
+    "grove",
+    "ocean",
+    "ember",
+    "iris",
+    "white",
+    "nord",
+    "solarized",
 ];
 /// `crypto.randomUUID()` is 36 ASCII characters: 8-4-4-4-12 hex.
 const CUSTOM_THEME_ID_LEN: usize = 36;
@@ -2019,7 +2026,7 @@ pub struct Settings {
     #[serde(default)]
     pub builtin_assistants_seeded_v3: bool,
     /// 一次性迁移标记：把 pre-green-light 安装（原生工具默认全关 + 旧 approval_policy）
-    /// 带到新默认——原生文件/命令工具置 true，且仅当 approval_policy 仍是旧默认时改 "auto"。
+    /// 带到新默认——原生文件/命令工具置 true，不改变已有审批策略（包括用户显式选择的 auto）。
     /// 幂等：置 true 后不再翻转，尊重用户此后手动关闭某工具或改 policy 的选择。
     #[serde(default)]
     pub chat_tools_greenlit_v1: bool,
@@ -2754,8 +2761,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         settings.theme = default_theme();
     }
     sanitize_custom_themes(&mut settings.custom_themes);
-    settings.theme_color =
-        canonicalize_theme_color(&settings.theme_color, &settings.custom_themes);
+    settings.theme_color = canonicalize_theme_color(&settings.theme_color, &settings.custom_themes);
     settings.ui_font_scale = if settings.ui_font_scale.is_finite() {
         settings.ui_font_scale.clamp(0.8, 1.4)
     } else {
@@ -2954,10 +2960,9 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
     sanitize_hooks(&mut settings.chat_tools.hooks);
     // One-shot green-light migration: bring a pre-green-light install (native
-    // tools defaulted OFF + old approval_policy) to the new baseline. Idempotent
+    // tools defaulted OFF) to the capability baseline. Approval is never weakened. Idempotent
     // via `chat_tools_greenlit_v1` so a user who later turns a tool back off, or
-    // picks a stricter policy, is never re-flipped. The policy is only changed
-    // when it still equals the legacy default, so an explicit choice survives.
+    // picks a stricter policy, is never re-flipped. Explicit approval choices survive.
     if !settings.chat_tools_greenlit_v1 {
         let native = &mut settings.chat_tools.native_tools;
         native.read_file = true;
@@ -2966,9 +2971,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         native.run_command = true;
         native.web_fetch = true;
         native.web_search = true;
-        if settings.chat_tools.approval_policy == LEGACY_DEFAULT_APPROVAL_POLICY {
-            settings.chat_tools.approval_policy = "auto".to_string();
-        }
         settings.chat_tools_greenlit_v1 = true;
     }
     settings.chat_tools.skill_scan_paths = settings
@@ -3430,45 +3432,60 @@ fn apply_external_agent_settings(previous: &Settings, settings: &Settings) -> Re
     crate::external_agents::provider_profile::materialize_all()
 }
 
+fn read_settings_document(
+    path: &std::path::Path,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match std::fs::read(path) {
+        Ok(data) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+                    |error| format!("Cannot restrict settings file permissions: {error}"),
+                )?;
+            }
+            serde_json::from_slice(&data)
+                .map_err(|_| "Invalid settings JSON; existing file preserved".into())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(format!("Cannot read settings JSON: {error}")),
+    }
+}
+fn write_settings_document(
+    path: &std::path::Path,
+    document: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let data = serde_json::to_string_pretty(document).map_err(|error| error.to_string())?;
+    crate::chat::storage::atomic_write(path, &data, "settings")
+}
+
 pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let (canonical, to_persist) = settings_for_persistence(settings);
-    let store = StoreBuilder::new(app, SETTINGS_STORE)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let previous_value = store.get("settings");
-    let previous_settings = previous_value
-        .clone()
+    use tauri::Manager;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(SETTINGS_STORE);
+    let previous = read_settings_document(&path)?;
+    let previous_settings = previous
+        .get("settings")
+        .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .map(sanitize_settings)
         .unwrap_or_default();
-    store.set(
-        "settings".to_string(),
+    let mut next = previous.clone();
+    next.insert(
+        "settings".into(),
         serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
     );
-    let previous_cache_value = previous_value.clone();
     let external_agents_changed = external_cli_agents_changed(&previous_settings, &canonical);
     persist_then_apply_with_rollback(
-        || store.save().map_err(|e| e.to_string()),
-        || {
-            match previous_cache_value {
-                Some(value) => store.set("settings".to_string(), value),
-                None => {
-                    store.delete("settings");
-                }
-            }
-            Ok(())
-        },
+        || write_settings_document(&path, &next),
+        || Ok(()),
         || apply_external_agent_settings(&previous_settings, &canonical),
         || {
-            match previous_value {
-                Some(value) => {
-                    store.set("settings".to_string(), value);
-                }
-                None => {
-                    store.delete("settings");
-                }
-            }
-            let disk_rollback = store.save().map_err(|err| err.to_string());
+            let disk_rollback = write_settings_document(&path, &previous);
             crate::external_agents::overrides::sync_from_settings(&previous_settings);
             // apply 只在配置变了时才写过原生文件；没写过就没有什么要还原。
             let profile_rollback = if external_agents_changed {
@@ -3489,7 +3506,6 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
 
     // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
     // 首次启动的内置专家迁移会在 AppState manage 之前保存设置，此时还没有缓存可清。
-    use tauri::Manager;
     if let Some(state) = app.try_state::<crate::state::AppState>() {
         state
             .external_discovery()
@@ -3567,14 +3583,15 @@ fn copy_dir_recursive(from: &std::path::Path, to: &std::path::Path) -> std::io::
 pub fn load_settings(app: &AppHandle) -> Settings {
     // 入口先把旧 identifier 目录的数据搬到新目录（幂等）
     migrate_legacy_app_data(app);
-    let store = StoreBuilder::new(app, SETTINGS_STORE).build();
-    let settings = match store {
-        Ok(store) => store
-            .get("settings")
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default(),
-        Err(_) => Settings::default(),
-    };
+    use tauri::Manager;
+    let settings = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|root| read_settings_document(&root.join(SETTINGS_STORE)).ok())
+        .and_then(|mut document| document.remove("settings"))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
     let settings = sanitize_settings(settings);
     crate::external_agents::overrides::sync_from_settings(&settings);
     settings
@@ -3818,6 +3835,31 @@ fn normalize_hotkey(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_json_owner_preserves_additional_keys_and_uses_private_atomic_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original =
+            serde_json::json!({"settings": {"themeMode":"dark"}, "other-plugin-key": "retained"});
+        std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut document = super::read_settings_document(&path).unwrap();
+        document.insert("settings".into(), serde_json::json!({"themeMode":"light"}));
+        super::write_settings_document(&path, &document).unwrap();
+        let reopened = super::read_settings_document(&path).unwrap();
+        assert_eq!(reopened["settings"]["themeMode"], "light");
+        assert_eq!(reopened["other-plugin-key"], "retained");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&path, "invalid-json").unwrap();
+        assert!(super::read_settings_document(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid-json");
+    }
     use std::cell::RefCell;
 
     use crate::state::test_app_state;
@@ -3869,18 +3911,32 @@ mod tests {
             "name": "Anonymous",
             "baseUrl": "http://localhost:1234/v1",
             "enabledModels": ["local-model"]
-        })).unwrap();
-        for format in ["openai_chat", "openai_responses", "xai_responses", "anthropic_messages", "gemini"] {
+        }))
+        .unwrap();
+        for format in [
+            "openai_chat",
+            "openai_responses",
+            "xai_responses",
+            "anthropic_messages",
+            "gemini",
+        ] {
             provider.api_format = format.into();
-            for keys in [Vec::new(), vec![" ".into(), "\t".into()], vec!["key".into()]] {
+            for keys in [
+                Vec::new(),
+                vec![" ".into(), "\t".into()],
+                vec!["key".into()],
+            ] {
                 provider.api_keys = keys;
                 assert!(provider.authentication_ready());
                 assert!(provider_has_usable_config(&provider));
             }
         }
-        provider.request.oauth = Some(serde_json::from_value(serde_json::json!({
-            "provider": "codex"
-        })).unwrap());
+        provider.request.oauth = Some(
+            serde_json::from_value(serde_json::json!({
+                "provider": "codex"
+            }))
+            .unwrap(),
+        );
         assert!(!provider.authentication_ready());
         assert!(!provider_has_usable_config(&provider));
         provider.request.oauth.as_mut().unwrap().credential_id = Some("saved-login".into());
@@ -4651,7 +4707,7 @@ mod tests {
     }
 
     #[test]
-    fn greenlight_migration_enables_tools_and_flips_legacy_policy() {
+    fn greenlight_migration_enables_tools_without_weakening_approval() {
         // Simulate a pre-green-light install: flag unset, native tools off, old policy.
         let mut settings = Settings::default();
         settings.chat_tools_greenlit_v1 = false;
@@ -4670,7 +4726,11 @@ mod tests {
         assert!(settings.chat_tools.native_tools.read_file);
         assert!(settings.chat_tools.native_tools.write_file);
         assert!(settings.chat_tools.native_tools.run_command);
-        assert_eq!(settings.chat_tools.approval_policy, "auto");
+        assert_eq!(
+            settings.chat_tools.approval_policy,
+            LEGACY_DEFAULT_APPROVAL_POLICY
+        );
+        assert_eq!(ChatToolsConfig::default().approval_policy, "always_confirm");
     }
 
     #[test]
@@ -4850,17 +4910,15 @@ mod tests {
 
     #[test]
     fn greenlight_migration_does_not_stomp_explicit_policy_on_first_run() {
-        // Pre-green-light flag, but the user had explicitly chosen always_confirm.
-        let mut settings = Settings::default();
-        settings.chat_tools_greenlit_v1 = false;
-        settings.chat_tools.approval_policy = "always_confirm".to_string();
-
-        let settings = sanitize_settings(settings);
-
-        // Tools still get enabled, but the explicit policy is preserved.
-        assert!(settings.chat_tools_greenlit_v1);
-        assert!(settings.chat_tools.native_tools.read_file);
-        assert_eq!(settings.chat_tools.approval_policy, "always_confirm");
+        for policy in ["always_confirm", "auto"] {
+            let mut settings = Settings::default();
+            settings.chat_tools_greenlit_v1 = false;
+            settings.chat_tools.approval_policy = policy.into();
+            let settings = sanitize_settings(settings);
+            assert!(settings.chat_tools_greenlit_v1);
+            assert!(settings.chat_tools.native_tools.read_file);
+            assert_eq!(settings.chat_tools.approval_policy, policy);
+        }
     }
 
     #[test]
@@ -5986,8 +6044,11 @@ mod custom_theme_tests {
         assert!(stored.get("custom_themes").is_none());
         assert_eq!(stored["themeColor"], "neutral");
 
-        for broken in [serde_json::Value::Null, serde_json::json!("nope"), serde_json::json!({})]
-        {
+        for broken in [
+            serde_json::Value::Null,
+            serde_json::json!("nope"),
+            serde_json::json!({}),
+        ] {
             let mut body = legacy_body();
             body["customThemes"] = broken;
             let settings: Settings =
@@ -6038,11 +6099,12 @@ mod custom_theme_tests {
         assert_eq!(value["customThemes"][0]["light"]["surfaceSoft"], "#020202");
         assert_eq!(value["customThemes"][0]["light"]["onAccent"], "#0f0f0f");
         assert_eq!(value["customThemes"][0]["light"]["dangerSoft"], "#111111");
-        assert!(value["customThemes"][0]["light"].get("surface_soft").is_none());
+        assert!(value["customThemes"][0]["light"]
+            .get("surface_soft")
+            .is_none());
         assert!(value["customThemes"][0].get("css").is_none());
 
-        let reloaded: Settings =
-            serde_json::from_value(value).expect("saved settings should load");
+        let reloaded: Settings = serde_json::from_value(value).expect("saved settings should load");
         let reloaded = sanitize_settings(reloaded);
         assert_eq!(reloaded.custom_themes, canonical.custom_themes);
         assert_eq!(reloaded.theme_color, ocean);

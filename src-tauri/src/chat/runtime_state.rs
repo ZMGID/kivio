@@ -22,6 +22,8 @@ pub(crate) struct ChatRuntimeState {
     /// Signalled whenever a conversation's last reply slot is retired, so a
     /// queued send can retry its atomic reservation instead of polling.
     reply_idle: tokio::sync::Notify,
+    /// Generation ownership still rejects late writes; this only wakes I/O waits.
+    generation_retired: tokio::sync::Notify,
     popout_create_lock: tokio::sync::Mutex<()>,
     conversation_create_lock: tokio::sync::Mutex<()>,
 }
@@ -53,11 +55,13 @@ impl ChatRuntimeState {
         indexes.active_generations.remove(conversation_id);
         indexes.pending_steering.remove(conversation_id);
         indexes.pending_follow_up.remove(conversation_id);
+        self.generation_retired.notify_waiters();
     }
 
     pub(crate) fn end_generation(&self, conversation_id: &str, generation: u64) {
         let mut indexes = self.indexes();
         retire_generation(&mut indexes, conversation_id, generation);
+        self.generation_retired.notify_waiters();
     }
 
     /// Reply slot and generation are retired as one operation. Releasing the
@@ -72,6 +76,7 @@ impl ChatRuntimeState {
         let idle = {
             let mut indexes = self.indexes();
             retire_generation(&mut indexes, conversation_id, generation);
+            self.generation_retired.notify_waiters();
             retire_reply(&mut indexes, conversation_id, run_id)
         };
         if idle {
@@ -91,6 +96,24 @@ impl ChatRuntimeState {
             .active_generations
             .get(conversation_id)
             .is_some_and(|active| !active.is_empty())
+    }
+
+    /// Subscribe before checking ownership so retirement cannot fall between
+    /// the check and the wait. Other generations waking us remain active.
+    pub(crate) async fn wait_for_generation_inactive(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+    ) {
+        loop {
+            let notified = self.generation_retired.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.is_generation_active(conversation_id, generation) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn push_steering(&self, conversation_id: &str, message: SteeringMessage) -> bool {
@@ -172,11 +195,15 @@ impl ChatRuntimeState {
             indexes.pending_goal_user_queue.remove(conversation_id);
             indexes.auto_compact_failures.remove(conversation_id);
             indexes.context_measurements.remove(conversation_id);
+            self.generation_retired.notify_waiters();
         }
         self.reply_idle.notify_waiters();
     }
 
-    pub(crate) fn context_measurement(&self, conversation_id: &str) -> Option<LiveContextMeasurement> {
+    pub(crate) fn context_measurement(
+        &self,
+        conversation_id: &str,
+    ) -> Option<LiveContextMeasurement> {
         self.indexes()
             .context_measurements
             .get(conversation_id)
@@ -204,9 +231,9 @@ impl ChatRuntimeState {
         if slot.request_id.is_empty() && slot.seq <= seq {
             slot.seq = seq;
             slot.lifecycle_id = lifecycle_id;
-            if let Some(stored) = stored.filter(|stored| {
-                stored.lifecycle_id == lifecycle_id && stored.seq == seq
-            }) {
+            if let Some(stored) =
+                stored.filter(|stored| stored.lifecycle_id == lifecycle_id && stored.seq == seq)
+            {
                 slot.provider_id = stored.provider_id.clone();
                 slot.model = stored.model.clone();
                 slot.reported_tokens = stored.reported_tokens;
@@ -282,7 +309,9 @@ impl ChatRuntimeState {
     ) -> Option<LiveContextMeasurement> {
         let mut indexes = self.indexes();
         let slot = indexes.context_measurements.get_mut(conversation_id)?;
-        if slot.request_id != run_id || run_id.is_empty() || slot.report_received
+        if slot.request_id != run_id
+            || run_id.is_empty()
+            || slot.report_received
             || slot.stored().reported_tokens.is_some()
         {
             return None;
@@ -306,7 +335,10 @@ impl ChatRuntimeState {
         }
     }
 
-    pub(crate) fn invalidate_context_display(&self, conversation_id: &str) -> LiveContextMeasurement {
+    pub(crate) fn invalidate_context_display(
+        &self,
+        conversation_id: &str,
+    ) -> LiveContextMeasurement {
         let mut indexes = self.indexes();
         let slot = indexes
             .context_measurements
@@ -322,7 +354,6 @@ impl ChatRuntimeState {
         slot.run_cache = None;
         slot.clone()
     }
-
 
     /// Consecutive automatic compaction failures, kept for the life of the process like
     /// ZCode's per-session circuit breaker.
@@ -448,6 +479,32 @@ fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn generation_waiters_wake_on_every_retirement_and_keep_siblings_active() {
+        for retirement in ["end", "finish", "cancel", "forget"] {
+            let runtime = ChatRuntimeState::default();
+            let generation = runtime.begin_generation("a");
+            let other = runtime.begin_generation("b");
+            let done = runtime.wait_for_generation_inactive("a", generation);
+            let sibling = runtime.wait_for_generation_inactive("b", other);
+            tokio::pin!(done, sibling);
+            assert!(futures::poll!(done.as_mut()).is_pending());
+            assert!(futures::poll!(sibling.as_mut()).is_pending());
+            match retirement {
+                "end" => runtime.end_generation("a", generation),
+                "finish" => runtime.finish_reply_generation("a", "run", generation),
+                "cancel" => runtime.cancel_conversation("a"),
+                "forget" => runtime.forget_conversation("a"),
+                _ => unreachable!(),
+            }
+            assert!(futures::poll!(done.as_mut()).is_ready(), "{retirement}");
+            assert!(
+                futures::poll!(sibling.as_mut()).is_pending(),
+                "{retirement}"
+            );
+        }
+    }
 
     #[test]
     fn parallel_runs_end_independently_and_cancel_is_conversation_scoped() {
@@ -597,15 +654,35 @@ mod tests {
     #[test]
     fn late_cache_report_cannot_overwrite_new_branch_request() {
         let runtime = ChatRuntimeState::default();
-        runtime.bind_prepared_context("conversation", "old", "first", "openai", "gpt-4o", &[], Some((100, 90)));
+        runtime.bind_prepared_context(
+            "conversation",
+            "old",
+            "first",
+            "openai",
+            "gpt-4o",
+            &[],
+            Some((100, 90)),
+        );
         runtime.invalidate_context_display("conversation");
-        runtime.bind_prepared_context("conversation", "new", "second", "openai", "gpt-4o", &[], Some((100, 10)));
+        runtime.bind_prepared_context(
+            "conversation",
+            "new",
+            "second",
+            "openai",
+            "gpt-4o",
+            &[],
+            Some((100, 10)),
+        );
         // This callback belongs to the old run, which has already lost ownership.
         runtime.note_context_run_cache("conversation", "old", Some((100, 90)));
-        let (reported, _) = runtime.report_context_tokens("conversation", "new", 7_100).unwrap();
+        let (reported, _) = runtime
+            .report_context_tokens("conversation", "new", 7_100)
+            .unwrap();
         assert_eq!(reported.run_cache, Some((100, 10)));
         runtime.note_context_run_cache("conversation", "new", Some((200, 30)));
-        let (reported, _) = runtime.report_context_tokens("conversation", "new", 8_000).unwrap();
+        let (reported, _) = runtime
+            .report_context_tokens("conversation", "new", 8_000)
+            .unwrap();
         assert_eq!(reported.run_cache, Some((200, 30)));
     }
 }

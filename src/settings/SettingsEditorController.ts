@@ -20,7 +20,7 @@ export interface SettingsEditorPort {
   refresh(): Promise<SettingsSnapshot>
   save(draft: Settings, version: SettingsVersion): Promise<SettingsSnapshot>
   subscribe(listener: (snapshot: SettingsSnapshot) => void): () => void
-  import?(path: string, version: SettingsVersion): Promise<SettingsSnapshot>
+  import?(path: string, version: SettingsVersion, trusted?: boolean): Promise<SettingsSnapshot>
 }
 
 export interface SettingsEditorView {
@@ -215,11 +215,11 @@ export class SettingsEditorController {
     this.publish({ loading: false, loadError: '', saveError: '' })
   }
 
-  async import(path: string): Promise<void> {
+  async import(path: string, trusted?: boolean): Promise<void> {
     if (!this.port.import) throw new Error('Settings import is unavailable')
     if (!await this.flush()) throw new Error(this.view.saveError || 'Save failed: unsaved settings remain')
     if (!this.version) throw new Error('Settings version is unavailable')
-    const imported = await this.port.import(path, this.version)
+    const imported = trusted ? await this.port.import(path, this.version, true) : await this.port.import(path, this.version)
     this.replace(imported)
     this.onSettingsChange()
   }

@@ -119,7 +119,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider, authorize
         ]} />
     </FieldBlock>
     {auth && <FieldBlock label={zh ? '账号授权' : 'Account authorization'}
-      description={zh ? '在浏览器中登录账号。凭证保存在系统凭证库，调用模型时自动刷新。' : 'Sign in through your browser. Credentials stay in the system credential store and refresh automatically.'}>
+      description={zh ? '在浏览器中登录账号。凭证保存在本机 JSON 文件中，调用模型时自动刷新；完整备份包含凭证，请勿分享。' : 'Sign in through your browser. Credentials are saved in local JSON and refresh automatically. Full backups include credentials; keep them private.'}>
       <div className="flex items-center gap-2">
         <span className="text-sm" role="status">{auth.credentialId ? (zh ? '已授权' : 'Authorized') : (zh ? '尚未授权' : 'Not signed in')}</span>
         {auth.credentialId

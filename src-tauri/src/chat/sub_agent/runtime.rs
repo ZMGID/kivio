@@ -160,6 +160,8 @@ pub struct Runtime {
     control: Mutex<Control>,
     events: tokio::sync::watch::Sender<u64>,
     result_events: tokio::sync::watch::Sender<u64>,
+    /// Stopping takes effect even if its durable status cannot be saved.
+    running_changed: tokio::sync::Notify,
 }
 
 impl Runtime {
@@ -186,6 +188,7 @@ impl Runtime {
             }),
             events: tokio::sync::watch::channel(0).0,
             result_events: tokio::sync::watch::channel(0).0,
+            running_changed: tokio::sync::Notify::new(),
         };
         // Rebuild lightweight summaries one record at a time on startup. Never
         // retain all histories in memory while recovering interrupted workers.
@@ -698,6 +701,7 @@ impl Runtime {
         }
         if record.current().status.active() {
             control.stopping.insert(expected.into());
+            self.running_changed.notify_waiters();
             if user {
                 control.user_stops.insert(expected.into());
             }
@@ -736,6 +740,7 @@ impl Runtime {
             }
         }
         let mut errors = Vec::new();
+        self.running_changed.notify_waiters();
         for (_, id) in targets {
             let result = self.scoped(conversation, &id).and_then(|mut record| {
                 record.current_mut().status = Status::Stopping;
@@ -763,6 +768,18 @@ impl Runtime {
             && !control.stopping.contains(run)
     }
 
+    pub(super) async fn wait_running_inactive(&self, conversation: &str, id: &str, run: &str) {
+        loop {
+            let notified = self.running_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.running(conversation, id, run) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
     pub fn register_parent(&self, run: &str) {
         self.lock().live_parents.insert(run.into());
     }
@@ -776,6 +793,7 @@ impl Runtime {
         let mut control = self.lock();
         control.stopping.insert(run.into());
         control.user_stops.insert(run.into());
+        self.running_changed.notify_waiters();
     }
 
     /// Orphans are recoverable by the next parent, but a live owner receives its
@@ -850,6 +868,7 @@ impl Runtime {
             .send_modify(|seq| *seq = seq.wrapping_add(1));
         control.storage_errors.remove(run);
         control.active.remove(run);
+        self.running_changed.notify_waiters();
         control.owners.remove(run);
         control.parent_runs.remove(run);
         control.stopping.remove(run);
@@ -932,6 +951,7 @@ impl Runtime {
             control.exiting = true;
             let active = control.active.clone();
             control.stopping.extend(active);
+            self.running_changed.notify_waiters();
             let ids: Vec<_> = control.owners.values().map(|(_, id)| id.clone()).collect();
             for id in ids {
                 let result = self.read(&id).and_then(|mut record| {
@@ -1201,16 +1221,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stopping_one_child_keeps_others_running_and_holds_capacity_until_finished() {
+    #[tokio::test]
+    async fn stopping_one_child_keeps_others_running_and_holds_capacity_until_finished() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Runtime::open(dir.path().into()).unwrap();
         runtime.set_limit(2);
         let a = child(&runtime, "a");
         let b = child(&runtime, "b");
+        let stopped = runtime.wait_running_inactive("conv_a", &a.id, &a.current().id);
+        let sibling = runtime.wait_running_inactive("conv_a", &b.id, &b.current().id);
+        tokio::pin!(stopped, sibling);
+        assert!(futures::poll!(stopped.as_mut()).is_pending());
+        assert!(futures::poll!(sibling.as_mut()).is_pending());
         runtime
             .stop("conv_a", &a.id, &a.current().id, true)
             .unwrap();
+        assert!(futures::poll!(stopped.as_mut()).is_ready());
+        assert!(futures::poll!(sibling.as_mut()).is_pending());
         assert!(!runtime.running("conv_a", &a.id, &a.current().id));
         assert!(runtime.running("conv_a", &b.id, &b.current().id));
         assert!(runtime
@@ -1805,22 +1832,26 @@ mod tests {
         assert!(runtime.can_collect("a", "b"));
     }
 
-    #[test]
-    fn parent_stop_cancels_every_worker_even_when_storage_is_offline() {
+    #[tokio::test]
+    async fn parent_stop_cancels_every_worker_even_when_storage_is_offline() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("records");
         let backup = dir.path().join("backup");
         let runtime = Runtime::open(root.clone()).unwrap();
         let a = child(&runtime, "a");
         let b = child(&runtime, "b");
+        let stopped = runtime.wait_running_inactive("conv_a", &a.id, &a.current().id);
+        tokio::pin!(stopped);
+        assert!(futures::poll!(stopped.as_mut()).is_pending());
         std::fs::rename(&root, &backup).unwrap();
         std::fs::write(&root, "storage offline").unwrap();
         assert!(runtime.stop_parent("conv_a", Some("parent")).is_err());
+        assert!(futures::poll!(stopped.as_mut()).is_ready());
         assert!(!runtime.running("conv_a", &a.id, &a.current().id));
         assert!(!runtime.running("conv_a", &b.id, &b.current().id));
         std::fs::remove_file(&root).unwrap();
         std::fs::rename(&backup, &root).unwrap();
-        for record in [a, b] {
+        for record in [&a, &b] {
             let ended = runtime
                 .finish(
                     "conv_a",

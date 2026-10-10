@@ -261,6 +261,20 @@ pub async fn execute_tool_call(
         );
     }
 
+    let interactive_approval = host.supports_interactive_approval();
+    let asks_user = tool.source == "native" && ask_user::is_ask_user_tool_name(&tool.name);
+    if !interactive_approval
+        && (hook_approval_reason.is_some() || tool_requires_approval(settings, tool) || asks_user)
+    {
+        let reason = "多答模式无法安全审批；请改用单模型执行，或在设置中显式选择自动授权。Interactive approval is unavailable in parallel answers; use single-model mode or explicitly select automatic authorization.";
+        record.status = ToolCallStatus::Skipped;
+        record.duration_ms = Some(0);
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some(reason.into());
+        host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+        return (record, reason.into(), Vec::new());
+    }
+
     let hook_approved = if let Some(reason) = hook_approval_reason {
         record.result_preview = Some(reason);
         if !host.request_tool_approval(ctx, &record).await {
@@ -289,7 +303,7 @@ pub async fn execute_tool_call(
     // then run freely with full-disk access for the rest of the conversation.
     // `approval_policy`: "auto" implicitly consents (no prompt); "always_confirm"
     // confirms each call (the per-call prompt IS the gate — no separate session
-    // consent); the default prompts once per conversation. Everything else (MCP
+    // consent); the legacy read-only policy prompts once per conversation. Everything else (MCP
     // tools, etc.) keeps the existing per-call approval.
     let skip = |record: &mut ToolCallRecord, reason: &str| {
         record.status = ToolCallStatus::Skipped;
@@ -297,7 +311,8 @@ pub async fn execute_tool_call(
         record.error = Some(reason.to_string());
     };
 
-    if !hook_approved && super::prepare::tool_requires_session_consent(tool) {
+    if !hook_approved && interactive_approval && super::prepare::tool_requires_session_consent(tool)
+    {
         let policy = settings.chat_tools.approval_policy.as_str();
         if policy == "always_confirm" {
             if !host.request_tool_approval(ctx, &record).await {
@@ -1157,10 +1172,14 @@ mod tests {
         approvals: AtomicUsize,
         consents: AtomicUsize,
         deny_consent: bool,
+        parallel_arm: bool,
         records: Mutex<Vec<ToolCallRecord>>,
     }
 
     impl AgentHost for ExecuteTestHost {
+        fn supports_interactive_approval(&self) -> bool {
+            !self.parallel_arm
+        }
         fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
             self.workflow.as_ref()
         }
@@ -1632,9 +1651,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parallel_answer_approval_never_executes_sensitive_or_remote_tools_implicitly() {
+        let host = ExecuteTestHost {
+            parallel_arm: true,
+            ..Default::default()
+        };
+        let executor = ExecuteTestExecutor::default();
+        let mut settings = Settings::default();
+        let tool = sensitive_test_tool();
+        let call = || {
+            test_pending_call(
+                "c",
+                "write",
+                serde_json::json!({"path":"file","content":"text"}),
+            )
+        };
+        let (record, feedback, _) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &tool,
+            call(),
+            None,
+        )
+        .await;
+        assert!(matches!(record.status, ToolCallStatus::Skipped));
+        assert!(feedback.contains("single-model"));
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
+        let mut remote = tool.clone();
+        remote.source = "mcp".into();
+        remote.sensitive = false;
+        settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".into();
+        let (record, _, _) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &remote,
+            call(),
+            None,
+        )
+        .await;
+        assert!(matches!(record.status, ToolCallStatus::Skipped));
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+        settings.chat_tools.approval_policy = "auto".into();
+        let (record, _, _) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &tool,
+            call(),
+            None,
+        )
+        .await;
+        assert!(matches!(record.status, ToolCallStatus::Success));
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn workflow_hook_ask_requires_approval_even_under_auto_policy() {
         let dir = tempfile::tempdir().unwrap();
-        let host = host_with_hook(
+        let mut host = host_with_hook(
             dir.path(),
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"review"}}),
         );
@@ -1656,6 +1736,24 @@ mod tests {
         )
         .await;
         assert!(matches!(record.status, ToolCallStatus::Success));
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 1);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+        host.parallel_arm = true;
+        let (record, _, _) = execute_tool_call(
+            &host,
+            &executor,
+            &settings,
+            &test_execution_context(),
+            &sensitive_test_tool(),
+            test_pending_call(
+                "other",
+                "write",
+                serde_json::json!({"path":"file","content":"text"}),
+            ),
+            None,
+        )
+        .await;
+        assert!(matches!(record.status, ToolCallStatus::Skipped));
         assert_eq!(host.approvals.load(Ordering::SeqCst), 1);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }

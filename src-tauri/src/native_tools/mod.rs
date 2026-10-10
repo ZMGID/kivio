@@ -415,15 +415,25 @@ mod tests {
     fn project_tools_reject_missing_roots_without_creating_them() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
-        for root in [None, Some(String::new()), Some(missing.display().to_string())] {
-            let workspace = NativeToolWorkspace::project("project_test".into(), "Test".into(), root);
+        for root in [
+            None,
+            Some(String::new()),
+            Some(missing.display().to_string()),
+        ] {
+            let workspace =
+                NativeToolWorkspace::project("project_test".into(), "Test".into(), root);
             assert!(resolve_tool_existing_dir(&workspace, None).is_err());
             assert!(!missing.exists());
         }
         let workspace = NativeToolWorkspace::project(
-            "project_test".into(), "Test".into(), Some(dir.path().display().to_string()),
+            "project_test".into(),
+            "Test".into(),
+            Some(dir.path().display().to_string()),
         );
-        assert_eq!(resolve_tool_existing_dir(&workspace, None).unwrap(), dir.path().canonicalize().unwrap());
+        assert_eq!(
+            resolve_tool_existing_dir(&workspace, None).unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
     }
 
     #[test]

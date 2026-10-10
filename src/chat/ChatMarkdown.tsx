@@ -787,6 +787,23 @@ function HtmlCodePreview({ html }: { html: string }) {
     [html, settledHtml, streaming],
   )
 
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!showPreview) return
+    let active = true
+    let id: string | null = null
+    setPreviewUrl(null)
+    void api.createHtmlPreview(previewHtml).then((preview) => {
+      id = preview.id
+      if (active) setPreviewUrl(preview.url)
+      else void api.releaseHtmlPreview(preview.id).catch(() => {})
+    }).catch(() => { if (active) setPreviewUrl(null) })
+    return () => {
+      active = false
+      if (id) void api.releaseHtmlPreview(id).catch(() => {})
+    }
+  }, [showPreview, previewHtml])
+
   const openInBrowser = () => {
     void api.openHtmlPreview(htmlPreviewSrcDoc(html)).catch((err) => {
       console.error('Failed to open HTML preview:', err)
@@ -795,7 +812,7 @@ function HtmlCodePreview({ html }: { html: string }) {
 
   return (
     <>
-      {showPreview ? (
+      {showPreview && previewUrl ? (
         <ChatHeavyIsland
           minHeight={520}
           fallback={<CodeBlock code={html} language="html" />}
@@ -804,9 +821,9 @@ function HtmlCodePreview({ html }: { html: string }) {
           <div className="my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-neutral-50">
             <iframe
               title="HTML 预览"
-              srcDoc={previewHtml}
+              src={previewUrl}
               // 模型输出是不可信输入。允许脚本用于交互式预览，但绝不允许 same-origin：
-              // 否则 srcDoc 可直接访问父聊天页及 Tauri 注入的 IPC 全局。
+              // 独立预览源不注入 Tauri IPC，响应 CSP 也禁止访问 IPC/本机服务。
               sandbox="allow-scripts"
               referrerPolicy="no-referrer"
               className="h-[520px] w-full border-0 bg-neutral-50"

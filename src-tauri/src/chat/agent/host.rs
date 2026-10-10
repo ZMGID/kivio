@@ -9,6 +9,11 @@ use super::execute::ToolExecutionContext;
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait AgentHost: Send + Sync {
+    /// Parallel answer arms cannot share an interactive approval mailbox safely.
+    fn supports_interactive_approval(&self) -> bool {
+        true
+    }
+
     /// A managed worker must not claim cleanup merely because a tool future was
     /// dropped. Keep ownership until the operation itself returns.
     fn requires_tool_completion(&self) -> bool {
@@ -104,7 +109,8 @@ pub trait AgentHost: Send + Sync {
         _model: &str,
         _messages: &[serde_json::Value],
         _tools: &[crate::mcp::ChatToolDefinition],
-    ) {}
+    ) {
+    }
 
     fn note_context_cache(&self, _conversation_id: &str, _cache: Option<(u64, u64)>) {}
 
@@ -126,7 +132,6 @@ pub trait AgentHost: Send + Sync {
         _cache_usage: Option<(u64, u64)>,
     ) {
     }
-
 
     /// Persist a best-effort snapshot of the in-progress assistant message to
     /// durable storage after a completed tool round. The full assistant message

@@ -18,8 +18,8 @@ use crate::settings::ModelProvider;
 use crate::state::AppState;
 
 use super::catalog::strip_transcripts_for_frontend;
-use super::sanitization::{sanitize_api_message_for_model, sanitize_image_payloads_for_model};
 use super::image_content_part;
+use super::sanitization::{sanitize_api_message_for_model, sanitize_image_payloads_for_model};
 
 #[tauri::command]
 pub(crate) async fn chat_get_context_stats(
@@ -181,8 +181,15 @@ pub(crate) async fn chat_clear_context(
 
 pub(super) fn invalidate_context_measurement(state: &AppState, conversation: &mut Conversation) {
     let context = &mut conversation.context_state;
-    state.chat_runtime().seed_context_measurement(&conversation.id, context.lifecycle_id, context.measurement_seq, context.request_measurement.as_ref());
-    let live = state.chat_runtime().invalidate_context_display(&conversation.id);
+    state.chat_runtime().seed_context_measurement(
+        &conversation.id,
+        context.lifecycle_id,
+        context.measurement_seq,
+        context.request_measurement.as_ref(),
+    );
+    let live = state
+        .chat_runtime()
+        .invalidate_context_display(&conversation.id);
     context.measurement_seq = live.seq;
     context.lifecycle_id = live.lifecycle_id;
     context.request_measurement = Some(live.stored());
@@ -282,7 +289,6 @@ pub(super) fn apply_context_clear(conversation: &mut Conversation) -> Result<(),
     conversation.context_state.warning = None;
     Ok(())
 }
-
 
 pub(crate) fn active_summary(conversation: &Conversation) -> Option<&ConversationContextSummary> {
     let summary = conversation
@@ -475,15 +481,25 @@ pub(super) fn measure_request_segments(
     provider: Option<&ModelProvider>,
     model: &str,
 ) -> Vec<ContextUsageSegment> {
-    let mut segments = crate::chat::agent::context_measure::measure_prepared_request(messages, tools);
-    let image_tokens = messages.iter().map(|message| request_image_tokens(message, provider, model)).sum::<usize>();
+    let mut segments =
+        crate::chat::agent::context_measure::measure_prepared_request(messages, tools);
+    let image_tokens = messages
+        .iter()
+        .map(|message| request_image_tokens(message, provider, model))
+        .sum::<usize>();
     if image_tokens > 0 {
-        if let Some(conversation) = segments.iter_mut().find(|segment| segment.id == "conversation") {
+        if let Some(conversation) = segments
+            .iter_mut()
+            .find(|segment| segment.id == "conversation")
+        {
             conversation.estimated_tokens += image_tokens;
         } else {
             segments.push(ContextUsageSegment {
-                id: "conversation".into(), label: "Conversation".into(),
-                estimated_tokens: image_tokens, chars: 0, color: None,
+                id: "conversation".into(),
+                label: "Conversation".into(),
+                estimated_tokens: image_tokens,
+                chars: 0,
+                color: None,
             });
         }
     }
@@ -496,40 +512,66 @@ fn image_header_dimensions(data: &str) -> Option<(u32, u32)> {
     const HEADER_BASE64_CHARS: usize = 65_536_usize.div_ceil(3) * 4;
     let count = data.len().min(HEADER_BASE64_CHARS) / 4 * 4;
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&data.as_bytes()[..count]).ok()?;
+        .decode(&data.as_bytes()[..count])
+        .ok()?;
     let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format().ok()?.into_dimensions().ok()?;
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
     (width > 0 && height > 0).then_some((width, height))
 }
 
 fn image_url_dimensions(url: &str) -> Option<(u32, u32)> {
     let (metadata, data) = url.strip_prefix("data:")?.split_once(',')?;
-    metadata.ends_with(";base64").then(|| image_header_dimensions(data)).flatten()
+    metadata
+        .ends_with(";base64")
+        .then(|| image_header_dimensions(data))
+        .flatten()
 }
 
 /// Estimate request image parts, never their encoded length or remote contents.
-fn request_image_tokens(value: &Value, provider: Option<&ModelProvider>, model: &str) -> usize {
+pub(crate) fn request_image_tokens(
+    value: &Value,
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> usize {
     match value {
-        Value::Array(values) => values.iter().map(|value| request_image_tokens(value, provider, model)).sum(),
-        Value::Object(object) if object.get("type").and_then(Value::as_str)
-            .is_some_and(|kind| agent_prepare::IMAGE_PART_TYPES.contains(&kind)) => {
+        Value::Array(values) => values
+            .iter()
+            .map(|value| request_image_tokens(value, provider, model))
+            .sum(),
+        Value::Object(object)
+            if object
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| agent_prepare::IMAGE_PART_TYPES.contains(&kind)) =>
+        {
             let image = object.get("image_url");
             let source = object.get("source");
-            let detail = image.and_then(|image| image.get("detail"))
-                .or_else(|| object.get("detail")).and_then(Value::as_str);
-            let url = image.and_then(|image| image.as_str().or_else(|| image.get("url")?.as_str()))
+            let detail = image
+                .and_then(|image| image.get("detail"))
+                .or_else(|| object.get("detail"))
+                .and_then(Value::as_str);
+            let url = image
+                .and_then(|image| image.as_str().or_else(|| image.get("url")?.as_str()))
                 .or_else(|| object.get("dataUrl")?.as_str())
                 .or_else(|| source?.get("url")?.as_str());
             let dimensions = if let Some(url) = url {
                 image_url_dimensions(url)
             } else {
-                source.and_then(|source| source.get("data"))
-                    .or_else(|| object.get("data")).and_then(Value::as_str)
+                source
+                    .and_then(|source| source.get("data"))
+                    .or_else(|| object.get("data"))
+                    .and_then(Value::as_str)
                     .and_then(image_header_dimensions)
             };
             estimate_image_tokens(provider, model, dimensions, detail)
         }
-        Value::Object(object) => object.values().map(|value| request_image_tokens(value, provider, model)).sum(),
+        Value::Object(object) => object
+            .values()
+            .map(|value| request_image_tokens(value, provider, model))
+            .sum(),
         _ => 0,
     }
 }
@@ -544,11 +586,18 @@ pub(super) fn estimate_image_tokens(
 ) -> usize {
     // Avoid allocating a lowercased provider/model descriptor for every image.
     let identifies = |name: &str| {
-        let contains = |value: &str| value.as_bytes().windows(name.len())
-            .any(|part| part.eq_ignore_ascii_case(name.as_bytes()));
-        contains(model) || provider.is_some_and(|provider| {
-            contains(&provider.name) || contains(&provider.base_url) || contains(&provider.api_format)
-        })
+        let contains = |value: &str| {
+            value
+                .as_bytes()
+                .windows(name.len())
+                .any(|part| part.eq_ignore_ascii_case(name.as_bytes()))
+        };
+        contains(model)
+            || provider.is_some_and(|provider| {
+                contains(&provider.name)
+                    || contains(&provider.base_url)
+                    || contains(&provider.api_format)
+            })
     };
     if identifies("anthropic") || identifies("claude") {
         return dimensions.map_or_else(
@@ -557,7 +606,9 @@ pub(super) fn estimate_image_tokens(
         );
     }
     if identifies("gemini") || identifies("google") {
-        return dimensions.map_or(1_600, |(width, height)| estimate_gemini_image_tokens(width, height));
+        return dimensions.map_or(1_600, |(width, height)| {
+            estimate_gemini_image_tokens(width, height)
+        });
     }
 
     let patch = |budget: Option<usize>, multiplier: f64, max_dimension: u32| {
@@ -565,9 +616,9 @@ pub(super) fn estimate_image_tokens(
             // Original detail on newer models has a rejection limit, not a
             // resizing budget. Unknown inputs use the largest accepted count.
             || (budget.unwrap_or(30_000) as f64 * multiplier).ceil() as usize,
-            |(width, height)| estimate_openai_patch_image_tokens(
-                width, height, budget, multiplier, max_dimension,
-            ),
+            |(width, height)| {
+                estimate_openai_patch_image_tokens(width, height, budget, multiplier, max_dimension)
+            },
         )
     };
     let astra = identifies("gpt-6-astra");
@@ -655,7 +706,9 @@ pub(super) fn resolve_usage_anchor(
         .enumerate()
         .rev()
         .find_map(|(idx, message)| {
-            if message.role != "assistant" || group_answer_excluded_from_context(conversation, message) {
+            if message.role != "assistant"
+                || group_answer_excluded_from_context(conversation, message)
+            {
                 return None;
             }
             if conversation
@@ -672,9 +725,17 @@ pub(super) fn resolve_usage_anchor(
                         .iter()
                         .position(|m| m.id == r.through_message_id)
                 })
-                .is_some_and(|end| idx < end || (idx == end
-                    && !conversation.context_state.compaction_boundaries.last()
-                        .is_some_and(|boundary| matches!(boundary.trigger.as_str(), "agent_loop" | "reactive"))))
+                .is_some_and(|end| {
+                    idx < end
+                        || (idx == end
+                            && !conversation
+                                .context_state
+                                .compaction_boundaries
+                                .last()
+                                .is_some_and(|boundary| {
+                                    matches!(boundary.trigger.as_str(), "agent_loop" | "reactive")
+                                }))
+                })
             {
                 return None;
             }
@@ -692,7 +753,8 @@ pub(super) fn resolve_usage_anchor(
                     return None;
                 }
             }
-            let tokens = crate::chat::agent::context_estimate::anchor_total_tokens(usage, api_format);
+            let tokens =
+                crate::chat::agent::context_estimate::anchor_total_tokens(usage, api_format);
             tokens.map(|total| (idx, total))
         });
     match anchor {
@@ -722,8 +784,13 @@ pub(super) fn conversation_cache_usage(
         {
             continue;
         }
-        let Some((next_input, next_read)) = message.cache_pair_input.zip(message.cache_pair_read)
-            .filter(|(input, read)| *input > 0 && read <= input) else { continue };
+        let Some((next_input, next_read)) = message
+            .cache_pair_input
+            .zip(message.cache_pair_read)
+            .filter(|(input, read)| *input > 0 && read <= input)
+        else {
+            continue;
+        };
         input = input.saturating_add(next_input);
         read = read.saturating_add(next_read);
     }
@@ -786,14 +853,20 @@ pub(super) async fn compute_context_state(
     let settings = state.settings_read().clone();
     let provider = settings.get_provider(&conversation.provider_id).cloned();
     let live = state.chat_runtime().context_measurement(&conversation.id);
-    let measurement = crate::chat::agent::context_measure::resolve_display(conversation, live.as_ref());
+    let measurement =
+        crate::chat::agent::context_measure::resolve_display(conversation, live.as_ref());
     let reported_context_tokens = measurement.reported_tokens;
     let segments = measurement.segments;
-    let estimated_input_tokens = segments.iter().map(|segment| segment.estimated_tokens).sum();
+    let estimated_input_tokens = segments
+        .iter()
+        .map(|segment| segment.estimated_tokens)
+        .sum();
     let mut cache = conversation_cache_usage(conversation, &settings);
     if let Some(live) = live.as_ref().filter(|live| {
-        !conversation.messages.iter().any(|message| message.id == live.message_id
-            && message.cache_pair_input.is_some())
+        !conversation
+            .messages
+            .iter()
+            .any(|message| message.id == live.message_id && message.cache_pair_input.is_some())
     }) {
         crate::chat::agent::context_measure::add_cache_pairs(&mut cache, live.run_cache);
     }
@@ -841,7 +914,8 @@ pub(super) async fn compute_context_state(
         clear_boundaries: conversation.context_state.clear_boundaries.clone(),
         warning: conversation.context_state.warning.clone(),
         context_source: Some(crate::external_agents::context::CONTEXT_SOURCE_BUILTIN.to_string()),
-        token_count_source: reported_context_tokens.map(|_| "provider_context_reported".to_string()),
+        token_count_source: reported_context_tokens
+            .map(|_| "provider_context_reported".to_string()),
         session_input_tokens: None,
         session_output_tokens: None,
         external_agent_id: None,
@@ -918,13 +992,15 @@ pub(crate) fn emit_chat_context_usage_live(
                 segments: segments.map(|segments| {
                     segments
                         .iter()
-                        .map(|segment| crate::chat::protocol::ChatContextUsageSegmentPayload {
-                            id: segment.id.clone(),
-                            label: segment.label.clone(),
-                            estimated_tokens: segment.estimated_tokens as u64,
-                            chars: segment.chars as u64,
-                            color: segment.color.clone(),
-                        })
+                        .map(
+                            |segment| crate::chat::protocol::ChatContextUsageSegmentPayload {
+                                id: segment.id.clone(),
+                                label: segment.label.clone(),
+                                estimated_tokens: segment.estimated_tokens as u64,
+                                chars: segment.chars as u64,
+                                color: segment.color.clone(),
+                            },
+                        )
                         .collect()
                 }),
             },

@@ -2,9 +2,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
@@ -1508,6 +1509,7 @@ impl CodexAppServerSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .map_err(|e| format!("spawn: {e}"))?;
         // N1: drain stderr for the process lifetime.
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
@@ -2693,6 +2695,7 @@ pub async fn detect_codex_models(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
     let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let mut reader = BufReader::new(stdout).lines();
@@ -2913,6 +2916,7 @@ pub async fn detect_codex_commands(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
     {
         if let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) {
             let mut reader = BufReader::new(stdout).lines();
@@ -3115,6 +3119,7 @@ mod tests {
                 .no_console_window()
                 .kill_on_drop(true)
                 .spawn()
+                .map(crate::external_agents::spawn::AgentChild::from)
                 .unwrap();
             let mut session = CodexAppServerSession {
                 stdin: child.stdin.take().unwrap(),
@@ -3471,7 +3476,12 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
         let args = vec!["app-server".to_string()];
         let mut writable = CodexAppServerSession::connect(
-            &wrapper, &args, &work, None, Some("workspace-write"), None,
+            &wrapper,
+            &args,
+            &work,
+            None,
+            Some("workspace-write"),
+            None,
         )
         .await
         .unwrap();
@@ -3484,61 +3494,114 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!(extra)));
-        let native = writable.request("thread/read", json!({
-            "threadId": native_id, "includeTurns": false
-        })).await.unwrap();
-        let rollout = native["thread"]["path"].as_str().map(PathBuf::from).unwrap_or_else(|| {
-            home.join("sessions/2026/10/04").join(format!(
-                "rollout-2026-10-04T00-00-00-{native_id}.jsonl"
-            ))
-        });
-        writable.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+        let native = writable
+            .request(
+                "thread/read",
+                json!({
+                    "threadId": native_id, "includeTurns": false
+                }),
+            )
+            .await
+            .unwrap();
+        let rollout = native["thread"]["path"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                home.join("sessions/2026/10/04")
+                    .join(format!("rollout-2026-10-04T00-00-00-{native_id}.jsonl"))
+            });
+        writable
+            .request("thread/unsubscribe", json!({"threadId": native_id}))
+            .await
+            .unwrap();
         writable.close().await;
         // Empty threads need not flush a rollout until their first model turn. Seed only
         // this isolated test home's metadata instead of paying for generation to persist it.
         if !rollout.exists() {
             std::fs::create_dir_all(rollout.parent().unwrap()).unwrap();
-            std::fs::write(&rollout, format!("{}\n", json!({
-                "timestamp": "2026-10-04T00:00:00.000Z",
-                "type": "session_meta",
-                "payload": {
-                    "id": native_id, "timestamp": "2026-10-04T00:00:00.000Z",
-                    "cwd": work, "originator": "kivio-offline-regression",
-                    "cli_version": "0.158.0", "source": "cli", "model_provider": "openai"
-                }
-            }))).unwrap();
+            std::fs::write(
+                &rollout,
+                format!(
+                    "{}\n",
+                    json!({
+                        "timestamp": "2026-10-04T00:00:00.000Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": native_id, "timestamp": "2026-10-04T00:00:00.000Z",
+                            "cwd": work, "originator": "kivio-offline-regression",
+                            "cli_version": "0.158.0", "source": "cli", "model_provider": "openai"
+                        }
+                    })
+                ),
+            )
+            .unwrap();
         }
 
         let mut plan = CodexAppServerSession::connect(
-            &wrapper, &args, &work, None, Some(CODEX_PLAN_MODE), Some(&native_id),
+            &wrapper,
+            &args,
+            &work,
+            None,
+            Some(CODEX_PLAN_MODE),
+            Some(&native_id),
         )
         .await
         .unwrap();
         assert_eq!(plan.thread_id(), native_id);
         // Ask the loaded server, not just the adapter's cached policy.
-        let active = plan.request("thread/resume", json!({"threadId": native_id, "excludeTurns": true})).await.unwrap();
+        let active = plan
+            .request(
+                "thread/resume",
+                json!({"threadId": native_id, "excludeTurns": true}),
+            )
+            .await
+            .unwrap();
         eprintln!("resumed plan sandbox: {}", active["sandbox"]);
         assert_eq!(active["sandbox"]["type"], "readOnly");
         let turn = build_codex_turn_params(
-            &native_id, &plan.cwd, vec![], None, None, &[], plan.approval_policy,
+            &native_id,
+            &plan.cwd,
+            vec![],
+            None,
+            None,
+            &[],
+            plan.approval_policy,
             &plan.sandbox_policy,
         );
         // Apply precisely the turn's policy through the offline settings API. Both APIs
         // update the same sticky thread policy, without starting an inference request.
-        plan.request("thread/settings/update", json!({
-            "threadId": native_id, "sandboxPolicy": turn["sandboxPolicy"]
-        })).await.unwrap();
-        plan.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+        plan.request(
+            "thread/settings/update",
+            json!({
+                "threadId": native_id, "sandboxPolicy": turn["sandboxPolicy"]
+            }),
+        )
+        .await
+        .unwrap();
+        plan.request("thread/unsubscribe", json!({"threadId": native_id}))
+            .await
+            .unwrap();
         plan.close().await;
 
         for tier in ["workspace-write", "danger-full-access"] {
             let mut resumed = CodexAppServerSession::connect(
-                &wrapper, &args, &work, None, Some(tier), Some(&native_id),
+                &wrapper,
+                &args,
+                &work,
+                None,
+                Some(tier),
+                Some(&native_id),
             )
             .await
             .unwrap();
             assert_eq!(resumed.thread_id(), native_id);
-            let active = resumed.request("thread/resume", json!({"threadId": native_id, "excludeTurns": true})).await.unwrap();
+            let active = resumed
+                .request(
+                    "thread/resume",
+                    json!({"threadId": native_id, "excludeTurns": true}),
+                )
+                .await
+                .unwrap();
             eprintln!("resumed {tier} sandbox: {}", active["sandbox"]);
             if tier == "workspace-write" {
                 assert_eq!(active["sandbox"], original_policy);
@@ -3546,7 +3609,10 @@ mod tests {
             } else {
                 assert_eq!(active["sandbox"]["type"], "dangerFullAccess");
             }
-            resumed.request("thread/unsubscribe", json!({"threadId": native_id})).await.unwrap();
+            resumed
+                .request("thread/unsubscribe", json!({"threadId": native_id}))
+                .await
+                .unwrap();
             resumed.close().await;
         }
     }

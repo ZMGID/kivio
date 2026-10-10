@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use serde_json::Value;
 use tauri::{AppHandle, State};
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{compose_text_attachments_for_api, TextAttachmentInput};
@@ -428,6 +428,23 @@ fn defer_command_injection(content: &str) -> bool {
 mod command_injection_tests {
     use super::defer_command_injection;
 
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_releases_a_pending_request_without_poll_delay() {
+        let state = crate::state::test_app_state();
+        let generation = state.chat_runtime().begin_generation("cancel-wait");
+        let wait = super::wait_for_chat_cancel(&state, "cancel-wait", generation);
+        tokio::pin!(wait);
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        state.chat_runtime().cancel_conversation("cancel-wait");
+        let next = state.chat_runtime().begin_generation("cancel-wait");
+        tokio::time::timeout(std::time::Duration::from_millis(20), wait)
+            .await
+            .expect("cancel must release the pending request without a polling tick");
+        assert!(state
+            .chat_runtime()
+            .is_generation_active("cancel-wait", next));
+    }
+
     #[test]
     fn explicit_commands_wait_for_normal_send() {
         for content in ["/wizard task", "请用/skill:wizard task", "/unknown task"] {
@@ -731,12 +748,10 @@ pub(crate) async fn request_user_response(
 }
 
 pub(super) async fn wait_for_chat_cancel(state: &AppState, conversation_id: &str, generation: u64) {
-    while state
+    state
         .chat_runtime()
-        .is_generation_active(conversation_id, generation)
-    {
-        sleep(Duration::from_millis(100)).await;
-    }
+        .wait_for_generation_inactive(conversation_id, generation)
+        .await;
 }
 
 pub(crate) fn emit_chat_tool_record(app: &AppHandle, run_id: &str, record: &ToolCallRecord) {

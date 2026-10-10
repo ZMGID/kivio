@@ -721,9 +721,8 @@ mod tests {
                 .unwrap(),
         );
         let mut signed_out = provider("signed-out", json!(true));
-        signed_out.request.oauth = Some(
-            serde_json::from_value(json!({"provider": "kimi"})).unwrap(),
-        );
+        signed_out.request.oauth =
+            Some(serde_json::from_value(json!({"provider": "kimi"})).unwrap());
         let mut settings = Settings::default();
         settings.providers = vec![
             main.clone(),
@@ -740,7 +739,12 @@ mod tests {
                 .provider_id,
             "anonymous"
         );
-        settings.providers.iter_mut().find(|p| p.id == "anonymous").unwrap().enabled = false;
+        settings
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "anonymous")
+            .unwrap()
+            .enabled = false;
         assert_eq!(
             select_model(&settings, &main, "private-model", true)
                 .unwrap()

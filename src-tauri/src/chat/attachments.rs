@@ -1959,9 +1959,18 @@ mod tests {
             assert!(externalize_artifact_in_dir(dir.path(), &mut deleted));
             let retained_path = Path::new(retained.path.as_deref().unwrap()).to_path_buf();
             assert!(retained_path.is_absolute());
-            let retained_name = retained_path.file_name().unwrap().to_str().unwrap().to_string();
+            let retained_name = retained_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
             let orphan_name = Path::new(deleted.path.as_deref().unwrap())
-                .file_name().unwrap().to_str().unwrap().to_string();
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
             let upload_name = "att_original-user.pdf".to_string();
             fs::write(dir.path().join(&upload_name), b"user upload").unwrap();
 
@@ -1970,15 +1979,19 @@ mod tests {
             });
             match source {
                 "message" => message["artifacts"] = serde_json::json!([retained]),
-                "tool_call" => message["tool_calls"] = serde_json::json!([{
-                    "id": "call", "name": "report", "status": "success", "artifacts": [retained],
-                }]),
-                "model_tool_result" => message["model_messages"] = serde_json::json!([{
-                    "role": "tool", "content": [{
-                        "type": "tool_result", "tool_call_id": "call", "content": "report",
-                        "is_error": false, "artifacts": [retained],
-                    }],
-                }]),
+                "tool_call" => {
+                    message["tool_calls"] = serde_json::json!([{
+                        "id": "call", "name": "report", "status": "success", "artifacts": [retained],
+                    }])
+                }
+                "model_tool_result" => {
+                    message["model_messages"] = serde_json::json!([{
+                        "role": "tool", "content": [{
+                            "type": "tool_result", "tool_call_id": "call", "content": "report",
+                            "is_error": false, "artifacts": [retained],
+                        }],
+                    }])
+                }
                 _ => unreachable!(),
             }
             let mut conversation: crate::chat::Conversation =
@@ -1988,7 +2001,8 @@ mod tests {
                         "id": "deleted", "role": "assistant", "content": "old report",
                         "timestamp": 2, "artifacts": [deleted],
                     }],
-                })).unwrap();
+                }))
+                .unwrap();
             conversation.messages.pop();
             let disk = dir.path().join("conversation.json");
             fs::write(&disk, serde_json::to_vec(&conversation).unwrap()).unwrap();
@@ -2003,9 +2017,16 @@ mod tests {
             for name in orphans {
                 fs::remove_file(dir.path().join(name)).unwrap();
             }
-            assert_eq!(fs::read(retained_path).unwrap(), b"%PDF-retained", "{source}");
+            assert_eq!(
+                fs::read(retained_path).unwrap(),
+                b"%PDF-retained",
+                "{source}"
+            );
             assert!(!dir.path().join(orphan_name).exists(), "{source}");
-            assert_eq!(fs::read(dir.path().join(upload_name)).unwrap(), b"user upload");
+            assert_eq!(
+                fs::read(dir.path().join(upload_name)).unwrap(),
+                b"user upload"
+            );
         }
     }
 

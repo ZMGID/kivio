@@ -139,9 +139,7 @@ impl TestHost {
     }
 
     fn recorded_context_ticks(&self) -> Vec<(u64, Option<u64>)> {
-        self.context_ticks
-            .lock()
-            .clone()
+        self.context_ticks.lock().clone()
     }
 }
 
@@ -1015,7 +1013,9 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
 async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_order() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    // This regression exercises scheduling after explicit authorization, not approval prompts.
+    settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
     let mut skill_cache = skills::SkillRunCache::default();
 
@@ -1088,7 +1088,9 @@ fn write_tools_stay_outside_parallel_whitelist() {
 async fn tool_round_runs_read_only_mcp_tools_concurrently() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    // This regression exercises scheduling after explicit authorization, not approval prompts.
+    settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![
         test_mcp_tool("search_a", serde_json::json!({ "readOnlyHint": true })),
         test_mcp_tool("search_b", serde_json::json!({ "readOnlyHint": true })),
@@ -1249,7 +1251,9 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
 async fn tool_round_preserves_unknown_and_invalid_call_order() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
-    let settings = Settings::default();
+    let mut settings = Settings::default();
+    // This regression exercises scheduling after explicit authorization, not approval prompts.
+    settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
     let mut skill_cache = skills::SkillRunCache::default();
     let mut invalid_fetch = pending_tool_call("call_bad_args", "web_fetch");
@@ -2668,7 +2672,8 @@ async fn run_loop_without_usage_does_not_publish_local_estimates() {
 }
 
 #[tokio::test]
-async fn run_loop_reports_last_request_occupancy_and_weighted_cache_without_accumulating_occupancy() {
+async fn run_loop_reports_last_request_occupancy_and_weighted_cache_without_accumulating_occupancy()
+{
     let server = MockModelServer::start(vec![
         // 第 1 轮：调一次工具。
         MockResponse::Sse(vec![
@@ -2706,10 +2711,17 @@ async fn run_loop_reports_last_request_occupancy_and_weighted_cache_without_accu
         .expect("run completes");
     assert_eq!(result.content, "读完了。");
 
-    let mut ticks: Vec<_> = host.recorded_context_ticks().into_iter().map(|tick| tick.0).collect();
+    let mut ticks: Vec<_> = host
+        .recorded_context_ticks()
+        .into_iter()
+        .map(|tick| tick.0)
+        .collect();
     ticks.dedup();
     assert_eq!(ticks, vec![31000, 32000]);
-    assert_eq!(host.cache_ticks.lock().last().copied(), Some((60000, 53500)));
+    assert_eq!(
+        host.cache_ticks.lock().last().copied(),
+        Some((60000, 53500))
+    );
     assert_eq!(result.last_step_usage.unwrap().input_tokens, Some(29000));
 }
 
@@ -3138,6 +3150,63 @@ async fn run_loop_length_truncated_tool_calls_fail_whole_batch() {
 /// history; the summary itself stays out of persisted api_messages, and the
 /// compacted full history is returned via `compacted_history` (R3).
 #[tokio::test]
+async fn run_loop_rejects_compaction_when_retained_images_exceed_request_budget() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec![long_summary_sse("SUMMARY_MARKER"), "[DONE]".into()]),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"继续处理保留图片。"}}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.provider.model_overrides.insert(
+        "test-model".into(),
+        crate::settings::ModelInfo {
+            context_window: Some(8_000),
+            ..Default::default()
+        },
+    );
+    config
+        .runtime_messages
+        .push(serde_json::json!({"role":"user","content":"OLD_HISTORY".repeat(8_000)}));
+    for index in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if index % 2 == 0 { "assistant" } else { "user" },
+            "content": format!("recent history {index}")
+        }));
+    }
+    // Each low-detail image costs 85 tokens on this OpenAI tile model: the
+    // immutable latest group alone exceeds its 8k window, even after a summary.
+    let images: Vec<Value> = (0..100).map(|index| serde_json::json!({
+        "type":"image_url", "image_url":{"url":format!("https://example.org/image-{index}.png"),"detail":"low"}
+    })).collect();
+    config
+        .runtime_messages
+        .push(serde_json::json!({"role":"user","content":images}));
+    let host = TestHost::default();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .unwrap();
+    assert!(
+        result.compacted_history.is_none(),
+        "over-budget retained images must not be recorded as a successful compaction"
+    );
+    assert_eq!(
+        *host.compaction_phases.lock().unwrap(),
+        vec!["started", "failed"]
+    );
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    assert!(bodies[0].contains("context summarization assistant"));
+    assert!(
+        bodies[1].contains("OLD_HISTORY"),
+        "rejected compaction must preserve the original history"
+    );
+    assert!(bodies[1].contains("image-99.png"));
+}
+
+#[tokio::test]
 async fn run_loop_layer2_replaces_old_history_with_summary() {
     let server = MockModelServer::start(vec![
         // 1) Layer2 摘要请求（**流式 SSE**）——压缩摘要调用现在走流式路径。
@@ -3451,7 +3520,6 @@ async fn run_loop_skips_compaction_without_enough_history() {
     assert!(host.compaction_phases.lock().unwrap().is_empty());
     assert_eq!(*host.auto_compact_failures.lock().unwrap(), 0);
 }
-
 
 /// Under-budget runs must not be touched by compaction: the request body
 /// carries the tool output verbatim.
@@ -5027,8 +5095,12 @@ async fn manual_summary_preserves_recent_context_verbatim() {
     let crate::chat::agent::compaction::CompactOutcome::Compacted(history, _) = result else {
         panic!("summary must succeed");
     };
-    assert!(history.iter().any(|m| m["content"] == "latest original answer"));
-    assert!(history.iter().any(|m| m["content"] == "latest correction: do not modify files"));
+    assert!(history
+        .iter()
+        .any(|m| m["content"] == "latest original answer"));
+    assert!(history
+        .iter()
+        .any(|m| m["content"] == "latest correction: do not modify files"));
     let bodies = server.captured_bodies();
     assert!(bodies[0].contains("old answer"));
     assert!(!bodies[0].contains("latest original answer"));
@@ -5274,7 +5346,9 @@ async fn manual_overflow_never_discards_oldest_history() {
     assert!(bodies.iter().all(|body| body.contains("oldest request")));
     assert!(bodies[0].contains("middle work"));
     assert!(!bodies[1].contains("middle work"));
-    assert!(history.iter().any(|m| m["content"].as_str().is_some_and(|s| s.starts_with("middle work"))));
+    assert!(history.iter().any(|m| m["content"]
+        .as_str()
+        .is_some_and(|s| s.starts_with("middle work"))));
 }
 
 /// GLM-style providers end an overlong summary request with an empty `length` finish;
@@ -5376,7 +5450,9 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
             let bodies = server.captured_bodies();
             assert_eq!(bodies.len(), 2);
             assert!(bodies[1].len() < bodies[0].len());
-            assert!(serde_json::to_string(&history).unwrap().contains("middle work"));
+            assert!(serde_json::to_string(&history)
+                .unwrap()
+                .contains("middle work"));
             assert!(bodies[1].contains("oldest request"));
         }
     }
@@ -5549,18 +5625,27 @@ async fn anthropic_reports_cached_prompt_before_text_and_merges_partial_usage() 
     config.provider.api_format = "anthropic_messages".into();
     config.tools.clear();
     let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await.unwrap();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .unwrap();
     assert_eq!(result.content, "first answer");
     let usage = result.last_step_usage.unwrap();
     assert_eq!(usage.input_tokens, Some(5000));
     assert_eq!(usage.cached_input_tokens, Some(20000));
     assert_eq!(usage.cache_creation_input_tokens, Some(5000));
     assert_eq!(usage.output_tokens, Some(24));
-    let text_context: Vec<_> = host.recorded_deltas().iter()
-        .filter(|delta| !delta.delta.is_empty()).map(|delta| delta.context_input_tokens).collect();
+    let text_context: Vec<_> = host
+        .recorded_deltas()
+        .iter()
+        .filter(|delta| !delta.delta.is_empty())
+        .map(|delta| delta.context_input_tokens)
+        .collect();
     assert_eq!(text_context.first(), Some(&Some(30000)));
     assert_eq!(host.recorded_context_ticks().last(), Some(&(30024, None)));
-    assert_eq!(host.cache_ticks.lock().last().copied(), Some((30000, 20000)));
+    assert_eq!(
+        host.cache_ticks.lock().last().copied(),
+        Some((30000, 20000))
+    );
 }
 
 #[tokio::test]
@@ -5570,7 +5655,8 @@ async fn automatic_compaction_uses_configured_summary_model_and_resumes_chat_mod
         "[DONE]".into(),
     ])]);
     let chat_server = MockModelServer::start(vec![MockResponse::Sse(vec![
-        r#"{"choices":[{"delta":{"content":"resumed"}}]}"#.into(), "[DONE]".into(),
+        r#"{"choices":[{"delta":{"content":"resumed"}}]}"#.into(),
+        "[DONE]".into(),
     ])]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &chat_server.base_url);
@@ -5582,7 +5668,9 @@ async fn automatic_compaction_uses_configured_summary_model_and_resumes_chat_mod
     config.initial_anchor_total_tokens = Some(200_000);
     config.runtime_messages = tool_round_history();
     config.tools.clear();
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await.unwrap();
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .unwrap();
     assert_eq!(result.content, "resumed");
     let saved = result.compaction_summary.unwrap();
     assert!(saved.content.contains("CONFIGURED_SUMMARY"));
@@ -5605,26 +5693,50 @@ async fn compaction_rejects_expansion_without_replacing_history() {
     let config = test_run_config(&state, &server.base_url);
     let messages = tool_round_history();
     let outcome = compaction::summarize_history(
-        &state, &config.provider, &config.model, &messages, false, &[], 16384,
-        "test", "reply", None, None,
-    ).await;
+        &state,
+        &config.provider,
+        &config.model,
+        &messages,
+        false,
+        &[],
+        16384,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
     assert!(matches!(outcome, compaction::CompactOutcome::Failed));
 }
 
 #[tokio::test]
 async fn automatic_compaction_rejects_insufficient_headroom() {
     let server = MockModelServer::start(vec![
-        MockResponse::Sse(vec![long_summary_sse_tagged("REJECTED_SUMMARY"), "[DONE]".into()]),
-        MockResponse::Sse(vec![r#"{"choices":[{"delta":{"content":"original history retained"}}]}"#.into(), "[DONE]".into()]),
+        MockResponse::Sse(vec![
+            long_summary_sse_tagged("REJECTED_SUMMARY"),
+            "[DONE]".into(),
+        ]),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"original history retained"}}]}"#.into(),
+            "[DONE]".into(),
+        ]),
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
-    config.provider.model_overrides.entry(config.model.clone()).or_default().context_window = Some(40_000);
+    config
+        .provider
+        .model_overrides
+        .entry(config.model.clone())
+        .or_default()
+        .context_window = Some(40_000);
     config.runtime_messages = tool_round_history();
-    config.runtime_messages.last_mut().unwrap()["content"] = Value::String(archived_work("latest work"));
+    config.runtime_messages.last_mut().unwrap()["content"] =
+        Value::String(archived_work("latest work"));
     config.tools.clear();
     let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await.unwrap();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .unwrap();
     assert_eq!(result.content, "original history retained");
     assert!(result.compaction_summary.is_none());
     let sent = &server.captured_bodies()[1];
@@ -5636,13 +5748,18 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
 #[tokio::test]
 async fn local_safety_floor_triggers_compaction_despite_small_reported_anchor() {
     let server = MockModelServer::start(vec![
-        MockResponse::Sse(vec![long_summary_sse_tagged("SAFETY_FLOOR_SUMMARY"), "[DONE]".into()]),
+        MockResponse::Sse(vec![
+            long_summary_sse_tagged("SAFETY_FLOOR_SUMMARY"),
+            "[DONE]".into(),
+        ]),
         final_answer_sse("continued after safe compaction"),
     ]);
     let state = test_app_state();
     let mut config = over_budget_config(&state, &server.base_url);
     config.initial_anchor_total_tokens = Some(1);
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await.unwrap();
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .unwrap();
     assert_eq!(result.content, "continued after safe compaction");
     assert!(result.compacted_history.is_some());
     assert!(server.captured_bodies()[1].contains("SAFETY_FLOOR_SUMMARY"));
@@ -5651,12 +5768,20 @@ async fn local_safety_floor_triggers_compaction_despite_small_reported_anchor() 
 #[tokio::test]
 async fn text_only_summary_model_does_not_strip_retained_recent_images() {
     let server = MockModelServer::start(vec![MockResponse::Sse(vec![
-        long_summary_sse_tagged("media handoff"), "[DONE]".into(),
+        long_summary_sse_tagged("media handoff"),
+        "[DONE]".into(),
     ])]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
-    config.provider.model_overrides.entry(config.model.clone()).or_default().capabilities =
-        Some(crate::settings::ModelCapabilities { vision: Some(false), ..Default::default() });
+    config
+        .provider
+        .model_overrides
+        .entry(config.model.clone())
+        .or_default()
+        .capabilities = Some(crate::settings::ModelCapabilities {
+        vision: Some(false),
+        ..Default::default()
+    });
     let mut messages = tool_round_history();
     messages[1]["content"] = serde_json::json!([
         {"type":"text","text":"old image observation"},
@@ -5668,9 +5793,19 @@ async fn text_only_summary_model_does_not_strip_retained_recent_images() {
     ]});
     messages.push(recent.clone());
     let outcome = compaction::summarize_history(
-        &state, &config.provider, &config.model, &messages, false, &[], 16384,
-        "test", "reply", None, None,
-    ).await;
+        &state,
+        &config.provider,
+        &config.model,
+        &messages,
+        false,
+        &[],
+        16384,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
     let compaction::CompactOutcome::Compacted(history, _) = outcome else {
         panic!("text-only summarization should preserve the recent image");
     };

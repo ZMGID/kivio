@@ -321,7 +321,7 @@ impl MacOcrClient {
                 return Err(err);
             }
         }
-        while let Some(ev) = rx.recv().await {
+        if let Some(ev) = rx.recv().await {
             match ev {
                 OcrRequestEvent::Done(content) => {
                     self.schedule_idle_shutdown();

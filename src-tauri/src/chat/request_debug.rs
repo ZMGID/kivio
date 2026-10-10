@@ -531,6 +531,8 @@ mod tests {
             },
         };
         let output = GenerateOutput {
+            canonical_message: None,
+            billing_usage: None,
             text: "hello".into(),
             reasoning: None,
             tool_calls: vec![PendingToolCall {

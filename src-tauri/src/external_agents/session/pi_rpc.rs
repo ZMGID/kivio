@@ -7,9 +7,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
@@ -66,6 +67,7 @@ pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Opti
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
     let result = timeout(Duration::from_secs(timeout_secs), async {
         let mut stdin = child.stdin.take()?;
@@ -264,6 +266,7 @@ pub async fn detect_pi_commands(
         .no_console_window()
         .kill_on_drop(true)
         .spawn()
+        .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -1864,6 +1867,7 @@ impl PiRpcSession {
             .no_console_window()
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .map_err(|error| format!("start Pi RPC: {error}"))?;
         let stdin = child
             .stdin
@@ -2187,6 +2191,7 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .expect("spawn pi --mode rpc");
 
         let events = std::cell::RefCell::new(Vec::<UnifiedAgentEvent>::new());
@@ -3244,6 +3249,7 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
+            .map(crate::external_agents::spawn::AgentChild::from)
             .expect("spawn Pi RPC");
         let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
         let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();

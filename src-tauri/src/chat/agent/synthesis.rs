@@ -171,7 +171,12 @@ pub(crate) async fn synthesis_step(
                 ),
         ));
     }
-    state.merge_usage(stream.usage.clone(), env, true);
+    state.merge_usage_with_billing(
+        stream.usage.clone(),
+        stream.billing_usage.clone(),
+        env,
+        true,
+    );
     state.generated_images.append(&mut stream.images);
     let final_reasoning_for_api = stream.reasoning.clone();
     let reasoning = merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone());
@@ -195,13 +200,13 @@ pub(crate) async fn synthesis_step(
             return Err(empty_assistant_response_error("Chat stream"));
         }
     } else {
-        if !state.generated_api_messages.is_empty() {
-            state
-                .generated_api_messages
-                .push(final_assistant_api_message(
-                    &response,
-                    final_reasoning_for_api.as_deref(),
-                ));
+        if !state.generated_api_messages.is_empty() || stream.canonical_message.is_some() {
+            let message = if stream.canonical_message.is_some() {
+                stream.to_openai_compatible_message()
+            } else {
+                final_assistant_api_message(&response, final_reasoning_for_api.as_deref())
+            };
+            state.generated_api_messages.push(message);
         }
         (response, reasoning, final_reasoning_for_api)
     };

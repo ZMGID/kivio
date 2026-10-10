@@ -190,9 +190,10 @@ export async function saveSettingsCached(
 export async function importSettingsSnapshotCached(
   path: string,
   expectedVersion: SettingsVersion,
+  trusted?: boolean,
 ): Promise<SettingsSnapshot> {
   const requestSequence = beginRequest()
-  const imported = await api.importSettings(path, expectedVersion)
+  const imported = trusted ? await api.importSettings(path, expectedVersion, true) : await api.importSettings(path, expectedVersion)
   return acceptSnapshot(imported, requestSequence, true)
 }
 

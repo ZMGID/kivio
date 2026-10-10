@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
@@ -395,11 +395,17 @@ impl AgentHost for SubAgentHost {
         generation: u64,
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async move {
-            loop {
-                if !self.is_generation_active(conversation_id, generation) {
-                    return;
+            let state = self.app.state::<AppState>();
+            if let Some((runtime, run)) = &self.managed {
+                tokio::select! {
+                    _ = runtime.wait_running_inactive(&self.parent_conversation_id, &self.task_id, run) => {}
+                    _ = state.chat_runtime().wait_for_generation_inactive(conversation_id, generation) => {}
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            } else {
+                tokio::select! {
+                    _ = state.chat_runtime().wait_for_generation_inactive(conversation_id, generation) => {}
+                    _ = state.chat_runtime().wait_for_generation_inactive(&self.parent_conversation_id, self.parent_generation) => {}
+                }
             }
         })
     }

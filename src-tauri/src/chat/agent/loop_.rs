@@ -185,21 +185,33 @@ impl RunState {
         env: &LoopEnv<'_>,
         display: bool,
     ) {
+        self.merge_usage_with_billing(next, None, env, display);
+    }
+
+    pub(crate) fn merge_usage_with_billing(
+        &mut self,
+        next: Option<crate::chat::model::ModelUsage>,
+        billing: Option<crate::chat::model::ModelUsage>,
+        env: &LoopEnv<'_>,
+        display: bool,
+    ) {
         let main_display = display && env.config.depth == 0;
         if display {
             self.last_step_usage = next.clone();
             self.initial_anchor_valid = false;
         }
-        let Some(next) = next else {
-            if main_display {
-                env.host.finish_unreported_context(&env.config.conversation_id);
-            }
+        if next.is_none() && main_display {
+            env.host
+                .finish_unreported_context(&env.config.conversation_id);
+        }
+        let bill = billing.or_else(|| next.clone());
+        let Some(bill) = bill else {
             return;
         };
         if main_display {
             super::context_measure::accumulate_cache_pair(
                 &mut self.cache_pairs,
-                &next,
+                &bill,
                 &env.config.provider.api_format,
             );
             env.host
@@ -211,18 +223,21 @@ impl RunState {
                 *slot = Some(slot.unwrap_or(0).saturating_add(value));
             }
         };
-        add(&mut total.input_tokens, next.input_tokens);
-        add(&mut total.output_tokens, next.output_tokens);
-        add(&mut total.total_tokens, next.total_tokens);
-        add(&mut total.cached_input_tokens, next.cached_input_tokens);
+        add(&mut total.input_tokens, bill.input_tokens);
+        add(&mut total.output_tokens, bill.output_tokens);
+        add(&mut total.total_tokens, bill.total_tokens);
+        add(&mut total.cached_input_tokens, bill.cached_input_tokens);
         add(
             &mut total.cache_creation_input_tokens,
-            next.cache_creation_input_tokens,
+            bill.cache_creation_input_tokens,
         );
-        add(&mut total.reasoning_tokens, next.reasoning_tokens);
+        add(&mut total.reasoning_tokens, bill.reasoning_tokens);
         if !main_display {
             return;
         }
+        let Some(next) = next else {
+            return;
+        };
         let api_format = env.config.provider.api_format.as_str();
         if let Some(used) = super::context_estimate::prompt_tokens(&next, api_format)
             .map(|input| input.saturating_add(next.output_tokens.unwrap_or(0)))
@@ -239,7 +254,8 @@ impl RunState {
                 cache,
             );
         } else {
-            env.host.finish_unreported_context(&env.config.conversation_id);
+            env.host
+                .finish_unreported_context(&env.config.conversation_id);
         }
     }
 }

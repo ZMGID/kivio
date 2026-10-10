@@ -83,9 +83,11 @@ pub(crate) fn utf16_content_chars(value: &Value) -> usize {
         }
         Value::Array(items) => items.iter().map(utf16_content_chars).sum(),
         Value::Object(map) => {
-            if map.get("type").and_then(Value::as_str).is_some_and(|kind| {
-                kind == "video_url" || IMAGE_PART_TYPES.contains(&kind)
-            }) {
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "video_url" || IMAGE_PART_TYPES.contains(&kind))
+            {
                 return 0;
             }
             map.iter()
@@ -145,9 +147,11 @@ pub(crate) fn measure_prepared_request(
     let mut tool_chars = 0usize;
     for tool in tools {
         let name = tool.openai_tool_name();
-        tool_tokens += estimate_tokens(&name) + estimate_tokens(&tool.description)
+        tool_tokens += estimate_tokens(&name)
+            + estimate_tokens(&tool.description)
             + estimate_value_tokens(&tool.input_schema);
-        tool_chars += name.encode_utf16().count() + tool.description.encode_utf16().count()
+        tool_chars += name.encode_utf16().count()
+            + tool.description.encode_utf16().count()
             + utf16_content_chars(&tool.input_schema);
     }
     let mut segments = Vec::new();
@@ -168,7 +172,6 @@ pub(crate) fn measure_prepared_request(
     );
     segments
 }
-
 
 /// Add one request's cache pair. A missing cache or input field is skipped entirely,
 /// so it cannot shrink the denominator the way a zero would.
@@ -377,8 +380,15 @@ mod tests {
         let segments = measure_prepared_request(&messages, &[tool]);
         let ids: Vec<_> = segments.iter().map(|segment| segment.id.as_str()).collect();
         assert_eq!(ids, vec!["system_prompt", "tools", "conversation"]);
-        let conversation = segments.iter().find(|segment| segment.id == "conversation").unwrap();
-        assert!(conversation.chars < 100, "image payload leaked into chars: {}", conversation.chars);
+        let conversation = segments
+            .iter()
+            .find(|segment| segment.id == "conversation")
+            .unwrap();
+        assert!(
+            conversation.chars < 100,
+            "image payload leaked into chars: {}",
+            conversation.chars
+        );
         assert!(conversation.chars >= "hi".encode_utf16().count());
     }
 }

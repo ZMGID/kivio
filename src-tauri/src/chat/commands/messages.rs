@@ -310,7 +310,9 @@ pub(crate) async fn push_assistant_message(
     message.provider_id = Some(conversation.provider_id.clone());
     message.model = Some(conversation.model.clone());
     message.degraded = degraded;
-    if let Some(live) = state.chat_runtime().context_measurement(&conversation.id)
+    if let Some(live) = state
+        .chat_runtime()
+        .context_measurement(&conversation.id)
         .filter(|live| live.message_id == message.id)
     {
         message.cache_pair_input = live.run_cache.map(|pair| pair.0);

@@ -454,7 +454,20 @@ mod persistence_tests {
         let dir = tempfile::tempdir().expect("temporary conversation store");
         let path = dir.path().join("conv_restart_read.json");
 
-        let persisted = write_conversation_file_at_path(&path, conversation())
+        let native = serde_json::json!([
+            {"type":"anthropic_thinking", "thinking":" plan ", "signature":"disk-signature"},
+            {"type":"anthropic_redacted_thinking", "data":"disk-redacted"},
+            {"type":"text", "text":"stored answer"}
+        ]);
+        let mut saved = conversation();
+        saved.messages.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"signed_assistant", "role":"assistant", "content":"stored answer", "timestamp":2,
+                "model_messages":[{"role":"assistant", "content":native}]
+            }))
+            .unwrap(),
+        );
+        let persisted = write_conversation_file_at_path(&path, saved)
             .expect("first owner persists conversation");
         drop(persisted);
 
@@ -469,8 +482,35 @@ mod persistence_tests {
         assert_eq!(reloaded.id, "conv_restart_read");
         assert_eq!(reloaded.revision, 7);
         assert_eq!(reloaded.title, "survives restart");
-        assert_eq!(reloaded.messages.len(), 1);
+        assert_eq!(reloaded.messages.len(), 2);
         assert_eq!(reloaded.messages[0].content, "persist me");
+        let legacy = crate::chat::commands::context::build_chat_api_messages(
+            None,
+            "",
+            &reloaded,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let request = crate::chat::model::generate_request_from_openai_messages(
+            &reloaded.model,
+            legacy,
+            None,
+            Default::default(),
+            "storage reload",
+            Default::default(),
+        );
+        let wire =
+            crate::chat::model::anthropic::anthropic_messages_from_generate_request(&request);
+        assert_eq!(
+            wire[1]["content"],
+            serde_json::json!([
+                {"type":"thinking", "thinking":" plan ", "signature":"disk-signature"},
+                {"type":"redacted_thinking", "data":"disk-redacted"},
+                {"type":"text", "text":"stored answer"}
+            ])
+        );
     }
 
     fn blank_item(archived: bool) -> ConversationListItem {

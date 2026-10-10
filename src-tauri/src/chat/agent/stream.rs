@@ -635,7 +635,10 @@ impl<'a> AgentStreamSink<'a> {
 impl StreamSink for AgentStreamSink<'_> {
     fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
         match part {
-            StreamPart::ContextUsage { input_tokens, output_tokens } => {
+            StreamPart::ContextUsage {
+                input_tokens,
+                output_tokens,
+            } => {
                 self.host.emit_context_usage_live(
                     &self.conversation_id,
                     input_tokens.saturating_add(output_tokens),
@@ -766,6 +769,7 @@ pub fn should_flush_tool_planning_text_buffer(buffer: &str) -> bool {
 }
 
 pub struct ChatStreamOutput {
+    pub canonical_message: Option<crate::chat::model::ModelMessage>,
     pub content: String,
     pub raw_content: String,
     pub reasoning: Option<String>,
@@ -775,6 +779,7 @@ pub struct ChatStreamOutput {
     /// Provider-reported usage for this single model call (None when the
     /// provider does not report usage or the stream was cancelled mid-flight).
     pub usage: Option<crate::chat::model::ModelUsage>,
+    pub billing_usage: Option<crate::chat::model::ModelUsage>,
     /// 模型原生内置联网搜索的解析结果（仅内置搜索发生时为 Some）。循环据此合成一张
     /// 「网络搜索」工具卡（任务 07-23）。
     pub web_search: Option<crate::chat::model::BuiltinWebSearch>,
@@ -808,6 +813,8 @@ impl ChatStreamOutput {
         cancelled: bool,
     ) -> Self {
         Self {
+            canonical_message: None,
+            billing_usage: None,
             content,
             raw_content,
             reasoning: if reasoning.trim().is_empty() {
@@ -830,6 +837,7 @@ impl ChatStreamOutput {
         snapshot_content: String,
         snapshot_reasoning: String,
     ) -> Self {
+        let canonical_message = output.canonical_message;
         let raw_content = if output.text.trim().is_empty() {
             snapshot_content
         } else {
@@ -847,7 +855,9 @@ impl ChatStreamOutput {
             output.finish_reason,
             false,
         );
+        result.canonical_message = canonical_message;
         result.usage = output.usage;
+        result.billing_usage = output.billing_usage;
         result.web_search = web_search;
         result.images = images;
         result.reasoning_items = output.reasoning_items;
@@ -855,6 +865,19 @@ impl ChatStreamOutput {
     }
 
     pub fn to_openai_compatible_message(&self) -> Value {
+        if let Some(message) = &self.canonical_message {
+            if let Some(mut value) = crate::chat::model::openai_messages_from_model_messages(
+                std::slice::from_ref(message),
+            )
+            .into_iter()
+            .next()
+            {
+                if let Some(reason) = &self.finish_reason {
+                    value["finish_reason"] = Value::String(reason.clone());
+                }
+                return value;
+            }
+        }
         let content = if self.raw_content.trim().is_empty() {
             self.content.clone()
         } else {
@@ -1499,6 +1522,8 @@ mod tests {
             cancelled: false,
             web_search: None,
             images: Vec::new(),
+            canonical_message: None,
+            billing_usage: None,
             reasoning_items: vec![crate::chat::model::ProviderReasoningItem {
                 model: "gpt-5.6".to_string(),
                 item: serde_json::json!({

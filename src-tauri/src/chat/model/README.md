@@ -14,6 +14,40 @@ Rules:
 - Provider adapters may use `serde_json::Value` freely at their wire boundary.
 - Storage can keep legacy `api_messages` for compatibility, but new replay logic should
   prefer canonical model messages when available.
+- `GenerateOutput.canonical_message` and `ChatStreamOutput.canonical_message` preserve
+  ordered provider content for replay. Their legacy bridge also preserves `finish_reason`
+  so tool loops and compaction can reject truncated responses. Anthropic thinking and
+  redacted thinking are
+  distinct `MessagePart` variants; signatures and encrypted data are opaque and must
+  survive tool rounds and storage reload unchanged, including empty thinking text.
+  New blocks record `source_model` and `source_provider_id`; replay excludes blocks
+  from a different model or provider. Older blocks without origin remain readable.
+  Display reasoning cannot reconstruct signed blocks. Unsigned thinking is replayed
+  only for the known official DeepSeek Anthropic endpoint; strict Claude requests omit
+  unsigned legacy reasoning. The legacy runtime JSON bridge
+  carries ordered parts in `anthropic_content`, which is stripped from Chat Completions
+  wire requests. Full runtime history still includes legacy JSON metadata; this output
+  contract does not imply that all history orchestration has migrated to typed messages.
+- Request serializers share typed tool-history repair. Every client tool-call batch
+  receives exactly one result per call before later user content; existing results
+  take precedence over synthetic interrupted/unavailable errors. Unpaired historical
+  output remains quoted user data. Anthropic client IDs are normalized with a
+  collision-safe paired mapping; native server IDs and signed content are unchanged.
+  Empty assistant text does not produce an empty Anthropic text block.
+- `AnthropicNativeBlock` preserves provider-local server tool blocks and cited text
+  under the same model/provider origin guard. Other adapters expose only visible
+  text and never send native metadata. Anthropic `pause_turn` continues the native
+  assistant turn at most eight times without executing server tools locally.
+  Ordered native history and the final finish reason survive the continuation.
+  `GenerateOutput.usage` and `ChatStreamOutput.usage` belong to the final HTTP request;
+  optional `billing_usage` sums hidden continuation requests for billing only.
+- Model adapters share SSE data framing: blank lines dispatch events, multiple `data`
+  fields join with newlines, and CRLF/CR/LF and split UTF-8 bytes are accepted. EOF does
+  not dispatch an unfinished event. Each adapter owns its terminal/usage semantics.
+- Generation cancellation waits use the runtime owner's notification and recheck the
+  generation predicate after subscribing. Generation IDs still reject late writes;
+  notification wakes pending I/O without a polling tick. Managed child cancellation
+  also observes its runtime's stopping state independently of durable status writes.
 - Realtime Tauri payloads are generated from the Rust `chat-protocol` contract.
   are UI contracts, not provider contracts.
 - Model-generated images are protocol-agnostic on the contract: adapters parse each
@@ -47,8 +81,11 @@ Rules:
   use their fixed low-detail cost or eight-tile upper estimate. Claude uses its
   model cap; Gemini retains the 1,600-token unknown-size heuristic, not a guaranteed
   upper bound. No remote image fetch is performed just for accounting.
-  These are display estimates; provider reports still own the meter, and this
-  change does not alter the internal compaction budget or trigger policy.
+  The internal request estimate also includes this image estimate, including the
+  first request without a provider usage anchor. Provider reports still own the meter.
+  Compaction reserves the configured output allowance as well as its usual headroom;
+  estimates cannot guarantee provider acceptance when model-window metadata or
+  configured output limits are incompatible.
 - `measurementSeq` orders both live events and persisted snapshots; lower sequences
   cannot overwrite newer measurements. `lifecycleId` advances on invalidation.
   Model changes and history rewrites clear the meter; switching back cannot revive it.

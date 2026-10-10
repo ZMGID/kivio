@@ -20,12 +20,23 @@ pub(super) struct SpeechPalette {
 
 pub(super) fn speech_palette(dark: bool) -> SpeechPalette {
     let color = |r: u8, g: u8, b: u8| Color {
-        r: r as f64 / 255.0, g: g as f64 / 255.0, b: b as f64 / 255.0, a: 1.0,
+        r: r as f64 / 255.0,
+        g: g as f64 / 255.0,
+        b: b as f64 / 255.0,
+        a: 1.0,
     };
     if dark {
-        SpeechPalette { background: color(38, 42, 51), foreground: color(244, 246, 251), border: color(66, 72, 85) }
+        SpeechPalette {
+            background: color(38, 42, 51),
+            foreground: color(244, 246, 251),
+            border: color(66, 72, 85),
+        }
     } else {
-        SpeechPalette { background: color(255, 255, 255), foreground: color(39, 47, 62), border: color(224, 229, 237) }
+        SpeechPalette {
+            background: color(255, 255, 255),
+            foreground: color(39, 47, 62),
+            border: color(224, 229, 237),
+        }
     }
 }
 
