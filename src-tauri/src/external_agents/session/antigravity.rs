@@ -1,4 +1,4 @@
-//! Official agy NDJSON protocol (verified with 1.2.6; core stream remains compatible).
+//! Official agy NDJSON protocol (1.3.3 flags/error output; documented stream contract).
 //! https://antigravity.google/docs/cli/headless/
 //! One init per process, one result per turn. No control RPCs or native image blocks.
 use std::collections::{HashMap, HashSet};
@@ -88,6 +88,7 @@ impl Usage {
             cached_input_tokens: Some(self.cache),
             cache_creation_input_tokens: None,
             context_window_tokens: None,
+            context_tokens: None,
         }
     }
 }
@@ -98,6 +99,7 @@ struct TurnStream {
     tools: HashSet<String>,
     finished_tools: HashSet<String>,
     step_usage: HashMap<u64, Usage>,
+    request_context: Option<(u64, u64)>,
 }
 
 impl TurnStream {
@@ -110,7 +112,24 @@ impl TurnStream {
             return;
         };
         if step["usage"].is_object() {
-            self.step_usage.insert(index, Usage::parse(&step["usage"]));
+            let usage = Usage::parse(&step["usage"]);
+            // Per-step usage is a request, while result.usage is session cumulative.
+            // Checkpoints spend tokens too, but are not the agent's active context.
+            if step["step_type"] == "agent_response"
+                && step["state"] == "DONE"
+                && self
+                    .request_context
+                    .is_none_or(|(previous, _)| index >= previous)
+            {
+                let tokens = usage
+                    .input
+                    .saturating_add(usage.cache)
+                    .saturating_add(usage.output);
+                if tokens > 0 {
+                    self.request_context = Some((index, tokens));
+                }
+            }
+            self.step_usage.insert(index, usage);
         }
         match step["step_type"].as_str() {
             Some("agent_response") => {
@@ -205,9 +224,9 @@ impl TurnStream {
                 .map(|(current, old)| current.since(old))
         };
         if let Some(usage) = usage {
-            sink(UnifiedAgentEvent::Usage {
-                usage: usage.model_usage(),
-            });
+            let mut usage = usage.model_usage();
+            usage.context_tokens = self.request_context.map(|(_, tokens)| tokens);
+            sink(UnifiedAgentEvent::Usage { usage });
         }
         if cumulative.is_some() {
             *previous = cumulative;
@@ -622,9 +641,13 @@ mod tests {
     async fn live_antigravity_multiturn_tools_cancel_and_resume() {
         use crate::external_agents::defs::antigravity::ANTIGRAVITY_AGENT_DEF;
         use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
-        let bin = crate::external_agents::spawn::resolve_binary(&ANTIGRAVITY_AGENT_DEF)
-            .await
-            .expect("agy binary");
+        let bin = if let Some(bin) = std::env::var_os("KIVIO_AGY_TEST_BIN") {
+            PathBuf::from(bin)
+        } else {
+            crate::external_agents::spawn::resolve_binary(&ANTIGRAVITY_AGENT_DEF)
+                .await
+                .expect("agy binary")
+        };
         let cwd = std::env::temp_dir().join(format!("kivio-agy-probe-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&cwd).unwrap();
         let fixture = cwd.join("probe.txt");
@@ -691,6 +714,13 @@ mod tests {
         .contains("kumquat"));
         let events = ask(&control, &format!("For this turn use view_file to read exactly this absolute file path: {}. Return its contents. Do not search other directories, edit files or execute shell commands.", fixture.display())).await;
         assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UnifiedAgentEvent::Usage { usage }
+            if usage.context_tokens.is_some_and(|tokens| tokens > 0))),
+            "real tool turn must supply a request footprint: {events:?}"
+        );
+        assert!(
             text(&events).contains("AGY_TOOL_PROBE_72941"),
             "file response: {events:?}"
         );
@@ -749,7 +779,8 @@ mod tests {
         assert!(text(&events).to_lowercase().contains("kumquat"));
         assert!(events
             .iter()
-            .any(|e| matches!(e, UnifiedAgentEvent::Usage { .. })));
+            .any(|e| matches!(e, UnifiedAgentEvent::Usage { usage }
+                if usage.context_tokens.is_some_and(|tokens| tokens > 0))));
         control.send(SessionCommand::Close).await.unwrap();
         timeout(Duration::from_secs(20), control.closed())
             .await
@@ -757,6 +788,44 @@ mod tests {
         // Only the exact fixture created above is removed; never recursively delete the workspace.
         std::fs::remove_file(fixture).unwrap();
         let _ = std::fs::remove_dir(cwd);
+    }
+
+    #[test]
+    fn request_context_is_separate_from_turn_cost_and_checkpoint_usage() {
+        let mut stream = TurnStream::default();
+        let mut events = vec![];
+        for (index, kind, input, cache, output) in [
+            (3, "agent_response", 100, 800, 7),
+            (4, "checkpoint", 20, 0, 3),
+            (5, "agent_response", 30, 60, 5),
+            (6, "checkpoint", 200, 0, 10),
+        ] {
+            stream.handle(
+                &json!({"event":"step_update","step_update":{
+                    "step_index":index,"step_type":kind,"state":"DONE",
+                    "usage":{"input_tokens":input,"cache_read_tokens":cache,"output_tokens":output}
+                }}),
+                &mut |e| events.push(e),
+            );
+        }
+        stream
+            .finish(&json!({"status":"SUCCESS"}), &mut None, &mut |e| {
+                events.push(e)
+            })
+            .unwrap();
+        let UnifiedAgentEvent::Usage { usage } = events.last().unwrap() else {
+            panic!("usage missing")
+        };
+        assert_eq!(
+            usage.total_tokens,
+            Some(1235),
+            "cost includes every request"
+        );
+        assert_eq!(
+            serde_json::to_value(usage).unwrap()["context_tokens"],
+            95,
+            "context follows the last agent request after compaction, not checkpoint or total cost"
+        );
     }
 
     #[test]
@@ -780,6 +849,7 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(187));
         assert_eq!(usage.reasoning_tokens, Some(5));
         assert_eq!(usage.cached_input_tokens, Some(80));
+        assert_eq!(usage.context_tokens, Some(187));
     }
 
     #[test]

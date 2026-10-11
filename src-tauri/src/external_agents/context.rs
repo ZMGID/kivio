@@ -162,7 +162,7 @@ pub struct ExternalSessionUsage {
 /// 调用方是 `chat_get_context_stats`（用户点开用量条）与压缩后的重算，不在回复热路径。
 /// 从一条 CLI 实报的 `usage` 里取出**上下文占用**口径的已用 token。
 ///
-/// 用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
+/// 优先独立的 `context_tokens`（Antigravity 最近请求），否则用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
 /// 已按各家的 cache 包含关系把 cache 正确汇总进 `total_tokens`，而 `input_tokens` 在
 /// Anthropic 口径（claude / pi / ACP）下只是**非缓存**部分——只读它等于把前面几层补的
 /// cache 全丢在半路（实测 kimi cache 占 97.6%、pi 62%、opencode 13%）。
@@ -173,7 +173,8 @@ pub struct ExternalSessionUsage {
 /// 生成过程中的数字与轮末的权威值分叉），那条通道已删 —— 外部 CLI 的占用现在一轮只更新一次。
 pub(crate) fn cli_reported_context_tokens(usage: &ModelUsage) -> usize {
     usage
-        .total_tokens
+        .context_tokens
+        .or(usage.total_tokens)
         .unwrap_or_else(|| {
             usage
                 .input_tokens
@@ -208,6 +209,14 @@ pub fn collect_external_session_usage(
             continue;
         }
         if let Some(usage) = message.usage.as_ref() {
+            // Old Antigravity messages contain only turn cost, not context. Never
+            // revive those inflated values after a reload or a result-only failure.
+            if agent_id == "antigravity" && usage.context_tokens.is_none() {
+                if usage_has_token_numbers(usage) {
+                    break;
+                }
+                continue;
+            }
             // **跳过全零上报**：没有 LLM 往返的轮次（未登录 / `/help` / 未知斜杠命令 /
             // 我们自己发的 `/compact`）会落下 `Some(0)` 的用量。判据若只看 `is_some()`，
             // `Some(0)` 会命中 ⇒ 挑到这条 ⇒ 用量条从 47K 掉到 0，直到下一轮真实回复才恢复。
@@ -759,6 +768,44 @@ mod tests {
         assert_eq!(state.status, "unknown");
         // 分子仍然照常显示。
         assert_eq!(state.estimated_input_tokens, 5010);
+    }
+
+    #[test]
+    fn antigravity_reopen_uses_request_footprint_and_hides_legacy_cost() {
+        let mut conversation = empty_conversation();
+        conversation.agent_runtime.external_agent_id = Some("antigravity".into());
+        let usage: ModelUsage = serde_json::from_value(serde_json::json!({
+            "input_tokens":3000000,"output_tokens":20000,"total_tokens":3020000,
+            "context_tokens":95000
+        }))
+        .unwrap();
+        conversation
+            .messages
+            .push(message("a1", "assistant", "done", Some(usage)));
+        let restored: Conversation =
+            serde_json::from_value(serde_json::to_value(&conversation).unwrap()).unwrap();
+        let state =
+            compute_external_context_state(&restored, "antigravity", "default", None, None, None);
+        assert_eq!(state.estimated_input_tokens, 95000);
+        conversation.messages.push(message(
+            "a2",
+            "assistant",
+            "older adapter",
+            Some(serde_json::from_value(serde_json::json!({"total_tokens":5553400})).unwrap()),
+        ));
+        let state = compute_external_context_state(
+            &conversation,
+            "antigravity",
+            "default",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(state.status, "unknown");
+        assert_eq!(
+            state.session_input_tokens, None,
+            "do not reuse old turn cost or an older request"
+        );
     }
 
     /// **首轮什么都不显示**：CLI 一个数都没报过时，分子分母全空（前端退回「—」），

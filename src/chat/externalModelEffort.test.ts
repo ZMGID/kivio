@@ -7,6 +7,8 @@ const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'antigr
 it('removes stale overrides when selecting an Antigravity effort variant', () => {
   expect(withExternalModel(runtime, 'gemini-3.8-flash-low').externalReasoning).toBeNull()
   expect(withExternalModel(runtime, 'gpt-oss-120b-medium', 'high').externalReasoning).toBeNull()
+  expect(withExternalModel(runtime, 'custom-xhigh', 'medium').externalReasoning).toBeNull()
+  expect(withExternalModel(runtime, 'custom-max', 'low').externalReasoning).toBeNull()
 })
 
 it('distinguishes explicit clearing from retaining an unspecified effort', () => {

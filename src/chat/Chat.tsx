@@ -2334,6 +2334,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         generating={streamCoarse.streaming}
         error={contextError}
         usesExternalRuntime={usesExternalRuntime}
+        externalAgentId={activeAgentRuntime.externalAgentId}
         onRefresh={handleRefreshContext}
         onCompress={handleCompressContext}
         onStopCompression={handleStopCompression}
@@ -2352,6 +2353,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       handleStopCompression,
       handleRefreshContext,
       streamCoarse.streaming,
+      activeAgentRuntime.externalAgentId,
       uiLang,
       usesExternalRuntime,
     ],

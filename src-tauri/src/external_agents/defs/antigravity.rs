@@ -21,7 +21,7 @@ pub fn build_antigravity_args(
         model.trim().rsplit_once('-').is_some_and(|(_, suffix)| {
             matches!(
                 suffix.to_ascii_lowercase().as_str(),
-                "low" | "medium" | "high"
+                "low" | "medium" | "high" | "xhigh" | "max"
             )
         })
     });
@@ -65,6 +65,8 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         ("low", "Low"),
         ("medium", "Medium"),
         ("high", "High"),
+        ("xhigh", "Extra high"),
+        ("max", "Max"),
     ],
     sandbox_options: &[
         ("default", "遵循 CLI 配置"),
@@ -172,6 +174,8 @@ mod tests {
             "gemini-3.8-flash-low",
             "gemini-3.8-flash-high",
             "gpt-oss-120b-medium",
+            "custom-xhigh",
+            "custom-max",
         ] {
             let options = RuntimeBuildOptions {
                 model: Some(model.into()),

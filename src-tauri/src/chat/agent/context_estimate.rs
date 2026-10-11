@@ -104,6 +104,7 @@ mod tests {
             cache_creation_input_tokens: cache_create,
             reasoning_tokens: None,
             context_window_tokens: None,
+            context_tokens: None,
         }
     }
 

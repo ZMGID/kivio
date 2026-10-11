@@ -23,6 +23,9 @@ pub async fn request_external_compaction(
         .filter(|id| !id.trim().is_empty())
         .ok_or_else(|| "未选择外部 Agent".to_string())?;
     let compact_prompt = compact_prompt_for_agent(&agent_id).ok_or_else(|| {
+        if agent_id == "antigravity" {
+            return "Antigravity CLI 自动管理上下文；当前流式接口不支持手动压缩。/context 是交互式终端中的用量面板。".to_string();
+        }
         format!(
             "{} 不支持从 Kivio 手动触发压缩，请在该 CLI 内使用其自带的 context 命令。",
             get_agent_def(&agent_id)

@@ -884,6 +884,7 @@ pub fn model_usage_from_openai_value(value: &Value) -> Option<ModelUsage> {
             .and_then(Value::as_u64),
         // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
         context_window_tokens: None,
+        context_tokens: None,
     })
 }
 
@@ -904,6 +905,7 @@ pub fn model_usage_from_anthropic_value(value: &Value) -> Option<ModelUsage> {
         reasoning_tokens: None,
         // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
         context_window_tokens: None,
+        context_tokens: None,
     })
 }
 

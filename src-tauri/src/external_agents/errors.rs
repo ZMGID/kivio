@@ -17,6 +17,8 @@ pub enum ExternalAgentErrorKind {
     /// Not logged in / token expired (401 / "Authentication required"). Needs user re-login;
     /// never auto-retried (a doomed retry could trigger a login storm).
     Auth,
+    /// Daily/account quota or AI credits exhausted; retrying cannot recover it.
+    Quota,
     /// Handshake or turn timed out — usually slow network or an unresponsive CLI.
     Timeout,
     /// The provider's streaming response was interrupted before the turn completed.
@@ -92,6 +94,8 @@ fn contains_token(hay: &str, needle: &str) -> bool {
 fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> ExternalAgentErrorKind {
     let hay = format!("{raw}\n{stderr_tail}").to_lowercase();
     if hay.contains("authentication required")
+        || hay.contains("authentication expired")
+        || hay.contains("authentication failed")
         || hay.contains("unauthorized")
         || hay.contains("not logged in")
         || hay.contains("please log in")
@@ -107,6 +111,13 @@ fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> External
         || contains_token(&hay, "401")
     {
         ExternalAgentErrorKind::Auth
+    } else if hay.contains("quota exhausted")
+        || hay.contains("quota exceeded")
+        || hay.contains("quota is exhausted")
+        || hay.contains("individual quota")
+        || hay.contains("ai credits balance is too low")
+    {
+        ExternalAgentErrorKind::Quota
     } else if hay.contains("timeout") || hay.contains("timed out") {
         ExternalAgentErrorKind::Timeout
     } else if hay.contains("stream_read_error")
@@ -116,6 +127,9 @@ fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> External
         || hay.contains("reconnecting")
         || hay.contains("responsestreamdisconnected")
         || hay.contains("responsestreamconnectionfailed")
+        || hay.contains("forcibly closed by the remote host")
+        || hay.contains("connection reset by peer")
+        || hay.contains("unexpected eof")
     {
         ExternalAgentErrorKind::Transport
     } else if hay.contains("exited")
@@ -175,6 +189,9 @@ pub fn classify(
             }
             None => format!("{name} 进程意外退出，请确认 CLI 可正常启动后重试。"),
         },
+        ExternalAgentErrorKind::Quota => format!(
+            "{name} 的可用额度已耗尽。请等待额度恢复或检查账号配额与 AI credits 后再试。"
+        ),
         ExternalAgentErrorKind::Protocol => {
             let lower = raw.to_lowercase();
             if policy.detail == AgentErrorDetailStrategy::CodexAppServer
@@ -255,6 +272,31 @@ pub fn is_missing_codex_thread_error(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_failures_distinguish_transport_expired_auth_and_quota() {
+        let transport = classify("API error (attempt 1): read tcp: wsarecv: An existing connection was forcibly closed by the remote host.", None, "", "antigravity");
+        assert_eq!(transport.kind, ExternalAgentErrorKind::Transport);
+        assert!(!transport.user_message.contains("登录"));
+        assert_eq!(
+            classify(
+                "Authentication expired. Please log back in.",
+                None,
+                "",
+                "antigravity"
+            )
+            .kind,
+            ExternalAgentErrorKind::Auth
+        );
+        let quota = classify(
+            "Your AI credits balance is too low to continue.",
+            Some(3),
+            "",
+            "antigravity",
+        );
+        assert!(quota.user_message.contains("额度"));
+        assert!(!quota.user_message.contains("进程意外退出"));
+    }
 
     /// claude 的 assistant 帧用机器码而不是自然语言报认证失败——必须也归到 Auth，
     /// 否则用户拿到的是无从下手的 Protocol 提示，而不是 `claude /login`。

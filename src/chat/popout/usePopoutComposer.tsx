@@ -638,6 +638,7 @@ export function usePopoutComposer({
         generating={streaming}
         error={contextError}
         usesExternalRuntime={usesExternalRuntime}
+        externalAgentId={runtime.externalAgentId}
         onRefresh={handleRefreshContext}
         onCompress={handleCompressContext}
         onStopCompression={handleStopCompression}
@@ -657,6 +658,7 @@ export function usePopoutComposer({
       handleRefreshContext,
       lang,
       streaming,
+      runtime.externalAgentId,
       usesExternalRuntime,
     ],
   )

@@ -957,6 +957,7 @@ fn usage_from_prompt_result(result: &Value) -> Option<crate::chat::model::ModelU
         reasoning_tokens: field("reasoningTokens").filter(|v| *v > 0),
         // 窗口不在这里给（grok 在 session/new 的 `_meta.totalContextTokens`，已由模型探测读走）。
         context_window_tokens: None,
+        context_tokens: None,
     })
 }
 

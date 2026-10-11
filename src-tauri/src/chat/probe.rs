@@ -589,6 +589,7 @@ mod tests {
             cache_creation_input_tokens: Some(5),
             reasoning_tokens: Some(6),
             context_window_tokens: Some(1_000_000),
+            context_tokens: None,
         };
         let v = serde_json::to_value(probe_usage(&usage)).unwrap();
         assert_eq!(v["input"], 1);

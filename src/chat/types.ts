@@ -226,6 +226,9 @@ export interface ChatMessage {
 }
 
 export interface MessageUsage {
+  /** Latest CLI agent request footprint; distinct from accumulated token consumption. */
+  context_tokens?: number | null
+  contextTokens?: number | null
   input_tokens?: number | null
   inputTokens?: number | null
   output_tokens?: number | null

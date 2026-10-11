@@ -1272,6 +1272,7 @@ fn gemini_usage(value: &Value) -> Option<ModelUsage> {
         reasoning_tokens: get("thoughtsTokenCount"),
         // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
         context_window_tokens: None,
+        context_tokens: None,
     })
 }
 

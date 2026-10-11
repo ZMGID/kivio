@@ -317,6 +317,11 @@ pub struct ModelUsage {
     /// `collect_external_session_usage` 能一并读到，无需为分母另开事件通道。
     #[serde(default)]
     pub context_window_tokens: Option<u64>,
+    /// Latest agent request footprint, separate from accumulated billing usage.
+    /// Antigravity includes disjoint cached input and output, and excludes checkpoint calls.
+    /// Missing on old messages and protocols which only report accumulated usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

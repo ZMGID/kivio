@@ -38,6 +38,7 @@ interface ContextIndicatorProps {
   generating?: boolean
   error?: string
   usesExternalRuntime?: boolean
+  externalAgentId?: string | null
   onRefresh?: () => void
   onCompress?: () => void
   onStopCompression?: () => void
@@ -78,6 +79,7 @@ export function ContextIndicator({
   generating = false,
   error = '',
   usesExternalRuntime = false,
+  externalAgentId,
   onRefresh,
   onCompress,
   onStopCompression,
@@ -108,6 +110,8 @@ export function ContextIndicator({
   const contextSource = valueFrom(contextState?.context_source, contextState?.contextSource, null)
   const isExternalContext =
     usesExternalRuntime || contextSource === 'external_cli'
+  const cliManagesContext = isExternalContext && (externalAgentId ??
+    contextState?.external_agent_id ?? contextState?.externalAgentId) === 'antigravity'
   const compressedMessageCount = valueFrom(
     contextState?.compressed_message_count,
     contextState?.compressedMessageCount,
@@ -129,7 +133,7 @@ export function ContextIndicator({
       + (usageRatio == null ? '' : ` (${percentFormat.format(usageRatio)})`)
   const sourceLabel = reportedTokens == null
     ? ''
-    : (isExternalContext ? t.contextSourceCliReported : t.contextUsageLastPrompt)
+    : (cliManagesContext ? t.contextSourceCliLastRequest : isExternalContext ? t.contextSourceCliReported : t.contextUsageLastPrompt)
   const ringRatio = usageRatio == null ? 0 : Math.max(0, Math.min(1, usageRatio))
   const segments = contextBreakdown(contextState?.segments).map((segment) => ({
     ...segment, label: t[SEGMENT_LABELS[segment.id]],
@@ -143,7 +147,7 @@ export function ContextIndicator({
     ?? (contextState?.clear_boundaries ?? contextState?.clearBoundaries ?? []).at(-1)?.sourceUntilMessageId
     ?? null
   const liveContextEmpty = lastMessageId != null && lastMessageId === lastClearUntilId
-  const canCompress = Boolean(onCompress) && !compressing && !loading && messageCount > 2 && !liveContextEmpty
+  const canCompress = !cliManagesContext && Boolean(onCompress) && !compressing && !loading && messageCount > 2 && !liveContextEmpty
   const canClear = Boolean(onClear)
     && !compressing
     && !loading
@@ -151,7 +155,7 @@ export function ContextIndicator({
     && messageCount > 0
     && lastMessageId != null
     && !liveContextEmpty
-  const compressLabel = isExternalContext
+  const compressLabel = cliManagesContext && !compressing ? t.contextCliManaged : isExternalContext
     ? (compressing ? t.contextCliCompacting : t.contextCliCompact)
     : (compressing ? t.contextCompressing : t.contextCompress)
   // Automatic compaction runs inside a generation, and stopping it stops that generation.
@@ -300,8 +304,8 @@ export function ContextIndicator({
             <Button
               variant="ghost"
               size="sm"
-              aria-label={compressing && onStopCompression ? stopLabel : t.contextCompressAria}
-              title={autoHint ? `${compressLabel} · ${autoHint}` : compressLabel}
+              aria-label={compressing && onStopCompression ? stopLabel : cliManagesContext ? compressLabel : t.contextCompressAria}
+              title={cliManagesContext ? t.contextCliManagedHint : autoHint ? `${compressLabel} · ${autoHint}` : compressLabel}
               onClick={compressing && onStopCompression ? onStopCompression : onCompress}
               disabled={compressing ? !onStopCompression : !canCompress}
             >

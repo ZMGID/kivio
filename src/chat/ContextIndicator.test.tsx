@@ -77,6 +77,17 @@ describe('ContextIndicator character share', () => {
 })
 
 describe('ContextIndicator stop action', () => {
+  it('explains Antigravity automatic management without offering unsupported manual compaction', () => {
+    const onCompress = vi.fn()
+    openPanel({ compressing: false, usesExternalRuntime: true,
+      contextState: { external_agent_id: 'antigravity' }, onCompress })
+    const action = screen.getByRole('button', { name: 'CLI manages context' })
+    expect(action).toBeDisabled()
+    fireEvent.click(action)
+    expect(onCompress).not.toHaveBeenCalled()
+    expect(action.title).toContain('manual compaction')
+  })
+
   it('offers to stop a manual compaction', () => {
     const onStop = openPanel({ generating: false })
     fireEvent.click(screen.getByRole('button', { name: 'Stop compaction' }))

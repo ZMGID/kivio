@@ -3,7 +3,7 @@ import type { AgentRuntimeConfig } from './types'
 /** Antigravity 返回的档位变体已经在模型 ID 中指定强度。 */
 export function modelIncludesEffort(agentId: string | null | undefined, modelId: string | null | undefined, label?: string): boolean {
   return agentId === 'antigravity' && !!modelId && modelId !== 'default' && (
-    /-(low|medium|high)$/i.test(modelId) || /\((low|medium|high)\)\s*$/i.test(label ?? '')
+    /-(low|medium|high|xhigh|max)$/i.test(modelId) || /\((low|medium|high|xhigh|max)\)\s*$/i.test(label ?? '')
   )
 }
 
