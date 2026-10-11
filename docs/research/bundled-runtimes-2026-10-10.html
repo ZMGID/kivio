@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kivio 内置运行环境调研 · 2026-10-10</title>
+<style>body{font:16px/1.75 system-ui,sans-serif;color:#263238;background:#f5f6f8;margin:0}main{max-width:980px;margin:32px auto;padding:36px;background:white;border-radius:16px}h1{font-size:28px}h2{font-size:21px;margin-top:32px}table{border-collapse:collapse;width:100%;font-size:15px}td,th{border:1px solid #dce1e7;padding:10px;text-align:left;vertical-align:top}th{background:#f3f5f8}a{color:#215ac3}code{background:#f1f3f5;padding:2px 5px;border-radius:4px}.lead{border-left:4px solid #3b68c8;padding:12px 18px;background:#f0f5ff}.muted{color:#607080}@media(max-width:700px){main{margin:0;padding:20px}table{display:block;overflow:auto}}</style>
+<main>
+<h1>Kivio 内置 Python / Node.js 调研</h1>
+<p class="muted">2026-10-10 · 参考对象按 Codex 桌面应用理解 · 本轮只调研，未修改运行逻辑或安装任何新环境。</p>
+<p class="lead"><strong>推荐：安装包附带可独立运行的 Python、Node.js/npm/npx、uv，以及少量常用处理库。</strong>基础能力安装后离线可用；扩展依赖写入 Kivio 管理目录；项目明确指定的解释器、虚拟环境和 CLI 路径继续优先。不要把“首次使用时下载 Python”当作免配置的基础方案。</p>
+<h2>1. Codex 的实机证据</h2>
+<p>通过当前 Codex 的 <code>load_workspace_dependencies</code> 工具取得受管理环境路径，再实际执行解释器、列出依赖并测量目录。以下是本机这次安装的快照，不能据此断言所有 Codex 版本或平台都有相同配置，也不能证明资源一定随初始安装包发放。</p>
+<table><tr><th>项目</th><th>本机核验结果</th></tr>
+<tr><td>运行包</td><td>26.1007.11041；目录位于 <code>~/.cache/codex-runtimes/codex-primary-runtime/dependencies</code></td></tr>
+<tr><td>Python</td><td>3.12.14；包含 pandas、numpy、openpyxl、python-docx、python-pptx、pypdf、pdfplumber、Pillow、reportlab 等。</td></tr>
+<tr><td>Node</td><td>24.19.0；附带 docx、pptxgenjs、pdf-lib、sharp、playwright、pnpm 等及其依赖。</td></tr>
+<tr><td>原生工具</td><td>目录包括 Git、Poppler、LibreOffice headless、libheif、jxrlib；有 fallback/override 命令入口。</td></tr>
+<tr><td>磁盘占用</td><td><code>du -sh</code>：Python 364M，Node 与依赖 451M，native 742M，合计约 1.5 GiB。这是落盘目录占用，不是下载包体积。</td></tr></table>
+<p>可借鉴的是“版本化工具环境、固定解释器路径、预装任务依赖、明确向模型提供环境信息”。不建议直接复制 Codex 的工具集合、私有包或文件；公开官方文档未提供足以复现这套桌面依赖包的完整构建和更新协议。</p>
+<h2>2. Kivio 当前缺口</h2>
+<ul>
+<li><code>tauri.conf.json</code> 目前打包 skills、plugins、licenses 和 OCR sidecar，没有 Python/Node 资源。</li>
+<li><code>native_tools/shell.rs</code> 在宿主系统执行命令；目前补充启用插件的 bin 路径，尚无自带解释器。</li>
+<li>PDF、DOCX、XLSX 技能明确要求本机处理工具可用；仅放入 Python 仍会遇到缺少 openpyxl、pypdf 等问题。</li>
+<li><code>external_agents/installer.rs</code> 已有缺 Node 时尝试 winget/Homebrew 的逻辑。它属于安装宿主环境，仍依赖安装器、网络和权限；内置环境应成为优先可用的选项，避免继续触发这条补安装路径。</li>
+<li>MCP、插件 hooks、CLI、PTY 终端各自启动进程；只在 Agent 的 bash 中改 PATH 不能解决其他入口。</li>
+<li>当前 release 支持 macOS Apple Silicon 与 Windows x64；首批运行包按这两个目标制作。Windows 安装器及 portable ZIP 均要带齐资源。</li>
+</ul>
+<h2>3. 推荐首批内容</h2>
+<table><tr><th>内容</th><th>方案与用途</th></tr>
+<tr><td>CPython</td><td>候选 Python 3.13，最终以跨平台库兼容验证确定并固定补丁版本。使用 Astral python-build-standalone 的 install_only_stripped 分发，避免复制开发机解释器。</td></tr>
+<tr><td>Python 包管理</td><td>附带 uv；基础库在构建阶段锁版本、预装。追加依赖进入可写虚拟环境，不写系统 Python 或已签名应用目录。</td></tr>
+<tr><td>基础文档和数据库</td><td>numpy、pandas、openpyxl、xlsxwriter、python-docx、python-pptx、pypdf、pdfplumber、Pillow、reportlab；图表需求可加入 matplotlib。这里只是建议集合，尚未制作和测量。</td></tr>
+<tr><td>Node.js</td><td>选择 Node 24 LTS 的固定补丁版本，使用官方平台二进制分发；包含 npm/npx。它同时满足当前代码记录的 dsh Node 版本要求。</td></tr>
+<tr><td>Node 业务库</td><td>按实际技能选入，例如 pptxgenjs、docx、pdf-lib、sharp；不预装全部开发框架。</td></tr>
+<tr><td>下一阶段扩展</td><td>Git 值得单独评估；Poppler、LibreOffice、FFmpeg、浏览器引擎应按功能加入。Python/Node 本身不能替代这些原生工具，也不能保证任意 npm/pip 原生扩展无需编译器。</td></tr></table>
+<p>官方 Windows embeddable Python 适合固定应用嵌入，但默认不附带 pip，官方也不支持把它当作普通 pip 环境管理。考虑 Kivio 后续需要扩展依赖，优先采用完整便携 CPython。Node 的单文件应用适合固定脚本，Kivio 需要执行任意脚本、npm/npx 与 MCP，因此优先直接附带完整 Node 运行时。</p>
+<h2>4. 接入方式与唯一归属</h2>
+<p>建立一个真正负责运行环境的 Module：读取运行包清单、解析应用资源与可写缓存路径、校验运行包状态，并生成各类子进程使用的环境。把现有 PATH 补全逻辑与其组合，保持用户 CLI 探测、身份变量清理和插件规则各有归属，不新建多层转发。</p>
+<ol>
+<li><strong>分发：</strong>在 CI 获取固定版本官方资源，校验 SHA-256，按目标平台准备并打包；保留解释器和第三方依赖的许可证。应用基础运行环境只读，随应用版本更新。</li>
+<li><strong>扩展：</strong>在应用数据目录存放版本化的扩展 venv、npm prefix 和缓存。需要创建 venv 时在最终目录创建，不能把开发机 venv 原样搬进安装包。基础解释器明确绑定；避免 uv 自动下载另一个 Python。</li>
+<li><strong>选择：</strong>Kivio 自有文档技能明确使用受管理解释器；项目显式配置的解释器、venv、CLI 路径优先；无配置、无本机环境时使用内置环境。系统有 Python 不代表系统 Python 有基础库，不能仅检查可执行文件是否存在。</li>
+<li><strong>覆盖：</strong>让 Agent shell、MCP 启动、插件 hooks、CLI 探测与安装、内置终端共同使用该环境规则，只改变 Kivio 及其子进程，不写用户全局 PATH。</li>
+<li><strong>模块导入：</strong>Python/Node 均验证实际业务库导入；Node ESM 不能靠 NODE_PATH 保证导入成功，技能脚本需使用明确的模块根目录、引导入口或受管理包项目。</li>
+<li><strong>模型认知：</strong>工具说明和技能写明解释器、已安装包、可写扩展目录和命令入口；保留宿主 Python 安装保护，不让模型反复安装已有库。</li>
+</ol>
+<p>受管理运行环境不等于沙箱：当前命令仍在宿主执行，文件权限和工具审批语义不因“内置 Python”改变。Windows 的 python/python3、npm/npx.cmd 与 PowerShell 启动方式，以及 macOS Python 扩展与 Node 的签名/JIT 权限，都需要针对真实发行包确认。</p>
+<h2>5. 分发取舍</h2>
+<table><tr><th>方式</th><th>评估</th></tr>
+<tr><td>基础环境随安装包附带</td><td><strong>推荐。</strong>初次使用与离线使用都可用；代价是安装包变大，升级需维护运行包版本。</td></tr>
+<tr><td>首次使用时自动下载</td><td>缩小应用初始包，但基础功能仍可能被网络、代理、下载失败阻塞；不适合作为本需求的唯一方案。</td></tr>
+<tr><td>Homebrew / winget 自动装系统环境</td><td>可作用户主动选择的路径，但仍有安装器和权限前提，也改变宿主环境，无法提供一致的基础文档能力。</td></tr></table>
+<p>目前没有制作 Kivio 候选运行包，不能给出可信的安装包增量。下一步应先对两种发行平台做最小运行包样品，分别记录下载、解压、打包后的增量，以及导入和首个任务耗时，再决定是否增加大型原生工具。</p>
+<h2>6. 验收标准与实施次序</h2>
+<p>先完成 Python/Node 基础包与文档库，再统一进程接入和技能说明，最后补扩展包安装及环境状态页。验收必须在没有系统 Python/Node、没有 Homebrew/winget 辅助的干净机器上进行，不能只验证开发机 <code>npm run dev</code>。</p>
+<ul>
+<li>从 Finder / Explorer 打开发行应用；离线导入基础库、读取 PDF/DOCX/XLSX、生成可打开的文档与图表。</li>
+<li>Agent、Node/Python MCP、插件 hooks 和内置终端均实际执行；依赖未预装的 MCP 需联网取包时，明确区分运行时可用与包下载失败。</li>
+<li>含中文与空格路径、只读安装目录、移动后的 Windows portable ZIP 均可运行。</li>
+<li>项目已有 venv/Node 配置不被覆盖；追加包不会破坏基础库，也不会写入系统 Python。</li>
+<li>从旧版升级后缓存不引用已删除的解释器；下载或扩展安装中断可恢复，错误指向具体缺失资源。</li>
+<li>检查 macOS DMG、Windows NSIS 与 portable ZIP 的实际运行资源；Windows 实机验收是必要项。</li>
+</ul>
+<h2>7. 来源与证据边界</h2>
+<p>使用 Exa 检索 25 个结果条目（包含同源重复结果），按 Codex、Python、Node/Tauri 三个方向查找并读取主要官方来源；只使用项目代码、实机检查和官方技术资料支撑结论。</p>
+<ul>
+<li><a href="https://developers.openai.com/codex/app/troubleshooting">OpenAI：Codex 桌面应用说明</a>。公开资料未说明完整桌面工具运行包；本报告的 Python/Node 清单来自本机工具接口与执行结果。</li>
+<li><a href="https://docs.astral.sh/python-build-standalone/running/">Astral：便携 Python 的运行与目标平台</a>；<a href="https://docs.astral.sh/python-build-standalone/distributions/">分发格式</a>。</li>
+<li><a href="https://docs.python.org/3/using/windows.html#the-embeddable-package">Python 官方：Windows embeddable package 限制</a>。</li>
+<li><a href="https://docs.astral.sh/uv/concepts/projects/sync/">uv：依赖锁定和同步</a>。</li>
+<li><a href="https://nodejs.org/en/download/current">Node 官方：LTS 状态与预编译分发</a>；<a href="https://v2.tauri.app/learn/sidecar-nodejs/">Tauri：直接附带 Node 运行时的支持</a>。</li>
+</ul>
+<p class="muted">本方案是针对当前需求的调研建议，不是新增工程规范或已完成的实现。读取了现有 docs/adr 列表，未发现运行包分发专属 ADR；后续实现仍遵循统一工程规范与既有 CLI 会话约束。</p>
+</main></html>

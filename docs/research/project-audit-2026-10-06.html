@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kivio 项目审查与 Agent 客户端对比 · 2026-10-06</title>
+<style>
+:root{color-scheme:light;font-family:system-ui,-apple-system,"PingFang SC",sans-serif;color:#26302d;background:#f5f6f3;line-height:1.8}body{max-width:1060px;margin:auto;padding:48px 24px 80px}header,section{background:white;border:1px solid #e0e5df;border-radius:16px;padding:28px 32px;margin:18px 0}h1{font-size:30px;line-height:1.35;margin:10px 0 18px}h2{font-size:21px;margin:0 0 18px}h3{font-size:17px;margin:26px 0 8px}p{margin:10px 0}a{color:#216553;text-underline-offset:3px}small,.muted{color:#66736b}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid #e5e9e4}th{background:#f2f5f1}code{font-size:.9em;background:#f0f3ef;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}.p1,.p2{font-size:12px;border-radius:5px;padding:3px 7px;margin-right:7px}.p1{background:#ffebe3;color:#964120}.p2{background:#fff4cd;color:#705719}.lead{font-size:19px}.box{border-left:3px solid #51816c;padding:8px 16px;background:#f4f8f4}.scroll{overflow-x:auto}li{margin:6px 0}@media(max-width:650px){body{padding:16px 10px}header,section{padding:20px 16px}h1{font-size:25px}table{min-width:620px}}@media print{body{background:white;padding:0;max-width:none}header,section{break-inside:auto;border-radius:0}a{color:inherit}h3{break-after:avoid}}
+</style>
+<header>
+<small>工程审查 · 2026 年 10 月 6 日 · v3.1.1</small>
+<h1>Kivio 项目审查与 Agent 客户端对比</h1>
+<p class="lead"><strong>推荐下一阶段优先投入发布可靠性、调试数据契约和性能验收，再改善多运行时的使用一致性。</strong></p>
+<p>项目已有完整的运行时、会话持久化、流式渲染与自动化基础。当前检查结果支持继续做局部收敛，未提供需要整体重写的证据。最紧迫的问题集中在“检查成功是否可信”和“产品行为是否兑现界面承诺”。</p>
+<p class="muted">审查基线：<code>6c60d9c3625cca4b9af1aff83a7e20b2b16a69e9</code> 加当前 11 个未提交文件。未修改业务代码或测试；本报告为新增文档。遵循统一工程规范和六项领域 ADR。</p>
+</header>
+<section>
+<h2>结论与证据范围</h2>
+<p>本次覆盖工程规范、发布与 CI、前后端检查、会话存储与查询、流式渲染、请求调试、外部 CLI 能力与导入/回退约束；对重点路径追踪实现，并运行现有测试。属于全项目层面的风险审查与重点源码抽查，不代表逐行审计了所有文件。</p>
+<div class="scroll"><table><tr><th>实际执行</th><th>结果</th><th>解释</th></tr>
+<tr><td>前端全量 Vitest</td><td>320 文件 / 2688 测试通过</td><td>当前工作区运行，无失败。</td></tr>
+<tr><td>Rust <code>cargo test --lib</code></td><td>2777 通过 / 55 忽略</td><td>未把忽略项计为通过；不包含独立集成测试、全部 binary target 或原生窗口验收。</td></tr>
+<tr><td>ESLint、<code>tsc --noEmit</code>、协议生成一致性</td><td>通过</td><td>历史记录中的 markdownUtils 类型阻断，本次未复现。</td></tr>
+<tr><td>架构边界</td><td>检查器 12 测试通过；0 临时例外</td><td>只能证明依赖边界，不能证明所有调用流程足够简洁。</td></tr>
+<tr><td>前端生产构建</td><td>成功，8.63 秒</td><td>存在大 chunk 提示；不是原生安装包或实际启动耗时测量。</td></tr>
+<tr><td>性能报告空输入</td><td><code>{}</code> 返回成功</td><td>已复现验收脚本缺口，详见问题 4。</td></tr>
+</table></div>
+<p class="muted">未执行：Windows 环境验证、真实桌面窗口全流程、竞品本机性能对跑、外部服务付费调用、完整依赖漏洞/供应链审计。Rust 编译仍有警告及 block 0.1.6 的未来兼容提示，不能据此直接判定当前产品故障。本机 Node 为 26.0.0，CI 使用 Node 20，测试结果不代表环境完全相同。</p>
+</section>
+<section>
+<h2>六项已确认的问题</h2>
+<h3><span class="p1">P1</span>1. 请求调试承诺“不落盘”，实现却持续写盘</h3>
+<p><code>src/settings/RequestDebugPanel.tsx:694–695</code> 的中英文说明都承诺仅内存保存；<code>src-tauri/src/chat/request_debug.rs:46,50–59,276–289</code> 会将缓冲写入应用数据目录的 <code>request_debug/records.jsonl</code>。</p>
+<p>触发条件是用户开启请求调试。保存内容包含请求正文；请求记录构造仅专门剔除视频载荷，不能把“请求头 key 脱敏”理解为“正文内容无敏感信息”。没有发现凭此可断言远程泄露的证据，但本地持久化行为已违反界面契约。现有 Rust 测试明确验证落盘与手动清除，说明不能只靠测试绿灯发现这类矛盾。</p>
+<p><strong>建议：</strong>默认遵守内存记录承诺；若确需磁盘诊断，做成独立显式选项，说明位置、保存内容及清除方式，并对 URL、额外认证头、正文做分层处理。验收应覆盖默认无文件、显式开启后落盘、清除后文件消失，及失败时的可见反馈。</p>
+
+<h3><span class="p1">P1</span>2. 安装包对外发布早于包内资源验证</h3>
+<p><code>.github/workflows/release.yml:44</code> 创建非 draft Release；<code>:98–114</code> 构建并上传，<code>releaseDraft: false</code>；直到 <code>:116</code> 与 <code>:136</code> 才解包验证 macOS/Windows 资源。</p>
+<p>资源检查失败或某个平台构建失败时，已公开版本和资产可能仍可下载。建议使用 draft 暂存，两平台构建、资源校验及 portable 检查全部成功后，由最终 job 统一发布。对重跑已有 Release 的情况也要定义行为，避免再次暴露半成品。</p>
+
+<h3><span class="p1">P1</span>3. Release 没有绑定同一提交的完整质量门</h3>
+<p><code>.github/workflows/release.yml:52</code> 只依赖 create-release；构建使用 <code>npx tauri</code>，其 beforeBuildCommand 仅执行 Vite。Release 工作流本身没有 lint、TypeScript、协议一致性、架构或前后端行为测试依赖。</p>
+<p>这不代表主分支没有远端保护；本次未核查 branch protection。但工作流自身不能证明待发布 commit 已通过质量门，手动 ref 和 tag 构建尤其需要绑定验证。</p>
+<p><strong>建议：</strong>提取可复用 quality workflow，解析并固定待发布 SHA，使验证和打包使用相同 SHA，避免复制两套检查列表。</p>
+
+<h3><span class="p2">P2</span>4. 性能检查将缺失数据当作零成本</h3>
+<p><code>scripts/check-chat-performance-report.mjs:20–29</code> 将缺失 samples、longTasks、buckets 替换为空数组；后续最大值与总计默认零。我实际给脚本输入 <code>{}</code>，它输出全零、空 violations，并以 0 退出。</p>
+<p>探针未启用、采集失败、拿错文件时，也能出现“性能通过”。这与 <code>docs/perf/chat-rendering-baseline.md</code> 中“空生产 Profiler 报告不等于零成本”的说明不一致。</p>
+<p><strong>建议：</strong>先校验报告版本、场景与必要样本，缺失数据判为不可验收。不同采集模式分别定义必需字段；longTasks 为空可能完全正常，不能机械要求每个数组非空。再执行现有预算判断。</p>
+
+<h3><span class="p2">P2</span>5. Windows 平台回归发现过晚</h3>
+<p><code>.github/workflows/ci.yml:22</code> 只在 macOS 执行质量 job，Windows 仅在 Release 矩阵出现。macOS 无法编译检查 Windows 条件分支，Windows 单测也不在这两个工作流中执行。</p>
+<p>建议 PR 增加 Windows Rust 编译与平台相关测试；前端通用检查保持一次即可。这是已确认的覆盖缺口，不是已确认的 Windows 故障。</p>
+
+<h3><span class="p2">P2</span>6. 文档忽略规则覆盖了产品运行资源</h3>
+<p><code>.github/workflows/ci.yml:7,14</code> 忽略所有 <code>**.md</code> 及 docs，而 <code>src-tauri/tauri.conf.json</code> 打包 skills、plugins 和 docs/licenses。仅修改或删除 SKILL.md、参考资料、许可证 Markdown 时，不会触发此 CI。</p>
+<p>建议只忽略纯说明文档；对随包资源设置轻量资源检查，无须所有 Markdown 修改都执行完整 Rust 测试。验收样例应包含“仅删一个打包技能文件”能触发并阻断检查。</p>
+</section>
+<section>
+<h2>需要测量后决定的优化</h2>
+<h3>渲染依赖与首次使用成本</h3>
+<p>本次构建的 minified chunk：ChatMarkdown 1551.25 kB、NotesCenter 1129.41 kB、Chat 1010.19 kB、ApprovalCard 691.47 kB。<code>src/chat/ChatMarkdown.tsx:5–11</code> 静态接入多种渲染插件，是适合分析的依赖入口。</p>
+<p>这些名称不代表体积全部来自对应组件，gzip 体积也不等于桌面 WebView 的解析执行成本。项目已有 lazy 页面、重内容延迟挂载、虚拟列表与流式状态拆分，笔记也已有首次使用加载，应保留。</p>
+<p>先固定 F1–F5 场景，测冷打开聊天、首次代码/图表渲染、长回复更新、会话切换的 p50/p95、长任务与内存。只有确认依赖加载阻塞后，再按真实模块归属延迟加载 Mermaid/语法能力；不以调高 chunk 警告阈值当优化。</p>
+<h3>对话库全文搜索的规模成本</h3>
+<p><code>src-tauri/src/chat/storage/search.rs:119–136,350–361</code> 在元数据未命中时读取会话文件，必要时解析正文；对话库为计算 total 需筛选全部候选。后台线程与共享读屏障已经存在，因此不能说它必然阻塞 UI 或全局写锁。</p>
+<p>建议用 100、1000、10000 条合成会话测搜索延迟、读取字节和快速连续查询。若不达预算，先考虑可重建的正文索引、查询取消或合并；保留原 JSON 为真源，避免未经测量就整体迁移数据库。</p>
+<h3>调试记录需要字节预算</h3>
+<p><code>request_debug.rs:50–59</code> 每次复制最多 50 条记录并同步重写整个镜像；50 条是数量上限，不是总字节上限。请求正文含完整上下文或图像时，调试可能额外放大内存与 I/O 成本。</p>
+<p>在修正落盘契约时一并建立每条/总量字节预算，保留诊断必要字段，按需导出完整内容。当前未测得实际延迟，按性能风险处理，不标为已复现卡顿。</p>
+</section>
+<section>
+<h2>与其他 Agent 客户端的对比</h2>
+<p>使用 Exa 的 3 组搜索共返回 14 条结果，再读取官方仓库、文档及 OpenCode 关键源码；不采用第三方汇总作为技术结论依据。以下为本次检索到的官方资料，不是四款软件在相同硬件上的实测排名。动态分支未固定 SHA，后续实施前需再次核对接口。</p>
+<div class="scroll"><table><tr><th>项目</th><th>官方资料确认的特点</th><th>Kivio 可借鉴的方向</th><th>实施约束</th></tr>
+<tr><td><a href="https://github.com/iOfficeAI/AionUi/wiki/ACP-Setup">AionUi</a></td><td>内置 Agent 与外部 CLI 并存；ACP/兼容适配；明确各代理保留各自模型、认证、工具和权限能力。</td><td>把运行时能力差异做得更易理解：用户能在使用前看见某个动作是否支持、为何不可用。</td><td>Kivio 已有 supports_steering、supports_follow_up 等字段，应扩展已有能力真源，避免新增另一套前端判断。</td></tr>
+<tr><td><a href="https://github.com/anomalyco/opencode">OpenCode</a></td><td>终端与桌面入口；独立 snapshot 模块提供 track、restore、revert、diff；压缩代码保护近期上下文并处理旧工具输出。</td><td>任务结束后集中看变更、理解回退范围；对压缩效果建立可观察的验收样例。</td><td>Kivio ADR-0006 的“回到这里”不撤销文件。若加入文件恢复，需独立动作、预览和冲突保护，先解决产品语义，不能静默改变既有行为。</td></tr>
+<tr><td><a href="https://goose-docs.ai/docs/guides/recipes/">Goose</a></td><td>Recipes 将提示、扩展与设置组织为可复用工作流，并支持快捷启动与子配方。</td><td>将已完成的有效流程保存为带输入参数的模板，降低重复任务的启动成本。</td><td>Kivio 已有助手、技能、定时任务、自动化；优先在既有归属内组合，不创建第五种互相重叠的任务系统。</td></tr>
+<tr><td><a href="https://github.com/cherryHQ/cherry-studio">Cherry Studio</a></td><td>多供应商、多模型对话、文档处理、翻译、WebDAV 备份等通用桌面工作能力。</td><td>改善模型配置、历史资料、附件与备份的可发现性，缩短“配置好到第一次成功使用”的路径。</td><td>这是产品建议，本次未做 Kivio 原生 UI 可用性测试，不能据此断言某个现有页面难用。</td></tr>
+</table></div>
+<p>OpenCode 的实现依据：<a href="https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/snapshot/index.ts">snapshot 源码</a>、<a href="https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/compaction.ts">compaction 源码</a>。其<a href="https://opencode.ai/docs/config/">官方配置文档</a>也指出快照可能增加大型仓库的索引耗时和磁盘占用，因此不能把“有快照”直接推成“更快、更省资源”。</p>
+<p class="box"><strong>定位建议：</strong>Kivio 值得继续强化“屏幕级操作 → 对话 → Agent 执行 → 查看交付物”的桌面闭环。多接一个 CLI 的收益取决于真实用户需求；现有多个运行时的稳定续聊、取消、错误解释和产物交付更值得优先投入。</p>
+</section>
+<section>
+<h2>应保留的设计与推荐落地顺序</h2>
+<p>应保留：导入原生会话的所有权与工作目录约束、历史快照差异提示、子代理身份跨任务保留、设置写入 CAS、会话原子写入、流式内容与低频状态拆分，以及运行中草稿追加日志。</p>
+<p>特别核对了 <code>src-tauri/src/chat/commands/messages.rs:534</code>：工具轮间草稿已写 append-only journal，不能再依据旧注释提出“每轮整本重写会话”的问题。<code>draft_journal.rs</code> 已有 16 MiB 轮转逻辑，后续应围绕真实瓶颈做测量。</p>
+<p>测试方面，设置多窗口冲突、真实 AppKit 红绿灯几何、安装包文件 hash 属于有价值的行为/平台契约；没有证据支持大规模删除测试。优先补齐“UI 承诺与后端行为一致”的验收。</p>
+<ol>
+<li><strong>第一批：修正信任边界。</strong>请求调试落盘契约、draft 发布与同 SHA 质量门、性能空报告拒绝。验收分别用真实文件存在性、故意失败的发布验证、空/非法/有效性能报告。</li>
+<li><strong>第二批：补齐交付覆盖。</strong>Windows PR 编译/测试、技能和许可证资源轻量门禁。复用现有检查器，保持规则单一维护。</li>
+<li><strong>第三批：建立性能基线。</strong>测量冷启动、F1–F5、全文搜索和开启调试时的成本；按最大的实测瓶颈逐项优化。</li>
+<li><strong>第四批：完善 Agent 体验。</strong>统一解释运行时能力与失败原因、改善产物查看，再评估模板化工作流和独立文件回退。</li>
+</ol>
+<p class="muted">优先级说明：P1 建议下次正式发布前处理；P2 应安排近期迭代。产品建议与性能风险不等同于已确认缺陷。本次未修改或提交修复。</p>
+</section>
+<footer class="muted">本地验证日志：/tmp/kivio-audit-tests.log、/tmp/kivio-audit-rust-all.log、/tmp/kivio-audit-lint.log、/tmp/kivio-audit-protocol.log、/tmp/kivio-audit-build.log、/tmp/kivio-audit-architecture.log。临时文件可能由系统清理。</footer>
+</html>
