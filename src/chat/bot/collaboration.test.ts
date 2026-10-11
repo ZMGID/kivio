@@ -4,7 +4,7 @@ import { decodeSnapshot, type CollaborationSnapshot } from './collaboration'
 import { fetchStillCurrent, reduceCollaboration, type CollaborationView } from './collaborationStore'
 import { collaborationCard, deliveryCardState } from './eventCard'
 import { mentionPlan, roomPost, sendMentions } from './mentionPlan'
-import { contactSignal } from './presence'
+import { contactAvatarMood, contactSignal } from './presence'
 import type { ToolCallRecord } from '../types'
 
 const snapshot: CollaborationSnapshot = {
@@ -50,6 +50,15 @@ describe('collaboration snapshot', () => {
 })
 
 describe('bot presence', () => {
+  it('keeps approval waiting ahead of work and errors and never calls queued work success', () => {
+    const running = { id: 'run', status: 'running' as const, updatedAt: 3 }
+    expect(contactAvatarMood({ generating: true, pending: true, error: true, deliveries: [running] })).toBe('wait')
+    expect(contactAvatarMood({ generating: true, pending: false, attention: true, deliveries: [running] })).toBe('wait')
+    expect(contactAvatarMood({ generating: false, pending: false, deliveries: [{ ...running, status: 'queued' }] })).toBe('work')
+    expect(contactAvatarMood({ generating: false, pending: false, deliveries: [{ ...running, status: 'failed' }] })).toBe('error')
+    expect(contactAvatarMood({ generating: false, pending: false, deliveries: [{ ...running, status: 'succeeded' }] })).toBe('idle')
+  })
+
   it('shows working for an in-flight delivery and attention only for the latest problem', () => {
     expect(contactSignal({
       generating: false,

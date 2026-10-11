@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Bot, Eye, EyeOff, Pin, Plus, Settings } from 'lucide-react'
+import { Users, Bot, Eye, EyeOff, Pin, Plus, Settings } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { i18n } from '../components/i18n'
 import { Input, Label } from '../settings/public/controls'
 import { collaborationApi, decodeRoom } from './bot/collaboration'
 import { refreshCollaboration, useBotCollaboration } from './bot/collaborationStore'
-import { contactSignal, deliveryStatusLabel, roomStatusLabel } from './bot/presence'
+import { contactAvatarMood, contactSignal, deliveryStatusLabel, roomStatusLabel } from './bot/presence'
 import { profileApi, type BotListItem } from './bot/profile'
 import { isTauriRuntime } from './utils'
 import { AgentIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon } from '../settings/public/icons'
@@ -19,7 +19,7 @@ import { useClampedMenuPosition } from './useClampedMenuPosition'
 import type { SidebarProps, ExtensionsNavItem } from './Sidebar'
 import type { ChatAssistant, ConversationListItem } from './types'
 
-type Props = Pick<SidebarProps, 'lang' | 'currentConversationId' | 'generatingConversationIds' | 'attentionConversationIds' | 'optimisticConversations' | 'refreshKey' | 'searchOpen' | 'onSelectConversation' | 'onOpenSettings' | 'onOpenExtensionsItem'> & {
+type Props = Pick<SidebarProps, 'lang' | 'currentConversationId' | 'generatingConversationIds' | 'attentionConversationIds' | 'botExecutionFeedback' | 'optimisticConversations' | 'refreshKey' | 'searchOpen' | 'onSelectConversation' | 'onOpenSettings' | 'onOpenExtensionsItem'> & {
   footer: ReactNode
   onNewBot: () => void
   onEditBot?: (assistant: ChatAssistant) => void
@@ -27,7 +27,7 @@ type Props = Pick<SidebarProps, 'lang' | 'currentConversationId' | 'generatingCo
   activeRoomId?: string | null
 }
 
-export function BotRoster({ lang, currentConversationId, generatingConversationIds, optimisticConversations = [], refreshKey, searchOpen, onSelectConversation, onOpenSettings, onOpenExtensionsItem, onEditBot, footer, onNewBot, onOpenRoom, activeRoomId = null, attentionConversationIds }: Props) {
+export function BotRoster({ lang, currentConversationId, generatingConversationIds, optimisticConversations = [], refreshKey, searchOpen, onSelectConversation, onOpenSettings, onOpenExtensionsItem, onEditBot, footer, onNewBot, onOpenRoom, activeRoomId = null, attentionConversationIds, botExecutionFeedback }: Props) {
   const t = i18n[lang]
   const collaboration = useBotCollaboration()
   const [items, setItems] = useState<ConversationListItem[]>([])
@@ -193,7 +193,7 @@ export function BotRoster({ lang, currentConversationId, generatingConversationI
             return <button type="button" key={`room:${room.id}`} aria-current={activeRoomId === room.id ? 'page' : undefined}
               onClick={() => onOpenRoom?.(room.id)}
               className={`mb-0.5 flex min-h-[60px] w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left ${activeRoomId === room.id ? 'bg-neutral-900/[0.06]' : 'hover:bg-neutral-900/[0.04]'}`}>
-              <span className="relative shrink-0"><BotAvatar size={32} />{signal === 'working' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-emerald-500" />}{signal === 'attention' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-amber-500" />}</span>
+              <span className="relative shrink-0"><Users size={28} className="m-0.5 text-neutral-500" aria-hidden="true" />{signal === 'working' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-emerald-500" />}{signal === 'attention' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-amber-500" />}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-medium text-neutral-900">{room.title}</span>
                 <span className="mt-0.5 block truncate text-[12px] leading-4 text-neutral-600">{signal === 'working' ? t.chatBotWorking : signal === 'attention' ? (collaboration.snapshot.pending.some(action => action.roomId === room.id && action.status === 'awaiting_user') || !latest ? t.chatBotNeedsYou : deliveryStatusLabel(latest.status, t)) : `${roomStatusLabel(room.status, t)} · ${room.members.map(memberName).join(', ')}`}</span>
@@ -204,13 +204,21 @@ export function BotRoster({ lang, currentConversationId, generatingConversationI
           const assistant = profiles.get(botAssistantId(item.id) ?? '')
           const assistantId = botAssistantId(item.id) ?? ''
           const botDeliveries = collaboration.snapshot.deliveries.filter(delivery => delivery.toConversationId === item.id || delivery.toBotId === assistantId)
-          const signal = contactSignal({
+          const feedback = botExecutionFeedback?.[item.id]
+          const signal = feedback?.status === 'error' ? 'attention' : contactSignal({
             generating: Boolean(generatingConversationIds?.has(item.id)),
             pending: collaboration.snapshot.pending.some(action => action.botId === assistantId && action.status === 'awaiting_user'),
             deliveries: botDeliveries,
             attention: Boolean(attentionConversationIds?.has(item.id)),
           })
+          const avatarMood = contactAvatarMood({
+            error: feedback?.status === 'error',
+            generating: Boolean(generatingConversationIds?.has(item.id)),
+            pending: collaboration.snapshot.pending.some(action => action.botId === assistantId && action.status === 'awaiting_user'),
+            deliveries: botDeliveries, attention: Boolean(attentionConversationIds?.has(item.id)),
+          })
           const latest = [...botDeliveries].sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0]
+          const latestSuccess = [...botDeliveries].filter(delivery => delivery.status === 'succeeded').sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0]
           const working = signal === 'working'
           return <button type="button" key={item.id} disabled={savingIds.has(item.id)}
             aria-current={!activeRoomId && currentConversationId === item.id ? 'page' : undefined}
@@ -218,10 +226,10 @@ export function BotRoster({ lang, currentConversationId, generatingConversationI
             onContextMenu={event => { event.preventDefault(); openMenu(event.clientX, event.clientY, item) }}
             onKeyDown={event => { if (event.key === 'F10' && event.shiftKey) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); openMenu(rect.right - 224, rect.bottom, item) } }}
             className={`group mb-0.5 flex select-none min-h-[60px] w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors disabled:opacity-50 ${!activeRoomId && currentConversationId === item.id ? 'bg-neutral-900/[0.06]' : 'hover:bg-neutral-900/[0.04]'}`}>
-            <span className="relative shrink-0"><BotAvatar color={assistant?.color} size={32} />{working && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-emerald-500" />}{signal === 'attention' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-amber-500" />}</span>
+            <span className="relative shrink-0"><BotAvatar icon={assistant?.icon} color={assistant?.color} size={36} mood={avatarMood} label={t.chatBotAvatarMoods.split('|')[({ idle: 0, think: 1, search: 2, work: 3, speak: 4, wait: 5, error: 6, done: 7 })[avatarMood]]} successKey={feedback?.status === 'completed' || latestSuccess ? `${feedback?.status === 'completed' ? feedback.key : ''}|${latestSuccess?.id ?? ''}` : undefined} />{working && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-emerald-500" />}{signal === 'attention' && <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-neutral-100 bg-amber-500" />}</span>
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5"><span className="truncate text-[13px] font-medium text-neutral-900">{assistant?.name ?? item.assistant_name ?? item.title}</span>{botProfiles.some(entry => entry.assistantId === assistantId && entry.primary) && <span className="shrink-0 text-[11px] text-neutral-500">{t.chatBotPrimary}</span>}{item.pinned && <Pin size={11} className="shrink-0 text-neutral-400" />}</span>
-              <span className="mt-0.5 block truncate text-[12px] leading-4 text-neutral-600">{item.archived ? t.chatBotRestore : working ? t.chatBotWorking : signal === 'attention' ? (collaboration.snapshot.pending.some(action => action.botId === assistantId && action.status === 'awaiting_user') || !latest ? t.chatBotNeedsYou : deliveryStatusLabel(latest.status, t)) : item.preview || assistant?.description || t.chatBotNoMessages}</span>
+              <span className="mt-0.5 block truncate text-[12px] leading-4 text-neutral-600">{item.archived ? t.chatBotRestore : working ? t.chatBotWorking : avatarMood === 'error' ? t.chatBotAvatarMoods.split('|')[6] : signal === 'attention' ? (collaboration.snapshot.pending.some(action => action.botId === assistantId && action.status === 'awaiting_user') || !latest ? t.chatBotNeedsYou : deliveryStatusLabel(latest.status, t)) : item.preview || assistant?.description || t.chatBotNoMessages}</span>
             </span>
           </button>
         }) : <div className="px-3 py-10 text-center" role="status">

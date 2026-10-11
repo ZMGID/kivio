@@ -11,6 +11,11 @@ type SendPort = Pick<typeof chatApi, 'sendMessage'>
 declare const sendClaimBrand: unique symbol
 export type SendClaim = { readonly [sendClaimBrand]: true }
 
+export interface ExecutionFeedback {
+  status: 'completed' | 'error' | 'cancelled' | 'unknown'
+  key: string
+}
+
 export interface ExecutionLease {
   readonly conversationId: string
   readonly token: number
@@ -90,6 +95,7 @@ export function createChatExecutionOwner(
     runIds: Set<string>
     startedAt: number
     claim?: SendClaim
+    terminalStatus?: ExecutionFeedback['status']
   }>()
   const claims = new Map<SendClaim, Reservation>()
   const external = new Set<string>()
@@ -101,6 +107,7 @@ export function createChatExecutionOwner(
     terminalIds: Set<string>
     ready: boolean
     groupEnded: boolean
+    terminalStatus?: ExecutionFeedback['status']
   }>()
   const retiredExternalRunIds = new Map<string, Set<string>>()
   let externalSequence = 0
@@ -111,6 +118,23 @@ export function createChatExecutionOwner(
   }
   const listeners = new Set<() => void>()
   let revision = 0
+  let feedback: Readonly<Record<string, ExecutionFeedback>> = {}
+  const clearFeedback = (id: string) => {
+    if (!feedback[id]) return
+    const next = { ...feedback }
+    delete next[id]
+    feedback = next
+  }
+  const terminalStatus = (reason?: string): ExecutionFeedback['status'] => reason === 'done' ? 'completed' : reason === 'error' ? 'error' : reason === 'cancelled' ? 'cancelled' : 'unknown'
+  const combineStatus = (previous: ExecutionFeedback['status'] | undefined, reason?: string): ExecutionFeedback['status'] => {
+    const next = terminalStatus(reason)
+    if (previous === 'error' || next === 'error') return 'error'
+    if (previous === 'cancelled' || next === 'cancelled') return 'cancelled'
+    return next === 'unknown' ? previous ?? next : next
+  }
+  const recordFeedback = (id: string, status: ExecutionFeedback['status'], key: string) => {
+    feedback = { ...feedback, [id]: { status, key } }
+  }
   const publish = () => {
     revision += 1
     listeners.forEach((listener) => listener())
@@ -153,6 +177,14 @@ export function createChatExecutionOwner(
       return () => { listeners.delete(listener) }
     },
     getRevision: () => revision,
+    feedbackSnapshot: () => feedback,
+    /** Publish the existing view error without taking over run settlement. */
+    noteStreamError(conversationId: string, error: boolean) {
+      if (error) recordFeedback(conversationId, 'error', `execution:${turnEpochs.get(conversationId) ?? 0}`)
+      else if (feedback[conversationId]?.status === 'error') clearFeedback(conversationId)
+      else return
+      publish()
+    },
     turnEpoch: (conversationId: string) => turnEpochs.get(conversationId) ?? 0,
     snapshot,
     activeConversationIds: () => [...new Set([...active.keys(), ...external])],
@@ -216,6 +248,7 @@ export function createChatExecutionOwner(
         throw new Error('Regeneration cannot begin a multi-answer group')
       }
       cancellations.delete(id)
+      clearFeedback(id)
       retireExternal(id)
       const token = settlement.beginInvoke(id)
       const lease = { conversationId: id, token }
@@ -245,7 +278,12 @@ export function createChatExecutionOwner(
       return lease
     },
     observe(event: ExecutionEvent): boolean {
-      if (event.kind === 'deferTerminal') return settlement.deferTerminal(event.terminal)
+      if (event.kind === 'deferTerminal') {
+        const accepted = settlement.deferTerminal(event.terminal)
+        const invocation = active.get(event.terminal.conversationId)
+        if (accepted && invocation) invocation.terminalStatus = combineStatus(invocation.terminalStatus, event.terminal.reason)
+        return accepted
+      }
       const id = event.conversationId
       if (event.kind === 'runEvent') {
         if (event.runId && retiredExternalRunIds.get(id)?.has(event.runId)) return false
@@ -279,6 +317,7 @@ export function createChatExecutionOwner(
             }
             if (!run) {
               advanceTurn(id)
+              clearFeedback(id)
               run = {
                 token: ++externalSequence,
                 groupId: event.groupId ?? null,
@@ -296,7 +335,7 @@ export function createChatExecutionOwner(
         return true
       }
       if (event.kind === 'externalStarted' && !active.has(id)) {
-        if (!external.has(id)) advanceTurn(id)
+        if (!external.has(id)) { advanceTurn(id); clearFeedback(id) }
         external.add(id)
       }
       if (event.kind === 'externalEnded') {
@@ -306,6 +345,7 @@ export function createChatExecutionOwner(
       }
       if (event.kind === 'drop') {
         advanceTurn(id)
+        clearFeedback(id)
         const invocation = active.get(id)
         if (invocation?.claim) abandonSend(invocation.claim)
         if (invocation?.optimisticToken != null) optimistic.settle(id, invocation.optimisticToken)
@@ -326,6 +366,9 @@ export function createChatExecutionOwner(
       const id = terminal.conversationId
       const invocation = active.get(id)
       if (invocation) {
+        if (terminal.turnEpoch != null && terminal.turnEpoch !== (turnEpochs.get(id) ?? 0)) return { kind: 'ignored' }
+        if (!settlement.acceptRunEvent(id, terminal.runId)) return { kind: 'ignored' }
+        invocation.terminalStatus = combineStatus(invocation.terminalStatus, terminal.reason)
         if (target === 'group' || invocation.groupId) return { kind: 'pending' }
         return settlement.deferTerminal(terminal) ? { kind: 'deferred' } : { kind: 'ignored' }
       }
@@ -334,6 +377,7 @@ export function createChatExecutionOwner(
         && !retiredExternalRunIds.get(id)?.has(terminal.runId)) {
         // A terminal can be the first observed packet after a protocol gap.
         advanceTurn(id)
+        clearFeedback(id)
         run = {
           token: ++externalSequence, groupId: null, expectedArms: 1,
           runIds: new Set([terminal.runId]), terminalIds: new Set(),
@@ -344,6 +388,7 @@ export function createChatExecutionOwner(
       }
       if (!run || !terminal.runId || !run.runIds.has(terminal.runId)
         || run.terminalIds.has(terminal.runId)) return { kind: 'ignored' }
+      run.terminalStatus = combineStatus(run.terminalStatus, terminal.reason)
       run.terminalIds.add(terminal.runId)
       if (run.terminalIds.size < run.expectedArms) return { kind: 'pending' }
       run.ready = true
@@ -359,6 +404,8 @@ export function createChatExecutionOwner(
     isExternalTerminalCurrent,
     completeExternalTerminal(permit: ExternalTerminalPermit): boolean {
       if (!isExternalTerminalCurrent(permit)) return false
+      const run = externalRuns.get(permit.conversationId)!
+      recordFeedback(permit.conversationId, run.terminalStatus ?? 'unknown', `execution:${turnEpochs.get(permit.conversationId) ?? 0}:${run.token}`)
       external.delete(permit.conversationId)
       retireExternal(permit.conversationId)
       cancellations.delete(permit.conversationId)
@@ -369,6 +416,7 @@ export function createChatExecutionOwner(
       const id = lease.conversationId
       const invocation = active.get(id)
       if (!invocation || invocation.lease.token !== lease.token) return
+      recordFeedback(id, invocation.terminalStatus ?? (cancellations.has(id) ? 'cancelled' : feedback[id]?.status === 'error' ? 'error' : 'unknown'), `execution:${turnEpochs.get(id) ?? 0}:${lease.token}`)
       active.delete(id)
       cancellations.delete(id)
       if (invocation.optimisticToken != null) optimistic.settle(id, invocation.optimisticToken)

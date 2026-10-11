@@ -6,7 +6,9 @@ import {
   KivioBlobSim,
   blobScheduleMs,
   type BlobMood,
+  type BlobIdentity,
 } from './kivioBlobSim'
+import type { BotAccessory } from './botAvatarIdentity'
 import { prefersReducedMotion } from './utils'
 
 export type { BlobMood }
@@ -16,6 +18,9 @@ export interface KivioBlobHandle {
 }
 
 interface KivioBlobProps {
+  identity?: BlobIdentity
+  accessory?: BotAccessory
+  interactive?: boolean
   size?: number
   mood?: BlobMood
   /** 切会话覆盖层盖住时停表，避免和点阵脉冲叠两套动画。 */
@@ -32,7 +37,7 @@ function writeAttr(el: Element, name: string, value: string, prev: string): stri
 }
 
 export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(function KivioBlob(
-  { size = 28, mood = 'idle', paused = false, pulse, onPoke }: KivioBlobProps,
+  { size = 28, mood = 'idle', paused = false, pulse, onPoke, identity, accessory = 'none', interactive = true }: KivioBlobProps,
   ref,
 ) {
   const hostRef = useRef<HTMLSpanElement>(null)
@@ -48,7 +53,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   onPokeRef.current = onPoke
   pausedRef.current = paused
   if (!simRef.current) {
-    simRef.current = new KivioBlobSim({ reducedMotion: prefersReducedMotion() })
+    simRef.current = new KivioBlobSim({ reducedMotion: prefersReducedMotion(), identity })
   }
 
   const pokeAt = (clientX?: number) => {
@@ -67,6 +72,11 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   const pokeAtRef = useRef(pokeAt)
   pokeAtRef.current = pokeAt
   useImperativeHandle(ref, () => ({ pokeAt: (clientX) => pokeAtRef.current(clientX) }), [])
+
+  useEffect(() => {
+    simRef.current?.setIdentity(identity, performance.now())
+    armRef.current()
+  }, [identity])
 
   useEffect(() => {
     simRef.current?.setMood(mood, performance.now())
@@ -109,7 +119,10 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     }
 
     apply(performance.now())
-    if (prefersReducedMotion()) return
+    if (prefersReducedMotion()) {
+      armRef.current = (now = performance.now()) => apply(now)
+      return () => { armRef.current = () => {} }
+    }
 
     let raf = 0
     let timeout = 0
@@ -136,7 +149,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
         highFps: sim.wantsHighFps(now),
         idleWakeMs: sim.nextIdleWakeMs(now),
       })
-      if (delay == null) return
+      if (delay == null) { apply(now); return }
       const paint = (t: number) => {
         raf = 0
         apply(t)
@@ -191,16 +204,18 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   return (
     <span
       ref={hostRef}
-      role="button"
-      tabIndex={0}
-      className="inline-flex shrink-0 cursor-pointer select-none"
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-hidden={interactive ? undefined : true}
+      className={`inline-flex shrink-0 select-none ${interactive ? 'cursor-pointer' : ''}`}
       style={{ '--kv-stream-logo-size': `${size}px`, width: size, height: size } as CSSProperties}
       onPointerDown={(event) => {
-        if (event.button !== 0) return
+        if (!interactive || event.button !== 0) return
         event.preventDefault()
         pokeAt(event.clientX)
       }}
       onKeyDown={(event) => {
+        if (!interactive) return
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
         pokeAt()
@@ -208,7 +223,8 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     >
       <svg
         className="kv-stream-logo"
-        viewBox="0 0 240 240"
+        style={identity ? { width: size, height: size } : undefined}
+        viewBox={identity ? '8 0 224 240' : '0 0 240 240'}
         width={size}
         height={size}
         overflow="visible"
@@ -217,6 +233,19 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
           <path ref={bodyRef} d={BLOB_REST.bodyD} fill={BLOB_BLUE} transform={BLOB_REST.body} />
           <path ref={eye0Ref} fill={BLOB_EYE} d={BLOB_REST.eyes[0].d} transform={BLOB_REST.eyes[0].transform} />
           <path ref={eye1Ref} fill={BLOB_EYE} d={BLOB_REST.eyes[1].d} transform={BLOB_REST.eyes[1].transform} />
+          {accessory === 'glasses' && <g fill="none" stroke="#292C35" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="78" y="96" width="36" height="36" rx="11" /><rect x="126" y="96" width="36" height="36" rx="11" />
+            <path d="M114 110 Q120 106 126 110 M69 103 L78 106 M162 106 L171 103" />
+          </g>}
+          {accessory === 'headphones' && <g fill="#292C35" stroke="#292C35" strokeWidth="7" strokeLinecap="round">
+            <path d="M51 117 V100 C51 17 189 17 189 100 V117" fill="none" />
+            <rect x="45" y="102" width="16" height="38" rx="7" /><rect x="179" y="102" width="16" height="38" rx="7" />
+            <path d="M188 138 Q185 156 159 155" fill="none" />
+          </g>}
+          {accessory === 'sprout' && <g stroke="#315D3E" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" fill="#86B679">
+            <path d="M120 48 Q120 31 134 23" fill="none" /><path d="M122 39 Q99 41 99 19 Q121 18 122 39Z" />
+            <path d="M124 34 Q124 12 146 16 Q145 36 124 34Z" />
+          </g>}
         </g>
       </svg>
     </span>

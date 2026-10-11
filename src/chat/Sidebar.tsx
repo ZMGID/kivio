@@ -1,3 +1,4 @@
+import type { ExecutionFeedback } from './chatExecutionOwner'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -195,6 +196,7 @@ export interface SidebarProps {
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
   attentionConversationIds?: ReadonlySet<string>
+  botExecutionFeedback?: Readonly<Record<string, ExecutionFeedback>>
   optimisticConversations?: ConversationListItem[]
   /**
    * 当前打开的对话。后端 list 排除归档，所以归档后仍开着的对话不会出现在
@@ -627,6 +629,7 @@ export const Sidebar = memo(function Sidebar({
   currentConversationId,
   generatingConversationIds = new Set(),
   attentionConversationIds,
+  botExecutionFeedback,
   optimisticConversations = [],
   openConversation = null,
   selectedProject = null,
@@ -1604,7 +1607,7 @@ export const Sidebar = memo(function Sidebar({
 
       </>}
 
-      {botView ? <BotRoster lang={lang} currentConversationId={currentConversationId} generatingConversationIds={generatingConversationIds} attentionConversationIds={attentionConversationIds} optimisticConversations={optimisticConversations} refreshKey={refreshKey} searchOpen={searchOpen} onSelectConversation={onSelectConversation} onOpenSettings={onOpenSettings} onOpenExtensionsItem={onOpenExtensionsItem} onEditBot={onEditBot} onOpenRoom={onOpenRoom} activeRoomId={activeRoomId} onNewBot={onNewConversation} footer={<SidebarUserFooter compact botMode onSwitchWorkspace={switchWorkspace} profile={userProfile} lang={lang} settingsActive={settingsActive} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />} /> : <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
+      {botView ? <BotRoster lang={lang} currentConversationId={currentConversationId} generatingConversationIds={generatingConversationIds} attentionConversationIds={attentionConversationIds} botExecutionFeedback={botExecutionFeedback} optimisticConversations={optimisticConversations} refreshKey={refreshKey} searchOpen={searchOpen} onSelectConversation={onSelectConversation} onOpenSettings={onOpenSettings} onOpenExtensionsItem={onOpenExtensionsItem} onEditBot={onEditBot} onOpenRoom={onOpenRoom} activeRoomId={activeRoomId} onNewBot={onNewConversation} footer={<SidebarUserFooter compact botMode onSwitchWorkspace={switchWorkspace} profile={userProfile} lang={lang} settingsActive={settingsActive} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />} /> : <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
         {loading ? (
           <div className="space-y-2 px-2 py-3" aria-label={t.chatLoading} aria-busy="true">
             {[0, 1, 2, 3, 4, 5].map((i) => (

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -282,4 +282,25 @@ it('shows private approval attention ahead of working, including outside the ope
   expect(screen.getByRole('button', { name: /Gamma/ })).toHaveTextContent(t.chatBotWorking)
   expect(screen.getByRole('button', { name: /Ada/ })).toHaveTextContent(t.chatBotNeedsYou)
   expect(screen.getByRole('button', { name: /Ada/ })).not.toHaveTextContent(t.chatBotWorking)
+})
+
+it('shows a private run failure and celebrates only its new settled success in the roster', async () => {
+  vi.spyOn(profileApi, 'list').mockResolvedValue([listedBot('ada', 'Ada')])
+  Object.defineProperty(window, '__TAURI_INTERNALS__', { value: {}, configurable: true })
+  vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([{ ...createBlankAssistant('Ada'), id: 'ada' }])
+  vi.spyOn(chatApi, 'getBotConversations').mockResolvedValue([
+    { id: 'conv_bot_ada', title: 'Ada', preview: 'quiet', provider_id: '', model: '', message_count: 1, created_at: 1, updated_at: 1 },
+  ])
+  const shared = { lang: 'zh' as const, refreshKey: 0, searchOpen: false, onSelectConversation: () => {}, onOpenSettings: () => {}, onOpenExtensionsItem: () => {}, footer: null, onNewBot: () => {} }
+  const { rerender } = render(<BotRoster {...shared} botExecutionFeedback={{ conv_bot_ada: { status: 'error', key: 'failed' } }} />)
+  const row = await screen.findByRole('button', { name: /Ada/ })
+  expect(within(row).getByRole('img')).toHaveAccessibleName('遇到问题')
+  expect(row).not.toHaveTextContent('需要你')
+  rerender(<BotRoster {...shared} generatingConversationIds={new Set(['conv_bot_ada'])} botExecutionFeedback={{}} />)
+  expect(within(row).getByRole('img')).toHaveAccessibleName('工作中')
+  rerender(<BotRoster {...shared} botExecutionFeedback={{ conv_bot_ada: { status: 'completed', key: 'new-success' } }} />)
+  expect(within(row).getByRole('img')).toHaveAccessibleName('刚刚完成')
+  rerender(<BotRoster {...shared} generatingConversationIds={new Set(['conv_bot_ada'])} botExecutionFeedback={{}} />)
+  rerender(<BotRoster {...shared} botExecutionFeedback={{ conv_bot_ada: { status: 'cancelled', key: 'cancelled' } }} />)
+  expect(within(row).getByRole('img')).toHaveAccessibleName('安静')
 })

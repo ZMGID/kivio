@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { LangContext } from '../components/i18n'
 import { chatApi } from './api'
 import { abandonAssistantEdit, beginAssistantEdit, createBlankAssistant } from './assistantDraftStore'
+import { encodeBotAvatar } from './botAvatarIdentity'
 import { BotProfileEditor } from './BotProfileEditor'
 
 afterEach(() => { vi.restoreAllMocks(); abandonAssistantEdit(); localStorage.clear() })
@@ -32,6 +33,9 @@ it('edits a Bot beside the chat and keeps changes after a failed save', async ()
   await user.keyboard('{End}')
   expect(screen.getByRole('tab', { name: '设置' })).toHaveAttribute('aria-selected', 'true')
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: '编辑头像' }))
+  await user.click(screen.getByRole('button', { name: '头像预设 3' }))
+  const selectedAvatar = encodeBotAvatar({ body: 'cloud', face: 'dots', accessory: 'sprout' })
   let role = screen.getByRole('textbox', { name: '职责与长期指令' })
   await user.clear(role)
   await user.type(role, '先核验来源')
@@ -45,7 +49,10 @@ it('edits a Bot beside the chat and keeps changes after a failed save', async ()
   expect(role).toHaveValue('先核验来源')
   expect(onClose).not.toHaveBeenCalled()
   await user.click(screen.getByRole('button', { name: '保存资料' }))
-  expect((await chatApi.getAssistants()).find(item => item.id === assistant.id)?.system_prompt).toBe('先核验来源')
+  const persisted = (await chatApi.getAssistants()).find(item => item.id === assistant.id)
+  expect(persisted?.system_prompt).toBe('先核验来源')
+  expect(persisted?.icon).toBe(selectedAvatar)
+  expect(persisted?.color).toBe('#6E9E80')
   expect((await chatApi.getConversation(conversation.id)).messages[0].content).toBe('保留的历史')
   expect(screen.getByRole('tab', { name: '设置' })).toHaveAttribute('aria-selected', 'true')
   await user.click(screen.getByRole('tab', { name: '详情' }))

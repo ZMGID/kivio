@@ -14,7 +14,7 @@ import {
   queueBlink,
   resolveBlobMood,
 } from './kivioBlobSim'
-import { BODY_POINTS } from './kivioBlobShapes'
+import { bodyPoints, BODY_POINTS } from './kivioBlobShapes'
 
 function visibleSchedule(sim: KivioBlobSim, now: number) {
   return blobScheduleMs({
@@ -37,6 +37,29 @@ function driveUntilStill(sim: KivioBlobSim, start: number, limit: number) {
 }
 
 describe('kivioBlobSim', () => {
+  it('keeps a contact silhouette and color through states, including reduced motion', () => {
+    for (const reducedMotion of [false, true]) {
+      const sim = new KivioBlobSim({ reducedMotion, random: () => 0.5, identity: { body: 'bean', face: 'sleepy', color: '#C8886B' } })
+      expect(sim.sample(0).eyes[0].d).not.toBe(new KivioBlobSim({ reducedMotion: true }).sample(0).eyes[0].d)
+      for (const mood of ['think', 'search', 'work', 'speak', 'wait', 'error', 'done', 'idle'] as const) {
+        sim.setMood(mood, 1000)
+        const frame = sim.sample(1800)
+        expect(frame.bodyD).toBe(polyPath(bodyPoints('bean')))
+        expect(frame.fill).toBe('#C8886B')
+        expect(frame.rig).not.toContain('NaN')
+      }
+    }
+  })
+
+  it('wakes an idle contact for gentle blinking while the default mascot can stop', () => {
+    const contact = new KivioBlobSim({ random: () => 0.5, identity: { body: 'cloud', face: 'neutral', color: '#6E9E80' } })
+    contact.sample(0)
+    expect(visibleSchedule(contact, 0)).toBeGreaterThan(1000)
+    const still = new KivioBlobSim({ random: () => 0.5 })
+    still.sample(0)
+    expect(visibleSchedule(still, 0)).toBeNull()
+  })
+
   it('queueBlink 走 70ms 眯 → 150ms 过冲 → 300ms 睁开', () => {
     const q: { at: number; v: number }[] = []
     queueBlink(q, 1000, () => 1)

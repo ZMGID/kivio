@@ -1,5 +1,6 @@
 import { BotProfileEditor } from './BotProfileEditor'
 import { BotConversationHeader } from './BotConversationHeader'
+import { useCurrentBotAppearance } from './hooks/useCurrentBotAppearance'
 import { BotGroupPane } from './bot/BotGroupPane'
 import { BotConversationPending } from './bot/BotPendingCards'
 import { PeerExchangeView } from './bot/PeerExchangeView'
@@ -639,6 +640,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [executionOwner, interactionInbox, previewOwner, queueCommands, syncGeneratingConversationIds, warmConversationCache])
 
   const setStreamErrorForConversation = useCallback((conversationId: string, error: string) => {
+    executionOwner.noteStreamError(conversationId, Boolean(error))
     if (error) {
       streamErrorsRef.current[conversationId] = error
     } else {
@@ -647,7 +649,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (currentConversationIdRef.current === conversationId) {
       setStreamCoarse({ streamError: error })
     }
-  }, [])
+  }, [executionOwner])
 
   const isCurrentConversationBusy = useCallback(() => (
     Boolean(currentConversationIdRef.current && (
@@ -947,6 +949,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     () => skillRecommendedTools(effectiveSkill),
     [effectiveSkill],
   )
+
+  const currentBotAppearance = useCurrentBotAppearance(botMode ? botContactId(currentConversation?.id) : null)
 
   const currentAssistantSnapshot =
     currentConversation?.assistant_snapshot ?? currentConversation?.assistantSnapshot ?? null
@@ -2868,6 +2872,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const messageListProps = useMemo<MessageListProps>(() => ({
     conversationId: currentConversation?.id,
+    botAppearance: currentBotAppearance,
     messages: displayMessages,
     historyStart: currentConversation?.history_start ?? 0,
     historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
@@ -2906,6 +2911,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onFocusMessageHandled: () => setFocusMessageId(null),
   }), [
     animateCompactionBoundaryId,
+    currentBotAppearance,
     botMode,
     animateClearBoundaryId,
     assistantStreamStatsByMessageId,
@@ -2986,6 +2992,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           currentConversationId={currentConversation?.id}
           generatingConversationIds={generatingConversationIds}
           attentionConversationIds={botAttentionConversationIds}
+          botExecutionFeedback={executionOwner.feedbackSnapshot()}
           optimisticConversations={optimisticSidebarConversations}
           openConversation={openSidebarConversation}
           selectedProject={selectedProject}
@@ -3160,7 +3167,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             currentAssistantName={currentAssistantSnapshot?.name ?? null}
             selectedProjectName={selectedProject?.name ?? null}
             selectedSetName={selectedSet?.name ?? null}
-            botHeader={<BotConversationHeader conversation={currentConversation} onEdit={botActions.editCurrentBot} detailsOpen={botActions.editorMode === 'edit'} />}
+            botHeader={<BotConversationHeader appearance={currentBotAppearance} executionFeedback={currentConversation ? executionOwner.feedbackSnapshot()[currentConversation.id] : undefined} active={streamCoarse.streaming || streamCoarse.streamFrozen} attention={Boolean(currentConversation && botAttentionConversationIds.has(currentConversation.id))} error={Boolean(streamCoarse.streamError)} conversation={currentConversation} onEdit={botActions.editCurrentBot} detailsOpen={botActions.editorMode === 'edit'} />}
             inputBarProps={inputBarProps}
             messageListProps={messageListProps}
             hookWarning={hookWarning}

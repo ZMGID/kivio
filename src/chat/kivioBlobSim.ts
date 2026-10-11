@@ -409,6 +409,12 @@ function hopCadence(mood: BlobMood): [number, number] | null {
   return null
 }
 
+export interface BlobIdentity {
+  body: BodyShape
+  face: FaceName
+  color: string
+}
+
 export interface BlobPaint {
   rig: string
   body: string
@@ -452,6 +458,7 @@ export class KivioBlobSim {
   mood: BlobMood = 'idle'
   private random: () => number
   private reduced: boolean
+  private identity?: BlobIdentity
   private spin = spring(0)
   private tx = spring(0)
   private ty = spring(0)
@@ -496,9 +503,24 @@ export class KivioBlobSim {
     bias: { spin: 0, tx: 0, ty: 0, squash: 1 },
   }
 
-  constructor(opts: { random?: () => number; reducedMotion?: boolean } = {}) {
+  constructor(opts: { random?: () => number; reducedMotion?: boolean; identity?: BlobIdentity } = {}) {
     this.random = opts.random ?? Math.random
     this.reduced = opts.reducedMotion ?? false
+    this.identity = opts.identity
+    if (this.identity) {
+      this.face.snap(this.identity.face, facePoints(this.identity.face))
+      this.body.snap(this.identity.body, [bodyPoints(this.identity.body)])
+    }
+  }
+
+  setIdentity(identity: BlobIdentity | undefined, now: number) {
+    this.identity = identity
+    this.body.retarget(identity?.body ?? 'circle', [bodyPoints(identity?.body ?? 'circle')])
+    if (this.mood === 'idle') {
+      const face = identity?.face ?? 'neutral'
+      this.face.retarget(face, facePoints(face))
+      this.blinkUntil = identity ? now + this.rand(5000, 12000) : Infinity
+    }
   }
 
   setMood(mood: BlobMood, now = 0) {
@@ -509,13 +531,13 @@ export class KivioBlobSim {
     this.bodyIdx = 0
     if (changed) {
       this.bodyList = this.random() < BODY_CHANCE[mood] ? BODY_PLAY[mood] : ['circle']
-      this.face.retarget(faces[0], facePoints(faces[0]))
-      this.body.retarget(this.bodyList[0], [bodyPoints(this.bodyList[0])])
+      this.face.retarget(mood === 'idle' && this.identity ? this.identity.face : faces[0], facePoints(mood === 'idle' && this.identity ? this.identity.face : faces[0]))
+      this.body.retarget(this.identity?.body ?? this.bodyList[0], [bodyPoints(this.identity?.body ?? this.bodyList[0])])
     }
     const idle = mood === 'idle'
     this.faceUntil = idle ? Infinity : now + this.rand(...FACE_HOLD[mood])
     this.bodyUntil = idle ? Infinity : now + this.rand(...BODY_HOLD[mood])
-    this.blinkUntil = idle ? Infinity : now + this.rand(900, 2800)
+    this.blinkUntil = idle ? this.identity ? now + this.rand(5000, 12000) : Infinity : now + this.rand(900, 2800)
     this.gazeUntil = idle ? Infinity : now + this.rand(280, 900)
     if (idle) {
       this.gazeX.t = 0
@@ -626,7 +648,7 @@ export class KivioBlobSim {
   nextIdleWakeMs(now: number): number {
     if (this.mood === 'idle') {
       // Expired holds still need one frame after a hidden/paused interval.
-      return Math.min(this.ctx.biasUntil, this.gazeUntil, this.faceUntil,
+      return Math.min(this.ctx.biasUntil, this.gazeUntil, this.faceUntil, this.identity ? this.blinkUntil : Infinity,
         this.pokeHeat > 0 ? this.heatHoldUntil : Infinity) - now
     }
     const wakes = [this.blinkUntil, this.faceUntil, this.bodyUntil]
@@ -647,6 +669,12 @@ export class KivioBlobSim {
     this.last = now
     const mt = (now - this.t0) / 1000
     const pose = applyPose(this.mood, mt, now, this.ctx, (a, b) => this.rand(a, b))
+    if (this.identity) {
+      // Contacts keep their silhouette; short gestures carry the action instead.
+      if (this.mood === 'work') pose.squash = 1 - Math.max(0, Math.sin(mt * 8)) * 0.065
+      if (this.mood === 'wait') { pose.spin = 9; pose.tx = 0; pose.ty = 0 }
+      if (this.mood === 'error') { pose.spin *= 1.6; pose.squash = 0.94 }
+    }
     this.spin.t = pose.spin
     this.tx.t = pose.tx
     this.ty.t = pose.ty
@@ -674,7 +702,7 @@ export class KivioBlobSim {
 
     // 闭着的脸（笑弯 / x_x / 星星 / 一条线）不眨；但节拍照走，否则 nextIdleWakeMs 会拿到过期时间。
     const blinkable = faceBlinks(this.face.key as FaceName)
-    const cad = BLINK[this.mood]
+    const cad = this.mood === 'idle' && this.identity ? [5000, 12000] as [number, number] : BLINK[this.mood]
     if (cad && now >= this.blinkUntil) {
       if (blinkable) queueBlink(this.blinkQ, now, this.random)
       this.blinkUntil = now + this.rand(...cad)
@@ -728,8 +756,10 @@ export class KivioBlobSim {
       this.boost.x = 1
       this.hopAt = -1
       const faces = FACE_PLAY[this.mood]
-      this.face.snap(faces[0], facePoints(faces[0]))
-      this.body.snap('circle', [bodyPoints('circle')])
+      const face = this.mood === 'idle' && this.identity ? this.identity.face : faces[0]
+      this.face.snap(face, facePoints(face))
+      const shape = this.identity?.body ?? 'circle'
+      this.body.snap(shape, [bodyPoints(shape)])
     }
 
     if (now > this.heatHoldUntil && this.pokeHeat > 0) {
@@ -782,7 +812,7 @@ export class KivioBlobSim {
       rig: `translate(${this.tx.x.toFixed(2)} ${(this.ty.x + hop).toFixed(2)}) rotate(${this.spin.x.toFixed(2)} ${CX} ${CY})`,
       body: `translate(${CX} ${CY}) scale(1 ${this.squash.x.toFixed(3)}) translate(${-CX} ${-CY})`,
       bodyD: polyPath(this.body.current()[0]),
-      fill: this.mood === 'error'
+      fill: this.identity ? this.identity.color : this.mood === 'error'
         ? BLOB_ERROR
         : this.pokeHeat <= 0
           ? BLOB_BLUE
@@ -793,6 +823,7 @@ export class KivioBlobSim {
 
   /** 此刻身体该是什么形：被戳 > 出错抖动炸毛 > 心情轮播。闲置停在圆上。 */
   private bodyTarget(now: number): BodyShape {
+    if (this.identity) return this.identity.body
     if (this.pokeShape) return this.pokeShape
     if (this.mood === 'error') return now < this.ctx.shakeUntil ? 'burst' : 'puddle'
     if (this.mood === 'idle') return 'circle'
@@ -827,7 +858,7 @@ export class KivioBlobSim {
       this.gazeUntil = Infinity
     }
     if (now >= this.faceUntil) {
-      const rest = FACE_PLAY.idle[0]
+      const rest = this.identity?.face ?? FACE_PLAY.idle[0]
       if (this.face.key !== rest) this.face.retarget(rest, facePoints(rest))
       this.faceUntil = Infinity
     }

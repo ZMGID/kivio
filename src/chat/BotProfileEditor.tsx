@@ -10,6 +10,7 @@ import { abandonAssistantEdit, adoptFetchedAssistant, assistantDraftStore, begin
 import type { ChatAssistant } from './types'
 import { assistantColors } from './assistantColors'
 import { BotAvatar } from './BotAvatar'
+import { BotAvatarPicker } from './BotAvatarPicker'
 import { BotRuntimePanel, type BotThinkingSettings } from './bot/BotRuntimePanel'
 import { BotWorkDetails } from './bot/BotWorkDetails'
 import { assistantFromProfile, isProfileConflict, profileApi, type BotPersonaWrite } from './bot/profile'
@@ -275,8 +276,7 @@ export function BotProfileEditor({ onSaved, onClose, thinkingSettings, registerL
         <div hidden={!created && settingsPage !== 'profile'}>
         <div className="flex flex-col gap-4">
         {(created || colorsOpen) && <div className="flex flex-col gap-3">
-          {created ? <div className="flex flex-col items-center gap-3"><BotAvatar color={draft.color} size={54} /></div>
-            : null}
+          <BotAvatarPicker icon={draft.icon} color={draft.color} disabled={busy || runtimeBusy} onChange={patch => updateAssistantDraft(d => ({ ...d, ...patch }))} />
           {(created || colorsOpen) && <div className="flex flex-wrap justify-center gap-2" role="group" aria-label={t.chatAssistantColor}>
             {assistantColors.map((color, index) => <button key={color} type="button" disabled={busy}
               aria-label={`${t.chatAssistantColor} ${index + 1}`} aria-pressed={draft.color === color}
@@ -337,12 +337,12 @@ export function BotProfileEditor({ onSaved, onClose, thinkingSettings, registerL
       <IconButton variant="ghost" label={t.chatWinClose} disabled={busy || runtimeBusy} onClick={() => void requestClose()}><X size={16} /></IconButton>
     </header>
     <div className="flex shrink-0 items-start gap-3 px-5 pb-4 pt-3">
-      <BotAvatar color={draft.color} size={40} />
+      <BotAvatar icon={draft.icon} color={draft.color} size={40} />
       <div className="min-w-0 flex-1">
         <h3 className="break-words text-[15px] font-semibold text-neutral-900">{draft.name}</h3>
         {draft.description && <p className="mt-1 break-words text-[12px] leading-5 text-neutral-500">{draft.description}</p>}
       </div>
-      {editing && settingsPage === 'profile' && <IconButton variant="ghost" label={t.chatAssistantColor} aria-expanded={colorsOpen} disabled={busy || runtimeBusy}
+      {editing && settingsPage === 'profile' && <IconButton variant="ghost" label={t.chatBotAvatarEdit} aria-expanded={colorsOpen} disabled={busy || runtimeBusy}
         onClick={() => setColorsOpen(open => !open)}><Palette size={15} /></IconButton>}
     </div>
     <div className="shrink-0 border-b border-neutral-200/60 px-5 pb-3">

@@ -1,4 +1,5 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { decodeBotAvatar } from './botAvatarIdentity'
 import { KivioBlob, type BlobMood } from './KivioBlob'
 import { getCoarse, getSnapshot } from './streamingStore'
 import { resolveBlobMood } from './kivioBlobSim'
@@ -11,12 +12,16 @@ export const StreamStatusLogo = memo(function StreamStatusLogo({
   size = 28,
   mood = 'idle',
   paused = false,
+  botAppearance,
 }: {
   size?: number
   mood?: BlobMood
   paused?: boolean
+  botAppearance?: { icon?: string | null; color?: string }
 }) {
-  return <KivioBlob size={size} mood={mood} paused={paused} />
+  const appearance = useMemo(() => botAppearance ? decodeBotAvatar(botAppearance.icon) : undefined, [botAppearance])
+  const identity = useMemo(() => appearance ? { body: appearance.body, face: appearance.face, color: botAppearance?.color ?? '#6A8FBD' } : undefined, [appearance, botAppearance?.color])
+  return <KivioBlob size={size} mood={mood} paused={paused} identity={identity} accessory={appearance?.accessory} interactive={!botAppearance} />
 })
 
 function toolName(tool: { tool_name?: string; toolName?: string; name?: string }): string {
@@ -72,6 +77,7 @@ interface StreamStatusLineProps {
   /** 生成中（按检索/干活/说话/思考切脸 + 实时信息）；false = 闲置或出错脸 */
   active: boolean
   lang?: Lang
+  botAppearance?: { icon?: string | null; color?: string }
 }
 
 interface LiveStats {
@@ -90,7 +96,7 @@ interface LiveStats {
  * 读一次，token 从已流出的正文 + 思维链估算 —— 任何运行时（内置 / 外部 CLI）都有数，
  * 且和 Claude 一样随输出平滑上涨；后端的 live 用量事件太稀（每 planning 轮一次）不用。
  */
-export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 'zh' }: StreamStatusLineProps) {
+export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 'zh', botAppearance }: StreamStatusLineProps) {
   const { loading } = useConversationTransition()
   const [stats, setStats] = useState<LiveStats | null>(null)
   const doneUntilRef = useRef(0)
@@ -149,7 +155,7 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
     <div
       className={`flex items-center gap-2.5 py-2${active ? ' chat-motion-fade-up' : ' kv-stream-status-idle'}`}
     >
-      <StreamStatusLogo mood={mood} paused={loading} />
+      <StreamStatusLogo mood={mood} paused={loading} botAppearance={botAppearance} />
       {(parts.length > 0 || showQuip) && (
         <span className="text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
           {parts.join(' · ')}

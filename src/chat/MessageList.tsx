@@ -87,6 +87,7 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
+  botAppearance?: { icon?: string | null; color?: string }
   conversationId?: string | null
   messages: ChatMessage[]
   historyStart?: number
@@ -220,6 +221,7 @@ function streamErrorDegraded(error: string): DegradedAnswer {
 type GroupModelLabel = { providerId: string | null; model: string | null }
 
 function MessageListBase({
+  botAppearance,
   conversationId,
   messages: storedMessages,
   renderRequestId = 0,
@@ -2401,7 +2403,7 @@ function MessageListBase({
       )}
       {(messages.length > 0 || streaming) && (
         <div className="chat-reading-content">
-          <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} />
+          <StreamStatusLine key={conversationId} botAppearance={botAppearance} active={streaming && !streamFrozen && !liveGroup} lang={lang} />
         </div>
       )}
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />

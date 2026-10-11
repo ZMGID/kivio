@@ -1,3 +1,4 @@
+import type { BlobMood } from '../KivioBlob'
 import type { I18n } from '../../components/i18n'
 import type { DeliveryStatus, RoomStatus } from './collaboration'
 
@@ -13,9 +14,8 @@ export function contactSignal(input: {
   /** Private approval or question. Wins over an in-flight working mark. */
   attention?: boolean
 }): BotSignal {
-  if (input.attention) return 'attention'
+  if (input.attention || input.pending || input.deliveries.some(item => item.status === 'awaiting_user')) return 'attention'
   if (input.generating || input.deliveries.some((delivery) => IN_FLIGHT.has(delivery.status))) return 'working'
-  if (input.pending) return 'attention'
   const latest = [...input.deliveries].sort((left, right) => right.updatedAt - left.updatedAt || right.id.localeCompare(left.id))[0]
   return latest && ATTENTION.has(latest.status) ? 'attention' : 'quiet'
 }
@@ -40,4 +40,13 @@ export function roomStatusLabel(status: RoomStatus, t: I18n): string {
     case 'paused': return t.chatBotGroupPaused
     case 'stopped': return t.chatBotGroupStopped
   }
+}
+
+/** Approval wins over both execution and failure; unknown active work stays generic. */
+export function contactAvatarMood(input: Parameters<typeof contactSignal>[0] & { error?: boolean }): BlobMood {
+  if (input.attention || input.pending || input.deliveries.some(item => item.status === 'awaiting_user')) return 'wait'
+  if (input.error) return 'error'
+  if (contactSignal(input) === 'working') return 'work'
+  const latest = [...input.deliveries].sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))[0]
+  return latest && ATTENTION.has(latest.status) ? 'error' : 'idle'
 }

@@ -371,3 +371,46 @@ describe('chat execution owner', () => {
 function portsWithOutcome() {
   return { ...ports(), onOutcome: vi.fn() }
 }
+
+it('publishes terminal feedback once and clears it before a new run; stale results cannot replace cancellation or failure', async () => {
+  const owner = createChatExecutionOwner()
+  const first = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 1 })!
+  owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'first', started: true })
+  const oldTerminal = { conversationId: 'a', runId: 'first', reason: 'done', turnEpoch: owner.turnEpoch('a') }
+  owner.observeTerminal(oldTerminal, 'single')
+  await owner.finish(first, conversation('a'), ports())
+  expect(owner.feedbackSnapshot().a.status).toBe('completed')
+  const completedKey = owner.feedbackSnapshot().a.key
+  const second = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 2 })!
+  expect(owner.feedbackSnapshot().a).toBeUndefined()
+  expect(owner.observeTerminal(oldTerminal, 'single').kind).toBe('ignored')
+  owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'second', started: true })
+  owner.observeTerminal({ conversationId: 'a', runId: 'second', reason: 'cancelled', turnEpoch: owner.turnEpoch('a') }, 'single')
+  await owner.finish(second, conversation('a'), ports())
+  expect(owner.feedbackSnapshot().a.status).toBe('cancelled')
+  expect(owner.feedbackSnapshot().a.key).not.toBe(completedKey)
+  await owner.finish(first, conversation('a'), ports())
+  expect(owner.feedbackSnapshot().a.status).toBe('cancelled')
+  const third = owner.begin({ conversationId: 'a', kind: 'send', startedAt: 3 })!
+  owner.noteStreamError('a', true)
+  await owner.finish(third, null, ports())
+  expect(owner.feedbackSnapshot().a.status).toBe('error')
+  owner.observe({ kind: 'drop', conversationId: 'a' })
+  expect(owner.feedbackSnapshot().a).toBeUndefined()
+})
+
+it('only publishes recovered group feedback at valid settlement and a failed arm wins over completed arms', () => {
+  const owner = createChatExecutionOwner({ begin: vi.fn(), end: vi.fn() })
+  owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'one', started: true, groupId: 'g', groupSize: 2 })
+  owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'two', started: true, groupId: 'g', groupSize: 2 })
+  owner.observeTerminal({ conversationId: 'a', runId: 'one', reason: 'error' }, 'group')
+  expect(owner.feedbackSnapshot().a).toBeUndefined()
+  const decision = owner.observeTerminal({ conversationId: 'a', runId: 'two', reason: 'done' }, 'group')
+  if (decision.kind !== 'ready') throw new Error('Group did not settle')
+  expect(owner.completeExternalTerminal(decision.permit)).toBe(true)
+  expect(owner.feedbackSnapshot().a.status).toBe('error')
+  owner.observe({ kind: 'runEvent', conversationId: 'a', runId: 'new', started: true })
+  expect(owner.feedbackSnapshot().a).toBeUndefined()
+  expect(owner.completeExternalTerminal(decision.permit)).toBe(false)
+  expect(owner.feedbackSnapshot().a).toBeUndefined()
+})
