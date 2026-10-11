@@ -50,6 +50,7 @@ src-tauri/swift/kivio-ocr-helper/.build/
 .codex/
 .cursor/
 .opencode/
+.omp/
 .trellis/
 
 # AI 助手项目记忆（本地维护，不入库）
@@ -63,3 +64,10 @@ MEMORY.md
 
 # 本地手测用的外部仓库克隆（不入库）
 /test-ZMGID/
+
+# Impeccable platform executables and local review/session artifacts
+/.github/skills/impeccable/scripts/bin/
+/.impeccable/live/
+/.impeccable/review/
+/.impeccable/critique/
+/.impeccable/*-brief.md

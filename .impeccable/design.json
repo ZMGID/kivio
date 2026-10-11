@@ -1,0 +1,746 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-09T20:10:51.801Z",
+  "title": "Design System: Kivio Desktop",
+  "extensions": {
+    "colorMeta": {
+      "surface": {
+        "role": "neutral",
+        "displayName": "纸白 · surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.00285 84.56)",
+          "oklch(26.43% 0.00285 84.56)",
+          "oklch(37.86% 0.00285 84.56)",
+          "oklch(49.29% 0.00285 84.56)",
+          "oklch(60.71% 0.00285 84.56)",
+          "oklch(72.14% 0.00285 84.56)",
+          "oklch(83.57% 0.00285 84.56)",
+          "oklch(95.00% 0.00285 84.56)"
+        ]
+      },
+      "surface-soft": {
+        "role": "neutral",
+        "displayName": "纸白 · surface-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.00286 84.56)",
+          "oklch(26.43% 0.00286 84.56)",
+          "oklch(37.86% 0.00286 84.56)",
+          "oklch(49.29% 0.00286 84.56)",
+          "oklch(60.71% 0.00286 84.56)",
+          "oklch(72.14% 0.00286 84.56)",
+          "oklch(83.57% 0.00286 84.56)",
+          "oklch(95.00% 0.00286 84.56)"
+        ]
+      },
+      "surface-muted": {
+        "role": "neutral",
+        "displayName": "纸白 · surface-muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.00287 84.56)",
+          "oklch(26.43% 0.00287 84.56)",
+          "oklch(37.86% 0.00287 84.56)",
+          "oklch(49.29% 0.00287 84.56)",
+          "oklch(60.71% 0.00287 84.56)",
+          "oklch(72.14% 0.00287 84.56)",
+          "oklch(83.57% 0.00287 84.56)",
+          "oklch(95.00% 0.00287 84.56)"
+        ]
+      },
+      "surface-hover": {
+        "role": "neutral",
+        "displayName": "纸白 · surface-hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.00288 84.56)",
+          "oklch(26.43% 0.00288 84.56)",
+          "oklch(37.86% 0.00288 84.56)",
+          "oklch(49.29% 0.00288 84.56)",
+          "oklch(60.71% 0.00288 84.56)",
+          "oklch(72.14% 0.00288 84.56)",
+          "oklch(83.57% 0.00288 84.56)",
+          "oklch(95.00% 0.00288 84.56)"
+        ]
+      },
+      "surface-active": {
+        "role": "neutral",
+        "displayName": "纸白 · surface-active",
+        "tonalRamp": [
+          "oklch(15.00% 0.00290 84.56)",
+          "oklch(26.43% 0.00290 84.56)",
+          "oklch(37.86% 0.00290 84.56)",
+          "oklch(49.29% 0.00290 84.56)",
+          "oklch(60.71% 0.00290 84.56)",
+          "oklch(72.14% 0.00290 84.56)",
+          "oklch(83.57% 0.00290 84.56)",
+          "oklch(95.00% 0.00290 84.56)"
+        ]
+      },
+      "surface-titlebar": {
+        "role": "neutral",
+        "displayName": "纸白 · surface-titlebar",
+        "tonalRamp": [
+          "oklch(15.00% 0.00289 84.56)",
+          "oklch(26.43% 0.00289 84.56)",
+          "oklch(37.86% 0.00289 84.56)",
+          "oklch(49.29% 0.00289 84.56)",
+          "oklch(60.71% 0.00289 84.56)",
+          "oklch(72.14% 0.00289 84.56)",
+          "oklch(83.57% 0.00289 84.56)",
+          "oklch(95.00% 0.00289 84.56)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "边界 · border",
+        "tonalRamp": [
+          "oklch(15.00% 0.00291 84.56)",
+          "oklch(26.43% 0.00291 84.56)",
+          "oklch(37.86% 0.00291 84.56)",
+          "oklch(49.29% 0.00291 84.56)",
+          "oklch(60.71% 0.00291 84.56)",
+          "oklch(72.14% 0.00291 84.56)",
+          "oklch(83.57% 0.00291 84.56)",
+          "oklch(95.00% 0.00291 84.56)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "边界 · border-strong",
+        "tonalRamp": [
+          "oklch(15.00% 0.00295 84.56)",
+          "oklch(26.43% 0.00295 84.56)",
+          "oklch(37.86% 0.00295 84.56)",
+          "oklch(49.29% 0.00295 84.56)",
+          "oklch(60.71% 0.00295 84.56)",
+          "oklch(72.14% 0.00295 84.56)",
+          "oklch(83.57% 0.00295 84.56)",
+          "oklch(95.00% 0.00295 84.56)"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "墨灰 · text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00381 286.10)",
+          "oklch(26.43% 0.00381 286.10)",
+          "oklch(37.86% 0.00381 286.10)",
+          "oklch(49.29% 0.00381 286.10)",
+          "oklch(60.71% 0.00381 286.10)",
+          "oklch(72.14% 0.00381 286.10)",
+          "oklch(83.57% 0.00381 286.10)",
+          "oklch(95.00% 0.00381 286.10)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "墨灰 · text-muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "text-faint": {
+        "role": "neutral",
+        "displayName": "墨灰 · text-faint",
+        "tonalRamp": [
+          "oklch(15.00% 0.01011 286.13)",
+          "oklch(26.43% 0.01011 286.13)",
+          "oklch(37.86% 0.01011 286.13)",
+          "oklch(49.29% 0.01011 286.13)",
+          "oklch(60.71% 0.01011 286.13)",
+          "oklch(72.14% 0.01011 286.13)",
+          "oklch(83.57% 0.01011 286.13)",
+          "oklch(95.00% 0.01011 286.13)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "清晰蓝 · accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.20536 262.22)",
+          "oklch(26.43% 0.20536 262.22)",
+          "oklch(37.86% 0.20536 262.22)",
+          "oklch(49.29% 0.20536 262.22)",
+          "oklch(60.71% 0.20536 262.22)",
+          "oklch(72.14% 0.20536 262.22)",
+          "oklch(83.57% 0.20536 262.22)",
+          "oklch(95.00% 0.20536 262.22)"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "清晰蓝 · accent-hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.19355 262.95)",
+          "oklch(26.43% 0.19355 262.95)",
+          "oklch(37.86% 0.19355 262.95)",
+          "oklch(49.29% 0.19355 262.95)",
+          "oklch(60.71% 0.19355 262.95)",
+          "oklch(72.14% 0.19355 262.95)",
+          "oklch(83.57% 0.19355 262.95)",
+          "oklch(95.00% 0.19355 262.95)"
+        ]
+      },
+      "accent-soft": {
+        "role": "primary",
+        "displayName": "清晰蓝 · accent-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.02364 262.10)",
+          "oklch(26.43% 0.02364 262.10)",
+          "oklch(37.86% 0.02364 262.10)",
+          "oklch(49.29% 0.02364 262.10)",
+          "oklch(60.71% 0.02364 262.10)",
+          "oklch(72.14% 0.02364 262.10)",
+          "oklch(83.57% 0.02364 262.10)",
+          "oklch(95.00% 0.02364 262.10)"
+        ]
+      },
+      "on-accent": {
+        "role": "primary",
+        "displayName": "清晰蓝 · on-accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "danger": {
+        "role": "neutral",
+        "displayName": "危险状态 · danger",
+        "tonalRamp": [
+          "oklch(15.00% 0.18447 32.04)",
+          "oklch(26.43% 0.18447 32.04)",
+          "oklch(37.86% 0.18447 32.04)",
+          "oklch(49.29% 0.18447 32.04)",
+          "oklch(60.71% 0.18447 32.04)",
+          "oklch(72.14% 0.18447 32.04)",
+          "oklch(83.57% 0.18447 32.04)",
+          "oklch(95.00% 0.18447 32.04)"
+        ]
+      },
+      "danger-soft": {
+        "role": "neutral",
+        "displayName": "危险状态 · danger-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.01872 25.60)",
+          "oklch(26.43% 0.01872 25.60)",
+          "oklch(37.86% 0.01872 25.60)",
+          "oklch(49.29% 0.01872 25.60)",
+          "oklch(60.71% 0.01872 25.60)",
+          "oklch(72.14% 0.01872 25.60)",
+          "oklch(83.57% 0.01872 25.60)",
+          "oklch(95.00% 0.01872 25.60)"
+        ]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "dark-surface-soft": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.00550 286.03)",
+          "oklch(26.43% 0.00550 286.03)",
+          "oklch(37.86% 0.00550 286.03)",
+          "oklch(49.29% 0.00550 286.03)",
+          "oklch(60.71% 0.00550 286.03)",
+          "oklch(72.14% 0.00550 286.03)",
+          "oklch(83.57% 0.00550 286.03)",
+          "oklch(95.00% 0.00550 286.03)"
+        ]
+      },
+      "dark-surface-muted": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface-muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.00542 286.05)",
+          "oklch(26.43% 0.00542 286.05)",
+          "oklch(37.86% 0.00542 286.05)",
+          "oklch(49.29% 0.00542 286.05)",
+          "oklch(60.71% 0.00542 286.05)",
+          "oklch(72.14% 0.00542 286.05)",
+          "oklch(83.57% 0.00542 286.05)",
+          "oklch(95.00% 0.00542 286.05)"
+        ]
+      },
+      "dark-surface-hover": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface-hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.00718 285.95)",
+          "oklch(26.43% 0.00718 285.95)",
+          "oklch(37.86% 0.00718 285.95)",
+          "oklch(49.29% 0.00718 285.95)",
+          "oklch(60.71% 0.00718 285.95)",
+          "oklch(72.14% 0.00718 285.95)",
+          "oklch(83.57% 0.00718 285.95)",
+          "oklch(95.00% 0.00718 285.95)"
+        ]
+      },
+      "dark-surface-active": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface-active",
+        "tonalRamp": [
+          "oklch(15.00% 0.01044 285.82)",
+          "oklch(26.43% 0.01044 285.82)",
+          "oklch(37.86% 0.01044 285.82)",
+          "oklch(49.29% 0.01044 285.82)",
+          "oklch(60.71% 0.01044 285.82)",
+          "oklch(72.14% 0.01044 285.82)",
+          "oklch(83.57% 0.01044 285.82)",
+          "oklch(95.00% 0.01044 285.82)"
+        ]
+      },
+      "dark-surface-titlebar": {
+        "role": "neutral",
+        "displayName": "深色 · 纸白 · dark-surface-titlebar",
+        "tonalRamp": [
+          "oklch(15.00% 0.00883 285.88)",
+          "oklch(26.43% 0.00883 285.88)",
+          "oklch(37.86% 0.00883 285.88)",
+          "oklch(49.29% 0.00883 285.88)",
+          "oklch(60.71% 0.00883 285.88)",
+          "oklch(72.14% 0.00883 285.88)",
+          "oklch(83.57% 0.00883 285.88)",
+          "oklch(95.00% 0.00883 285.88)"
+        ]
+      },
+      "dark-border": {
+        "role": "neutral",
+        "displayName": "深色 · 边界 · dark-border",
+        "tonalRamp": [
+          "oklch(15.00% 0.01032 285.86)",
+          "oklch(26.43% 0.01032 285.86)",
+          "oklch(37.86% 0.01032 285.86)",
+          "oklch(49.29% 0.01032 285.86)",
+          "oklch(60.71% 0.01032 285.86)",
+          "oklch(72.14% 0.01032 285.86)",
+          "oklch(83.57% 0.01032 285.86)",
+          "oklch(95.00% 0.01032 285.86)"
+        ]
+      },
+      "dark-border-strong": {
+        "role": "neutral",
+        "displayName": "深色 · 边界 · dark-border-strong",
+        "tonalRamp": [
+          "oklch(15.00% 0.01310 285.83)",
+          "oklch(26.43% 0.01310 285.83)",
+          "oklch(37.86% 0.01310 285.83)",
+          "oklch(49.29% 0.01310 285.83)",
+          "oklch(60.71% 0.01310 285.83)",
+          "oklch(72.14% 0.01310 285.83)",
+          "oklch(83.57% 0.01310 285.83)",
+          "oklch(95.00% 0.01310 285.83)"
+        ]
+      },
+      "dark-text": {
+        "role": "neutral",
+        "displayName": "深色 · 墨灰 · dark-text",
+        "tonalRamp": [
+          "oklch(15.00% 0.00399 286.32)",
+          "oklch(26.43% 0.00399 286.32)",
+          "oklch(37.86% 0.00399 286.32)",
+          "oklch(49.29% 0.00399 286.32)",
+          "oklch(60.71% 0.00399 286.32)",
+          "oklch(72.14% 0.00399 286.32)",
+          "oklch(83.57% 0.00399 286.32)",
+          "oklch(95.00% 0.00399 286.32)"
+        ]
+      },
+      "dark-text-muted": {
+        "role": "neutral",
+        "displayName": "深色 · 墨灰 · dark-text-muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.01294 286.07)",
+          "oklch(26.43% 0.01294 286.07)",
+          "oklch(37.86% 0.01294 286.07)",
+          "oklch(49.29% 0.01294 286.07)",
+          "oklch(60.71% 0.01294 286.07)",
+          "oklch(72.14% 0.01294 286.07)",
+          "oklch(83.57% 0.01294 286.07)",
+          "oklch(95.00% 0.01294 286.07)"
+        ]
+      },
+      "dark-text-faint": {
+        "role": "neutral",
+        "displayName": "深色 · 墨灰 · dark-text-faint",
+        "tonalRamp": [
+          "oklch(15.00% 0.01233 285.98)",
+          "oklch(26.43% 0.01233 285.98)",
+          "oklch(37.86% 0.01233 285.98)",
+          "oklch(49.29% 0.01233 285.98)",
+          "oklch(60.71% 0.01233 285.98)",
+          "oklch(72.14% 0.01233 285.98)",
+          "oklch(83.57% 0.01233 285.98)",
+          "oklch(95.00% 0.01233 285.98)"
+        ]
+      },
+      "dark-accent": {
+        "role": "primary",
+        "displayName": "深色 · 清晰蓝 · dark-accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.16651 263.77)",
+          "oklch(26.43% 0.16651 263.77)",
+          "oklch(37.86% 0.16651 263.77)",
+          "oklch(49.29% 0.16651 263.77)",
+          "oklch(60.71% 0.16651 263.77)",
+          "oklch(72.14% 0.16651 263.77)",
+          "oklch(83.57% 0.16651 263.77)",
+          "oklch(95.00% 0.16651 263.77)"
+        ]
+      },
+      "dark-accent-hover": {
+        "role": "primary",
+        "displayName": "深色 · 清晰蓝 · dark-accent-hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.14532 263.88)",
+          "oklch(26.43% 0.14532 263.88)",
+          "oklch(37.86% 0.14532 263.88)",
+          "oklch(49.29% 0.14532 263.88)",
+          "oklch(60.71% 0.14532 263.88)",
+          "oklch(72.14% 0.14532 263.88)",
+          "oklch(83.57% 0.14532 263.88)",
+          "oklch(95.00% 0.14532 263.88)"
+        ]
+      },
+      "dark-accent-soft": {
+        "role": "primary",
+        "displayName": "深色 · 清晰蓝 · dark-accent-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.03251 265.00)",
+          "oklch(26.43% 0.03251 265.00)",
+          "oklch(37.86% 0.03251 265.00)",
+          "oklch(49.29% 0.03251 265.00)",
+          "oklch(60.71% 0.03251 265.00)",
+          "oklch(72.14% 0.03251 265.00)",
+          "oklch(83.57% 0.03251 265.00)",
+          "oklch(95.00% 0.03251 265.00)"
+        ]
+      },
+      "dark-on-accent": {
+        "role": "primary",
+        "displayName": "深色 · 清晰蓝 · dark-on-accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.00000 89.88)",
+          "oklch(26.43% 0.00000 89.88)",
+          "oklch(37.86% 0.00000 89.88)",
+          "oklch(49.29% 0.00000 89.88)",
+          "oklch(60.71% 0.00000 89.88)",
+          "oklch(72.14% 0.00000 89.88)",
+          "oklch(83.57% 0.00000 89.88)",
+          "oklch(95.00% 0.00000 89.88)"
+        ]
+      },
+      "dark-danger": {
+        "role": "neutral",
+        "displayName": "深色 · 危险状态 · dark-danger",
+        "tonalRamp": [
+          "oklch(15.00% 0.16748 29.06)",
+          "oklch(26.43% 0.16748 29.06)",
+          "oklch(37.86% 0.16748 29.06)",
+          "oklch(49.29% 0.16748 29.06)",
+          "oklch(60.71% 0.16748 29.06)",
+          "oklch(72.14% 0.16748 29.06)",
+          "oklch(83.57% 0.16748 29.06)",
+          "oklch(95.00% 0.16748 29.06)"
+        ]
+      },
+      "dark-danger-soft": {
+        "role": "neutral",
+        "displayName": "深色 · 危险状态 · dark-danger-soft",
+        "tonalRamp": [
+          "oklch(15.00% 0.02872 25.64)",
+          "oklch(26.43% 0.02872 25.64)",
+          "oklch(37.86% 0.02872 25.64)",
+          "oklch(49.29% 0.02872 25.64)",
+          "oklch(60.71% 0.02872 25.64)",
+          "oklch(72.14% 0.02872 25.64)",
+          "oklch(83.57% 0.02872 25.64)",
+          "oklch(95.00% 0.02872 25.64)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "聊天空态标题",
+        "purpose": "主区空态，不用于所有页面的大标题。"
+      },
+      "title": {
+        "displayName": "嵌入设置标题",
+        "purpose": "宿主特定标题规格；独立设置保留其较小标题。"
+      },
+      "body": {
+        "displayName": "设置正文",
+        "purpose": "紧凑设置与信息行；聊天输入另有规格。"
+      },
+      "label": {
+        "displayName": "控件标签",
+        "purpose": "共享按钮的标签。"
+      },
+      "mono": {
+        "displayName": "等宽内容",
+        "purpose": "代码与技术信息，包含 CJK 回退。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "root-shadow-sm",
+        "value": "0 1px 1px color-mix(in srgb, var(--text) 8%, transparent)",
+        "purpose": "root 默认控件阴影；设置 .kv 会覆盖。"
+      },
+      {
+        "name": "settings-shadow-sm-light",
+        "value": "0 1px 1px rgba(15, 15, 20, 0.04)",
+        "purpose": "浅色 .kv 控件。"
+      },
+      {
+        "name": "settings-shadow-sm-dark",
+        "value": "0 1px 1px rgba(0, 0, 0, 0.4)",
+        "purpose": "深色 .kv 控件。"
+      },
+      {
+        "name": "settings-shadow-md-light",
+        "value": "0 6px 18px rgba(15, 15, 20, 0.08), 0 1px 1px rgba(15, 15, 20, 0.04)",
+        "purpose": "浅色 .kv 浮层。"
+      },
+      {
+        "name": "settings-shadow-md-dark",
+        "value": "0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.3)",
+        "purpose": "深色 .kv 浮层。"
+      },
+      {
+        "name": "menu-light",
+        "value": "0 0 0 0.5px rgba(24,24,27,0.04), 0 4px 12px -4px rgba(24,24,27,0.12), 0 12px 28px -12px rgba(24,24,27,0.18)",
+        "purpose": "浅色选择菜单与通用菜单。"
+      },
+      {
+        "name": "menu-dark",
+        "value": "0 0 0 0.5px rgba(255,255,255,0.05), 0 4px 14px -4px rgba(0,0,0,0.5), 0 14px 32px -14px rgba(0,0,0,0.6)",
+        "purpose": "深色菜单。"
+      },
+      {
+        "name": "embedded-group-light",
+        "value": "0 1px 2px rgba(0,0,0,0.03)",
+        "purpose": "嵌入设置卡片；深色取消。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "--kv-ease-standard",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "入场、展开与弹出。"
+      },
+      {
+        "name": "--kv-ease-firm",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "拖拽与重排。"
+      },
+      {
+        "name": "--kv-ease-spring",
+        "value": "cubic-bezier(0.34, 1.56, 0.64, 1)",
+        "purpose": "按压回弹与强调微动效。"
+      },
+      {
+        "name": "--kv-ease-out",
+        "value": "cubic-bezier(0.33, 1, 0.68, 1)",
+        "purpose": "颜色与透明度过渡。"
+      },
+      {
+        "name": "--kv-dur-instant",
+        "value": "90ms",
+        "purpose": "全局 instant 时长。"
+      },
+      {
+        "name": "--kv-dur-fast",
+        "value": "150ms",
+        "purpose": "全局 fast 时长。"
+      },
+      {
+        "name": "--kv-dur-normal",
+        "value": "220ms",
+        "purpose": "全局 normal 时长。"
+      },
+      {
+        "name": "--kv-dur-slow",
+        "value": "320ms",
+        "purpose": "全局 slow 时长。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "settings-shell-icons",
+        "value": "820px"
+      },
+      {
+        "name": "settings-shell-provider-stack",
+        "value": "720px"
+      },
+      {
+        "name": "settings-shell-compact-gutter",
+        "value": "560px"
+      },
+      {
+        "name": "settings-shell-standalone-icons",
+        "value": "480px"
+      },
+      {
+        "name": "chat-main-message-navigator-hide",
+        "value": "719px"
+      },
+      {
+        "name": "chat-main-heading-navigator-hide",
+        "value": "959px"
+      },
+      {
+        "name": "chat-main-compact-gutter",
+        "value": "560px"
+      },
+      {
+        "name": "chat-main-secondary-labels-hide",
+        "value": "520px"
+      },
+      {
+        "name": "chat-main-model-label-hide",
+        "value": "480px"
+      },
+      {
+        "name": "theme-page-two-columns-min",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button default",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "共享 Button default 外观；预览采用聊天宿主的键盘聚焦规则。",
+      "html": "<button type=\"button\" class=\"ds-button-default\">选择文件</button>",
+      "css": ".ds-button-default{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:4px 11px;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;border-radius:6px;border:1px solid var(--theme-surface-border-strong,#d2d1cf);background:var(--theme-surface,#fdfcfa);color:var(--text,#1d1d1f);cursor:default;box-shadow:var(--shadow-sm,0 1px 1px color-mix(in srgb,var(--text,#1d1d1f) 8%,transparent));font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);transition:background-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),border-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),transform var(--kv-dur-instant,90ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1));} .ds-button-default:hover:not(:disabled){background:var(--theme-surface-hover,#eeedeb);} .ds-button-default:active:not(:disabled){transform:scale(0.97)} .ds-button-default:disabled{opacity:0.5;cursor:not-allowed} .ds-button-default:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)} :host-context(.dark) .ds-button-default:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 18%,transparent)} @media(prefers-reduced-motion:reduce){.ds-button-default{transition-duration:0.01ms!important}.ds-button-default:active:not(:disabled){transform:none}}"
+    },
+    {
+      "name": "Button primary",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "共享 Button primary 外观；预览采用聊天宿主的键盘聚焦规则。",
+      "html": "<button type=\"button\" class=\"ds-button-primary\">保存</button>",
+      "css": ".ds-button-primary{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:4px 11px;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;border-radius:6px;border:1px solid var(--theme-surface-border-strong,#d2d1cf);background:var(--theme-surface,#fdfcfa);color:var(--text,#1d1d1f);cursor:default;box-shadow:var(--shadow-sm,0 1px 1px color-mix(in srgb,var(--text,#1d1d1f) 8%,transparent));font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);transition:background-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),border-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),transform var(--kv-dur-instant,90ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1));background:var(--accent,#2f6ff0);border-color:var(--accent,#2f6ff0);color:var(--text-onaccent,#ffffff);box-shadow:0 1px 1px rgba(0,0,0,0.08),inset 0 0.5px 0 rgba(255,255,255,0.18);} .ds-button-primary:hover:not(:disabled){background:var(--accent-hover,#2960d8);border-color:var(--accent-hover,#2960d8);} .ds-button-primary:active:not(:disabled){transform:scale(0.97)} .ds-button-primary:disabled{opacity:0.5;cursor:not-allowed} .ds-button-primary:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)} :host-context(.dark) .ds-button-primary:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 18%,transparent)} @media(prefers-reduced-motion:reduce){.ds-button-primary{transition-duration:0.01ms!important}.ds-button-primary:active:not(:disabled){transform:none}}"
+    },
+    {
+      "name": "Button ghost",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "共享 Button ghost 外观；预览采用聊天宿主的键盘聚焦规则。",
+      "html": "<button type=\"button\" class=\"ds-button-ghost\">取消</button>",
+      "css": ".ds-button-ghost{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:4px 11px;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;border-radius:6px;border:1px solid var(--theme-surface-border-strong,#d2d1cf);background:var(--theme-surface,#fdfcfa);color:var(--text,#1d1d1f);cursor:default;box-shadow:var(--shadow-sm,0 1px 1px color-mix(in srgb,var(--text,#1d1d1f) 8%,transparent));font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);transition:background-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),border-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),transform var(--kv-dur-instant,90ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1));background:transparent;border-color:transparent;box-shadow:none;} .ds-button-ghost:hover:not(:disabled){background:var(--theme-surface-hover,#eeedeb);} .ds-button-ghost:active:not(:disabled){transform:scale(0.97)} .ds-button-ghost:disabled{opacity:0.5;cursor:not-allowed} .ds-button-ghost:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)} :host-context(.dark) .ds-button-ghost:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 18%,transparent)} @media(prefers-reduced-motion:reduce){.ds-button-ghost{transition-duration:0.01ms!important}.ds-button-ghost:active:not(:disabled){transform:none}}"
+    },
+    {
+      "name": "Button danger",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "共享 Button danger 外观；预览采用聊天宿主的键盘聚焦规则。",
+      "html": "<button type=\"button\" class=\"ds-button-danger\">删除</button>",
+      "css": ".ds-button-danger{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:4px 11px;font-size:12px;font-weight:500;line-height:1.4;white-space:nowrap;border-radius:6px;border:1px solid var(--theme-surface-border-strong,#d2d1cf);background:var(--theme-surface,#fdfcfa);color:var(--text,#1d1d1f);cursor:default;box-shadow:var(--shadow-sm,0 1px 1px color-mix(in srgb,var(--text,#1d1d1f) 8%,transparent));font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);transition:background-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),border-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),transform var(--kv-dur-instant,90ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1));color:var(--danger,#c4341c);background:transparent;border-color:transparent;box-shadow:none;} .ds-button-danger:hover:not(:disabled){background:var(--danger-soft,#fdecea);} .ds-button-danger:active:not(:disabled){transform:scale(0.97)} .ds-button-danger:disabled{opacity:0.5;cursor:not-allowed} .ds-button-danger:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)} :host-context(.dark) .ds-button-danger:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 18%,transparent)} @media(prefers-reduced-motion:reduce){.ds-button-danger{transition-duration:0.01ms!important}.ds-button-danger:active:not(:disabled){transform:none}}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Input 的主题边框、text-muted 占位文字（opacity 1）与 3px 聚焦光环。",
+      "html": "<input class=\"ds-input\" aria-label=\"供应商名称\" placeholder=\"供应商名称\" />",
+      "css": ".ds-input{background:var(--theme-surface,#fdfcfa);border:1px solid var(--theme-surface-border-strong,#d2d1cf);border-radius:6px;padding:5px 9px;font-size:12.5px;color:var(--text,#1d1d1f);font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);box-shadow:var(--shadow-sm,0 1px 1px color-mix(in srgb,var(--text,#1d1d1f) 8%,transparent));width:100%;box-sizing:border-box}.ds-input::placeholder{color:var(--text-muted,#737373);opacity:1}.ds-input:focus,.ds-input:focus-visible{outline:none;border-color:var(--accent,#2f6ff0);box-shadow:0 0 0 3px var(--accent-ring,color-mix(in srgb,var(--accent,#2f6ff0) 32%,transparent))}"
+    },
+    {
+      "name": "Embedded settings navigation",
+      "kind": "nav",
+      "description": "嵌入设置导航项；不代替独立设置宿主的 active 表面与强调图标。",
+      "html": "<nav class=\"ds-nav\" aria-label=\"设置\"><button type=\"button\" class=\"ds-nav-item ds-nav-active\" aria-current=\"page\">通用</button><button type=\"button\" class=\"ds-nav-item\">供应商</button></nav>",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:2px;font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);}.ds-nav-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--text,#1d1d1f);font-family:inherit;font-size:13px;font-weight:500;cursor:default;text-align:left}.ds-nav-item:hover{background:color-mix(in srgb,var(--text,#1d1d1f) 4%,transparent)}.ds-nav-item.ds-nav-active{background:color-mix(in srgb,var(--text,#1d1d1f) 6%,transparent)}.ds-nav-item:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)}:host-context(.dark) .ds-nav-item:focus-visible{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 18%,transparent)}"
+    },
+    {
+      "name": "Removable technical chip",
+      "kind": "chip",
+      "description": "kv-chip 技术标签；状态标签 kv-tag 是另一种规格。",
+      "html": "<span class=\"ds-chip\">MCP<button type=\"button\" class=\"ds-chip-remove\" aria-label=\"移除 MCP\"><svg viewBox=\"0 0 12 12\" width=\"10\" height=\"10\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" aria-hidden=\"true\"><path d=\"M3 3l6 6M9 3L3 9\"/></svg></button></span>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 5px 2px 8px;background:var(--theme-surface-muted,#f4f3f1);border:1px solid var(--theme-surface-border,#e2e1df);border-radius:999px;font-size:11.5px;line-height:1.4;color:var(--text,#1d1d1f);font-family:ui-monospace,\"SF Mono\",Menlo,Consolas,monospace}.ds-chip-remove{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:transparent;border:none;color:var(--text-faint,#9c9ca3);cursor:default;padding:0}.ds-chip-remove:hover{background:var(--theme-surface-hover,#eeedeb);color:var(--text,#1d1d1f)}.ds-chip-remove:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)}"
+    },
+    {
+      "name": "Embedded settings group",
+      "kind": "card",
+      "refersTo": "settings-card",
+      "description": "实际使用的嵌入式 kv-group，不是未使用的 .settings-card 类。",
+      "html": "<section class=\"ds-settings-group\"><h3 class=\"ds-group-title\">通用</h3><div class=\"ds-group-row\">显示模式<span class=\"ds-group-value\">跟随系统</span></div></section>",
+      "css": ".ds-settings-group{margin-bottom:12px;padding:4px 16px 8px;border:1px solid var(--theme-surface-border,#e2e1df);border-radius:12px;background:var(--theme-surface,#fdfcfa);color:var(--text,#1d1d1f);box-shadow:0 1px 2px rgba(0,0,0,0.03);font-family:var(--font-sans,system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", \"Hiragino Sans GB\", sans-serif);font-size:13px;line-height:1.4}.ds-group-title{padding-top:10px;margin:0 0 2px;font-size:12px;font-weight:600;color:var(--text-muted,#737373)}.ds-group-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:9px 0;min-height:32px}.ds-group-value{font-size:11.5px;color:var(--text-muted,#737373)}:host-context(.dark) .ds-settings-group{box-shadow:none}"
+    },
+    {
+      "name": "Toggle",
+      "kind": "custom",
+      "description": "关闭与开启的 Toggle 外观；静态示例不模拟应用设置写入。",
+      "html": "<div class=\"ds-toggle-pair\"><button type=\"button\" role=\"switch\" aria-checked=\"false\" aria-label=\"关闭示例\" class=\"ds-toggle\"></button><button type=\"button\" role=\"switch\" aria-checked=\"true\" aria-label=\"开启示例\" class=\"ds-toggle ds-toggle-on\"></button></div>",
+      "css": ".ds-toggle-pair{display:flex;gap:8px}.ds-toggle{position:relative;width:30px;height:18px;border-radius:999px;background:var(--theme-surface-active,#e7e6e4);box-shadow:inset 0 0 0 0.5px rgba(0,0,0,0.06);border:0;padding:0;cursor:pointer;transition:background 0.15s}.ds-toggle::after{content:\"\";position:absolute;width:14px;height:14px;top:2px;left:2px;border-radius:50%;background:var(--theme-surface,#fdfcfa);box-shadow:0 1px 2px rgba(0,0,0,0.25);transition:transform 0.15s}.ds-toggle-on{background:var(--accent,#2f6ff0)}.ds-toggle-on::after{transform:translateX(12px)}.ds-toggle:disabled{opacity:0.45;cursor:not-allowed}.ds-toggle:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)}:host-context(.dark) .ds-toggle{box-shadow:inset 0 0 0 0.5px rgba(255,255,255,0.08)}@media(prefers-reduced-motion:reduce){.ds-toggle,.ds-toggle::after{transition-duration:0.01ms!important}}"
+    },
+    {
+      "name": "IconButton md",
+      "kind": "button",
+      "description": "32px 方形 IconButton，带内联 SVG、标签与原生 title。",
+      "html": "<button type=\"button\" class=\"ds-icon\" aria-label=\"添加\" title=\"添加\"><svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg></button>",
+      "css": ".ds-icon{width:32px;height:32px;border-radius:7px;background:transparent;border:none;color:var(--text-faint,#9c9ca3);cursor:default;display:flex;align-items:center;justify-content:center;padding:0;transition:background-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),border-color var(--kv-dur-fast,150ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1)),transform var(--kv-dur-instant,90ms) var(--kv-ease-out,cubic-bezier(0.33,1,0.68,1));}.ds-icon:hover:not(:disabled){background:var(--theme-surface-hover,#eeedeb);color:var(--text,#1d1d1f)}.ds-icon:active:not(:disabled){transform:scale(0.95)}.ds-icon:disabled{opacity:0.5;cursor:not-allowed}.ds-icon:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#2f6ff0) 14%,transparent)}@media(prefers-reduced-motion:reduce){.ds-icon{transition-duration:0.01ms!important}.ds-icon:active:not(:disabled){transform:none}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "安静的工作台",
+    "overview": "Kivio 桌面客户端以克制、清晰、紧凑为共同气质。系统字体、低饱和表面、细边框与局部交互强调让界面退后，让对话、工具和当前任务成为主角。\n\n控件紧凑、圆润、低干扰；平面为主，浮层抬升。文档描述现有系统，不把某个页面的构图推广为全局规则，也不将默认蓝色固定为所有主题的品牌色。",
+    "keyCharacteristics": [
+      "系统字体与 CJK 回退；代码使用等宽字体。",
+      "语义主题色支持明暗与自定义色板。",
+      "紧凑控件与桌面容器响应式布局。",
+      "色阶与细边框分区，菜单和弹窗用阴影表达浮层。"
+    ],
+    "rules": [
+      {
+        "name": "Theme Roles",
+        "body": "默认色板是基准样本；界面实现必须引用现有语义变量，随用户主题切换。",
+        "section": "colors"
+      },
+      {
+        "name": "Shared Owner",
+        "body": "共享控件的视觉规则由现有组件与全局样式维护，页面只负责内容与布局。",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do 复用 Button / IconButton、settings/public/controls、kv-modal 与 custom-scrollbar；共享能力缺口在原负责人中补齐。",
+      "Do 使用语义主题变量，并区分默认中性色板、启动兜底与当前用户主题。",
+      "Do 按宿主容器处理空间变化，保留键盘焦点、菜单焦点恢复与减少动态效果行为。",
+      "Do 保留平台差异：透明画布、原生材质、标题栏和字体渲染由已有实现负责。"
+    ],
+    "donts": [
+      "Don’t 用页面 CSS 覆盖共享控件的尺寸、颜色、边框、圆角和交互状态。",
+      "Don’t 将官网的 Geist / Silkscreen 字体与营销视觉规则搬进桌面客户端。",
+      "Don’t 固定白底蓝色、全局替换图片或品牌图标颜色，或把 --color-primary 当作 --accent。",
+      "Don’t 在局部滚动区域添加 scrollbar-width / scrollbar-color，覆盖全局胶囊滚动条。",
+      "Don’t 将未使用的 settings-card 样式或不存在的自定义 tooltip 当成已经交付的标准组件。"
+    ]
+  }
+}
