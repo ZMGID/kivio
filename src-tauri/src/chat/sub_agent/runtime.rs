@@ -241,9 +241,11 @@ impl Runtime {
     fn summary_dir(&self, conversation: &str) -> Result<PathBuf, String> {
         if conversation.is_empty()
             || conversation.len() > 128
-            || !conversation
+            || !(conversation
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                || crate::chat::bot_profile::assistant_id_from_member_conversation(conversation)
+                    .is_some())
         {
             return Err("Invalid parent conversation identifier".into());
         }
@@ -1054,6 +1056,22 @@ fn enqueue(record: &mut Record, key: &str, sender: &str, text: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_member_children_keep_their_own_persistent_parent_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = crate::chat::bot_profile::member_conversation_id("asst_worker", "room_one").unwrap();
+        let other = crate::chat::bot_profile::member_conversation_id("asst_worker", "room_two").unwrap();
+        let runtime = Runtime::open(dir.path().into()).unwrap();
+        let child = runtime.start(&member, "parent", "key", "Child", Profile::default(), "Inspect").unwrap();
+        assert_eq!(runtime.list(&member).unwrap()[0].id, child.id);
+        assert!(runtime.list(&other).unwrap().is_empty());
+        drop(runtime);
+        let reopened = Runtime::open(dir.path().into()).unwrap();
+        assert_eq!(reopened.list(&member).unwrap()[0].id, child.id);
+        assert!(reopened.list("conv_bot_member_asst_worker@../outside").is_err());
+        assert!(reopened.list("conv_bot_member_asst_worker@room@other").is_err());
+    }
 
     #[test]
     fn partial_output_and_recovery_survive_terminal_error_and_restart() {

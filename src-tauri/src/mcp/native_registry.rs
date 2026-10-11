@@ -586,7 +586,11 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
 ];
 
 pub fn find_entry(name: &str) -> Option<&'static NativeToolEntry> {
-    NATIVE_TOOLS.iter().find(|entry| entry.name == name)
+    NATIVE_TOOLS
+        .iter()
+        .chain(crate::chat::bot_collaboration::ENTRIES)
+        .chain(crate::chat::bot_profile::ENTRIES)
+        .find(|entry| entry.name == name)
 }
 
 /// The native file/shell tools (Pi's 7) are gated by a single one-time
@@ -1186,7 +1190,12 @@ fn call_memory_read(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         if !ctx.settings.chat_memory.enabled {
             return Err("Chat memory is disabled in Settings".to_string());
         }
-        crate::chat::memory::tool_read(ctx.app, ctx.arguments)
+        let dir = crate::chat::memory::memory_dir_for_conversation(
+            ctx.app,
+            ctx.native_ctx
+                .map(|context| context.conversation_id.as_str()),
+        )?;
+        crate::chat::memory::tool_read_at(&dir, ctx.arguments)
     })
 }
 
@@ -1195,7 +1204,12 @@ fn call_memory_modify(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         if !ctx.settings.chat_memory.enabled {
             return Err("Chat memory is disabled in Settings".to_string());
         }
-        crate::chat::memory::tool_modify(ctx.app, ctx.arguments)
+        let dir = crate::chat::memory::memory_dir_for_conversation(
+            ctx.app,
+            ctx.native_ctx
+                .map(|context| context.conversation_id.as_str()),
+        )?;
+        crate::chat::memory::tool_modify_at(&dir, ctx.arguments)
     })
 }
 
@@ -1204,7 +1218,12 @@ fn call_memory_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         if !ctx.settings.chat_memory.enabled {
             return Err("Chat memory is disabled in Settings".to_string());
         }
-        crate::chat::memory::tool_search(ctx.app, ctx.arguments)
+        let dir = crate::chat::memory::memory_dir_for_conversation(
+            ctx.app,
+            ctx.native_ctx
+                .map(|context| context.conversation_id.as_str()),
+        )?;
+        crate::chat::memory::tool_search_at(&dir, ctx.arguments)
     })
 }
 

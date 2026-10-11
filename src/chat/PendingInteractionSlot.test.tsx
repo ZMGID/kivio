@@ -44,6 +44,7 @@ function snapshot(overrides: Partial<RunInteractionSnapshot> = {}): RunInteracti
     sessionConsentError: '',
     userPrompt: null,
     pendingToolConversationIds: [],
+    memberAttention: [],
     ...overrides,
   }
 }

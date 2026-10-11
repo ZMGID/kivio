@@ -13,6 +13,14 @@ export type RunInteractionEvent =
   | { kind: 'runStarted' | 'runTerminal'; conversationId: string; runId: string }
   | { kind: 'drop'; conversationId: string }
 
+/** Which private thread needs a person. No tool arguments, prompts, or credentials. */
+export type MemberAttentionKind = 'question' | 'approval'
+
+export interface MemberAttention {
+  conversationId: string
+  kind: MemberAttentionKind
+}
+
 export interface RunInteractionSnapshot {
   activeConversationId: string | null
   toolConfirm: ChatToolConfirmPayload | null
@@ -23,6 +31,7 @@ export interface RunInteractionSnapshot {
   sessionConsentError: string
   userPrompt: ChatUserPromptPayload | null
   pendingToolConversationIds: readonly string[]
+  memberAttention: readonly MemberAttention[]
 }
 
 interface RunInteractionTransport {
@@ -79,7 +88,29 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     sessionConsentError: '',
     userPrompt: null,
     pendingToolConversationIds: [],
+    memberAttention: [],
   }
+
+  const attentionOf = (): MemberAttention[] => {
+    const seen = new Set<string>()
+    const out: MemberAttention[] = []
+    const consider = (conversationId: string) => {
+      if (seen.has(conversationId)) return
+      const question = (users.get(conversationId)?.length ?? 0) > 0
+      const approval = (tools.get(conversationId)?.length ?? 0) > 0 || consents.has(conversationId)
+      if (!question && !approval) return
+      seen.add(conversationId)
+      out.push({ conversationId, kind: question ? 'question' : 'approval' })
+    }
+    for (const id of users.keys()) consider(id)
+    for (const id of tools.keys()) consider(id)
+    for (const id of consents.keys()) consider(id)
+    return out
+  }
+
+  const sameAttention = (left: readonly MemberAttention[], right: readonly MemberAttention[]) =>
+    left.length === right.length
+    && left.every((item, index) => item.conversationId === right[index]?.conversationId && item.kind === right[index]?.kind)
 
   const hasTool = (prompt: ChatToolConfirmPayload) =>
     (tools.get(prompt.conversationId) ?? []).some((item) =>
@@ -91,6 +122,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     const consent = conversationId ? consents.get(conversationId) ?? null : null
     const user = conversationId ? users.get(conversationId)?.[0] ?? null : null
     const pendingToolConversationIds = [...tools.keys()].filter((id) => (tools.get(id)?.length ?? 0) > 0)
+    const memberAttention = attentionOf()
     const next: RunInteractionSnapshot = {
       activeConversationId: conversationId,
       toolConfirm: tool,
@@ -101,6 +133,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       sessionConsentError: consent ? consentErrors.get(runKey(consent.conversationId, consent.runId)) ?? '' : '',
       userPrompt: user,
       pendingToolConversationIds,
+      memberAttention,
     }
     if (
       snapshot.activeConversationId === next.activeConversationId
@@ -113,6 +146,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       && snapshot.userPrompt === next.userPrompt
       && snapshot.pendingToolConversationIds.length === next.pendingToolConversationIds.length
       && snapshot.pendingToolConversationIds.every((id, index) => id === next.pendingToolConversationIds[index])
+      && sameAttention(snapshot.memberAttention, next.memberAttention)
     ) return
     snapshot = next
     for (const listener of listeners) listener()

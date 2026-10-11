@@ -2,6 +2,7 @@ import { useCallback, type MutableRefObject } from 'react'
 import { persistLastChatModelToSettings, saveLastThinkingLevel, saveLastWebSearchMode } from '../composerPreferences'
 import { saveLastModel } from '../../data/chatModelPreference'
 import { chatApi } from '../api'
+import { isBotOwnedConversation } from '../botIdentity'
 import { withExternalModel } from '../externalModelEffort'
 import { saveLastAgentRuntime } from '../lastAgentRuntime'
 import type {
@@ -75,10 +76,12 @@ export function useConversationMetaMutations({
   }, [draft, updateMeta])
 
   const changeThinkingLevel = useCallback(async (level: ThinkingLevel | null) => {
-    draft.setThinkingLevel(level)
-    saveLastThinkingLevel(level) // 记住为全局默认，不再回落到 high
+    if (!isBotOwnedConversation(currentConversationRef.current?.id)) {
+      draft.setThinkingLevel(level)
+      saveLastThinkingLevel(level)
+    }
     await updateMeta({ thinkingLevel: level }, 'change thinking level', '思考等级切换失败')
-  }, [draft, updateMeta])
+  }, [currentConversationRef, draft, updateMeta])
 
   // 会话级三态联网搜索：持久化到会话（欢迎页先存草稿），并记住为全局默认——之后所有
   // 新会话 / 未显式设置的会话自动沿用（与思考等级同款）。

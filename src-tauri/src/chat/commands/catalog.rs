@@ -10,7 +10,7 @@ use crate::chat::attachments::{save_message_attachments, title_source_for_user_m
 use crate::chat::storage::{
     archive_assistant, assistant_snapshot, create_assistant, create_set, delete_project,
     delete_set, duplicate_assistant, find_project_by_id, find_project_by_name, find_set_by_id,
-    get_assistants, get_projects, get_sets, update_assistant, update_project, update_set,
+    get_assistants, get_projects, get_sets, update_project, update_set,
 };
 use crate::chat::{
     AgentPlanState, AgentTodoState, Attachment, ChatAssistant, ChatMessage, Conversation,
@@ -103,6 +103,7 @@ pub(crate) async fn chat_search_conversations(
 #[tauri::command]
 pub(crate) async fn chat_query_conversations(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     offset: Option<usize>,
     limit: Option<usize>,
     sort: Option<String>,
@@ -117,6 +118,7 @@ pub(crate) async fn chat_query_conversations(
     runtime_kind: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let query = crate::chat::storage::ConversationLibraryQuery {
+        bot_only: crate::windows::workspace::is_bot_workspace(&window),
         offset: offset.unwrap_or(0),
         limit: limit.unwrap_or(80),
         sort: sort.unwrap_or_else(|| "updated".into()),
@@ -165,6 +167,7 @@ pub(crate) async fn chat_get_conversation(
         }
     };
     reconcile_conversation_orphan_tool_segments(&mut conversation);
+    project_legacy_peer_messages(&app, &mut conversation);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
@@ -193,6 +196,7 @@ pub(crate) async fn chat_get_conversation_window(
     };
     let read_ms = started.elapsed().as_secs_f64() * 1_000.0;
     reconcile_conversation_orphan_tool_segments(&mut conversation);
+    project_legacy_peer_messages(&app, &mut conversation);
     strip_transcripts_for_frontend(&mut conversation);
     let total = conversation.messages.len();
     let start = history_window_start(&conversation.messages, total);
@@ -297,6 +301,7 @@ pub(crate) async fn chat_get_conversation_page(
         .await
         .map_err(crate::chat::repository::repository_error)?;
     reconcile_conversation_orphan_tool_segments(&mut conversation);
+    project_legacy_peer_messages(&app, &mut conversation);
     strip_transcripts_for_frontend(&mut conversation);
     let total = conversation.messages.len();
     let end = before.min(total);
@@ -353,6 +358,16 @@ pub(crate) async fn chat_get_conversation_revision(
         .revision(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)
+}
+
+/// In-memory presentation of legacy peer envelopes. Disk is unchanged; a
+/// refresh that only reads must not rewrite history.
+fn project_legacy_peer_messages(app: &AppHandle, conversation: &mut Conversation) {
+    let deliveries = crate::chat::bot_collaboration::recorded_deliveries(app, &conversation.id);
+    if deliveries.is_empty() {
+        return;
+    }
+    crate::chat::bot_collaboration::project_trusted_legacy_peers(conversation, &deliveries);
 }
 
 /// 读取时对账(只读、不写盘):对每条 assistant 消息补齐孤立工具分段为中断态记录,
@@ -711,7 +726,11 @@ pub(crate) async fn create_chat_conversation_internal(
                 reply_models: Vec::new(),
                 group_selections: std::collections::HashMap::new(),
                 forked_from: None,
-                agent_runtime: settings.chat.default_agent_runtime.clone(),
+                agent_runtime: if creation == ConversationCreation::Bot {
+                    crate::chat::AgentRuntimeConfig::default()
+                } else {
+                    settings.chat.default_agent_runtime.clone()
+                },
             };
 
             crate::chat::repository::repository(app)
@@ -810,6 +829,7 @@ pub(crate) async fn chat_import_external_conversation(
             model: None,
             timestamp: now,
             degraded: None,
+            peer: None,
         });
     }
 
@@ -872,35 +892,10 @@ pub(crate) async fn chat_update_assistant(
     state: State<'_, AppState>,
     assistant: ChatAssistant,
 ) -> Result<serde_json::Value, String> {
-    let assistant = update_assistant(&app, assistant)?;
-    // Ordinary chats keep their frozen persona. A Bot's own durable chat follows
-    // explicit edits to that Bot; repository mutation preserves concurrent messages.
-    let bot_id = format!("{BOT_CONVERSATION_PREFIX}{}", assistant.id);
-    if crate::chat::storage::conversation_file_path(&app, &bot_id)?.exists() {
-        let snapshot = crate::chat::ChatAssistantSnapshot::from(&assistant);
-        let name = assistant.name.clone();
-        let (default_provider, default_model) = state.settings_read().effective_chat_model();
-        crate::chat::repository::repository(&app)
-            .mutate(&app, &bot_id, move |conversation| {
-                let previous = conversation.assistant_snapshot.as_ref();
-                let model_changed = previous
-                    .map(|old| {
-                        old.provider_id != snapshot.provider_id || old.model != snapshot.model
-                    })
-                    .unwrap_or(true);
-                if model_changed {
-                    conversation.provider_id =
-                        non_empty_string(snapshot.provider_id.clone()).unwrap_or(default_provider);
-                    conversation.model =
-                        non_empty_string(snapshot.model.clone()).unwrap_or(default_model);
-                }
-                conversation.assistant_snapshot = Some(snapshot);
-                conversation.title = name;
-                Ok(())
-            })
-            .await
-            .map_err(crate::chat::repository::repository_error)?;
-    }
+    // Lifecycle lock is acquired inside commit, before the assistant catalog write,
+    // and held through profile CAS and the fixed-chat persona sync.
+    let assistant =
+        crate::chat::bot_profile::commit_assistant_edit(&app, state.inner(), assistant).await?;
     let _ = app.emit("chat-assistants-changed", &assistant.id);
     Ok(serde_json::json!({
         "success": true,

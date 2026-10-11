@@ -129,6 +129,7 @@ pub(crate) async fn run_chat_probe(
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+        peer: None,
     };
     let runtime = conversation.agent_runtime.clone();
     let plan_state = conversation.agent_plan_state.clone();

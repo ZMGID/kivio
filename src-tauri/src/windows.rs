@@ -6,6 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde_json::json;
+pub(crate) mod workspace;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::{
@@ -277,19 +278,25 @@ fn is_valid_chat_last_route(route: &str) -> bool {
     crate::chat::route_contract::is_restorable_chat_route(route)
 }
 
-fn chat_last_route_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn chat_last_route_path(app: &AppHandle, bot_workspace: bool) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
-        .map(|dir| dir.join(CHAT_LAST_ROUTE_FILE))
+        .map(|dir| {
+            dir.join(if bot_workspace {
+                "bots-last-route.json"
+            } else {
+                CHAT_LAST_ROUTE_FILE
+            })
+        })
         .map_err(|e| format!("app_data_dir unavailable: {e}"))
 }
 
-fn load_stored_last_chat_route(app: &AppHandle) -> Option<String> {
-    let path = chat_last_route_path(app).ok()?;
+fn load_stored_last_chat_route(app: &AppHandle, bot_workspace: bool) -> Option<String> {
+    let path = chat_last_route_path(app, bot_workspace).ok()?;
     let content = fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
     let route = parsed.get("route")?.as_str()?.trim().to_string();
-    if route.is_empty() || !is_valid_chat_last_route(&route) {
+    if route.is_empty() || !valid_workspace_route(&route, bot_workspace) {
         return None;
     }
     Some(route)
@@ -298,11 +305,17 @@ fn load_stored_last_chat_route(app: &AppHandle) -> Option<String> {
 /// 前端在路由变化时调用：记住（或清除）聊天窗口上次停留的路由。
 /// `route` 为 null / 空串时删除记录（删除对话、新建对话等场景）。
 #[tauri::command]
-pub fn chat_remember_last_route(app: AppHandle, route: Option<String>) -> Result<(), String> {
-    let path = chat_last_route_path(&app)?;
+pub fn chat_remember_last_route(
+    app: AppHandle,
+    window: WebviewWindow,
+    route: Option<String>,
+    bot_workspace: Option<bool>,
+) -> Result<(), String> {
+    let bot_workspace = bot_workspace.unwrap_or_else(|| workspace::is_bot_workspace(&window));
+    let path = chat_last_route_path(&app, bot_workspace)?;
     let normalized = route.as_deref().map(str::trim).filter(|r| !r.is_empty());
     match normalized {
-        Some(route) if is_valid_chat_last_route(route) => {
+        Some(route) if valid_workspace_route(route, bot_workspace) => {
             let content = serde_json::to_string(&json!({ "route": route }))
                 .map_err(|e| format!("serialize last route: {e}"))?;
             crate::chat::storage::atomic_write(&path, &content, "chat-last-route")
@@ -312,6 +325,17 @@ pub fn chat_remember_last_route(app: AppHandle, route: Option<String>) -> Result
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(format!("remove last route: {e}")),
         },
+    }
+}
+
+fn valid_workspace_route(route: &str, bot_workspace: bool) -> bool {
+    if !is_valid_chat_last_route(route) {
+        return false;
+    }
+    let path = crate::chat::route_contract::path_from_route(route);
+    match crate::chat::route_contract::decode_conversation_route_id(path) {
+        Some(id) => id.starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX) == bot_workspace,
+        None => true,
     }
 }
 
@@ -351,7 +375,7 @@ pub fn ensure_translator_window(app: &AppHandle) -> Result<WebviewWindow, String
  * 创建时优先把上次停留的 chat 路由烤进 URL（设置页等显式路由不受影响）。
  */
 pub fn ensure_chat_window(app: &AppHandle) -> Result<WebviewWindow, String> {
-    let route = load_stored_last_chat_route(app).unwrap_or_else(|| "chat".to_string());
+    let route = load_stored_last_chat_route(app, false).unwrap_or_else(|| "chat".to_string());
     ensure_chat_window_with_hash(app, &route)
 }
 
@@ -536,8 +560,8 @@ fn ensure_overlay_window(
         "lens".to_string()
     };
     let url = format!("index.html#{hash}");
-    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
-        .title(title)
+    let window = WebviewWindowBuilder::new(app, "chat", WebviewUrl::App(url.into()))
+        .title("Kivio Desktop")
         .inner_size(600.0, 72.0)
         .always_on_top(true)
         .visible_on_all_workspaces(true)

@@ -86,3 +86,19 @@ final result: passed
 - 当前证据：`.impeccable/review/bot/desktop.png`、`narrow-sidebar.png`、`create.png`、`profile.png`、`functions.png`、`settings.png`；审查与修复评分分别见 `finish-review.md` 和 `contrast-verdict.md`。DESIGN.md 与 design.json 已记录新增共享能力，保留既有系统。
 - 验证：83 项相关前端测试通过；架构检查 12 项通过、零违规；定向 ESLint 与补充 ES2022 lib 的类型检查通过；macOS 原生 bundle 构建成功并已打开。默认项目类型检查仍有现存 ES2020 lib 与 .at/replaceAll 不匹配问题，没有改动其配置。
 - 视觉范围为 macOS 浅色空对话、最窄 200px 侧栏、创建、资料和两个菜单。未宣称深色、Windows、已有消息历史或实时生成完成视觉验收；公共搜索 Input 与 plain TextArea 的占位色由源码确认。
+
+
+### Bot 侧栏设计语言修正
+
+用户否定照搬 Grok 的圆形搜索/加号与 boxed 更多按钮后，以既有 Kivio 导航为基准：顶部与底部统一复用 28px ghost IconButton，搜索/撰写/四格工作台使用项目现有图标；联系人收为 60px 导航行、32px mascot 与 13px/12px 名字摘要；底部复用 22px 账户头像和轻分隔线。撤回仅此处使用的 outline 变体，ghost 静止图标在共享负责人使用 text-muted。
+
+按两轮有限原生检查交给全新独立 finish reviewer，用户驳回的截图作为主要问题证据。审查确认控制语言与 Kivio 连续，唯一 material fix 为选中行的摘要对比度。已在业务内容负责人改用既有 neutral-600 语义文字角色，保持全局 text-muted；相同五张截图及补充未选中行重新捕获。最终评分 resolved，disposition ship，仅覆盖该修复；选中态约 8.3–8.5:1，未选中态约 9.6:1。
+
+19 项相关前端测试、定向 ESLint、补充 ES2022 lib 的类型检查、diff 检查和 macOS 原生 bundle 构建通过。最新应用已打开原 Bot 持久聊天，没有为本次检查发送新消息或创建/删除联系人。当前截图与审查在 `.impeccable/review/bot-sidebar/`，设计记录已同步。视觉范围为 macOS 浅色侧栏的普通/最窄 200px、搜索、键盘焦点、工作台与选中/未选中行；不扩展为其他平台、完整聊天渲染或模型生命周期验收。
+
+
+### Bot 设置右侧栏与紧凑布局
+
+原聊天设置浮层改为独立 Bot 配置侧栏，资料编辑沿用草稿与保存负责人。按用户对第一版的反馈，身份头像缩为 40px，颜色选择按需展开，删除重复说明，模型、思考与权限改为设置行。已有 Bot 的聊天记录与编辑失败草稿保留，离开时确认未保存修改；创建仍复用公共弹窗。
+
+10 项相关回归、定向 lint、前端构建与架构检查通过；默认类型检查仍为既有的 26 项 at/replaceAll lib 错误。已在浏览器 1280px/460px 和实际 macOS 开发窗口检查浅色布局，并在原生窗口验证 Esc 只关闭思考菜单而保留设置栏。当前原生截图为 bot-settings.png（本任务可视化目录），范围不涵盖深色或 Windows。本次没有发送聊天消息或更改真实 Bot 配置。

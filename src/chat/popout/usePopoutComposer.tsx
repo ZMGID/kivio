@@ -17,6 +17,7 @@ import { ContextIndicator } from '../ContextIndicator'
 import { dockApi } from '../dock/api'
 import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState } from '../agentTodoState'
+import { composerInputHistory } from '../composerInputHistory'
 import type { InputBarProps } from '../InputBar'
 import {
   deriveDshPresetModes,
@@ -721,7 +722,7 @@ export function usePopoutComposer({
     externalAgentName: runtime.externalAgentId ?? null,
     conversationId,
     knowledgeBaseIds: conversation?.knowledge_base_ids ?? conversation?.knowledgeBaseIds ?? [],
-    inputHistory: conversation?.messages.filter((message) => message.role === 'user').map((message) => message.content),
+    inputHistory: composerInputHistory(conversation?.messages),
     onChangeKnowledgeBaseIds: handleChangeKnowledgeBaseIds,
     forceKnowledgeSearch: conversation?.force_knowledge_search ?? conversation?.forceKnowledgeSearch ?? false,
     onToggleForceKnowledgeSearch: handleToggleForceKnowledgeSearch,

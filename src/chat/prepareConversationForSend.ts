@@ -1,5 +1,6 @@
 import { resolveProviderWebSearchMode } from '../api/tauri'
 import { agentRuntimesEqual, chatApi, normalizeAgentRuntime } from './api'
+import { isBotOwnedConversation } from './botIdentity'
 import type {
   AdditionalDirectory,
   AgentRuntimeConfig,
@@ -132,7 +133,7 @@ export async function prepareConversationForSend(
     }))
     if (error) return error
   }
-  if (draft.thinkingLevel && (conversation.thinking_level ?? conversation.thinkingLevel ?? null) === null) {
+  if (!isBotOwnedConversation(conversation.id) && draft.thinkingLevel && (conversation.thinking_level ?? conversation.thinkingLevel ?? null) === null) {
     const error = await apply('thinkingLevel', () => persistence.updateConversation(conversation!.id, {
       thinkingLevel: draft.thinkingLevel,
     }))

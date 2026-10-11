@@ -85,6 +85,14 @@ Full history: [Releases](https://github.com/ZMGID/kivio/releases) · current not
 - Media studio: generate images and videos; video results and creation details load the first frame before playback, without autoplay
 - Progressive SVG previews in chat: `svg` blocks and SVG-only `html` blocks render during generation, with a source toggle and the last picture preserved for unfinished tags, attributes, or character entities, including Markdown-added trailing newlines. Ordinary HTML pages remain sandboxed previews after generation ends
 
+### Bots: persistent colleagues and local work
+
+- Bots have a separate contact workspace and stable private threads, using Kivio's built-in runtime rather than external CLIs or temporary sub-agents. The primary Bot coordinates; it gains no extra authority.
+- Users and Bots share creation and editing rules. Role edits retain identity and history; concurrent configuration conflicts cannot silently overwrite newer changes. Capabilities and approvals can inherit global settings or use explicit Bot settings without changing other Bots.
+- Peer messages queue while the recipient is busy. Exchange details retain both sides' actual messages and execution states. Personal groups support naming, membership, mentions, handoffs, pause, continue and stop, with bounded automatic exchanges.
+- Private memory can be inspected, edited and cleared. Explicitly shared information is recorded separately; existing global memory is not automatically copied to every Bot. Details collect the Bot's routines, runs and delivered artifacts, with configuration opened on demand.
+- Kivio must remain running. Page navigation does not stop admitted work, and idle Bots do not continually call models. Interrupted execution is not automatically replayed after exit; sleep or post-exit execution is not promised. Shared local files are not a security sandbox.
+
 ### Translate & Lens
 
 - Quick, selection, screenshot OCR, and in-place replace translation

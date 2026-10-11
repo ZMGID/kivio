@@ -37,6 +37,10 @@ import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { asyncReplyDisplayText } from './asyncQuestionReply'
+import { PeerMessageCard } from './bot/PeerMessageCard'
+import { isCollaborationTool } from './bot/collaboration'
+import { canonicalToolName } from './segments'
+import { peerMessageOf } from './bot/peerMessage'
 import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
   clusterToolCallsForDisplay,
@@ -1004,7 +1008,7 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && isVisibleArtifactPresentation(tool))
+        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isCollaborationTool(canonicalToolName(tool))))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1347,7 +1351,9 @@ function MessageBubbleComponent({
     onPointerLeave: () => setBubbleHovered(false),
   }
   // 工具调用超过 4 个时默认折叠（与思考过程一致）
-  const toolsCollapsible = toolCalls.length > 4
+  const processToolCalls = toolCalls.filter(tool => !isCollaborationTool(canonicalToolName(tool)))
+  const collaborationToolCalls = toolCalls.filter(tool => isCollaborationTool(canonicalToolName(tool)))
+  const toolsCollapsible = processToolCalls.length > 4
   const agentPlan = message.agent_plan ?? message.agentPlan ?? agentPlanOverride
   const isAgentPlanMessage = Boolean(agentPlan?.document) || hasAgentPlanText(agentPlan?.plan)
 
@@ -1359,6 +1365,22 @@ function MessageBubbleComponent({
   }
 
   if (isUser) {
+    const peer = peerMessageOf(message)
+    if (peer) {
+      return (
+        <div
+          className={`flex justify-start py-2 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
+        >
+          <div className="w-full min-w-0">
+            <PeerMessageCard
+              peer={peer}
+              attachments={attachments}
+              conversationId={conversationId}
+            />
+          </div>
+        </div>
+      )
+    }
     const hasText = message.content.trim().length > 0
     // R8（多模型一问多答）：本问发给 ≥2 个模型时，在 user 气泡顶部渲染模型标签行（如 @deepseek @qwen）。
     // 单模型不显示这行（sentModels 缺省或 <2）。
@@ -1444,7 +1466,10 @@ function MessageBubbleComponent({
       data-chat-outline-owner={outlineEligible ? message.id : undefined}
     >
       <div className="w-full min-w-0">
-        {toolCalls.length > 0 && !hasTimelineSegments && (
+        {collaborationToolCalls.length > 0 && !hasTimelineSegments && (
+          <ClusteredToolCalls toolCalls={collaborationToolCalls} artifacts={renderArtifacts} conversationId={conversationId} />
+        )}
+        {processToolCalls.length > 0 && !hasTimelineSegments && (
           <section
             aria-label="工具调用"
             className={message.content.trim().length > 0 || message.reasoning ? 'mb-3' : ''}
@@ -1459,7 +1484,7 @@ function MessageBubbleComponent({
                 data-tauri-drag-region="false"
               >
                 <span>
-                  工具调用 · {toolCalls.length} 个
+                  工具调用 · {processToolCalls.length} 个
                 </span>
               </button>
             ) : (
@@ -1470,7 +1495,7 @@ function MessageBubbleComponent({
             {toolsCollapsible && (
               <ChatDisclosureBody open={toolsExpanded}>
                 <ClusteredToolCalls
-                  toolCalls={toolCalls}
+                  toolCalls={processToolCalls}
                   artifacts={renderArtifacts}
                   conversationId={conversationId}
                 />
@@ -1478,7 +1503,7 @@ function MessageBubbleComponent({
             )}
             {!toolsCollapsible && (
               <ClusteredToolCalls
-                toolCalls={toolCalls}
+                toolCalls={processToolCalls}
                 artifacts={renderArtifacts}
                 conversationId={conversationId}
               />

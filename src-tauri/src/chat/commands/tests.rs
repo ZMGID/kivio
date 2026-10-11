@@ -28,7 +28,8 @@ use super::messages::{
 };
 use super::mutations::{
     apply_regenerate_truncation, apply_reply_with_model_result, build_fork_messages,
-    build_fork_messages_before_anchor, prepare_reply_with_model, remove_assistant_answer,
+    build_fork_messages_before_anchor, ensure_user_rewind_allowed, prepare_reply_with_model,
+    remove_assistant_answer,
 };
 use super::reply_runtime::resolve_reply_arms;
 use super::sanitization::sanitize_image_payloads_for_model;
@@ -1719,6 +1720,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
         model: None,
         timestamp: 1,
         degraded: None,
+        peer: None,
     };
 
     replace_final_text_segments_for_edit(&mut message, "new final");
@@ -1824,6 +1826,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
         model: None,
         timestamp: 1,
         degraded: None,
+        peer: None,
     };
 
     replace_final_text_segments_for_edit(&mut message, "new final");
@@ -1863,6 +1866,7 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
         model: None,
         timestamp,
         degraded: None,
+        peer: None,
     }
 }
 
@@ -2380,7 +2384,13 @@ fn regenerate_truncation_edits_user_content_and_truncates_after() {
     // 编辑 msg_user_2（index 2）：内容替换、其后 assistant 被截、摘要保持未过期
     // （msg_user_2 在摘要 boundary msg_assistant_1 之后，不触发 stale）。
     let mut conversation = test_conversation_with_summary(false);
-    apply_regenerate_truncation(&mut conversation, 2, Some("edited question".to_string())).unwrap();
+    apply_regenerate_truncation(
+        &mut conversation,
+        2,
+        Some("edited question".to_string()),
+        &[],
+    )
+    .unwrap();
     assert_eq!(conversation.messages.len(), 3);
     assert_eq!(conversation.messages[2].id, "msg_user_2");
     assert_eq!(conversation.messages[2].content, "edited question");
@@ -2395,6 +2405,7 @@ fn regenerate_truncation_edits_user_content_and_truncates_after() {
         &mut covered,
         0,
         Some("rewritten first question".to_string()),
+        &[],
     )
     .unwrap();
     assert_eq!(covered.messages.len(), 1);
@@ -2433,7 +2444,7 @@ fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
     conversation.agent_todo_state = snapshot("later step");
 
     // Regenerating the last answer drops its todo_write; the list follows the history.
-    apply_regenerate_truncation(&mut conversation, 3, None).unwrap();
+    apply_regenerate_truncation(&mut conversation, 3, None, &[]).unwrap();
     super::mutations::restore_todo_state_from_history(&mut conversation);
     assert_eq!(conversation.agent_todo_state.items[0].content, "early step");
 
@@ -2455,20 +2466,20 @@ fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
 fn regenerate_truncation_rejects_bad_edit_targets() {
     // 空内容 → 报错且对话未被改动。
     let mut conversation = test_conversation_with_summary(false);
-    let err =
-        apply_regenerate_truncation(&mut conversation, 2, Some("   ".to_string())).unwrap_err();
+    let err = apply_regenerate_truncation(&mut conversation, 2, Some("   ".to_string()), &[])
+        .unwrap_err();
     assert_eq!(err, "消息内容不能为空");
     assert_eq!(conversation.messages.len(), 4);
 
     // new_content 指向 assistant → 明确报错（不静默忽略）。
-    let err =
-        apply_regenerate_truncation(&mut conversation, 3, Some("nope".to_string())).unwrap_err();
+    let err = apply_regenerate_truncation(&mut conversation, 3, Some("nope".to_string()), &[])
+        .unwrap_err();
     assert_eq!(err, "编辑内容仅支持用户消息");
     assert_eq!(conversation.messages.len(), 4);
 
     // 无 new_content 的既有行为不回归：assistant 截到它之前；user 孤儿保留自身。
     let mut plain = test_conversation_with_summary(false);
-    apply_regenerate_truncation(&mut plain, 3, None).unwrap();
+    apply_regenerate_truncation(&mut plain, 3, None, &[]).unwrap();
     assert_eq!(plain.messages.len(), 3);
     assert_eq!(plain.messages.last().unwrap().id, "msg_user_2");
 }
@@ -2585,6 +2596,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 model: None,
                 timestamp: 1,
                 degraded: None,
+                peer: None,
             },
             ChatMessage {
                 id: "msg_assistant_1".to_string(),
@@ -2634,6 +2646,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 model: None,
                 timestamp: 2,
                 degraded: None,
+                peer: None,
             },
         ],
         active_skill_id: Some("doc".to_string()),
@@ -2767,6 +2780,7 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
                     model: None,
                     timestamp: 2,
                     degraded: None,
+                    peer: None,
                 },
             ],
             active_skill_id: None,
@@ -4406,4 +4420,215 @@ fn resolve_thinking_checks_stored_levels_and_uses_an_available_default() {
             .unwrap_err()
             .contains("不支持思考强度")
     );
+}
+
+#[test]
+fn peer_origin_rejects_user_edit_and_rewind_without_changing_provenance() {
+    use crate::chat::bot_collaboration::{peer_user_message, Actor, Delivery, PeerMessage};
+
+    let peer = PeerMessage {
+        delivery_id: "dlv_keep".into(),
+        exchange_id: "ex_keep".into(),
+        from: Actor::bot("asst_ada", "Ada"),
+        to_bot_id: "asst_bo".into(),
+        to_name: "Bo".into(),
+        room_id: None,
+        kind: crate::chat::bot_collaboration::DeliveryKind::Peer,
+    };
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.messages[2].peer = Some(peer.clone());
+    let before = conversation.messages[2].clone();
+    let edit = apply_regenerate_truncation(&mut conversation, 2, Some("edited body".into()), &[]);
+    assert!(edit.unwrap_err().contains("不能编辑"));
+    assert_eq!(conversation.messages[2].content, before.content);
+    assert_eq!(conversation.messages[2].peer, Some(peer.clone()));
+    assert_eq!(conversation.messages.len(), 4);
+    let rewind = ensure_user_rewind_allowed(&conversation, 2, &[]);
+    assert!(rewind.unwrap_err().contains("放回输入框"));
+    assert_eq!(conversation.messages.len(), 4);
+
+    apply_regenerate_truncation(&mut conversation, 2, None, &[]).unwrap();
+    assert_eq!(conversation.messages.len(), 3);
+    assert_eq!(conversation.messages[2].content, before.content);
+    assert_eq!(conversation.messages[2].peer, Some(peer.clone()));
+
+    let mut assistant_turn = test_conversation_with_summary(false);
+    assistant_turn.messages[2].peer = Some(peer);
+    apply_regenerate_truncation(&mut assistant_turn, 3, None, &[]).unwrap();
+    assert_eq!(assistant_turn.messages.len(), 3);
+    assert_eq!(assistant_turn.messages[2].content, "recent user content");
+    assert!(assistant_turn.messages[2].peer.is_some());
+
+    let delivery: Delivery = serde_json::from_value(serde_json::json!({
+        "id": "dlv_legacy",
+        "exchangeId": "ex_legacy",
+        "entryId": "entry_legacy",
+        "roomCycle": 0,
+        "from": {"kind": "user"},
+        "toBotId": "asst_bo",
+        "toName": "Bo",
+        "toConversationId": "conv_test",
+        "kind": "mention",
+        "body": "stored body",
+        "depth": 0,
+        "status": "queued",
+        "createdAt": 1,
+        "updatedAt": 1
+    }))
+    .unwrap();
+    let envelope = peer_user_message(&delivery);
+    let mut legacy = test_conversation_with_summary(false);
+    legacy.messages[2].content = envelope.clone();
+    let rejected = apply_regenerate_truncation(
+        &mut legacy,
+        2,
+        Some("new question".into()),
+        std::slice::from_ref(&delivery),
+    );
+    assert!(rejected.unwrap_err().contains("不能编辑"));
+    assert_eq!(legacy.messages[2].content, envelope);
+    assert!(legacy.messages[2].peer.is_none());
+    assert!(ensure_user_rewind_allowed(&legacy, 2, std::slice::from_ref(&delivery)).is_err());
+    apply_regenerate_truncation(&mut legacy, 2, None, std::slice::from_ref(&delivery)).unwrap();
+    assert_eq!(legacy.messages[2].content, envelope);
+    assert!(legacy.messages[2].peer.is_none());
+
+    let mut prefixed = test_conversation_with_summary(false);
+    prefixed.messages[2].content = "[kivio-peer dlv_legacy]\nstill mine".into();
+    apply_regenerate_truncation(
+        &mut prefixed,
+        2,
+        Some("edited".into()),
+        std::slice::from_ref(&delivery),
+    )
+    .unwrap();
+    assert_eq!(prefixed.messages[2].content, "edited");
+    assert!(prefixed.messages[2].peer.is_none());
+    ensure_user_rewind_allowed(&prefixed, 2, std::slice::from_ref(&delivery)).unwrap();
+
+    let foreign: Delivery = serde_json::from_value(serde_json::json!({
+        "id": "dlv_foreign",
+        "exchangeId": "ex_foreign",
+        "entryId": "entry_foreign",
+        "roomCycle": 0,
+        "from": {"kind": "bot", "id": "asst_ada", "name": "Ada"},
+        "toBotId": "asst_bo",
+        "toName": "Bo",
+        "toConversationId": "conv_other",
+        "kind": "peer",
+        "body": "secret",
+        "depth": 0,
+        "status": "queued",
+        "createdAt": 1,
+        "updatedAt": 1
+    }))
+    .unwrap();
+    let mut other = test_conversation_with_summary(false);
+    other.messages[2].content = peer_user_message(&foreign);
+    apply_regenerate_truncation(
+        &mut other,
+        2,
+        Some("edited".into()),
+        std::slice::from_ref(&foreign),
+    )
+    .unwrap();
+    assert_eq!(other.messages[2].content, "edited");
+    assert!(other.messages[2].peer.is_none());
+}
+
+#[test]
+fn legacy_fixture_matches_durable_delivery_before_edit_or_rewind() {
+    use crate::chat::bot_collaboration::{peer_user_message, project_trusted_legacy_peers, Store};
+
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/chat/fixtures/peer-legacy-migration");
+    let loaded = Store::new(root.clone()).load().unwrap().expect("durable records");
+    let mut conversation: Conversation = serde_json::from_str(
+        &std::fs::read_to_string(root.join("conversation.json")).unwrap(),
+    )
+    .unwrap();
+    let presented: ChatMessage = serde_json::from_str(
+        &std::fs::read_to_string(root.join("presented-message.json")).unwrap(),
+    )
+    .unwrap();
+    let legacy_idx = conversation
+        .messages
+        .iter()
+        .position(|message| message.id == "msg_legacy")
+        .unwrap();
+    let stored = conversation.messages[legacy_idx].content.clone();
+    let own = loaded
+        .state
+        .deliveries
+        .iter()
+        .find(|delivery| delivery.id == "dlv_legacy_notes")
+        .unwrap();
+    let foreign = loaded
+        .state
+        .deliveries
+        .iter()
+        .find(|delivery| delivery.id == "dlv_other_room")
+        .unwrap();
+    assert_eq!(own.to_conversation_id, conversation.id);
+    assert_ne!(foreign.to_conversation_id, conversation.id);
+    assert_eq!(stored, peer_user_message(own));
+    assert_eq!(
+        conversation
+            .messages
+            .iter()
+            .find(|message| message.id == "msg_foreign")
+            .unwrap()
+            .content,
+        peer_user_message(foreign)
+    );
+    assert!(apply_regenerate_truncation(
+        &mut conversation.clone(),
+        legacy_idx,
+        Some("my command".into()),
+        &loaded.state.deliveries,
+    )
+    .unwrap_err()
+    .contains("不能编辑"));
+    assert!(ensure_user_rewind_allowed(&conversation, legacy_idx, &loaded.state.deliveries).is_err());
+
+    let prefix_idx = conversation
+        .messages
+        .iter()
+        .position(|message| message.id == "msg_prefix")
+        .unwrap();
+    let prefix = conversation.messages[prefix_idx].content.clone();
+    assert!(prefix.starts_with("[kivio-peer dlv_legacy_notes]"));
+    assert_ne!(prefix, stored);
+    apply_regenerate_truncation(
+        &mut conversation.clone(),
+        prefix_idx,
+        Some("still mine".into()),
+        &loaded.state.deliveries,
+    )
+    .unwrap();
+
+    project_trusted_legacy_peers(&mut conversation, &loaded.state.deliveries);
+    assert_eq!(conversation.messages[legacy_idx].content, presented.content);
+    assert_eq!(conversation.messages[legacy_idx].peer, presented.peer);
+    assert_eq!(
+        conversation.messages[legacy_idx].attachments.len(),
+        presented.attachments.len()
+    );
+    assert_eq!(conversation.messages[prefix_idx].content, prefix);
+    assert!(conversation.messages[prefix_idx].peer.is_none());
+    let foreign_message = conversation
+        .messages
+        .iter()
+        .find(|message| message.id == "msg_foreign")
+        .unwrap();
+    assert_eq!(foreign_message.content, peer_user_message(foreign));
+    assert!(foreign_message.peer.is_none());
+    assert!(apply_regenerate_truncation(
+        &mut conversation,
+        legacy_idx,
+        Some("my command".into()),
+        &[],
+    )
+    .unwrap_err()
+    .contains("不能编辑"));
 }

@@ -35,11 +35,13 @@ mod sets;
 
 #[allow(unused_imports)]
 pub(crate) use assistants::merge_builtin_definitions;
+#[cfg(test)]
+pub(crate) use assistants::remove_assistant_from_index;
 pub use assistants::{
     archive_assistant, assistant_snapshot, builtin_assistant_definitions, create_assistant,
     duplicate_assistant, get_assistant, get_assistants, load_assistant_index,
-    merge_builtin_assistants_v2, merge_builtin_assistants_v3, save_assistant_index,
-    seed_builtin_assistants_v1, update_assistant,
+    merge_builtin_assistants_v2, merge_builtin_assistants_v3, remove_assistant_index_row,
+    remove_unopened_assistant, save_assistant_index, seed_builtin_assistants_v1, update_assistant,
 };
 pub use conversations::{
     conversation_pins_file_path, find_reusable_blank_conversation, get_conversations,
@@ -121,16 +123,24 @@ fn temporary_write_path(path: &Path) -> PathBuf {
 }
 
 fn validate_conversation_id(id: &str) -> Result<(), String> {
-    let valid = id.starts_with("conv_")
+    let plain = id.starts_with("conv_")
         && id.len() > "conv_".len()
+        && !id.contains('@')
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if valid {
+    // Group member threads use the core id `conv_bot_member_{assistantId}@{roomId}`.
+    let member =
+        crate::chat::bot_profile::assistant_id_from_member_conversation(id).is_some();
+    if plain || member {
         Ok(())
     } else {
         Err(format!("Invalid conversation id: {id}"))
     }
+}
+
+pub(crate) fn conversation_id_is_valid(id: &str) -> bool {
+    validate_conversation_id(id).is_ok()
 }
 
 fn validate_project_id(id: &str) -> Result<(), String> {

@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CollaborationSnapshot",
+  "type": "object",
+  "properties": {
+    "deliveries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Delivery"
+      }
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exchanges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Exchange"
+      }
+    },
+    "pending": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PendingAction"
+      }
+    },
+    "rooms": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Room"
+      }
+    }
+  },
+  "required": [
+    "deliveries",
+    "rooms",
+    "exchanges",
+    "pending"
+  ],
+  "$defs": {
+    "Actor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "user"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "bot"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "name"
+          ]
+        }
+      ]
+    },
+    "Delivery": {
+      "type": "object",
+      "properties": {
+        "admitted": {
+          "type": "boolean",
+          "default": false
+        },
+        "attachmentIds": {
+          "description": "Existing chat attachment ids. Empty for older queued items.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "attachmentSources": {
+          "description": "Conversations allowed to supply those attachments. Ids only, not transcripts.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "body": {
+          "type": "string"
+        },
+        "claimToken": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exchangeId": {
+          "type": "string"
+        },
+        "finishedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "from": {
+          "$ref": "#/$defs/Actor"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DeliveryKind"
+        },
+        "nativeOutput": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parentDeliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receipts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Receipt"
+          }
+        },
+        "roomCycle": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sensitive": {
+          "type": "boolean",
+          "default": false
+        },
+        "status": {
+          "$ref": "#/$defs/DeliveryStatus"
+        },
+        "toBotId": {
+          "type": "string"
+        },
+        "toConversationId": {
+          "type": "string"
+        },
+        "toName": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "exchangeId",
+        "entryId",
+        "roomCycle",
+        "from",
+        "toBotId",
+        "toName",
+        "toConversationId",
+        "kind",
+        "body",
+        "depth",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DeliveryKind": {
+      "type": "string",
+      "enum": [
+        "peer",
+        "mention",
+        "reply",
+        "handoff",
+        "broadcast"
+      ]
+    },
+    "DeliveryStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "awaiting_user",
+        "claimed",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "unavailable"
+      ]
+    },
+    "Exchange": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExchangeEntry"
+          }
+        },
+        "id": {
+          "type": "string"
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "entries"
+      ]
+    },
+    "ExchangeEntry": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "body": {
+          "type": "string"
+        },
+        "deliveryId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DeliveryKind"
+        },
+        "status": {
+          "$ref": "#/$defs/DeliveryStatus"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "actor",
+        "kind",
+        "body",
+        "deliveryId",
+        "status"
+      ]
+    },
+    "LogKind": {
+      "type": "string",
+      "enum": [
+        "message",
+        "status",
+        "handoff",
+        "membership"
+      ]
+    },
+    "MemberState": {
+      "type": "string",
+      "enum": [
+        "active",
+        "pending_removal"
+      ]
+    },
+    "PendingAction": {
+      "type": "object",
+      "properties": {
+        "botId": {
+          "type": "string"
+        },
+        "botName": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "deliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PendingKind"
+        },
+        "resolvedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "roomId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PendingStatus"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "botId",
+        "botName",
+        "status",
+        "createdAt"
+      ]
+    },
+    "PendingKind": {
+      "type": "string",
+      "enum": [
+        "handoff",
+        "add_member",
+        "remove_member"
+      ]
+    },
+    "PendingStatus": {
+      "type": "string",
+      "enum": [
+        "awaiting_user",
+        "approved",
+        "rejected"
+      ]
+    },
+    "Receipt": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/ReceiptState"
+        }
+      },
+      "required": [
+        "at",
+        "state"
+      ]
+    },
+    "ReceiptState": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "completed",
+        "rejected",
+        "interrupted",
+        "unavailable"
+      ]
+    },
+    "Room": {
+      "type": "object",
+      "properties": {
+        "createdAt": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cycle": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoomLogEntry"
+          }
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoomMember"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/RoomStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "cycle",
+        "members",
+        "log",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RoomLogEntry": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "body": {
+          "type": "string"
+        },
+        "deliveryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/LogKind"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "actor",
+        "kind",
+        "body"
+      ]
+    },
+    "RoomMember": {
+      "type": "object",
+      "properties": {
+        "botId": {
+          "type": "string"
+        },
+        "conversationId": {
+          "type": "string"
+        },
+        "joinedAt": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/MemberState"
+        }
+      },
+      "required": [
+        "botId",
+        "name",
+        "conversationId",
+        "state",
+        "joinedAt"
+      ]
+    },
+    "RoomStatus": {
+      "type": "string",
+      "enum": [
+        "active",
+        "paused",
+        "stopped"
+      ]
+    }
+  }
+}

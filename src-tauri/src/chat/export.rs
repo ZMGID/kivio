@@ -301,6 +301,7 @@ mod tests {
                     model: None,
                     timestamp: 1_700_000_000,
                     degraded: None,
+                    peer: None,
                 },
                 ChatMessage {
                     id: "assistant_1".to_string(),
@@ -332,6 +333,7 @@ mod tests {
                     model: None,
                     timestamp: 1_700_000_001,
                     degraded: None,
+                    peer: None,
                 },
             ],
             agent_runtime: AgentRuntimeConfig::default(),
@@ -419,6 +421,7 @@ mod tests {
             model: None,
             timestamp: 1_700_000_002,
             degraded: None,
+            peer: None,
         });
 
         let markdown = render_conversation_markdown(&conversation, "en");

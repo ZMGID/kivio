@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { api, type ChatExternalSendRequest } from '../../api/tauri'
 import type { Conversation, PendingAttachment } from '../types'
+import { isBotWorkspace } from '../workspace'
 
 let ownerSequence = 0
 function nextOwnerId(): string {
@@ -64,6 +65,7 @@ export function useExternalSendQueue({
   callbacksRef.current = { onEnterConversationView, onImportConversation, onSendMessage, onError }
 
   const drainExternalSends = useCallback(async () => {
+    if (isBotWorkspace()) return
     const ownerId = ownerIdRef.current
     const mountEpoch = mountEpochRef.current
     const stale = () => disposedRef.current || mountEpochRef.current !== mountEpoch

@@ -6,7 +6,10 @@ use super::*;
 
 pub(crate) fn read_conversation_file(path: &Path, id: &str) -> Result<Conversation, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("读取对话文件失败（{id}）：{e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))
+    let mut conversation: Conversation = serde_json::from_str(&content)
+        .map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))?;
+    conversation.normalize_bot_runtime();
+    Ok(conversation)
 }
 
 /// Only the identity needed to recheck a restart candidate under its keyed lock.
@@ -99,8 +102,9 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, Stri
 
 fn write_conversation_file_at_path(
     path: &Path,
-    conversation: Conversation,
+    mut conversation: Conversation,
 ) -> Result<Conversation, String> {
+    conversation.normalize_bot_runtime();
     // compact 而非 pretty：长对话数 MB 级,pretty 徒增 ~30-50% 体积与序列化时间,
     // 且每个工具轮都要整本重写。人读导出走 export.rs,不靠这份文件的排版。
     let content =
@@ -279,7 +283,12 @@ pub fn get_conversations(
 ) -> Result<Vec<ConversationListItem>, String> {
     let mut index = load_index_or_scan(app)?;
     // 侧栏 / 常规列表：归档对话不出现
-    index.conversations.retain(|c| !c.archived);
+    index.conversations.retain(|c| {
+        !c.archived
+            && !c
+                .id
+                .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+    });
     let set_filter = set_id.and_then(|id| {
         let trimmed = id.trim();
         if trimmed.is_empty() {
@@ -470,6 +479,38 @@ mod persistence_tests {
             }]
         }))
         .expect("conversation fixture")
+    }
+
+    #[test]
+    fn legacy_bot_runtime_is_builtin_on_reload_without_losing_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conv_bot_research.json");
+        let mut saved = conversation();
+        saved.id = "conv_bot_research".into();
+        saved.agent_runtime = crate::chat::AgentRuntimeConfig {
+            kind: crate::chat::AgentRuntimeKind::External,
+            external_agent_id: Some("codex".into()),
+            external_model: Some("old-model".into()),
+            ..Default::default()
+        };
+        // Write legacy bytes directly so the current writer cannot normalize the fixture.
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let loaded = read_conversation_file(&path, &saved.id).unwrap();
+        assert_eq!(
+            loaded.agent_runtime.kind,
+            crate::chat::AgentRuntimeKind::Builtin
+        );
+        assert!(loaded.agent_runtime.external_agent_id.is_none());
+        assert!(loaded.agent_runtime.external_model.is_none());
+        assert_eq!(loaded.messages[0].content, "persist me");
+        assert_eq!(loaded.provider_id, saved.provider_id);
+        assert_eq!(loaded.model, saved.model);
+        // A new write also enforces the policy, independent of read normalization.
+        write_conversation_file_at_path(&path, saved).unwrap();
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["agent_runtime"]["kind"], "builtin");
+        assert!(persisted["agent_runtime"]["externalAgentId"].is_null());
     }
 
     #[test]

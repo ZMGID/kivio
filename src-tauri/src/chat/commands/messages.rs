@@ -235,6 +235,7 @@ pub(super) fn build_assistant_message(
         model,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+        peer: None,
     }
 }
 
@@ -531,6 +532,7 @@ pub(super) async fn persist_partial_assistant_snapshot(
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+        peer: None,
     };
     // 草稿不再整会话重写:追加进 append-only 日志(见 chat::draft_journal 模块注释),
     // 主会话文件与索引在 run 期间完全不动;终态写入后 push_assistant_message 清日志。

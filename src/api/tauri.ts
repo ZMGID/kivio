@@ -2006,6 +2006,8 @@ export const api = {
     on<ScheduledTasksChangedEvent>('scheduled-tasks-changed', handler),
 
   // 窗口控制
+  switchChatWorkspace: (bot: boolean): Promise<void> =>
+    invoke('switch_chat_workspace', { bot }),
   /** 给当前（chat）窗口上 Mica，返回材质是否真的生效。Win10 没有 Mica 时为 false —— 这条
    *  路走后端而不是 window.setEffects()，因为 tauri 把 apply_mica 的失败静默吞掉了。 */
   chatWindowApplyMica: (dark: boolean): Promise<boolean> =>
@@ -2049,8 +2051,8 @@ export const api = {
   },
 
   /** 把聊天窗口上次停留的路由交给 Rust 持久化（null = 清除）。 */
-  rememberChatLastRoute: async (route: string | null): Promise<void> => {
-    await invoke('chat_remember_last_route', { route })
+  rememberChatLastRoute: async (route: string | null, botWorkspace?: boolean): Promise<void> => {
+    await invoke('chat_remember_last_route', { route, botWorkspace })
   },
 
   // 事件监听

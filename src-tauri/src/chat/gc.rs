@@ -49,13 +49,9 @@ impl GcReport {
     }
 }
 
-/// `conv_` 前缀校验（与 `storage::validate_conversation_id` 同口径，但这里只要布尔）。
+/// Same rule as `storage::validate_conversation_id`, including member threads.
 fn is_conversation_dir_name(name: &str) -> bool {
-    name.starts_with("conv_")
-        && name.len() > "conv_".len()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    crate::chat::storage::conversation_id_is_valid(name)
 }
 
 fn dir_is_empty(path: &Path) -> bool {

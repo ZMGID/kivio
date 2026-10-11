@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { subscribePeerExchange } from './bot/exchangeRequest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
@@ -1046,6 +1047,84 @@ describe('MessageBubble 多模型所发模型标签（R8）', () => {
     expect(screen.queryByText('@deepseek-chat')).not.toBeInTheDocument()
     rerender(<MessageBubble message={userMessage} />)
     expect(screen.queryByText(/^@/)).not.toBeInTheDocument()
+  })
+})
+
+describe('inbound colleague message', () => {
+  it('keeps the exchange entry visible between chat text after work collapses', () => {
+    render(<MessageBubble message={{
+      id: 'peer-timeline', role: 'assistant', timestamp: 1, content: '我去问一下。\n对方已回复。',
+      stream_outcome: 'completed',
+      tool_calls: [{ id: 'peer-tool', toolName: 'bot_peer_send', status: 'completed', result: JSON.stringify({
+        id: 'delivery', exchangeId: 'exchange', status: 'succeeded', toName: 'Bee', body: 'private colleague prompt',
+      }) }],
+      segments: [
+        { id: 'before', kind: 'text', phase: 'synthesis', order: 0, text: '我去问一下。' },
+        { id: 'send', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'peer-tool' },
+        { id: 'after', kind: 'text', phase: 'synthesis', order: 2, text: '对方已回复。' },
+      ],
+    }} />)
+    const entry = screen.getByRole('button', { name: /查看交流.*Bee/ })
+    expect(entry).toBeVisible()
+    expect(screen.getByText('我去问一下。').compareDocumentPosition(entry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(entry.compareDocumentPosition(screen.getByText('对方已回复。')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByText('private colleague prompt')).not.toBeInTheDocument()
+  })
+
+  it('opens that delivery’s exchange and does not impersonate the sender as the user', async () => {
+    const seen: string[] = []
+    const stop = subscribePeerExchange((id) => seen.push(id))
+    const ada: ChatMessage = {
+      id: 'ada',
+      role: 'user',
+      content: 'Bring the notes',
+      timestamp: 1,
+      peer_message: { deliveryId: 'dlv-a', exchangeId: 'ex-a', from: { kind: 'bot', id: 'ada', name: 'Ada' }, toBotId: 'me', toName: 'Me', kind: 'reply' },
+      attachments: [{ id: 'file', type: 'file', name: 'notes.txt', path: 'notes.txt' }],
+    }
+    const bea: ChatMessage = {
+      id: 'bea',
+      role: 'user',
+      content: 'I finished the draft',
+      timestamp: 2,
+      peer_message: { deliveryId: 'dlv-b', exchangeId: 'ex-b', from: { kind: 'bot', id: 'bea', name: 'Bea' }, toBotId: 'me', toName: 'Me', kind: 'mention' },
+    }
+    const { container } = render(
+      <>
+        <MessageBubble message={ada} onRewindMessage={async () => {}} onForkMessage={async () => {}} />
+        <MessageBubble message={bea} onRewindMessage={async () => {}} onForkMessage={async () => {}} />
+      </>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /查看交流.*Bea/ }))
+
+    expect(seen).toEqual(['ex-b'])
+    expect(screen.getByText('Ada')).toBeInTheDocument()
+    expect(screen.queryByText('Bring the notes')).not.toBeInTheDocument()
+    expect(screen.queryByText('I finished the draft')).not.toBeInTheDocument()
+    expect(screen.getByText('notes.txt')).toBeInTheDocument()
+    expect(screen.queryByText('ex-a')).not.toBeInTheDocument()
+    expect(screen.queryByText('ex-b')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '回到这里' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '建分支' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '复制' })).not.toBeInTheDocument()
+    expect(container.querySelector('.justify-end')).toBeNull()
+    expect(container.querySelector('.justify-start')).not.toBeNull()
+    stop()
+  })
+
+  it('leaves an ordinary user message right-aligned with rewind and fork', () => {
+    const { container } = render(
+      <MessageBubble
+        message={{ id: 'mine', role: 'user', content: 'my question', timestamp: 1 }}
+        onRewindMessage={async () => {}}
+        onForkMessage={async () => {}}
+      />,
+    )
+    expect(screen.getByRole('button', { name: '回到这里' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '建分支' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '查看交流' })).not.toBeInTheDocument()
+    expect(container.firstElementChild).toHaveClass('justify-end')
   })
 })
 

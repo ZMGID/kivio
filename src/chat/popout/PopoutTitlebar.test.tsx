@@ -18,12 +18,12 @@ vi.mock('../PermissionPicker', () => ({ PermissionPicker: () => <span /> }))
 const runtime: AgentRuntimeConfig = { kind: 'builtin' }
 
 describe('PopoutTitlebar', () => {
-  it('places the conversation title to the right of the model pills', () => {
+  it.each(['c1', 'conv_bot_research'])('places the title beside model controls for %s', (id) => {
     const { container } = render(
       <LangContext.Provider value="zh">
         <PopoutTitlebar
           conversation={{
-            id: 'c1',
+            id,
             revision: 1,
             title: '商品图片批量生成工作流搭建',
             provider_id: 'p',
@@ -45,6 +45,8 @@ describe('PopoutTitlebar', () => {
     )
     const pills = container.querySelector('[data-popout-pills]')
     const title = container.querySelector('[data-popout-title]')
+    expect(container.querySelector('[data-testid="runtime-picker"]') !== null).toBe(id === 'c1')
+    expect(container.querySelector('[data-testid="model-selector"]')).toBeTruthy()
     expect(pills).toBeTruthy()
     expect(title?.textContent).toBe('商品图片批量生成工作流搭建')
     expect(title).toHaveAttribute('data-tauri-drag-region')

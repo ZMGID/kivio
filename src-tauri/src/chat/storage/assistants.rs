@@ -380,6 +380,46 @@ pub fn duplicate_assistant(app: &AppHandle, assistant_id: &str) -> Result<ChatAs
     create_assistant(app, copy)
 }
 
+/// Removes an assistant row that never received a fixed Bot conversation.
+/// Used only to undo a create that failed before `conv_bot_{id}` existed.
+/// A present conversation file is an error; this does not archive or rewrite it.
+/// Drops an assistant row when the conversation directory cannot be checked.
+/// Create calls this only before a fixed chat exists. It does not delete a conversation file.
+pub fn remove_assistant_index_row(app: &AppHandle, assistant_id: &str) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
+    validate_assistant_id(assistant_id)?;
+    let mut index = load_assistant_index(app)?;
+    remove_assistant_from_index(&mut index, assistant_id)?;
+    save_assistant_index(app, &index)
+}
+
+pub fn remove_unopened_assistant(app: &AppHandle, assistant_id: &str) -> Result<(), String> {
+    let _catalog = catalog_mutation_lock();
+    validate_assistant_id(assistant_id)?;
+    let bot_id = format!(
+        "{}{assistant_id}",
+        crate::chat::types::BOT_CONVERSATION_PREFIX
+    );
+    if conversation_file_path(app, &bot_id)?.exists() {
+        return Err("助手已经有固定 Bot 对话，失败补偿不能删除它".to_string());
+    }
+    let mut index = load_assistant_index(app)?;
+    remove_assistant_from_index(&mut index, assistant_id)?;
+    save_assistant_index(app, &index)
+}
+
+pub(crate) fn remove_assistant_from_index(
+    index: &mut ChatAssistantIndex,
+    assistant_id: &str,
+) -> Result<ChatAssistant, String> {
+    let pos = index
+        .assistants
+        .iter()
+        .position(|assistant| assistant.id == assistant_id)
+        .ok_or_else(|| "助手不存在".to_string())?;
+    Ok(index.assistants.remove(pos))
+}
+
 pub fn archive_assistant(app: &AppHandle, assistant_id: &str) -> Result<(), String> {
     let _catalog = catalog_mutation_lock();
     validate_assistant_id(assistant_id)?;

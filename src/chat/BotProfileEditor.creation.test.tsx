@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { BotDialog } from './BotDialog'
+import { BotProfileEditor } from './BotProfileEditor'
 import { chatApi } from './api'
 import { abandonAssistantEdit, beginAssistantEdit, createBlankAssistant, resetAssistantDraftStore } from './assistantDraftStore'
 
@@ -23,7 +23,7 @@ function Creation() {
   return <>
     <button onClick={() => { beginAssistantEdit(createBlankAssistant('资料 Bot'), false); setOpen(true) }}>添加</button>
     <output>{selected}</output>
-    {open && <BotDialog onClose={() => { abandonAssistantEdit(); setOpen(false) }} onAdvanced={() => {}}
+    {open && <BotProfileEditor onClose={() => { abandonAssistantEdit(); setOpen(false) }}
       onSaved={async assistant => { const conversation = await chatApi.openBot(assistant.id); setSelected(conversation.assistant_snapshot?.name ?? '') }} />}
   </>
 }

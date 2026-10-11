@@ -429,6 +429,11 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String, // "user" | "assistant"
     pub content: String,
+    /// Peer delivery provenance. `content` stays the clean body. Ordinary
+    /// messages and fresh constructors leave this empty; the UI send command
+    /// cannot set it. Provider replay wraps a present value once.
+    #[serde(default, rename = "peer_message", skip_serializing_if = "Option::is_none")]
+    pub peer: Option<crate::chat::bot_collaboration::PeerMessage>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
     #[serde(default)]
@@ -686,6 +691,13 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Bots always use Kivio's tool-capable runtime, including legacy stored Bots.
+    pub(crate) fn normalize_bot_runtime(&mut self) {
+        if self.id.starts_with(BOT_CONVERSATION_PREFIX) {
+            self.agent_runtime = AgentRuntimeConfig::default();
+        }
+    }
+
     /// Changing a selected answer also changes the input represented by a saved
     /// summary/tail. Callers validate membership before selecting an answer.
     pub(crate) fn select_group_answer(&mut self, group_id: String, message_id: String) {

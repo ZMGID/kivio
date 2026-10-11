@@ -186,6 +186,72 @@ pub fn l1_prompt_block(app: &AppHandle) -> Result<Option<String>, String> {
     l1_prompt_block_at(&memory_dir(app)?)
 }
 
+/// Private Bot memory lives under `chat-memory/bots/{assistant_id}`.
+/// The global L1/L2 files are not copied and are not this directory.
+pub fn bot_memory_dir_at(base: &Path, assistant_id: &str) -> Result<PathBuf, String> {
+    let id = assistant_id.trim();
+    if !id.starts_with("asst_")
+        || id.len() <= "asst_".len()
+        || id
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    {
+        return Err(format!("Bot 记忆目录拒绝这个助手 id：{assistant_id}"));
+    }
+    Ok(memory_dir_at(base)?.join("bots").join(id))
+}
+
+pub fn bot_memory_dir(app: &AppHandle, assistant_id: &str) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir unavailable: {e}"))?;
+    bot_memory_dir_at(&base, assistant_id)
+}
+
+/// Private Bot chats and dedicated group-member threads use that Bot's directory.
+/// A member thread that does not resolve to one stable Bot is an error, not the
+/// global directory. Ordinary chats and a missing conversation id stay global.
+pub fn memory_dir_for_conversation(
+    app: &AppHandle,
+    conversation_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(conversation_id) = conversation_id {
+        if let Some(assistant_id) =
+            crate::chat::bot_profile::resolve_stable_assistant_id(app, conversation_id)?
+        {
+            return bot_memory_dir(app, &assistant_id);
+        }
+    }
+    memory_dir(app)
+}
+
+pub fn read_layer_if_present(
+    dir: &Path,
+    layer: MemoryLayer,
+) -> Result<Option<MemoryLayerContent>, String> {
+    let path = memory_file_path_at(dir, layer);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("read {} memory: {e}", layer.label()))?;
+    Ok(Some(MemoryLayerContent {
+        layer: layer.label().to_ascii_lowercase(),
+        bytes: content.len(),
+        max_bytes: (layer == MemoryLayer::L1).then_some(L1_MAX_BYTES),
+        content,
+    }))
+}
+
+pub fn reset_layer_at(dir: &Path, layer: MemoryLayer) -> Result<MemoryLayerContent, String> {
+    save_layer_at(dir, layer, layer.default_content())
+}
+
+pub fn ensure_memory_text_allowed(content: &str) -> Result<(), String> {
+    validate_secret_free(content)
+}
+
 #[tauri::command]
 pub(crate) fn chat_memory_get(app: AppHandle) -> Result<ChatMemoryState, String> {
     read_all(&app)

@@ -1,0 +1,16 @@
+{
+  "id": "dlv_other_room",
+  "exchangeId": "ex_other",
+  "entryId": "entry_other",
+  "roomCycle": 1,
+  "from": { "kind": "bot", "id": "asst_bo", "name": "Bo" },
+  "toBotId": "asst_ada",
+  "toName": "Ada",
+  "toConversationId": "conv_bot_asst_ada",
+  "kind": "reply",
+  "body": "Secret from the other room",
+  "depth": 0,
+  "status": "succeeded",
+  "createdAt": 10,
+  "updatedAt": 11
+}

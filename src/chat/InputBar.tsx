@@ -11,7 +11,6 @@ import {
   Layers,
   Plus,
   Search,
-  SlidersHorizontal,
   Square,
   TextQuote,
   WandSparkles,
@@ -1760,8 +1759,6 @@ export const InputBar = memo(function InputBar({
   const stopOwnsSendSlot = Boolean(cancelVisible && onCancel) && !(queueMode && canSend)
   const cliAgentLabel = externalCliAgentLabel(externalAgentName)
 
-  const [botToolsExpanded, setBotToolsExpanded] = useState(false)
-
   const wrapperClass =
     layout === 'inline'
       ? 'w-full'
@@ -2232,9 +2229,7 @@ export const InputBar = memo(function InputBar({
               }
               sourcesActive={knowledgeBaseIds.length > 0 || webSearchMode !== 'off'}
             />
-            {botMode && <IconButton size="sm" shape="circle" label={t.chatBotComposerTools} aria-expanded={botToolsExpanded}
-              onClick={() => setBotToolsExpanded(value => !value)}><SlidersHorizontal size={16} /></IconButton>}
-            <div className={botMode && !botToolsExpanded ? 'hidden' : 'contents'}>
+            <div className={botMode ? 'hidden' : 'contents'}>
             {showAssistantEntry && onOpenAssistantCenter && (
               <AssistantPicker
                 currentAssistant={currentAssistant}
@@ -2483,14 +2478,21 @@ export const InputBar = memo(function InputBar({
             )}
 
             {/* 注入 placement：上下文弹层贴按钮紧凑展开，仅翻转方向随 layout */}
-            {isValidElement<{ placement?: 'up' | 'down' }>(contextSlot)
+            {!botMode && (isValidElement<{ placement?: 'up' | 'down' }>(contextSlot)
               ? cloneElement(contextSlot, {
                   placement: layout === 'inline' ? 'down' : 'up',
                 })
-              : contextSlot}
+              : contextSlot)}
 
             {/* 发送 / 停止已移进输入框右端（见 textarea 同级的 chat-composer-send-slot）。 */}
             </div>
+            {botMode && (
+              <div className="ml-auto">
+                {isValidElement<{ placement?: 'up' | 'down' }>(contextSlot)
+                  ? cloneElement(contextSlot, { placement: layout === 'inline' ? 'down' : 'up' })
+                  : contextSlot}
+              </div>
+            )}
             </div>
           </div>
 

@@ -273,6 +273,7 @@ mod tests {
             model: None,
             timestamp: 0,
             degraded: None,
+            peer: None,
         }
     }
 

@@ -94,7 +94,7 @@ async function loadTasks(ownerGeneration: number) {
     const payload = await api.scheduledTasksSnapshot()
     if (ownerGeneration !== generation || issuedAt !== mutation || subscribers.size === 0) return
     replaceFromSnapshot(payload.tasks, payload.liveRuns)
-    publish({ tasks: payload.tasks, error: '', revision: view.revision, liveRuns: visibleRuns(payload.tasks) })
+    publish({ tasks: payload.tasks, error: payload.error ?? '', revision: view.revision, liveRuns: visibleRuns(payload.tasks) })
   } catch (error) {
     if (ownerGeneration === generation && issuedAt === mutation && subscribers.size > 0) {
       publish({ ...view, error: String(error) })

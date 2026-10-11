@@ -36,6 +36,25 @@ function intent(overrides: Record<string, unknown> = {}) {
   }
 }
 
+
+it('keeps Bot thinking independent of the Agent composer preference', async () => {
+  for (const [id, expected] of [['conv_bot_ada', null], ['agent-chat', 'off']] as const) {
+    let stored = { ...conversation(id), thinking_level: null as Conversation['thinking_level'] }
+    const result = await prepareConversationForSend(intent({
+      conversation: stored,
+      draft: { ...intent().draft, knowledgeBaseIds: [], thinkingLevel: 'off' },
+    }), {
+      createConversation: vi.fn(),
+      setAgentRuntime: vi.fn(),
+      updateConversation: async (_id, patch) => {
+        stored = { ...stored, thinking_level: patch.thinkingLevel ?? stored.thinking_level }
+        return stored
+      },
+    }, () => {})
+    expect(result.ok && result.conversation.thinking_level).toBe(expected)
+    expect(stored.thinking_level).toBe(expected)
+  }
+})
 describe('prepare conversation for send', () => {
   it('returns a created partial conversation and recoverable error when a draft patch fails', async () => {
     const created = conversation('new-a')

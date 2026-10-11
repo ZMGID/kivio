@@ -925,6 +925,7 @@ impl ChatProtocolEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatProtocolFilter {
     All,
+    Workspace { bot: bool },
     Conversation(String),
 }
 
@@ -941,6 +942,10 @@ impl ChatProtocolFilter {
         match self {
             Self::Conversation(id) => id == conversation_id,
             Self::All => !(high_frequency && exclusive_live),
+            Self::Workspace { bot } => {
+                conversation_id.starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX) == *bot
+                    && !(high_frequency && exclusive_live)
+            }
         }
     }
 }
@@ -1989,7 +1994,11 @@ pub fn chat_protocol_subscribe(
     channel: tauri::ipc::Channel<ChatProtocolEvent>,
     conversation_id: Option<String>,
 ) {
-    let filter = crate::chat::popout::protocol_filter_for_window(window.label(), conversation_id);
+    let filter = crate::chat::popout::protocol_filter_for_window(
+        window.label(),
+        conversation_id,
+        crate::windows::workspace::is_bot_workspace(&window),
+    );
     state.chat_protocol().subscribers().insert(
         window.label().to_string(),
         ChatProtocolSubscriber { filter, channel },
@@ -3215,6 +3224,59 @@ mod tests {
             Some(Instant::now() - COMPLETED_RUN_TTL - Duration::from_secs(1));
         hub.prune();
         assert!(!hub.runs.contains_key(&expired));
+    }
+
+    #[test]
+    fn workspace_delivery_keeps_agent_and_bot_streams_separate_with_popout_handoffs() {
+        let agent = crate::chat::popout::protocol_filter_for_window("chat", None, false);
+        let bots = crate::chat::popout::protocol_filter_for_window("chat", None, true);
+        let popout = crate::chat::popout::protocol_filter_for_window(
+            "chat-popout-conv_bot_writer",
+            None,
+            false,
+        );
+        for high_frequency in [false, true] {
+            assert_eq!(
+                labels_matching_filters(
+                    [("chat", &agent), ("bots", &bots)],
+                    "conv_agent",
+                    high_frequency
+                ),
+                vec!["chat"]
+            );
+            assert_eq!(
+                labels_matching_filters(
+                    [("chat", &agent), ("bots", &bots)],
+                    "conv_bot_writer",
+                    high_frequency
+                ),
+                vec!["bots"]
+            );
+        }
+        assert_eq!(
+            labels_matching_filters(
+                [
+                    ("chat", &agent),
+                    ("bots", &bots),
+                    ("chat-popout-conv_bot_writer", &popout)
+                ],
+                "conv_bot_writer",
+                true
+            ),
+            vec!["chat-popout-conv_bot_writer"]
+        );
+        assert_eq!(
+            labels_matching_filters(
+                [
+                    ("chat", &agent),
+                    ("bots", &bots),
+                    ("chat-popout-conv_bot_writer", &popout)
+                ],
+                "conv_bot_writer",
+                false
+            ),
+            vec!["bots", "chat-popout-conv_bot_writer"]
+        );
     }
 
     #[test]

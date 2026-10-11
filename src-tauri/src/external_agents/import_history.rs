@@ -128,6 +128,7 @@ impl Pending {
                 // 毫秒 → 秒：`ChatMessage.timestamp` 与前端 `nowSeconds()` 对齐，
                 // 直接塞毫秒会让导入的消息显示成公元五万年。
                 timestamp: self.timestamp / 1000,
+                peer: None,
             },
             images: self.images,
         })

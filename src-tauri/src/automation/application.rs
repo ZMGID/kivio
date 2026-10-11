@@ -717,6 +717,7 @@ fn workflow_user_message(content: String) -> ChatMessage {
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+        peer: None,
     }
 }
 

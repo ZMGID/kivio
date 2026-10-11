@@ -10,6 +10,7 @@ use super::{conversation_file_path, load_index_or_scan};
 /// 对话库查询参数（扩展 → 对话库）。
 #[derive(Debug, Clone, Default)]
 pub struct ConversationLibraryQuery {
+    pub bot_only: bool,
     pub offset: usize,
     pub limit: usize,
     /// updated | created | title | messages
@@ -47,6 +48,9 @@ pub fn query_conversations(
     let limit = query.limit.clamp(1, 200);
     let offset = query.offset;
     let mut items = load_index_or_scan(app)?.conversations;
+    items.retain(|c| {
+        c.id.starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX) == query.bot_only
+    });
 
     let shelf = query.shelf.trim().to_ascii_lowercase();
     // Conversation timestamps are unix seconds (chrono::Local::now().timestamp()).
@@ -215,14 +219,12 @@ pub fn search_conversations(
         return Ok(vec![]);
     }
     let mut index = load_index_or_scan(app)?;
-    if bot_only {
-        // Filter before ranking/limiting, so ordinary chat hits cannot crowd
-        // an older Bot history out of the contact search results.
-        index.conversations.retain(|item| {
-            item.id
-                .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
-        });
-    }
+    // Workspace isolation happens before ranking/pagination, in both directions.
+    index.conversations.retain(|item| {
+        item.id
+            .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+            == bot_only
+    });
     Ok(search_ranked_items(
         index.conversations,
         query,

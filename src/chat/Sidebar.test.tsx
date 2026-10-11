@@ -46,6 +46,7 @@ function conversation(id: string, title: string, project: ChatProject): Conversa
 
 afterEach(() => {
   vi.restoreAllMocks()
+  window.history.replaceState(null, '', '/')
 })
 
 beforeEach(() => {
@@ -569,13 +570,13 @@ describe('Sidebar view choice', () => {
     expect(props.onSelectProject).toHaveBeenCalledWith(project2)
   })
 
-  it('switches to Bot contacts, remembers the view and keeps moved entrances reachable', async () => {
+  it('keeps Bot contacts and their actions in the independent Bots workspace', async () => {
     const user = userEvent.setup()
     const { props, projectChat } = setup()
+    window.history.replaceState(null, '', '/?workspace=bot#chat')
     const bot = { ...projectChat, id: 'conv_bot_research', title: '研究员', preview: '资料已经核验', assistant_name: '研究员' }
     vi.spyOn(chatApi, 'getBotConversations').mockResolvedValue([bot])
     const view = render(<Sidebar {...props} />)
-    await toggleView(user, '切换为 Bot 模式')
     expect(screen.queryByRole('button', { name: '新建聊天' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '插件' })).not.toBeInTheDocument()
     const contact = await screen.findByRole('button', { name: '研究员 资料已经核验' })
@@ -586,15 +587,12 @@ describe('Sidebar view choice', () => {
     expect(await screen.findByRole('button', { name: '研究员 资料已经核验' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '新建 Bot' }))
     expect(props.onNewConversation).toHaveBeenCalledOnce()
-    await user.click(screen.getByRole('button', { name: '更多' }))
+    await user.click(screen.getByRole('button', { name: '工作台' }))
     await user.click(screen.getByRole('menuitem', { name: '插件' }))
     expect(props.onOpenExtensionsItem).toHaveBeenCalledWith('plugins')
-    await user.click(screen.getByRole('button', { name: '更多' }))
-    await user.click(screen.getByRole('menuitem', { name: '切换为经典视图' }))
-    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '插件' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '项目', current: false }))
-    expect(await screen.findByRole('button', { name: projectChat.title })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '工作台' }))
+    expect(screen.queryByRole('menuitem', { name: '切换为经典视图' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '切换为扁平视图' })).not.toBeInTheDocument()
   })
 
   it('clears only the filtered list after confirmation, even with another project open', async () => {

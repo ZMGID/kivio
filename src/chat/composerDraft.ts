@@ -1,9 +1,9 @@
 import type { PendingAttachment } from './types'
+import { workspaceStorageKey } from './workspace'
 
 /**
  * 输入框草稿的内存暂存：切换对话/页面导致 InputBar 卸载重挂时，保住已打的字、引用与附件。
- * 按会话 id 存（新建对话用 NEW_CHAT_KEY）。仅进程内存活——app 关窗销毁即清，符合"本次使用期间"语义。
- * ponytail: 内存 Map 足够；要跨 app 重启保留再换 sessionStorage（附件 temp 路径届时可能已被 GC，需另处理）。
+ * 按会话 id 存（新建对话用 NEW_CHAT_KEY）。切换工作模式时经 sessionStorage 交接，关窗即清。
  */
 export interface ComposerDraft {
   input: string
@@ -14,6 +14,18 @@ export interface ComposerDraft {
 
 const NEW_CHAT_KEY = '__new__'
 const drafts = new Map<string, ComposerDraft>()
+const handoffKey = workspaceStorageKey('composer-drafts')
+try {
+  const saved = window.sessionStorage.getItem(handoffKey)
+  if (saved) {
+    for (const [key, draft] of JSON.parse(saved) as Array<[string, ComposerDraft]>) drafts.set(key, draft)
+    window.sessionStorage.removeItem(handoffKey)
+  }
+} catch { /* Unavailable storage must not prevent composing a message. */ }
+if (typeof window !== 'undefined') window.addEventListener('pagehide', () => {
+  try { window.sessionStorage.setItem(handoffKey, JSON.stringify([...drafts])) }
+  catch { /* Keep the in-memory drafts if the storage quota is exhausted. */ }
+})
 const listeners = new Set<(key: string, draft: ComposerDraft) => void>()
 
 export function subscribeComposerDraft(listener: (key: string, draft: ComposerDraft) => void) {

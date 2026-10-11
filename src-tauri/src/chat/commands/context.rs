@@ -4,6 +4,7 @@ use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::bot_collaboration::{provider_user_text, recorded_deliveries, Delivery};
 use crate::chat::model::openai_messages_from_model_messages;
 use crate::chat::model_metadata::context_window_for_model;
 use crate::chat::storage::load_conversation;
@@ -1133,6 +1134,34 @@ pub(crate) fn build_chat_api_messages_with_video(
     last_user_image_paths: &[PathBuf],
     include_video: bool,
 ) -> Result<Vec<Value>, String> {
+    let deliveries = app
+        .map(|app| recorded_deliveries(app, &conversation.id))
+        .unwrap_or_default();
+    build_chat_api_messages_with_deliveries(
+        app,
+        system_prompt,
+        conversation,
+        last_user_idx,
+        last_user_api_content,
+        last_user_image_paths,
+        include_video,
+        &deliveries,
+    )
+}
+
+
+/// Same builder as history replay. `deliveries` correlate legacy envelopes;
+/// an empty slice leaves ordinary and already-provenance rows unchanged.
+pub(crate) fn build_chat_api_messages_with_deliveries(
+    app: Option<&AppHandle>,
+    system_prompt: &str,
+    conversation: &Conversation,
+    last_user_idx: Option<usize>,
+    last_user_api_content: Option<&str>,
+    last_user_image_paths: &[PathBuf],
+    include_video: bool,
+    deliveries: &[Delivery],
+) -> Result<Vec<Value>, String> {
     let mut messages = vec![serde_json::json!({
         "role": "system",
         "content": system_prompt,
@@ -1183,12 +1212,11 @@ pub(crate) fn build_chat_api_messages_with_video(
         if snapshot_reports.contains(&message.id) {
             continue;
         }
-        let content = if Some(idx) == last_user_idx {
-            last_user_api_content.unwrap_or(message.content.as_str())
-        } else {
-            message.content.as_str()
-        };
-        let sanitized_content = sanitize_image_payloads_for_model(content);
+        let override_text = (Some(idx) == last_user_idx)
+            .then_some(last_user_api_content)
+            .flatten();
+        let content = provider_user_text(&conversation.id, message, override_text, deliveries);
+        let sanitized_content = sanitize_image_payloads_for_model(&content);
         if message.role == "assistant" && message.id.starts_with("subagent-result-") {
             messages.push(tag_ui_message_id(
                 crate::chat::sub_agent::control::report_input(&sanitized_content),

@@ -2,6 +2,8 @@ import type { Window } from '@tauri-apps/api/window'
 import { api } from '../api/tauri'
 import { isWindows } from './platform'
 import { hashPath } from './browserRoute'
+import { belongsToWorkspace, isBotWorkspace, workspaceStorageKey } from './workspace'
+import { decodeConversationRouteId } from './routeCodec'
 import {
   isRememberableChatRoute,
   pathFromHash,
@@ -44,7 +46,7 @@ const MIN_VISIBLE_GEOMETRY_EDGE = 80
 
 function getLocalStorageItem(key: string): string | null {
   try {
-    return window.localStorage?.getItem(key) ?? null
+    return window.localStorage?.getItem(workspaceStorageKey(key)) ?? null
   } catch {
     return null
   }
@@ -52,7 +54,7 @@ function getLocalStorageItem(key: string): string | null {
 
 function setLocalStorageItem(key: string, value: string) {
   try {
-    window.localStorage?.setItem(key, value)
+    window.localStorage?.setItem(workspaceStorageKey(key), value)
   } catch {
     // Storage can be unavailable in restricted previews. Chat still works without persistence.
   }
@@ -60,7 +62,7 @@ function setLocalStorageItem(key: string, value: string) {
 
 function removeLocalStorageItem(key: string) {
   try {
-    window.localStorage?.removeItem(key)
+    window.localStorage?.removeItem(workspaceStorageKey(key))
   } catch {
     // Ignore storage errors; persistence is best-effort only.
   }
@@ -74,11 +76,12 @@ export function rememberTasksTab(tab: TasksTab) {
   setLocalStorageItem(CHAT_TASKS_TAB_KEY, tab)
 }
 
-export type SidebarView = 'classic' | 'flat' | 'bot'
+export type SidebarView = 'classic' | 'flat'
 
 export function getRememberedSidebarView(): SidebarView {
   const view = getLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY)
-  return view === 'flat' || view === 'bot' ? view : 'classic'
+  // The former Bot view is now a separate window; restore its Agent host to flat view.
+  return view === 'flat' || view === 'bot' ? 'flat' : 'classic'
 }
 
 export function rememberSidebarView(view: SidebarView) {
@@ -118,12 +121,13 @@ let routeWriteRevision = 0
 let routeWriteTail: Promise<void> = Promise.resolve()
 
 function persistRememberedChatRoute(route: string | null, migration = false): Promise<void> {
+  const botWorkspace = isBotWorkspace()
   const revision = ++routeWriteRevision
   const legacy = getLocalStorageItem(CHAT_LAST_ROUTE_KEY)
   // Serialize IPC writes, not just their callbacks: a delayed legacy write must
   // finish before a newer remember/clear can update the authoritative store.
   const write = routeWriteTail.then(async () => {
-    await api.rememberChatLastRoute(route)
+    await api.rememberChatLastRoute(route, botWorkspace)
     if (revision === routeWriteRevision && getLocalStorageItem(CHAT_LAST_ROUTE_KEY) === legacy) {
       removeLocalStorageItem(CHAT_LAST_ROUTE_KEY)
     }
@@ -141,6 +145,8 @@ function persistRememberedChatRoute(route: string | null, migration = false): Pr
 export function rememberCurrentChatRoute() {
   const path = hashPath()
   if (!isRememberableChatRoute(path)) return
+  const id = decodeConversationRouteId(path)
+  if (id && !belongsToWorkspace(id)) return
   const route = window.location.hash || '#chat'
   lastRouteCache = route
   return persistRememberedChatRoute(route)
@@ -151,7 +157,9 @@ export function getRememberedChatRoute(): string | null {
   if (lastRouteCache !== undefined) return lastRouteCache
   
   // Failed migrations release the cache so the next read can retry.
-  const legacy = normalizeStoredChatRoute(getLocalStorageItem(CHAT_LAST_ROUTE_KEY))
+  const stored = normalizeStoredChatRoute(getLocalStorageItem(CHAT_LAST_ROUTE_KEY))
+  const id = stored ? decodeConversationRouteId(pathFromHash(stored)) : null
+  const legacy = id && !belongsToWorkspace(id) ? null : stored
   if (legacy) {
     adoptLegacyRememberedChatRoute(legacy)
     return legacy

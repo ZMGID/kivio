@@ -200,6 +200,7 @@ fn dispatch(
 ) -> Result<Value, String> {
     let conversation_id = ctx.conversation_id.as_str();
     let svc = service(app);
+    svc.ensure_available()?;
     if tool_name == LIST_TOOL {
         let tasks: Vec<Value> = bound_tasks(&svc.list(), conversation_id)
             .into_iter()

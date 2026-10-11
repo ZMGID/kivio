@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Code2, Eye, FilePen, Layers, ListChecks, Network, ShieldAlert, ShieldCheck, ShieldQuestion, Sparkles, Target, Terminal, Wand2, Zap } from 'lucide-react'
+import { isBotOwnedConversation } from './botIdentity'
 import { APPROVAL_POLICY_OPTIONS } from './approvalPolicies'
 import { chatApi, type DshAgentPresetOption } from './api'
 import type { AgentPlanMode, AgentRuntimeConfig, DetectedExternalAgent } from './types'
@@ -226,9 +227,11 @@ export function derivePermissionModes({
 }
 
 /** 本地 CLI 档位表要读探测到的 agents 列表（后端长 TTL 缓存，切会话不会重探）。 */
-export function useDetectedExternalAgents(conversationId?: string | null): DetectedExternalAgent[] {
+export function useDetectedExternalAgents(conversationId?: string | null, enabled = true): DetectedExternalAgent[] {
+  enabled = enabled && !isBotOwnedConversation(conversationId)
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
   useEffect(() => {
+    if (!enabled) return
     let active = true
     void chatApi.detectExternalAgents(false, conversationId)
       .then((list) => {
@@ -240,6 +243,6 @@ export function useDetectedExternalAgents(conversationId?: string | null): Detec
     return () => {
       active = false
     }
-  }, [conversationId])
-  return agents
+  }, [conversationId, enabled])
+  return enabled ? agents : []
 }

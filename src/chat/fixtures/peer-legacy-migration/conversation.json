@@ -1,0 +1,37 @@
+{
+  "id": "conv_bot_asst_bo",
+  "title": "Bo",
+  "provider_id": "provider",
+  "model": "model",
+  "created_at": 10,
+  "updated_at": 13,
+  "messages": [
+    {
+      "id": "msg_prefix",
+      "role": "user",
+      "content": "[kivio-peer dlv_legacy_notes]\n这不是完整信封",
+      "timestamp": 10
+    },
+    {
+      "id": "msg_legacy",
+      "role": "user",
+      "content": "[kivio-peer dlv_legacy_notes]\n发送方：Ada（asst_ada）\n接收方：Bo（asst_bo）\n房间：直接\n类型：同伴\n交流：ex_legacy_notes\n\nBring the notes\n\n用你自己的助手身份处理。不要代替对方再写一条回复。",
+      "timestamp": 11,
+      "attachments": [
+        { "id": "att_notes", "type": "file", "name": "notes.txt", "path": "notes.txt" }
+      ]
+    },
+    {
+      "id": "msg_foreign",
+      "role": "user",
+      "content": "[kivio-peer dlv_other_room]\n发送方：Bo（asst_bo）\n接收方：Ada（asst_ada）\n房间：直接\n类型：回复\n交流：ex_other\n\nSecret from the other room\n\n用你自己的助手身份处理。不要代替对方再写一条回复。",
+      "timestamp": 12
+    },
+    {
+      "id": "msg_reply",
+      "role": "assistant",
+      "content": "I have the notes.",
+      "timestamp": 13
+    }
+  ]
+}

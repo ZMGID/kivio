@@ -1,0 +1,17 @@
+{
+  "id": "msg_legacy",
+  "role": "user",
+  "content": "Bring the notes",
+  "timestamp": 11,
+  "peer_message": {
+    "deliveryId": "dlv_legacy_notes",
+    "from": { "kind": "bot", "id": "asst_ada", "name": "Ada" },
+    "toBotId": "asst_bo",
+    "toName": "Bo",
+    "kind": "peer",
+    "exchangeId": "ex_legacy_notes"
+  },
+  "attachments": [
+    { "id": "att_notes", "type": "file", "name": "notes.txt", "path": "notes.txt" }
+  ]
+}

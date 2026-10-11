@@ -109,15 +109,15 @@ pub fn ensure_effective_cwd(
     Ok(path)
 }
 
-/// 模型/斜杠命令探测按项目根或默认目录缓存，普通对话共用稳定 scope。
-/// 与新对话的执行目录一致，以便发现该目录下的 CLI 配置。
+/// 已有会话按实际执行目录探测，新草稿使用默认目录。
+/// 缓存仍按目录复用，同时保持 CLI 的目录级配置与实际执行一致。
 pub fn resolve_detection_cwd(
     app: &AppHandle,
     conversation_id: Option<&str>,
 ) -> Result<PathBuf, String> {
     if let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) {
-        if let Some(path) = project_cli_root_for_conversation(app, conversation_id, None)? {
-            return Ok(path);
+        if load_conversation(app, conversation_id).is_ok() {
+            return ensure_effective_cwd(app, conversation_id, None);
         }
     }
     let settings = crate::settings::load_settings(app);

@@ -1,3 +1,4 @@
+import { botAssistantId } from '../botIdentity'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { ModelSelector } from '../ModelSelector'
 import { PermissionPicker } from '../PermissionPicker'
@@ -43,14 +44,14 @@ function TitlebarPills({
   return (
     <>
       <div className="flex min-w-0 items-center gap-1" data-popout-pills>
-        <div className="shrink-0" data-tauri-drag-region="false">
+        {!botAssistantId(conversation?.id) && <div className="shrink-0" data-tauri-drag-region="false">
           <RuntimePicker
             agentRuntime={runtime}
             onRuntimeChange={onRuntimeChange}
             conversationId={conversation?.id}
             locked={locked}
           />
-        </div>
+        </div>}
         <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
           {usesExternalRuntime ? (
             <ExternalModelSelector

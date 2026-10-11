@@ -240,7 +240,7 @@ pub fn run() {
                 } else if label == "chat" {
                     crate::chat::protocol::unsubscribe_label(
                         &window.app_handle().state::<AppState>(),
-                        "chat",
+                        label,
                     );
                 }
                 #[cfg(target_os = "macos")]
@@ -385,7 +385,13 @@ pub fn run() {
                     .app_data_dir()
                     .map_err(|err| format!("app_data_dir unavailable: {err}"))?
                     .join("scheduled_tasks"),
-            )?);
+            ));
+            app.manage(chat::bot_collaboration::BotCollaboration::load(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|err| format!("app_data_dir unavailable: {err}"))?
+                    .join("bot_collaboration"),
+            ));
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
 
@@ -431,6 +437,7 @@ pub fn run() {
             }
             crate::automation::spawn_scheduler(app.handle().clone());
             crate::scheduled_tasks::spawn_scheduler(app.handle().clone());
+            chat::bot_collaboration::spawn(app.handle().clone());
             if let Err(err) = setup_tray(&app.handle()) {
                 eprintln!("Failed to setup tray: {err}");
             }
@@ -536,6 +543,7 @@ pub fn run() {
             chat::media_station::media_station_reference,
             commands::get_settings,
             windows::chat_window_apply_mica,
+            windows::workspace::switch_chat_workspace,
             windows::chat_window_set_opaque,
             windows::chat_traffic_light_center_y,
             chat::notification_viewing::chat_report_notification_view,
@@ -825,6 +833,32 @@ pub fn run() {
             chat::knowledge_base::ingest::kb_reindex_library,
             chat::knowledge_base::ingest::kb_update_embedding,
             chat::knowledge_base::ingest::kb_set_embed_batch_size,
+            chat::bot_collaboration::bot_collaboration_snapshot,
+            chat::bot_collaboration::bot_collaboration_member_identity,
+            chat::bot_collaboration::bot_peer_send,
+            chat::bot_collaboration::bot_exchange_query,
+            chat::bot_collaboration::bot_room_create,
+            chat::bot_collaboration::bot_room_set_members,
+            chat::bot_collaboration::bot_room_member_session,
+            chat::bot_collaboration::bot_room_mention,
+            chat::bot_collaboration::bot_room_handoff,
+            chat::bot_collaboration::bot_room_pause,
+            chat::bot_collaboration::bot_room_continue,
+            chat::bot_collaboration::bot_room_stop,
+            chat::bot_collaboration::bot_room_broadcast,
+            chat::bot_collaboration::bot_room_rename,
+            chat::bot_collaboration::bot_room_log,
+            chat::bot_collaboration::bot_collaboration_resolve,
+            chat::bot_profile::chat_create_bot,
+            chat::bot_profile::chat_update_bot,
+            chat::bot_profile::chat_get_bot_profile,
+            chat::bot_profile::chat_list_bots,
+            chat::bot_profile::chat_set_primary_bot,
+            chat::bot_profile::chat_get_bot_memory,
+            chat::bot_profile::chat_save_bot_memory,
+            chat::bot_profile::chat_clear_bot_memory,
+            chat::bot_profile::chat_add_bot_shared_memory,
+            chat::bot_profile::chat_delete_bot_shared_memory,
             // Dock 模块命令（右侧文件树 + Git 面板 + 终端面板 + workspace 监听）
             dock::dock_resolve_cwd,
             dock::fs::dock_fs_list,

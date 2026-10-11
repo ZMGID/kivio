@@ -31,6 +31,12 @@ name = "traffic-lights"
 path = "tests/traffic_lights.rs"
 harness = false
 
+# The Tauri runtime must be initialized on the process main thread.
+[[test]]
+name = "workspace-lifecycle"
+path = "tests/workspace_lifecycle.rs"
+harness = false
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

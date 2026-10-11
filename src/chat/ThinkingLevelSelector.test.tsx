@@ -31,37 +31,6 @@ describe('ThinkingLevelSelector', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('value=null 时按默认档显示 High（不再有「跟随全局」）', async () => {
-    render(
-      <ThinkingLevelSelector
-        value={null}
-        currentProviderId="p1"
-        currentModel="m1"
-        onChange={() => {}}
-      />,
-    )
-    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
-    expect(screen.getByRole('button')).toHaveTextContent('High')
-  })
-
-  it('下拉项为英文标签且不含「跟随全局」', async () => {
-    render(
-      <ThinkingLevelSelector
-        value="high"
-        currentProviderId="p1"
-        currentModel="m1"
-        onChange={() => {}}
-      />,
-    )
-    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
-    act(() => {
-      fireEvent.click(screen.getByRole('button'))
-    })
-    expect(screen.queryByText('跟随全局')).not.toBeInTheDocument()
-    // 英文标签存在（Off + 兜底 low/medium/high）。
-    expect(screen.getByText('Off')).toBeInTheDocument()
-    expect(screen.getByText('Medium')).toBeInTheDocument()
-  })
 
   it('选择某一档回调原始等级值', async () => {
     const onChange = vi.fn()
@@ -121,29 +90,28 @@ describe('ThinkingLevelSelector', () => {
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'On' }))
     expect(onChange).toHaveBeenLastCalledWith('high')
   })
-
-  it('始终思考模型保留旧 Off 的明确提示且不能再次选择 Off', async () => {
-    thinkingCapabilitiesForModel.mockResolvedValue({ levels: ['low', 'high', 'max'], offMode: 'unsupported' })
+  it.each([
+    { levels: ['low', 'medium', 'high', 'xhigh', 'max'], expected: 'high' },
+    { levels: ['low', 'max'], expected: 'max' },
+  ])('reconciles stale Off to a supported effort: $expected', async ({ levels, expected }) => {
+    thinkingCapabilitiesForModel.mockResolvedValue({ levels, offMode: 'unsupported' })
     const onChange = vi.fn()
-    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="kimi-k3" onChange={onChange} />) })
-    expect(screen.getByRole('button')).toHaveTextContent(/Off.*(不可用|unavailable)/)
+    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="always-thinking" onChange={onChange} />) })
+    expect(onChange).toHaveBeenCalledWith(expected)
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeDisabled()
-    expect(screen.getByRole('note')).toHaveTextContent(/不支持关闭|cannot turn thinking off/)
-    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.queryByRole('menuitemradio', { name: 'Off' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Low' }))
-    expect(onChange).toHaveBeenCalledWith('low')
+    expect(onChange).toHaveBeenLastCalledWith('low')
   })
 
-  it('无强度档位的始终思考模型允许修正旧 Off 为 On', async () => {
+  it('repairs stale Off without showing a control for a model with no effort choices', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: [], offMode: 'unsupported' })
     const onChange = vi.fn()
-    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="kimi-k2.7-code" onChange={onChange} />) })
-    fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('menuitemradio', { name: 'On' }))
+    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="always-on" onChange={onChange} />) })
     expect(onChange).toHaveBeenCalledWith('high')
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
+
 
   it('换模型等待新能力时不使用旧档位回写选择', async () => {
     const onChange = vi.fn()

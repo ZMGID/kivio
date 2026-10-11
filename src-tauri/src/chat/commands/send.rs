@@ -99,6 +99,7 @@ pub(crate) async fn chat_send_message(
         plan_message_id,
         user_message_id,
         None,
+        None,
     )
     .await
 }
@@ -129,6 +130,9 @@ pub(crate) async fn send_user_message_when_idle(
     on_send_ready: &(dyn Fn() -> bool + Send + Sync),
     on_user_message_saved: &(dyn Fn() + Send + Sync),
     on_send_finished: &(dyn Fn() + Send + Sync),
+    attachments: Vec<String>,
+    text_attachments: Option<Vec<TextAttachmentInput>>,
+    peer: Option<crate::chat::bot_collaboration::PeerMessage>,
 ) -> Result<QueuedSendOutcome, String> {
     let state = app.state::<AppState>();
     let _send_reservation = tokio::select! {
@@ -147,12 +151,13 @@ pub(crate) async fn send_user_message_when_idle(
         app.state::<AppState>(),
         conversation_id.to_string(),
         content,
-        Vec::new(),
-        None,
+        attachments,
+        text_attachments,
         None,
         None,
         None,
         Some(on_user_message_saved),
+        peer,
     )
     .await?;
     if outcome.get("success").and_then(|value| value.as_bool()) == Some(true) {
@@ -179,6 +184,7 @@ async fn send_reserved(
     plan_message_id: Option<String>,
     user_message_id: Option<String>,
     on_user_message_saved: Option<&(dyn Fn() + Send + Sync)>,
+    peer: Option<crate::chat::bot_collaboration::PeerMessage>,
 ) -> Result<serde_json::Value, String> {
     let user_message_id = match user_message_id {
         Some(id)
@@ -203,8 +209,12 @@ async fn send_reserved(
         return Err("User message already exists".into());
     }
 
+    // Peer turns already carry provenance. Whole-string plan and `/goal` gates
+    // stay on ordinary sends so a clean peer body cannot gain those commands.
+    let local_command = peer.is_none();
     let plan_message_id = plan_message_id.or_else(|| {
-        (conversation.agent_plan_state.document.is_some()
+        (local_command
+            && conversation.agent_plan_state.document.is_some()
             && matches!(
                 content.trim(),
                 "开始执行" | "按计划执行" | "执行计划" | "按这条计划开始执行。"
@@ -222,7 +232,7 @@ async fn send_reserved(
         None
     };
 
-    if content.trim() == "/goal" {
+    if local_command && content.trim() == "/goal" {
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({
             "success": true,
@@ -330,6 +340,7 @@ async fn send_reserved(
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+        peer,
     };
 
     conversation.messages.push(user_message.clone());

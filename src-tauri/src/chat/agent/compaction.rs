@@ -1310,6 +1310,7 @@ mod tests {
             model: None,
             timestamp: 0,
             degraded: None,
+            peer: None,
         }
     }
     fn test_conversation(messages: Vec<ChatMessage>) -> Conversation {

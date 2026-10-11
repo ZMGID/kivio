@@ -1,7 +1,12 @@
-import { BotDialog } from './BotDialog'
+import { BotProfileEditor } from './BotProfileEditor'
 import { BotConversationHeader } from './BotConversationHeader'
+import { BotGroupPane } from './bot/BotGroupPane'
+import { BotConversationPending } from './bot/BotPendingCards'
+import { PeerExchangeView } from './bot/PeerExchangeView'
+import { subscribePeerExchange } from './bot/exchangeRequest'
+import { composerInputHistory } from './composerInputHistory'
 import { useBotActions } from './hooks/useBotActions'
-import { botAssistantId } from './botIdentity'
+import { botContactId, botConversationId, isBotOwnedConversation, isDedicatedMemberConversation } from './botIdentity'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
@@ -26,7 +31,7 @@ import { forgetChatReadingPosition, recallChatReadingPosition } from './chatRead
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
-import { createRunInteractionInbox } from './runInteractionInbox'
+import { createRunInteractionInbox, type MemberAttention } from './runInteractionInbox'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
 import { createChatRunCommands, type RunCommandPresentationEvent } from './chatRunCommands'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
@@ -133,13 +138,13 @@ import { setExclusiveConversationIds } from '../api/chatProtocol'
 import { OnboardingShell } from '../onboarding/public/shell'
 import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
 import { AppDialogHost } from '../components/AppDialog'
-import { confirmDialog } from '../components/dialogQueue'
+import { alertDialog, confirmDialog } from '../components/dialogQueue'
 import { i18n, LangContext, type Lang } from '../components/i18n'
 import { estimateTokens } from '../utils/tokens'
 import {
   forgetRememberedChatRoute,
-  getRememberedSidebarView,
 } from './persistence'
+import { belongsToWorkspace, isBotWorkspace, switchChatWorkspace } from './workspace'
 import { RightDock } from './dock/RightDock'
 import { useRightDock } from './hooks/useRightDock'
 import { insertTextIntoComposer } from './composerInsert'
@@ -374,6 +379,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!initialViewIsSettingsRef.current) emitContentReady()
   }, [emitContentReady])
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
+  const botMode = isBotWorkspace()
+  const [openRoomId, setOpenRoomId] = useState<string | null>(null)
+  const [peerExchangeId, setPeerExchangeId] = useState<string | null>(null)
+  const [artifactScopeId, setArtifactScopeId] = useState<string | null>(null)
+  useEffect(() => subscribePeerExchange((id) => {
+    if (!isBotWorkspace()) return
+    setPeerExchangeId(id)
+  }), [])
   const [historyLoadError, setHistoryLoadError] = useState<{ conversationId: string; message: string } | null>(null)
   const [warmConversationCache] = useState(createConversationWarmCache)
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
@@ -417,6 +430,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     useState<ConversationListItem[]>([])
   const [generatingConversationIds, setGeneratingConversationIds] = useState<ReadonlySet<string>>(
     () => new Set(),
+  )
+  const [memberAttention, setMemberAttention] = useState<readonly MemberAttention[]>([])
+  const botAttentionConversationIds = useMemo(
+    () => new Set(memberAttention.map((item) => item.conversationId)),
+    [memberAttention],
   )
   const [popoutOwner] = useState(createChatPopoutOwnershipOwner)
   const popoutConversationIds = useSyncExternalStore(popoutOwner.subscribe, popoutOwner.membership)
@@ -547,9 +565,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       ...interactionInbox.getSnapshot().pendingToolConversationIds,
     ])
     const previous = generatingConversationIdsRef.current
-    if (previous.size === next.size && [...previous].every((id) => next.has(id))) return
-    generatingConversationIdsRef.current = next
-    setGeneratingConversationIds(next)
+    if (!(previous.size === next.size && [...previous].every((id) => next.has(id)))) {
+      generatingConversationIdsRef.current = next
+      setGeneratingConversationIds(next)
+    }
+    const attention = interactionInbox.getSnapshot().memberAttention
+    setMemberAttention((current) => (
+      current.length === attention.length
+      && current.every((item, index) => item.conversationId === attention[index]?.conversationId && item.kind === attention[index]?.kind)
+        ? current
+        : attention
+    ))
   }, [executionOwner, interactionInbox, previewOwner])
 
   useEffect(() => interactionInbox.subscribe(syncGeneratingConversationIds), [interactionInbox, syncGeneratingConversationIds])
@@ -670,7 +696,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     try {
       const complete = await chatApi.getConversation(current.id)
       if (!isCurrentConversationNavigation(lease) || currentConversationIdRef.current !== current.id) return null
-      return complete.messages.filter(message => message.role === 'user').map(message => message.content)
+      return composerInputHistory(complete.messages)
     } catch (error) {
       if (isCurrentConversationNavigation(lease) && currentConversationIdRef.current === current.id) {
         setStreamErrorForConversation(current.id, '读取输入历史失败，请重试。')
@@ -788,8 +814,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [interactionInbox, previewOwner, syncGeneratingConversationIds])
 
   const activeAgentRuntime = useMemo(
-    () => (currentConversation ? normalizeAgentRuntime(currentConversation) : draftAgentRuntime),
-    [currentConversation, draftAgentRuntime],
+    () => (botMode ? BUILTIN_AGENT_RUNTIME : currentConversation ? normalizeAgentRuntime(currentConversation) : draftAgentRuntime),
+    [botMode, currentConversation, draftAgentRuntime],
   )
   const usesExternalRuntime = activeAgentRuntime.kind === 'external' && !!activeAgentRuntime.externalAgentId
   const usesChatRuntime = activeAgentRuntime.kind === 'chat'
@@ -821,7 +847,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   })
   // 底栏模式胶囊：内置 Agent = Act/Plan/Orchestrate；Kivio Chat 无此胶囊；本地 CLI = 沙盒档位。
   // CLI 没有档位时返回空表 → 胶囊隐藏。
-  const detectedExternalAgents = useDetectedExternalAgents(currentConversation?.id ?? null)
+  const detectedExternalAgents = useDetectedExternalAgents(currentConversation?.id ?? null, !botMode)
   const activeAgentPlanMode = currentConversation?.agent_plan_state?.mode
     ?? currentConversation?.agentPlanState?.mode
     ?? 'act'
@@ -1521,10 +1547,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useTauriEvent(api.onChatUserPrompt, (payload) => {
       if (popoutOwner.owns(payload.conversationId)) return
       if (!executionOwner.allowsStreamPayload(payload)) return
-      if (!executionOwner.snapshot(payload.conversationId).inFlight) return
+      const memberThread = isDedicatedMemberConversation(payload.conversationId)
+      if (!memberThread && !executionOwner.snapshot(payload.conversationId).inFlight) return
       if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
-      if (!previewOwner.projectDisplay({ kind: 'userPrompt', payload }).accepted) return
+      const projected = previewOwner.projectDisplay({ kind: 'userPrompt', payload }).accepted
+      if (!projected && !memberThread) return
       // 同时排进「输入框上方」那张面板的队列：消息流里的那条只是痕迹，真正作答在面板上。
+      // 群成员的追问只进收件箱。群时间线不展示问题和参数。
       interactionInbox.observe({ kind: 'userPromptRequested', payload })
       syncGeneratingConversationIds()
   }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
@@ -1604,6 +1633,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
     api.onOpenSettings(() => {
       if (cancelled) return
+      if (isBotWorkspace()) return
       const path = hashPath()
       if (!path.startsWith('chat')) return
       runAfterLeavingEditors(() => openEmbeddedSettings())
@@ -1642,7 +1672,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     let unlisten: (() => void) | undefined
 
     api.onChatOpenConversation(async (payload) => {
-      if (cancelled || !payload.conversationId) return
+      if (cancelled || !payload.conversationId || !belongsToWorkspace(payload.conversationId)) return
       if (tasksLeaveGuardRef.current && !await requestTasksLeave() || cancelled) return
       setChatView('conversation')
       void navigation.openConversation(payload.conversationId, { reload: payload.reload })
@@ -1688,24 +1718,38 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     setAssistantStreamStatsByMessageId,
   })
 
-  const { beginNewBot, ...botActions } = useBotActions({ lang: uiLang, currentConversationRef, navigation,
+  const { beginNewBot, startTaskChat, ...botActions } = useBotActions({ lang: uiLang, currentConversationRef, navigation,
     refreshSidebar, refreshContextStats, applyConversationIfCurrent, setStreamErrorForConversation,
-    setAssistantStreamStatsByMessageId, runAfterLeavingEditors, openAssistantCenter,
+    setAssistantStreamStatsByMessageId, runAfterLeavingEditors,
     startAssistantChat: handleStartAssistantChat,
   })
 
+  const handleSwitchWorkspace = useCallback(() => {
+    if (Object.values(messageQueue.queued).some(messages => messages.length > 0)) {
+      void alertDialog(i18n[uiLang].chatWorkspacePendingQueue)
+      return
+    }
+    runAfterLeavingEditors(() => {
+      setOpenRoomId(null)
+      setPeerExchangeId(null)
+      setArtifactScopeId(null)
+      void switchChatWorkspace(!isBotWorkspace()).catch(error => { void alertDialog(String(error)) })
+    })
+  }, [messageQueue.queued, runAfterLeavingEditors, uiLang])
+
   const handleNewConversation = useCallback(async () => {
     if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
-    if (getRememberedSidebarView() === 'bot') beginNewBot()
+    if (isBotWorkspace()) beginNewBot()
     else navigation.startNewConversation()
   }, [beginNewBot, navigation, requestTasksLeave])
 
   // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule_create / automation_upsert 完成。
   const handleCreateTaskByChat = useCallback(async (prompt: string) => {
     if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
+    if (isBotWorkspace()) return startTaskChat(prompt)
     navigation.startNewConversation()
     updateComposerDraft(draftKey(null), (draft) => ({ ...draft, input: prompt }))
-  }, [navigation, requestTasksLeave])
+  }, [navigation, requestTasksLeave, startTaskChat])
 
   const handleClearChat = useCallback(async () => {
     await navigation.clearCurrentChat()
@@ -2126,6 +2170,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   ])
 
   useEffect(() => {
+    if (isBotWorkspace()) return
     let cancelled = false
     const disposers: Array<() => void> = []
     const register = (p: Promise<() => void>) => {
@@ -2436,6 +2481,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           ? conversation.matchMessageId ?? undefined
           : undefined
     runAfterLeavingEditors(() => {
+      setOpenRoomId(null)
+      setPeerExchangeId(null)
       // 跨项目/集点击必须是一次原子导航。这里仅更新导航上下文，不调用
       // handleSelectProject/handleSelectSet（两者会清空会话并写 #chat）。
       if (scope) {
@@ -2453,6 +2500,24 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       })
     }, { restoreCurrentRoute: false })
   }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingEditors])
+
+  const openBotRoom = useCallback((roomId: string) => {
+    runAfterLeavingEditors(() => {
+      setPeerExchangeId(null)
+      setOpenRoomId(roomId)
+      if (chatView !== 'conversation') {
+        setChatView('conversation')
+        syncConversationRoute(currentConversationRef.current?.id ?? null)
+      }
+    })
+  }, [chatView, currentConversationRef, runAfterLeavingEditors, syncConversationRoute])
+
+  const openScopedArtifacts = useCallback((conversationId: string) => {
+    runAfterLeavingEditors(() => {
+      setArtifactScopeId(conversationId)
+      openExtensionsItem('artifacts')
+    })
+  }, [openExtensionsItem, runAfterLeavingEditors])
 
   const handleSidebarNewConversation = useCallback(() => {
     runAfterLeavingEditors(() => void handleNewConversation())
@@ -2501,7 +2566,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const handleSidebarOpenExtensionsItem = useCallback((item: ExtensionsNavItem) => {
     // 设置页开着时点扩展项：先走退场（会 flush 自动保存），否则设置页被硬切走、动画不播。
     // 侧栏在设置页下常驻可点（见下方 collapsed 注释）后这条路径才可达。
-    runAfterLeavingEditors(() => openExtensionsItem(item))
+    runAfterLeavingEditors(() => {
+      if (item === 'artifacts') setArtifactScopeId(null)
+      openExtensionsItem(item)
+    })
   }, [openExtensionsItem, runAfterLeavingEditors])
 
   const handleSidebarOpenSettings = useCallback(() => {
@@ -2604,10 +2672,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [navigation, popoutOwner])
 
-  // 会话页顶栏控件。非 mac 渲染进全宽标题栏带（单行 chrome），mac 仍留在主区 52px 顶栏。
+  const botThinkingSettings = {
+    value: currentConversation?.thinking_level ?? currentConversation?.thinkingLevel ?? null,
+    onChange: handleThinkingLevelChange,
+  }
+
   const conversationTitlebarControls = useMemo(() => (
     <ConversationTitlebarControls
-      compact={Boolean(botAssistantId(currentConversation?.id))}
+      compact={botMode}
       activeAgentRuntime={activeAgentRuntime}
       conversationId={currentConversation?.id ?? null}
       runtimeLocked={
@@ -2643,6 +2715,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     />
   ), [
     activeAgentRuntime,
+    botMode,
     activeModel,
     activeProviderId,
     approvalPolicy,
@@ -2698,17 +2771,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     selectedProject,
     conversationProject,
     onSelectProject: handleSidebarSelectProject,
-    showProjectEntry: true,
+    showProjectEntry: !botMode,
     selectedSet,
     onSelectSet: handleSidebarSelectSet,
     currentAssistant: composerCurrentAssistant,
-    onOpenAssistantCenter: botAssistantId(currentConversation?.id) ? undefined : openAssistantCenter,
+    onOpenAssistantCenter: isBotOwnedConversation(currentConversation?.id) ? undefined : openAssistantCenter,
     onSelectAssistant: handleSelectAssistant,
     autoFocus: true,
     usesExternalRuntime,
     externalAgentName: activeAgentRuntime.externalAgentId ?? null,
     conversationId: currentConversation?.id ?? null,
-    inputHistory: currentConversation?.messages.filter((message) => message.role === 'user').map((message) => message.content),
+    inputHistory: composerInputHistory(currentConversation?.messages),
     onLoadInputHistory: isPartialConversation(currentConversation) ? loadInputHistory : undefined,
     knowledgeBaseIds: composerKnowledgeBaseIds,
     onChangeKnowledgeBaseIds: handleChangeKnowledgeBaseIds,
@@ -2725,7 +2798,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     replyModels: activeReplyModels,
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot: composerContextSlot,
-    gitWorkdir: usesChatRuntime ? null : dockWorkdir || null,
+    gitWorkdir: botMode || usesChatRuntime ? null : dockWorkdir || null,
     gitLang: uiLang,
     onOpenGitPanel: handleOpenDockGit,
     modeOptions: composerModes.options,
@@ -2738,6 +2811,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     presetLockedReason: i18n[uiLang].chatAgentPresetLocked,
     usageSlot: composerUsageSlot,
   }), [
+    botMode,
     activeAgentRuntime.externalAgentId,
     activeBuiltinWebSearchSupported,
     activeReplyModels,
@@ -2815,7 +2889,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     ),
     sessionProviderId: currentConversation?.provider_id,
     sessionModel: currentConversation?.model,
-    onForkMessage: handleForkMessage,
+    onForkMessage: botMode ? undefined : handleForkMessage,
     onRewindMessage: handleRewindMessage,
     onDeleteMessage: handleDeleteMessage,
     onSaveMessageToNote: handleSaveMessageToNote,
@@ -2832,6 +2906,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onFocusMessageHandled: () => setFocusMessageId(null),
   }), [
     animateCompactionBoundaryId,
+    botMode,
     animateClearBoundaryId,
     assistantStreamStatsByMessageId,
     contextCompressing,
@@ -2896,10 +2971,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
         >
-          {chatView === 'conversation' && !botAssistantId(currentConversation?.id) ? conversationTitlebarControls : null}
+          {chatView === 'conversation' && !botMode ? conversationTitlebarControls : null}
         </ChatTitlebar>
       )}
-      <div className="flex min-h-0 w-full flex-1">
+      <div className="relative flex min-h-0 w-full flex-1">
         {chatView !== 'onboarding' ? (
         /* 设置页自带 200px 导航栏，聊天侧栏此时借用已有的折叠过渡整体滑出（不再直接卸载，
            否则左列会先空一帧、且关闭时侧栏是瞬间 pop 回来的）。退场期保持折叠，
@@ -2910,6 +2985,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           lang={uiLang}
           currentConversationId={currentConversation?.id}
           generatingConversationIds={generatingConversationIds}
+          attentionConversationIds={botAttentionConversationIds}
           optimisticConversations={optimisticSidebarConversations}
           openConversation={openSidebarConversation}
           selectedProject={selectedProject}
@@ -2918,7 +2994,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onSelectSet={handleSidebarSelectSet}
           onSelectConversation={handleSidebarSelectConversation}
           onNewConversation={handleSidebarNewConversation}
+          onSwitchWorkspace={handleSwitchWorkspace}
           onEditBot={botActions.editBot}
+          onOpenRoom={openBotRoom}
+          activeRoomId={openRoomId}
           onOpenInPopout={handleOpenConversationPopout}
           onConversationDeleted={handleSidebarConversationDeleted}
           onForceDropConversation={handleSidebarForceDropConversation}
@@ -2988,7 +3067,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 currentAssistantId={currentAssistantId}
                 onStartAssistantChat={botActions.startAssistant}
                 onStartBuilder={() => void handleStartBuilderChat()}
-                onApplyAssistant={currentConversation && !botAssistantId(currentConversation.id) ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
+                onApplyAssistant={currentConversation && !isBotOwnedConversation(currentConversation.id) ? (assistantId) => void handleApplyAssistant(assistantId) : undefined}
               />
             </Suspense>
           </div>
@@ -3007,7 +3086,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         ) : chatView === 'artifacts' ? (
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
-            <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
+            <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} conversationId={botMode ? artifactScopeId : null} onClearScope={() => setArtifactScopeId(null)} />
           </div>
         ) : chatView === 'notes' ? (
           <div key="center" className={centerPageClass}>
@@ -3064,7 +3143,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onNewConversation={handleTitlebarNewConversation}
           />
         ) : (
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className={botMode && openRoomId ? 'hidden' : 'flex min-h-0 min-w-0 flex-1 flex-col'} hidden={botMode && openRoomId ? true : undefined}>
+          {botMode && <BotConversationPending botId={botContactId(currentConversation?.id) ?? ''} />}
           <ChatConversationPane
+            botMode={botMode}
             titlebarControls={conversationTitlebarControls}
             usesNativeTitlebar={usesNativeTitlebar}
             sidebarCollapsed={sidebarCollapsed}
@@ -3077,7 +3160,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             currentAssistantName={currentAssistantSnapshot?.name ?? null}
             selectedProjectName={selectedProject?.name ?? null}
             selectedSetName={selectedSet?.name ?? null}
-            botHeader={<BotConversationHeader conversation={currentConversation} onEdit={botActions.editCurrentBot} controls={conversationTitlebarControls} />}
+            botHeader={<BotConversationHeader conversation={currentConversation} onEdit={botActions.editCurrentBot} detailsOpen={botActions.editorMode === 'edit'} />}
             inputBarProps={inputBarProps}
             messageListProps={messageListProps}
             hookWarning={hookWarning}
@@ -3087,8 +3170,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
-            subAgentSlot={currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}
-            goalSlot={visibleGoal ? (
+            subAgentSlot={!botMode && currentConversation?.id ? <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} /> : null}
+            goalSlot={!botMode && visibleGoal ? (
               <GoalCard
                 goal={visibleGoal}
                 onEdit={handleEditGoal}
@@ -3107,9 +3190,24 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onCloseImageViewer={handleCloseImageViewer}
             onRender={onChatPerfProfiler}
           />
+          </div>
+          {botMode && openRoomId && <BotGroupPane roomId={openRoomId} attention={memberAttention} onClose={() => { setOpenRoomId(null); setPeerExchangeId(null) }} onOpenMember={(conversationId) => {
+            setOpenRoomId(null)
+            setPeerExchangeId(null)
+            void handleSelectConversation(conversationId)
+          }} />}
+          {botMode && peerExchangeId && <PeerExchangeView exchangeId={peerExchangeId} onClose={() => setPeerExchangeId(null)} />}
+          </div>
         )}
         </ChatRouteKeepAlive>
-        {chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && (
+        {chatView === 'conversation' && botMode && botActions.editorMode === 'edit' && (
+          <BotProfileEditor key={botActions.editedAssistantId} onSaved={botActions.finishEdit} onClose={botActions.closeDialog}
+            registerLeaveGuard={registerTasksLeaveGuard}
+            conversationId={botActions.editedAssistantId ? botConversationId(botActions.editedAssistantId) : null}
+            onOpenArtifacts={openScopedArtifacts}
+            thinkingSettings={botActions.editedAssistantId === botContactId(currentConversation?.id) ? botThinkingSettings : undefined} />
+        )}
+        {chatView === 'conversation' && !botMode && !usesChatRuntime && botActions.editorMode !== 'edit' && !conversationOccupied && (
           <RightDock
             subAgentRequest={dock.subAgentRequest}
             open={dockOpen}
@@ -3138,8 +3236,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       </div>
     </Profiler>
     </AsyncQuestionsContext.Provider>
-    {botActions.dialogOpen && <BotDialog onSaved={botActions.finishEdit}
-      onClose={botActions.closeDialog} onAdvanced={botActions.openAdvanced} />}
+    {botActions.editorMode === 'create' && <BotProfileEditor onSaved={botActions.finishEdit}
+      onClose={botActions.closeDialog} registerLeaveGuard={registerTasksLeaveGuard} />}
     <AppDialogHost />
     </LangContext.Provider>
   )

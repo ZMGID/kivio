@@ -83,7 +83,12 @@ pub async fn migrate_ordinary_conversation_workspaces(
         .bulk_mutate_loaded(app, |conversations| {
             let mut migrations = Vec::new();
             for (conversation_index, conversation) in conversations.iter().enumerate() {
-                if conversation_has_project_binding(app, conversation)? {
+                // Native sessions resume in their bound cwd; moving their files would
+                // leave the CLI in an empty directory even though the binding survives.
+                if conversation_has_project_binding(app, conversation)?
+                    || crate::external_agents::session::load_live_handle(app, &conversation.id)
+                        .is_some_and(|handle| !handle.cwd.trim().is_empty())
+                {
                     continue;
                 }
                 migrations.push(WorkspaceMigration {

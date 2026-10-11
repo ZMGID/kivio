@@ -129,6 +129,56 @@ export function beginAssistantEdit(assistant: ChatAssistant, persisted: boolean)
   }))
 }
 
+/**
+ * Apply one fetched profile to a clean draft. Returns false when the user
+ * already edited past `fence`, so a newer revision is never stored on the older text.
+ */
+export function adoptFetchedAssistant(
+  assistant: ChatAssistant,
+  fence: { session: number; revision: number },
+): boolean {
+  let applied = false
+  assistantDraftStore.setState((prev) => {
+    if (!prev.editing || !prev.draft) return prev
+    if (prev.session !== fence.session || prev.revision !== fence.revision) return prev
+    if (prev.revision !== prev.acknowledgedRevision) return prev
+    if (prev.draft.id !== assistant.id) return prev
+    applied = true
+    return {
+      ...prev,
+      draft: normalizeAssistantForDraft({
+        ...prev.draft,
+        name: assistant.name,
+        description: assistant.description ?? '',
+        system_prompt: assistant.system_prompt ?? assistant.systemPrompt ?? '',
+        icon: assistant.icon ?? prev.draft.icon,
+        color: assistant.color ?? prev.draft.color,
+      }),
+      acknowledgedRevision: prev.revision,
+    }
+  })
+  return applied
+}
+
+/** Remember a server write without ending the edit session or dropping newer keystrokes. */
+export function noteAssistantPersisted(saved: ChatAssistant, writtenRevision: number) {
+  assistantDraftStore.setState((prev) => {
+    if (!prev.editing || !prev.draft) return prev
+    const unchanged = prev.revision === writtenRevision
+    const id = saved.id || prev.draft.id
+    return {
+      ...prev,
+      draft: unchanged
+        ? normalizeAssistantForDraft({ ...prev.draft, ...saved, id })
+        : normalizeAssistantForDraft({ ...prev.draft, id }),
+      persisted: true,
+      acknowledgedRevision: unchanged ? prev.revision : writtenRevision,
+      status: unchanged ? 'saved' : prev.status,
+      error: '',
+    }
+  })
+}
+
 /** Back / successful leave. Does not write. */
 export function abandonAssistantEdit() {
   assistantDraftStore.setState((prev) => ({ ...EMPTY, session: prev.session + 1 }))

@@ -113,6 +113,7 @@ pub struct ScheduledTask {
 pub struct ScheduledTasksSnapshot {
     pub tasks: Vec<ScheduledTask>,
     pub live_runs: Vec<TaskRun>,
+    pub error: Option<String>,
 }
 
 /// Create (no id) or full update (id) request.

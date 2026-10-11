@@ -133,6 +133,18 @@ function Strict({ children }: { children: ReactNode }) {
 }
 
 describe('useScheduledTasks', () => {
+  it('surfaces unavailable definition data from the backend snapshot', async () => {
+    const { result } = renderHook(() => useScheduledTasks())
+    await connect()
+    await deliver(0, { tasks: [], liveRuns: [], error: '无法读取定时任务数据，已禁止写入' })
+    expect(result.current.tasks).toEqual([])
+    expect(result.current.error).toBe('无法读取定时任务数据，已禁止写入')
+    act(() => result.current.refresh())
+    await deliver(1, { tasks: [task()], liveRuns: [], error: null })
+    expect(result.current.tasks).toHaveLength(1)
+    expect(result.current.error).toBe('')
+  })
+
   it('restores queued and running work only after the listener is registered', async () => {
     const { result } = renderHook(() => useScheduledTasks())
     expect(api.scheduledTasksSnapshot).not.toHaveBeenCalled()

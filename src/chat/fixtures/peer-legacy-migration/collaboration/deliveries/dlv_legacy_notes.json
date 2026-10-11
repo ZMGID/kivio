@@ -1,0 +1,16 @@
+{
+  "id": "dlv_legacy_notes",
+  "exchangeId": "ex_legacy_notes",
+  "entryId": "entry_legacy_notes",
+  "roomCycle": 1,
+  "from": { "kind": "bot", "id": "asst_ada", "name": "Ada" },
+  "toBotId": "asst_bo",
+  "toName": "Bo",
+  "toConversationId": "conv_bot_asst_bo",
+  "kind": "peer",
+  "body": "Bring the notes",
+  "depth": 0,
+  "status": "succeeded",
+  "createdAt": 10,
+  "updatedAt": 11
+}

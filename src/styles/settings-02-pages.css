@@ -888,6 +888,7 @@ input[type="password"]::-ms-clear {
   background: var(--danger-soft);
   color: var(--danger);
 }
+.kv-icon-btn.ghost { color: var(--text-muted); }
 .kv-icon-btn {
   transition:
     background-color var(--kv-dur-fast) var(--kv-ease-out),
@@ -901,12 +902,6 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn.md { width: 32px; height: 32px; border-radius: 7px; }
 .kv-icon-btn.lg { width: 36px; height: 36px; border-radius: 8px; }
 .kv-icon-btn.circle { border-radius: 9999px; }
-.kv-icon-btn.is-outlined {
-  border: 1px solid var(--border, var(--color-border));
-  background: var(--bg, var(--color-background));
-  color: var(--text);
-}
-.kv-icon-btn.is-outlined:hover:not(:disabled) { background: var(--bg-hover, var(--theme-surface-hover)); }
 .kv-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv-icon-btn.sm svg,
 .kv-icon-btn.md svg,

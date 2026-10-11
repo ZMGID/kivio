@@ -1185,6 +1185,9 @@ pub(crate) fn open_chat_window(app: &AppHandle) -> Result<(), String> {
 
 /// Open a specific conversation, including the cold-window case.
 pub(crate) fn open_chat_conversation(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    if conversation_id.starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX) {
+        return crate::windows::workspace::open_workspace(app, Some(conversation_id));
+    }
     let encoded: String =
         url::form_urlencoded::byte_serialize(conversation_id.as_bytes()).collect();
     open_chat_route(app, Some(&format!("chat/{}", encoded.replace('+', "%20"))))
@@ -1209,6 +1212,11 @@ fn open_chat_route(app: &AppHandle, route: Option<&str>) -> Result<(), String> {
     normalize_chat_window_behavior(&window);
 
     if existing_window.is_some() {
+        if crate::windows::workspace::is_bot_workspace(&window) {
+            crate::windows::workspace::switch_workspace(&window, false, route)?;
+            reveal_chat_window(app, &window);
+            return Ok(());
+        }
         if let Some(route) = route {
             let hash =
                 serde_json::to_string(&format!("#{route}")).map_err(|error| error.to_string())?;

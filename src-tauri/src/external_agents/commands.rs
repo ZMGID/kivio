@@ -358,6 +358,7 @@ pub async fn chat_set_agent_runtime(
     let conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
             check_runtime_switch_allowed(
+                &conversation.id,
                 &conversation.agent_runtime,
                 conversation.messages.is_empty(),
                 &agent_runtime,
@@ -367,7 +368,11 @@ pub async fn chat_set_agent_runtime(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    if let Some(agent_id) = persist_agent.as_deref() {
+    if let Some(agent_id) = persist_agent.as_deref().filter(|_| {
+        !conversation
+            .id
+            .starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+    }) {
         if let Err(err) = crate::external_agents::provider_profile::persist_selected_model(
             agent_id,
             persist_model.as_deref(),
@@ -389,10 +394,16 @@ pub async fn chat_set_agent_runtime(
 /// exists, `kind` and `external_agent_id` are frozen (covers both local CLI *and* Kivio builtin).
 /// Same-agent model / reasoning / sandbox updates remain allowed.
 fn check_runtime_switch_allowed(
+    conversation_id: &str,
     current: &AgentRuntimeConfig,
     messages_is_empty: bool,
     next: &AgentRuntimeConfig,
 ) -> Result<(), String> {
+    if conversation_id.starts_with(crate::chat::types::BOT_CONVERSATION_PREFIX)
+        && next.kind != crate::chat::types::AgentRuntimeKind::Builtin
+    {
+        return Err("Bot 仅使用 Kivio 内置运行时".into());
+    }
     if messages_is_empty {
         return Ok(());
     }
@@ -441,12 +452,35 @@ mod tests {
     }
 
     #[test]
+    fn bots_reject_other_runtimes_even_before_the_first_message() {
+        let current = AgentRuntimeConfig::default();
+        for empty in [true, false] {
+            let external = external("codex", "default");
+            let chat = AgentRuntimeConfig {
+                kind: AgentRuntimeKind::Chat,
+                ..Default::default()
+            };
+            for next in [&external, &chat] {
+                assert_eq!(
+                    check_runtime_switch_allowed("conv_bot_research", &current, empty, next)
+                        .unwrap_err(),
+                    "Bot 仅使用 Kivio 内置运行时"
+                );
+            }
+            assert!(
+                check_runtime_switch_allowed("conv_bot_research", &current, empty, &current)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
     fn empty_conversation_allows_any_switch() {
         let current = external("claude", "default");
         let next = AgentRuntimeConfig::default(); // builtin
-        assert!(check_runtime_switch_allowed(&current, true, &next).is_ok());
+        assert!(check_runtime_switch_allowed("conv_regular", &current, true, &next).is_ok());
         let next2 = external("codex", "default");
-        assert!(check_runtime_switch_allowed(&current, true, &next2).is_ok());
+        assert!(check_runtime_switch_allowed("conv_regular", &current, true, &next2).is_ok());
     }
 
     #[test]
@@ -454,34 +488,46 @@ mod tests {
         let current = external("claude", "default");
         // Switch to a different CLI.
         let to_other = external("codex", "default");
-        assert!(check_runtime_switch_allowed(&current, false, &to_other).is_err());
+        assert!(check_runtime_switch_allowed("conv_regular", &current, false, &to_other).is_err());
         // Switch back to builtin.
         let to_builtin = AgentRuntimeConfig::default();
-        assert!(check_runtime_switch_allowed(&current, false, &to_builtin).is_err());
+        assert!(
+            check_runtime_switch_allowed("conv_regular", &current, false, &to_builtin).is_err()
+        );
     }
 
     #[test]
     fn non_empty_external_allows_model_and_reasoning_change() {
         let current = external("claude", "default");
         let same_agent_new_model = external("claude", "sonnet");
-        assert!(check_runtime_switch_allowed(&current, false, &same_agent_new_model).is_ok());
+        assert!(check_runtime_switch_allowed(
+            "conv_regular",
+            &current,
+            false,
+            &same_agent_new_model
+        )
+        .is_ok());
         let mut with_reasoning = external("claude", "default");
         with_reasoning.external_reasoning = Some("high".to_string());
-        assert!(check_runtime_switch_allowed(&current, false, &with_reasoning).is_ok());
+        assert!(
+            check_runtime_switch_allowed("conv_regular", &current, false, &with_reasoning).is_ok()
+        );
     }
 
     #[test]
     fn non_empty_builtin_rejects_switch_to_external() {
         let current = AgentRuntimeConfig::default(); // builtin
         let to_external = external("claude", "default");
-        assert!(check_runtime_switch_allowed(&current, false, &to_external).is_err());
+        assert!(
+            check_runtime_switch_allowed("conv_regular", &current, false, &to_external).is_err()
+        );
     }
 
     #[test]
     fn non_empty_builtin_allows_same_kind_noop() {
         let current = AgentRuntimeConfig::default();
         let same = AgentRuntimeConfig::default();
-        assert!(check_runtime_switch_allowed(&current, false, &same).is_ok());
+        assert!(check_runtime_switch_allowed("conv_regular", &current, false, &same).is_ok());
     }
 
     /// 回归：缓存命中必须带回探测到的 reasoning_options。

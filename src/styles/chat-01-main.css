@@ -2273,3 +2273,40 @@ button.chat-composer-status-item:hover {
 }
 
 /* 按钮焦点环见 shared-surfaces.css（与模态框共用，并只在键盘操作时出现）。 */
+
+/* Bot profile settings share the chat layout, with their own editing surface. */
+.chat-bot-settings-sidebar {
+  width: 320px;
+  max-width: 100%;
+  background: var(--theme-surface-soft);
+}
+
+@media (max-width: 900px) {
+  .chat-bot-settings-sidebar {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 40;
+    width: min(320px, 100%);
+  }
+}
+
+.chat-bot-setting-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chat-bot-setting-row > div {
+  justify-self: end;
+  max-width: 100%;
+}
+
+/* Menus stay inside the sidebar when their trigger is right aligned. */
+.chat-bot-setting-row .chat-model-selector-menu {
+  left: auto;
+  right: 0;
+}

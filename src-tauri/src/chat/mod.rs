@@ -3,6 +3,8 @@ pub mod agent;
 pub(crate) mod artifacts;
 pub mod ask_user;
 pub mod attachments;
+pub mod bot_collaboration;
+pub mod bot_profile;
 pub mod commands;
 mod completion_notification;
 pub mod draft_journal;

@@ -77,6 +77,21 @@ describe('run interaction inbox', () => {
     expect(inbox.getSnapshot().userPrompt?.toolCallId).toBe('user-b')
   })
 
+  it('lists member attention without tool arguments or question text', () => {
+    const { inbox } = setup()
+    const secret = 'sk-live-do-not-share'
+    inbox.observe({ kind: 'toolRequested', payload: { ...tool('conv_bot_member_a@room', 'r1', 't1'), argumentsPreview: secret, name: 'shell' } })
+    inbox.observe({ kind: 'userPromptRequested', payload: { ...user('conv_bot_member_b@room', 'r2', 'u1'), prompt: { questions: [{ id: 'q', prompt: secret, options: [] }] } } })
+    inbox.observe({ kind: 'consentRequested', payload: consent('conv_bot_member_c@room', 'r3') })
+    expect(inbox.getSnapshot().memberAttention).toEqual([
+      { conversationId: 'conv_bot_member_b@room', kind: 'question' },
+      { conversationId: 'conv_bot_member_a@room', kind: 'approval' },
+      { conversationId: 'conv_bot_member_c@room', kind: 'approval' },
+    ])
+    expect(JSON.stringify(inbox.getSnapshot().memberAttention)).not.toContain(secret)
+    expect(JSON.stringify(inbox.getSnapshot().memberAttention)).not.toContain('shell')
+  })
+
   it('clears stale same-run interactions only on the first start and fences late terminal events', () => {
     const { inbox } = setup()
     inbox.activate('a')

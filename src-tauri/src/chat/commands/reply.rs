@@ -205,7 +205,24 @@ pub(super) async fn complete_assistant_reply_inner(
         });
     }
 
-    let settings = state.settings_read().clone();
+    let mut settings = state.settings_read().clone();
+    if let Some(assistant_id) =
+        crate::chat::bot_profile::assistant_id_from_member_conversation(&conversation.id)
+    {
+        let assistant = crate::chat::storage::get_assistant(app, assistant_id)?;
+        let (provider, model) = settings.effective_chat_model();
+        crate::chat::bot_profile::apply_persona(conversation, &assistant, &provider, &model);
+    }
+    let bot_scope = crate::chat::bot_profile::runtime_scope(app, &settings, conversation)?;
+    let primary_bot = bot_scope.as_ref().is_some_and(|scope| scope.primary);
+    if let Some(scope) = bot_scope.as_ref() {
+        crate::chat::bot_profile::apply_runtime_scope(conversation, scope)?;
+        if !probe {
+            if let Some(policy) = scope.approval_override.as_ref() {
+                settings.chat_tools.approval_policy.clone_from(policy);
+            }
+        }
+    }
     // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
     // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
     let resolved_provider_id = arm
@@ -491,7 +508,10 @@ pub(super) async fn complete_assistant_reply_inner(
         // operations requiring interactive approval instead of silently granting them.
         effective_chat_tools.approval_policy = "auto".to_string();
     }
-    let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
+    let (memory_prompt, memory_warning) = match bot_scope {
+        Some(scope) => (scope.memory_prompt, scope.memory_warning),
+        None => chat_memory_prompt_for_request(app, &settings),
+    };
     if let Some(warning) = memory_warning.as_ref() {
         conversation.context_state.warning = Some(warning.clone());
     }
@@ -587,6 +607,10 @@ pub(super) async fn complete_assistant_reply_inner(
     {
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
+    if !plan_mode && !builder_mode && arm.is_none() {
+        crate::chat::bot_collaboration::append_tools(app, &conversation.id, &mut tools);
+        crate::chat::bot_profile::append_tools(app, &conversation.id, &mut tools);
+    }
     // Resolved here (rather than further down with the other prompt context) so
     // the sub-agent role registry below can reuse the project root instead of
     // resolving the conversation's project a second time.
@@ -662,6 +686,19 @@ pub(super) async fn complete_assistant_reply_inner(
             Some(note) => format!("{system_prompt}\n\n{note}"),
             None => system_prompt,
         };
+    let system_prompt = if primary_bot {
+        format!(
+            "{system_prompt}\n\nYou are the primary Bot. Favor planning, coordinating colleagues, and summarizing progress when useful to the user's request. All Bots have equal authority; this role grants no extra permissions. Do not create unsolicited background work."
+        )
+    } else {
+        system_prompt
+    };
+    let system_prompt = match crate::chat::bot_collaboration::reply_seam(app, &conversation.id)
+        .collaboration_note
+    {
+        Some(note) => format!("{system_prompt}\n\n{note}"),
+        None => system_prompt,
+    };
     let system_prompt = match crate::chat::goal::format_prompt(conversation.goal_state.as_ref()) {
         Some(goal_prompt) if goal_tools_available => format!("{system_prompt}\n\n{goal_prompt}"),
         _ => system_prompt,

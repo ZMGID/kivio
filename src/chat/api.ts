@@ -1,4 +1,5 @@
-import { botAssistantId, botConversationId } from './botIdentity'
+import { botAssistantId, botContactId, botConversationId, isBotOwnedConversation, isDedicatedMemberConversation } from './botIdentity'
+import { isBotWorkspace } from './workspace'
 // Chat API 调用封装
 import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
@@ -77,8 +78,9 @@ export const CHAT_AGENT_RUNTIME: AgentRuntimeConfig = {
 }
 
 export function normalizeAgentRuntime(
-  conversation?: Pick<Conversation, 'agent_runtime' | 'agentRuntime'> | Pick<ConversationListItem, 'agent_runtime' | 'agentRuntime'> | null,
+  conversation?: (Pick<Conversation, 'agent_runtime' | 'agentRuntime'> & { id?: string }) | null,
 ): AgentRuntimeConfig {
+  if (isBotOwnedConversation(conversation?.id)) return { ...BUILTIN_AGENT_RUNTIME }
   const raw = conversation?.agent_runtime ?? conversation?.agentRuntime
   if (!raw || raw.kind === 'builtin') {
     return { ...BUILTIN_AGENT_RUNTIME }
@@ -327,6 +329,7 @@ const mockChatApi = {
     projectId?: string | null,
   ): Promise<ConversationListItem[]> {
     const conversations = loadMockConversations()
+      .filter(conversation => !isBotOwnedConversation(conversation.id))
       .filter((conversation) => {
         if (projectId) {
           const conversationProjectId = conversation.project_id ?? conversation.projectId ?? null
@@ -780,7 +783,7 @@ const mockChatApi = {
     const conversations = loadMockConversations()
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
-    const botId = botAssistantId(conversationId)
+    const botId = botContactId(conversationId)
     if (botId && 'assistantId' in updates && updates.assistantId !== botId) throw new Error('Bot 的助手身份不能更换')
     const hasFolderUpdate = 'folder' in updates
     const hasProjectUpdate = 'projectId' in updates
@@ -1131,10 +1134,13 @@ const mockChatApi = {
 
 export const chatApi = {
   async getBotConversations(): Promise<ConversationListItem[]> {
-    if (!isTauriRuntime()) return loadMockConversations().filter(c => botAssistantId(c.id)).map(toListItem)
-    const result = await invoke<{ success: boolean; conversations: ConversationListItem[] }>('chat_get_bot_conversations')
-    if (!result.success) throw new Error('Failed to load Bots')
-    return result.conversations
+    const list = !isTauriRuntime()
+      ? loadMockConversations().filter(c => botAssistantId(c.id)).map(toListItem)
+      : await invoke<{ success: boolean; conversations: ConversationListItem[] }>('chat_get_bot_conversations').then((result) => {
+        if (!result.success) throw new Error('Failed to load Bots')
+        return result.conversations
+      })
+    return list.filter(item => Boolean(botAssistantId(item.id)))
   },
 
   /** Open the same durable chat; history is read through the existing paged endpoint. */
@@ -1173,7 +1179,7 @@ export const chatApi = {
     if (!isTauriRuntime()) {
       const needle = query.trim().toLowerCase()
       if (!needle) return []
-      return loadMockConversations().filter(c => !botOnly || botAssistantId(c.id))
+      return loadMockConversations().filter(c => !isDedicatedMemberConversation(c.id) && Boolean(botAssistantId(c.id)) === botOnly)
         .filter(c => [c.title, ...c.messages.map(m => m.content)].some(text => text.toLowerCase().includes(needle)))
         .sort((a, b) => b.updated_at - a.updated_at).slice(0, limit)
         .map(c => ({ ...toListItem(c), match_field: 'content', match_message_id: null, match_snippet: null }))
@@ -1184,13 +1190,15 @@ export const chatApi = {
       'chat_search_conversations',
       { query: trimmed, limit, botOnly }
     )
-    return result.success ? result.conversations : []
+    return result.success
+      ? result.conversations.filter(hit => !isDedicatedMemberConversation(hit.id) && (botOnly ? Boolean(botAssistantId(hit.id)) : !isBotOwnedConversation(hit.id)))
+      : []
   },
 
   /** 对话库统一查询（筛选 / 排序 / 分页 + total） */
   async queryConversations(query: ConversationLibraryQuery = {}): Promise<ConversationLibraryPage> {
     if (!isTauriRuntime()) {
-      const all = await mockChatApi.getConversations(0, 500)
+      const all = loadMockConversations().filter(c => !isDedicatedMemberConversation(c.id) && isBotOwnedConversation(c.id) === isBotWorkspace()).map(toListItem)
       const slice = all.slice(query.offset ?? 0, (query.offset ?? 0) + (query.limit ?? 80))
       return { items: slice as ConversationSearchHit[], total: all.length }
     }
@@ -1212,7 +1220,8 @@ export const chatApi = {
       },
     )
     if (!result.success) throw new Error('Failed to query conversations')
-    return { items: result.items ?? [], total: result.total ?? 0 }
+    const items = (result.items ?? []).filter(item => !isDedicatedMemberConversation(item.id))
+    return { items, total: result.total ?? 0 }
   },
 
   async bulkUpdateConversations(
@@ -2068,6 +2077,9 @@ export const chatApi = {
     conversationId: string,
     agentRuntime: AgentRuntimeConfig,
   ): Promise<Conversation> {
+    if (isBotOwnedConversation(conversationId) && agentRuntime.kind !== 'builtin') {
+      throw new Error('Bot 仅使用 Kivio 内置运行时')
+    }
     if (!isTauriRuntime()) {
       const conversations = loadMockConversations()
       const index = conversations.findIndex((item) => item.id === conversationId)

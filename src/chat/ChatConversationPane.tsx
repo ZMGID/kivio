@@ -9,14 +9,14 @@ import { KivioBlob, type KivioBlobHandle } from './KivioBlob'
 import { useEmptyHeroJab, useEmptyHeroLine } from './emptyHero'
 import { TypewriterText } from './TypewriterText'
 import { QueuedMessages } from './QueuedMessages'
-import { IconButton } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
+import { BotAvatar } from './BotAvatar'
 import type { QueuedMessage } from './hooks/useMessageQueue'
 import type { MessageListProps } from './MessageList'
 import type { ChatImageViewerItem } from './imageViewer'
 import type { ChatHookPayload } from '../api/tauri'
 import type { Lang } from '../components/i18n'
 import { i18n } from '../components/i18n'
-import { botAssistantId } from './botIdentity'
 
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
@@ -74,6 +74,7 @@ function EmptyHeroHeading({
 }
 
 export interface ChatConversationPaneProps {
+  botMode: boolean
   botHeader?: ReactNode
   titlebarControls: ReactNode
   usesNativeTitlebar: boolean
@@ -116,6 +117,7 @@ export interface ChatConversationPaneProps {
  * 侧栏/设置切换不再让 Chat.tsx 直接重建这段巨型 JSX。
  */
 export const ChatConversationPane = memo(function ChatConversationPane({
+  botMode,
   botHeader,
   titlebarControls,
   usesNativeTitlebar,
@@ -152,7 +154,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 }: ChatConversationPaneProps) {
   const transition = useConversationTransition()
   const conversationLoading = transition.loading
-  const botMode = Boolean(botAssistantId(currentConversationId))
   return (
     <div className="chat-motion-pane-in chat-main-pane relative flex min-w-0 flex-1 flex-col">
       {usesNativeTitlebar && (
@@ -188,7 +189,14 @@ export const ChatConversationPane = memo(function ChatConversationPane({
       )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {showEmptyHero && !botMode ? (
+        {botMode && !currentConversationId ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 text-center">
+            <BotAvatar size={48} />
+            <div><h2 className="text-lg font-medium text-neutral-900">Bots</h2>
+              <p className="mt-2 text-[13px] text-neutral-500">{i18n[lang].chatBotChooseContact}</p></div>
+            <Button onClick={onNewConversation}>{i18n[lang].chatBotNew}</Button>
+          </div>
+        ) : showEmptyHero && !botMode ? (
           <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading

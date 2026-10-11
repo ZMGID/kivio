@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
   ChevronRight,
+  ArrowLeft,
+  Bot,
   Folder,
   FolderPlus,
   Layers,
@@ -36,6 +38,8 @@ import { applyConversationPins, withPinAt, type ConversationPin } from './conver
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, isMac, usesNativeTitlebar } from './platform'
 import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedSidebarView, rememberSidebarView } from './persistence'
+import { isBotWorkspace, switchChatWorkspace } from './workspace'
+import { isBotOwnedConversation } from './botIdentity'
 import { useChatPerfRenderProbe } from './chatPerformanceProbe'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import type { ChatUserProfile } from './types'
@@ -74,7 +78,7 @@ export interface ConversationSelectionScope {
 const extensionSubItems: Array<{
   id: ExtensionsNavItem
   label: (t: I18n) => string
-  icon: (props: { size?: number; strokeWidth?: number; className?: string }) => React.JSX.Element
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>
 }> = [
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
@@ -190,6 +194,7 @@ export interface SidebarProps {
   lang: Lang
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
+  attentionConversationIds?: ReadonlySet<string>
   optimisticConversations?: ConversationListItem[]
   /**
    * 当前打开的对话。后端 list 排除归档，所以归档后仍开着的对话不会出现在
@@ -206,7 +211,10 @@ export interface SidebarProps {
     scope?: ConversationSelectionScope,
   ) => void
   onNewConversation: () => void
+  onSwitchWorkspace?: () => void
   onEditBot?: (assistant: ChatAssistant) => void
+  onOpenRoom?: (roomId: string) => void
+  activeRoomId?: string | null
   onOpenInPopout?: (conversationId: string) => void | Promise<void>
   onConversationDeleted?: (id: string) => void
   onForceDropConversation?: (id: string) => void
@@ -231,6 +239,8 @@ export interface SidebarProps {
 
 function SidebarUserFooter({
   compact = false,
+  botMode = false,
+  onSwitchWorkspace,
   profile,
   lang,
   settingsActive,
@@ -239,6 +249,8 @@ function SidebarUserFooter({
   onOpenUsage,
 }: {
   compact?: boolean
+  botMode?: boolean
+  onSwitchWorkspace: () => void
   profile: ChatUserProfile
   lang: Lang
   settingsActive: boolean
@@ -280,7 +292,7 @@ function SidebarUserFooter({
           aria-haspopup="menu"
           aria-expanded={menuRect !== null}
         >
-          <UserAvatar profile={profile} size={compact ? 28 : 22} />
+          <UserAvatar profile={profile} size={22} />
           <span
             className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700"
             title={profile.displayName || undefined}
@@ -288,6 +300,9 @@ function SidebarUserFooter({
             {profile.displayName || 'Kivio'}
           </span>
         </button>
+        <IconButton size="xs" label={botMode ? t.chatSwitchToAgent : t.chatSwitchToBots} onClick={onSwitchWorkspace}>
+          {botMode ? <ArrowLeft strokeWidth={1.75} /> : <Bot strokeWidth={1.75} />}
+        </IconButton>
         {!compact && <IconButton
           size="xs"
           label={`${t.settings} (${isMac ? '⌘,' : 'Ctrl+,'})`}
@@ -611,6 +626,7 @@ export const Sidebar = memo(function Sidebar({
   lang,
   currentConversationId,
   generatingConversationIds = new Set(),
+  attentionConversationIds,
   optimisticConversations = [],
   openConversation = null,
   selectedProject = null,
@@ -620,6 +636,9 @@ export const Sidebar = memo(function Sidebar({
   onSelectConversation,
   onNewConversation,
   onEditBot,
+  onOpenRoom,
+  activeRoomId = null,
+  onSwitchWorkspace,
   onOpenInPopout,
   onConversationDeleted,
   onForceDropConversation,
@@ -722,7 +741,21 @@ export const Sidebar = memo(function Sidebar({
   const [activeTab, setActiveTab] = useState<'conversations' | 'sets' | 'projects'>('conversations')
   const [sidebarView, setSidebarView] = useState(getRememberedSidebarView)
   const flatView = sidebarView === 'flat'
-  const botView = sidebarView === 'bot'
+  const botView = isBotWorkspace()
+  const switchWorkspace = useCallback(() => {
+    if (onSwitchWorkspace) onSwitchWorkspace()
+    else void switchChatWorkspace(!botView).catch(error => { void alertDialog(String(error)) })
+  }, [botView, onSwitchWorkspace])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        switchWorkspace()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [botView, switchWorkspace])
   const switchSidebarView = (view: SidebarView) => {
     setSidebarView(view)
     rememberSidebarView(view)
@@ -1203,19 +1236,19 @@ export const Sidebar = memo(function Sidebar({
   const visibleConversations = useMemo(() => {
     // 侧栏永不展示已归档（后端 list 也会滤；这里再兜一层防脏数据/旧索引）
     const active = conversations.filter(
-      (item) => !item.archived && !suppressedConversationIds.has(item.id),
+      (item) => !isBotOwnedConversation(item.id) && !item.archived && !suppressedConversationIds.has(item.id),
     )
     // 当前打开的对话即使已被归档 / 不在最近 80 里，也要留在侧栏，否则用户对着正文找不到入口。
     // 刚从侧栏归档的除外：那条在 suppressed 里，不能又并回来。
     const withOpen = (() => {
-      if (!openConversation || suppressedConversationIds.has(openConversation.id)) return active
+      if (!openConversation || isBotOwnedConversation(openConversation.id) || suppressedConversationIds.has(openConversation.id)) return active
       if (active.some((item) => item.id === openConversation.id)) return active
       return [{ ...openConversation, archived: false }, ...active]
     })()
     if (optimisticConversations.length === 0) return applyPinOverrides(withOpen, pinOverrides)
     const realById = new Map(withOpen.map((item) => [item.id, item]))
     const visibleOptimisticConversations = optimisticConversations.filter((item) => {
-      if (item.archived || suppressedConversationIds.has(item.id)) return false
+      if (isBotOwnedConversation(item.id) || item.archived || suppressedConversationIds.has(item.id)) return false
       const real = realById.get(item.id)
       // 真实列表里没有 → 保留。新会话从创建到首次 refetch 之间只存在于乐观列表；run 刚结束
       // 的那次 commit 里 generating 已清、refetch 还没落地，此刻若按 generating 判丢弃，
@@ -1514,10 +1547,10 @@ export const Sidebar = memo(function Sidebar({
           </div>
         )}
 
-      {botView && <div className={`chat-titlebar-row chat-sidebar-titlebar-row flex shrink-0 items-center gap-2 ${usesNativeTitlebar ? chatTitlebarMacInsetClass : 'pl-3'} pr-3`} data-tauri-drag-region>
+      {botView && <div className={`chat-titlebar-row chat-sidebar-titlebar-row flex shrink-0 items-center gap-1 ${usesNativeTitlebar ? chatTitlebarMacInsetClass : 'pl-3'} pr-3`} data-tauri-drag-region>
         <div className="min-w-0 flex-1" data-tauri-drag-region />
-        <IconButton size="lg" shape="circle" variant="outline" label={t.chatBotSearch} aria-expanded={searchOpen} onClick={() => onSearchOpenChange(!searchOpen)}><Search size={20} strokeWidth={1.75} /></IconButton>
-        <IconButton size="lg" shape="circle" variant="outline" label={t.chatBotNew} onClick={onNewConversation}><Plus size={22} strokeWidth={1.75} /></IconButton>
+        <IconButton size="sm" variant="ghost" label={t.chatBotSearch} aria-expanded={searchOpen} onClick={() => onSearchOpenChange(!searchOpen)}><SearchNavIcon /></IconButton>
+        <IconButton size="sm" variant="ghost" label={t.chatBotNew} onClick={onNewConversation}><ComposeIcon /></IconButton>
       </div>}
 
       {!botView && <><nav
@@ -1571,7 +1604,7 @@ export const Sidebar = memo(function Sidebar({
 
       </>}
 
-      {botView ? <BotRoster lang={lang} currentConversationId={currentConversationId} generatingConversationIds={generatingConversationIds} optimisticConversations={optimisticConversations} refreshKey={refreshKey} searchOpen={searchOpen} onSelectConversation={onSelectConversation} onOpenSettings={onOpenSettings} onOpenExtensionsItem={onOpenExtensionsItem} onEditBot={onEditBot} onSwitchView={switchSidebarView} onNewBot={onNewConversation} footer={<SidebarUserFooter compact profile={userProfile} lang={lang} settingsActive={settingsActive} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />} /> : <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
+      {botView ? <BotRoster lang={lang} currentConversationId={currentConversationId} generatingConversationIds={generatingConversationIds} attentionConversationIds={attentionConversationIds} optimisticConversations={optimisticConversations} refreshKey={refreshKey} searchOpen={searchOpen} onSelectConversation={onSelectConversation} onOpenSettings={onOpenSettings} onOpenExtensionsItem={onOpenExtensionsItem} onEditBot={onEditBot} onOpenRoom={onOpenRoom} activeRoomId={activeRoomId} onNewBot={onNewConversation} footer={<SidebarUserFooter compact botMode onSwitchWorkspace={switchWorkspace} profile={userProfile} lang={lang} settingsActive={settingsActive} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />} /> : <div className="flex min-h-0 flex-1 flex-col" data-tauri-drag-region="false">
         {loading ? (
           <div className="space-y-2 px-2 py-3" aria-label={t.chatLoading} aria-busy="true">
             {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -2043,7 +2076,6 @@ export const Sidebar = memo(function Sidebar({
                   onOpenSearch={() => onSearchOpenChange(true)}
                   flatView={flatView}
                   onToggleView={toggleSidebarView}
-                  onUseBot={() => switchSidebarView('bot')}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}
@@ -2094,6 +2126,7 @@ export const Sidebar = memo(function Sidebar({
       </div>}
 
       {!botView && <SidebarUserFooter
+        onSwitchWorkspace={switchWorkspace}
         profile={userProfile}
         lang={lang}
         settingsActive={settingsActive}

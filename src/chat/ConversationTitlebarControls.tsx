@@ -1,3 +1,4 @@
+import { isBotOwnedConversation } from './botIdentity'
 import { memo } from 'react'
 import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
 import { IconButton } from '../components/Button'
@@ -59,14 +60,14 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   return (
     <>
       <div className={`flex min-w-0 items-center gap-1 ${compact ? 'flex-wrap gap-y-2' : ''}`}>
-        <div className="shrink-0" data-tauri-drag-region="false">
+        {!isBotOwnedConversation(conversationId) && <div className="shrink-0" data-tauri-drag-region="false">
           <RuntimePicker
             agentRuntime={activeAgentRuntime}
             onRuntimeChange={onRuntimeChange}
             conversationId={conversationId}
             locked={runtimeLocked}
           />
-        </div>
+        </div>}
         <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
           {usesExternalRuntime ? (
             <ExternalModelSelector

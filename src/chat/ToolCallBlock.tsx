@@ -1,6 +1,8 @@
 import { type ComponentType, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { SubAgentToolCard } from './SubAgentToolCard'
+import { BotEventCard } from './bot/BotEventCard'
+import { isCollaborationTool } from './bot/collaboration'
 import {
   AlertCircle,
   Bot,
@@ -2177,6 +2179,9 @@ export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: Too
 }
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
+  if (isCollaborationTool(toolRawName(props.toolCall))) {
+    return <BotEventCard toolCall={props.toolCall} />
+  }
   if ((props.toolCall.source === 'native' && ['agent', 'agent_control'].includes(toolRawName(props.toolCall))) || objectValue(props.toolCall.structured_content ?? props.toolCall.structuredContent)?.type === 'subagent_control') {
     return <SubAgentToolCard toolCall={props.toolCall} />
   }

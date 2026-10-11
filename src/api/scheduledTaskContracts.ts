@@ -62,4 +62,6 @@ export interface ScheduledTasksChangedEvent {
 export interface ScheduledTasksSnapshot {
   tasks: ScheduledTask[]
   liveRuns: ScheduledTaskRun[]
+  /** Definition data could not be read; writes remain blocked until restart. */
+  error?: string | null
 }

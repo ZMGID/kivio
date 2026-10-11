@@ -8,6 +8,7 @@ import { applyThemeSettings, disposeTheme } from './theme/theme'
 import { i18n, type Lang } from './components/i18n'
 import { useWindowInteractionFocus } from './api/windowFocus'
 import { ChatWindowHost } from './chat/ChatWindowHost'
+import { isBotWorkspace } from './chat/workspace'
 import {
   getRememberedChatRoute,
   hashPath,
@@ -394,6 +395,7 @@ function App() {
     let cleanup: (() => void) | undefined
 
     listen('chat-open-request', () => {
+      if (isBotWorkspace()) return
       const path = hashPath()
       // 全局 listen 会收到 emit_to("chat") 的事件（Tauri v2 的 Any 目标语义），所以 lens/translate/
       // settings/translator 窗也会收到这条广播。只有 chat 窗该响应，否则其它窗口会把自己导航成 chat。

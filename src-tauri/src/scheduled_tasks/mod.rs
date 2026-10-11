@@ -41,6 +41,8 @@ const CANCELLED_REASON: &str = "任务已暂停、删除或修改，本次未发
 
 pub struct ScheduledTasks {
     store: Store,
+    /// An unreadable definition file must not block app startup or be overwritten.
+    load_error: Option<String>,
     tasks: Mutex<Vec<ScheduledTask>>,
     runs_lock: Mutex<()>,
     wake: tokio::sync::Notify,
@@ -68,34 +70,62 @@ fn same_execution(a: &ScheduledTask, b: &ScheduledTask) -> bool {
         && a.schedule == b.schedule
 }
 
+fn reconcile_run_history(store: &Store, task_id: &str, now: i64) -> Result<(), String> {
+    let mut runs = store.load_runs(task_id)?;
+    let mut changed = false;
+    for run in runs.iter_mut().filter(|run| !run.status.is_terminal()) {
+        run.status = RunStatus::Interrupted;
+        run.error = Some("应用退出时该次运行尚未完成".into());
+        run.finished_at = Some(now);
+        changed = true;
+    }
+    if changed {
+        store.save_runs(task_id, &runs)?;
+    }
+    Ok(())
+}
+
 impl ScheduledTasks {
-    pub fn load(dir: PathBuf) -> Result<Self, String> {
+    pub fn load(dir: PathBuf) -> Self {
         let store = Store::new(dir);
-        let tasks = store.load_tasks()?;
+        let (mut tasks, load_error) = match store.load_tasks() {
+            Ok(tasks) => (tasks, None),
+            Err(err) => {
+                eprintln!("[scheduled-tasks] load definitions failed: {err}");
+                (
+                    Vec::new(),
+                    Some(format!(
+                        "定时任务数据无法读取，已禁止写入。请修复文件后重启应用：{err}"
+                    )),
+                )
+            }
+        };
         // A run cannot survive a restart: close out whatever was in flight.
         let now = now_secs();
-        for task in &tasks {
-            let mut runs = store.load_runs(&task.id)?;
-            let mut changed = false;
-            for run in runs.iter_mut().filter(|run| !run.status.is_terminal()) {
-                run.status = RunStatus::Interrupted;
-                run.error = Some("应用退出时该次运行尚未完成".into());
-                run.finished_at = Some(now);
-                changed = true;
-            }
-            if changed {
-                if let Err(err) = store.save_runs(&task.id, &runs) {
-                    eprintln!("[scheduled-tasks] reconcile runs failed: {err}");
-                }
+        for task in &mut tasks {
+            if let Err(err) = reconcile_run_history(&store, &task.id, now) {
+                eprintln!("[scheduled-tasks] reconcile runs failed: {err}");
+                task.enabled = false;
+                task.last_error = Some(format!(
+                    "运行记录无法读取或恢复，任务已停用。请修复后重新启用：{err}"
+                ));
             }
         }
-        Ok(Self {
+        Self {
             store,
+            load_error,
             tasks: Mutex::new(tasks),
             runs_lock: Mutex::new(()),
             wake: tokio::sync::Notify::new(),
             active_runs: Mutex::new(HashMap::new()),
-        })
+        }
+    }
+
+    fn ensure_available(&self) -> Result<(), String> {
+        match &self.load_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     pub fn list(&self) -> Vec<ScheduledTask> {
@@ -105,6 +135,7 @@ impl ScheduledTasks {
     }
 
     pub fn get(&self, id: &str) -> Result<ScheduledTask, String> {
+        self.ensure_available()?;
         self.lock_tasks()
             .iter()
             .find(|task| task.id == id)
@@ -120,6 +151,7 @@ impl ScheduledTasks {
         invalidate: Option<&str>,
         mutate: impl FnOnce(&mut Vec<ScheduledTask>) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.ensure_available()?;
         let mut current = self.lock_tasks();
         let mut candidate = current.clone();
         let result = mutate(&mut candidate)?;
@@ -167,6 +199,10 @@ impl ScheduledTasks {
                         .iter_mut()
                         .find(|task| task.id == id)
                         .ok_or("定时任务不存在")?;
+                    if enabled && !existing.enabled {
+                        let _runs = self.lock_runs();
+                        self.store.load_runs(id)?;
+                    }
                     existing.name = name;
                     existing.prompt = prompt;
                     existing.schedule = schedule;
@@ -229,12 +265,17 @@ impl ScheduledTasks {
                 .find(|task| task.id == id)
                 .ok_or("定时任务不存在")?;
             if enabled && !task.enabled {
+                let _runs = self.lock_runs();
+                self.store.load_runs(id)?;
+            }
+            if enabled && !task.enabled {
                 let next = rule::next_after(&task.schedule, now)?;
                 if next.is_none() {
                     return Err("计划时间已过，请编辑任务选择新的时间".into());
                 }
                 task.status = TaskStatus::Active;
                 task.next_run_at = next;
+                task.last_error = None;
             }
             task.enabled = enabled;
             task.revision = task.revision.wrapping_add(1);
@@ -246,11 +287,13 @@ impl ScheduledTasks {
     }
 
     pub fn runs(&self, task_id: &str) -> Result<Vec<TaskRun>, String> {
+        self.ensure_available()?;
         let _runs = self.lock_runs();
         self.store.load_runs(task_id)
     }
 
     pub fn delete_run(&self, task_id: &str, run_id: &str) -> Result<(), String> {
+        self.ensure_available()?;
         let _runs = self.lock_runs();
         let mut runs = self.store.load_runs(task_id)?;
         let index = runs
@@ -347,7 +390,11 @@ impl ScheduledTasks {
             .collect();
         let mut tasks = tasks.clone();
         tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        ScheduledTasksSnapshot { tasks, live_runs }
+        ScheduledTasksSnapshot {
+            tasks,
+            live_runs,
+            error: self.load_error.clone(),
+        }
     }
 
     fn persist_run(&self, run: &TaskRun) -> Result<(), String> {
@@ -591,6 +638,7 @@ pub async fn save_task(
     source: TaskSource,
 ) -> Result<ScheduledTask, String> {
     let now = now_secs();
+    service(app).ensure_available()?;
     let valid = validate_input(&input, now)?;
     let conversation_id = match &input.target {
         TaskTarget::NewConversation {
@@ -785,6 +833,9 @@ async fn execute(
         &on_send_ready,
         &on_user_message_saved,
         &on_send_finished,
+        Vec::new(),
+        None,
+        None,
     )
     .await;
     outcome.map_err(|message| RunError {
@@ -837,7 +888,7 @@ mod tests {
     use super::*;
 
     fn service_in(dir: &std::path::Path) -> ScheduledTasks {
-        ScheduledTasks::load(dir.to_path_buf()).unwrap()
+        ScheduledTasks::load(dir.to_path_buf())
     }
 
     fn input(schedule: ScheduleRule) -> ScheduledTaskInput {
@@ -851,6 +902,75 @@ mod tests {
             },
             enabled: None,
         }
+    }
+
+    #[test]
+    fn unreadable_history_only_disables_its_task_and_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service_in(dir.path());
+        let schedule = ScheduleRule::Interval {
+            minutes: 10,
+            anchor_at: Some(1100),
+        };
+        let broken = svc
+            .save(input(schedule.clone()), TaskSource::User, 1000)
+            .unwrap();
+        let healthy = svc.save(input(schedule), TaskSource::User, 1000).unwrap();
+        let definitions = std::fs::read(dir.path().join("tasks.json")).unwrap();
+        let history = dir.path().join("runs").join(format!("{}.json", broken.id));
+        std::fs::create_dir_all(&history).unwrap();
+        std::fs::write(history.join("keep.txt"), "preserve").unwrap();
+
+        let reloaded = service_in(dir.path());
+        let disabled = reloaded.get(&broken.id).unwrap();
+        assert!(!disabled.enabled);
+        assert!(disabled.last_error.as_deref().unwrap().contains("无法读取"));
+        assert!(reloaded.set_enabled(&broken.id, true, 1001).is_err());
+        assert!(reloaded.runs(&broken.id).is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("tasks.json")).unwrap(),
+            definitions
+        );
+        let (fires, _) = reloaded.claim_due(1100);
+        assert_eq!(fires.len(), 1);
+        assert_eq!(fires[0].task.id, healthy.id);
+        assert_eq!(
+            std::fs::read_to_string(history.join("keep.txt")).unwrap(),
+            "preserve"
+        );
+        std::fs::remove_dir_all(history).unwrap();
+        let resumed = reloaded.set_enabled(&broken.id, true, 1101).unwrap();
+        assert!(resumed.enabled);
+        assert!(resumed.last_error.is_none());
+        assert_eq!(resumed.next_run_at, Some(1700));
+    }
+
+    #[test]
+    fn unreadable_definitions_leave_a_read_only_service_instead_of_failing_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let definitions = dir.path().join("tasks.json");
+        std::fs::create_dir(&definitions).unwrap();
+        std::fs::write(definitions.join("keep.txt"), "preserve").unwrap();
+        let svc = service_in(dir.path());
+        assert!(svc.list().is_empty());
+        assert!(svc
+            .snapshot()
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("无法读取"));
+        assert!(svc
+            .save(
+                input(ScheduleRule::Once { at: 1100 }),
+                TaskSource::User,
+                1000
+            )
+            .is_err());
+        assert!(svc.claim_due(1100).0.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(definitions.join("keep.txt")).unwrap(),
+            "preserve"
+        );
     }
 
     #[test]

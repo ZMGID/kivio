@@ -317,11 +317,13 @@ pub(crate) async fn chat_update_message(
 /// - assistant：截到它之前（`new_content` 无意义 → 报错）。
 /// - user + `new_content`：trim 校验非空 → 替换内容（编辑提问；附件保留）→ 保留该条截掉其后。
 ///   摘要失效用 `idx`（内容变了，覆盖到该条的摘要即失效）。
-/// - user 无 `new_content`：孤儿重试，摘要失效用 `idx + 1`，保留该条截掉其后。
+///   同事发来的正文（已有 provenance，或与本会话投递记录的完整信封精确相等）拒绝编辑。
+/// - user 无 `new_content`：孤儿重试，摘要失效用 `idx + 1`，保留该条截掉其后。不改正文或 peer。
 pub(super) fn apply_regenerate_truncation(
     conversation: &mut Conversation,
     idx: usize,
     new_content: Option<String>,
+    deliveries: &[crate::chat::bot_collaboration::Delivery],
 ) -> Result<(), String> {
     match conversation.messages[idx].role.as_str() {
         "assistant" => {
@@ -333,6 +335,13 @@ pub(super) fn apply_regenerate_truncation(
         }
         "user" => {
             if let Some(content) = new_content {
+                if crate::chat::bot_collaboration::peer_authored_content(
+                    &conversation.id,
+                    &conversation.messages[idx],
+                    deliveries,
+                ) {
+                    return Err("不能编辑同事发来的消息".to_string());
+                }
                 let trimmed = content.trim();
                 if trimmed.is_empty() {
                     return Err("消息内容不能为空".to_string());
@@ -389,6 +398,7 @@ pub(crate) async fn chat_regenerate_message(
     };
 
     let repository = crate::chat::repository::repository(&app);
+    let deliveries = crate::chat::bot_collaboration::recorded_deliveries(&app, &conversation_id);
     let mut snapshot = repository
         .get(&app, &conversation_id)
         .await
@@ -399,7 +409,7 @@ pub(crate) async fn chat_regenerate_message(
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
                 let idx = find_message_index(latest, &message_id)?;
-                apply_regenerate_truncation(latest, idx, next_content)?;
+                apply_regenerate_truncation(latest, idx, next_content, &deliveries)?;
                 if latest.messages.last().map(|message| message.role.as_str()) != Some("user") {
                     return Err("缺少对应的用户消息，无法重新生成".to_string());
                 }
@@ -448,8 +458,13 @@ pub(crate) async fn chat_regenerate_message(
             } else {
                 conversation_attachments_dir(&app, &conversation_id).ok()
             };
+            let body = crate::chat::bot_collaboration::clean_peer_body(
+                &conversation.id,
+                message,
+                &deliveries,
+            );
             let mut api_content = compose_user_content_for_api(
-                &message.content,
+                body.as_ref(),
                 &message.attachments,
                 attachment_dir.as_deref(),
             );
@@ -648,6 +663,7 @@ pub(crate) async fn chat_rewind_to_message(
     // 而 rewind 只是删消息。前端拿到结果立刻更新，随后 fire-and-forget 调 chat_get_context_stats
     // 补算上下文用量。
     let repository = crate::chat::repository::repository(&app);
+    let deliveries = crate::chat::bot_collaboration::recorded_deliveries(&app, &conversation_id);
     let mut snapshot = repository
         .get(&app, &conversation_id)
         .await
@@ -655,9 +671,7 @@ pub(crate) async fn chat_rewind_to_message(
     let mut attempt = 0;
     let (mut conversation, content) = loop {
         let idx = find_message_index(&snapshot, &message_id)?;
-        if snapshot.messages[idx].role != "user" {
-            return Err("仅支持回到用户提问".to_string());
-        }
+        ensure_user_rewind_allowed(&snapshot, idx, &deliveries)?;
         // 外部 CLI 的历史真身在 CLI 自己的原生会话里，只截 Kivio 这份，下一轮 resume 仍会带上
         // 被删掉的轮次，所以下一轮发送前要先把原生会话拉回可见历史（ADR-0006）。
         // 校验通过后、截断之前记下「待回退」：记不下就整体失败、不留半截状态。不能提前到校验
@@ -669,9 +683,7 @@ pub(crate) async fn chat_rewind_to_message(
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
                 let latest_idx = find_message_index(latest, &message_id)?;
-                if latest.messages[latest_idx].role != "user" {
-                    return Err("仅支持回到用户提问".to_string());
-                }
+                ensure_user_rewind_allowed(latest, latest_idx, &deliveries)?;
                 mark_summary_stale_if_needed(latest, latest_idx);
                 latest.messages.truncate(latest_idx);
                 let existing_ids: std::collections::HashSet<String> = latest
@@ -754,6 +766,27 @@ pub(super) fn build_fork_messages(messages: &[ChatMessage], anchor_idx: usize) -
     }
 
     out
+}
+
+/// Rewind puts the stored text into the composer as the user's own command.
+/// Colleague deliveries are not editable that way. Legacy rows qualify only
+/// through an exact durable envelope for this conversation.
+pub(super) fn ensure_user_rewind_allowed(
+    conversation: &Conversation,
+    idx: usize,
+    deliveries: &[crate::chat::bot_collaboration::Delivery],
+) -> Result<(), String> {
+    if conversation.messages[idx].role != "user" {
+        return Err("仅支持回到用户提问".to_string());
+    }
+    if crate::chat::bot_collaboration::peer_authored_content(
+        &conversation.id,
+        &conversation.messages[idx],
+        deliveries,
+    ) {
+        return Err("不能把同事发来的消息放回输入框".to_string());
+    }
+    Ok(())
 }
 
 pub(super) fn build_fork_messages_before_anchor(
@@ -1508,8 +1541,14 @@ pub(crate) async fn chat_reply_with_model(
     } else {
         conversation_attachments_dir(&app, &conversation_id).ok()
     };
+    let deliveries = crate::chat::bot_collaboration::recorded_deliveries(&app, &conversation.id);
+    let body = crate::chat::bot_collaboration::clean_peer_body(
+        &conversation.id,
+        user_message,
+        &deliveries,
+    );
     let mut last_user_api_content = compose_user_content_for_api(
-        &user_message.content,
+        body.as_ref(),
         &user_message.attachments,
         attachment_dir.as_deref(),
     );

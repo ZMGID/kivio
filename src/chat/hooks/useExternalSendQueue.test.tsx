@@ -53,9 +53,27 @@ beforeEach(() => {
   mockRenew.mockResolvedValue({ success: true, renewed: 1 })
 })
 
-afterEach(() => { vi.useRealTimers() })
+afterEach(() => { vi.useRealTimers(); window.history.replaceState({}, '', '/') })
 
 describe('useExternalSendQueue 基本流转', () => {
+  it('leaves external handoffs available to Agent when the Bot workspace wakes', async () => {
+    window.history.replaceState({}, '', '/?workspace=bot#chat/conv_bot_research')
+    mockTake.mockResolvedValueOnce({ success: true, requests: [{ id: 'lens', content: '屏幕内容', attachments: [] }] } as never)
+    const bot = setup()
+    await act(async () => {
+      await bot.result.current.drainExternalSends()
+      await bot.result.current.wakeAfterRun()
+    })
+    expect(bot.onSendMessage).not.toHaveBeenCalled()
+    expect(mockTake).not.toHaveBeenCalled()
+    bot.unmount()
+    window.history.replaceState({}, '', '/#chat')
+    const agent = setup()
+    await act(async () => { await agent.result.current.drainExternalSends() })
+    expect(agent.onSendMessage).toHaveBeenCalledWith('屏幕内容', [], expect.anything())
+    expect(mockAck).toHaveBeenCalledWith(expect.any(String), 'lens')
+  })
+
   it('无消息时不发送、不报错', async () => {
     const { result, onSendMessage, onError } = setup()
     await act(async () => { await result.current.drainExternalSends() })

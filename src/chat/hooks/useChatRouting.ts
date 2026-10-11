@@ -23,6 +23,7 @@ import { getRememberedTasksTab, rememberTasksTab } from '../persistence'
 
 import type { ChatView } from '../routeCodec'
 import { pathFromHash } from '../routeCodec'
+import { belongsToWorkspace } from '../workspace'
 
 interface UseChatRoutingParams {
   onViewChange: (view: ChatView) => void
@@ -158,6 +159,13 @@ export function useChatRouting({
         return
       }
       const conversationId = getRouteConversationId()
+      if (conversationId && !belongsToWorkspace(conversationId)) {
+        setHash('#chat')
+        onLeaveConversation()
+        onViewChange('conversation')
+        onResetConversation()
+        return
+      }
       if (!conversationId) {
         onLeaveConversation()
         onViewChange('conversation')

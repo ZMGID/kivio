@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from 'vitest'
-import { chatApi } from './api'
+import { chatApi, normalizeAgentRuntime } from './api'
 import { createBlankAssistant } from './assistantDraftStore'
 
 afterEach(() => {
@@ -14,11 +14,20 @@ it('keeps one durable Bot history through concurrent opens, paging, profile edit
   const opens = await Promise.all(Array.from({ length: 3 }, () => chatApi.openBot(assistant.id)))
   expect(new Set(opens.map(item => item.id)).size).toBe(1)
   const id = opens[0].id
+  expect(normalizeAgentRuntime(opens[0]).kind).toBe('builtin')
+  await expect(chatApi.setAgentRuntime(id, { kind: 'external', externalAgentId: 'codex' }))
+    .rejects.toThrow('Bot 仅使用 Kivio 内置运行时')
+  await expect(chatApi.setAgentRuntime(id, { kind: 'chat' }))
+    .rejects.toThrow('Bot 仅使用 Kivio 内置运行时')
   expect(id).not.toBe(ordinary.id)
   expect(await chatApi.getBotConversations()).toHaveLength(1)
   for (let turn = 0; turn < 35; turn++) await chatApi.sendMessage(id, `研究问题 ${turn}`)
   await chatApi.sendMessage(ordinary.id, '研究问题 0')
   expect((await chatApi.searchConversations('研究问题 0', 1, true)).map(hit => hit.id)).toEqual([id])
+  // Agent list, search and library exclude Bot histories before pagination.
+  expect((await chatApi.getConversations(0, 1)).map(item => item.id)).toEqual([ordinary.id])
+  expect((await chatApi.searchConversations('研究问题 0', 1)).map(hit => hit.id)).toEqual([ordinary.id])
+  expect((await chatApi.queryConversations({ limit: 1 })).items.map(item => item.id)).toEqual([ordinary.id])
   const window = await chatApi.openBot(assistant.id)
   expect(window.history_total).toBe(70)
   expect(window.messages).toHaveLength(60)

@@ -8,6 +8,7 @@ import { Input, Select } from '../settings/public/controls'
 import { useLang } from '../components/i18n'
 import { WorksIcon } from '../settings/public/icons'
 import { artifactDataUrl, artifactMimeType } from './artifacts'
+import { artifactsForConversation } from './bot/artifactScope'
 import { DockContextMenu, type DockMenuAnchor } from './dock/DockContextMenu'
 import './ArtifactsCenter.css'
 import { confirmDialog } from '../components/dialogQueue'
@@ -82,7 +83,11 @@ function kindOf(item: ArtifactLibraryItem): Kind {
   return 'other'
 }
 
-export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (id: string) => void }) {
+export function ArtifactsCenter({ onOpenConversation, conversationId = null, onClearScope }: {
+  onOpenConversation: (id: string) => void
+  conversationId?: string | null
+  onClearScope?: () => void
+}) {
   const zh = useLang() === 'zh'
   const [works, setWorks] = useWindowStore(worksWindow)
   const error = works.error
@@ -115,7 +120,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   const groups = useMemo(() => {
     const deleted = new Set(works.deletedIds)
     const result = new Map<string, ArtifactLibraryItem[]>()
-    for (const item of page.items) {
+    for (const item of artifactsForConversation(page.items, conversationId)) {
       if (deleted.has(item.id)) continue
       const versions = result.get(item.workId) ?? []
       versions.push(item)
@@ -123,7 +128,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
     }
     for (const versions of result.values()) versions.sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id))
     return [...result.values()].sort((a, b) => b[0].createdAt - a[0].createdAt)
-  }, [page.items, works.deletedIds])
+  }, [conversationId, page.items, works.deletedIds])
   const kindCounts = useMemo(() => {
     const counts = new Map<Kind, number>()
     for (const [item] of groups) counts.set(kindOf(item), (counts.get(kindOf(item)) ?? 0) + 1)
@@ -244,6 +249,10 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   }, [managing, setWorks])
 
   return <section className={`kv-works custom-scrollbar${managing ? ' is-selecting' : ''}`} aria-label={zh ? '作品' : 'Works'}>
+    {conversationId && <div className="flex items-center justify-between gap-3 px-4 py-2 text-[12px] text-neutral-600" role="status">
+      <span>{zh ? '只显示这位 Bot 的成果' : 'Showing this Bot’s artifacts'}</span>
+      {onClearScope && <Button size="sm" onClick={onClearScope}>{zh ? '查看全部成果' : 'Show all artifacts'}</Button>}
+    </div>}
     <header className="kv-works-header">
       <div><h1>{zh ? '作品' : 'Works'} <span>{groups.length}</span></h1>
         <p>{zh ? '集中展示聊天交付的文件和媒体站生成的图片、视频，原文件位置不变。' : 'Files delivered in chats and images and videos from Media studio, together here. Original files stay where they were created.'}</p></div>

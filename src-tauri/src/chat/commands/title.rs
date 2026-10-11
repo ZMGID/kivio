@@ -669,6 +669,7 @@ mod tests {
             model: None,
             timestamp: 1,
             degraded: None,
+            peer: None,
         }
     }
 

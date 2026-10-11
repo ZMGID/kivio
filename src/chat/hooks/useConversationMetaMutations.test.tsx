@@ -100,6 +100,23 @@ describe('useConversationMetaMutations: metadata fields', () => {
     expect(mockUpdate).not.toHaveBeenCalled()
   })
 
+  it('changes Bot thinking without changing the Agent draft or preference', async () => {
+    let globalLevel = 'off'
+    let agentDraft = 'off'
+    let stored = conversation({ id: 'conv_bot_ada', thinking_level: 'off' })
+    vi.mocked(saveLastThinkingLevel).mockImplementation(level => { globalLevel = level ?? 'high' })
+    mockUpdate.mockImplementation(async (_id, patch) => {
+      stored = { ...stored, thinking_level: patch.thinkingLevel }
+      return stored
+    })
+    const { result, draft } = setup(stored)
+    draft.setThinkingLevel.mockImplementation(level => { agentDraft = level })
+    await act(async () => { await result.current.changeThinkingLevel('high') })
+    expect(stored.thinking_level).toBe('high')
+    expect(globalLevel).toBe('off')
+    expect(agentDraft).toBe('off')
+  })
+
   it('surfaces failures for user-visible fields but stays silent for knowledge-base mounts', async () => {
     mockUpdate.mockRejectedValue(new Error('nope'))
     const { result, setStreamErrorForConversation } = setup()

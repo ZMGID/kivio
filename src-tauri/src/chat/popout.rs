@@ -103,12 +103,14 @@ pub fn close_popout_for_conversation(app: &AppHandle, conversation_id: &str) {
 pub fn protocol_filter_for_window(
     label: &str,
     conversation_id: Option<String>,
+    bot_workspace: bool,
 ) -> protocol::ChatProtocolFilter {
     if let Some(id) = conversation_id_from_label(label) {
         protocol::ChatProtocolFilter::Conversation(id.to_string())
     } else {
         match conversation_id {
             Some(id) if !id.trim().is_empty() => protocol::ChatProtocolFilter::Conversation(id),
+            _ if label == "chat" => protocol::ChatProtocolFilter::Workspace { bot: bot_workspace },
             _ => protocol::ChatProtocolFilter::All,
         }
     }
@@ -217,15 +219,15 @@ mod tests {
     #[test]
     fn popout_label_forces_conversation_filter_even_without_js_id() {
         assert_eq!(
-            protocol_filter_for_window("chat-popout-conv_abc", None),
+            protocol_filter_for_window("chat-popout-conv_abc", None, false),
             protocol::ChatProtocolFilter::Conversation("conv_abc".into()),
         );
         assert_eq!(
-            protocol_filter_for_window("chat", None),
-            protocol::ChatProtocolFilter::All,
+            protocol_filter_for_window("chat", None, false),
+            protocol::ChatProtocolFilter::Workspace { bot: false },
         );
         assert_eq!(
-            protocol_filter_for_window("chat", Some("conv_abc".into())),
+            protocol_filter_for_window("chat", Some("conv_abc".into()), false),
             protocol::ChatProtocolFilter::Conversation("conv_abc".into()),
         );
     }

@@ -378,6 +378,9 @@ impl ChatRuntimeState {
 
     pub(crate) fn try_begin_reply(&self, conversation_id: &str, run_id: &str) -> bool {
         let mut indexes = self.indexes();
+        if another_bot_thread_is_replying(&indexes, conversation_id) {
+            return false;
+        }
         let runs = indexes
             .active_replies
             .entry(conversation_id.to_string())
@@ -387,22 +390,19 @@ impl ChatRuntimeState {
 
     pub(crate) fn try_reserve_send(&self, conversation_id: &str, run_id: &str) -> bool {
         let mut indexes = self.indexes();
+        if reply_owner_is_busy(&indexes, conversation_id) {
+            return false;
+        }
         let runs = indexes
             .active_replies
             .entry(conversation_id.to_string())
             .or_default();
-        if !runs.is_empty() {
-            return false;
-        }
         runs.insert(run_id.to_string());
         true
     }
 
     pub(crate) fn has_active_reply(&self, conversation_id: &str) -> bool {
-        self.indexes()
-            .active_replies
-            .get(conversation_id)
-            .is_some_and(|runs| !runs.is_empty())
+        reply_owner_is_busy(&self.indexes(), conversation_id)
     }
 
     pub(crate) fn end_reply(&self, conversation_id: &str, run_id: &str) {
@@ -442,6 +442,28 @@ impl ChatRuntimeState {
     fn indexes(&self) -> std::sync::MutexGuard<'_, ChatRunIndexes> {
         self.runs.lock().unwrap_or_else(|error| error.into_inner())
     }
+}
+
+fn bot_reply_owner(conversation_id: &str) -> Option<&str> {
+    super::bot_profile::assistant_id_from_member_conversation(conversation_id)
+        .or_else(|| super::bot_profile::assistant_id_from_conversation(conversation_id))
+}
+
+fn another_bot_thread_is_replying(indexes: &ChatRunIndexes, conversation_id: &str) -> bool {
+    let Some(owner) = bot_reply_owner(conversation_id) else {
+        return false;
+    };
+    indexes.active_replies.iter().any(|(id, runs)| {
+        id != conversation_id && !runs.is_empty() && bot_reply_owner(id) == Some(owner)
+    })
+}
+
+fn reply_owner_is_busy(indexes: &ChatRunIndexes, conversation_id: &str) -> bool {
+    indexes
+        .active_replies
+        .get(conversation_id)
+        .is_some_and(|runs| !runs.is_empty())
+        || another_bot_thread_is_replying(indexes, conversation_id)
 }
 
 fn has_active_generation(indexes: &ChatRunIndexes, conversation_id: &str) -> bool {
@@ -535,6 +557,29 @@ mod tests {
         assert!(runtime.has_active_reply("a"));
         runtime.end_reply("a", "run-2");
         assert!(runtime.try_reserve_send("a", "send"));
+    }
+
+    #[test]
+    fn bot_send_admission_is_shared_across_private_and_member_threads() {
+        let runtime = ChatRuntimeState::default();
+        let private = "conv_bot_asst_a";
+        let room_a = "conv_bot_member_asst_a@room_a";
+        let room_b = "conv_bot_member_asst_a@room_b";
+        let colleague = "conv_bot_member_asst_b@room_a";
+        assert!(runtime.try_reserve_send(private, "private-send"));
+        assert!(!runtime.try_reserve_send(room_a, "group-send"));
+        assert!(!runtime.try_begin_reply(room_a, "group-run"));
+        assert!(runtime.try_reserve_send(colleague, "colleague-send"));
+        runtime.end_reply(private, "private-send");
+        assert!(runtime.try_reserve_send(room_a, "group-send"));
+        assert!(runtime.try_begin_reply(room_a, "group-run"));
+        runtime.end_reply(room_a, "group-send");
+        assert!(runtime.has_active_reply(private));
+        assert!(!runtime.try_reserve_send(room_b, "second-room"));
+        runtime.cancel_conversation(private);
+        assert!(!runtime.try_reserve_send(private, "private-again"));
+        runtime.end_reply(room_a, "group-run");
+        assert!(runtime.try_reserve_send(private, "private-again"));
     }
 
     #[tokio::test]

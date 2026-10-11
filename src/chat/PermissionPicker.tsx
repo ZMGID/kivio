@@ -1,14 +1,15 @@
 import { memo, useMemo, useRef, useState } from 'react'
-import { Check } from 'lucide-react'
+import { Check, ChevronDown } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { derivePermissionModes } from './permissionModes'
-import { chatTitlebarIconButtonClass } from './platform'
+import { chatTitlebarIconButtonClass, chatTitlebarPillButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { AgentRuntimeConfig } from './types'
 import { usePopoverMenu } from './usePopoverMenu'
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
+  showLabel?: boolean
   /** Built-in agent tool-approval policy. */
   approvalPolicy?: string
   onApprovalPolicyChange?: (policy: string) => void
@@ -21,6 +22,7 @@ interface PermissionPickerProps {
  */
 function PermissionPickerBase({
   agentRuntime,
+  showLabel = false,
   approvalPolicy,
   onApprovalPolicyChange,
 }: PermissionPickerProps) {
@@ -54,7 +56,7 @@ function PermissionPickerBase({
         onClick={() => setOpen(!open)}
         aria-haspopup="menu"
         aria-expanded={open}
-        className={`${chatTitlebarIconButtonClass} ${
+        className={`${showLabel ? chatTitlebarPillButtonClass : chatTitlebarIconButtonClass} ${
           open
             ? 'bg-neutral-900/[0.06] text-neutral-800'
             : 'hover:text-neutral-800'
@@ -63,6 +65,7 @@ function PermissionPickerBase({
         aria-label={t.chatApprovalPolicy.replace('{name}', currentLabel)}
       >
         <CurrentIcon size={16} strokeWidth={1.8} />
+        {showLabel && <><span>{currentLabel}</span><ChevronDown size={14} /></>}
       </button>
       {open && (
         <>

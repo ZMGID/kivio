@@ -1,4 +1,5 @@
 // Chat 前端类型定义
+import type { PeerMessage } from '../generated/botCollaboration'
 
 export type ToolCallStatus =
   | 'pending'
@@ -185,10 +186,16 @@ export interface ChatMessageSegment {
   toolCallId?: string | null
 }
 
+export type { PeerMessage } from '../generated/botCollaboration'
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /**
+   * Present when this row was delivered by a colleague. Absent on messages the user typed.
+   */
+  peer_message?: PeerMessage | null
   attachments?: Attachment[]
   reasoning?: string
   artifacts?: ChatToolArtifact[]

@@ -76,6 +76,24 @@ describe('normalizeStoredChatRoute', () => {
 })
 
 describe('right dock tab persistence', () => {
+  it('keeps Bot window layout preferences separate from the Agent workspace', () => {
+    window.localStorage.clear()
+    window.history.replaceState(null, '', '/#chat')
+    rememberSidebarWidth(310)
+    rememberDockTab('git')
+    window.history.replaceState(null, '', '/?workspace=bot#chat')
+    expect(getRememberedSidebarWidth()).toBe(SIDEBAR_DEFAULT_WIDTH)
+    expect(getRememberedDockTab()).toBe('files')
+    rememberSidebarWidth(220)
+    rememberDockTab('tasks')
+    window.history.replaceState(null, '', '/#chat')
+    expect(getRememberedSidebarWidth()).toBe(310)
+    expect(getRememberedDockTab()).toBe('git')
+    window.history.replaceState(null, '', '/?workspace=bot#chat')
+    expect(getRememberedSidebarWidth()).toBe(220)
+    expect(getRememberedDockTab()).toBe('tasks')
+    window.history.replaceState(null, '', '/#chat')
+  })
   it('falls back to files for the removed trajectory / Pi sessions keys', () => {
     window.localStorage.clear()
     window.localStorage.setItem('kivio-chat-dock-tab', 'trajectory')

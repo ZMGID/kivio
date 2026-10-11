@@ -40,6 +40,16 @@ const base = {
 }
 
 describe('ConversationTitlebarControls', () => {
+  it('keeps model controls but removes runtime selection for Bot conversations', () => {
+    const { queryByTestId, getByTestId } = render(
+      <ConversationTitlebarControls {...base} conversationId="conv_bot_research"
+        activeAgentRuntime={{ kind: 'builtin' }} usesExternalRuntime={false} />,
+    )
+    expect(queryByTestId('runtime-picker')).toBeNull()
+    expect(getByTestId('model-selector')).toBeTruthy()
+    expect(getByTestId('thinking')).toBeTruthy()
+  })
+
   it('renders the external model picker for a CLI runtime', () => {
     const { getByTestId, queryByTestId } = render(
       <ConversationTitlebarControls
