@@ -5,7 +5,15 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    "lib": [
+      "ES2020"
+    ],
+    "resolveJsonModule": true
   },
-  "include": ["vite.config.ts"]
+  "include": [
+    "vite.config.ts",
+    "src/generated/chatProtocol.schema.json",
+    "src/generated/chatSync.schema.json"
+  ]
 }

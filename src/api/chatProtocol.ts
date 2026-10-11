@@ -1,7 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
-import Ajv2020 from 'ajv/dist/2020'
-import schema from '../generated/chatProtocol.schema.json'
-import syncSchema from '../generated/chatSync.schema.json'
+import { validateEvent, validateSync } from 'virtual:chat-protocol-validators'
 import {
   CHAT_PROTOCOL_VERSION,
   type ChatProtocolEvent,
@@ -24,16 +22,6 @@ type RunState = {
 
 const MAX_PENDING_EVENTS = 500
 
-const ajv = new Ajv2020({
-  allErrors: true,
-  strict: false,
-  formats: {
-    float: true, uint8: true, uint32: true, uint64: true, int64: true,
-    double: { type: 'number', validate: Number.isFinite },
-  },
-})
-const validateEvent = ajv.compile(schema)
-const validateSync = ajv.compile(syncSchema)
 const subscribers = new Set<Subscriber>()
 const issueSubscribers = new Set<(issue: ChatProtocolIssue, conversationId?: string) => void>()
 const runs = new Map<string, RunState>()
