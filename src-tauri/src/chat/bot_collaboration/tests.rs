@@ -85,6 +85,7 @@ fn busy_recipient_replies_once_with_native_output() {
         .finish(
             &claimed.id,
             "t2",
+            Actor::bot(&claimed.to_bot_id, &claimed.to_name),
             RunFinish::Succeeded {
                 native_output: "草案可以，补一节风险".into(),
                 model_enqueued: false,
@@ -98,7 +99,7 @@ fn busy_recipient_replies_once_with_native_output() {
     assert_eq!(reply.kind, DeliveryKind::Reply);
     assert_eq!(reply.depth, 1);
     match &reply.from {
-        Actor::Bot { id, name } => {
+        Actor::Bot { id, name, .. } => {
             assert_eq!(id, "b");
             assert_eq!(name, "Bo");
         }
@@ -120,6 +121,7 @@ fn busy_recipient_replies_once_with_native_output() {
         .finish(
             &claimed_reply.id,
             "t5",
+            Actor::bot(&claimed_reply.to_bot_id, &claimed_reply.to_name),
             RunFinish::Succeeded {
                 native_output: "收到".into(),
                 model_enqueued: false,
@@ -175,6 +177,7 @@ fn model_enqueued_reply_is_not_duplicated() {
         .finish(
             &claimed.id,
             "tok",
+            Actor::bot(&claimed.to_bot_id, &claimed.to_name),
             RunFinish::Succeeded {
                 native_output: "模型已经调用了回复工具".into(),
                 model_enqueued: true,
@@ -413,6 +416,7 @@ fn room_of_three_bots_keeps_each_identity() {
         .finish(
             &first.id,
             "ava-tok",
+            Actor::bot(&first.to_bot_id, &first.to_name),
             RunFinish::Succeeded {
                 native_output: "草稿甲".into(),
                 model_enqueued: false,
@@ -446,6 +450,7 @@ fn room_of_three_bots_keeps_each_identity() {
     svc.finish(
         &second.id,
         "bo-tok",
+        Actor::bot(&second.to_bot_id, &second.to_name),
         RunFinish::Succeeded {
             native_output: "复核乙".into(),
             model_enqueued: false,
@@ -601,6 +606,7 @@ fn group_stop_cancels_only_that_room_cycle() {
         .finish(
             &running.id,
             "run",
+            Actor::bot(&running.to_bot_id, &running.to_name),
             RunFinish::Succeeded {
                 native_output: "已经开始的结果".into(),
                 model_enqueued: false,
@@ -721,6 +727,7 @@ fn restart_marks_running_interrupted_and_keeps_the_other_item_queued() {
         .finish(
             &running.id,
             "live",
+            Actor::bot(&running.to_bot_id, &running.to_name),
             RunFinish::Succeeded {
                 native_output: "不该重放".into(),
                 model_enqueued: false,
@@ -777,6 +784,7 @@ fn claim_token_is_idempotent() {
         .finish(
             &delivery.id,
             "other",
+            Actor::bot(&delivery.to_bot_id, &delivery.to_name),
             RunFinish::Succeeded {
                 native_output: "错的认领".into(),
                 model_enqueued: false,
@@ -793,6 +801,7 @@ fn claim_token_is_idempotent() {
         .finish(
             &delivery.id,
             "tok",
+            Actor::bot(&delivery.to_bot_id, &delivery.to_name),
             RunFinish::Succeeded {
                 native_output: "对的结果".into(),
                 model_enqueued: false,
@@ -805,6 +814,7 @@ fn claim_token_is_idempotent() {
         .finish(
             &delivery.id,
             "tok",
+            Actor::bot(&delivery.to_bot_id, &delivery.to_name),
             RunFinish::Succeeded {
                 native_output: "第二次".into(),
                 model_enqueued: false,
@@ -1294,6 +1304,7 @@ fn unaddressed_broadcast_is_bounded_and_does_not_chain() {
         .finish(
             &claimed.id,
             &token,
+            Actor::bot(&claimed.to_bot_id, &claimed.to_name),
             RunFinish::Succeeded {
                 native_output: "只记在房间里".into(),
                 model_enqueued: false,
@@ -1799,5 +1810,153 @@ fn peer_replay_keeps_ordinary_text_one_envelope_and_its_own_delivery() {
             .filter(|part| part.contains("[Video attachment:"))
             .count(),
         1
+    );
+}
+
+#[test]
+fn old_actor_records_keep_their_default_avatar() {
+    let old = serde_json::json!({"kind": "bot", "id": "asst_ava", "name": "Ava"});
+    let actor: Actor = serde_json::from_value(old.clone()).unwrap();
+    assert!(matches!(
+        &actor,
+        Actor::Bot {
+            icon: None,
+            color: None,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_value(&actor).unwrap(), old);
+}
+
+#[test]
+fn historical_appearance_survives_reply_room_mirroring_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = service(dir.path());
+    let room = svc
+        .create_room(
+            "Design",
+            vec![
+                MemberInput {
+                    bot_id: "asst_ava".into(),
+                    name: "Ava".into(),
+                },
+                MemberInput {
+                    bot_id: "asst_bo".into(),
+                    name: "Bo".into(),
+                },
+            ],
+            1,
+        )
+        .unwrap();
+    let mut assistant: crate::chat::types::ChatAssistant = serde_json::from_value(
+        serde_json::json!({"id": "asst_ava", "name": "Ava", "icon": "kivio-avatar:v1:round:bright:glasses", "color": "#34a678", "created_at": 1, "updated_at": 1})
+    ).unwrap();
+    let source = Actor::from_assistant(&assistant);
+    let inbound = svc
+        .enqueue(
+            Enqueue {
+                from: source.clone(),
+                to_bot_id: "asst_bo".into(),
+                to_name: "Bo".into(),
+                room_id: Some(room.id.clone()),
+                kind: DeliveryKind::Mention,
+                body: "Draft".into(),
+                exchange_id: None,
+                parent_delivery_id: None,
+                sensitive: false,
+                approved: true,
+                attachment_ids: Vec::new(),
+                attachment_sources: Vec::new(),
+            },
+            2,
+        )
+        .unwrap();
+    assistant.id = "asst_bo".into();
+    assistant.name = "Bo".into();
+    assistant.icon = "kivio-avatar:v1:square:calm:headphones".into();
+    assistant.color = "#a467cd".into();
+    let recipient = Actor::from_assistant(&assistant);
+    // Changing the profile after capture must not recolor the in-flight reply.
+    assistant.icon = "replacement".into();
+    assistant.color = "#000000".into();
+    svc.claim_next(&HashSet::new(), "reply".into(), 3)
+        .unwrap()
+        .unwrap();
+    assert!(svc.begin_send(&inbound.id, "reply", 4).unwrap());
+    let report = svc
+        .finish(
+            &inbound.id,
+            "reply",
+            recipient.clone(),
+            RunFinish::Succeeded {
+                native_output: "Reviewed".into(),
+                model_enqueued: false,
+            },
+            5,
+        )
+        .unwrap();
+    let reply = report.follow_up.unwrap();
+    assert_eq!(reply.from, recipient);
+    // Transport provenance uses the same stored appearance, without another lookup.
+    assert_eq!(super::types::PeerMessage::from(&inbound).from, source);
+    assert_eq!(super::types::PeerMessage::from(&reply).from, recipient);
+    let claimed_reply = svc
+        .claim_next(&HashSet::new(), "final".into(), 6)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed_reply.id, reply.id);
+    assert!(svc.begin_send(&reply.id, "final", 7).unwrap());
+    let settled = svc
+        .finish(
+            &reply.id,
+            "final",
+            source.clone(),
+            RunFinish::Succeeded {
+                native_output: "Accepted".into(),
+                model_enqueued: false,
+            },
+            8,
+        )
+        .unwrap();
+    assert!(settled.follow_up.is_none());
+    drop(svc);
+    let reopened = service(dir.path());
+    let exchange = reopened.exchange(&inbound.exchange_id).unwrap();
+    assert_eq!(exchange.entries[0].actor, source);
+    assert_eq!(exchange.entries[1].actor, recipient);
+    assert_eq!(exchange.entries[2].actor, source);
+    let stored_source = serde_json::to_value(&exchange.entries[0].actor).unwrap();
+    assert_eq!(
+        stored_source["icon"],
+        "kivio-avatar:v1:round:bright:glasses"
+    );
+    assert_eq!(stored_source["color"], "#34a678");
+    let stored_reply = serde_json::to_value(&exchange.entries[1].actor).unwrap();
+    assert_eq!(
+        stored_reply["icon"],
+        "kivio-avatar:v1:square:calm:headphones"
+    );
+    assert_eq!(stored_reply["color"], "#a467cd");
+    let log = reopened.room(&room.id).unwrap().log;
+    assert_eq!(
+        log.iter()
+            .find(|entry| entry.body == "Draft")
+            .unwrap()
+            .actor,
+        source
+    );
+    assert_eq!(
+        log.iter()
+            .find(|entry| entry.body == "Reviewed")
+            .unwrap()
+            .actor,
+        recipient
+    );
+    assert_eq!(
+        log.iter()
+            .find(|entry| entry.body == "Accepted")
+            .unwrap()
+            .actor,
+        source
     );
 }

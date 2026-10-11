@@ -647,6 +647,7 @@ impl Collaboration {
         &mut self,
         id: &str,
         token: &str,
+        recipient_actor: Actor,
         outcome: RunFinish,
         now: i64,
     ) -> Result<FinishReport, String> {
@@ -674,6 +675,9 @@ impl Collaboration {
             DeliveryStatus::Claimed | DeliveryStatus::Running
         ) {
             return Err("这次投递还不能写入运行结果".into());
+        }
+        if recipient_actor.bot_id() != Some(existing.to_bot_id.as_str()) {
+            return Err("回复 Bot 身份与投递接收者不一致".into());
         }
         let mut follow = None;
         let native = match &outcome {
@@ -720,7 +724,7 @@ impl Collaboration {
         } = &outcome
         {
             if self.should_follow_up(&existing, *model_enqueued) {
-                let from = Actor::bot(&existing.to_bot_id, &existing.to_name);
+                let from = recipient_actor.clone();
                 match self.enqueue(
                     Enqueue {
                         from,
@@ -759,7 +763,7 @@ impl Collaboration {
                                 ExchangeEntry {
                                     id: new_id("ent"),
                                     at: now,
-                                    actor: Actor::bot(&existing.to_bot_id, &existing.to_name),
+                                    actor: recipient_actor.clone(),
                                     kind: DeliveryKind::Reply,
                                     body: native_output.clone(),
                                     delivery_id: existing.id.clone(),
@@ -775,7 +779,7 @@ impl Collaboration {
                     ExchangeEntry {
                         id: new_id("ent"),
                         at: now,
-                        actor: Actor::bot(&existing.to_bot_id, &existing.to_name),
+                        actor: recipient_actor.clone(),
                         kind: DeliveryKind::Reply,
                         body: native_output.clone(),
                         delivery_id: existing.id.clone(),
@@ -786,7 +790,7 @@ impl Collaboration {
                 if let Some(room_id) = existing.room_id.clone() {
                     self.push_log(
                         &room_id,
-                        Actor::bot(&existing.to_bot_id, &existing.to_name),
+                        recipient_actor.clone(),
                         LogKind::Message,
                         native_output,
                         Some(&existing.id),
@@ -798,7 +802,7 @@ impl Collaboration {
             let detail = error.unwrap_or_else(|| "运行没有继续".into());
             self.push_log(
                 &room_id,
-                Actor::bot(&existing.to_bot_id, &existing.to_name),
+                recipient_actor,
                 LogKind::Status,
                 &detail,
                 Some(&existing.id),

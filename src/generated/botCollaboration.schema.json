@@ -58,6 +58,18 @@
         {
           "type": "object",
           "properties": {
+            "color": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "icon": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },

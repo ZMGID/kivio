@@ -268,10 +268,12 @@ impl BotCollaboration {
         &self,
         id: &str,
         token: &str,
+        recipient_actor: Actor,
         outcome: RunFinish,
         now: i64,
     ) -> Result<FinishReport, String> {
-        let report = self.with_mut(|collab| collab.finish(id, token, outcome, now))?;
+        let report =
+            self.with_mut(|collab| collab.finish(id, token, recipient_actor, outcome, now))?;
         self.wake.notify_waiters();
         Ok(report)
     }
@@ -305,7 +307,7 @@ impl BotCollaboration {
         }
         let from = match &delivery.from {
             Actor::User => "用户".to_string(),
-            Actor::Bot { name, id } => format!("{name}（{id}）"),
+            Actor::Bot { name, id, .. } => format!("{name}（{id}）"),
         };
         Some(format!(
             "这次回复来自同伴投递 {}，发送方是 {from}。使用当前助手自己的配置和记忆。不要把发送方的会话摘要当作自己的记忆，也不要代替其他 Bot 发言。敏感交接必须等用户确认。",
@@ -505,22 +507,38 @@ pub fn actor_for_conversation(app: &AppHandle, conversation_id: &str) -> Result<
     if let Some(identity) = member_conversation_identity(app, conversation_id)? {
         if bot_id_from_conversation(conversation_id).is_some() {
             let conversation = crate::chat::storage::load_conversation(app, conversation_id)?;
-            return Ok(Actor::bot(identity.bot_id, bot_name(&conversation)));
+            return Ok(actor_for_bot(
+                app,
+                &identity.bot_id,
+                bot_name(&conversation),
+            ));
         }
         if crate::chat::bot_profile::assistant_id_from_member_conversation(conversation_id)
             .is_some()
         {
             if let Ok(conversation) = crate::chat::storage::load_conversation(app, conversation_id)
             {
-                return Ok(Actor::bot(identity.bot_id, bot_name(&conversation)));
+                return Ok(actor_for_bot(
+                    app,
+                    &identity.bot_id,
+                    bot_name(&conversation),
+                ));
             }
         }
-        return Ok(Actor::bot(identity.bot_id, identity.name));
+        return Ok(actor_for_bot(app, &identity.bot_id, identity.name));
     }
     if collaboration_conversation(app, conversation_id) {
         return Ok(Actor::User);
     }
     Err("只有 Bot 会话可以投递给同伴".into())
+}
+
+/// Capture the authoritative profile once, before creating a historical actor.
+/// Legacy Bots without an assistant profile safely keep their name/default avatar.
+pub(super) fn actor_for_bot(app: &AppHandle, bot_id: &str, name: String) -> Actor {
+    crate::chat::storage::get_assistant(app, bot_id)
+        .map(|assistant| Actor::from_assistant(&assistant))
+        .unwrap_or_else(|_| Actor::bot(bot_id, name))
 }
 
 fn bot_name(conversation: &Conversation) -> String {
@@ -621,9 +639,14 @@ async fn run_claimed(app: &AppHandle, claim: DispatchClaim) {
     };
     let id = claim.delivery.id.clone();
     let token = claim.delivery.claim_token.clone().unwrap_or_default();
+    let recipient_actor = actor_for_bot(
+        app,
+        &claim.delivery.to_bot_id,
+        claim.delivery.to_name.clone(),
+    );
     let end = execute_delivery(app, claim).await;
     if let ExecuteEnd::Finish(outcome) = end {
-        if let Err(err) = service.finish(&id, &token, outcome, now_secs()) {
+        if let Err(err) = service.finish(&id, &token, recipient_actor, outcome, now_secs()) {
             eprintln!("[bot-collaboration] 写入运行结果失败：{err}");
         }
     }

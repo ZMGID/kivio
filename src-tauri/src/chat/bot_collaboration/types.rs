@@ -184,7 +184,15 @@ pub fn validate_bot_id(bot_id: &str) -> Result<&str, String> {
 #[ts(tag = "kind", rename_all = "snake_case")]
 pub enum Actor {
     User,
-    Bot { id: String, name: String },
+    Bot {
+        id: String,
+        name: String,
+        // Appearance at message creation; old records retain the default avatar.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
 }
 
 impl Actor {
@@ -192,6 +200,17 @@ impl Actor {
         Self::Bot {
             id: id.into(),
             name: name.into(),
+            icon: None,
+            color: None,
+        }
+    }
+
+    pub fn from_assistant(assistant: &crate::chat::types::ChatAssistant) -> Self {
+        Self::Bot {
+            id: assistant.id.clone(),
+            name: assistant.name.clone(),
+            icon: (!assistant.icon.is_empty()).then(|| assistant.icon.clone()),
+            color: (!assistant.color.is_empty()).then(|| assistant.color.clone()),
         }
     }
 

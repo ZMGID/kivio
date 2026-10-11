@@ -2,7 +2,9 @@
 
 use tauri::AppHandle;
 
-use super::runtime::{actor_for_conversation, now_secs, publish, require_bot, try_service};
+use super::runtime::{
+    actor_for_bot, actor_for_conversation, now_secs, publish, require_bot, try_service,
+};
 use super::types::{
     normalize_attachment_ids, Actor, BroadcastReceipt, Delivery, DeliveryKind, Enqueue,
     MemberInput, MemberSession, PendingAction, PendingKind, Room, RoomMember,
@@ -217,7 +219,7 @@ pub fn actor_from_command(app: &AppHandle, from_bot_id: Option<String>) -> Resul
     match from_bot_id {
         Some(bot_id) => {
             let member = require_bot(app, &bot_id)?;
-            Ok(Actor::bot(member.bot_id, member.name))
+            Ok(actor_for_bot(app, &member.bot_id, member.name))
         }
         None => Ok(Actor::User),
     }

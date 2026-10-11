@@ -49,7 +49,7 @@ pub fn classify_native_reply(
 pub fn peer_envelope(peer: &PeerMessage, body: &str) -> String {
     let from = match &peer.from {
         Actor::User => "用户".to_string(),
-        Actor::Bot { id, name } => format!("{name}（{id}）"),
+        Actor::Bot { id, name, .. } => format!("{name}（{id}）"),
     };
     let room = peer.room_id.as_deref().unwrap_or("直接");
     let kind = match peer.kind {
