@@ -202,7 +202,7 @@ Import is a display snapshot. The history still belongs to the original CLI. Con
 <details>
 <summary><strong>Environment and commands</strong></summary>
 
-You need Node.js, npm, Rust, and Tauri 2 platform deps. macOS also needs Swift for the OCR sidecar.
+You need Node.js 20.19+ (a version supported by ESLint), npm, Rust, and Tauri 2 platform deps. macOS also needs Swift for the OCR sidecar.
 
 ```bash
 npm install
@@ -212,6 +212,8 @@ npm run lint
 npm run typecheck
 npm test
 ```
+
+Lint configuration is in [`eslint.config.mjs`](eslint.config.mjs). `@shadcn/lint` is registered without enabling new rules; add chosen `shadcn/*` rules in its `rules` object. See the [available rules](https://github.com/shadcn-ui/lint#rules) and [configuration examples](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md).
 
 Rust tests:
 

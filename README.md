@@ -203,7 +203,7 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 <details>
 <summary><strong>环境与命令</strong></summary>
 
-需要 Node.js、npm、Rust，以及 Tauri 2 的平台依赖。macOS 上 OCR sidecar 还需要 Swift。
+需要 Node.js 20.19+（且版本须受 ESLint 支持）、npm、Rust，以及 Tauri 2 的平台依赖。macOS 上 OCR sidecar 还需要 Swift。
 
 ```bash
 npm install
@@ -213,6 +213,8 @@ npm run lint
 npm run typecheck
 npm test
 ```
+
+Lint 配置位于 [`eslint.config.mjs`](eslint.config.mjs)。`@shadcn/lint` 已注册，尚未启用新规则；需要时在其中的 `rules` 对象添加所选的 `shadcn/*` 规则。参见[可用规则](https://github.com/shadcn-ui/lint#rules)和[配置示例](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md)。
 
 Rust 测试：
 
