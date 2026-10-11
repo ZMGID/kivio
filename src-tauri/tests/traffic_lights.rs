@@ -67,6 +67,36 @@ fn main() {
                 Some(26.0)
             );
 
+            // A background button update must not rely on a frame notification,
+            // a parent layout pass, or the next focus event to restore alignment.
+            let _: () = msg_send![window, makeKeyWindow];
+            let _: () = msg_send![window, resignKeyWindow];
+            let key: bool = msg_send![window, isKeyWindow];
+            assert!(!key);
+            let zoom: id = msg_send![window, standardWindowButton: 2_u64];
+            for setter in 0..3 {
+                let _: () = msg_send![zoom, setPostsFrameChangedNotifications: false];
+                let mut frame: NSRect = msg_send![zoom, frame];
+                frame.origin.y += 14.0;
+                match setter {
+                    0 => {
+                        let _: () = msg_send![zoom, setFrame: frame];
+                    }
+                    1 => {
+                        let _: () = msg_send![zoom, setFrameOrigin: frame.origin];
+                    }
+                    _ => {
+                        frame.size.height += 4.0;
+                        let _: () = msg_send![zoom, setFrameSize: frame.size];
+                    }
+                }
+                assert_aligned(window, 26.0, native_spacing);
+                let _: () = msg_send![window, displayIfNeeded];
+                assert_aligned(window, 26.0, native_spacing);
+                recoveries += 1;
+            }
+            let _: () = msg_send![zoom, setPostsFrameChangedNotifications: true];
+
             for center in [26.0, 30.0, 36.0] {
                 assert!(traffic_lights::restore_macos_traffic_lights(window, center));
                 let close: id = msg_send![window, standardWindowButton: 0_u64];

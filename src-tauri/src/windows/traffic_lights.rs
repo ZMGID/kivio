@@ -299,6 +299,80 @@ unsafe fn observe_macos_traffic_light_layout(
         };
         object_setClass(view, subclass);
     }
+
+    // A button can move after its parent's layout, with frame notifications
+    // suppressed. Finish alignment at the geometry setter boundary as well:
+    // an inactive window must not wait for the next key-window notification.
+    unsafe fn button_superclass(this: &Object) -> &objc::runtime::Class {
+        let mut owner = this.class();
+        while !owner.name().starts_with("KivioAlignedTrafficButton_") {
+            owner = owner.superclass().unwrap();
+        }
+        owner.superclass().unwrap()
+    }
+    unsafe fn restore_after_button_change(this: &Object) {
+        let window: id = msg_send![this, window];
+        if window != nil {
+            let observer = objc_getAssociatedObject(window, &KEY);
+            if observer != nil && !*(*observer).get_ivar::<bool>("busy") {
+                restore_macos_traffic_lights(window, *(*observer).get_ivar::<f64>("targetCenter"));
+            }
+        }
+    }
+    extern "C" fn button_set_frame(this: &mut Object, _: Sel, frame: cocoa::foundation::NSRect) {
+        unsafe {
+            let _: () = msg_send![super(this, button_superclass(this)), setFrame: frame];
+            restore_after_button_change(this);
+        }
+    }
+    extern "C" fn button_set_origin(this: &mut Object, _: Sel, origin: cocoa::foundation::NSPoint) {
+        unsafe {
+            let _: () = msg_send![super(this, button_superclass(this)), setFrameOrigin: origin];
+            restore_after_button_change(this);
+        }
+    }
+    extern "C" fn button_set_size(this: &mut Object, _: Sel, size: cocoa::foundation::NSSize) {
+        unsafe {
+            let _: () = msg_send![super(this, button_superclass(this)), setFrameSize: size];
+            restore_after_button_change(this);
+        }
+    }
+    for view in [button, mini, zoom] {
+        if view == nil {
+            continue;
+        }
+        let mut ancestor = Some((*view).class());
+        let mut installed = false;
+        while let Some(class) = ancestor {
+            if class.name().starts_with("KivioAlignedTrafficButton_") {
+                installed = true;
+                break;
+            }
+            ancestor = class.superclass();
+        }
+        if installed {
+            continue;
+        }
+        let base = (*view).class();
+        let name = format!("KivioAlignedTrafficButton_{}", base.name());
+        let subclass = objc::runtime::Class::get(&name).unwrap_or_else(|| {
+            let mut decl = objc::declare::ClassDecl::new(&name, base).unwrap();
+            decl.add_method(
+                sel!(setFrame:),
+                button_set_frame as extern "C" fn(&mut Object, Sel, cocoa::foundation::NSRect),
+            );
+            decl.add_method(
+                sel!(setFrameOrigin:),
+                button_set_origin as extern "C" fn(&mut Object, Sel, cocoa::foundation::NSPoint),
+            );
+            decl.add_method(
+                sel!(setFrameSize:),
+                button_set_size as extern "C" fn(&mut Object, Sel, cocoa::foundation::NSSize),
+            );
+            decl.register()
+        });
+        object_setClass(view, subclass);
+    }
     observer
 }
 
