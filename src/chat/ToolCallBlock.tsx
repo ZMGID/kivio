@@ -1,8 +1,10 @@
+import { AutomationNotice } from './AutomationNotice'
+import { isAutomationNoticeTool } from './automationNoticeTools'
 import { type ComponentType, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { SubAgentToolCard } from './SubAgentToolCard'
 import { BotEventCard } from './bot/BotEventCard'
-import { isCollaborationTool } from './bot/collaboration'
+import { isBotActivityTool } from './bot/eventCard'
 import {
   AlertCircle,
   Bot,
@@ -475,16 +477,6 @@ function subagentStatusLine(t: I18n, view: SubagentView | null, status: ToolCall
   return t.toolCardStarting
 }
 
-function CardEyebrow({ running = false }: { running?: boolean }) {
-  // 品牌标记：7×7 实心方块（黑/白随主题）。运行中像终端光标一样步进闪烁，呼应官网运行轨迹方块。
-  return (
-    <span
-      className={`inline-block h-[7px] w-[7px] shrink-0 bg-neutral-900 dark:bg-neutral-100 ${running ? 'kv-card-eyebrow--running' : ''}`}
-      aria-hidden="true"
-    />
-  )
-}
-
 /** 卡片状态标记：完成用中性灰 ✓（不用应用全局那枚 accent blue ✓，保持 STYLE.md 纯灰阶
  *  调色板）；出错/取消/跳过沿用 StatusIcon 的中性图标；运行态不在此渲染（由 eyebrow 闪烁 +
  *  状态文字流光表达）。 */
@@ -520,12 +512,7 @@ function CardSection({ label, children }: { label: string; children: ReactNode }
   )
 }
 
-/** Shared boxed "consult card" shell for standalone delegations/consultations
- *  (SUBAGENT / ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
- *  status mark + status line + collapse; callers supply identity chips, metric
- *  chips, and the expandable body. Header order matches the original hand-rolled
- *  cards: eyebrow · LABEL · identity chips · status mark · metric chips ·
- *  status line · chevron. */
+/** Compact disclosure row shared by consultations and searches. */
 function ConsultCard({
   label,
   status,
@@ -547,7 +534,7 @@ function ConsultCard({
   const hasBody = Boolean(children)
   const running = status === 'running'
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:text-neutral-400">
+    <div className="not-prose mb-2 py-1.5 leading-5 text-[var(--text-muted)]">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}
@@ -556,8 +543,8 @@ function ConsultCard({
         className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left ${hasBody ? '' : 'cursor-default'}`}
         data-tauri-drag-region="false"
       >
-        <CardEyebrow running={running} />
-        <span className="shrink-0 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-neutral-800">
+        <ChevronDown size={13} aria-hidden="true" className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+        <span className="shrink-0 text-[12px] font-medium text-[var(--text)]">
           {label}
         </span>
         {identityChips}
@@ -569,7 +556,7 @@ function ConsultCard({
         {metricChips}
         {statusLine && (
           <span
-            className={`min-w-0 truncate font-mono text-[11px] ${
+            className={`min-w-0 break-words text-[11px] ${
               running ? 'reasoning-shimmer-text' : 'text-neutral-400 dark:text-neutral-500'
             }`}
           >
@@ -580,7 +567,7 @@ function ConsultCard({
 
       {hasBody && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px]">
+          <div className="mt-2 space-y-2 pl-5 text-[12.5px]">
             {children}
           </div>
         </ChatDisclosureBody>
@@ -2179,7 +2166,8 @@ export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: Too
 }
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
-  if (isCollaborationTool(toolRawName(props.toolCall))) {
+  if (isAutomationNoticeTool(toolRawName(props.toolCall))) return <AutomationNotice toolCall={props.toolCall} />
+  if (isBotActivityTool(toolRawName(props.toolCall))) {
     return <BotEventCard toolCall={props.toolCall} />
   }
   if ((props.toolCall.source === 'native' && ['agent', 'agent_control'].includes(toolRawName(props.toolCall))) || objectValue(props.toolCall.structured_content ?? props.toolCall.structuredContent)?.type === 'subagent_control') {

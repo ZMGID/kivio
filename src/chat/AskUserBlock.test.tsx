@@ -391,4 +391,22 @@ describe('AskUserBlock', () => {
     expect(screen.getByText('立即重试')).toBeInTheDocument()
     expect(screen.queryByRole('option')).not.toBeInTheDocument()
   })
+
+  it('collapses answered multi-question forms and reveals complete answers on demand', () => {
+    const fullAnswer = '保留完整答复。'.repeat(60)
+    render(<AskUserBlock toolCall={askUserCall({
+      phase: 'answered',
+      questions: [RETRY_QUESTION, { ...RETRY_QUESTION, id: 'second', prompt: '具体如何实现？' }],
+      answers: {
+        '0': { selected_option_ids: ['1'], custom_text: null },
+        second: { selected_option_ids: [], custom_text: fullAnswer },
+      },
+    })} />)
+    expect(screen.getByText('具体如何实现？')).not.toBeVisible()
+    fireEvent.click(screen.getByText('已回答 2 个问题'))
+    expect(screen.getByText('具体如何实现？')).toBeVisible()
+    expect(screen.getByText(fullAnswer)).toBeVisible()
+    expect(screen.getByText('立即重试')).toBeVisible()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
+  })
 })

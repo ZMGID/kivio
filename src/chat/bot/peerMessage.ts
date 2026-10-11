@@ -5,6 +5,8 @@ import type { ChatMessage } from '../types'
 export type InboundPeerMessage = {
   exchangeId: string
   senderName: string
+  icon?: string
+  color?: string
   kind: DeliveryKind
 }
 
@@ -14,6 +16,8 @@ export function peerMessageOf(message: ChatMessage): InboundPeerMessage | null {
   return {
     exchangeId: peer.exchangeId,
     senderName: peer.from.kind === 'bot' ? peer.from.name : '你',
+    icon: peer.from.kind === 'bot' ? peer.from.icon ?? undefined : undefined,
+    color: peer.from.kind === 'bot' ? peer.from.color ?? undefined : undefined,
     kind: peer.kind,
   }
 }

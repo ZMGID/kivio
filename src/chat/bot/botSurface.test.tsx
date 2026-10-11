@@ -11,6 +11,8 @@ import { createBlankAssistant } from '../assistantDraftStore'
 import { chatApi } from '../api'
 import { BotRoster } from '../BotRoster'
 import { BotGroupPane } from './BotGroupPane'
+import { BotPendingCards, BotPrivateRunCards } from './BotPendingCards'
+import { subscribePeerExchange } from './exchangeRequest'
 import { collaborationApi, type Exchange, type Room, type RoomMember } from './collaboration'
 import { resetCollaborationForTests } from './collaborationStore'
 import { PeerExchangeView } from './PeerExchangeView'
@@ -143,6 +145,7 @@ it('offers only bot profile contacts in the group member selector', async () => 
   ])
   render(<BotGroupPane roomId="alpha" onClose={() => {}} />)
   await screen.findByRole('heading', { name: 'Alpha' })
+  fireEvent.click(screen.getByRole('button', { name: t.chatBotManageMembers }))
   fireEvent.click(await screen.findByRole('button', { name: t.chatBotAddMember, expanded: false }))
   expect(await screen.findByRole('option', { name: 'Cara' })).toBeInTheDocument()
   expect(screen.queryByRole('option', { name: 'Ordinary' })).not.toBeInTheDocument()
@@ -205,7 +208,7 @@ it('uses the current directory name for active members and keeps the history aut
   render(<BotGroupPane roomId="alpha" onClose={() => {}} />)
   expect(await screen.findByRole('checkbox', { name: 'AdaPrime' })).toBeInTheDocument()
   const history = screen.getByText('historical line').closest('article')
-  expect(history?.textContent).toMatch(/Ada ·/)
+  expect(history?.textContent).toContain('Ada')
   expect(history?.textContent).not.toContain('AdaPrime')
   fireEvent.change(screen.getByPlaceholderText(t.chatBotGroupComposer), { target: { value: '@AdaPrime hello' } })
   fireEvent.click(screen.getByRole('button', { name: t.chatBotKindMention }))
@@ -271,7 +274,8 @@ it('shows private approval attention ahead of working, including outside the ope
     />,
   )
   await act(async () => { await assistantsReady })
-  fireEvent.click(await screen.findByRole('button', { name: t.chatBotNewGroup }))
+  fireEvent.click(screen.getByRole('button', { name: t.chatBotWorkspace }))
+  fireEvent.click(await screen.findByRole('menuitem', { name: t.chatBotNewGroup }))
   expect(screen.queryByRole('checkbox', { name: 'Ordinary' })).not.toBeInTheDocument()
   await act(async () => { resolveList([listedBot('ada', 'Ada'), listedBot('bee', 'Bee'), listedBot('cara', 'Cara')]) })
   expect(await screen.findByRole('checkbox', { name: 'Ada' })).toBeInTheDocument()
@@ -282,6 +286,92 @@ it('shows private approval attention ahead of working, including outside the ope
   expect(screen.getByRole('button', { name: /Gamma/ })).toHaveTextContent(t.chatBotWorking)
   expect(screen.getByRole('button', { name: /Ada/ })).toHaveTextContent(t.chatBotNeedsYou)
   expect(screen.getByRole('button', { name: /Ada/ })).not.toHaveTextContent(t.chatBotWorking)
+})
+
+
+it('renders group messages as Markdown and keeps system activity outside the conversation bubbles', async () => {
+  const group = room('alpha', 'Alpha', [member('ada', 'Ada')])
+  group.log = [
+    { id: 'message', at: 1, actor: { kind: 'bot', id: 'ada', name: 'Historical Ada' }, kind: 'message', body: '## Result\n\n**Ready**\n\n[Source](https://example.com/result)' },
+    { id: 'system', at: 2, actor: { kind: 'bot', id: 'ada', name: 'Ada' }, kind: 'membership', body: 'Ada joined the group' },
+  ]
+  vi.spyOn(collaborationApi, 'snapshot').mockResolvedValue(collaboration([group]))
+  render(<BotGroupPane roomId="alpha" onClose={() => {}} />)
+  const heading = await screen.findByRole('heading', { name: 'Result' })
+  expect(heading.closest('article')).toHaveTextContent('Historical Ada')
+  expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute('href', 'https://example.com/result')
+  expect(screen.getByText('Ada joined the group').closest('article')).toBeNull()
+})
+
+it('keeps member management on demand while reply and exchange actions reach their real targets', async () => {
+  const group = room('alpha', 'Alpha', [member('ada', 'Ada')])
+  group.log = [
+    { id: 'reply', at: 1, actor: { kind: 'bot', id: 'ada', name: 'Ada' }, kind: 'message', body: 'Reply here', deliveryId: 'reply' },
+    { id: 'handoff', at: 2, actor: { kind: 'bot', id: 'ada', name: 'Ada' }, kind: 'handoff', body: 'Work handed off', deliveryId: 'reply' },
+  ]
+  const state = collaboration([group])
+  const reply = exchange('ex-1', [{ id: 'reply', body: 'Reply here', at: 1 }])
+  vi.spyOn(collaborationApi, 'snapshot').mockResolvedValue({ ...state, deliveries: [{
+    id: 'reply', exchangeId: 'ex-1', entryId: 'reply', roomId: 'alpha', roomCycle: 1,
+    from: { kind: 'user' }, toBotId: 'ada', toName: 'Ada', toConversationId: 'conv_bot_ada',
+    kind: 'reply', body: 'Reply here', depth: 0, status: 'succeeded', admitted: true,
+    sensitive: false, receipts: [], createdAt: 1, updatedAt: 1,
+  }], exchanges: [reply] })
+  const openExchange = vi.fn()
+  const unsubscribe = subscribePeerExchange(openExchange)
+  try {
+    render(<BotGroupPane roomId="alpha" onClose={() => {}} onOpenMember={() => {}} />)
+    await screen.findByText('Reply here')
+    expect(screen.queryByRole('button', { name: t.chatBotRemoveMember })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: t.chatBotOpenMemberThread })).not.toBeInTheDocument()
+    const message = screen.getByText('Reply here').closest('article')!
+    const exchangeAction = within(message).getByRole('button', { name: t.chatBotOpenExchange })
+    expect(exchangeAction).not.toHaveTextContent(t.chatBotOpenExchange)
+    fireEvent.click(exchangeAction)
+    expect(openExchange).toHaveBeenCalledWith('ex-1')
+    const handoff = screen.getByText('Work handed off').parentElement!
+    const handoffExchange = within(handoff).getByRole('button', { name: t.chatBotOpenExchange })
+    expect(handoffExchange).not.toHaveTextContent(t.chatBotOpenExchange)
+    fireEvent.click(handoffExchange)
+    expect(openExchange).toHaveBeenLastCalledWith('ex-1')
+    expect(openExchange).toHaveBeenCalledTimes(2)
+    fireEvent.click(within(message).getByRole('button', { name: t.chatBotReplyTo.replace('{name}', 'Ada') }))
+    expect(screen.getByRole('checkbox', { name: 'Ada' })).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: t.chatBotManageMembers }))
+    expect(screen.getByRole('button', { name: t.chatBotRemoveMember })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: t.chatBotOpenMemberThread })).toBeInTheDocument()
+  } finally { unsubscribe() }
+})
+
+it('disables every pending decision during a submission and restores actions after a failure', async () => {
+  let reject: (error: Error) => void = () => {}
+  const request = new Promise((_, fail) => { reject = fail })
+  const resolve = vi.spyOn(collaborationApi, 'resolve').mockImplementation(() => request)
+  render(<BotPendingCards actions={[
+    { id: 'one', kind: 'add_member', botId: 'ada', botName: 'Ada', status: 'awaiting_user', createdAt: 1 },
+    { id: 'two', kind: 'remove_member', botId: 'bee', botName: 'Bee', status: 'awaiting_user', createdAt: 1 },
+  ]} />)
+  expect(screen.getByText(t.chatBotPendingAddRequest.replace('{name}', 'Ada'))).toBeInTheDocument()
+  expect(screen.getByText(t.chatBotPendingRemoveRequest.replace('{name}', 'Bee'))).toBeInTheDocument()
+  fireEvent.click(screen.getAllByRole('button', { name: t.chatBotApprove })[0])
+  for (const button of screen.getAllByRole('button')) expect(button).toBeDisabled()
+  fireEvent.click(screen.getAllByRole('button', { name: t.chatBotReject })[1])
+  expect(resolve).toHaveBeenCalledTimes(1)
+  await act(async () => { reject(new Error('decision failed')) })
+  expect(screen.getByRole('alert')).toHaveTextContent('decision failed')
+  for (const button of screen.getAllByRole('button')) expect(button).toBeEnabled()
+})
+
+it('opens the actual private member thread from the waiting reminder', () => {
+  const onOpen = vi.fn()
+  render(<BotPrivateRunCards
+    members={[{ botId: 'ada', name: 'Ada', conversationId: 'conv_bot_member_ada@alpha' }]}
+    attention={[{ conversationId: 'conv_bot_member_ada@alpha', kind: 'question' }]}
+    onOpen={onOpen}
+  />)
+  expect(screen.getByText(t.chatBotPrivateQuestionWaiting.replace('{name}', 'Ada'))).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: t.chatBotOpenPending }))
+  expect(onOpen).toHaveBeenCalledWith('ada')
 })
 
 it('shows a private run failure and celebrates only its new settled success in the roster', async () => {

@@ -3198,7 +3198,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onRender={onChatPerfProfiler}
           />
           </div>
-          {botMode && openRoomId && <BotGroupPane roomId={openRoomId} attention={memberAttention} onClose={() => { setOpenRoomId(null); setPeerExchangeId(null) }} onOpenMember={(conversationId) => {
+          {botMode && openRoomId && <BotGroupPane roomId={openRoomId} generatingConversationIds={generatingConversationIds} attention={memberAttention} onClose={() => { setOpenRoomId(null); setPeerExchangeId(null) }} onOpenMember={(conversationId) => {
             setOpenRoomId(null)
             setPeerExchangeId(null)
             void handleSelectConversation(conversationId)

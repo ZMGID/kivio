@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { ShieldQuestion } from 'lucide-react'
 import { Button } from '../components/Button'
+import { useT } from '../components/i18n'
 
 export type ApprovalAction = {
   label: string
@@ -36,6 +37,7 @@ function isEditableTarget(node: EventTarget | null): boolean {
  * 挂载时把焦点移到主动作按钮上，否则焦点还在输入框里、数字键会被当成正文输入。
  */
 export function ApprovalCard({ title, subtitle, detail, actions, error }: ApprovalCardProps) {
+  const t = useT()
   const actionsRef = useRef(actions)
   actionsRef.current = actions
 
@@ -71,7 +73,7 @@ export function ApprovalCard({ title, subtitle, detail, actions, error }: Approv
   const [deny, ...rest] = actions
 
   return (
-    <div className="not-prose mx-auto mb-2 w-full rounded-md border border-neutral-200/70 bg-[var(--theme-surface)]/90 px-3 py-2.5 text-[12px] leading-5 text-neutral-700 shadow-[0_10px_28px_-26px_rgba(0,0,0,0.45),0_1px_2px_rgba(0,0,0,0.035)]">
+    <div className="not-prose mx-auto mb-2 w-full py-2.5 text-[12px] leading-5 text-neutral-700">
       <div className="flex items-start gap-2">
         <ShieldQuestion size={16} className="mt-0.5 shrink-0 text-accent" />
         <div className="min-w-0 flex-1">
@@ -86,9 +88,12 @@ export function ApprovalCard({ title, subtitle, detail, actions, error }: Approv
         </div>
       </div>
       {detail && (
-        <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-neutral-100 px-2.5 py-2 text-[11px] leading-relaxed text-neutral-700">
-          {detail}
-        </pre>
+        <details className="mt-2">
+          <summary className="cursor-pointer text-[12px] text-neutral-500">{t.chatApprovalDetails}</summary>
+          <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-neutral-700">
+            {detail}
+          </pre>
+        </details>
       )}
       {error && (
         <div className="mt-2 text-[11.5px] leading-5 text-red-600 dark:text-red-400" role="alert">

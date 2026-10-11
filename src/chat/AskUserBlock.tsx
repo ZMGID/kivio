@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
+import { Input } from '../settings/public/controls'
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -300,7 +301,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   const signature = promptSignature(parsed)
   const optionsScrollRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const customInputRef = useRef<HTMLInputElement>(null)
+  const customInputRowRef = useRef<HTMLDivElement>(null)
   const [draft, setDraft] = useState<Record<string, DraftAnswer>>(() => createDraft(parsed))
   /** 草稿的同步镜像。两个用途，都是「不能等下一次渲染」：
    *  ① 单题单选点一下就提交，要**当场**拿到含这次选择的草稿（`draft` 还是旧值）；
@@ -428,7 +429,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       const delta = event.key === 'ArrowDown' ? 1 : -1
       setActiveIndex((index) => {
         const next = Math.min(rowCount - 1, Math.max(0, index + delta))
-        if (next === optionCount) customInputRef.current?.focus()
+        if (next === optionCount) customInputRowRef.current?.querySelector('input')?.focus()
         return next
       })
       return
@@ -437,7 +438,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       event.preventDefault()
       const option = currentQuestion.options[activeIndex]
       if (option) pickOption(currentQuestion, option.id)
-      else customInputRef.current?.focus()
+      else customInputRowRef.current?.querySelector('input')?.focus()
       return
     }
     // 数字键直选（与审批卡的 1/2/3 同一套肌肉记忆）。
@@ -527,14 +528,36 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
   submitRef.current = (skipped, draftOverride) => { void submit(skipped, draftOverride) }
 
+  if (!awaiting) {
+    const answers = parsed.questions.map((question) => (
+      <div key={question.id} className="break-words">
+        <div className="text-[12.5px] leading-5 text-neutral-700">{question.prompt}</div>
+        <div className="mt-0.5 whitespace-pre-wrap text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">
+          {parsed.async ? '此问题已收起' : readonlySummary(question, parsed.answers[question.id])}
+        </div>
+      </div>
+    ))
+    return (
+      <div className="not-prose my-2 max-w-[min(100%,38rem)] text-[12px] leading-5">
+        {multiQuestion ? (
+          <details>
+            <summary className="cursor-pointer text-neutral-500 dark:text-neutral-400">
+              {parsed.async ? '已收起' : phaseLabel(parsed.phase)} {parsed.questions.length} 个问题
+            </summary>
+            <div className="custom-scrollbar mt-2 max-h-64 space-y-3 overflow-y-auto">{answers}</div>
+          </details>
+        ) : (
+          <>
+            <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{parsed.async ? '已收起' : phaseLabel(parsed.phase)}</span>
+            {answers}
+          </>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <div className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-[var(--theme-surface)]/95 text-[12px] leading-5 text-neutral-700 ${
-      // 只有吊在输入框上方那张才有投影（它是浮在对话之上的层）。消息流里的那块是**内容**，
-      // 带投影会在浅灰底上糊出一条脏影子 —— 与旁边其它工具卡（无投影）也不是一套。
-      docked
-        ? 'shadow-[0_14px_36px_-28px_rgba(0,0,0,0.5),0_1px_2px_rgba(0,0,0,0.035)]'
-        : 'my-2 max-w-[min(100%,38rem)]'
-    }`}>
+    <div className={`not-prose w-full text-[12px] leading-5 text-neutral-700 ${docked ? '' : 'my-2 max-w-[min(100%,38rem)]'}`}>
       {/* 标题行：问题本身当标题（原来是「需要确认」当标题、问题降到正文，主次颠倒）。
           右侧是翻页 + 跳过，同参考图的 `‹ 1 of 4 ›  ×`。 */}
       <div className="flex items-start gap-3 px-3.5 pt-3 pb-2">
@@ -594,7 +617,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         </div>
       </div>
 
-      {awaiting && currentQuestion ? (
+      {currentQuestion && (
         <>
           {/* 选项列表：整行 + 左侧编号 + 细分隔线；键盘光标那行整块高亮并露出 →。
               列表自己是焦点承载者（`tabIndex`），所以 ↑↓ / Enter / 数字键直接可用。 */}
@@ -604,7 +627,8 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
             aria-label={currentQuestion.prompt}
             tabIndex={0}
             onKeyDown={handleListKeyDown}
-            className="chat-popover-scroll max-h-[17rem] overflow-y-auto px-2 pb-1 outline-none"
+            aria-multiselectable={multiSelect}
+            className="custom-scrollbar max-h-[17rem] overflow-y-auto px-2 pb-1 outline-none"
           >
             <div ref={optionsScrollRef} key={visibleIndex} className="chat-motion-fade">
               {currentQuestion.options.map((option, index) => {
@@ -619,7 +643,8 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                     onMouseDown={preventMouseFocus}
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => pickOption(currentQuestion, option.id)}
-                    className={`flex w-full items-center gap-3 rounded-xl px-1.5 py-2 text-left transition-colors ${
+                    disabled={submitting}
+                    className={`flex w-full items-center gap-3 px-1.5 py-2 text-left transition-colors disabled:cursor-wait disabled:opacity-50 ${
                       // 行之间不画线：当前行的底色已经把「在哪一行」说清楚了，再加分隔线就是两套
                       // 冗余的边界。也别改回「非当前行才加 border-t」—— 那会让行高随 hover 在
                       // 1px 之间变，整张面板（吊在输入框上方）跟着上下跳。尺寸绝不能随 hover 变。
@@ -642,7 +667,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                         {option.label}
                       </span>
                       {option.description && (
-                        <span className="mt-0.5 line-clamp-2 block break-words text-[11.5px] leading-4 text-neutral-500 dark:text-neutral-400">
+                        <span className="mt-0.5 block break-words text-[11.5px] leading-4 text-neutral-500 dark:text-neutral-400">
                           {option.description}
                         </span>
                       )}
@@ -662,23 +687,22 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
               {allowCustom(currentQuestion) && (
                 <div
-                  className={`flex items-center gap-3 rounded-xl px-1.5 py-1.5 ${
-                    // 同上：不画分隔线。
-                    activeIndex === optionCount ? 'bg-neutral-100' : ''
-                  }`}
+                  ref={customInputRowRef}
+                  className="flex items-center gap-3 px-1.5 py-1.5"
                 >
                   <span className="grid size-6 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-400 dark:text-neutral-500">
                     <Pencil size={12} strokeWidth={2} />
                   </span>
-                  <input
-                    ref={customInputRef}
+                  <Input
                     value={currentAnswer.customText}
+                    aria-label={`${currentQuestion.prompt}：自己的回答`}
+                    disabled={submitting}
                     autoCapitalize="off"
                     autoCorrect="off"
                     autoComplete="off"
                     spellCheck={false}
                     onFocus={() => setActiveIndex(optionCount)}
-                    onChange={(event) => setCustomText(currentQuestion.id, event.target.value)}
+                    onChange={(value) => setCustomText(currentQuestion.id, value)}
                     onKeyDown={(event) => {
                       // 输入框嵌在列表里：不拦住的话 ↑↓ / 数字键会被列表当成选项导航，
                       // 输入「1」就变成直选第 1 项并提交。
@@ -699,7 +723,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                       else if (allAnswered) void submit(false)
                     }}
                     placeholder="自己写一个…"
-                    className="min-w-0 flex-1 bg-transparent text-[13px] leading-5 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
+                    className="min-w-0 flex-1"
                   />
                 </div>
               )}
@@ -726,24 +750,6 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
             )}
           </div>
         </>
-      ) : (
-        /* 已作答：问题 + 用户选的答案逐条列出（参考 Claude Code 答完之后那块）。
-           答案**不截断、不塞进右侧小药丸** —— 「我当时选了什么」是这块唯一的价值，
-           截一半就等于没留下。 */
-        <div className="chat-popover-scroll max-h-64 overflow-y-auto px-3.5 pb-3">
-          <div className="space-y-2">
-            {parsed.questions.map((question) => (
-              <div key={question.id}>
-                <div className="break-words text-[12.5px] font-medium leading-5 text-neutral-800">
-                  {question.prompt}
-                </div>
-                <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">
-                  {parsed.async ? '此问题已收起' : readonlySummary(question, parsed.answers[question.id])}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
       )}
 
       {submitError && (

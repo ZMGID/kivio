@@ -1,24 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, MessageCircle, Reply } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
-import { useLang, useT } from '../../components/i18n'
+import { useT } from '../../components/i18n'
 import { Input, Select, TextArea } from '../../settings/public/controls'
 import { syncChatProtocol } from '../../api/chatProtocol'
 import type { MemberAttention } from '../runInteractionInbox'
 import { BotPendingCards, BotPrivateRunCards } from './BotPendingCards'
+import { BotMessage } from './BotMessage'
+import { chatApi } from '../api'
+import { BotAvatar } from '../BotAvatar'
 import { collaborationApi, decodeRoom, isDedicatedMemberConversation } from './collaboration'
 import { refreshCollaboration, useBotCollaboration } from './collaborationStore'
 import { requestPeerExchange } from './exchangeRequest'
 import { roomPost, sendMentions } from './mentionPlan'
-import { deliveryStatusLabel, roomStatusLabel } from './presence'
+import { contactAvatarMood, roomStatusLabel } from './presence'
 import { profileApi } from './profile'
-
-function formatTime(at: number, lang: 'zh' | 'en') {
-  return new Date(at * 1000).toLocaleString(lang === 'zh' ? 'zh-CN' : 'en-US', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  })
-}
 
 function errorText(err: unknown) {
   return err instanceof Error ? err.message : String(err)
@@ -31,23 +28,24 @@ interface RoomComposer {
   renaming: boolean
   acceptedIds: string[]
   addId: string
+  managingMembers: boolean
 }
 
 const EMPTY_COMPOSER: RoomComposer = {
-  body: '', selected: [], titleDraft: '', renaming: false, acceptedIds: [], addId: '',
+  body: '', selected: [], titleDraft: '', renaming: false, acceptedIds: [], addId: '', managingMembers: false,
 }
 
-export function BotGroupPane({ roomId, attention = [], onClose, onOpenMember }: {
+export function BotGroupPane({ roomId, attention = [], generatingConversationIds, onClose, onOpenMember }: {
   roomId: string
+  generatingConversationIds?: ReadonlySet<string>
   attention?: readonly MemberAttention[]
   onClose: () => void
   onOpenMember?: (conversationId: string) => void
 }) {
   const t = useT()
-  const lang = useLang()
   const { snapshot, error: snapshotError } = useBotCollaboration()
   const room = snapshot.rooms.find((item) => item.id === roomId) ?? null
-  const [contacts, setContacts] = useState<{ id: string; name: string }[]>([])
+  const [contacts, setContacts] = useState<{ id: string; name: string; icon?: string; color?: string }[]>([])
   const [contactsError, setContactsError] = useState('')
   const [directoryTick, setDirectoryTick] = useState(0)
   const [drafts, setDrafts] = useState<Record<string, RoomComposer>>({})
@@ -75,11 +73,11 @@ export function BotGroupPane({ roomId, attention = [], onClose, onOpenMember }: 
   }, [])
   useEffect(() => {
     let current = true
-    void profileApi.list().then((entries) => {
+    void Promise.all([profileApi.list(), chatApi.getAssistants()]).then(([entries, assistants]) => {
       if (!current) return
       setContacts(entries
         .filter((entry) => !isDedicatedMemberConversation(entry.conversationId))
-        .map((entry) => ({ id: entry.assistantId, name: entry.name })))
+        .map((entry) => { const assistant = assistants.find(item => item.id === entry.assistantId); return { id: entry.assistantId, name: entry.name, icon: assistant?.icon, color: assistant?.color } }))
       setContactsError('')
     }).catch((err) => {
       if (current) setContactsError(errorText(err))
@@ -247,70 +245,81 @@ export function BotGroupPane({ roomId, attention = [], onClose, onOpenMember }: 
         {room?.status === 'stopped' && <p className="mb-3 text-[12px] leading-5 text-neutral-500">{t.chatBotGroupResumeHint}</p>}
         {room && (
           <section className="mb-4" aria-label={t.chatBotGroupMembers}>
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-[var(--text-muted)]">
               {room.members.map((member) => (
-                <span key={member.botId} className="inline-flex items-center gap-1 rounded-full bg-neutral-900/[0.05] px-2 py-1 text-[12px]">
+                <span key={member.botId} className="inline-flex items-center gap-1.5">
+                  <BotAvatar size={28} icon={contacts.find(contact => contact.id === member.botId)?.icon} color={contacts.find(contact => contact.id === member.botId)?.color}
+                    mood={contactAvatarMood({ generating: Boolean(generatingConversationIds?.has(member.conversationId)),
+                      attention: attention.some(item => item.conversationId === member.conversationId), pending: pending.some(item => item.botId === member.botId),
+                      deliveries: snapshot.deliveries.filter(item => item.toBotId === member.botId && item.roomId === room.id) })} />
                   {liveName(member)}
-                  {member.state === 'pending_removal' && <span className="text-neutral-500">{t.chatBotMemberLeaving}</span>}
-                  {onOpenMember && (
-                    <Button size="sm" variant={attention.some((item) => item.conversationId === member.conversationId) ? 'primary' : 'ghost'} disabled={roomBusy} onClick={() => openPrivate(member.botId)}>
-                      {attention.some((item) => item.conversationId === member.conversationId) ? t.chatBotNeedsYou : t.chatBotOpenMemberThread}
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" disabled={roomBusy} onClick={() => removeMember(member.botId, liveName(member))}>{t.chatBotRemoveMember}</Button>
+                  {member.state === 'pending_removal' && <span>{t.chatBotMemberLeaving}</span>}
                 </span>
               ))}
+              <Button size="sm" variant="ghost" disabled={roomBusy} aria-expanded={draft.managingMembers} onClick={() => updateDraft(room.id, (current) => ({ ...current, managingMembers: !current.managingMembers }))}>{t.chatBotManageMembers}</Button>
             </div>
-            {candidates.length > 0 && room.members.length < 8 && (
-              <div className="flex items-center gap-2">
-                <Select ariaLabel={t.chatBotAddMember} value={draft.addId} onChange={(addId) => updateDraft(room.id, (current) => ({ ...current, addId }))} options={[{ value: '', label: t.chatBotAddMember }, ...candidates.map((contact) => ({ value: contact.id, label: contact.name }))]} />
-                <Button size="sm" disabled={roomBusy || !draft.addId} onClick={() => {
-                  const addId = draft.addId
-                  if (!addId) return
-                  const next = [...room.members.map((member) => member.botId), addId]
-                  updateDraft(room.id, (current) => ({ ...current, addId: '' }))
-                  run(room.id, () => collaborationApi.setMembers(room.id, next).then(() => undefined))
-                }}>{t.chatBotAddMember}</Button>
+            {draft.managingMembers && (
+              <div className="mt-3 space-y-2">
+                {room.members.map((member) => (
+                  <div key={member.botId} className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 flex-1 text-[13px] text-[var(--text)]">{liveName(member)}</span>
+                    {onOpenMember && <Button size="sm" variant="ghost" disabled={roomBusy} onClick={() => openPrivate(member.botId)}>{t.chatBotOpenMemberThread}</Button>}
+                    <Button size="sm" variant="danger" disabled={roomBusy} onClick={() => removeMember(member.botId, liveName(member))}>{t.chatBotRemoveMember}</Button>
+                  </div>
+                ))}
+                {candidates.length > 0 && room.members.length < 8 && (
+                  <div className="flex items-center gap-2">
+                    <Select ariaLabel={t.chatBotAddMember} value={draft.addId} disabled={roomBusy} onChange={(addId) => updateDraft(room.id, (current) => ({ ...current, addId }))} options={[{ value: '', label: t.chatBotAddMember }, ...candidates.map((contact) => ({ value: contact.id, label: contact.name }))]} />
+                    <Button size="sm" disabled={roomBusy || !draft.addId} onClick={() => {
+                      const addId = draft.addId
+                      if (!addId) return
+                      const next = [...room.members.map((member) => member.botId), addId]
+                      updateDraft(room.id, (current) => ({ ...current, addId: '' }))
+                      run(room.id, () => collaborationApi.setMembers(room.id, next).then(() => undefined))
+                    }}>{t.chatBotAddMember}</Button>
+                  </div>
+                )}
               </div>
             )}
           </section>
         )}
         <BotPrivateRunCards members={namedActive} attention={attention} disabled={roomBusy} onOpen={openPrivate} />
-        <BotPendingCards actions={pending} />
+        <BotPendingCards actions={pending} disabled={roomBusy} />
+        <div className="chat-reading-content space-y-5">
         {room?.log.map((entry) => {
           const delivery = entry.deliveryId ? deliveries.get(entry.deliveryId) : undefined
           const authorId = entry.actor.kind === 'bot' ? entry.actor.id : null
           const authorName = entry.actor.kind === 'bot' ? entry.actor.name : ''
           const canReply = authorId != null && activeMembers.some((member) => member.botId === authorId)
+          if (entry.kind !== 'message') {
+            return (
+              <div key={entry.id} className="flex flex-wrap items-center justify-center gap-2 py-2 text-center text-[12px] leading-5 text-[var(--text-muted)]">
+                <p>{entry.body}</p>
+                {delivery && <IconButton size="xs" variant="ghost" label={t.chatBotOpenExchange} onClick={() => requestPeerExchange(delivery.exchangeId)}><MessageCircle size={12} /></IconButton>}
+              </div>
+            )
+          }
           return (
-            <article key={entry.id} className="border-b border-neutral-200/70 py-3">
-              <p className="text-[12px] text-neutral-500">
-                {entry.actor.kind === 'user' ? t.chatBotYou : entry.actor.name}
-                {' · '}
-                {formatTime(entry.at, lang)}
-                {delivery && ` · ${deliveryStatusLabel(delivery.status, t)}`}
-              </p>
-              <p className="mt-1 whitespace-pre-wrap text-[14px] leading-6 text-neutral-900">{entry.body}</p>
+            <BotMessage key={entry.id} actor={entry.actor} body={entry.body} at={entry.at} status={delivery?.status}>
               {delivery && delivery.attachmentIds && delivery.attachmentIds.length > 0 && (
-                <p className="mt-1 text-[12px] text-neutral-500">{t.chatBotAttachmentCount.replace('{count}', String(delivery.attachmentIds.length))}</p>
+                <span>{t.chatBotAttachmentCount.replace('{count}', String(delivery.attachmentIds.length))}</span>
               )}
-              {(delivery || canReply) && (
-                <div className="mt-2 flex gap-2">
-                  {delivery && <Button size="sm" onClick={() => requestPeerExchange(delivery.exchangeId)}>{t.chatBotOpenExchange}</Button>}
-                  {canReply && authorId && (
-                    <Button size="sm" onClick={() => updateDraft(roomId, (current) => ({ ...current, selected: [authorId], acceptedIds: [] }))}>{t.chatBotReplyTo.replace('{name}', authorName)}</Button>
-                  )}
-                </div>
+              {delivery && <IconButton size="xs" variant="ghost" label={t.chatBotOpenExchange} onClick={() => requestPeerExchange(delivery.exchangeId)}><MessageCircle size={12} /></IconButton>}
+              {canReply && authorId && (
+                <span className="flex opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+                  <IconButton size="xs" variant="ghost" disabled={roomBusy || room.status === 'stopped'} label={t.chatBotReplyTo.replace('{name}', authorName)} onClick={() => updateDraft(roomId, (current) => ({ ...current, selected: [authorId], acceptedIds: [] }))}><Reply size={12} /></IconButton>
+                </span>
               )}
-            </article>
+            </BotMessage>
           )
         })}
+        </div>
       </div>
       {room && (
         <form className="shrink-0 border-t border-neutral-200/70 px-6 py-3" onSubmit={(event) => { event.preventDefault(); send() }}>
           {room.status === 'paused' && <p className="mb-2 text-[12px] text-neutral-500">{t.chatBotPausedSendHint}</p>}
           <fieldset className="mb-2 flex flex-wrap gap-2" disabled={room.status === 'stopped' || roomBusy}>
-            <legend className="sr-only">{t.chatBotGroupMembers}</legend>
+            <legend className="mb-1 text-[12px] text-[var(--text-muted)]">{t.chatBotRecipients}</legend>
             {activeMembers.map((member) => (
               <label key={member.botId} className="inline-flex items-center gap-1 text-[12px] text-neutral-700">
                 <input type="checkbox" checked={draft.selected.includes(member.botId)} onChange={(event) => {

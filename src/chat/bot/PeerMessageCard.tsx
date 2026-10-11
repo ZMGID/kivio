@@ -15,7 +15,7 @@ export function PeerMessageCard({ peer, attachments = [], conversationId }: {
       <BotExchangeNotice
         exchangeId={peer.exchangeId}
         label={t.chatBotExchangeWith}
-        name={peer.senderName}
+        name={peer.senderName} icon={peer.icon} color={peer.color}
       />
       {attachments.length > 0 && (
         <ChatAttachments attachments={attachments} conversationId={conversationId} variant="assistant" />

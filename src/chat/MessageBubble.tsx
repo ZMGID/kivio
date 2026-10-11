@@ -1,3 +1,4 @@
+import { isAutomationNoticeTool } from './automationNoticeTools'
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -38,11 +39,11 @@ import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { asyncReplyDisplayText } from './asyncQuestionReply'
 import { PeerMessageCard } from './bot/PeerMessageCard'
-import { isCollaborationTool } from './bot/collaboration'
-import { canonicalToolName } from './segments'
+import { isBotActivityTool } from './bot/eventCard'
 import { peerMessageOf } from './bot/peerMessage'
 import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
+  canonicalToolName,
   clusterToolCallsForDisplay,
   formatWorkDuration,
   groupTimelineSegments,
@@ -1008,7 +1009,7 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isCollaborationTool(canonicalToolName(tool))))
+        return Boolean(tool && (isVisibleArtifactPresentation(tool) || (isBotActivityTool(canonicalToolName(tool)) || isAutomationNoticeTool(canonicalToolName(tool)))))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1351,8 +1352,8 @@ function MessageBubbleComponent({
     onPointerLeave: () => setBubbleHovered(false),
   }
   // 工具调用超过 4 个时默认折叠（与思考过程一致）
-  const processToolCalls = toolCalls.filter(tool => !isCollaborationTool(canonicalToolName(tool)))
-  const collaborationToolCalls = toolCalls.filter(tool => isCollaborationTool(canonicalToolName(tool)))
+  const processToolCalls = toolCalls.filter(tool => !(isBotActivityTool(canonicalToolName(tool)) || isAutomationNoticeTool(canonicalToolName(tool))))
+  const collaborationToolCalls = toolCalls.filter(tool => (isBotActivityTool(canonicalToolName(tool)) || isAutomationNoticeTool(canonicalToolName(tool))))
   const toolsCollapsible = processToolCalls.length > 4
   const agentPlan = message.agent_plan ?? message.agentPlan ?? agentPlanOverride
   const isAgentPlanMessage = Boolean(agentPlan?.document) || hasAgentPlanText(agentPlan?.plan)

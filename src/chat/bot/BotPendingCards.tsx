@@ -7,19 +7,19 @@ import { refreshCollaboration, useBotCollaboration } from './collaborationStore'
 import { privateRunCards } from './privateRunAttention'
 
 function label(action: PendingAction, t: ReturnType<typeof useT>) {
-  if (action.kind === 'handoff') return t.chatBotPendingHandoff
-  if (action.kind === 'remove_member') return t.chatBotPendingRemove
-  return t.chatBotPendingAdd
+  const template = action.kind === 'handoff' ? t.chatBotPendingHandoffRequest
+    : action.kind === 'remove_member' ? t.chatBotPendingRemoveRequest : t.chatBotPendingAddRequest
+  return template.replace('{name}', action.botName)
 }
 
 /** Membership and handoff only. Ask and tool approval stay on the private member thread. */
-export function BotPendingCards({ actions }: { actions: readonly PendingAction[] }) {
+export function BotPendingCards({ actions, disabled = false }: { actions: readonly PendingAction[]; disabled?: boolean }) {
   const t = useT()
   const [resolving, setResolving] = useState<string | null>(null)
   const [error, setError] = useState('')
   if (actions.length === 0) return null
   const resolve = (action: PendingAction, approve: boolean) => {
-    if (resolving) return
+    if (resolving || disabled) return
     setResolving(action.id)
     setError('')
     void collaborationApi.resolve(action.id, approve).then(() => refreshCollaboration()).catch((err) => {
@@ -30,14 +30,13 @@ export function BotPendingCards({ actions }: { actions: readonly PendingAction[]
     <div className="mb-3 flex flex-col gap-2">
       {error && <p className="text-[12px] text-red-600" role="alert">{error}</p>}
       {actions.map((action) => (
-        <article key={action.id} className="rounded-lg border border-neutral-200/80 px-3 py-2">
-          <p className="text-[13px] font-medium text-neutral-900">{label(action, t)}</p>
-          <p className="mt-0.5 text-[12px] text-neutral-600">{action.botName}</p>
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" variant="primary" disabled={resolving === action.id} onClick={() => resolve(action, true)}>{t.chatBotApprove}</Button>
-            <Button size="sm" disabled={resolving === action.id} onClick={() => resolve(action, false)}>{t.chatBotReject}</Button>
+        <div key={action.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2">
+          <p className="min-w-0 flex-1 text-[13px] leading-5 text-[var(--text)]">{label(action, t)}</p>
+          <div className="flex gap-2" aria-busy={resolving === action.id}>
+            <Button size="sm" variant="primary" disabled={disabled || resolving !== null} onClick={() => resolve(action, true)}>{t.chatBotApprove}</Button>
+            <Button size="sm" variant="ghost" disabled={disabled || resolving !== null} onClick={() => resolve(action, false)}>{t.chatBotReject}</Button>
           </div>
-        </article>
+        </div>
       ))}
     </div>
   )
@@ -68,15 +67,12 @@ export function BotPrivateRunCards({
   return (
     <div className="mb-3 flex flex-col gap-2">
       {cards.map((card) => (
-        <article key={card.conversationId} className="rounded-lg border border-neutral-200/80 px-3 py-2">
-          <p className="text-[13px] font-medium text-neutral-900">{card.name}</p>
-          <p className="mt-0.5 text-[12px] text-neutral-600">
-            {card.kind === 'question' ? t.chatBotPrivateQuestion : t.chatBotPrivateApproval}
+        <div key={card.conversationId} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1">
+          <p className="min-w-0 flex-1 text-[13px] leading-5 text-[var(--text-muted)]">
+            {(card.kind === 'question' ? t.chatBotPrivateQuestionWaiting : t.chatBotPrivateApprovalWaiting).replace('{name}', card.name)}
           </p>
-          <div className="mt-2">
-            <Button size="sm" variant="primary" disabled={disabled} onClick={() => onOpen(card.botId)}>{t.chatBotOpenPending}</Button>
-          </div>
-        </article>
+          <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onOpen(card.botId)}>{t.chatBotOpenPending}</Button>
+        </div>
       ))}
     </div>
   )
