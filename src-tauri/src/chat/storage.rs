@@ -30,8 +30,8 @@ mod conversations;
 mod index;
 mod migration;
 mod projects;
-mod sets;
 pub(crate) mod set_backup;
+mod sets;
 
 #[allow(unused_imports)]
 pub(crate) use assistants::merge_builtin_definitions;
