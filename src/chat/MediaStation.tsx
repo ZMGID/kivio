@@ -592,7 +592,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
       <form className="kv-media-composer" onSubmit={(e) => { e.preventDefault(); if (canGenerate) void generate() }}>
         <label className="kv-media-prompt-field">
           <span className="sr-only">{text('创作描述', 'Prompt')}</span>
-          <TextArea value={form.prompt} onChange={(prompt) => update({ prompt })} rows={3} className="kv-media-prompt-input"
+          <TextArea variant="plain" value={form.prompt} onChange={(prompt) => update({ prompt })} rows={3} maxRows={10} className="kv-media-prompt-input"
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
             placeholder={form.kind === 'image' ? text('你想看见怎样的画面？描述主体、光线、风格，或从一张参考图开始…', 'What would you like to see? Describe the subject, light and style…') : text('让画面如何运动？描述动作、镜头与节奏，或添加一张首帧…', 'Describe the motion, camera and rhythm, or add a first frame…')} />
         </label>
@@ -604,11 +604,11 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
         </div>}
         <div className="kv-media-toolbar">
           <IconButton size="sm" variant="ghost" label={form.kind === 'image' ? text('添加参考图（最多 4 张）', 'Add references (up to 4)') : text('添加首帧图片', 'Add first frame')} onClick={() => void pickReferences()} disabled={!desktop}><ImagePlus size={16} /></IconButton>
-          <Select className="kv-media-provider" ariaLabel={text('供应商', 'Provider')} value={form.providerId} options={capableProviders.map((p) => ({ value: p.id, label: p.name }))} onChange={(providerId) => update({ providerId, model: '' })} />
-          <Select className="kv-media-model" ariaLabel={text('模型', 'Model')} value={form.model} onChange={(model) => update({ model })}
+          <Select className="kv-media-provider" size="sm" triggerLabel={capableProviders.find((p) => p.id === form.providerId)?.name ?? text('供应商', 'Provider')} ariaLabel={text('供应商', 'Provider')} value={form.providerId} options={capableProviders.map((p) => ({ value: p.id, label: p.name }))} onChange={(providerId) => update({ providerId, model: '' })} />
+          <Select className="kv-media-model" size="sm" triggerLabel={form.model || text('模型', 'Model')} ariaLabel={text('模型', 'Model')} value={form.model} onChange={(model) => update({ model })}
             options={modelChoices.map((model) => ({ value: model, label: model }))} />
-          <Select className="kv-media-ratio" ariaLabel={text('画幅', 'Aspect ratio')} value={form.aspectRatio} onChange={(aspectRatio) => update({ aspectRatio })} options={['1:1', '16:9', '9:16', '4:3', '3:4'].map((value) => ({ value, label: value }))} />
-          {form.kind === 'video' && <Select className="kv-media-duration" ariaLabel={text('时长', 'Duration')} value={String(form.duration)} onChange={(duration) => update({ duration: Number(duration) })} options={[5, 10, 15].map((n) => ({ value: String(n), label: `${n} ${text('秒', 'sec')}` }))} />}
+          <Select className="kv-media-ratio" size="sm" triggerLabel={form.aspectRatio} ariaLabel={text('画幅', 'Aspect ratio')} value={form.aspectRatio} onChange={(aspectRatio) => update({ aspectRatio })} options={['1:1', '16:9', '9:16', '4:3', '3:4'].map((value) => ({ value, label: value }))} />
+          {form.kind === 'video' && <Select className="kv-media-duration" size="sm" triggerLabel={`${form.duration} ${text('秒', 'sec')}`} ariaLabel={text('时长', 'Duration')} value={String(form.duration)} onChange={(duration) => update({ duration: Number(duration) })} options={[5, 10, 15].map((n) => ({ value: String(n), label: `${n} ${text('秒', 'sec')}` }))} />}
           <Button className="kv-media-generate" size="sm" variant="primary" type="submit" disabled={!canGenerate}>
             {submitting ? <LoaderCircle size={15} className="animate-spin" /> : <Sparkles size={15} />}{text('开始生成', 'Generate')}
           </Button>

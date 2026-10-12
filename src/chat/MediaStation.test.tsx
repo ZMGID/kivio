@@ -111,7 +111,7 @@ it('uses a saved image as the video first frame without submitting a paid task',
   fireEvent.click(await screen.findByRole('button', { name: '用作视频首帧' }))
   expect(await screen.findByText('image.png')).toBeTruthy()
   expect(screen.getByRole('button', { name: '生视频' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByLabelText('模型')).toHaveTextContent('')
+  expect(screen.getByLabelText('模型')).toHaveTextContent('模型')
   expect(screen.getByLabelText('模型')).toBeDisabled()
   expect(mediaStationApi.start).not.toHaveBeenCalled()
   view.unmount()

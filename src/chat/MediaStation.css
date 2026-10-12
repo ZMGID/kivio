@@ -19,9 +19,9 @@
 .kv-media-reference-file span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .kv-media-toolbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.kv-media-provider { flex: 0 1 120px; min-width: 72px; }
-.kv-media-model { flex: 0 1 200px; min-width: 110px; }
-.kv-media-ratio, .kv-media-duration { flex: 0 0 76px; }
+.kv-media-provider { flex: 0 1 auto; min-width: 0; max-width: 120px; }
+.kv-media-model { flex: 0 1 auto; min-width: 0; max-width: 200px; }
+.kv-media-ratio, .kv-media-duration { flex: none; }
 .kv-media-generate { margin-left: auto; flex: none; }
 
 .kv-media-composer-caption { margin: 6px 4px 0; text-align: center; }
