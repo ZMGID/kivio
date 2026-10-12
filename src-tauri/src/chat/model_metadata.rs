@@ -40,7 +40,7 @@ fn model_image_generation_from_model_info(info: Option<&ModelInfo>) -> Option<bo
 }
 
 /// 用户模型库覆盖文件名，放在 app data 目录下（与 `settings.json` 同级）。
-const USER_MODEL_DATABASE_FILE: &str = "modelDatabase.json";
+pub(crate) const USER_MODEL_DATABASE_FILE: &str = "modelDatabase.json";
 
 /// 把用户覆盖逐 key 合并进内置基线：新 key 直接新增，已有 key **按顶层字段合并**
 /// （只写 `reasoningEfforts` 不会把 `pricing` 抹掉；但 `capabilities` 这类嵌套对象是整块替换）。
@@ -74,6 +74,16 @@ fn load_user_model_database(path: &std::path::Path) -> Option<serde_json::Map<St
             None
         }
     }
+}
+
+/// 内置基线的 `_meta.version`（未加载用户覆盖时的版本号），供设置页展示与远程更新对比。
+pub(crate) fn builtin_database_version() -> String {
+    model_database_entries()
+        .and_then(|entries| entries.get("_meta"))
+        .and_then(|meta| meta.get("version"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 fn model_database_entries() -> Option<&'static serde_json::Map<String, Value>> {

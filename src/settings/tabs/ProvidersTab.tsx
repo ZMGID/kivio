@@ -8,6 +8,7 @@ import { ProviderSortableList } from '../ProviderSortableList'
 import { ProviderIcon, PROVIDER_PICKER_KEYS } from '../../components/ModelIcon'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../providerPresets'
 import { ProviderDetail } from './ProviderDetail'
+import { ModelDatabaseCard } from './ModelDatabaseCard'
 import { isProviderEnabled } from '../utils'
 import type { I18n, Lang } from '../../components/i18n'
 import type {
@@ -262,6 +263,7 @@ export function ProvidersTab({
         />
 
         <div className="kv-provider-detail">
+          <ModelDatabaseCard lang={lang} />
           <SettingsGroup title={lang === 'zh' ? '供应商' : 'Provider'} className="!pt-0 kv-provider-section">
             {selectedProvider ? (
               <div className="kv-provider-header">
