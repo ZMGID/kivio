@@ -207,7 +207,7 @@ function streamErrorDegraded(error: string): DegradedAnswer {
       ? 'timeout'
       : normalized.includes('context') || normalized.includes('上下文')
         ? 'context_overflow'
-        : normalized.includes('rate') || normalized.includes('quota') || normalized.includes('限流')
+        : /\brate[\s_-]*limit(?:ed|ing|s)?(?=[^a-z0-9]|$)|\bquota\b|\b429\b|too many requests|限流|配额/.test(normalized)
           ? 'rate_limited'
           : 'unknown'
   const reason = kind === 'timeout'
