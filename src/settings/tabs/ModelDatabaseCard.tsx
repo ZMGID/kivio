@@ -5,8 +5,8 @@ import type { Lang } from '../../components/i18n'
 import { Input, SettingsGroup, SettingRow } from '../components'
 
 const URL_STORAGE_KEY = 'kivio_model_db_url'
-/** 作者在 Gitee 维护的模型库 raw 地址；用户可换成任意 HTTPS 直链（GitHub raw / jsdelivr / 自建）。 */
-const DEFAULT_MODEL_DB_URL = 'https://gitee.com/zmgid/kivio-model-database/raw/main/modelDatabase.json'
+/** 作者仓库（ZMGID/kivio）内的模型库 raw 地址；用户可换成任意 HTTPS 直链（自建镜像 / jsdelivr 等）。 */
+const DEFAULT_MODEL_DB_URL = 'https://raw.githubusercontent.com/ZMGID/kivio/main/src/data/modelDatabase.json'
 
 /**
  * 模型库远程更新卡片：显示当前生效版本，从远程地址一键拉取最新的 modelDatabase.json。
@@ -84,8 +84,8 @@ export function ModelDatabaseCard({ lang }: { lang: Lang }) {
       <SettingRow
         label={zh ? '模型库地址' : 'Database URL'}
         description={zh
-          ? '指向 modelDatabase.json 的 HTTPS 直链（Gitee / GitHub raw / 自建镜像均可）。更新写入本机后重启生效。'
-          : 'An HTTPS link to modelDatabase.json (Gitee / GitHub raw / your own mirror). Saved locally; restart to apply.'}
+          ? '指向 modelDatabase.json 的 HTTPS 直链（默认取自 GitHub 仓库 ZMGID/kivio，自建镜像亦可）。更新写入本机后重启生效。'
+          : 'An HTTPS link to modelDatabase.json (defaults to the GitHub repo ZMGID/kivio; any mirror works too). Saved locally; restart to apply.'}
         stack
       >
         <Input value={url} onChange={setUrl} placeholder={DEFAULT_MODEL_DB_URL} mono />

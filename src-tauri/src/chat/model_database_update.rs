@@ -1,11 +1,11 @@
-//! 模型库远程更新：从远程 URL（Gitee / GitHub raw / 自建镜像均可，普通 HTTPS GET）
+//! 模型库远程更新：从远程 URL（GitHub raw / 自建镜像均可，普通 HTTPS GET）
 //! 拉取 `modelDatabase.json` 覆盖文件，落到 `<app_data>/modelDatabase.json`。
 //!
 //! 覆盖合并逻辑在 [`super::model_metadata`]：进程启动时把该文件逐 key 合并进内置基线。
 //! 本模块只负责「检查 + 下载安装」，装完重启应用生效（模型库进程内只读一次）。
 //!
 //! 为什么不做自动拉取：模型库一天最多变一次，手动「点一下更新」足够；且远程地址
-//! 由用户填写（作者维护的 Gitee 仓库 / 自己的镜像），不内置任何硬编码端点，离线零请求。
+//! 由用户填写（默认取作者仓库 ZMGID/kivio 的 raw 地址 / 自己的镜像），不硬编码必走端点，离线零请求。
 
 use std::path::PathBuf;
 
