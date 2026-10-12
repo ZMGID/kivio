@@ -30,6 +30,15 @@ test('all checked-in versions and resource sources agree', () => {
   assert.ok(checkResources(root) > 0)
 })
 
+test('translator overlay disables native drag-region double-click maximization', () => {
+  // This builder flag is also the guard used by Tauri's internal_toggle_maximize.
+  // Checking the shipped window configuration avoids rebuilding a native app just for this contract.
+  const windows = readFileSync(path.join(root, 'src-tauri/src/windows.rs'), 'utf8')
+  const translator = windows.match(/pub fn ensure_translator_window\b[\s\S]*?\n}\n/)
+  assert.ok(translator, 'Translator window builder must exist')
+  assert.match(translator[0], /\.resizable\(false\)/)
+})
+
 test('rejects stale MSI versions and mismatched release tags', t => {
   const directory = fixture(t)
   assert.throws(() => checkVersions(directory, 'v0.0.1'), /Release tag/)

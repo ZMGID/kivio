@@ -328,7 +328,9 @@ pub fn ensure_translator_window(app: &AppHandle) -> Result<WebviewWindow, String
     )
     .title(TRANSLATOR_WINDOW_TITLE)
     .inner_size(TRANSLATOR_WINDOW_WIDTH, TRANSLATOR_WINDOW_HEIGHT)
-    .resizable(true)
+    // Tauri's drag-region double-click checks is_resizable before maximizing.
+    // Content-driven setSize still works; this only disables user resizing/zoom.
+    .resizable(false)
     .decorations(false)
     .shadow(false)
     .transparent(true)
