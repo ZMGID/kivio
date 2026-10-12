@@ -43,9 +43,6 @@ pub fn start(conversation: &mut Conversation, objective: &str) -> Result<GoalSta
     ) {
         return Err("Goal mode is available only for Kivio Agent".into());
     }
-    if crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state) {
-        return Err("Goal mode does not support Orchestrate in this version".into());
-    }
     if conversation.reply_models.len() >= 2 {
         return Err("Goal mode requires a single reply model".into());
     }
@@ -56,6 +53,7 @@ pub fn start(conversation: &mut Conversation, objective: &str) -> Result<GoalSta
     if objective.chars().count() > 4000 {
         return Err("Goal objective is limited to 4000 characters".into());
     }
+    // Goal owns the execution mode; entering it from Plan or Orchestrate uses Act.
     conversation.agent_plan_state = crate::chat::plan::with_mode(
         &conversation.agent_plan_state,
         crate::chat::types::AgentPlanMode::Act,
@@ -803,6 +801,30 @@ fn response(mut c: Conversation) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn starting_goal_switches_execution_modes_to_act_without_losing_saved_plan() {
+        for mode in ["act", "plan", "orchestrate"] {
+            let mut conversation: Conversation = serde_json::from_value(serde_json::json!({
+                "id":"goal-transition", "title":"Goal transition", "provider_id":"provider",
+                "model":"model", "messages":[], "created_at":1, "updated_at":1,
+                "agent_plan_state":{"mode":mode, "status":"draft", "plan":"Keep this plan"}
+            }))
+            .unwrap();
+            let goal = start(&mut conversation, "  Finish the task  ").unwrap();
+            assert_eq!(goal.status, GoalStatus::Active);
+            assert_eq!(goal.objective, "Finish the task");
+            assert_eq!(conversation.goal_state.as_ref(), Some(&goal));
+            assert_eq!(
+                conversation.agent_plan_state.mode,
+                crate::chat::types::AgentPlanMode::Act
+            );
+            assert_eq!(
+                conversation.agent_plan_state.plan.as_deref(),
+                Some("Keep this plan")
+            );
+        }
+    }
+
     #[test]
     fn completion_metadata_preserves_old_goals_and_round_trips_through_protocol() {
         let mut goal: GoalState = serde_json::from_value(serde_json::json!({
