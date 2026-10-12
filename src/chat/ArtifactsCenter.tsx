@@ -94,7 +94,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [kind, setKind] = useState<Kind>('all')
-  const [list, setList] = useState(false)
+  const [list, setList] = useState(true)
   const [sort, setSort] = useState('recent')
   const [menu, setMenu] = useState<{ workId: string; anchor: DockMenuAnchor } | null>(null)
   useEffect(() => {
