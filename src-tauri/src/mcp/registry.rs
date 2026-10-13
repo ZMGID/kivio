@@ -216,12 +216,7 @@ pub(crate) async fn collect_enabled_mcp_tool_defs(
 ) -> (Vec<ChatToolDefinition>, Vec<String>) {
     let servers = eligible_mcp_servers(settings)
         .into_iter()
-        .filter(|server| {
-            allowed_server_ids.is_none_or(|ids| {
-                ids.iter()
-                    .any(|id| crate::computer_control::mcp_server_ids_equivalent(id, &server.id))
-            })
-        })
+        .filter(|server| allowed_server_ids.is_none_or(|ids| ids.iter().any(|id| id == &server.id)))
         .collect::<Vec<_>>();
     let listings = servers.iter().map(|server| async move {
         let result = list_tools_bounded(state, sink, server).await;

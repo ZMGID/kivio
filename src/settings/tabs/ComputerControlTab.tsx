@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FileSpreadsheet, Globe2, Monitor, RefreshCw } from 'lucide-react'
 import { api } from '../../api/tauri'
-import type { ChatMcpServer, ChatToolsConfig, ControlToolStatus, PluginStatus, SkillMeta } from '../../api/tauri'
+import type { ChatToolsConfig, ControlToolStatus, PluginStatus, SkillMeta } from '../../api/tauri'
 import { refreshSettings } from '../../api/settingsCache'
 import { Button } from '../../components/Button'
 import { FieldBlock, Input, Toggle } from '../public/controls'
@@ -33,32 +33,6 @@ const CONTROL_GROUPS = [
   { id: 'browser' as const, zh: '浏览器操作', en: 'Browser control' },
   { id: 'document' as const, zh: '文档操作', en: 'Document control' },
 ]
-
-const CUA_MCP_ID = 'computer-control-cua-driver'
-const LEGACY_CUA_MCP_CONNECTOR_ID = 'plugin:cua-driver'
-
-function isCuaMcp(server: ChatMcpServer): boolean {
-  return server.id === CUA_MCP_ID
-    || server.id === 'plugin-cua-driver'
-    || server.connectorId === 'computer-control:cua'
-    || server.connectorId === LEGACY_CUA_MCP_CONNECTOR_ID
-}
-
-function cuaMcpServer(current?: ChatMcpServer, enabled = true): ChatMcpServer {
-  return {
-    id: CUA_MCP_ID,
-    name: 'Cua Driver',
-    enabled,
-    transport: 'stdio',
-    url: '',
-    command: current?.command || 'cua-driver',
-    args: ['mcp'],
-    env: current?.env ?? {},
-    headers: {},
-    cwd: current?.cwd ?? null,
-    enabledTools: current?.enabledTools ?? [],
-  }
-}
 
 function formatControlVersion(output: string): string {
   const match = output.match(/\bv?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)\b/i)
@@ -181,7 +155,7 @@ async function runControlOperation(
   }
 }
 
-function nativeControlUpdates(current: ChatToolsConfig, tool: NativeTool, id: string, enabled: boolean): Partial<ChatToolsConfig> {
+function nativeControlUpdates(current: ChatToolsConfig, id: string, enabled: boolean): Partial<ChatToolsConfig> {
   const disabled = new Set(current.disabledSkillIds ?? [])
   if (enabled) disabled.delete(id)
   else disabled.add(id)
@@ -195,12 +169,6 @@ function nativeControlUpdates(current: ChatToolsConfig, tool: NativeTool, id: st
         runCommand: true,
         readFile: true,
       },
-    } : {}),
-    ...(tool === 'cua' ? {
-      servers: [
-        ...current.servers.filter(server => !isCuaMcp(server)),
-        cuaMcpServer(current.servers.find(isCuaMcp), enabled),
-      ],
     } : {}),
   }
 }
@@ -264,8 +232,8 @@ export function ComputerControlTab({ lang, tools, onChange }: {
     setLoading(false)
   }, [operation.detectionRevision, reload])
 
-  const setNativeControlEnabled = (tool: NativeTool, id: string, enabled: boolean) => {
-    latest.current.onChange(current => nativeControlUpdates(current, tool, id, enabled))
+  const setNativeControlEnabled = (id: string, enabled: boolean) => {
+    latest.current.onChange(current => nativeControlUpdates(current, id, enabled))
   }
 
   const install = (tool: Tool) => {
@@ -277,7 +245,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
         await refreshSettings().catch(() => undefined)
       } else {
         const skill = await api.computerControlInstall(tool)
-        setNativeControlEnabled(tool, skill.id, true)
+        setNativeControlEnabled(skill.id, true)
       }
     })
   }
@@ -286,7 +254,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
     const paths = [...latest.current.tools.skillScanPaths]
     return runControlOperation(tool, 'update', paths, async () => {
       const skill = await api.computerControlUpdate(tool)
-      setNativeControlEnabled(tool, skill.id, true)
+      setNativeControlEnabled(skill.id, true)
     })
   }
 
@@ -315,10 +283,9 @@ export function ComputerControlTab({ lang, tools, onChange }: {
               const skill = tool.kind === 'native'
                 ? skills.find(item => item.id === tool.skill || item.name === tool.skill)
                 : undefined
-              const mcp = tool.id === 'cua' ? tools.servers.find(isCuaMcp) : undefined
               const installed = tool.kind === 'plugin' ? plugin?.installed === true : undefined
               const skillCount = tool.kind === 'plugin' ? (installed ? plugin?.skillCount ?? 0 : 0) : (skill ? 1 : 0)
-              const mcpCount = tool.kind === 'plugin' ? (installed ? plugin?.mcpCount ?? 0 : 0) : (mcp ? 1 : 0)
+              const mcpCount = tool.kind === 'plugin' ? (installed ? plugin?.mcpCount ?? 0 : 0) : 0
               const componentCounts = [
                 skillCount > 0 ? `${skillCount} Skill` : '',
                 mcpCount > 0 ? `${mcpCount} MCP` : '',
@@ -329,13 +296,12 @@ export function ComputerControlTab({ lang, tools, onChange }: {
               const updateStatus = tool.kind === 'native' ? updates[tool.id] : undefined
               const ready = tool.kind === 'plugin'
                 ? installed === true
-                : !!version && !!skill && (tool.id !== 'cua' || !!mcp)
+                : !!version && !!skill
               const enabled = tool.kind === 'plugin'
                 ? plugin?.enabled === true
                 : ready
                   && runtimeEnabled
                   && !(tools.disabledSkillIds ?? []).includes(skill!.id)
-                  && (tool.id !== 'cua' || mcp?.enabled === true)
               const Icon = tool.icon
               const description = version
                 ? `${version}${componentCounts ? ` · ${componentCounts}` : ''}`
@@ -376,7 +342,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
                             ariaLabel={`${tool.name} ${zh ? '控制' : 'control'}`}
                             onChange={value => {
                               if (tool.kind === 'plugin') void setPluginEnabled(tool.id, value)
-                              else setNativeControlEnabled(tool.id, skill!.id, value)
+                              else setNativeControlEnabled(skill!.id, value)
                             }}
                           />
                         </>

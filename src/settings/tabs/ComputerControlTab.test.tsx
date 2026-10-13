@@ -35,10 +35,6 @@ function renderControls(initial: ChatToolsConfig, lang: Lang = 'zh') {
 
 const playwrightSkill = { id: 'playwright-cli', name: 'playwright-cli', source: 'user', description: 'Browser automation', recommendedTools: [] } satisfies SkillMeta
 const cuaSkill = { id: 'cua-driver', name: 'cua-driver', source: 'user', description: 'Desktop automation', recommendedTools: [] } satisfies SkillMeta
-const cuaMcp = {
-  id: 'computer-control-cua-driver', name: 'Cua Driver', enabled: true, transport: 'stdio', url: '',
-  command: 'cua-driver', args: ['mcp'], env: {}, headers: {}, cwd: null, enabledTools: [],
-}
 const pluginStatus = (overrides: Partial<PluginStatus>): PluginStatus => ({
   id: 'ego-lite', name: 'ego lite', description: '', binary: 'ego-browser', tags: [], homepage: '', repo: '',
   installed: true, enabled: true, version: '0.4.0', path: null, source: 'system', hasSkill: true,
@@ -80,9 +76,8 @@ describe('ComputerControlTab', () => {
     const onChange = vi.fn()
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    tools.servers = [cuaMcp]
     render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
-    expect(await screen.findByText('v0.28.1 · 1 Skill · 1 MCP')).toBeTruthy()
+    expect(await screen.findByText('v0.28.1 · 1 Skill')).toBeTruthy()
     expect(screen.getAllByText('未安装').length).toBeGreaterThan(0)
     expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).toBeTruthy()
     expect(screen.getAllByRole('button', { name: '安装' }).length).toBeGreaterThan(0)
@@ -132,19 +127,20 @@ describe('ComputerControlTab', () => {
     expect(controls.tools().disabledSkillIds).toEqual(['playwright-cli'])
   })
 
-  it('controls the Cua Skill and MCP together', async () => {
+  it('toggles Cua CLI through its Skill without registering an MCP server', async () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    tools.servers = [{ ...cuaMcp, id: 'plugin-cua-driver', connectorId: 'plugin:cua-driver' }]
     const controls = renderControls(tools)
-    await screen.findByText('v0.28.1 · 1 Skill · 1 MCP')
+    await screen.findByText('v0.28.1 · 1 Skill')
     fireEvent.click(screen.getByRole('switch', { name: 'Cua Driver 控制' }))
     expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).not.toBeChecked()
     expect(controls.tools().disabledSkillIds).toContain('cua-driver')
-    expect(controls.tools().servers).toEqual([expect.objectContaining({
-      id: 'computer-control-cua-driver', enabled: false, args: ['mcp'],
-    })])
+    expect(controls.tools().servers).toEqual([])
+    fireEvent.click(screen.getByRole('switch', { name: 'Cua Driver 控制' }))
+    expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).toBeChecked()
+    expect(controls.tools().disabledSkillIds).not.toContain('cua-driver')
+    expect(controls.tools().servers).toEqual([])
   })
 
   it('groups ego lite with browsers and OfficeCLI with documents', async () => {
@@ -188,10 +184,9 @@ describe('ComputerControlTab', () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    tools.servers = [cuaMcp]
 
     const first = render(<ComputerControlTab lang="zh" tools={tools} onChange={vi.fn()} />)
-    await screen.findByText('v0.28.1 · 1 Skill · 1 MCP')
+    await screen.findByText('v0.28.1 · 1 Skill')
     first.unmount()
     vi.mocked(api.computerControlStatus).mockClear()
     vi.mocked(api.chatSkillsList).mockClear()
@@ -199,13 +194,13 @@ describe('ComputerControlTab', () => {
 
     render(<ComputerControlTab lang="zh" tools={tools} onChange={vi.fn()} />)
     expect(screen.queryByText('正在检测…')).toBeNull()
-    expect(screen.getByText('v0.28.1 · 1 Skill · 1 MCP')).toBeTruthy()
+    expect(screen.getByText('v0.28.1 · 1 Skill')).toBeTruthy()
     expect(api.computerControlStatus).not.toHaveBeenCalled()
     expect(api.chatSkillsList).not.toHaveBeenCalled()
     expect(api.pluginsList).not.toHaveBeenCalled()
   })
 
-  it('updates the Cua binary, MCP runtime, and official skill when a release is available', async () => {
+  it('updates the Cua binary and official skill when a release is available', async () => {
     vi.mocked(api.computerControlStatus).mockImplementation(async tool => {
       if (tool === 'cua') return { currentVersion: '0.28.1', latestVersion: '0.28.2', updateAvailable: true }
       throw new Error('playwright-cli not found')
@@ -214,7 +209,6 @@ describe('ComputerControlTab', () => {
     vi.mocked(api.computerControlUpdate).mockResolvedValue(cuaSkill)
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    tools.servers = [cuaMcp]
 
     render(<ComputerControlTab lang="zh" tools={tools} onChange={vi.fn()} />)
     const button = await screen.findByRole('button', { name: '更新' })
@@ -232,7 +226,6 @@ describe('ComputerControlTab', () => {
     vi.mocked(api.computerControlUpdate).mockRejectedValue(new Error('installer exited with code 1'))
     const tools = makeChatToolsFixture()
     tools.enabled = true
-    tools.servers = [cuaMcp]
 
     render(<ComputerControlTab lang="zh" tools={tools} onChange={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: '更新' }))

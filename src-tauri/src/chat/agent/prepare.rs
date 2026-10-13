@@ -32,10 +32,7 @@ pub fn apply_assistant_mcp_restrictions(
             return true;
         }
         match tool.server_id.as_deref() {
-            Some(server_id) => assistant
-                .mcp_server_ids
-                .iter()
-                .any(|id| crate::computer_control::mcp_server_ids_equivalent(id, server_id)),
+            Some(server_id) => assistant.mcp_server_ids.iter().any(|id| id == server_id),
             None => false,
         }
     });
@@ -313,26 +310,9 @@ fn computer_control_system_prompt(
     }
 
     if skill_available("cua-driver") {
-        let cua_server = chat_tools.servers.iter().find(|server| {
-            server.enabled
-                && !server.command.trim().is_empty()
-                && (crate::computer_control::is_cua_mcp_server_id(&server.id)
-                    || server.connector_id.as_deref() == Some("computer-control:cua")
-                    || server.connector_id.as_deref()
-                        == Some(crate::computer_control::LEGACY_CUA_MCP_CONNECTOR_ID))
-        });
-        let mcp_available = cua_server.is_some_and(|server| {
-            assistant_snapshot.is_none_or(|assistant| {
-                assistant.mcp_server_ids.iter().any(|server_id| {
-                    crate::computer_control::mcp_server_ids_equivalent(server_id, &server.id)
-                })
-            })
-        });
-        if mcp_available {
-            lines.push(
-                "- Desktop application interaction: prefer Cua Driver; activate the `cua-driver` skill and use its enabled MCP tools.",
-            );
-        }
+        lines.push(
+            "- Desktop application interaction: activate the `cua-driver` skill and use the `cua-driver` CLI through the command tool. Discover individual commands with `cua-driver describe <tool>` when needed; do not start or configure a Cua MCP server.",
+        );
     }
 
     (!lines.is_empty()).then(|| format!("Enabled computer-control tools:\n{}", lines.join("\n")))
@@ -1398,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn computer_control_prompt_requires_cua_skill_and_mcp() {
+    fn computer_control_prompt_uses_cua_cli_without_mcp() {
         let registry = skills::SkillRegistry {
             records: vec![test_skill_record("cua-driver")],
             warnings: Vec::new(),
@@ -1408,32 +1388,19 @@ mod tests {
         chat_tools.native_tools.skill_runtime = true;
         chat_tools.native_tools.run_command = true;
         chat_tools.native_tools.read_file = true;
-        chat_tools.servers.push(crate::settings::ChatMcpServer {
-            id: "computer-control-cua-driver".to_string(),
-            name: "Cua Driver".to_string(),
-            enabled: true,
-            command: "cua-driver".to_string(),
-            args: vec!["mcp".to_string()],
-            ..Default::default()
-        });
-
-        let prompt =
-            computer_control_system_prompt(&registry, &chat_tools, true, None).expect("Cua prompt");
-        assert!(prompt.contains("prefer Cua Driver"), "{prompt}");
-
-        let legacy_assistant = test_assistant_snapshot(
-            vec![crate::computer_control::LEGACY_CUA_MCP_SERVER_ID],
-            vec!["cua-driver"],
+        let assistant = test_assistant_snapshot(vec![], vec!["cua-driver"]);
+        let prompt = computer_control_system_prompt(&registry, &chat_tools, true, Some(&assistant))
+            .expect("CLI does not require any MCP server");
+        assert!(prompt.contains("`cua-driver` CLI"), "{prompt}");
+        let restricted = test_assistant_snapshot(vec![], vec![]);
+        assert!(
+            computer_control_system_prompt(&registry, &chat_tools, true, Some(&restricted))
+                .is_none()
         );
-        assert!(computer_control_system_prompt(
-            &registry,
-            &chat_tools,
-            true,
-            Some(&legacy_assistant),
-        )
-        .is_some());
-
-        chat_tools.servers[0].enabled = false;
+        chat_tools.disabled_skill_ids.push("cua-driver".to_string());
+        assert!(computer_control_system_prompt(&registry, &chat_tools, true, None).is_none());
+        chat_tools.disabled_skill_ids.clear();
+        chat_tools.native_tools.run_command = false;
         assert!(computer_control_system_prompt(&registry, &chat_tools, true, None).is_none());
     }
 
@@ -1835,18 +1802,6 @@ mod tests {
         assert!(tools
             .iter()
             .any(|t| t.source == "mcp" && t.server_id.as_deref() == Some("demo")));
-    }
-
-    #[test]
-    fn assistant_mcp_restrictions_accept_legacy_cua_id() {
-        let assistant = test_assistant_snapshot(vec!["plugin-cua-driver"], vec![]);
-        let mut cua = test_mcp_tool();
-        cua.server_id = Some("computer-control-cua-driver".to_string());
-        let mut tools = vec![cua];
-
-        apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
-
-        assert_eq!(tools.len(), 1);
     }
 
     #[test]
