@@ -891,14 +891,20 @@ fn choose_permission_outcome(options: Option<&Value>) -> Option<String> {
 
 /// 解析 ACP `PromptResponse.usage`（官方标记 UNSTABLE，字段缺失一律按 0，不报错）。
 ///
-/// 四个分量**并列不重叠**，都要计入上下文占用。opencode 实测样本对账：
+/// **CLI 自报了 `totalTokens`（>0）就信它**，与 grok `_meta` 路同一原则：各 CLI 的
+/// cache 与 input 包含口径不同，客户端按分量猜口径必错一家。分量仍如实记录（成本面板用）。
+///
+/// `totalTokens` 缺失时才按「四项并列」分量累加兜底（opencode 旧实测口径：
 /// `inputTokens 11685 + outputTokens 4 + thoughtTokens 11 + cachedReadTokens 1792 = 13492`
-/// 恰等于其自报的 `totalTokens`——所以 `thoughtTokens` 没有含在 `outputTokens` 里
-/// （与 pi/codex 相反，那两家的 reasoning 已含在 output 内，见 `CliUsageParts::reasoning` 注释）。
+/// 恰等于其自报 totalTokens，两路一致；`thoughtTokens` 不含在 `outputTokens` 内，与
+/// pi/codex 相反，见 `CliUsageParts::reasoning` 注释）。hermes 实测（openai-codex 代理）属 OpenAI 口径
+/// `cachedReadTokens ⊆ inputTokens`，并列累加会把 cache 双算，见
+/// `prompt_response_usage_trusts_cli_reported_total` 的对账样本。
 ///
 /// 全零时返回 `None`（保留既有行为：没报就是没报，不要造出一个 0 用量覆盖真实值）。
 fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
     let field = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    let reported_total = field("totalTokens");
     let parts = CliUsageParts {
         input: field("inputTokens"),
         output: field("outputTokens"),
@@ -918,10 +924,15 @@ fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
         && parts.cache_read == 0
         && parts.cache_creation == 0
         && parts.reasoning == 0
+        && reported_total == 0
     {
         None
     } else {
-        Some(usage_from_parts(parts))
+        let mut model_usage = usage_from_parts(parts);
+        if reported_total > 0 {
+            model_usage.total_tokens = Some(reported_total);
+        }
+        Some(model_usage)
     }
 }
 
@@ -3447,6 +3458,29 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(13_492));
         // PromptResponse.usage 不带窗口——留 None 交给 run.rs 的窗口粘滞。
         assert_eq!(usage.context_window_tokens, None);
+    }
+
+    /// hermes 0.21.3 本机实测（2026-10-13，`openai-codex:gpt-6.1-sol` 经 chatgpt codex 代理）：
+    /// 它的 `inputTokens` 是**全量 prompt（已含 cache）**、`cachedReadTokens ⊆ inputTokens`
+    /// （OpenAI 口径，对账：其 state.db 累计非缓存 21448 + cache 175616 = 197064 = inputTokens）。
+    /// 按「四项并列」累加会把 cache 双算成 373155（实机用量条 74.6%，真实 39.5%）。
+    /// 与 grok `_meta` 路同理：CLI 自报了 `totalTokens` 就信它，不自己按分量猜口径。
+    #[test]
+    fn prompt_response_usage_trusts_cli_reported_total() {
+        let usage = format_acp_usage(&json!({
+            "inputTokens": 197064, "outputTokens": 466, "totalTokens": 197530,
+            "thoughtTokens": 9, "cachedReadTokens": 175616
+        }))
+        .expect("hermes 上报的是真实用量");
+        assert_eq!(
+            usage.total_tokens,
+            Some(197_530),
+            "分母口径归 CLI 自报，不再按并列分量累加"
+        );
+        // 分量照实记录，成本面板还要用。
+        assert_eq!(usage.input_tokens, Some(197_064));
+        assert_eq!(usage.cached_input_tokens, Some(175_616));
+        assert_eq!(usage.reasoning_tokens, Some(9));
     }
 
     #[test]
