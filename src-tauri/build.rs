@@ -7,7 +7,22 @@ fn main() {
     println!("cargo:rerun-if-changed=icons");
 
     // Tauri 构建脚本：在编译时生成 Tauri 应用所需的上下文和资源配置
-    tauri_build::build();
+    let attributes = tauri_build::Attributes::new();
+    let attributes = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        // tauri-winres embeds its manifest only into bin targets, leaving the
+        // libtest harness unable to resolve Common Controls v6 imports at startup
+        // (STATUS_ENTRYPOINT_NOT_FOUND). Embed the same dependency through the
+        // linker for every executable, and disable the duplicate resource manifest.
+        // https://github.com/tauri-apps/tauri/issues/13419
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+        attributes.windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest())
+    } else {
+        attributes
+    };
+    tauri_build::try_build(attributes).expect("Tauri build setup failed");
 
     // These directory mappings match bundle.resources in tauri.conf.json.
     // Watch the roots as well as Tauri's individual files so additions/removals

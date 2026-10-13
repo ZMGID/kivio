@@ -63,43 +63,29 @@ fn prune_directory(source: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    struct Fixture(PathBuf);
-
-    impl Fixture {
-        fn new() -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "kivio-resource-test-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir_all(root.join("source/current")).unwrap();
-            fs::create_dir_all(root.join("output/skills/current")).unwrap();
-            Self(root)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).unwrap();
-        }
+    fn fixture() -> tempfile::TempDir {
+        // Atomic directory creation avoids collisions between parallel tests;
+        // wall-clock timestamps are not unique, even at nanosecond precision.
+        let root = tempfile::Builder::new()
+            .prefix("kivio-resource-test-")
+            .tempdir()
+            .unwrap();
+        fs::create_dir_all(root.path().join("source/current")).unwrap();
+        fs::create_dir_all(root.path().join("output/skills/current")).unwrap();
+        root
     }
 
     #[test]
     fn removes_retired_skills_and_nested_files_but_keeps_current_and_siblings() {
-        let fixture = Fixture::new();
-        let source = fixture.0.join("source");
-        let output = fixture.0.join("output/skills");
+        let fixture = fixture();
+        let source = fixture.path().join("source");
+        let output = fixture.path().join("output/skills");
         fs::write(source.join("current/SKILL.md"), "current").unwrap();
         fs::write(output.join("current/SKILL.md"), "current").unwrap();
         fs::write(output.join("current/obsolete.md"), "old").unwrap();
         fs::create_dir_all(output.join("retired/references")).unwrap();
         fs::write(output.join("retired/references/old.md"), "old").unwrap();
-        fs::write(fixture.0.join("output/kivio.exe"), "keep").unwrap();
+        fs::write(fixture.path().join("output/kivio.exe"), "keep").unwrap();
         prune_stale(&source, &output).unwrap();
         assert_eq!(
             fs::read_to_string(output.join("current/SKILL.md")).unwrap(),
@@ -107,16 +93,16 @@ mod tests {
         );
         assert!(!output.join("current/obsolete.md").exists());
         assert!(!output.join("retired").exists());
-        assert!(fixture.0.join("output/kivio.exe").exists());
+        assert!(fixture.path().join("output/kivio.exe").exists());
         prune_stale(&source, &output).unwrap();
     }
 
     #[test]
     fn missing_source_and_overlapping_roots_leave_output_intact() {
-        let fixture = Fixture::new();
-        let output = fixture.0.join("output/skills");
+        let fixture = fixture();
+        let output = fixture.path().join("output/skills");
         fs::write(output.join("keep.md"), "keep").unwrap();
-        assert!(prune_stale(&fixture.0.join("missing"), &output).is_err());
+        assert!(prune_stale(&fixture.path().join("missing"), &output).is_err());
         assert!(prune_stale(&output, &output).is_err());
         assert!(prune_stale(&output.join("current"), &output).is_err());
         assert!(prune_stale(&output, &output.join("current")).is_err());
