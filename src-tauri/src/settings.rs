@@ -2368,7 +2368,10 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         reading
     };
     settings.reading_target_lang = match reading {
-        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" => reading.to_string(),
+        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "it" | "ru" | "ar" | "hi"
+        | "th" | "vi" | "id" | "ms" | "tr" | "nl" | "pl" | "uk" | "sv" | "da" | "no" | "fi" => {
+            reading.to_string()
+        }
         _ => "zh".to_string(),
     };
     let token = settings.chat_tools.playwright_extension_token.trim();
@@ -3881,7 +3884,14 @@ mod tests {
 
     #[test]
     fn reading_translation_language_migrates_once_and_stays_independent() {
-        for (legacy, expected) in [("auto", "zh"), ("ja", "ja"), ("zh-Hant", "zh-Hant")] {
+        for (legacy, expected, prompt_language) in [
+            ("auto", "zh", "Simplified Chinese"),
+            ("ja", "ja", "Japanese"),
+            ("zh-Hant", "zh-Hant", "Traditional Chinese"),
+            ("es", "es", "Spanish"),
+            ("ar", "ar", "Arabic"),
+            ("th", "th", "Thai"),
+        ] {
             let old: Settings =
                 serde_json::from_value(serde_json::json!({"targetLang": legacy})).unwrap();
             let migrated = sanitize_settings(old);
@@ -3889,6 +3899,10 @@ mod tests {
             assert_eq!(saved["readingTargetLang"], expected);
             saved["targetLang"] = serde_json::json!("ko");
             let reopened = sanitize_settings(serde_json::from_value(saved).unwrap());
+            assert_eq!(
+                crate::utils::language_name(&reopened.reading_target_lang),
+                prompt_language
+            );
             let saved = serde_json::to_value(reopened).unwrap();
             assert_eq!(saved["readingTargetLang"], expected);
             assert_eq!(saved["targetLang"], "ko");

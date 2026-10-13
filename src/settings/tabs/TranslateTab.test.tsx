@@ -41,17 +41,17 @@ describe('TranslateTab', () => {
   it('目标语言下拉写 targetLang', async () => {
     const props = renderTab()
     await userEvent.click(screen.getByRole('button', { name: '输入翻译输出语言' }))
-    await userEvent.click(screen.getByText(t.langJa))
-    expect(props.onUpdateSettings).toHaveBeenCalledWith({ targetLang: 'ja' })
+    await userEvent.click(screen.getByText('西班牙语'))
+    expect(props.onUpdateSettings).toHaveBeenCalledWith({ targetLang: 'es' })
   })
 
   it('阅读语言独立保存，不提供中英互译的自动选项', async () => {
     const props = renderTab()
     await userEvent.click(screen.getByRole('button', { name: '阅读目标语言' }))
     expect(screen.queryByText(t.langAuto)).toBeNull()
-    await userEvent.click(screen.getByText(t.langKo))
+    await userEvent.click(screen.getByText('泰语'))
     expect(props.onUpdateSettings).toHaveBeenCalledTimes(1)
-    expect(props.onUpdateSettings).toHaveBeenCalledWith({ readingTargetLang: 'ko' })
+    expect(props.onUpdateSettings).toHaveBeenCalledWith({ readingTargetLang: 'th' })
   })
 
   it('提示词回显 translatorPrompt 而非默认模板', () => {
