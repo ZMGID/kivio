@@ -3836,6 +3836,7 @@ mod tests {
             UnifiedAgentEvent::UserFollowUp { .. } => "UserFollowUp",
             UnifiedAgentEvent::QueuedTextsRestored { .. } => "QueuedTextsRestored",
             UnifiedAgentEvent::StatusNote { .. } => "StatusNote",
+            UnifiedAgentEvent::RetryStatus { .. } => "RetryStatus",
             UnifiedAgentEvent::BackgroundTask { .. } => "BackgroundTask",
             UnifiedAgentEvent::TodoWrite { .. } => "TodoWrite",
             UnifiedAgentEvent::SubagentProgress { .. } => "SubagentProgress",

@@ -107,7 +107,25 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         crate::chat::protocol::emit_run_event(
             &self.app,
             run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
+        );
+    }
+
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                note: Some(format!(
+                    "{} · retry {}/{}",
+                    retry.reason, retry.attempt, retry.max_retries
+                )),
+                retry: Some(retry),
+            },
         );
     }
 
@@ -462,7 +480,25 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         crate::chat::protocol::emit_run_event(
             &self.app,
             run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note },
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
+        );
+    }
+
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        crate::chat::protocol::emit_run_event(
+            &self.app,
+            run_id,
+            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                note: Some(format!(
+                    "{} · retry {}/{}",
+                    retry.reason, retry.attempt, retry.max_retries
+                )),
+                retry: Some(retry),
+            },
         );
     }
 

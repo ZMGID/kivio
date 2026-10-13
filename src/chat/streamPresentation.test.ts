@@ -12,8 +12,10 @@ describe('conversation stream presentation', () => {
   it('clears retry status when content resumes and finalizes reasoning duration on terminal', () => {
     const snapshot = createEmptyStreamSnapshot()
     snapshot.statusNote = 'retrying'
+    snapshot.retryStatus = { attempt: 1, maxRetries: 10, retryAtMs: 1000, reason: 'Rate limited' }
     expect(applyConversationStreamEvent(snapshot, event('reasoning_delta', 'run-a', 'thinking'), 100)).toBe(true)
     expect(snapshot.statusNote).toBeNull()
+    expect(snapshot.retryStatus).toBeNull()
     expect(snapshot.reasoningDurationMs).toBe(0)
     expect(applyConversationStreamEvent(snapshot, event('run_completed', 'run-a'), 145)).toBe(true)
     expect(snapshot.reasoningDurationMs).toBe(45)

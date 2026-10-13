@@ -2013,6 +2013,7 @@ pub struct Settings {
     pub settings_language: Option<String>,
     #[serde(default = "default_retry_enabled")]
     pub retry_enabled: bool,
+    /// Total attempts, including the first request. UI shows this minus one.
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u8,
     /// 一次性迁移标记：内置专家（写作/编程/研究/数据）已 seed 进 assistants.json 后置 true。
@@ -3793,7 +3794,7 @@ fn default_settings_language() -> Option<String> {
 }
 
 fn default_retry_attempts() -> u8 {
-    5
+    11 // First request + ten retries; persisted totals retain their original meaning.
 }
 
 fn default_retry_enabled() -> bool {
@@ -3801,7 +3802,7 @@ fn default_retry_enabled() -> bool {
 }
 
 fn clamp_retry_attempts(value: u8) -> u8 {
-    value.clamp(1, 8)
+    value.clamp(1, 11)
 }
 
 /**
@@ -4312,15 +4313,12 @@ mod tests {
 
     #[test]
     fn sanitize_settings_clamps_retry_attempts() {
-        let mut s = Settings::default();
-        s.retry_attempts = 0;
-        let s = sanitize_settings(s);
-        assert!((1..=8).contains(&s.retry_attempts));
-
-        let mut s = Settings::default();
-        s.retry_attempts = 99;
-        let s = sanitize_settings(s);
-        assert!((1..=8).contains(&s.retry_attempts));
+        assert_eq!(Settings::default().retry_attempts, 11);
+        for (stored, expected) in [(0, 1), (5, 5), (11, 11), (99, 11)] {
+            let mut settings = Settings::default();
+            settings.retry_attempts = stored;
+            assert_eq!(sanitize_settings(settings).retry_attempts, expected);
+        }
     }
 
     #[test]

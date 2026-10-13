@@ -6,6 +6,7 @@ import { isAskUserToolName } from './askUserTools'
 import { useStatusQuip } from './blobQuips'
 import { useConversationTransition } from './conversationTransitionStore'
 import type { Lang } from '../components/i18n'
+import type { ChatRetryStatusPayload } from '../generated/chatProtocol'
 
 export const StreamStatusLogo = memo(function StreamStatusLogo({
   size = 28,
@@ -79,6 +80,8 @@ interface LiveStats {
   tokens: number
   running: number
   statusNote: string | null
+  retryStatus: ChatRetryStatusPayload | null
+  now: number
 }
 
 /**
@@ -90,7 +93,7 @@ interface LiveStats {
  * 读一次，token 从已流出的正文 + 思维链估算 —— 任何运行时（内置 / 外部 CLI）都有数，
  * 且和 Claude 一样随输出平滑上涨；后端的 live 用量事件太稀（每 planning 轮一次）不用。
  */
-export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 'zh' }: StreamStatusLineProps) {
+export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 'en' }: StreamStatusLineProps) {
   const { loading } = useConversationTransition()
   const [stats, setStats] = useState<LiveStats | null>(null)
   const doneUntilRef = useRef(0)
@@ -120,6 +123,8 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
           0,
         ),
         statusNote: snapshot.statusNote,
+        retryStatus: snapshot.retryStatus,
+        now,
       })
     }
     update()
@@ -140,10 +145,14 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
     parts.push(formatElapsed(stats.elapsedMs))
     if (stats.tokens > 0) parts.push(`${formatTokens(stats.tokens)} tokens`)
     if (stats.running > 0) parts.push(`${stats.running} running`)
-    if (stats.statusNote) parts.push(stats.statusNote)
+    if (stats.retryStatus) {
+      const retry = stats.retryStatus
+      const seconds = Math.max(0, Math.ceil((retry.retryAtMs - stats.now) / 1000))
+      parts.push(`${retry.reason} · retry ${retry.attempt}/${retry.maxRetries} · ${seconds > 0 ? `in ${seconds}s` : 'Retrying…'}`)
+    } else if (stats.statusNote) parts.push(stats.statusNote)
   }
   // 后端的状态一行字优先，墨团别抢话。
-  const showQuip = quip && !stats?.statusNote
+  const showQuip = quip && !stats?.statusNote && !stats?.retryStatus
 
   return (
     <div
@@ -151,7 +160,7 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
     >
       <StreamStatusLogo mood={mood} paused={loading} />
       {(parts.length > 0 || showQuip) && (
-        <span className="text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+        <span className="min-w-0 break-words text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
           {parts.join(' · ')}
           {showQuip && (
             <span key={quip} className="kv-blob-quip">

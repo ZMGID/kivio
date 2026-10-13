@@ -63,6 +63,7 @@ struct TestHost {
     /// Compaction phases emitted, in order.
     compaction_phases: Mutex<Vec<String>>,
     retry_notes: Mutex<Vec<Option<String>>>,
+    retry_statuses: Mutex<Vec<crate::chat::protocol::ChatRetryStatusPayload>>,
     discarded_attempts: Mutex<Vec<(u32, u32, Vec<String>, Vec<String>)>>,
 }
 
@@ -284,6 +285,21 @@ impl AgentHost for TestHost {
 
     fn emit_status_note(&self, _run_id: &str, note: Option<String>) {
         self.retry_notes.lock().unwrap().push(note);
+    }
+
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        self.emit_status_note(
+            run_id,
+            Some(format!(
+                "{} · retry {}/{}",
+                retry.reason, retry.attempt, retry.max_retries
+            )),
+        );
+        self.retry_statuses.lock().unwrap().push(retry);
     }
 
     fn emit_tool_record(
@@ -1826,6 +1842,69 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
     );
 }
 
+/// An HTTP error and an interrupted established stream consume the same budget.
+#[tokio::test]
+async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
+    for recover in [true, false] {
+        let final_response = if recover {
+            MockResponse::Sse(sse_from_completion_json(
+                r#"{"choices":[{"message":{"role":"assistant","content":"recovered"},"finish_reason":"stop"}]}"#,
+            ))
+        } else {
+            MockResponse::Status(503, "unavailable".into())
+        };
+        let server = MockModelServer::start(vec![
+            MockResponse::Status(503, "unavailable".into()),
+            MockResponse::SseInterrupt(vec![
+                serde_json::json!({"choices":[{"delta":{"content":"partial"}}]}).to_string(),
+            ]),
+            final_response,
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url);
+        let host = TestHost::default();
+        let result = config
+            .provider_runtime
+            .stream(crate::chat::agent::provider_runtime::StreamRequest {
+                host: &host,
+                provider: &config.provider,
+                model: &config.model,
+                messages: vec![serde_json::json!({"role":"user", "content":"hello"})],
+                tools: None,
+                retry_attempts: 3,
+                thinking_enabled: false,
+                thinking_level: None,
+                builtin_web_search: false,
+                max_output_tokens: 100,
+                conversation_id: &config.conversation_id,
+                run_id: &config.run_id,
+                message_id: &config.message_id,
+                generation: config.generation,
+                label: "Budget test",
+                policy: crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
+                text_segment: None,
+                reasoning_segment: None,
+                tool_draft_tracker: None,
+                web_search_tracker: None,
+            })
+            .await;
+        assert_eq!(result.is_ok(), recover);
+        if let Ok(output) = result {
+            assert_eq!(output.content, "recovered");
+        }
+        assert_eq!(server.captured_bodies().len(), 3);
+        let progress = host.retry_statuses.lock().unwrap();
+        assert_eq!(
+            progress
+                .iter()
+                .map(|retry| (retry.attempt, retry.max_retries))
+                .collect::<Vec<_>>(),
+            vec![(1, 2), (2, 2)]
+        );
+        assert_eq!(host.discarded_attempts.lock().unwrap().len(), 1);
+    }
+}
+
 /// A transient disconnect retries only the current model request, keeping completed
 /// tool results and never executing an incomplete tool draft.
 #[tokio::test]
@@ -1902,7 +1981,10 @@ async fn run_loop_reconnects_current_request_without_replaying_tools() {
             assert!(discarded[0].3.is_empty(), "prior tools must remain");
         }
         let notes = host.retry_notes.lock().unwrap();
-        assert!(notes.iter().flatten().any(|note| note.contains("重连 1/2")));
+        assert!(notes
+            .iter()
+            .flatten()
+            .any(|note| note.contains("retry 1/2")));
         assert_eq!(notes.last(), Some(&None));
         let bodies = server.captured_bodies();
         assert_eq!(bodies.len(), 3);

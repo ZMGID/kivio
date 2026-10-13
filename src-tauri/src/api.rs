@@ -246,32 +246,75 @@ impl Utf8StreamDecoder {
 }
 
 tokio::task_local! {
-    pub(crate) static RETRY_PROGRESS: tokio::sync::mpsc::UnboundedSender<String>;
+    pub(crate) static RETRY_PROGRESS: tokio::sync::mpsc::UnboundedSender<crate::chat::protocol::ChatRetryStatusPayload>;
+    static RETRY_BUDGET: RetryBudget;
 }
 
-fn report_retry_progress(attempt: usize, max: usize, delay_ms: u64) {
+/// One model request owns one budget, including HTTP failures, key switches and
+/// interrupted streams. Task-local scope carries it through provider adapters;
+/// separate requests (and concurrent subagents) never share their counters.
+#[derive(Clone)]
+pub(crate) struct RetryBudget(std::sync::Arc<parking_lot::Mutex<(usize, usize)>>);
+
+impl RetryBudget {
+    pub(crate) fn current_or_new(attempts: usize) -> Self {
+        RETRY_BUDGET.try_with(Clone::clone).unwrap_or_else(|_| {
+            Self(std::sync::Arc::new(parking_lot::Mutex::new((
+                0,
+                attempts.max(1) - 1,
+            ))))
+        })
+    }
+
+    pub(crate) fn schedule(
+        &self,
+        retry_after: Option<u64>,
+        reason: &str,
+        immediate: bool,
+    ) -> Option<(crate::chat::protocol::ChatRetryStatusPayload, u64)> {
+        let mut state = self.0.lock();
+        if state.0 >= state.1 {
+            return None;
+        }
+        state.0 += 1;
+        let delay_ms = if immediate {
+            0
+        } else {
+            retry_delay_ms(state.0, retry_after)
+        };
+        let retry = crate::chat::protocol::ChatRetryStatusPayload {
+            attempt: state.0 as u32,
+            max_retries: state.1 as u32,
+            retry_at_ms: (chrono::Utc::now().timestamp_millis().max(0) as u64)
+                .saturating_add(delay_ms),
+            reason: reason.to_string(),
+        };
+        Some((retry, delay_ms))
+    }
+
+    fn attempts(&self) -> (usize, usize) {
+        let state = self.0.lock();
+        (state.0 + 1, state.1 + 1)
+    }
+}
+
+pub(crate) async fn with_retry_budget<T>(attempts: usize, future: impl Future<Output = T>) -> T {
+    RETRY_BUDGET
+        .scope(RetryBudget::current_or_new(attempts), future)
+        .await
+}
+
+fn report_retry_progress(retry: crate::chat::protocol::ChatRetryStatusPayload) {
     let _ = RETRY_PROGRESS.try_with(|tx| {
-        let _ = tx.send(format!(
-            "请求重试 {attempt}/{} · {}s",
-            max.saturating_sub(1),
-            delay_ms.div_ceil(1000)
-        ));
+        let _ = tx.send(retry);
     });
 }
 
-// ===== Retry / Failover =====
-
-/// 重试延迟基础值（毫秒）。暂时性错误起步退避 ~5s。
-const RETRY_BASE_DELAY_MS: u64 = 5_000;
-/// 重试延迟最大值（毫秒）。温和退避封顶 30s（Retry-After 可覆盖更大值）。
+/// Claude Code-style bounded exponential backoff, starting at one second.
+const RETRY_BASE_DELAY_MS: u64 = 1_000;
 const RETRY_MAX_DELAY_MS: u64 = 30_000;
-/// 同一个 key 上连续 429 退避重试达到该次数后，若存在未冷却的备用 key，
-/// 则交回外层切 key（在新 key 上重新计数 / 重试）；无备用 key 时继续退避到总次数上限。
+/// A second 429 on the same key hands control back to key failover.
 const RATE_LIMIT_KEY_SWITCH_THRESHOLD: usize = 2;
-/// 限流（429）专用的最小重试次数。限流是「等一会就能恢复」的暂时性错误（QPM/配额按时间桶
-/// 刷新），值得比通用 `retry_attempts` 更耐心地退避重试——对标 Claude Code 对 rate-limit 的
-/// 多次退避。仅在**无备用 key**（无法换 key 规避）时生效；有备用 key 时仍按阈值优先换 key。
-const RATE_LIMIT_MAX_ATTEMPTS: usize = 8;
 
 /// 获取实际的重试次数
 /// 如果重试功能被禁用，则返回 1（即只尝试一次）
@@ -289,16 +332,6 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-}
-
-/// 判断 HTTP 状态码是否属于"立即换 key"错误（坏 / 失效 key）：
-/// - 401 鉴权失败（key 被吊销 / 错误）
-/// - 402 需要付费（账户欠费）
-/// - 403 权限不足 / 被封禁
-/// 这些与 key 直接相关、在同一 key 上重试永远失败 → 内层不重试，立即交外层换 key。
-/// 注意：429 不在此列 —— 429 由内层退避重试，仅在达到阈值且有备用 key 时才换 key。
-fn is_immediate_failover_status(status: StatusCode) -> bool {
-    matches!(status.as_u16(), 401 | 402 | 403)
 }
 
 /// 判断请求错误是否可重试
@@ -349,16 +382,15 @@ pub fn format_reqwest_error(error: &reqwest::Error) -> String {
 }
 
 /// 计算重试延迟
-/// 优先使用服务器返回的 Retry-After 头；否则使用指数退避策略。
+/// 指数退避与 Retry-After 取较大值，避免服务端的小值导致快速耗尽重试。
 /// Retry-After 同样受 `RETRY_MAX_DELAY_MS` 封顶：上游（或中转）偶尔返回
 /// `Retry-After: 86400` 之类的巨值，照睡会把整次请求挂死一天（只能靠取消轮询打断）。
 fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
-    if let Some(seconds) = retry_after {
-        return seconds.saturating_mul(1000).min(RETRY_MAX_DELAY_MS);
-    }
-
-    let delay = RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow((attempt - 1) as u32));
-    delay.min(RETRY_MAX_DELAY_MS)
+    let backoff =
+        RETRY_BASE_DELAY_MS.saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1) as u32));
+    backoff
+        .max(retry_after.unwrap_or(0).saturating_mul(1000))
+        .min(RETRY_MAX_DELAY_MS)
 }
 
 fn parse_leading_status_code(value: &str) -> Option<u16> {
@@ -398,7 +430,7 @@ pub fn extract_status_code(err_msg: &str) -> Option<u16> {
 /// - 402 需要付费（账户欠费）→ 立即换 key
 /// - 403 权限不足 / 被封禁 → 立即换 key
 /// - 429 限流（key 维度配额耗尽）→ 内层先退避重试；达到阈值且有备用 key 时，
-///   429 错误冒泡到外层触发换 key（在新 key 上重新计数）
+///   429 错误冒泡到外层触发换 key（共用同一个重试预算）
 /// 其它 4xx（如 400 malformed body）属于请求本身问题，换 key 也无济于事 → 不触发
 /// 5xx 由内层退避重试，正常不会到这里（除非耗尽次数；耗尽后非 key 问题，不换 key）
 /// 网络错误（timeout / connect 失败）非 key 问题，extract_status_code 返回 None → 不触发
@@ -413,7 +445,7 @@ pub fn is_failover_error(err_msg: &str) -> bool {
 /// - **401/402/403（坏 / 失效 key）**：内层不重试，立即冒泡 → 外层换 key。
 /// - **429（限流）**：内层在当前 key 退避重试；只有当**同一 key 连续 429 达到阈值**
 ///   `RATE_LIMIT_KEY_SWITCH_THRESHOLD` **且存在未冷却备用 key** 时，才让 429 冒泡 → 外层换 key
-///   （换后在新 key 上重新计数 / 重试）；无备用 key 时继续退避到总次数上限。
+///   （换后仍共用原预算）；无备用 key 时继续退避到总次数上限。
 /// - **5xx / timeout / connect（暂时性）**：内层退避重试，不换 key（不是 key 的问题）。
 /// - **400 / 404 / 422 等确定性客户端错误**：不重试，快速失败。
 ///
@@ -443,6 +475,35 @@ where
 }
 
 async fn send_with_failover_cancelable<F, Fut, C>(
+    state: &AppState,
+    label: &str,
+    attempts: usize,
+    provider_id: &str,
+    api_keys: &[String],
+    is_cancelled: C,
+    send: F,
+) -> Result<reqwest::Response, String>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    C: Fn() -> bool + Send + Sync,
+{
+    with_retry_budget(
+        attempts,
+        send_with_failover_budgeted(
+            state,
+            label,
+            attempts,
+            provider_id,
+            api_keys,
+            is_cancelled,
+            send,
+        ),
+    )
+    .await
+}
+
+async fn send_with_failover_budgeted<F, Fut, C>(
     state: &AppState,
     label: &str,
     attempts: usize,
@@ -526,6 +587,11 @@ where
                         total,
                         err_msg
                     );
+                    let budget = RetryBudget::current_or_new(attempts);
+                    let Some((retry, _)) = budget.schedule(None, "Switching API key", true) else {
+                        return Err(err_msg);
+                    };
+                    report_retry_progress(retry);
                     last_err = Some(err_msg);
                     continue;
                 }
@@ -608,99 +674,70 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
-    let attempts = attempts.max(1);
-    // 限流（429）在无备用 key 时用更高的重试上限耐心退避；有备用 key 时维持通用上限
-    // （阈值处会冒泡换 key，换 key 比干等更优）。其它错误（5xx/网络）仍走通用 `attempts`。
-    let rate_limit_max = if policy.rate_limit_cap.is_none() {
-        attempts.max(RATE_LIMIT_MAX_ATTEMPTS)
-    } else {
-        attempts
-    };
-    let loop_max = attempts.max(rate_limit_max);
-    let mut last_error: Option<String> = None;
-    // 同一 key 上累计的 429 次数，用于阈值化换 key。
-    let mut rate_limit_attempts: usize = 0;
-
-    for attempt in 1..=loop_max {
+    let budget = RetryBudget::current_or_new(attempts);
+    let mut rate_limit_attempts = 0;
+    loop {
         if is_cancelled() {
-            return Err(format!("{} cancelled", label));
+            return Err(format!("{label} cancelled"));
         }
-        match send().await {
+        let (err_msg, retry_after, reason, retryable) = match send().await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
                     return Ok(response);
                 }
-
-                // 401/402/403：坏 / 失效 key，内层不重试，立即冒泡（外层换 key）。
-                if is_immediate_failover_status(status) {
-                    let text = response.text().await.unwrap_or_default();
-                    let err_msg = format!("{} Error: {} - {}", label, status, text);
-                    return Err(format!("{} (attempt {}/{})", err_msg, attempt, attempts));
-                }
-
+                let retry_after = parse_retry_after(response.headers());
+                let text = response.text().await.unwrap_or_default();
+                let err_msg = format!("{label} Error: {status} - {text}");
                 let is_rate_limit = status == StatusCode::TOO_MANY_REQUESTS;
                 if is_rate_limit {
                     rate_limit_attempts += 1;
                 }
-
-                let retry_after = parse_retry_after(response.headers());
-                let text = response.text().await.unwrap_or_default();
-                let err_msg = format!("{} Error: {} - {}", label, status, text);
-
-                // 429：受 key-switch 阈值约束 + 限流专用上限耐心退避；
-                // 5xx：退避重试到通用次数；其它确定性 4xx：不重试快速失败。
-                let (should_retry, shown_max) = if is_rate_limit {
-                    (
-                        policy.should_retry_rate_limit(rate_limit_attempts)
-                            && attempt < rate_limit_max,
-                        rate_limit_max,
-                    )
+                let retryable = if is_rate_limit {
+                    policy.should_retry_rate_limit(rate_limit_attempts)
                 } else {
-                    (status.is_server_error() && attempt < attempts, attempts)
+                    status.is_server_error() || matches!(status.as_u16(), 408)
                 };
-
-                if should_retry {
-                    last_error = Some(err_msg);
-                    let delay = retry_delay_ms(attempt, retry_after);
-                    eprintln!(
-                        "{} retrying in {}ms (attempt {}/{})",
-                        label, delay, attempt, shown_max
-                    );
-                    if is_cancelled() {
-                        return Err(format!("{} cancelled", label));
-                    }
-                    report_retry_progress(attempt, shown_max, delay);
-                    sleep_with_cancel(label, delay, is_cancelled).await?;
-                    continue;
-                }
-
-                return Err(format!("{} (attempt {}/{})", err_msg, attempt, shown_max));
+                let reason = match status.as_u16() {
+                    429 => "Rate limited",
+                    529 => "Server overloaded",
+                    408 | 504 => "Request timed out",
+                    _ => "Server error",
+                };
+                (err_msg, retry_after, reason, retryable)
             }
             Err(err) => {
-                let err_msg = format!("{} Error: {}", label, format_reqwest_error(&err));
-                if is_retryable_error(&err) && attempt < attempts {
-                    last_error = Some(err_msg);
-                    let delay = retry_delay_ms(attempt, None);
-                    eprintln!(
-                        "{} retrying in {}ms (attempt {}/{})",
-                        label, delay, attempt, attempts
-                    );
-                    if is_cancelled() {
-                        return Err(format!("{} cancelled", label));
-                    }
-                    report_retry_progress(attempt, attempts, delay);
-                    sleep_with_cancel(label, delay, is_cancelled).await?;
-                    continue;
-                }
-                return Err(format!("{} (attempt {}/{})", err_msg, attempt, attempts));
+                let retryable = is_retryable_error(&err);
+                let reason = if err.is_timeout() {
+                    "Request timed out"
+                } else {
+                    "Connection interrupted"
+                };
+                (
+                    format!("{label} Error: {}", format_reqwest_error(&err)),
+                    None,
+                    reason,
+                    retryable,
+                )
+            }
+        };
+        if retryable {
+            if is_cancelled() {
+                return Err(format!("{label} cancelled"));
+            }
+            if let Some((retry, delay_ms)) = budget.schedule(retry_after, reason, false) {
+                eprintln!(
+                    "{label} retry {}/{} in {delay_ms}ms: {reason}",
+                    retry.attempt, retry.max_retries
+                );
+                report_retry_progress(retry);
+                sleep_with_cancel(label, delay_ms, is_cancelled).await?;
+                continue;
             }
         }
+        let (attempt, max) = budget.attempts();
+        return Err(format!("{err_msg} (attempt {attempt}/{max})"));
     }
-
-    Err(last_error
-        .map(|msg| format!("{} (attempt {}/{})", msg, loop_max, loop_max))
-        .unwrap_or_else(|| format!("{} Error: exceeded retry attempts ({})", label, loop_max)))
 }
 
 async fn sleep_with_cancel(
@@ -708,20 +745,17 @@ async fn sleep_with_cancel(
     delay_ms: u64,
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(), String> {
-    const CANCEL_POLL_MS: u64 = 250;
-    let mut remaining = delay_ms;
-    while remaining > 0 {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
+    loop {
         if is_cancelled() {
-            return Err(format!("{} cancelled", label));
+            return Err(format!("{label} cancelled"));
         }
-        let step = remaining.min(CANCEL_POLL_MS);
-        tokio::time::sleep(Duration::from_millis(step)).await;
-        remaining -= step;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(Duration::from_millis(250))).await;
     }
-    if is_cancelled() {
-        return Err(format!("{} cancelled", label));
-    }
-    Ok(())
 }
 
 // ===== Chat completion 调用 =====
@@ -1606,20 +1640,20 @@ mod tests {
     // ===== retry_delay_ms / parse_retry_after =====
 
     #[test]
-    fn retry_delay_starts_around_five_seconds_and_caps() {
-        // 起步 ~5s（RETRY_BASE_DELAY_MS）；指数退避封顶 RETRY_MAX_DELAY_MS（30s）。
+    fn retry_delay_starts_at_one_second_and_caps() {
+        // Start at 1s; exponential backoff caps at 30s.
         assert_eq!(retry_delay_ms(1, None), RETRY_BASE_DELAY_MS);
         assert_eq!(retry_delay_ms(2, None), RETRY_BASE_DELAY_MS * 2);
-        // 第 4 次本应 5s*8=40s，被 cap 到 30s。
-        assert_eq!(retry_delay_ms(4, None), RETRY_MAX_DELAY_MS);
+        // The sixth retry would wait 32s, capped at 30s.
+        assert_eq!(retry_delay_ms(6, None), RETRY_MAX_DELAY_MS);
         assert_eq!(retry_delay_ms(10, None), RETRY_MAX_DELAY_MS);
     }
 
     #[test]
-    fn retry_delay_prefers_retry_after_over_backoff() {
-        // Retry-After 优先：哪怕退避会算出别的值，也用服务器给的秒数。
+    fn retry_delay_uses_retry_after_as_a_minimum() {
+        // Small Retry-After values cannot burn the budget faster than backoff.
         assert_eq!(retry_delay_ms(1, Some(7)), 7_000);
-        assert_eq!(retry_delay_ms(5, Some(2)), 2_000);
+        assert_eq!(retry_delay_ms(5, Some(2)), 16_000);
     }
 
     #[test]
@@ -1964,7 +1998,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = Arc::clone(&calls);
 
-        let result = send_with_failover(&state, "Test", 5, "prov", &keys, |_key| {
+        let result = send_with_failover(&state, "Test", 1, "prov", &keys, |_key| {
             let c = Arc::clone(&c);
             async move {
                 c.fetch_add(1, AtomicOrdering::SeqCst);
@@ -1974,8 +2008,8 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        // 无备用 key → 退避到限流专用上限。
-        assert_eq!(calls.load(AtomicOrdering::SeqCst), RATE_LIMIT_MAX_ATTEMPTS);
+        // 关闭自动重试时，429 也必须只请求一次。
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
 
     // ===== LensEventSink / CombinedTranslateSplitter（StreamPart → 事件桥）=====

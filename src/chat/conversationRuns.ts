@@ -1,3 +1,5 @@
+import type { ChatRetryStatusPayload } from '../generated/chatProtocol'
+
 export interface ConversationStreamSnapshot {
   runId: string | null
   /** 当前流对应的持久化 assistant 消息 id。恢复运行时用于避免历史草稿和实时预览双渲染。 */
@@ -15,6 +17,7 @@ export interface ConversationStreamSnapshot {
   reasoningDurationMsBySegmentId: Record<string, number>
   /** 流状态行上的瞬态一行字（上游重试等，status_note_updated 事件）。正文一恢复流动就清。 */
   statusNote: string | null
+  retryStatus: ChatRetryStatusPayload | null
 }
 
 /** Bind a display snapshot to its first identified run. Events from an older
@@ -65,5 +68,6 @@ export function createEmptyStreamSnapshot(): ConversationStreamSnapshot {
     reasoningStartedAtBySegmentId: {},
     reasoningDurationMsBySegmentId: {},
     statusNote: null,
+    retryStatus: null,
   }
 }

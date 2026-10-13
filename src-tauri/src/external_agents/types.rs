@@ -571,6 +571,10 @@ pub enum UnifiedAgentEvent {
     StatusNote {
         text: String,
     },
+    /// Upstream owns the retry; Kivio only projects its attempt and deadline.
+    RetryStatus {
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    },
     /// CLI 侧后台任务（后台 Bash / 后台子代理）的生命周期更新，喂给 `AppState` 的
     /// 后台任务注册表（Background tasks 面板的数据源）。
     ///

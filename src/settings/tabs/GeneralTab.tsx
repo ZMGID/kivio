@@ -217,9 +217,9 @@ export function BehaviorGroup({
             value={retryAttemptsInput}
             onChange={onRetryAttemptsChange}
             onBlur={onRetryAttemptsBlur}
-            placeholder="5"
-            min={1}
-            max={8}
+            placeholder="10"
+            min={0}
+            max={10}
             className="!w-20 text-center"
           />
         </SettingRow>

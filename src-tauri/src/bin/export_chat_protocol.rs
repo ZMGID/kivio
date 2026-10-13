@@ -8,11 +8,12 @@ use kivio::chat::protocol::{
     ChatContextUsageSegmentPayload, ChatConversationEvent, ChatConversationEventEnvelope,
     ChatFileLedgerPayload, ChatGoalCriterionPayload, ChatGoalStatePayload, ChatGoalStatus,
     ChatPendingInteractionSnapshot, ChatPlanMode, ChatPlanStatePayload, ChatPlanStatus,
-    ChatProtocolEvent, ChatProtocolScope, ChatRunCursor, ChatRunEvent, ChatRunEventEnvelope,
-    ChatRunRecoveryMetadata, ChatRunSnapshot, ChatRunStatus, ChatRunSync, ChatSegmentKind,
-    ChatSegmentPayload, ChatSegmentPhase, ChatSubagentSnapshot, ChatSyncRequest, ChatSyncResult,
-    ChatTerminalSnapshot, ChatTodoItemPayload, ChatTodoStatePayload, ChatTodoStatus,
-    ChatToolArtifactPayload, ChatToolPayload, ChatWarningSnapshot, CHAT_PROTOCOL_VERSION,
+    ChatProtocolEvent, ChatProtocolScope, ChatRetryStatusPayload, ChatRunCursor, ChatRunEvent,
+    ChatRunEventEnvelope, ChatRunRecoveryMetadata, ChatRunSnapshot, ChatRunStatus, ChatRunSync,
+    ChatSegmentKind, ChatSegmentPayload, ChatSegmentPhase, ChatSubagentSnapshot, ChatSyncRequest,
+    ChatSyncResult, ChatTerminalSnapshot, ChatTodoItemPayload, ChatTodoStatePayload,
+    ChatTodoStatus, ChatToolArtifactPayload, ChatToolPayload, ChatWarningSnapshot,
+    CHAT_PROTOCOL_VERSION,
 };
 use schemars::schema_for;
 use serde_json::Value;
@@ -54,6 +55,7 @@ fn typescript() -> String {
         ChatAskUserOptionPayload::decl(&config),
         ChatAskUserQuestionPayload::decl(&config),
         ChatAskUserPromptPayload::decl(&config),
+        ChatRetryStatusPayload::decl(&config),
         ChatRunEvent::decl(&config),
         ChatRunEventEnvelope::decl(&config),
         ChatConversationEvent::decl(&config),

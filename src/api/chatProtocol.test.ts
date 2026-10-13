@@ -383,8 +383,9 @@ describe('chat protocol sequencing', () => {
   it('restores retry progress when returning to a running conversation', () => {
     const seen: ChatRunEventEnvelope[] = []
     chatProtocolTesting.subscribe((item) => { if (item.scope === 'run') seen.push(item) })
-    chatProtocolTesting.applySnapshot(snapshot({ statusNote: '重连 2/4' }))
-    expect(seen.at(-1)).toMatchObject({ type: 'status_note_updated', note: '重连 2/4' })
+    const retry = { attempt: 2, maxRetries: 10, retryAtMs: 8000, reason: 'Server overloaded' }
+    chatProtocolTesting.applySnapshot(snapshot({ statusNote: 'retry 2/10', retryStatus: retry }))
+    expect(seen.at(-1)).toMatchObject({ type: 'status_note_updated', note: 'retry 2/10', retry })
   })
 
   it('marks snapshot events as restored deliveries', () => {

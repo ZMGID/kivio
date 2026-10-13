@@ -73,6 +73,20 @@ pub trait AgentHost: Send + Sync {
 
     fn emit_status_note(&self, _run_id: &str, _note: Option<String>) {}
 
+    fn emit_retry_status(
+        &self,
+        run_id: &str,
+        retry: crate::chat::protocol::ChatRetryStatusPayload,
+    ) {
+        self.emit_status_note(
+            run_id,
+            Some(format!(
+                "{} · retry {}/{}",
+                retry.reason, retry.attempt, retry.max_retries
+            )),
+        );
+    }
+
     fn emit_tool_record(
         &self,
         conversation_id: &str,

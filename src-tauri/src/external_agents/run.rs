@@ -3612,11 +3612,27 @@ fn apply_unified_event(
         }
         // 上游重试等瞬态状态 → 流状态行（StreamStatusLine），不进正文。
         // 前端在下一条正文/思考增量到达时自行清除（重试成功没有显式信号，流恢复即成功）。
+        UnifiedAgentEvent::RetryStatus { retry } => {
+            crate::chat::protocol::emit_run_event(
+                app,
+                run_id,
+                crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                    note: Some(format!(
+                        "{} · retry {}/{}",
+                        retry.reason, retry.attempt, retry.max_retries
+                    )),
+                    retry: Some(retry),
+                },
+            );
+        }
         UnifiedAgentEvent::StatusNote { text } => {
             crate::chat::protocol::emit_run_event(
                 app,
                 run_id,
-                crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note: Some(text) },
+                crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
+                    note: Some(text),
+                    retry: None,
+                },
             );
         }
         // CLI 侧后台任务（后台 Bash / 后台子代理）→ AppState 注册表，

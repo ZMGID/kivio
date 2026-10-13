@@ -1,3 +1,4 @@
+import type { ChatRetryStatusPayload } from '../generated/chatProtocol'
 import type { ChatSubagentPayload, ChatToolProgressPayload, ChatUserPromptPayload } from '../api/tauri'
 import { acceptStreamRun, type ConversationStreamSnapshot } from './conversationRuns'
 import { userFollowUpId, userSteerId } from './segments'
@@ -12,7 +13,7 @@ import { mergeToolRecord } from './conversationRuns'
 
 export type RunDisplayEvent =
   | { kind: 'tool'; payload: ChatToolProgressPayload }
-  | { kind: 'status'; payload: { conversationId: string; runId: string; note: string | null } }
+  | { kind: 'status'; payload: { conversationId: string; runId: string; note: string | null; retry?: ChatRetryStatusPayload } }
   | { kind: 'subagent'; payload: ChatSubagentPayload }
   | { kind: 'userPrompt'; payload: ChatUserPromptPayload }
 
@@ -28,6 +29,7 @@ export function applyRunDisplayEvent(
   if (!acceptStreamRun(snapshot, runId)) return { accepted: false }
   if (event.kind === 'status') {
     snapshot.statusNote = event.payload.note
+    snapshot.retryStatus = event.payload.retry ?? null
     return { accepted: true }
   }
   if (event.kind === 'subagent') {

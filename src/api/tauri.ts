@@ -14,6 +14,7 @@ import {
 } from './chatProtocol'
 import type {
   ChatProtocolEvent,
+  ChatRetryStatusPayload,
   ChatRunEventEnvelope,
   ChatSegmentPayload as GeneratedChatSegmentPayload,
 } from '../generated/chatProtocol'
@@ -2183,7 +2184,7 @@ export const api = {
   },
   /** 流状态行的瞬态一行字（上游重试等，status_note_updated）。note=null 为显式清除。 */
   onChatStatusNote: (
-    listener: (payload: { conversationId: string; runId: string; note: string | null }) => void,
+    listener: (payload: { conversationId: string; runId: string; note: string | null; retry?: ChatRetryStatusPayload }) => void,
   ) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
@@ -2192,6 +2193,7 @@ export const api = {
         conversationId: event.conversationId,
         runId: event.runId,
         note: event.note,
+        retry: event.retry,
       })
     })
   },

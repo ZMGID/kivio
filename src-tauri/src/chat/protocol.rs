@@ -700,6 +700,18 @@ impl From<&crate::chat::ask_user::AskUserPromptPayload> for ChatAskUserPromptPay
     }
 }
 
+/// Retry state is transient and run-scoped. An absolute deadline keeps countdowns
+/// correct when a window is reopened or receives a replayed snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
+pub struct ChatRetryStatusPayload {
+    pub attempt: u32,
+    pub max_retries: u32,
+    pub retry_at_ms: u64,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
 #[serde(
     tag = "type",
@@ -785,6 +797,9 @@ pub enum ChatRunEvent {
     /// `note: None` = 显式清除。
     StatusNoteUpdated {
         note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        retry: Option<ChatRetryStatusPayload>,
     },
     /// Pi `clear_queue` 在取消时退回的立刻引导 / follow-up 原文，前端写回输入框。
     /// 只在直播路径消费；快照回放忽略（避免打开旧对话时污染输入框）。
@@ -1243,6 +1258,9 @@ pub struct ChatRunSnapshot {
     pub warnings: Vec<ChatWarningSnapshot>,
     /// 流状态行上的瞬态一行字（上游重试等）。见 `ChatRunEvent::StatusNoteUpdated`。
     pub status_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub retry_status: Option<ChatRetryStatusPayload>,
     pub terminal: Option<ChatTerminalSnapshot>,
 }
 
@@ -1420,6 +1438,7 @@ impl ChatProtocolHub {
             pending_interactions: Vec::new(),
             warnings: Vec::new(),
             status_note: None,
+            retry_status: None,
             terminal: None,
         };
         self.runs.insert(
@@ -1674,6 +1693,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
         ChatRunEvent::TextDelta { delta, segment } => {
             if !delta.is_empty() {
                 snapshot.status_note = None;
+                snapshot.retry_status = None;
             }
             snapshot.content.push_str(delta);
             cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
@@ -1682,6 +1702,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
         ChatRunEvent::ReasoningDelta { delta, segment } => {
             if !delta.is_empty() {
                 snapshot.status_note = None;
+                snapshot.retry_status = None;
             }
             snapshot.reasoning.push_str(delta);
             cap_text_tail(&mut snapshot.reasoning, SNAPSHOT_TEXT_MAX_BYTES);
@@ -1834,8 +1855,9 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 snapshot.warnings.remove(0);
             }
         }
-        ChatRunEvent::StatusNoteUpdated { note } => {
+        ChatRunEvent::StatusNoteUpdated { note, retry } => {
             snapshot.status_note = note.clone();
+            snapshot.retry_status = retry.clone();
         }
         ChatRunEvent::RunCompleted {
             full,
@@ -1850,6 +1872,8 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 conversation_revision: *conversation_revision,
             });
             snapshot.pending_interactions.clear();
+            snapshot.status_note = None;
+            snapshot.retry_status = None;
         }
         ChatRunEvent::RunFailed {
             error,
@@ -1866,6 +1890,8 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 conversation_revision: *conversation_revision,
             });
             snapshot.pending_interactions.clear();
+            snapshot.status_note = None;
+            snapshot.retry_status = None;
         }
         ChatRunEvent::RunCancelled {
             full,
@@ -1880,6 +1906,8 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 conversation_revision: *conversation_revision,
             });
             snapshot.pending_interactions.clear();
+            snapshot.status_note = None;
+            snapshot.retry_status = None;
         }
         _ => {}
     }
@@ -2913,6 +2941,7 @@ mod tests {
             "run",
             ChatRunEvent::StatusNoteUpdated {
                 note: Some("重连 1/4".into()),
+                retry: None,
             },
         )
         .unwrap();

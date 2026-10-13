@@ -465,28 +465,39 @@ fn task_progress_line(obj: &serde_json::Map<String, Value>) -> Option<String> {
 /// 这正是「怎么卡住了」的头号成因。而我们刻意不给轮次加超时（spec 第 114 条），反而更依赖
 /// 这条可见信号。官方字段表见 headless 文档 "Handle API retries"。
 /// 曾经是插进正文的整句 blockquote —— 重试一波就往回答里打四五行，改挂状态行后收敛成
-/// `retry 2/10 · overloaded` 这样的一段尾巴（StreamStatusLine 统一英文）。
-fn api_retry_note(obj: &serde_json::Map<String, Value>) -> Option<String> {
-    let attempt = obj.get("attempt").and_then(|v| v.as_u64())?;
-    let of_max = obj
+/// 结构化次数、原因、截止时间由 StreamStatusLine 统一显示英文倒计时。
+fn api_retry_status(
+    obj: &serde_json::Map<String, Value>,
+) -> Option<crate::chat::protocol::ChatRetryStatusPayload> {
+    let attempt = u32::try_from(obj.get("attempt")?.as_u64()?).ok()?;
+    let max_retries = obj
         .get("max_retries")
-        .and_then(|v| v.as_u64())
-        .map(|max| format!("/{max}"))
-        .unwrap_or_default();
-    let cause = obj
-        .get("error")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            obj.get("error_status")
-                .and_then(|v| v.as_u64())
-                .map(|code| format!("HTTP {code}"))
-        });
-    Some(match cause {
-        Some(text) => format!("retry {attempt}{of_max} · {text}"),
-        None => format!("retry {attempt}{of_max}"),
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(u32::MAX as u64) as u32;
+    let delay = obj
+        .get("retry_delay_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let reason = match obj.get("error").and_then(Value::as_str) {
+        Some("overloaded") => "Server overloaded".to_string(),
+        Some("rate_limit") => "Rate limited".to_string(),
+        Some("server_error") => "Server error".to_string(),
+        Some("authentication_failed" | "oauth_org_not_allowed") => {
+            "Authentication failed".to_string()
+        }
+        Some("billing_error" | "account_on_hold") => "Account unavailable".to_string(),
+        _ => obj
+            .get("error_status")
+            .and_then(Value::as_u64)
+            .map(|code| format!("HTTP {code}"))
+            .unwrap_or_else(|| "Request failed".to_string()),
+    };
+    Some(crate::chat::protocol::ChatRetryStatusPayload {
+        attempt,
+        max_retries,
+        retry_at_ms: (chrono::Utc::now().timestamp_millis().max(0) as u64).saturating_add(delay),
+        reason,
     })
 }
 
@@ -846,6 +857,7 @@ pub struct ClaudeStreamState {
     /// 本轮已经报过的 assistant 错误值，用于去重：同一次失败常在多条 assistant 帧上
     /// 重复出现，且 `result` 往往还会再报一次。
     reported_assistant_errors: HashSet<String>,
+    retry_status_seen: bool,
     streamed_tool_use_ids: HashSet<String>,
     /// 嵌套子代理的 tool_use id → 主线 Task/Agent id。depth-2+ 的
     /// `parent_tool_use_id` 指向中间那次 Agent 调用，折到顶层卡片上。
@@ -876,6 +888,7 @@ impl ClaudeStreamState {
             return;
         }
         self.any_text_emitted = true;
+        self.retry_status_seen = false;
         sink(UnifiedAgentEvent::TextDelta { delta });
     }
 
@@ -1115,8 +1128,9 @@ impl ClaudeStreamState {
                     // 上游重试（429 / overloaded）→ 流状态行的瞬态短句，不进正文
                     // （逐条 blockquote 插正文会把正在生成的回答打得支离破碎，实测被用户点名）。
                     Some("api_retry") => {
-                        if let Some(text) = api_retry_note(obj) {
-                            sink(UnifiedAgentEvent::StatusNote { text });
+                        if let Some(retry) = api_retry_status(obj) {
+                            self.retry_status_seen = true;
+                            sink(UnifiedAgentEvent::RetryStatus { retry });
                         }
                     }
                     // 本轮被切到了别的模型（2.1.287：主模型下线 / 无权限 / 529 / 拒答后重试）。
@@ -1189,9 +1203,12 @@ impl ClaudeStreamState {
                     if self.reported_assistant_errors.insert(kind.clone()) {
                         if is_retryable_assistant_error(&kind) {
                             // CLI 还在 `api_retry`：挂状态行，不要钉 `stream_error`。
-                            sink(UnifiedAgentEvent::StatusNote {
-                                text: format!("retry · {kind}"),
-                            });
+                            // Do not replace an api_retry deadline with a duplicate error notice.
+                            if !self.retry_status_seen {
+                                sink(UnifiedAgentEvent::StatusNote {
+                                    text: format!("retry · {kind}"),
+                                });
+                            }
                         } else if let Some((fatal, message)) = assistant_error_report(&kind) {
                             if fatal {
                                 sink(UnifiedAgentEvent::Error { message });
@@ -1408,6 +1425,7 @@ impl ClaudeStreamState {
                 self.any_text_emitted = false;
                 self.per_request_usage_seen = false;
                 self.reported_assistant_errors.clear();
+                self.retry_status_seen = false;
                 // 车道是 per-turn 的：sidechain 随它的 `Task` 一起结束，主线的消息状态也会由
                 // 下一轮的 `message_start` 重建。不清的话常驻会话里每派一次子任务就多一条
                 // 永不回收的车道。
@@ -1570,6 +1588,9 @@ impl ClaudeStreamState {
                                 return;
                             }
                             if let Some(text) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                if !text.is_empty() {
+                                    self.retry_status_seen = false;
+                                }
                                 sink(UnifiedAgentEvent::ThinkingDelta {
                                     delta: text.to_string(),
                                 });
@@ -2592,16 +2613,37 @@ mod tests {
     #[test]
     fn api_retry_is_a_status_note_not_an_error() {
         let events = run(&[
-            r#"{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"error":"overloaded"}"#,
+            r#"{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":8000,"error":"overloaded"}"#,
             r#"{"type":"assistant","error":"overloaded","message":{"id":"m-1","role":"assistant","content":[]}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"resumed"}}}"#,
+            r#"{"type":"assistant","error":"server_error","message":{"id":"m-2","role":"assistant","content":[]}}"#,
             r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":1,"output_tokens":1}}"#,
         ]);
-        assert!(notes(&events)
+        let retry = events
             .iter()
-            .any(|text| text == "retry 2/10 · overloaded"));
-        assert!(notes(&events)
-            .iter()
-            .any(|text| text == "retry · overloaded"));
+            .find_map(|event| match event {
+                UnifiedAgentEvent::RetryStatus { retry } => Some(retry),
+                _ => None,
+            })
+            .expect("retry progress must reach the UI");
+        assert_eq!((retry.attempt, retry.max_retries), (2, 10));
+        assert_eq!(retry.reason, "Server overloaded");
+        let remaining = retry
+            .retry_at_ms
+            .saturating_sub(chrono::Utc::now().timestamp_millis() as u64);
+        assert!((7000..=8000).contains(&remaining));
+        assert!(
+            !notes(&events)
+                .iter()
+                .any(|text| text == "retry · overloaded"),
+            "duplicate errors must not overwrite the retry deadline"
+        );
+        assert!(
+            notes(&events)
+                .iter()
+                .any(|text| text == "retry · server_error"),
+            "a new failure after thinking resumes must remain visible"
+        );
         assert!(
             errors(&events).is_empty(),
             "可重试故障不能钉 stream_error：{events:?}"

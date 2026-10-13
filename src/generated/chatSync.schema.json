@@ -422,6 +422,37 @@
       ],
       "type": "string"
     },
+    "ChatRetryStatusPayload": {
+      "additionalProperties": false,
+      "description": "Retry state is transient and run-scoped. An absolute deadline keeps countdowns\ncorrect when a window is reopened or receives a replayed snapshot.",
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxRetries": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retryAtMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attempt",
+        "maxRetries",
+        "retryAtMs",
+        "reason"
+      ],
+      "type": "object"
+    },
     "ChatRunEventEnvelope": {
       "oneOf": [
         {
@@ -1362,6 +1393,16 @@
               "const": 1,
               "type": "integer"
             },
+            "retry": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChatRetryStatusPayload"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "runId": {
               "type": "string"
             },
@@ -1724,6 +1765,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/ChatRunRecoveryMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retryStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChatRetryStatusPayload"
             },
             {
               "type": "null"

@@ -68,6 +68,24 @@ describe('StreamStatusLine', () => {
     expect(screen.queryByText(new RegExp(STATUS_QUIPS.zh.wait[0]))).toBeNull()
   })
 
+  it('shows an English retry countdown and clears it when output resumes', () => {
+    patchSnapshot({
+      streaming: true,
+      startedAt: Date.now(),
+      statusNote: 'Server overloaded · retry 2/10',
+      retryStatus: { attempt: 2, maxRetries: 10, retryAtMs: Date.now() + 8000, reason: 'Server overloaded' },
+    })
+    render(<StreamStatusLine active lang="zh" />)
+    expect(screen.getByText(/Server overloaded · retry 2\/10 · in 8s/)).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(3000) })
+    expect(screen.getByText(/retry 2\/10 · in 5s/)).toBeTruthy()
+    act(() => { vi.advanceTimersByTime(5000) })
+    expect(screen.getByText(/retry 2\/10 · Retrying…/)).toBeTruthy()
+    patchSnapshot({ statusNote: null, retryStatus: null, content: 'Recovered' })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(screen.queryByText(/retry 2\/10/)).toBeNull()
+  })
+
   it('生成结束且没翻车：进「搞定」窗口，到点回闲置', () => {
     patchSnapshot({ streaming: true, startedAt: Date.now(), content: '答' })
     const { rerender } = render(<StreamStatusLine active lang="en" />)
