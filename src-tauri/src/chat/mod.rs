@@ -21,6 +21,7 @@ mod mcp_image_feedback;
 pub mod media_station;
 pub mod memory;
 pub mod model;
+pub mod model_database_update;
 pub mod model_metadata;
 pub(crate) mod notification_viewing;
 pub mod plan;

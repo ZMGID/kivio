@@ -1814,6 +1814,23 @@ function chatSubagentControl(conversationId: string, args: SubAgentControlReques
   return invoke('chat_subagent_control', { conversationId, arguments: args })
 }
 
+/** model_database_local_info 返回值。 */
+export type ModelDatabaseLocalInfo = {
+  builtinVersion: string
+  userVersion?: string | null
+  effectiveVersion: string
+  userFileExists: boolean
+  userFilePath?: string | null
+}
+
+/** model_database_remote_check / _install 返回值。 */
+export type ModelDatabaseRemoteInfo = {
+  version: string
+  entries: number
+  bytes?: number
+  path?: string
+}
+
 export const api = {
   chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),
   chatArtifactAction: (id: string, action: 'open' | 'reveal' | 'export' | 'export_unique' | 'delete' | 'rename', destination?: string, name?: string) =>
@@ -1842,6 +1859,10 @@ export const api = {
     on<boolean>('desktop-pet-enabled-changed', listener),
   // 设置相关
   getSettings: async () => normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('get_settings')),
+  // 模型库远程更新
+  modelDatabaseLocalInfo: () => invoke<ModelDatabaseLocalInfo>('model_database_local_info'),
+  modelDatabaseRemoteCheck: (url: string) => invoke<ModelDatabaseRemoteInfo>('model_database_remote_check', { url }),
+  modelDatabaseRemoteInstall: (url: string) => invoke<ModelDatabaseRemoteInfo>('model_database_remote_install', { url }),
   onKivioSettingsChanged: (listener: (event: SettingsChangedEvent) => void) =>
     on<SettingsChangedEvent>('kivio-settings-changed', listener),
   // 某模型可选的思考等级列表（用户覆盖 modelOverrides → 模型库 reasoningEfforts → 家族兜底）。
