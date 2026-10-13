@@ -1,8 +1,10 @@
 import { RefreshCw, Download, ExternalLink } from 'lucide-react'
 import { Toggle, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import type { ReactNode } from 'react'
-import type { I18n, Lang } from '../../components/i18n'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useModelDatabase } from '../../data/useModelDatabase'
+import { updateModelDatabase } from '../../data/modelDatabaseSync'
+import { useLang, type I18n, type Lang } from '../../components/i18n'
 import type { Settings as SettingsData, UpdateInfo } from '../../api/tauri'
 
 /** 应用信息：图标 / 名称 / 版本 / 开发者。 */
@@ -102,6 +104,8 @@ export function UpdateGroup({
           {status === 'checking' ? t.checkingUpdate : t.checkUpdate}
         </Button>
       </SettingRow>
+
+      <ModelDatabaseUpdateRow />
 
       {status === 'check-failed' && (
         <div className="kv-panel mt-2">
@@ -215,4 +219,53 @@ export function UpdateGroup({
       )}
     </SettingsGroup>
   )
+}
+
+function ModelDatabaseUpdateRow() {
+  const lang = useLang()
+  const database = useModelDatabase()
+  const [status, setStatus] = useState<'idle' | 'updating' | 'updated' | 'current' | 'failed'>('idle')
+  const [error, setError] = useState('')
+  const live = useRef(false)
+  const flight = useRef(false)
+  useEffect(() => {
+    live.current = true
+    return () => { live.current = false }
+  }, [])
+  const zh = lang === 'zh'
+  const update = async () => {
+    if (flight.current) return
+    flight.current = true
+    setStatus('updating')
+    setError('')
+    try {
+      const next = await updateModelDatabase()
+      if (live.current) setStatus(next.version === database.version ? 'current' : 'updated')
+    } catch (error) {
+      if (live.current) {
+        setStatus('failed')
+        setError(String(error))
+      }
+    } finally {
+      flight.current = false
+    }
+  }
+  const feedback = status === 'updated'
+    ? (zh ? '模型库已更新，后续请求将使用新数据。' : 'Updated. Future requests will use the new data.')
+    : status === 'current'
+      ? (zh ? '模型库已是最新版本。' : 'Model database is up to date.')
+      : (zh ? '手动更新模型资料，保留你的自定义设置。' : 'Update model metadata while keeping your custom settings.')
+  return <>
+    <SettingRow label={zh ? '模型库' : 'Model database'} description={`${database.version} · ${feedback}`}>
+      <Button size="sm" onClick={() => { void update() }} disabled={status === 'updating'} data-tauri-drag-region="false">
+        <RefreshCw size={11} className={status === 'updating' ? 'animate-spin' : ''} />
+        {status === 'updating' ? (zh ? '正在更新…' : 'Updating…') : (zh ? '更新模型库' : 'Update model database')}
+      </Button>
+    </SettingRow>
+    {status === 'failed' && <div className="kv-inline-error mt-2" role="alert">
+      {zh ? '更新失败，已保留原模型库。请重试。' : 'Update failed. Your current database is unchanged. Please retry.'}
+      <div>{error}</div>
+    </div>}
+    {(status === 'updated' || status === 'current') && <span className="sr-only" role="status">{feedback}</span>}
+  </>
 }

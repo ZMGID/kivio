@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 // 知识库中心页（扩展 → 知识库）：与 Skill/MCP 中心页同级同语汇的独立页面，
 // 取代原「设置 → 知识库」标签页。库列表卡片网格 + 库详情（导入/进度/重建）+ RAG 设置 tab。
 // 库/文档逻辑移植自原 settings/KnowledgeBasePanel（上传、拖拽、进度、重命名等保持不变）。
@@ -73,6 +74,7 @@ function EmbeddingModelPicker({
   showBadges?: boolean
 }) {
   const t = useT()
+  useModelDatabase()
   const enabled = providers.filter((p) => p.enabled !== false)
   const selected = enabled.find((p) => p.id === providerId)
   const options = [

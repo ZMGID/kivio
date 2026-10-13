@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { createWindowStore, useWindowStore } from '../utils/windowStore'
@@ -244,6 +245,7 @@ function MediaDetail({ job, errorMessage, cancelling, ...actions }: { job: Media
 }
 
 export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void }) {
+  useModelDatabase()
   const zh = useLang() === 'zh'
   const text = (cn: string, en: string) => zh ? cn : en
   const desktop = isTauriRuntime()

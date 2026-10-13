@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useModelDatabase } from '../data/useModelDatabase'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
 import type { ModelInfo, ModelProvider } from '../api/tauri'
 import { resolveModelInfo, matchModel, providerModelDatabaseId } from '../data/modelMatching'
@@ -33,10 +34,12 @@ export function ModelDetailDrawer({
   onSave,
   onReset,
 }: ModelDetailDrawerProps) {
+  const database = useModelDatabase()
   const resolved = resolveModelInfo(modelName, overrides, provider)
   const dbDefaults = matchModel(providerModelDatabaseId(modelName, provider))
   const hasOverride = !!overrides?.[modelName]
 
+  const [baseline, setBaseline] = useState<ModelInfo>(resolved)
   const [form, setForm] = useState<ModelInfo>(resolved)
   const [videoInputEdited, setVideoInputEdited] = useState(false)
   const [temperatureInput, setTemperatureInput] = useState(
@@ -46,13 +49,26 @@ export function ModelDetailDrawer({
     resolved.extraBody ? JSON.stringify(resolved.extraBody, null, 2) : '',
   )
 
+  const draft = useRef({ form, baseline, temperatureInput, extraBodyInput })
+  draft.current = { form, baseline, temperatureInput, extraBodyInput }
+  const previousTarget = useRef({ modelName, overrides, provider })
   useEffect(() => {
+    const previous = previousTarget.current
+    previousTarget.current = { modelName, overrides, provider }
+    const sameTarget = previous.modelName === modelName && previous.overrides === overrides && previous.provider === provider
+    const current = draft.current
+    const edited = !deepEqual(current.form, current.baseline)
+      || current.temperatureInput !== (current.baseline.temperature?.toString() ?? '')
+      || current.extraBodyInput !== (current.baseline.extraBody ? JSON.stringify(current.baseline.extraBody, null, 2) : '')
+    // A catalog event may refresh defaults, but must not erase an open editor's draft.
+    if (sameTarget && edited) return
     const next = resolveModelInfo(modelName, overrides, provider)
+    setBaseline(next)
     setForm(next)
     setVideoInputEdited(false)
     setTemperatureInput(next.temperature?.toString() ?? '')
     setExtraBodyInput(next.extraBody ? JSON.stringify(next.extraBody, null, 2) : '')
-  }, [modelName, overrides, provider])
+  }, [modelName, overrides, provider, database.revision])
 
   const updateField = useCallback(<K extends keyof ModelInfo>(key: K, value: ModelInfo[K]) => {
     setForm(prev => ({ ...prev, [key]: value }))
@@ -163,7 +179,7 @@ export function ModelDetailDrawer({
     }
   }, [modelName, onReset, dbDefaults])
 
-  const isDirty = !deepEqual(form, resolved)
+  const isDirty = !deepEqual(form, baseline)
 
   const t = {
     title: lang === 'zh' ? '模型详情' : 'Model Details',

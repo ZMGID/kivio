@@ -1,9 +1,12 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AppInfoGroup, UpdateGroup, type UpdateFlowState } from './AboutTab'
 import { makeSettings } from './testFixtures'
 import { i18n } from '../../components/i18n'
+
+import { api } from '../../api/tauri'
+import { getModelDatabaseSnapshot } from '../../data/modelMatching'
 
 const t = i18n.zh
 
@@ -127,5 +130,29 @@ describe('UpdateGroup', () => {
     const props = renderUpdate()
     await userEvent.click(screen.getByRole('switch'))
     expect(props.onUpdateSettings).toHaveBeenCalledWith({ autoCheckUpdate: false })
+  })
+})
+
+
+describe('manual model database update', () => {
+  it('does not download on mount; shows failure, allows retry, and refreshes the displayed version', async () => {
+    let reject!: (error: Error) => void
+    const update = vi.spyOn(api, 'updateModelDatabase').mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+    renderUpdate()
+    expect(update).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: '更新模型库' }))
+    expect(screen.getByRole('button', { name: '正在更新…' })).toBeDisabled()
+    reject(new Error('offline'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('已保留原模型库')
+    const current = getModelDatabaseSnapshot()
+    update.mockResolvedValueOnce({ ...current, revision: current.revision + 1, version: '2026-10-14.1' })
+    await userEvent.click(screen.getByRole('button', { name: '更新模型库' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('模型库已更新'))
+    expect(screen.getByText(/2026-10-14.1/)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    update.mockResolvedValueOnce(getModelDatabaseSnapshot())
+    await userEvent.click(screen.getByRole('button', { name: '更新模型库' }))
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('已是最新版本'))
+    update.mockRestore()
   })
 })

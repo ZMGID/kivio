@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Brain, Check, ChevronDown } from 'lucide-react'
 import { api, type ThinkingCapabilities } from '../api/tauri'
@@ -43,7 +44,8 @@ function ThinkingLevelSelectorBase({
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   usePopoverMenu(open, () => setOpen(false), menuRef)
-  const capabilityKey = JSON.stringify([currentProviderId, currentModel])
+  const { revision } = useModelDatabase()
+  const capabilityKey = JSON.stringify([currentProviderId, currentModel, revision])
   const [snapshot, setSnapshot] = useState<{ key: string; capabilities: ThinkingCapabilities } | null>(null)
   const levelsLoaded = snapshot?.key === capabilityKey
   const { levels, offMode } = levelsLoaded

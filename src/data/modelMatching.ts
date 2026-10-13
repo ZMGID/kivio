@@ -1,12 +1,12 @@
 import modelDatabase from './modelDatabase.json'
-import type { ModelInfo, ModelProvider } from '../api/tauri'
+import type { ModelInfo, ModelProvider, ModelDatabaseSnapshot } from '../api/tauri'
 
 type DbEntry = {
   displayName: string
   contextWindow: number
   maxOutput: number
   temperature?: number
-  capabilities: {
+  capabilities?: {
     vision?: boolean
     videoInput?: boolean
     functionCalling?: boolean
@@ -27,11 +27,37 @@ type DbEntry = {
   }
 }
 
-const raw = modelDatabase as Record<string, unknown>
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const { _meta: _, ...dbEntries } = raw
-const db = dbEntries as unknown as Record<string, DbEntry>
-const dbKeys = Object.keys(db)
+// Browser preview starts from the bundle; desktop replaces it before mounting React.
+let snapshot: ModelDatabaseSnapshot = { revision: -1, version: modelDatabase._meta.version, database: modelDatabase }
+const listeners = new Set<() => void>()
+export const getModelDatabaseSnapshot = () => snapshot
+export function subscribeModelDatabase(listener: () => void) {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+let db: Record<string, DbEntry>
+let dbKeys: string[]
+const normalizedExact = new Map<string, string>()
+let normalizedEntries: { orig: string; norm: string }[]
+
+function rebuildDatabase() {
+  db = Object.fromEntries(Object.entries(snapshot.database).filter(([key]) => key !== '_meta')) as Record<string, DbEntry>
+  dbKeys = Object.keys(db)
+  normalizedExact.clear()
+  normalizedEntries = dbKeys.map((orig) => {
+    const norm = normalizeSep(orig)
+    if (!normalizedExact.has(norm)) normalizedExact.set(norm, orig)
+    return { orig, norm }
+  })
+}
+
+export function applyModelDatabaseSnapshot(next: ModelDatabaseSnapshot) {
+  // A subscription event may overtake an earlier get/update response.
+  if (next.revision <= snapshot.revision) return
+  snapshot = next
+  rebuildDatabase()
+  for (const listener of listeners) listener()
+}
 
 // 版本分隔符归一化：数据库键用点号（`claude-sonnet-4.6`、`gpt-5.5`），但很多 provider
 // 返回的模型 ID 用连字符（`claude-sonnet-4-6`、`claude-opus-4-8`）。若不归一化，
@@ -49,14 +75,7 @@ const isVersionContinuation = (keyNorm: string, candidate: string, endIdx: numbe
   const nextSegment = candidate.slice(endIdx + 1).split('-')[0]
   return /^[0-9]{1,2}$/.test(nextSegment)
 }
-// 归一化键 → 原始键（首个占位；当前库无仅靠 `.`/`-` 区分的重复键）。
-const normalizedExact = new Map<string, string>()
-const normalizedEntries = dbKeys.map((orig) => {
-  const norm = normalizeSep(orig)
-  if (!normalizedExact.has(norm)) normalizedExact.set(norm, orig)
-  return { orig, norm }
-})
-
+rebuildDatabase()
 
 /**
  * 从内置数据库匹配模型信息
@@ -209,15 +228,15 @@ function toModelInfo(entry: DbEntry): ModelInfo {
     maxOutput: entry.maxOutput,
     temperature: entry.temperature,
     capabilities: {
-      vision: entry.capabilities.vision ?? false,
-      functionCalling: entry.capabilities.functionCalling ?? false,
-      reasoning: entry.capabilities.reasoning ?? false,
-      streaming: entry.capabilities.streaming ?? false,
-      webSearch: entry.capabilities.webSearch ?? false,
-      imageGeneration: entry.capabilities.imageGeneration ?? false,
-      videoGeneration: entry.capabilities.videoGeneration ?? false,
-      videoInput: entry.capabilities.videoInput ?? false,
-      embedding: entry.capabilities.embedding ?? false,
+      vision: entry.capabilities?.vision ?? false,
+      functionCalling: entry.capabilities?.functionCalling ?? false,
+      reasoning: entry.capabilities?.reasoning ?? false,
+      streaming: entry.capabilities?.streaming ?? false,
+      webSearch: entry.capabilities?.webSearch ?? false,
+      imageGeneration: entry.capabilities?.imageGeneration ?? false,
+      videoGeneration: entry.capabilities?.videoGeneration ?? false,
+      videoInput: entry.capabilities?.videoInput ?? false,
+      embedding: entry.capabilities?.embedding ?? false,
     },
     dimensions: entry.dimensions,
     multilingual: entry.multilingual,

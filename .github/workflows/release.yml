@@ -23,7 +23,27 @@ env:
   BUILD_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
 
 jobs:
+  model-database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_REF }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Resolve and validate latest compatible model database once
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/model-database.mjs --output "$RUNNER_TEMP/model-database/modelDatabase.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-model-database
+          path: ${{ runner.temp }}/model-database/
+          if-no-files-found: error
+
   create-release:
+    needs: model-database
     # Both platform jobs upload into this release. Creating it first avoids a
     # race where two tauri-action steps try to open the same tag.
     runs-on: ubuntu-latest
@@ -49,7 +69,7 @@ jobs:
             "${extra[@]}"
 
   tauri-release:
-    needs: create-release
+    needs: [create-release, model-database]
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +89,12 @@ jobs:
         with:
           ref: ${{ env.BUILD_REF }}
 
+      - name: Use the same model database snapshot on every platform
+        uses: actions/download-artifact@v4
+        with:
+          name: release-model-database
+          path: src/data/
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -80,6 +106,9 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Validate bundled model database
+        run: node scripts/model-database.mjs --check
 
       - name: Check application icons
         run: npm run icons:check

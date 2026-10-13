@@ -26,6 +26,12 @@ import type { ThemeDefinition } from '../theme/types'
 
 // ========== 类型定义 ==========
 
+export interface ModelDatabaseSnapshot {
+  revision: number
+  version: string
+  database: Record<string, unknown>
+}
+
 export interface ThinkingCapabilities {
   levels: string[]
   offMode: 'supported' | 'upfront_only' | 'not_applicable' | 'unsupported' | 'unknown'
@@ -2532,6 +2538,11 @@ export const api = {
   // ========== 自动更新（仅检查 + 跳转，不做自动下载安装） ==========
 
   /** 调后端 GitHub Releases API 检查最新版本 */
+  getModelDatabase: () => invoke<ModelDatabaseSnapshot>('get_model_database'),
+  updateModelDatabase: () => invoke<ModelDatabaseSnapshot>('update_model_database'),
+  onModelDatabaseChanged: (listener: (snapshot: ModelDatabaseSnapshot) => void) =>
+    on<ModelDatabaseSnapshot>('model-database-changed', listener),
+
   checkUpdate: () => invoke<UpdateInfo>('check_github_latest_release'),
 
   /** 下载新版本安装包到 OS temp 目录，返回本地文件路径。下载进度通过 onUpdateDownloadProgress 派发 */

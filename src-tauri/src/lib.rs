@@ -587,6 +587,8 @@ pub fn run() {
             lens_commands::lens_commit_image_to_history,
             lens_commands::lens_delete_history_image,
             updates::check_github_latest_release,
+            chat::model_database::get_model_database,
+            chat::model_database::update_model_database,
             updates::download_update_asset,
             updates::install_update_and_quit,
             commands::rapidocr_status,

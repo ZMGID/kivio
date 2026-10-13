@@ -7,6 +7,8 @@
   "author": "ZM",
   "type": "module",
   "scripts": {
+    "models:check": "node scripts/model-database.mjs --check",
+    "models:sync": "node scripts/model-database.mjs",
     "protocol:generate": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol",
     "protocol:check": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol -- --check",
     "dev": "(npm run build:swift || true) && tauri dev",

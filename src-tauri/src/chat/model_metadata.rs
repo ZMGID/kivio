@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use serde_json::Value;
 
 use crate::settings::{ModelInfo, ModelPricing, ModelProvider};
@@ -39,66 +37,6 @@ fn model_image_generation_from_model_info(info: Option<&ModelInfo>) -> Option<bo
         .and_then(|capabilities| capabilities.image_generation)
 }
 
-/// 用户模型库覆盖文件名，放在 app data 目录下（与 `settings.json` 同级）。
-const USER_MODEL_DATABASE_FILE: &str = "modelDatabase.json";
-
-/// 把用户覆盖逐 key 合并进内置基线：新 key 直接新增，已有 key **按顶层字段合并**
-/// （只写 `reasoningEfforts` 不会把 `pricing` 抹掉；但 `capabilities` 这类嵌套对象是整块替换）。
-/// key 统一小写，否则 `model_database_entry` 用小写模型名永远匹配不到，改了像没生效。
-/// `_meta` 只是出处记录，不接受覆盖。
-fn merge_user_entries(
-    base: &mut serde_json::Map<String, Value>,
-    user: serde_json::Map<String, Value>,
-) {
-    for (key, value) in user {
-        let key = key.trim().to_ascii_lowercase();
-        if key.is_empty() || key == "_meta" {
-            continue;
-        }
-        match (base.get_mut(&key).and_then(Value::as_object_mut), value) {
-            (Some(existing), Value::Object(fields)) => existing.extend(fields),
-            (_, value) => {
-                base.insert(key, value);
-            }
-        }
-    }
-}
-
-fn load_user_model_database(path: &std::path::Path) -> Option<serde_json::Map<String, Value>> {
-    let text = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str::<Value>(&text) {
-        Ok(Value::Object(map)) => Some(map),
-        // 手写 JSON 打错了不能让整个模型库瘫掉，只警告并退回内置基线。
-        _ => {
-            eprintln!("[model_metadata] 忽略无效的用户模型库 {}", path.display());
-            None
-        }
-    }
-}
-
-fn model_database_entries() -> Option<&'static serde_json::Map<String, Value>> {
-    static MODEL_DATABASE: OnceLock<Value> = OnceLock::new();
-    MODEL_DATABASE
-        .get_or_init(|| {
-            let mut base: Value =
-                serde_json::from_str(include_str!("../../../src/data/modelDatabase.json"))
-                    .unwrap_or(Value::Null);
-            // 内置那份是编译期 `include_str!` 进二进制的基线；补新模型 / 改某个字段不必重编译，
-            // 写 `<app_data>/modelDatabase.json` 即可（进程内只读一次，改完重启应用生效）。
-            if let Some(map) = base.as_object_mut() {
-                if let Some(user) = crate::app_data::app_data_dir()
-                    .map(|dir| dir.join(USER_MODEL_DATABASE_FILE))
-                    .filter(|path| path.exists())
-                    .and_then(|path| load_user_model_database(&path))
-                {
-                    merge_user_entries(map, user);
-                }
-            }
-            base
-        })
-        .as_object()
-}
-
 /// 版本分隔符归一化：数据库键用点号（`claude-sonnet-4.6`），不少 provider 返回连字符
 /// （`claude-sonnet-4-6`）。与前端 `src/data/modelMatching.ts` 的 `normalizeSep` 同构。
 fn normalize_model_sep(value: &str) -> String {
@@ -125,35 +63,6 @@ fn is_version_continuation(key_norm: &str, candidate: &str, end_idx: usize) -> b
     (1..=2).contains(&len) && next_segment.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// 与前端模块级 `normalizedExact` / `normalizedEntries` 对应：进程内只建一次。
-/// key 的 `&'static str` 来自 `model_database_entries` 的静态 JSON map。
-struct ModelDbNormIndex {
-    /// 归一化键 → 原始库 key（首个占位；当前库无仅靠 `.`/`-` 区分的重复键）
-    exact_norm: std::collections::HashMap<String, &'static str>,
-    /// `(原始 key, 归一化 key)`，供前缀 / 包含匹配复用
-    pairs: Vec<(&'static str, String)>,
-}
-
-fn model_db_norm_index() -> Option<&'static ModelDbNormIndex> {
-    static INDEX: OnceLock<Option<ModelDbNormIndex>> = OnceLock::new();
-    INDEX
-        .get_or_init(|| {
-            let entries = model_database_entries()?;
-            let mut exact_norm = std::collections::HashMap::new();
-            let mut pairs = Vec::new();
-            for key in entries.keys() {
-                if key == "_meta" {
-                    continue;
-                }
-                let norm = normalize_model_sep(key);
-                exact_norm.entry(norm.clone()).or_insert(key.as_str());
-                pairs.push((key.as_str(), norm));
-            }
-            Some(ModelDbNormIndex { exact_norm, pairs })
-        })
-        .as_ref()
-}
-
 /// 从内置模型库匹配条目。
 ///
 /// 与前端 `matchModel` / `matchModelExact` **同构**（精确 → 归一化精确 → 最长前缀 →
@@ -162,27 +71,28 @@ fn model_db_norm_index() -> Option<&'static ModelDbNormIndex> {
 ///
 /// 不做生图命名启发式（那是前端 `matchKnownImageGenerationModel` 的展示层兜底）；
 /// 也不为某个 CLI 别名（如 kimi 的 `k3`）放宽匹配——那会污染所有 provider。
-fn model_database_entry(model: &str) -> Option<&'static Value> {
+fn model_database_entry(model: &str) -> Option<Value> {
     let model = model.trim();
     if model.is_empty() {
         return None;
     }
 
-    let entries = model_database_entries()?;
+    let snapshot = super::model_database::snapshot();
+    let entries = &snapshot.database;
     let name = model.to_ascii_lowercase();
     let stripped = name.rsplit('/').next().unwrap_or(name.as_str());
 
     // 1. 精确匹配（含 OpenRouter 风格 `provider/model` 去前缀）
     if let Some(entry) = entries.get(name.as_str()) {
-        return Some(entry);
+        return Some(entry.clone());
     }
     if stripped != name.as_str() {
         if let Some(entry) = entries.get(stripped) {
-            return Some(entry);
+            return Some(entry.clone());
         }
     }
 
-    let index = model_db_norm_index()?;
+    let index = &snapshot;
 
     // 1b. 分隔符归一化后的精确匹配（`claude-sonnet-4-6` → `claude-sonnet-4.6`）
     if let Some(orig) = index
@@ -190,7 +100,7 @@ fn model_database_entry(model: &str) -> Option<&'static Value> {
         .get(&normalize_model_sep(&name))
         .or_else(|| index.exact_norm.get(&normalize_model_sep(stripped)))
     {
-        return entries.get(*orig);
+        return entries.get(orig).cloned();
     }
 
     let norm_name = normalize_model_sep(&name);
@@ -211,11 +121,11 @@ fn model_database_entry(model: &str) -> Option<&'static Value> {
                 && !is_version_continuation(norm, candidate, norm_len)
         });
         if hit && best_prefix.map_or(true, |(_, len)| norm_len > len) {
-            best_prefix = Some((*orig, norm_len));
+            best_prefix = Some((orig.as_str(), norm_len));
         }
     }
     if let Some((orig, _)) = best_prefix {
-        return entries.get(orig);
+        return entries.get(orig).cloned();
     }
 
     // 3. 包含匹配（归一化后最长 key 优先，带版本延续保护）
@@ -232,10 +142,10 @@ fn model_database_entry(model: &str) -> Option<&'static Value> {
             }
         });
         if hit && best_contains.map_or(true, |(_, len)| norm_len > len) {
-            best_contains = Some((*orig, norm_len));
+            best_contains = Some((orig.as_str(), norm_len));
         }
     }
-    best_contains.and_then(|(orig, _)| entries.get(orig))
+    best_contains.and_then(|(orig, _)| entries.get(orig).cloned())
 }
 
 /// Resolve Kimi Code aliases only for its own provider, without widening global matching.
@@ -263,11 +173,11 @@ fn provider_model_database_id<'a>(provider: Option<&ModelProvider>, model: &'a s
 }
 
 fn model_database_context_window(model: &str) -> Option<usize> {
-    context_window_from_database_entry(model_database_entry(model))
+    context_window_from_database_entry(model_database_entry(model).as_ref())
 }
 
 fn model_database_max_output(model: &str) -> Option<u32> {
-    max_output_from_database_entry(model_database_entry(model))
+    max_output_from_database_entry(model_database_entry(model).as_ref())
 }
 
 fn model_database_temperature(model: &str) -> Option<f64> {
@@ -332,6 +242,7 @@ pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str
         return sanitize_efforts(list.iter().map(String::as_str));
     }
     if let Some(list) = model_database_entry(provider_model_database_id(provider, model))
+        .as_ref()
         .and_then(|entry| entry.get("reasoningEfforts"))
         .and_then(Value::as_array)
     {
@@ -382,6 +293,7 @@ pub(crate) fn thinking_capabilities_for_model(
         .and_then(|caps| caps.reasoning)
         .or_else(|| {
             model_database_entry(provider_model_database_id(provider, model))
+                .as_ref()
                 .and_then(|entry| entry.get("capabilities"))
                 .and_then(|caps| caps.get("reasoning"))
                 .and_then(Value::as_bool)
@@ -401,6 +313,7 @@ pub(crate) fn thinking_capabilities_for_model(
     {
         ThinkingOffMode::Unsupported
     } else if let Some(mode) = model_database_entry(id)
+        .as_ref()
         .and_then(|entry| entry.get("thinkingOff"))
         .and_then(Value::as_bool)
     {
@@ -766,7 +679,8 @@ fn model_pricing_from_model_info(info: Option<&ModelInfo>) -> Option<ModelPricin
 }
 
 fn model_database_pricing(model: &str) -> Option<ModelPricing> {
-    let pricing = model_database_entry(model)?.get("pricing")?;
+    let entry = model_database_entry(model)?;
+    let pricing = entry.get("pricing")?;
     Some(ModelPricing {
         input: pricing.get("input").and_then(Value::as_f64),
         output: pricing.get("output").and_then(Value::as_f64),
@@ -1134,6 +1048,7 @@ mod tests {
 
     fn db_display_name(model: &str) -> Option<String> {
         model_database_entry(model)
+            .as_ref()
             .and_then(|entry| entry.get("displayName"))
             .and_then(Value::as_str)
             .map(str::to_string)
@@ -1175,12 +1090,12 @@ mod tests {
 
         // 主版本本身仍命中自己的条目，不能被次级版本抢
         assert_eq!(
-            db_display_name("claude-sonnet-4").as_deref(),
-            Some("Claude Sonnet 4")
+            db_display_name("claude-sonnet-5").as_deref(),
+            Some("Claude Sonnet 5")
         );
         assert_eq!(
-            db_display_name("claude-opus-4").as_deref(),
-            Some("Claude Opus 4")
+            db_display_name("claude-opus-5").as_deref(),
+            Some("Claude Opus 5")
         );
 
         // 日期快照后缀：最长归一化前缀，仍认 4.8（数字段 ≥3 不算版本延续）
@@ -1370,7 +1285,7 @@ mod tests {
         .unwrap()
         .clone();
 
-        merge_user_entries(&mut base, user);
+        super::super::model_database::merge_user_entries(&mut base, user);
 
         // 已有 key：按顶层字段合并，pricing 不被抹掉；key 大小写归一。
         let gpt = &base["gpt-5.6"];

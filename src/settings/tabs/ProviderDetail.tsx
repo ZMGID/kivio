@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../../data/useModelDatabase'
 import { useEffect, useState } from 'react'
 import {
   Plus, Minus, Trash2, RefreshCw, Eye, EyeOff, Wrench, Brain,
@@ -44,6 +45,7 @@ export function ProviderDetail({
   onOpenModelDrawer: (target: { providerId: string; model: string }) => void
   onRemoveEnabledModel: (providerId: string, model: string) => void
 }) {
+  useModelDatabase()
   const [showRequestPage, setShowRequestPage] = useState(false)
   // 切换供应商时退回一级页：否则会停在二级页上、悄悄改到另一个供应商的头。
   useEffect(() => setShowRequestPage(false), [provider.id])

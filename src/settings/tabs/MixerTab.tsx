@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../../data/useModelDatabase'
 import { useEffect, useState } from 'react'
 import { api, type SubAgentModelSelection, type ThinkingCapabilities } from '../../api/tauri'
 import { Select } from '../public/controls'
@@ -38,6 +39,7 @@ export function MixerTab({
   onUpdateChatTools,
   onUpdateChat,
 }: MixerTabProps) {
+  useModelDatabase()
   return (
     <>
       <SettingsGroup title={t.mixerSection}>

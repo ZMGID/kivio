@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
@@ -188,6 +189,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const modelTestProviderId = providerModals.testId
   const { closePicker, cancelDelete } = providerModals
   const requestWindowFocus = useWindowInteractionFocus()
+  useModelDatabase()
   const updates = useSettingsUpdateController(settings ? settings.autoCheckUpdate : null)
   const platform = getPlatform()
   const isMac = platform === 'macos'

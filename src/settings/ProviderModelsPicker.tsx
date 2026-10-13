@@ -1,3 +1,4 @@
+import { useModelDatabase } from '../data/useModelDatabase'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Minus, Plus, RefreshCw, Search, X } from 'lucide-react'
@@ -62,6 +63,7 @@ export function ProviderModelsPicker({
   onAddAll,
   onRemove,
 }: ProviderModelsPickerProps) {
+  useModelDatabase()
   const [query, setQuery] = useState('')
   const [groupOpen, setGroupOpen] = useState(true)
   const [manualOpen, setManualOpen] = useState(false)
@@ -87,11 +89,11 @@ export function ProviderModelsPicker({
     [provider.availableModels, extraModels],
   )
 
-  const filteredModels = useMemo(() => {
+  const filteredModels = (() => {
     const q = query.trim().toLowerCase()
     if (!q) return allModels
     return allModels.filter((model) => model.toLowerCase().includes(q) || resolveModelInfo(model, provider.modelOverrides, provider).displayName?.toLowerCase().includes(q))
-  }, [allModels, query, provider])
+  })()
 
   const addableModels = useMemo(
     () => filteredModels.filter((model) => !enabledSet.has(modelKey(model))),

@@ -104,8 +104,8 @@ describe('matchModel', () => {
   })
 
   it('still resolves the bare major-version model to its own entry', () => {
-    expect(matchModel('claude-sonnet-4')?.displayName).toBe('Claude Sonnet 4')
-    expect(matchModel('claude-opus-4')?.displayName).toBe('Claude Opus 4')
+    expect(matchModel('claude-sonnet-5')?.displayName).toBe('Claude Sonnet 5')
+    expect(matchModel('claude-opus-5')?.displayName).toBe('Claude Opus 5')
   })
 
   it('matches dated dash-versioned ids by longest normalized prefix', () => {
