@@ -42,7 +42,38 @@ pub(crate) async fn synthesis_step(
         AgentPhase::Synthesis
     };
     // 循环内上下文治理：超限时先 snip / 摘要（与 planning_step 相同的发送视图）。
-    let send_messages = super::compaction::maybe_compact_send_view(env, state).await;
+    let send_messages = super::compaction::maybe_compact_send_view(env, state, &[]).await;
+    if state.compaction_blocked {
+        let content = recovery::assemble_results_from_tool_records(
+            &state.tool_records,
+            &config.language,
+            recovery::FailureKind::ContextOverflow,
+        );
+        let content = if content.trim().is_empty() {
+            recovery::overflow_static_message(&config.language)
+        } else {
+            content
+        };
+        let segment = state.segment_builder.reserve(
+            ChatMessageSegmentKind::Text,
+            segment_phase_for_agent_phase(phase),
+            Some(step_number),
+            None,
+            &format!("step_{step_number}_compaction_blocked"),
+        );
+        return Ok(SynthesisFlow::Early(
+            RunResultBuilder::new(host, env.ids(), content)
+                .segment(&segment)
+                .emit_done("done")
+                .outcome("compaction_blocked")
+                .finish(
+                    std::mem::take(&mut state.segment_builder),
+                    &state.planning_reasoning_parts,
+                    std::mem::take(&mut state.tool_records),
+                    std::mem::take(&mut state.generated_api_messages),
+                ),
+        ));
+    }
     let synthesis_stream_policy = if state.tool_records.is_empty() {
         AgentStreamPolicy::SynthesisAlwaysDone
     } else {
@@ -366,7 +397,14 @@ fn silent_overflow_aware_kind(
 async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunState) -> String {
     let config = env.config;
     // 压缩一次(L1 snip → L2 摘要);返回压缩后的发送视图,并已写回 state.runtime_messages。
-    let compacted = super::compaction::compact_send_view(env, state, true).await;
+    let compacted = super::compaction::compact_send_view(env, state, true, &[]).await;
+    if state.compaction_blocked {
+        return recovery::assemble_results_from_tool_records(
+            &state.tool_records,
+            &config.language,
+            recovery::FailureKind::ContextOverflow,
+        );
+    }
     if config.depth == 0 {
         env.host.begin_context_request(
             &config.conversation_id,
