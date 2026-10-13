@@ -1869,6 +1869,11 @@ export const api = {
     return { id, url: convertFileSrc(id, 'kivio-preview') }
   },
   releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
+  exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<void>('export_full_backup', { path, interface: interfaceState }),
+  importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
+  backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
+  backupRestorePending: () => invoke<boolean>('backup_restore_pending'),
+  restartAfterRestore: () => invoke<void>('restart_after_restore'),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),

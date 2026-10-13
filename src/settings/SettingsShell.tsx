@@ -2,9 +2,9 @@ import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  Download, Upload, ArrowLeft, Palette,
+  ArrowLeft, Palette,
 } from 'lucide-react'
-import { open, save } from '@tauri-apps/plugin-dialog'
+import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
   api,
   type Settings as SettingsType,
@@ -55,6 +55,8 @@ import { AppInfoGroup, UpdateGroup } from './tabs/AboutTab'
 import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
+import { BackupSection } from './BackupSection'
+import { captureBackupInterface } from '../api/backupInterface'
 import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
@@ -71,7 +73,7 @@ import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chat
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,
-  SettingsGroup, FieldBlock,
+  SettingsGroup,
 } from './components'
 import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
@@ -213,15 +215,26 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   })
   const settingsBackup = useSettingsBackupController({
     pickImport: async () => {
-      const selected = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json', 'kivio', 'zip'] }] })
       return typeof selected === 'string' ? selected : null
     },
-    pickExport: (share) => save({
-      defaultPath: share ? 'kivio-share.json' : 'kivio-backup.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+    pickExport: (kind) => save({
+      defaultPath: kind === 'full' ? 'kivio-full-backup.kivio' : 'kivio-configuration.json',
+      filters: [{ name: 'Kivio backup', extensions: kind === 'full' ? ['kivio'] : ['json'] }],
     }),
     import: (path, trusted) => editorController.import(path, trusted),
-    export: (path, share) => api.exportSettings(path, share),
+    export: async (path, kind) => {
+      if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+      if (kind === 'full') await api.exportFullBackup(path, captureBackupInterface())
+      else await api.exportSettings(path)
+    },
+    importFull: (path, trusted) => api.importFullBackup(path, trusted),
+    confirmFullRestore: () => confirm(lang === 'zh'
+      ? '重启后将用备份替换当前 Kivio 数据，恢复前的数据会保留副本。请先停止正在运行的任务。继续准备恢复？'
+      : 'After restarting, this backup will replace your Kivio data. A copy of your previous data will be kept. Stop active tasks first. Prepare restore?',
+    { title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup', kind: 'warning' }),
+    restart: () => api.restartAfterRestore(),
+    pendingRestore: () => api.backupRestorePending(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),
@@ -1084,46 +1097,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   </SettingRow>
                 </SettingsGroup>
 
-                <SettingsGroup title={lang === 'zh' ? '备份与恢复' : 'Backup & Restore'}>
-                  <FieldBlock
-                    label={lang === 'zh' ? '数据备份' : 'Data backup'}
-                    description={lang === 'zh'
-                      ? '完整备份含 API Key、OAuth 和集，请仅保存在可信位置。普通导入会禁用 MCP 和 hooks，保留本机外部 CLI 配置；可信恢复会保留执行权限。'
-                      : 'Full backups include API keys, OAuth and sets. Keep them private. Import disables MCP and hooks and keeps local CLI configuration. Trusted restore preserves execution permissions.'}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.exportBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Download size={11} />
-                        {lang === 'zh' ? '导出备份' : 'Export'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={settingsBackup.importBackup}
-                        disabled={settingsBackup.busy}
-                        data-tauri-drag-region="false"
-                      >
-                        <Upload size={11} />
-                        {lang === 'zh' ? '导入备份' : 'Import'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.shareBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '导出分享配置' : 'Export for sharing'}
-                      </Button>
-                      <Button size="sm" onClick={settingsBackup.restoreBackup} disabled={settingsBackup.busy}>
-                        {lang === 'zh' ? '恢复可信备份（保留权限）' : 'Restore trusted backup (keep permissions)'}
-                      </Button>
-                      {settingsBackup.status && (
-                        <span className={`text-[12px] ${settingsBackup.status.kind === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}`}>
-                          {settingsBackup.status.msg}
-                        </span>
-                      )}
-                    </div>
-                  </FieldBlock>
-                </SettingsGroup>
+                <BackupSection controller={settingsBackup} lang={lang} />
 
                 {permissions.status?.platform === 'macos' && (
                   <PermissionsGroup

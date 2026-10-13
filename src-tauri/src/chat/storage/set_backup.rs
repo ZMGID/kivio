@@ -7,11 +7,32 @@ use serde_json::Value;
 const MAX_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The set catalog travels with settings so restoring preferences also restores
-/// their named personas and default assistants.
+/// their named personas and all assistant definitions.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SetCatalogBackup {
     sets: Vec<ChatSet>,
     assistants: Vec<ChatAssistant>,
+}
+
+impl SetCatalogBackup {
+    pub(crate) fn validate(&mut self) -> Result<(), String> {
+        let mut ids = HashSet::new();
+        for set in &mut self.sets {
+            sets::validate_set_id(&set.id)?;
+            set.name = sets::normalize_set_name(&set.name)?;
+            if !ids.insert(set.id.clone()) {
+                return Err("备份包含重复集".into());
+            }
+        }
+        ids.clear();
+        for assistant in &self.assistants {
+            validate_assistant_id(&assistant.id)?;
+            if !ids.insert(assistant.id.clone()) {
+                return Err("备份包含重复助手".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn export_catalog_in(root: &Path) -> Result<SetCatalogBackup, String> {
@@ -19,17 +40,8 @@ pub(crate) fn export_catalog_in(root: &Path) -> Result<SetCatalogBackup, String>
     let dir = root.join("conversations");
     let sets: ChatSetIndex = read_json(&dir.join("sets.json"))?;
     let assistants: ChatAssistantIndex = read_json(&dir.join("assistants.json"))?;
-    let ids: HashSet<_> = sets
-        .sets
-        .iter()
-        .filter_map(|set| set.default_assistant_id.as_deref())
-        .collect();
     Ok(SetCatalogBackup {
-        assistants: assistants
-            .assistants
-            .into_iter()
-            .filter(|assistant| ids.contains(assistant.id.as_str()))
-            .collect(),
+        assistants: assistants.assistants,
         sets: sets.sets,
     })
 }
@@ -37,14 +49,8 @@ pub(crate) fn export_catalog_in(root: &Path) -> Result<SetCatalogBackup, String>
 pub(crate) fn import_catalog_in(root: &Path, mut backup: SetCatalogBackup) -> Result<(), String> {
     let _catalog = catalog_mutation_lock();
     let dir = root.join("conversations");
-    let mut ids = HashSet::new();
-    for set in &mut backup.sets {
-        sets::validate_set_id(&set.id)?;
-        set.name = sets::normalize_set_name(&set.name)?;
-        if !ids.insert(set.id.clone()) {
-            return Err("备份包含重复集".into());
-        }
-    }
+    backup.validate()?;
+    let ids: HashSet<_> = backup.sets.iter().map(|set| set.id.clone()).collect();
     let existing: ChatSetIndex = read_json(&dir.join("sets.json"))?;
     backup.sets.extend(
         existing
@@ -742,6 +748,17 @@ mod tests {
             json(&sets).unwrap(),
         )
         .unwrap();
+        let mut catalog: ChatAssistantIndex =
+            read_json(&source.path().join("conversations/assistants.json")).unwrap();
+        let mut standalone = catalog.assistants[0].clone();
+        standalone.id = "asst_standalone".into();
+        standalone.system_prompt = "不属于任何集的助手".into();
+        catalog.assistants.push(standalone);
+        fs::write(
+            source.path().join("conversations/assistants.json"),
+            json(&catalog).unwrap(),
+        )
+        .unwrap();
         let exported = export_catalog_in(source.path()).unwrap();
         let raw = serde_json::to_vec(&exported).unwrap();
         let target = tempfile::tempdir().unwrap();
@@ -765,7 +782,8 @@ mod tests {
         );
         let assistants: ChatAssistantIndex =
             read_json(&target.path().join("conversations/assistants.json")).unwrap();
-        assert_eq!(assistants.assistants.len(), 1);
+        assert_eq!(assistants.assistants.len(), 2);
+        assert_eq!(assistants.assistants[1].system_prompt, "不属于任何集的助手");
         assert_eq!(assistants.assistants[0].system_prompt, "保留助手提示词");
     }
 

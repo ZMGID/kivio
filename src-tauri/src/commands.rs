@@ -288,7 +288,7 @@ async fn apply_settings(
 const SETTINGS_BACKUP_VERSION: u32 = 1;
 
 /// Backup files carry data, never implicit authorization to start foreign processes.
-fn prepare_imported_settings(
+pub(crate) fn prepare_imported_settings(
     settings: &mut Settings,
     trusted: bool,
     local_cli: &std::collections::HashMap<String, crate::settings::ExternalCliAgentConfig>,
@@ -416,16 +416,24 @@ pub(crate) async fn import_settings(
     if value.get("type").and_then(|v| v.as_str()) != Some("settings-backup") {
         return Err("这不是 Kivio 设置备份文件".into());
     }
+    if value.get("app").and_then(|v| v.as_str()) != Some("kivio")
+        || value.get("version").and_then(|v| v.as_u64()) != Some(SETTINGS_BACKUP_VERSION as u64)
+    {
+        return Err("不支持的配置备份格式或版本".into());
+    }
     let settings_value = value
         .get("settings")
         .ok_or_else(|| "备份文件缺少 settings 字段".to_string())?;
     let mut settings: Settings = serde_json::from_value(settings_value.clone())
         .map_err(|e| format!("备份内容无法解析: {e}"))?;
-    let sets: Option<crate::chat::storage::set_backup::SetCatalogBackup> = value
+    let mut sets: Option<crate::chat::storage::set_backup::SetCatalogBackup> = value
         .get("sets")
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
         .map_err(|e| format!("集备份无法解析: {e}"))?;
+    if let Some(catalog) = &mut sets {
+        catalog.validate()?;
+    }
     prepare_imported_settings(
         &mut settings,
         trusted.unwrap_or(false),
@@ -436,6 +444,7 @@ pub(crate) async fn import_settings(
         &mut settings,
         value.get("providerOAuth").unwrap_or(&serde_json::json!({})),
     )?;
+    let previous = state.settings_read().clone();
     let snapshot = match apply_settings(&app, &state, settings, expected_version, false).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -445,7 +454,13 @@ pub(crate) async fn import_settings(
     };
     if let Some(sets) = sets {
         let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        crate::chat::storage::set_backup::import_catalog_in(&root, sets)?;
+        if let Err(error) = crate::chat::storage::set_backup::import_catalog_in(&root, sets) {
+            apply_settings(&app, &state, previous, snapshot.version, false)
+                .await
+                .map_err(|rollback| format!("集恢复失败：{error}；设置回滚失败：{rollback}"))?;
+            crate::provider_oauth::discard_imported_credentials(&imported);
+            return Err(error.into());
+        }
     }
     Ok(snapshot)
 }

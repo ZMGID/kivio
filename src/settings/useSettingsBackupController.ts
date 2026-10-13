@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Lang } from '../components/i18n'
 
+export type BackupKind = 'configuration' | 'full'
 export interface SettingsBackupPort {
   pickImport(): Promise<string | null>
-  pickExport(share?: boolean): Promise<string | null>
+  pickExport(kind: BackupKind): Promise<string | null>
   import(path: string, trusted?: boolean): Promise<unknown>
-  export(path: string, share?: boolean): Promise<unknown>
+  export(path: string, kind: BackupKind): Promise<unknown>
+  importFull(path: string, trusted: boolean): Promise<void>
+  confirmFullRestore(): Promise<boolean>
+  restart(): Promise<void>
+  pendingRestore(): Promise<boolean>
 }
-
 type Status = { kind: 'ok' | 'err'; msg: string } | null
 
-/** Serializes backup file selection and commit, with status tied to the settled operation. */
+/** Owns one file-selection/backup operation at a time, including restore confirmation. */
 export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang) {
   const portRef = useRef(port)
   portRef.current = port
@@ -20,52 +24,69 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   const live = useRef(true)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
+  const [restartRequired, setRestartRequired] = useState(false)
 
-  const run = useCallback(async (kind: 'import' | 'restore' | 'export' | 'share'): Promise<void> => {
+  const run = useCallback(async (action: 'import' | 'restore' | BackupKind | 'restart'): Promise<void> => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
     setStatus(null)
+    const zh = langRef.current === 'zh'
     try {
-      const path = (kind === 'import' || kind === 'restore')
-        ? await portRef.current.pickImport()
-        : kind === 'share' ? await portRef.current.pickExport(true) : await portRef.current.pickExport()
+      if (action === 'restart') { await portRef.current.restart(); return }
+      if (await portRef.current.pendingRestore()) {
+        if (live.current) {
+          setRestartRequired(true)
+          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复。' : 'A backup is ready to restore. Restart to finish.' })
+        }
+        return
+      }
+      const importing = action === 'import' || action === 'restore'
+      const path = importing ? await portRef.current.pickImport() : await portRef.current.pickExport(action)
       if (!path) return
-      if (kind === 'import') await portRef.current.import(path)
-      else if (kind === 'restore') await portRef.current.import(path, true)
-      else if (kind === 'share') await portRef.current.export(path, true)
-      else await portRef.current.export(path)
+      let fullRestore = false
+      if (importing) {
+        fullRestore = /\.(kivio|zip)$/i.test(path)
+        if (fullRestore) {
+          if (!await portRef.current.confirmFullRestore()) return
+          await portRef.current.importFull(path, action === 'restore')
+        } else if (action === 'restore') await portRef.current.import(path, true)
+        else await portRef.current.import(path)
+      } else await portRef.current.export(path, action)
       if (!live.current) return
-      setStatus({
-        kind: 'ok',
-        msg: kind === 'import'
-          ? (langRef.current === 'zh' ? '已导入。MCP 和 hooks 已禁用，外部 CLI 保留本机配置，工具执行需要确认；检查配置后可重新启用。' : 'Imported. MCP and hooks are disabled, local CLI configuration is retained, and tool execution requires approval. Review settings before enabling them.')
-          : kind === 'restore'
-            ? (langRef.current === 'zh' ? '已恢复可信备份，包括原有执行权限。' : 'Trusted backup restored, including execution permissions.')
-            : kind === 'share'
-              ? (langRef.current === 'zh' ? '已导出分享配置。请检查集和自定义内容后再分享。' : 'Share configuration exported. Review sets and custom content before sharing.')
-          : (langRef.current === 'zh' ? '备份已导出。' : 'Backup exported.'),
+      if (fullRestore) setRestartRequired(true)
+      setStatus({ kind: 'ok', msg: fullRestore
+        ? (zh ? '备份已校验。重启后完成恢复；恢复前的数据会保留一份副本。' : 'Backup validated. Restart to restore. A copy of your previous data will be kept.')
+        : importing
+          ? action === 'restore'
+            ? (zh ? '配置已恢复，包括原有执行权限。' : 'Configuration restored, including execution permissions.')
+            : (zh ? '配置已导入。MCP 和 hooks 已禁用，外部 CLI 保留本机配置。' : 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.')
+          : action === 'full'
+            ? (zh ? '完全备份已导出。' : 'Full backup exported.')
+            : (zh ? '配置已导出。' : 'Configuration exported.'),
       })
     } catch (error) {
       if (!live.current) return
-      const prefix = (kind === 'import' || kind === 'restore')
-        ? (langRef.current === 'zh' ? '导入失败：' : 'Import failed: ')
-        : (langRef.current === 'zh' ? '导出失败：' : 'Export failed: ')
-      setStatus({ kind: 'err', msg: `${prefix}${error instanceof Error ? error.message : String(error)}` })
+      setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}` })
     } finally {
       inFlight.current = false
       if (live.current) setBusy(false)
     }
   }, [])
-
   useEffect(() => {
     live.current = true
-    return () => { live.current = false }
+    let current = true
+    void portRef.current.pendingRestore().then((pending) => {
+      if (current && pending) setRestartRequired(true)
+    }).catch((error) => {
+      if (current) setStatus({ kind: 'err', msg: String(error) })
+    })
+    return () => { current = false; live.current = false }
   }, [])
-
   const importBackup = useCallback(() => run('import'), [run])
-  const exportBackup = useCallback(() => run('export'), [run])
   const restoreBackup = useCallback(() => run('restore'), [run])
-  const shareBackup = useCallback(() => run('share'), [run])
-  return { busy, status, importBackup, exportBackup, restoreBackup, shareBackup }
+  const exportBackup = useCallback(() => run('configuration'), [run])
+  const exportFullBackup = useCallback(() => run('full'), [run])
+  const restart = useCallback(() => run('restart'), [run])
+  return { busy, status, restartRequired, importBackup, restoreBackup, exportBackup, exportFullBackup, restart }
 }
