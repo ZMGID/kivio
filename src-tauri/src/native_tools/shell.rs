@@ -2510,8 +2510,11 @@ mod tests {
 
     #[tokio::test]
     async fn foreground_cancel_kills_process_tree() {
-        let dir = std::env::temp_dir().join(format!("kivio_cancel_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let fixture = tempfile::Builder::new()
+            .prefix("kivio_cancel_")
+            .tempdir()
+            .expect("mkdir");
+        let dir = fixture.path().to_path_buf();
         let child_pid_path = dir.join("child.pid");
         let leader_pid_path = dir.join("leader.pid");
         #[cfg(not(target_os = "windows"))]
@@ -2545,7 +2548,9 @@ mod tests {
         // spawn+abort 才会真正 drop future；`tokio::pin!` 后 `drop(pin)` 只丢掉指针。
         let mut handle = tokio::spawn(fut);
 
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
+        // Readiness is not a startup-speed assertion: PowerShell competes with
+        // the full Windows suite. Keep the cancellation deadline separate.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         let child_pid = loop {
             if let Some(pid) = read_pid_file(&child_pid_path) {
                 break pid;
@@ -2553,12 +2558,13 @@ mod tests {
             if tokio::time::Instant::now() >= deadline {
                 handle.abort();
                 let _ = handle.await;
-                let _ = std::fs::remove_dir_all(&dir);
-                panic!("child pid file was not written");
+                panic!(
+                    "child pid file was not written (leader {:?})",
+                    read_pid_file(&leader_pid_path)
+                );
             }
             tokio::select! {
                 result = &mut handle => {
-                    let _ = std::fs::remove_dir_all(&dir);
                     panic!("command exited before cancel: {result:?}");
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
@@ -2570,18 +2576,29 @@ mod tests {
             panic!("grandchild {child_pid} should be alive before cancel");
         }
         handle.abort();
-        let _ = handle.await;
+        assert!(
+            handle
+                .await
+                .expect_err("command must be cancelled")
+                .is_cancelled(),
+            "the command must remain alive until cancellation"
+        );
+        let leader_pid = read_pid_file(&leader_pid_path).expect("leader pid must be written");
         let died_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-        while process_is_running(child_pid) && tokio::time::Instant::now() < died_deadline {
+        while (process_is_running(child_pid) || process_is_running(leader_pid))
+            && tokio::time::Instant::now() < died_deadline
+        {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        let leader_pid = read_pid_file(&leader_pid_path);
-        let leader_alive = leader_pid.is_some_and(process_is_running);
+        let leader_alive = process_is_running(leader_pid);
         assert!(
             !process_is_running(child_pid),
             "grandchild pid {child_pid} should die when the foreground future is dropped (leader {leader_pid:?} alive={leader_alive})"
         );
-        let _ = std::fs::remove_dir_all(dir);
+        assert!(
+            !leader_alive,
+            "leader pid {leader_pid} should die on cancellation"
+        );
     }
 
     #[test]
