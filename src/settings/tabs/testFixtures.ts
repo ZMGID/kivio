@@ -50,6 +50,7 @@ export function makeSettings(overrides: Partial<SettingsData> = {}): SettingsDat
     themeColor: 'neutral',
     translucentSidebar: true,
     targetLang: 'auto',
+    readingTargetLang: 'zh',
     autoPaste: false,
     launchAtStartup: false,
     launchMinimizedToTray: false,

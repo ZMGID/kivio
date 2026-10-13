@@ -20,6 +20,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     themeColor: 'blue',
     translucentSidebar: true,
     targetLang: 'auto',
+    readingTargetLang: 'zh',
     autoPaste: true,
     launchAtStartup: false,
     translatorProviderId: '',

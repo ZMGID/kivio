@@ -1188,7 +1188,10 @@ export type Settings = {
   uiFontScale?: number
   uiFontFamily?: string
   uiFontMono?: string
+  /** 输入翻译的输出语言；auto 表示中英互译。 */
   targetLang: string
+  /** 划词、截图与替换翻译的阅读目标语言，由后端迁移和规范化。 */
+  readingTargetLang: string
   autoPaste: boolean
   launchAtStartup: boolean
   /** 启动后不打开聊天窗口，进程留在托盘（适合开机自启后后台常驻） */
