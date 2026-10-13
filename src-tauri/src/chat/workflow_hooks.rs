@@ -634,6 +634,10 @@ mod tests {
         );
     }
 
+    // Process startup competes with the full suite on Windows CI. These tests
+    // assert hook behavior, not a five-second Node startup performance budget.
+    const PROCESS_TEST_TIMEOUT: u64 = 30;
+
     fn node_hook(dir: &std::path::Path, script: &str, timeout: u64) -> Runtime {
         let hooks = parse(&json!({"SessionStart":[{"hooks":[{"type":"command","command":"node","args":["-e",script],"timeout":timeout}]}]}), "fixture", dir, dir).unwrap();
         Runtime {
@@ -645,21 +649,33 @@ mod tests {
     #[tokio::test]
     async fn dropping_a_hook_future_terminates_its_process() {
         let dir = tempfile::tempdir().unwrap();
-        let runtime = node_hook(dir.path(), "const fs=require('fs');fs.writeFileSync('started','1');setTimeout(()=>fs.writeFileSync('finished','1'),1000);process.stdin.resume()", 5);
+        let runtime = node_hook(dir.path(), "const fs=require('fs');fs.writeFileSync('started','1');setTimeout(()=>fs.writeFileSync('finished','1'),1000);process.stdin.resume()", PROCESS_TEST_TIMEOUT);
         let task = tokio::spawn(async move {
             runtime
                 .run("SessionStart", runtime.input("SessionStart", "s"))
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(5), async {
+        let started = tokio::time::timeout(Duration::from_secs(PROCESS_TEST_TIMEOUT), async {
             while !dir.path().join("started").exists() {
+                assert!(
+                    !task.is_finished(),
+                    "hook exited before signalling readiness"
+                );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("hook actually started");
+        .await;
+        // Always cancel and join, including a readiness timeout, to avoid
+        // leaving a child process behind when the test fails.
         task.abort();
-        let _ = task.await;
+        let cancelled = task.await;
+        started.expect("hook actually started");
+        assert!(
+            cancelled
+                .expect_err("hook must remain alive until cancellation")
+                .is_cancelled(),
+            "the test must cancel the hook before its own timeout"
+        );
         tokio::time::sleep(Duration::from_millis(1200)).await;
         assert!(
             !dir.path().join("finished").exists(),
@@ -672,7 +688,7 @@ mod tests {
             .prefix("hook 中文 spaces ")
             .tempdir()
             .unwrap();
-        let runtime = node_hook(dir.path(), "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:JSON.parse(s).session_id+'|'+process.env.PLUGIN_ROOT}})))", 5);
+        let runtime = node_hook(dir.path(), "let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>s+=x);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:JSON.parse(s).session_id+'|'+process.env.PLUGIN_ROOT}})))", PROCESS_TEST_TIMEOUT);
         let output = runtime
             .run(
                 "SessionStart",
@@ -705,13 +721,13 @@ mod tests {
         let runtime = node_hook(
             dir.path(),
             "process.stdin.resume();process.stdout.write('x'.repeat(70000))",
-            5,
+            PROCESS_TEST_TIMEOUT,
         );
-        assert!(runtime
+        let error = runtime
             .run("SessionStart", runtime.input("SessionStart", "s"))
             .await
-            .unwrap_err()
-            .contains("64 KiB"));
+            .unwrap_err();
+        assert!(error.contains("64 KiB"), "unexpected hook failure: {error}");
     }
     #[test]
     fn event_output_is_not_interchangeable() {
