@@ -70,7 +70,7 @@ pub use sets::{
 };
 
 #[cfg(test)]
-use assistants::{assistant_is_available, canonicalize_cua_mcp_server_ids};
+use assistants::{assistant_is_available, retire_cua_mcp_server_ids};
 #[cfg(test)]
 use conversations::{
     read_restart_goal, remove_conversation_side_artifacts, restart_goal_candidates_in_dir,
@@ -270,22 +270,16 @@ mod conversation_workspace_tests {
     use super::*;
 
     #[test]
-    fn canonicalizes_and_deduplicates_legacy_cua_mcp_ids() {
+    fn retires_legacy_cua_mcp_ids() {
         let mut ids = vec![
             "plugin-cua-driver".to_string(),
             "computer-control-cua-driver".to_string(),
             "other".to_string(),
         ];
 
-        canonicalize_cua_mcp_server_ids(&mut ids);
+        retire_cua_mcp_server_ids(&mut ids);
 
-        assert_eq!(
-            ids,
-            vec![
-                "computer-control-cua-driver".to_string(),
-                "other".to_string(),
-            ]
-        );
+        assert_eq!(ids, vec!["other".to_string()]);
     }
 
     #[test]

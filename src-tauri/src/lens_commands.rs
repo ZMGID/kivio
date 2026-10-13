@@ -42,7 +42,7 @@ use crate::screenshot::cleanup_temp_file;
 use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_window};
 use crate::state::AppState;
-use crate::utils::{language_name, resolve_target_lang};
+use crate::utils::language_name;
 use crate::web_search::{format_web_context, search_web, WebSearchResult};
 use crate::windows;
 
@@ -1539,8 +1539,7 @@ pub(crate) async fn lens_translate(
     let st_thinking = settings.screenshot_translation.thinking_enabled;
     let st_stream = settings.screenshot_translation.stream_enabled;
 
-    let target_lang = resolve_target_lang(&settings.target_lang, "");
-    let lang_name = language_name(&target_lang).to_string();
+    let lang_name = language_name(&settings.reading_target_lang).to_string();
 
     // OCR 引擎路由：System / RapidOcr 走 local_ocr_then_translate（先识别再翻译两步）
     // CloudVision 落到下方 call_openai_ocr 单次完成 OCR+翻译的多模态路径。
@@ -1782,8 +1781,7 @@ pub(crate) async fn lens_translate_text(
     let direct_translate = settings.screenshot_translation.direct_translate;
     let st_thinking = settings.screenshot_translation.thinking_enabled;
     let st_stream = settings.screenshot_translation.stream_enabled;
-    let target_lang = resolve_target_lang(&settings.target_lang, &original);
-    let lang_name = language_name(&target_lang).to_string();
+    let lang_name = language_name(&settings.reading_target_lang).to_string();
     // 选中文本是干净的带结构文本，不复用截图(OCR)提示词；用其独立的自定义 prompt。
     let prompt = build_selected_text_translation_prompt(
         &original,
@@ -2141,8 +2139,7 @@ pub(crate) async fn lens_replace_translate(
     emit_replace_stream(&app, &image_id, "ocr", &[], &[], None, None, None);
     emit_replace_stream(&app, &image_id, "processing", &[], &[], None, None, None);
 
-    let target_lang = resolve_target_lang(&settings.target_lang, "");
-    let lang_name = language_name(&target_lang).to_string();
+    let lang_name = language_name(&settings.reading_target_lang).to_string();
     let request_regions: Vec<ReplaceTranslationRequestRegion<'_>> = geometry
         .groups
         .iter()

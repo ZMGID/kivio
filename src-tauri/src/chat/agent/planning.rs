@@ -71,15 +71,17 @@ pub(crate) async fn planning_step(
     let host = env.host;
     let step_number = state.step_number;
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
-    let mut send_messages = super::compaction::maybe_compact_send_view(env, state).await;
+    let active_tools = state.tools.clone();
+    let mut send_messages =
+        super::compaction::maybe_compact_send_view(env, state, &active_tools).await;
 
     // ZCode rapid-refill breaker: the context refilled right after compaction several
     // times in a row (a file or tool output is too large), so compacting again cannot
     // help. End the turn with the gathered tool results via recovery's degrade path.
-    // A failed compaction alone never ends the turn.
+    // Failed compaction also stops a request known to exceed the model input allowance.
     if state.compaction_blocked {
         eprintln!(
-            "Chat context compaction: context keeps refilling after compaction; ending turn with gathered results"
+            "Chat context compaction: context cannot fit safely after compaction; ending turn with gathered results"
         );
         let kind = crate::chat::agent::recovery::FailureKind::ContextOverflow;
         let content = crate::chat::agent::recovery::assemble_results_from_tool_records(
@@ -100,13 +102,13 @@ pub(crate) async fn planning_step(
             ChatMessageSegmentPhase::Plain,
             Some(step_number),
             Some(round),
-            &format!("step_{step_number}_compaction_thrash"),
+            &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(PlanningStepOutcome::Recovered(
             RunResultBuilder::new(host, env.ids(), content)
                 .segment(&degrade_segment)
                 .emit_done("done")
-                .outcome("compaction_thrash")
+                .outcome("compaction_blocked")
                 .finish(
                     std::mem::take(&mut state.segment_builder),
                     &state.planning_reasoning_parts,
@@ -116,7 +118,6 @@ pub(crate) async fn planning_step(
         ));
     }
 
-    let active_tools = state.tools.clone();
     let stream_policy = AgentStreamPolicy::PlanningNoDoneUntilNoTools;
     let planning_reasoning_segment = state.segment_builder.reserve(
         ChatMessageSegmentKind::Reasoning,
@@ -275,8 +276,9 @@ pub(crate) async fn planning_step(
             {
                 overflow_attempted = true;
                 let previous = send_messages.clone();
-                send_messages = super::compaction::compact_send_view(env, state, true).await;
-                if previous == send_messages {
+                send_messages =
+                    super::compaction::compact_send_view(env, state, true, &active_tools).await;
+                if state.compaction_blocked || previous == send_messages {
                     break Err(err.to_string());
                 }
                 continue;

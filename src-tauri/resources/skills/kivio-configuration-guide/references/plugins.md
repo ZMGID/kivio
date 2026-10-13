@@ -3,7 +3,7 @@
 ## 分清三条安装路径
 
 - **通用插件包**：根目录包含 `.kivio-plugin/plugin.json`、`.codex-plugin/plugin.json` 或 `.claude-plugin/plugin.json`。使用下面的工具流程。
-- **预设 CLI 插件**：如 OfficeCLI、ego lite，由插件页独立管理。使用该条目的安装说明或官方安装器，验证 binary 后在插件页启用；`plugin_import` 不负责安装这些 CLI，也不要自行伪造 `meta.json` 来启用。安装器可能将技能写进共享 `~/.agents/skills`，这是特定安装器行为，不是所有技能的默认路径。Cua Driver 由设置里的「电脑操控」管理，不属于插件。
+- **预设 CLI 插件**：如 OfficeCLI、ego lite，由插件页独立管理。使用该条目的安装说明或官方安装器，验证 binary 后在插件页启用；`plugin_import` 不负责安装这些 CLI，也不要自行伪造 `meta.json` 来启用。安装器可能将技能写进共享 `~/.agents/skills`，这是特定安装器行为，不是所有技能的默认路径。Cua Driver 由设置里的「电脑操控」管理，不属于插件；启用后通过 `cua-driver` Skill + CLI 使用，不注册 MCP。
 - **连接器/托管 app**：需要自己的服务和认证。OpenAI 平台 app ID 不等于 Kivio 可连接的 MCP endpoint；不能从 manifest 凭空恢复托管认证。只有标准 MCP 地址或服务配置时才走 MCP 流程。
 
 ## 通用包操作

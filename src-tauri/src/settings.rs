@@ -1949,6 +1949,9 @@ pub struct Settings {
     pub ui_font_mono: String,
     #[serde(default = "default_target_lang")]
     pub target_lang: String,
+    /// 阅读目标语言：划词、截图与替换翻译共用；缺失时从旧目标语言迁移。
+    #[serde(default)]
+    pub reading_target_lang: String,
     #[serde(default = "default_true")]
     pub auto_paste: bool,
     #[serde(default = "default_false")]
@@ -2175,6 +2178,7 @@ impl Default for Settings {
             ui_font_family: String::new(),
             ui_font_mono: String::new(),
             target_lang: "auto".to_string(),
+            reading_target_lang: "zh".to_string(),
             auto_paste: true,
             launch_at_startup: false,
             launch_minimized_to_tray: false,
@@ -2356,6 +2360,20 @@ fn mirror_explicit_chat_default_for_persistence(settings: &mut Settings) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
+    // 旧的自动中英互译只属于输入翻译；阅读翻译始终有一个明确目标。
+    let reading = settings.reading_target_lang.trim();
+    let reading = if reading.is_empty() {
+        settings.target_lang.trim()
+    } else {
+        reading
+    };
+    settings.reading_target_lang = match reading {
+        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "it" | "ru" | "ar" | "hi"
+        | "th" | "vi" | "id" | "ms" | "tr" | "nl" | "pl" | "uk" | "sv" | "da" | "no" | "fi" => {
+            reading.to_string()
+        }
+        _ => "zh".to_string(),
+    };
     let token = settings.chat_tools.playwright_extension_token.trim();
     let token = token.strip_prefix("export ").unwrap_or(token).trim();
     let token = token
@@ -3029,26 +3047,34 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     }
     // Persist only the new single-directory setting after legacy migration.
     settings.chat_tools.native_tools.workspace_roots.clear();
-    let mut migrated_legacy_cua = false;
+    // Cua now runs through its Skill + CLI. Retire only Kivio-managed MCP
+    // entries; preserve the user's disabled state and unrelated MCP servers.
+    let mut cua_enabled = None;
+    settings.chat_tools.servers.retain(|server| {
+        let managed_cua = crate::computer_control::is_cua_mcp_server_id(server.id.trim())
+            || matches!(
+                server.connector_id.as_deref().map(str::trim),
+                Some("computer-control:cua" | "plugin:cua-driver")
+            );
+        if managed_cua {
+            cua_enabled = Some(cua_enabled.unwrap_or(false) || server.enabled);
+        }
+        !managed_cua
+    });
+    if cua_enabled == Some(false)
+        && !settings
+            .chat_tools
+            .disabled_skill_ids
+            .iter()
+            .any(|id| id == "cua-driver")
+    {
+        settings
+            .chat_tools
+            .disabled_skill_ids
+            .push("cua-driver".to_string());
+    }
     for server in &mut settings.chat_tools.servers {
         server.id = server.id.trim().to_string();
-        let is_legacy_cua = server.id == crate::computer_control::LEGACY_CUA_MCP_SERVER_ID
-            || server.connector_id.as_deref().is_some_and(|id| {
-                id.trim() == crate::computer_control::LEGACY_CUA_MCP_CONNECTOR_ID
-            });
-        if is_legacy_cua {
-            migrated_legacy_cua = true;
-            server.id = crate::computer_control::CUA_MCP_SERVER_ID.to_string();
-            server.name = "Cua Driver".to_string();
-            server.connector_id = None;
-            server.transport = "stdio".to_string();
-            if server.command.trim().is_empty() {
-                server.command = "cua-driver".to_string();
-            }
-            if server.args.is_empty() {
-                server.args = vec!["mcp".to_string()];
-            }
-        }
         if server.id.is_empty() {
             server.id = format!("mcp-{}", uuid::Uuid::new_v4());
         }
@@ -3124,24 +3150,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         .chat_tools
         .servers
         .retain(|server| seen_server_ids.insert(server.id.clone()));
-    if migrated_legacy_cua {
-        let enabled = settings
-            .chat_tools
-            .servers
-            .iter()
-            .find(|server| server.id == crate::computer_control::CUA_MCP_SERVER_ID)
-            .is_some_and(|server| server.enabled);
-        settings
-            .chat_tools
-            .disabled_skill_ids
-            .retain(|id| id != "cua-driver");
-        if !enabled {
-            settings
-                .chat_tools
-                .disabled_skill_ids
-                .push("cua-driver".to_string());
-        }
-    }
 
     // 清理归档目录路径（去除首尾空白）
     settings.image_archive_path = settings.image_archive_path.trim().to_string();
@@ -3863,6 +3871,33 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::state::test_app_state;
+
+    #[test]
+    fn reading_translation_language_migrates_once_and_stays_independent() {
+        for (legacy, expected, prompt_language) in [
+            ("auto", "zh", "Simplified Chinese"),
+            ("ja", "ja", "Japanese"),
+            ("zh-Hant", "zh-Hant", "Traditional Chinese"),
+            ("es", "es", "Spanish"),
+            ("ar", "ar", "Arabic"),
+            ("th", "th", "Thai"),
+        ] {
+            let old: Settings =
+                serde_json::from_value(serde_json::json!({"targetLang": legacy})).unwrap();
+            let migrated = sanitize_settings(old);
+            let mut saved = serde_json::to_value(migrated).unwrap();
+            assert_eq!(saved["readingTargetLang"], expected);
+            saved["targetLang"] = serde_json::json!("ko");
+            let reopened = sanitize_settings(serde_json::from_value(saved).unwrap());
+            assert_eq!(
+                crate::utils::language_name(&reopened.reading_target_lang),
+                prompt_language
+            );
+            let saved = serde_json::to_value(reopened).unwrap();
+            assert_eq!(saved["readingTargetLang"], expected);
+            assert_eq!(saved["targetLang"], "ko");
+        }
+    }
 
     #[test]
     fn mixer_roles_migrate_legacy_selection_once_and_keep_effort_with_model() {
@@ -5503,57 +5538,51 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_settings_moves_cua_mcp_out_of_plugins() {
-        let mut s = Settings::default();
-        s.chat_tools.servers.push(ChatMcpServer {
-            id: "plugin-cua-driver".to_string(),
-            name: "Cua Driver (插件)".to_string(),
-            enabled: true,
-            transport: "stdio".to_string(),
-            command: "cua-driver".to_string(),
-            args: vec!["mcp".to_string()],
-            connector_id: Some("plugin:cua-driver".to_string()),
-            ..Default::default()
-        });
-
-        let s = sanitize_settings(s);
-        let server = &s.chat_tools.servers[0];
-        assert_eq!(server.id, "computer-control-cua-driver");
-        assert_eq!(server.name, "Cua Driver");
-        assert_eq!(server.connector_id, None);
-        assert_eq!(server.args, vec!["mcp".to_string()]);
-        assert!(server.enabled);
-        assert!(!s
-            .chat_tools
-            .disabled_skill_ids
-            .contains(&"cua-driver".to_string()));
-    }
-
-    #[test]
-    fn sanitize_settings_keeps_disabled_legacy_cua_disabled() {
-        let mut s = Settings::default();
-        s.chat_tools.servers.push(ChatMcpServer {
-            id: "plugin-cua-driver".to_string(),
-            name: "Cua Driver (插件)".to_string(),
-            enabled: false,
-            transport: "stdio".to_string(),
-            command: "cua-driver".to_string(),
-            args: vec!["mcp".to_string()],
-            connector_id: Some("plugin:cua-driver".to_string()),
-            ..Default::default()
-        });
-
-        let s = sanitize_settings(s);
-
-        assert_eq!(
-            s.chat_tools.servers[0].id,
-            crate::computer_control::CUA_MCP_SERVER_ID
-        );
-        assert!(!s.chat_tools.servers[0].enabled);
-        assert!(s
-            .chat_tools
-            .disabled_skill_ids
-            .contains(&"cua-driver".to_string()));
+    fn sanitize_settings_retires_cua_mcp_and_preserves_skill_choice() {
+        for (id, connector) in [
+            ("plugin-cua-driver", None),
+            ("computer-control-cua-driver", None),
+            ("custom-id", Some("plugin:cua-driver")),
+            ("custom-id", Some("computer-control:cua")),
+        ] {
+            for enabled in [false, true] {
+                for skill_disabled in [false, true] {
+                    let mut s = Settings::default();
+                    if skill_disabled {
+                        s.chat_tools
+                            .disabled_skill_ids
+                            .push("cua-driver".to_string());
+                    }
+                    s.chat_tools.servers = vec![
+                        ChatMcpServer {
+                            id: id.to_string(),
+                            enabled,
+                            connector_id: connector.map(str::to_string),
+                            command: "cua-driver".to_string(),
+                            args: vec!["mcp".to_string()],
+                            ..Default::default()
+                        },
+                        ChatMcpServer {
+                            id: "other".to_string(),
+                            ..Default::default()
+                        },
+                    ];
+                    let s = sanitize_settings(s);
+                    assert_eq!(s.chat_tools.servers.len(), 1);
+                    assert_eq!(s.chat_tools.servers[0].id, "other");
+                    assert_eq!(
+                        s.chat_tools
+                            .disabled_skill_ids
+                            .contains(&"cua-driver".to_string()),
+                        skill_disabled || !enabled
+                    );
+                    let saved = serde_json::to_value(&s).unwrap();
+                    let reopened =
+                        sanitize_settings(serde_json::from_value(saved.clone()).unwrap());
+                    assert_eq!(serde_json::to_value(reopened).unwrap(), saved);
+                }
+            }
+        }
     }
 
     #[test]

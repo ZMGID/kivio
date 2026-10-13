@@ -2,7 +2,7 @@
 use std::{path::Path, process::Stdio, time::Duration};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::AppHandle;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     sync::Mutex,
@@ -14,14 +14,9 @@ static INSTALL_LOCK: Mutex<()> = Mutex::const_new(());
 
 pub(crate) const CUA_MCP_SERVER_ID: &str = "computer-control-cua-driver";
 pub(crate) const LEGACY_CUA_MCP_SERVER_ID: &str = "plugin-cua-driver";
-pub(crate) const LEGACY_CUA_MCP_CONNECTOR_ID: &str = "plugin:cua-driver";
 
 pub(crate) fn is_cua_mcp_server_id(id: &str) -> bool {
     id == CUA_MCP_SERVER_ID || id == LEGACY_CUA_MCP_SERVER_ID
-}
-
-pub(crate) fn mcp_server_ids_equivalent(left: &str, right: &str) -> bool {
-    left == right || (is_cua_mcp_server_id(left) && is_cua_mcp_server_id(right))
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -269,7 +264,6 @@ pub async fn computer_control_install(
 #[tauri::command]
 pub async fn computer_control_update(
     app: AppHandle,
-    state: State<'_, crate::state::AppState>,
     tool: ControlTool,
 ) -> Result<SkillMeta, String> {
     let _guard = INSTALL_LOCK
@@ -283,10 +277,7 @@ pub async fn computer_control_update(
         .to_path_buf();
     let source = match tool {
         ControlTool::Cua => {
-            // Cua's MCP server is part of the driver binary. Update the binary first,
-            // then refresh its separately versioned official Skill pack.
-            state.mcp_disconnect_server(CUA_MCP_SERVER_ID).await;
-            state.mcp_disconnect_server(LEGACY_CUA_MCP_SERVER_ID).await;
+            // Update the CLI and its separately versioned official Skill pack.
             let update_result =
                 run("cua-driver", &["update", "--apply", "--json"], None, 300).await;
             crate::path_env::refresh_path_now();

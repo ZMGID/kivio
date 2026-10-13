@@ -11,7 +11,7 @@ pub fn load_assistant_index(app: &AppHandle) -> Result<ChatAssistantIndex, Strin
     let mut index: ChatAssistantIndex =
         serde_json::from_str(&content).map_err(|e| format!("parse assistants file: {e}"))?;
     for assistant in &mut index.assistants {
-        canonicalize_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
+        retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     }
     Ok(index)
 }
@@ -433,19 +433,16 @@ fn normalize_assistant(assistant: &mut ChatAssistant) -> Result<(), String> {
     assistant.provider_id = assistant.provider_id.trim().to_string();
     assistant.model = assistant.model.trim().to_string();
     assistant.mcp_server_ids = normalize_string_list(&assistant.mcp_server_ids, 64, 200);
-    canonicalize_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
+    retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     assistant.skill_ids = normalize_string_list(&assistant.skill_ids, 64, 200);
     Ok(())
 }
 
-pub(super) fn canonicalize_cua_mcp_server_ids(ids: &mut Vec<String>) {
-    for id in ids.iter_mut() {
-        if id.trim() == crate::computer_control::LEGACY_CUA_MCP_SERVER_ID {
-            *id = crate::computer_control::CUA_MCP_SERVER_ID.to_string();
-        }
-    }
+pub(super) fn retire_cua_mcp_server_ids(ids: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::new();
-    ids.retain(|id| seen.insert(id.clone()));
+    ids.retain(|id| {
+        !crate::computer_control::is_cua_mcp_server_id(id.trim()) && seen.insert(id.clone())
+    });
 }
 
 fn normalize_assistant_source(source: &str, built_in: bool) -> String {

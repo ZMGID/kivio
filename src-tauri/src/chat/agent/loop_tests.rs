@@ -510,6 +510,8 @@ impl ToolExecutor for CancelAfterToolExecutor {
 /// Responses are served in connection-accept order; each response closes (or
 /// deliberately breaks) its connection so reqwest opens a fresh one per request.
 enum MockResponse {
+    /// Evaluate the actual HTTP request instead of assuming a request sequence.
+    ForRequest(Box<dyn FnOnce(&str) -> MockResponse + Send>),
     /// SSE stream; each entry becomes one `data: <entry>` event.
     ///
     /// 没有「完整 JSON 响应」这个变体：所有模型调用都走流式线（见
@@ -546,15 +548,20 @@ impl MockModelServer {
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .ok();
-                match read_http_request(&mut stream) {
+                let response = match read_http_request(&mut stream) {
                     Ok(body) => {
+                        let response = match response {
+                            MockResponse::ForRequest(respond) => respond(&body),
+                            response => response,
+                        };
                         captured_for_thread
                             .lock()
                             .unwrap_or_else(|err| err.into_inner())
                             .push(body);
+                        response
                     }
                     Err(_) => continue,
-                }
+                };
                 serve_mock_response(stream, response);
             }
         });
@@ -562,6 +569,16 @@ impl MockModelServer {
             base_url: format!("http://{addr}/v1"),
             captured_bodies,
         }
+    }
+
+    fn summary_after_rejection(first: MockResponse, summary: &str) -> Self {
+        let mut responses = vec![first];
+        responses.extend(
+            (0..16).map(|_| {
+                MockResponse::Sse(vec![long_summary_sse_tagged(summary), "[DONE]".into()])
+            }),
+        );
+        Self::start(responses)
     }
 
     fn captured_bodies(&self) -> Vec<String> {
@@ -614,6 +631,7 @@ fn sse_body(events: &[String]) -> String {
 
 fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
     match response {
+        MockResponse::ForRequest(_) => unreachable!("request handler resolved before serving"),
         MockResponse::DropBeforeHeaders => {
             let _ = stream.shutdown(std::net::Shutdown::Both);
         }
@@ -2398,6 +2416,7 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     // Old history exceeds the proportional budget; the retained tail fits.
     config.provider.model_overrides.insert(
         "test-model".to_string(),
@@ -2502,6 +2521,7 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
@@ -3160,6 +3180,7 @@ async fn run_loop_rejects_compaction_when_retained_images_exceed_request_budget(
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     config.provider.model_overrides.insert(
         "test-model".into(),
         crate::settings::ModelInfo {
@@ -3197,13 +3218,14 @@ async fn run_loop_rejects_compaction_when_retained_images_exceed_request_budget(
         vec!["started", "failed"]
     );
     let bodies = server.captured_bodies();
-    assert_eq!(bodies.len(), 2);
-    assert!(bodies[0].contains("context summarization assistant"));
-    assert!(
-        bodies[1].contains("OLD_HISTORY"),
-        "rejected compaction must preserve the original history"
+    assert_eq!(
+        bodies.len(),
+        1,
+        "unsafe original history must not reach planning"
     );
-    assert!(bodies[1].contains("image-99.png"));
+    assert!(bodies[0].contains("context summarization assistant"));
+    assert!(result.compaction_summary.is_none());
+    assert_eq!(result.stream_outcome, "compaction_blocked");
 }
 
 #[tokio::test]
@@ -3222,6 +3244,7 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     // Original history exceeds the budget; the summary and recent groups fit.
     config.provider.model_overrides.insert(
         "test-model".to_string(),
@@ -3315,6 +3338,7 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
@@ -3393,13 +3417,29 @@ fn final_answer_sse(text: &str) -> MockResponse {
     ])
 }
 
-/// Old history exceeds the window; recent complete groups fit after summarization.
+/// Fixtures testing replay/streaming/failure policy use a summary model that can
+/// admit their historical request. Oversized-summary behavior has request-aware
+/// issue #62 coverage below, rather than a scripted successful oversized response.
+fn use_large_summary_model(config: &mut AgentRunConfig<'_>) {
+    config.settings.default_models.compression.provider_id = config.provider.id.clone();
+    config.settings.default_models.compression.model = "summary-model".into();
+    config.provider.model_overrides.insert(
+        "summary-model".into(),
+        crate::settings::ModelInfo {
+            context_window: Some(200_000),
+            max_output: Some(16_384),
+            ..Default::default()
+        },
+    );
+}
+
+/// Old history exceeds the auto threshold, but fits the model hard input limit.
 fn over_budget_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
     let mut config = test_run_config(state, base_url);
     config.provider.model_overrides.insert(
         "test-model".to_string(),
         crate::settings::ModelInfo {
-            context_window: Some(17_000),
+            context_window: Some(32_000),
             ..Default::default()
         },
     );
@@ -3411,6 +3451,7 @@ fn over_budget_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig
         serde_json::json!({ "role": "assistant", "content": "previous answer" }),
         serde_json::json!({ "role": "user", "content": "请读取文件" }),
     ];
+    use_large_summary_model(&mut config);
     config
 }
 
@@ -5007,14 +5048,11 @@ async fn live_deepseek_subagent_scenarios() {
 }
 
 #[tokio::test]
-async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
-    let server = MockModelServer::start(vec![
+async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
+    let server = MockModelServer::summary_after_rejection(
         MockResponse::Status(400, "maximum context length exceeded".into()),
-        MockResponse::Sse(vec![
-            long_summary_sse_tagged("historical task state"),
-            "[DONE]".into(),
-        ]),
-    ]);
+        "historical task state",
+    );
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
     let messages = vec![
@@ -5046,8 +5084,8 @@ async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
     };
     let text = serde_json::to_string(&history).unwrap();
     assert!(
-        text.contains("older completed work"),
-        "overflow moves more recent groups to preserved history"
+        !text.contains("older completed work"),
+        "overflow must not grow the retained tail"
     );
     assert!(text.contains("full tool result"));
     assert_eq!(
@@ -5056,9 +5094,11 @@ async fn zcode_summary_preserves_tool_round_and_reselects_on_overflow() {
         "call and result remain paired"
     );
     let bodies = server.captured_bodies();
-    assert_eq!(bodies.len(), 2);
+    assert!((3..=17).contains(&bodies.len()));
     assert!(bodies[0].contains("older completed work"));
-    assert!(!bodies[1].contains("older completed work"));
+    assert!(bodies[1..]
+        .iter()
+        .any(|body| body.contains("older completed work")));
     assert!(!bodies[0].contains("full tool result"));
 }
 
@@ -5316,13 +5356,13 @@ async fn zcode_summary_retries_without_tools_when_provider_rejects_them() {
 }
 
 /// Both manual and automatic overflow retries retain the oldest facts in the
-/// summary request, moving recent complete groups into the verbatim tail.
+/// accepted summary batches, without shifting oversized groups into the tail.
 #[tokio::test]
 async fn manual_overflow_never_discards_oldest_history() {
-    let server = MockModelServer::start(vec![
+    let server = MockModelServer::summary_after_rejection(
         MockResponse::Status(400, "maximum context length exceeded".into()),
-        MockResponse::Sse(vec![long_summary_sse_tagged("handoff"), "[DONE]".into()]),
-    ]);
+        "handoff",
+    );
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
     let outcome = crate::chat::agent::compaction::summarize_history(
@@ -5343,25 +5383,27 @@ async fn manual_overflow_never_discards_oldest_history() {
         panic!("summary retry must succeed");
     };
     let bodies = server.captured_bodies();
-    assert!(bodies.iter().all(|body| body.contains("oldest request")));
+    assert!(bodies[1..]
+        .iter()
+        .any(|body| body.contains("oldest request")));
     assert!(bodies[0].contains("middle work"));
-    assert!(!bodies[1].contains("middle work"));
-    assert!(history.iter().any(|m| m["content"]
+    assert!(bodies[1..].iter().any(|body| body.contains("middle work")));
+    assert!(!history.iter().any(|m| m["content"]
         .as_str()
         .is_some_and(|s| s.starts_with("middle work"))));
 }
 
 /// GLM-style providers end an overlong summary request with an empty `length` finish;
-/// like ZCode that is overflow pressure, retried with more history preserved.
+/// that is overflow pressure, retried through bounded history folding.
 #[tokio::test]
 async fn zcode_empty_length_summary_is_treated_as_overflow() {
-    let server = MockModelServer::start(vec![
+    let server = MockModelServer::summary_after_rejection(
         MockResponse::Sse(vec![
             r#"{"choices":[{"delta":{"content":""},"finish_reason":"length"}]}"#.into(),
             "[DONE]".into(),
         ]),
-        MockResponse::Sse(vec![long_summary_sse_tagged("handoff"), "[DONE]".into()]),
-    ]);
+        "handoff",
+    );
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
     let mut history = tool_round_history();
@@ -5384,12 +5426,12 @@ async fn zcode_empty_length_summary_is_treated_as_overflow() {
     )
     .await;
     let crate::chat::agent::compaction::CompactOutcome::Compacted(compacted, _) = outcome else {
-        panic!("empty length finish should reselect and retry");
+        panic!("empty length finish should fold and retry");
     };
     assert!(serde_json::to_string(&compacted)
         .unwrap()
         .contains("latest work"));
-    assert_eq!(server.captured_bodies().len(), 2);
+    assert!((3..=17).contains(&server.captured_bodies().len()));
 }
 
 #[tokio::test]
@@ -5404,10 +5446,10 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
         " CONTEXT_EXCEEDED ",
     ] {
         for preserve_recent in [true, false] {
-            let server = MockModelServer::start(vec![
+            let server = MockModelServer::summary_after_rejection(
                 MockResponse::Sse(vec![serde_json::json!({"choices":[{"delta":{"content":"<summary>UNSAFE_PARTIAL</summary>"},"finish_reason":reason}]}).to_string(), "[DONE]".into()]),
-                MockResponse::Sse(vec![long_summary_sse_tagged("SAFE_RETRY_SUMMARY"), "[DONE]".into()]),
-            ]);
+                "SAFE_RETRY_SUMMARY",
+            );
             let state = test_app_state();
             let config = test_run_config(&state, &server.base_url);
             let messages = vec![
@@ -5448,11 +5490,9 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
                 .contains("UNSAFE_PARTIAL"));
             assert_eq!(messages, original);
             let bodies = server.captured_bodies();
-            assert_eq!(bodies.len(), 2);
+            assert!((3..=17).contains(&bodies.len()));
             assert!(bodies[1].len() < bodies[0].len());
-            assert!(serde_json::to_string(&history)
-                .unwrap()
-                .contains("middle work"));
+            assert!(bodies[1..].iter().any(|body| body.contains("middle work")));
             assert!(bodies[1].contains("oldest request"));
         }
     }
@@ -5723,6 +5763,7 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    use_large_summary_model(&mut config);
     config
         .provider
         .model_overrides
@@ -5737,11 +5778,14 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
     let result = run_agent_loop(config, &host, &RecordingExecutor::default())
         .await
         .unwrap();
-    assert_eq!(result.content, "original history retained");
+    assert_eq!(result.stream_outcome, "compaction_blocked");
     assert!(result.compaction_summary.is_none());
-    let sent = &server.captured_bodies()[1];
-    assert!(sent.contains("oldest request"));
-    assert!(!sent.contains("REJECTED_SUMMARY"));
+    assert!(result.compacted_history.is_none());
+    assert_eq!(
+        server.captured_bodies().len(),
+        1,
+        "rejected compaction must not dispatch the oversized original history"
+    );
     assert_eq!(host.auto_compact_failures("conversation"), 1);
 }
 
@@ -5813,4 +5857,549 @@ async fn text_only_summary_model_does_not_strip_retained_recent_images() {
     let request = &server.captured_bodies()[0];
     assert!(request.contains("old image observation"));
     assert!(!request.contains("T0xEX0lNQUdF"));
+}
+
+/// The gateway rejects actual oversized inputs, including summary calls. This
+/// catches the issue #62 dead end hidden by sequence-only successful summaries.
+async fn assert_oversized_history_recovers(
+    gateway_error: &'static str,
+    oversized_tool: bool,
+    underestimated_window: bool,
+) {
+    const MAX_REQUEST_BYTES: usize = 50_000;
+    const MAX_REQUESTS: usize = 32;
+    let server = MockModelServer::start(
+        (0..MAX_REQUESTS)
+            .map(|_| {
+                MockResponse::ForRequest(Box::new(move |body| {
+                    if body.len() > MAX_REQUEST_BYTES {
+                        MockResponse::Status(
+                            400,
+                            serde_json::json!({
+                                "error": { "message": gateway_error }
+                            })
+                            .to_string(),
+                        )
+                    } else {
+                        let request: Value = serde_json::from_str(body).unwrap();
+                        if request["model"] == "summary-model" {
+                            MockResponse::Sse(vec![
+                                long_summary_sse_tagged("RECOVERED_HISTORY"),
+                                "[DONE]".into(),
+                            ])
+                        } else {
+                            final_answer_sse("continued current question")
+                        }
+                    }
+                }))
+            })
+            .collect(),
+    );
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    for model in ["test-model", "summary-model"] {
+        config.provider.model_overrides.insert(
+            model.into(),
+            crate::settings::ModelInfo {
+                context_window: Some(if oversized_tool && model == "test-model" {
+                    64_000
+                } else {
+                    32_000
+                }),
+                max_output: Some(1_024),
+                ..Default::default()
+            },
+        );
+    }
+    config.settings.default_models.compression.provider_id = config.provider.id.clone();
+    config.settings.default_models.compression.model = "summary-model".into();
+    config.tools.clear();
+    config.runtime_messages = vec![serde_json::json!({"role":"system", "content":"system prompt"})];
+    for index in 0..10 {
+        config.runtime_messages.push(serde_json::json!({
+            "role":"user", "content":format!("archived question {index}")
+        }));
+        config.runtime_messages.push(serde_json::json!({
+            "role":"assistant", "content":"diagnostic observation ".repeat(1_000)
+        }));
+    }
+    if underestimated_window {
+        config
+            .provider
+            .model_overrides
+            .get_mut("summary-model")
+            .unwrap()
+            .context_window = Some(200_000);
+        config.runtime_messages = vec![
+            serde_json::json!({"role":"system", "content":"system prompt"}),
+            serde_json::json!({"role":"user", "content":"oldest request"}),
+            serde_json::json!({"role":"assistant", "content":"old observation ".repeat(6_000)}),
+            serde_json::json!({"role":"user", "content":"next request"}),
+            serde_json::json!({"role":"assistant", "content":"more observation ".repeat(6_000)}),
+            serde_json::json!({"role":"assistant", "content":"latest short answer"}),
+        ];
+    }
+    if oversized_tool {
+        config.runtime_messages.truncate(1);
+        config.runtime_messages.extend([
+            serde_json::json!({"role":"user", "content":"inspect historical file"}),
+            serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+                "id":"large_tool", "type":"function", "function":{"name":"read", "arguments":
+                    serde_json::json!({"path":"𐐷".repeat(20_000)}).to_string()}
+            }]}),
+            serde_json::json!({"role":"tool", "tool_call_id":"large_tool", "content":"界".repeat(40_000)}),
+            serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+                "id":"retained_tool", "type":"function", "function":{"name":"read", "arguments":"{}"}
+            }]}),
+            serde_json::json!({"role":"tool", "tool_call_id":"retained_tool", "content":"retained result"}),
+        ]);
+    }
+    config
+        .runtime_messages
+        .push(serde_json::json!({"role":"user", "content":"current question"}));
+    for (index, message) in config.runtime_messages.iter_mut().enumerate().skip(1) {
+        message[compaction::UI_MESSAGE_ID_KEY] = Value::String(format!("history-{index}"));
+    }
+    let original_runtime = config.runtime_messages.clone();
+    let host = TestHost::default();
+    let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await;
+    let bodies = server.captured_bodies();
+    let sizes: Vec<_> = bodies.iter().map(String::len).collect();
+    let oversized_summaries = bodies
+        .iter()
+        .filter(|body| body.len() > MAX_REQUEST_BYTES && body.contains("summary-model"))
+        .count();
+    eprintln!("issue #62 gateway={gateway_error}; request bytes={sizes:?}; oversized summaries={oversized_summaries}; phases={:?}", host.compaction_phases.lock().unwrap());
+    let result = result.expect("bounded compaction must recover the current question");
+    assert_eq!(
+        result.content, "continued current question",
+        "oversized history must recover; request sizes={sizes:?}; outcome={}",
+        result.stream_outcome
+    );
+    assert_eq!(result.stream_outcome, "completed");
+    assert!(
+        result.compacted_history.is_some(),
+        "recovery must return the context for subsequent turns"
+    );
+    let saved = result
+        .compaction_summary
+        .as_ref()
+        .expect("UI-mapped history must produce a real checkpoint");
+    assert_eq!(
+        saved.source_until_message_id,
+        format!("history-{}", original_runtime.len() - 1)
+    );
+    let replay = saved
+        .replay
+        .as_ref()
+        .expect("checkpoint must carry its exact retained tail");
+    assert_eq!(replay.through_message_id, "message");
+    assert_eq!(
+        replay.messages,
+        compaction::replacement_body(result.compacted_history.as_ref().unwrap())
+    );
+    if !oversized_tool {
+        // Use the actual run-produced checkpoint with original UI history. This
+        // is the persisted Conversation representation consumed by real replay,
+        // not a hand-built replacement summary that could hide a handoff bug.
+        let mut ui_messages: Vec<Value> = original_runtime
+            .iter()
+            .skip(1)
+            .map(|message| {
+                serde_json::json!({
+                    "id":message[compaction::UI_MESSAGE_ID_KEY], "role":message["role"],
+                    "content":message["content"], "timestamp":0
+                })
+            })
+            .collect();
+        ui_messages.push(serde_json::json!({"id":"message", "role":"assistant",
+            "content":result.content, "api_messages":result.api_messages, "timestamp":1}));
+        let conversation: crate::chat::types::Conversation = serde_json::from_value(serde_json::json!({
+            "id":"conversation", "title":"regression", "provider_id":"test-provider", "model":"test-model",
+            "created_at":0,"updated_at":1,"messages":ui_messages,"context_state":{"summary":saved}
+        })).unwrap();
+        let disk = serde_json::to_vec(&conversation).unwrap();
+        let mut restored: crate::chat::types::Conversation = serde_json::from_slice(&disk).unwrap();
+        assert_eq!(
+            restored.messages.len(),
+            original_runtime.len(),
+            "raw UI history remains stored"
+        );
+        assert_eq!(
+            restored.messages[1].content,
+            original_runtime[2]["content"].as_str().unwrap()
+        );
+        restored.messages.push(
+            serde_json::from_value(serde_json::json!({
+                "id":"next", "role":"user", "content":"next question after reopening", "timestamp":2
+            }))
+            .unwrap(),
+        );
+        let replayed = crate::chat::commands::context::build_chat_api_messages(
+            None,
+            "fresh system",
+            &restored,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+        let text = serde_json::to_string(&replayed).unwrap();
+        assert_eq!(replayed[0]["content"], "fresh system");
+        assert_eq!(
+            replayed.last().unwrap()["content"],
+            "next question after reopening"
+        );
+        assert_eq!(text.matches("continued current question").count(), 1);
+        assert_eq!(text.matches("RECOVERED_HISTORY").count(), 1);
+        assert!(
+            text.len() < MAX_REQUEST_BYTES,
+            "reopened context must use the compacted tail"
+        );
+    }
+    assert!(bodies.len() < MAX_REQUESTS, "recovery must be bounded");
+    for pair in bodies.windows(2) {
+        assert!(
+            pair[0].len() <= MAX_REQUEST_BYTES || pair[0] != pair[1],
+            "a rejected oversized request must not be retried unchanged"
+        );
+    }
+    let final_request: Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+    if oversized_tool {
+        let summaries = bodies
+            .iter()
+            .filter(|body| body.contains("summary-model"))
+            .cloned()
+            .collect::<String>();
+        assert_eq!(
+            summaries.chars().filter(|ch| *ch == '𐐷').count(),
+            20_000,
+            "every oversized tool argument span must reach the summary model exactly once"
+        );
+        assert_eq!(
+            summaries.chars().filter(|ch| *ch == '界').count(),
+            40_000,
+            "every oversized tool result span must reach the summary model exactly once"
+        );
+        let messages = final_request["messages"].as_array().unwrap();
+        assert!(messages
+            .iter()
+            .any(|message| message["tool_calls"][0]["id"] == "retained_tool"));
+        assert!(messages
+            .iter()
+            .any(|message| message["tool_call_id"] == "retained_tool"));
+        assert!(!bodies.last().unwrap().contains("large_tool"));
+    }
+    assert_eq!(final_request["model"], "test-model");
+    assert!(bodies.last().unwrap().contains("current question"));
+    assert!(bodies.last().unwrap().len() <= MAX_REQUEST_BYTES);
+}
+
+#[tokio::test]
+async fn run_loop_issue_62_generic_400_recovers_oversized_history() {
+    assert_oversized_history_recovers("rejected by an internal MaaS component", false, false).await;
+}
+
+#[tokio::test]
+async fn run_loop_issue_62_explicit_overflow_recovers_oversized_history() {
+    assert_oversized_history_recovers("maximum context length exceeded", false, false).await;
+}
+
+#[tokio::test]
+async fn run_loop_issue_62_large_unicode_tool_history_preserves_coverage_and_pairs() {
+    assert_oversized_history_recovers("rejected by an internal MaaS component", true, false).await;
+}
+
+/// An unrelated small-request 400 must surface once, without context recovery.
+#[tokio::test]
+async fn run_loop_issue_62_unrelated_400_is_not_context_overflow() {
+    let server = MockModelServer::start(vec![MockResponse::Status(
+        400,
+        r#"{"error":{"message":"invalid response_format"}}"#.into(),
+    )]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.clear();
+    let host = TestHost::default();
+    let error = run_agent_loop(config, &host, &RecordingExecutor::default())
+        .await
+        .err()
+        .unwrap();
+    assert!(error.contains("invalid response_format"));
+    assert_eq!(server.captured_bodies().len(), 1);
+    assert!(host.compaction_phases.lock().unwrap().is_empty());
+}
+
+/// An optional breaker cannot permanently disable mandatory hard-limit recovery.
+#[tokio::test]
+async fn issue_62_second_review_open_breaker_allows_bounded_recovery() {
+    for healthy in [true, false] {
+        let server = MockModelServer::start(if healthy {
+            vec![
+                MockResponse::Sse(vec![
+                    long_summary_sse_tagged("recovered history"),
+                    "[DONE]".into(),
+                ]),
+                final_answer_sse("resumed after provider recovered"),
+            ]
+        } else {
+            vec![summary_auth_failure()]
+        });
+        let state = test_app_state();
+        let mut config = over_budget_config(&state, &server.base_url);
+        config.runtime_messages[1]["content"] = Value::String("history ".repeat(40_000));
+        let host = TestHost::default();
+        *host.auto_compact_failures.lock().unwrap() = 3;
+        let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+            .await
+            .unwrap();
+        if healthy {
+            assert_eq!(result.content, "resumed after provider recovered");
+            assert_eq!(server.captured_bodies().len(), 2);
+            assert!(result.compacted_history.is_some());
+            assert_eq!(*host.auto_compact_failures.lock().unwrap(), 0);
+        } else {
+            assert_eq!(result.stream_outcome, "compaction_blocked");
+            assert_eq!(
+                server.captured_bodies().len(),
+                1,
+                "never send oversized original after recovery fails"
+            );
+            assert!(result.compacted_history.is_none());
+            assert!(
+                *host.auto_compact_failures.lock().unwrap() >= 3,
+                "failure must not reset the breaker"
+            );
+        }
+    }
+}
+
+/// Failure/cancellation after a completed batch cannot install partial coverage.
+#[tokio::test]
+async fn issue_62_incremental_summary_failure_or_cancel_preserves_original_history() {
+    for cancel_second_batch in [false, true] {
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(vec![
+                long_summary_sse_tagged("PARTIAL_ONLY"),
+                "[DONE]".into(),
+            ]),
+            if cancel_second_batch {
+                MockResponse::SseThenHang(vec![])
+            } else {
+                summary_auth_failure()
+            },
+        ]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.provider.model_overrides.insert(
+            config.model.clone(),
+            crate::settings::ModelInfo {
+                context_window: Some(32_000),
+                max_output: Some(1_024),
+                ..Default::default()
+            },
+        );
+        let messages = vec![
+            serde_json::json!({"role":"system", "content":"rules"}),
+            serde_json::json!({"role":"user", "content":"older data ".repeat(20_000)}),
+            serde_json::json!({"role":"assistant", "content":"latest answer"}),
+            serde_json::json!({"role":"user", "content":"current question"}),
+        ];
+        let before = messages.clone();
+        let captured = Arc::clone(&server.captured_bodies);
+        let cancellation: Option<super::super::provider_runtime::ProviderFuture<'_, ()>> =
+            cancel_second_batch.then(|| {
+                Box::pin(async move {
+                    loop {
+                        if captured.lock().unwrap().len() >= 2 {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                }) as super::super::provider_runtime::ProviderFuture<'_, ()>
+            });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(3),
+            compaction::summarize_history(
+                &state,
+                &config.provider,
+                &config.model,
+                &messages,
+                true,
+                &[],
+                1_024,
+                "conversation",
+                "message",
+                cancellation,
+                None,
+            ),
+        )
+        .await
+        .expect("cancellation and errors must stop promptly");
+        assert!(if cancel_second_batch {
+            matches!(outcome, compaction::CompactOutcome::Cancelled)
+        } else {
+            matches!(outcome, compaction::CompactOutcome::Failed)
+        });
+        assert_eq!(messages, before);
+        let bodies = server.captured_bodies();
+        assert_eq!(bodies.len(), 2);
+        assert!(
+            bodies[1].contains("PARTIAL_ONLY"),
+            "second batch must extend the completed summary"
+        );
+    }
+}
+
+#[tokio::test]
+async fn run_loop_issue_62_explicit_overflow_with_underestimated_window_recovers() {
+    assert_oversized_history_recovers("maximum context length exceeded", false, true).await;
+}
+
+/// The round-limit transition removes schemas from the real synthesis request.
+#[tokio::test]
+async fn issue_62_second_review_synthesis_budgets_only_sent_tools() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        final_answer_sse("valid no-tools synthesis"),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.provider.model_overrides.insert(
+        "test-model".into(),
+        crate::settings::ModelInfo {
+            context_window: Some(8_000),
+            ..Default::default()
+        },
+    );
+    config.tools[0].description = "S".repeat(18_000);
+    let host = TestHost::default();
+    *host.auto_compact_failures.lock().unwrap() = 3;
+    let result = run_agent_loop(config, &host, &HugeResultExecutor { chars: 12_000 })
+        .await
+        .unwrap();
+    assert_eq!(result.content, "valid no-tools synthesis");
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    let planning: Value = serde_json::from_str(&bodies[0]).unwrap();
+    let synthesis: Value = serde_json::from_str(&bodies[1]).unwrap();
+    assert!(planning.get("tools").is_some());
+    assert!(synthesis.get("tools").is_none());
+    assert!(
+        bodies[1].contains(&"A".repeat(12_000)),
+        "completed tool result survives synthesis"
+    );
+}
+
+async fn assert_fold_progress_with_legal_long_summaries(reject_index: Option<usize>) {
+    let mut responses = Vec::new();
+    responses.extend((0..32).map(|_| {
+        MockResponse::ForRequest(Box::new(|body| {
+            let request: Value = serde_json::from_str(body).unwrap();
+            let limit = request["max_tokens"].as_u64().unwrap() as usize;
+            // Complete, legal output close to the advertised allowance. CJK chars
+            // each cost one local token; tags also fit, and the provider stops normally.
+            final_answer_sse(&format!(
+                "<summary>{}</summary>",
+                "界".repeat(limit.saturating_sub(64).min(12_000))
+            ))
+        }))
+    }));
+    if let Some(index) = reject_index {
+        responses.insert(
+            index,
+            MockResponse::Status(400, "maximum context length exceeded".into()),
+        );
+    }
+    let server = MockModelServer::start(responses);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.provider.model_overrides.insert(
+        "test-model".into(),
+        crate::settings::ModelInfo {
+            context_window: Some(32_000),
+            max_output: Some(16_384),
+            ..Default::default()
+        },
+    );
+    let messages = vec![
+        serde_json::json!({"role":"system","content":"rules"}),
+        serde_json::json!({"role":"user","content":"x".repeat(200_000)}),
+        serde_json::json!({"role":"assistant","content":"latest"}),
+    ];
+    let before = messages.clone();
+    let outcome = compaction::summarize_history(
+        &state,
+        &config.provider,
+        &config.model,
+        &messages,
+        true,
+        &[],
+        16_384,
+        "conversation",
+        "message",
+        None,
+        None,
+    )
+    .await;
+    let bodies = server.captured_bodies();
+    eprintln!(
+        "legal summary output reject_index={reject_index:?}: requests={}, output_limits={:?}",
+        bodies.len(),
+        bodies
+            .iter()
+            .map(|body| serde_json::from_str::<Value>(body).unwrap()["max_tokens"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(outcome, compaction::CompactOutcome::Compacted(_, _)),
+        "valid completed summaries must leave room for further progress"
+    );
+    assert_eq!(messages, before);
+    assert!(bodies.len() > 1 && bodies.len() <= 32);
+    // Every successfully submitted source character must be covered, even when
+    // the first request is rejected and its source span is retried smaller.
+    let accepted: Vec<Value> = bodies
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != reject_index)
+        .map(|(_, body)| serde_json::from_str(body).unwrap())
+        .collect();
+    let source_count: usize = accepted
+        .iter()
+        .map(|request| {
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|message| message["content"].as_str())
+                .map(|text| text.matches("xxxx").count() * 4)
+                .sum::<usize>()
+        })
+        .sum();
+    // UTF-8 chunks can divide a run of x's; allow only the per-fragment remainder.
+    assert!(source_count >= 200_000 - 3 * accepted.len());
+    if let Some(index) = reject_index {
+        let rejected: Value = serde_json::from_str(&bodies[index]).unwrap();
+        let retry: Value = serde_json::from_str(&bodies[index + 1]).unwrap();
+        assert!(
+            retry["max_tokens"].as_u64().unwrap() < rejected["max_tokens"].as_u64().unwrap(),
+            "output allowance must track a reduced batch input budget"
+        );
+    }
+}
+
+#[tokio::test]
+async fn issue_62_second_review_legal_summary_output_leaves_next_batch_capacity() {
+    assert_fold_progress_with_legal_long_summaries(None).await;
+}
+
+#[tokio::test]
+async fn issue_62_second_review_legal_summary_output_tracks_shrunk_budget() {
+    assert_fold_progress_with_legal_long_summaries(Some(0)).await;
+}
+
+#[tokio::test]
+async fn issue_62_second_review_smaller_gateway_budget_with_existing_carry_restarts_safely() {
+    assert_fold_progress_with_legal_long_summaries(Some(1)).await;
 }
