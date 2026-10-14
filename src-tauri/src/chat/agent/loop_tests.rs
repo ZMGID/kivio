@@ -2061,7 +2061,7 @@ async fn http_backoff_reports_progress_without_restarting_the_run() {
         assert!(notes
             .iter()
             .flatten()
-            .any(|note| note.contains("请求重试 1/1")));
+            .any(|note| note.contains("retry 1/1")));
         assert_eq!(notes.last(), Some(&None));
     }
 }

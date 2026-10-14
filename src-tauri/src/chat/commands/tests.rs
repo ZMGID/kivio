@@ -178,8 +178,9 @@ fn video_analysis_tool_is_available_in_chat_and_plan_without_extra_approval() {
 #[test]
 fn resolve_thinking_drops_level_for_models_without_effort_knob() {
     // 模型库里 `reasoningEfforts: []` = 没有思考深度旋钮。
+    // 2026-10-13.3 catalog 已剪掉 claude-3.5-haiku；改用仍带显式空列表的 glm-4.7。
     assert_eq!(
-        resolve_thinking(Some("high"), true, None, "claude-3.5-haiku").unwrap(),
+        resolve_thinking(Some("high"), true, None, "glm-4.7").unwrap(),
         (true, None)
     );
     // Claude 4：UI 档位会下发（适配器再映射成 budget_tokens / adaptive+effort）。
