@@ -253,6 +253,15 @@ mod anonymous_http_tests {
         provider: &ModelProvider,
         stream: bool,
     ) -> Result<GenerateOutput, ModelError> {
+        call_with_retries(state, provider, stream, 1).await
+    }
+
+    async fn call_with_retries(
+        state: &crate::state::AppState,
+        provider: &ModelProvider,
+        stream: bool,
+        retry_attempts: usize,
+    ) -> Result<GenerateOutput, ModelError> {
         let request = GenerateRequest {
             model: "local-model".into(),
             system: String::new(),
@@ -269,9 +278,16 @@ mod anonymous_http_tests {
         }
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             if stream {
-                stream_with_chat_provider(state, provider, 1, request, &mut DiscardSink).await
+                stream_with_chat_provider(
+                    state,
+                    provider,
+                    retry_attempts,
+                    request,
+                    &mut DiscardSink,
+                )
+                .await
             } else {
-                generate_with_chat_provider(state, provider, 1, request).await
+                generate_with_chat_provider(state, provider, retry_attempts, request).await
             }
         })
         .await
@@ -708,8 +724,13 @@ mod anonymous_http_tests {
             .await;
             let provider = provider(format, url, vec!["invalid-key".into(), "valid-key".into()]);
             let state = crate::state::test_app_state();
+            // Unified RetryBudget counts key switches as retries; attempts=1 cannot
+            // leave room to try the backup key after a 401.
             assert_eq!(
-                call(&state, &provider, false).await.unwrap().text,
+                call_with_retries(&state, &provider, false, 2)
+                    .await
+                    .unwrap()
+                    .text,
                 "anonymous ok"
             );
             let captured = server.await.unwrap();
