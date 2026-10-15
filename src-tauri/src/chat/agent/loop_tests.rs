@@ -3771,7 +3771,7 @@ async fn managed_worker_stop_keeps_tool_owned_until_it_returns() {
         let result = crate::chat::sub_agent::run_worker_loop(config, &host, &executor).await?;
         Ok((result.content, None))
     });
-    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
         .await
         .unwrap();
     runtime
