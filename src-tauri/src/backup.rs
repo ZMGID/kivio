@@ -789,7 +789,7 @@ mod tests {
                 restored_workspace
                     .join("file.txt")
                     .to_string_lossy()
-                    .as_ref()
+                    .replace('\\', "/")
             );
             assert_eq!(
                 read_json(&dest.join("scheduled_tasks/tasks.json")).unwrap()[0]["enabled"],
