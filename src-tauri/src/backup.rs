@@ -372,6 +372,27 @@ fn rewrite_paths(value: &mut Value, mappings: &[(String, String)], key: &str) {
     }
 }
 
+/// Only application-owned records may be rewritten. Attachments, project files,
+/// plugin content and native CLI history are opaque, even when named *.json.
+/// The flag identifies records whose execution switches must be disabled on import.
+fn restore_metadata_policy(relative: &Path) -> Option<bool> {
+    let parts: Vec<_> = relative.iter().map(|part| part.to_str()).collect();
+    match parts.as_slice() {
+        [Some("settings.json")] => Some(false),
+        [Some("conversations" | "lens-history"), Some(file)] if file.ends_with(".json") => {
+            Some(false)
+        }
+        [Some("artifacts"), Some("records"), Some(file)] if file.ends_with(".json") => Some(false),
+        [Some("media-station"), Some(_), Some("job.json")] => Some(false),
+        [Some("plugins"), Some(_), Some("meta.json")]
+        | [Some("plugins"), Some("packages"), Some(_), Some("record.json")]
+        | [Some("plugins"), Some("workflow-hooks.json")]
+        | [Some("scheduled_tasks"), Some("tasks.json")] => Some(true),
+        [Some("automations"), Some(file)] if file.ends_with(".json") => Some(true),
+        _ => None,
+    }
+}
+
 fn stage_restore(
     root: &Path,
     archive: &Path,
@@ -498,24 +519,15 @@ fn stage_restore(
             .collect();
         mappings.sort_by_key(|(source, _)| std::cmp::Reverse(source.len()));
         for relative in files(&app, true)? {
-            if relative.extension().is_none_or(|e| e != "json")
-                || relative.starts_with("external-agent-sessions")
-                || relative.starts_with("restored-files")
-            {
+            let Some(execution_settings) = restore_metadata_policy(&relative) else {
                 continue;
-            }
-            let path = app.join(&relative);
-            let mut value = match read_json(&path) {
-                Ok(value) => value,
-                Err(e)
-                    if relative.starts_with("conversations")
-                        || relative == Path::new("settings.json") =>
-                {
-                    return Err(e)
-                }
-                Err(_) => continue, // User/plugin files may use JSONC or arbitrary content.
             };
+            let path = app.join(&relative);
+            let mut value = read_json(&path)?;
             rewrite_paths(&mut value, &mappings, "");
+            if !trusted && execution_settings {
+                disable_enabled(&mut value);
+            }
             write_json(&path, &value)?;
         }
         let settings_path = app.join("settings.json");
@@ -531,43 +543,6 @@ fn stage_restore(
         document["settings"] =
             serde_json::to_value(crate::settings::sanitize_settings(settings)).map_err(error)?;
         write_json(&settings_path, &document)?;
-        if !trusted {
-            // Importing data does not authorize scheduled external actions.
-            for relative in files(&app, true)? {
-                if relative.extension().is_some_and(|e| e == "json")
-                    && ((relative.starts_with("plugins")
-                        && relative
-                            .file_name()
-                            .is_some_and(|n| n == "meta.json" || n == "record.json"))
-                        || relative
-                            .file_name()
-                            .is_some_and(|n| n == "workflow-hooks.json"))
-                {
-                    let path = app.join(relative);
-                    if let Ok(mut value) = read_json(&path) {
-                        disable_enabled(&mut value);
-                        write_json(&path, &value)?;
-                    }
-                }
-            }
-            let tasks = app.join("scheduled_tasks/tasks.json");
-            if tasks.exists() {
-                let mut v = read_json(&tasks)?;
-                disable_enabled(&mut v);
-                write_json(&tasks, &v)?;
-            }
-            let automations = app.join("automations");
-            if automations.exists() {
-                for entry in fs::read_dir(&automations).map_err(error)? {
-                    let path = entry.map_err(error)?.path();
-                    if path.extension().is_some_and(|e| e == "json") {
-                        let mut v = read_json(&path)?;
-                        disable_enabled(&mut v);
-                        write_json(&path, &v)?;
-                    }
-                }
-            }
-        }
         let ui: BTreeMap<String, String> = match zip.by_name("interface.json") {
             Ok(entry) if entry.size() <= 16 * 1024 * 1024 => {
                 serde_json::from_reader(entry).map_err(error)?
@@ -742,6 +717,87 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn restore_preserves_user_json_and_only_updates_owned_metadata() {
+        for trusted in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("source");
+            let workspace = temp.path().join("workspace");
+            fixture(&root, &workspace);
+            let content = format!(
+                "{{\n  \"path\": {:?},\n  \"enabled\": true\n}}\n",
+                workspace.join("file.txt").to_string_lossy()
+            );
+            let user_files = [
+                (
+                    "conversations/conv_one_attachments/input.json",
+                    content.as_bytes(),
+                ),
+                (
+                    "conversations/conv_one_attachments/broken.json",
+                    b"{ incomplete JSON".as_slice(),
+                ),
+                (
+                    "conversations/conv_one_attachments/workflow-hooks.json",
+                    content.as_bytes(),
+                ),
+                (
+                    "plugins/packages/demo/content/meta.json",
+                    content.as_bytes(),
+                ),
+                (
+                    "plugins/packages/demo/content/record.json",
+                    content.as_bytes(),
+                ),
+                ("local-project/package.json", content.as_bytes()),
+            ];
+            for (name, bytes) in user_files {
+                let path = root.join(name);
+                private_dir(path.parent().unwrap()).unwrap();
+                fs::write(path, bytes).unwrap();
+            }
+            fs::write(workspace.join("config.json"), &content).unwrap();
+            let plugin = root.join("plugins/packages/demo/record.json");
+            write_json(
+                &plugin,
+                &serde_json::json!({"enabled":true,"path":workspace.join("file.txt")}),
+            )
+            .unwrap();
+            let archive = temp.path().join("backup.kivio");
+            export_to(&root, &workspace, &archive, &BTreeMap::new()).unwrap();
+            let dest = temp.path().join("target");
+            stage_restore(&dest, &archive, trusted, &Settings::default()).unwrap();
+            apply_pending(&dest).unwrap();
+            for (name, bytes) in user_files {
+                assert_eq!(
+                    fs::read(dest.join(name)).unwrap(),
+                    bytes,
+                    "{name}, trusted={trusted}"
+                );
+            }
+            let settings = read_json(&dest.join("settings.json")).unwrap();
+            let restored: Settings = serde_json::from_value(settings["settings"].clone()).unwrap();
+            let restored_workspace = Path::new(&restored.chat_tools.native_tools.working_directory);
+            assert_eq!(
+                fs::read(restored_workspace.join("config.json")).unwrap(),
+                content.as_bytes()
+            );
+            let plugin = read_json(&dest.join("plugins/packages/demo/record.json")).unwrap();
+            assert_eq!(plugin["enabled"], trusted);
+            assert_eq!(
+                plugin["path"],
+                restored_workspace
+                    .join("file.txt")
+                    .to_string_lossy()
+                    .as_ref()
+            );
+            assert_eq!(
+                read_json(&dest.join("scheduled_tasks/tasks.json")).unwrap()[0]["enabled"],
+                trusted
+            );
+        }
+    }
+
     #[test]
     fn full_round_trip_relocates_files_preserves_history_and_commits_only_on_restart() {
         let source = tempfile::tempdir().unwrap();
