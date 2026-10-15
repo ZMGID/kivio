@@ -2,11 +2,10 @@ mod catalog;
 mod discover;
 pub mod parse;
 mod runtime;
-mod session;
-pub(crate) use session::SkillSessions;
 mod types;
 
 pub use catalog::format_catalog;
+pub(crate) use discover::build_registry_with_plugins;
 pub use discover::{
     build_registry, build_registry_in, home_agents_skills_dir, kivio_skills_dir,
     legacy_app_data_skills_dir, read_skill_record, user_skills_dir,

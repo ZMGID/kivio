@@ -152,6 +152,17 @@ struct Control {
     handles: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
+/// Display-only progress has its own small durable record. Execution identity
+/// and revision prevent a late preview from replacing a checkpoint or new run.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Progress {
+    execution_id: String,
+    sequence: u64,
+    preview: String,
+    steps: Vec<String>,
+}
+
 /// File transactions and admission share a lock. Only active execution metadata
 /// is resident; complete histories are loaded on demand and atomically replaced.
 pub struct Runtime {
@@ -232,11 +243,29 @@ impl Runtime {
     }
     fn read(&self, id: &str) -> Result<Record, String> {
         let text = std::fs::read_to_string(self.path(id)?).map_err(|e| e.to_string())?;
-        let record: Record = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let mut record: Record = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         if record.version != 1 || record.runs.is_empty() || record.id != id {
             return Err("Unsupported or damaged child record".into());
         }
+        self.overlay_progress(&mut record)?;
         Ok(record)
+    }
+    fn progress_path(&self, id: &str) -> Result<PathBuf, String> {
+        Ok(self.path(id)?.with_extension("progress"))
+    }
+    fn overlay_progress(&self, record: &mut Record) -> Result<(), String> {
+        let text = match std::fs::read_to_string(self.progress_path(&record.id)?) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let progress: Progress = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if progress.execution_id == record.current().id && progress.sequence > record.sequence {
+            record.sequence = progress.sequence;
+            record.preview = progress.preview;
+            record.steps = progress.steps;
+        }
+        Ok(())
     }
     fn summary_dir(&self, conversation: &str) -> Result<PathBuf, String> {
         if conversation.is_empty()
@@ -308,7 +337,9 @@ impl Runtime {
                 continue;
             }
             let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            summaries.push(serde_json::from_str(&text).map_err(|e| e.to_string())?);
+            let mut record = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            self.overlay_progress(&mut record)?;
+            summaries.push(record);
         }
         Ok(summaries)
     }
@@ -349,6 +380,9 @@ impl Runtime {
             self.summaries_dirty
                 .store(true, std::sync::atomic::Ordering::Release);
         }
+        // The committed record now includes this preview (or starts a new run).
+        // A leftover sidecar is harmless: readers compare execution and revision.
+        let _ = std::fs::remove_file(self.progress_path(&record.id)?);
         self.events.send_modify(|seq| *seq = seq.wrapping_add(1));
         Ok(())
     }
@@ -915,14 +949,40 @@ impl Runtime {
         text: String,
         steps: Vec<String>,
     ) -> Result<(), String> {
-        let _guard = self.lock();
-        let mut record = self.scoped(conversation, id)?;
+        let control = self.lock();
+        if !control
+            .owners
+            .get(run)
+            .is_some_and(|(owner, child)| owner == conversation && child == id)
+        {
+            return Ok(());
+        }
+        self.repair_summaries()?;
+        let summary = self.summary_dir(conversation)?.join(format!("{id}.json"));
+        let mut record: Record =
+            serde_json::from_str(&std::fs::read_to_string(summary).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        self.overlay_progress(&mut record)?;
         if record.current().id != run || !record.current().status.active() {
             return Ok(());
         }
-        record.preview = text;
-        record.steps = steps;
-        self.save(&mut record)
+        if record.preview == text && record.steps == steps {
+            return Ok(());
+        }
+        let progress = Progress {
+            execution_id: run.into(),
+            sequence: record.sequence + 1,
+            preview: text,
+            steps,
+        };
+        let content = serde_json::to_string(&progress).map_err(|e| e.to_string())?;
+        super::super::storage::atomic_write(
+            &self.progress_path(id)?,
+            &content,
+            "sub-agent progress",
+        )?;
+        self.events.send_modify(|seq| *seq = seq.wrapping_add(1));
+        Ok(())
     }
 
     pub fn acknowledge_result(
@@ -991,6 +1051,7 @@ impl Runtime {
             .filter(|r| r.conversation_id == conversation)
         {
             std::fs::remove_file(self.path(&record.id)?).map_err(|e| e.to_string())?;
+            let _ = std::fs::remove_file(self.progress_path(&record.id)?);
             std::fs::remove_file(
                 self.summary_dir(conversation)?
                     .join(format!("{}.json", record.id)),
@@ -1150,6 +1211,155 @@ mod tests {
                 "inspect",
             )
             .unwrap()
+    }
+
+    #[test]
+    fn progress_preserves_history_file_and_recovers_latest_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().into()).unwrap();
+        let record = child(&runtime, "progress");
+        let history = vec![json!({"role":"user", "content":"x".repeat(1024 * 1024)})];
+        runtime
+            .checkpoint("conv_a", &record.id, &record.current().id, &history, false)
+            .unwrap();
+        let before = std::fs::read(runtime.path(&record.id).unwrap()).unwrap();
+        for text in ["first", "latest"] {
+            runtime
+                .progress(
+                    "conv_a",
+                    &record.id,
+                    &record.current().id,
+                    text.into(),
+                    vec!["read".into()],
+                )
+                .unwrap();
+        }
+        assert!(
+            before == std::fs::read(runtime.path(&record.id).unwrap()).unwrap(),
+            "preview updates must not rewrite durable history"
+        );
+        let detail = runtime.get("conv_a", &record.id).unwrap();
+        let summary = runtime.list("conv_a").unwrap().remove(0);
+        assert_eq!(detail.preview, "latest");
+        assert_eq!(summary.preview, "latest");
+        assert_eq!(summary.sequence, detail.sequence);
+        assert_eq!(detail.history, history);
+        drop(runtime);
+        let reopened = Runtime::open(dir.path().into()).unwrap();
+        let restored = reopened.get("conv_a", &record.id).unwrap();
+        assert_eq!(restored.current().status, Status::Interrupted);
+        assert_eq!(restored.preview, "latest");
+        assert_eq!(restored.steps, ["read"]);
+        assert_eq!(restored.history, history);
+    }
+
+    #[test]
+    fn progress_merges_at_checkpoints_and_cannot_cross_executions() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Runtime::open(dir.path().into()).unwrap();
+        let record = child(&runtime, "progress-boundaries");
+        let run = &record.current().id;
+        runtime
+            .progress(
+                "conv_a",
+                &record.id,
+                run,
+                "working".into(),
+                vec!["read".into()],
+            )
+            .unwrap();
+        let progress_sequence = runtime.get("conv_a", &record.id).unwrap().sequence;
+        // Duplicate notifications neither write nor advance the visible revision.
+        runtime
+            .progress(
+                "conv_a",
+                &record.id,
+                run,
+                "working".into(),
+                vec!["read".into()],
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.get("conv_a", &record.id).unwrap().sequence,
+            progress_sequence
+        );
+        runtime
+            .checkpoint("conv_a", &record.id, run, &record.history, false)
+            .unwrap();
+        let saved: Record =
+            serde_json::from_slice(&std::fs::read(runtime.path(&record.id).unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(saved.preview, "working");
+        assert!(saved.sequence > progress_sequence);
+        runtime
+            .progress(
+                "conv_a",
+                &record.id,
+                run,
+                "done".into(),
+                vec!["read".into()],
+            )
+            .unwrap();
+        let ended = runtime
+            .finish("conv_a", &record.id, run, Ok(("report".into(), None)))
+            .unwrap();
+        assert_eq!(ended.preview, "done");
+        runtime
+            .progress("conv_a", &record.id, run, "late".into(), vec![])
+            .unwrap();
+        assert_eq!(runtime.get("conv_a", &record.id).unwrap().preview, "done");
+        let (next, _) = runtime
+            .resume(
+                "conv_a", &record.id, "parent2", "followup", "user", "continue",
+            )
+            .unwrap();
+        runtime
+            .progress("conv_a", &record.id, run, "old execution".into(), vec![])
+            .unwrap();
+        runtime
+            .progress(
+                "other-conversation",
+                &record.id,
+                &next.current().id,
+                "wrong owner".into(),
+                vec![],
+            )
+            .unwrap();
+        assert!(runtime
+            .get("conv_a", &record.id)
+            .unwrap()
+            .preview
+            .is_empty());
+        // A failed progress write cannot alter the accepted checkpoint or revision.
+        let sidecar = runtime.progress_path(&record.id).unwrap();
+        std::fs::create_dir(&sidecar).unwrap();
+        assert!(runtime
+            .progress(
+                "conv_a",
+                &record.id,
+                &next.current().id,
+                "unsaved".into(),
+                vec![]
+            )
+            .is_err());
+        std::fs::remove_dir(sidecar).unwrap();
+        assert_eq!(
+            runtime.get("conv_a", &record.id).unwrap().sequence,
+            next.sequence
+        );
+        runtime
+            .progress(
+                "conv_a",
+                &record.id,
+                &next.current().id,
+                "new execution".into(),
+                vec![],
+            )
+            .unwrap();
+        runtime
+            .stop("conv_a", &record.id, &next.current().id, true)
+            .unwrap();
+        assert_eq!(runtime.list("conv_a").unwrap()[0].preview, "new execution");
     }
 
     #[tokio::test]

@@ -335,15 +335,13 @@ pub fn resolve(root: &Path, mut package: Package, data: &Path) -> Result<Resolve
             ));
         }
     }
-    let mut component_files = markdown_files(&commands);
-    component_files.extend(markdown_files(&agents));
-    component_files.extend(
-        markdown_files(&skills)
-            .into_iter()
-            .filter(|p| p.file_name().is_some_and(|n| n == "SKILL.md")),
-    );
+    // Discover each component once. A skill's resource tree is not a component tree.
+    let skills = skill_files(&skills, 0);
+    let commands = markdown_files(&commands);
+    let agents = markdown_files(&agents);
+    let component_files = commands.iter().chain(&agents).chain(&skills);
     for file in component_files {
-        if let Err(error) = component_markdown(&file) {
+        if let Err(error) = component_markdown(file) {
             package
                 .diagnostics
                 .push(format!("{}: {error}", file.display()));
@@ -452,15 +450,9 @@ pub fn resolve(root: &Path, mut package: Package, data: &Path) -> Result<Resolve
         }
     }
     package.components = [
-        (
-            "skills",
-            markdown_files(&skills)
-                .iter()
-                .filter(|p| p.file_name().is_some_and(|n| n == "SKILL.md"))
-                .count(),
-        ),
-        ("commands", markdown_files(&commands).len()),
-        ("agents", markdown_files(&agents).len()),
+        ("skills", skills.len()),
+        ("commands", commands.len()),
+        ("agents", agents.len()),
         ("hooks", hooks.len()),
         ("mcp", servers.len()),
     ]
@@ -499,24 +491,56 @@ fn load(id: &str) -> Result<Resolved, String> {
     resolve(&dir.join("content"), package, &dir.join("data"))
 }
 pub fn active() -> Vec<Resolved> {
-    let Ok(root) = packages_root() else {
-        return vec![];
+    load_active(false).unwrap_or_default()
+}
+
+/// A reload must not silently replace a working catalog with partial resources.
+pub(crate) fn discover_active() -> Result<Vec<Resolved>, String> {
+    load_active(true)
+}
+
+fn load_active(strict: bool) -> Result<Vec<Resolved>, String> {
+    let root = packages_root()?;
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.to_string()),
     };
-    let Ok(entries) = fs::read_dir(root) else {
-        return vec![];
-    };
-    let mut packages = entries
-        .flatten()
-        .filter_map(|entry| {
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !owner_enabled(&id) {
-                return None;
+    let mut packages = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if uuid::Uuid::parse_str(&id).is_err() {
+            continue;
+        }
+        let load = || -> Result<Option<Resolved>, String> {
+            let package: Package =
+                serde_json::from_value(read_json(&entry.path().join("record.json"))?)
+                    .map_err(|error| error.to_string())?;
+            if !package.enabled {
+                return Ok(None);
             }
-            load(&id).ok().filter(|p| p.package.diagnostics.is_empty())
-        })
-        .collect::<Vec<_>>();
+            if package.id != id {
+                return Err("Plugin record identity mismatch".into());
+            }
+            let resolved = resolve(
+                &entry.path().join("content"),
+                package,
+                &entry.path().join("data"),
+            )?;
+            if !resolved.package.diagnostics.is_empty() {
+                return Err(resolved.package.diagnostics.join("; "));
+            }
+            Ok(Some(resolved))
+        };
+        match load() {
+            Ok(Some(package)) => packages.push(package),
+            Err(error) if strict => return Err(format!("Plugin {id}: {error}")),
+            _ => {}
+        }
+    }
     packages.sort_by(|a, b| a.package.id.cmp(&b.package.id));
-    packages
+    Ok(packages)
 }
 pub fn owner_enabled(id: &str) -> bool {
     package_dir(id)
@@ -975,6 +999,7 @@ async fn set_enabled(
         let _ = write_json(&package_dir(&id)?.join("record.json"), &old_package);
         return Err(error.into());
     }
+    state.chat_runtime().invalidate_resources();
     // IDs are deterministic; disconnect both enabled and disabled snapshots.
     for server in disconnect.into_inner() {
         state.mcp_disconnect_server(&server).await;
@@ -1066,15 +1091,13 @@ pub fn workflow_hooks_save(config: Value) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|e| e.to_string())?;
     write_json(&path, &config)
 }
-pub fn hook_runtime(
+pub(crate) fn hook_runtime(
+    plugin_hooks: &[Hook],
     cwd: PathBuf,
     agent_type: String,
     prompt: Option<String>,
 ) -> workflow_hooks::Runtime {
-    let mut hooks = active()
-        .into_iter()
-        .flat_map(|p| p.hooks)
-        .collect::<Vec<_>>();
+    let mut hooks = plugin_hooks.to_vec();
     if let Ok(value) = workflow_hooks_get() {
         if value.get("enabled").and_then(Value::as_bool) == Some(true) {
             if let Ok(path) = hooks_path() {
@@ -1094,6 +1117,42 @@ pub fn hook_runtime(
         agent_type,
         prompt,
     }
+}
+
+fn skill_files(paths: &[PathBuf], depth: usize) -> Vec<PathBuf> {
+    if depth > 6 {
+        return vec![];
+    }
+    let mut files = Vec::new();
+    for path in paths {
+        let Ok(meta) = fs::symlink_metadata(path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_file() {
+            if path.file_name().is_some_and(|name| name == "SKILL.md") {
+                files.push(path.clone());
+            }
+        } else if meta.is_dir() {
+            let skill = path.join("SKILL.md");
+            if fs::symlink_metadata(&skill).is_ok_and(|meta| meta.is_file()) {
+                files.push(skill);
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(path) {
+                let children = entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .collect::<Vec<_>>();
+                files.extend(skill_files(&children, depth + 1));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 pub fn markdown_files(paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -1185,6 +1244,39 @@ pub fn component_markdown(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn skill_resources_are_not_discovered_as_plugin_components() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".kivio-plugin")).unwrap();
+        fs::create_dir_all(root.join("skills/demo/resources/example")).unwrap();
+        write_json(
+            &root.join(".kivio-plugin/plugin.json"),
+            &json!({
+                "schemaVersion": 1, "name": "demo", "version": "1"
+            }),
+        )
+        .unwrap();
+        fs::write(
+            root.join("skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: Demo\n---\nUse resources as needed.",
+        )
+        .unwrap();
+        // An embedded example is data, even if it resembles an invalid skill.
+        fs::write(
+            root.join("skills/demo/resources/example/SKILL.md"),
+            "---\ninvalid yaml: [\n---\nExample",
+        )
+        .unwrap();
+        let resolved = resolve(root, fixture(), root).unwrap();
+        assert!(
+            resolved.package.diagnostics.is_empty(),
+            "{:?}",
+            resolved.package.diagnostics
+        );
+        assert_eq!(resolved.package.components["skills"], 1);
+    }
+
     #[test]
     fn native_manifest_rejects_unknown_versions_fields_and_bad_paths() {
         let base = json!({"schemaVersion":1,"name":"native-example","version":"1.0.0"});
@@ -1313,7 +1405,7 @@ mod tests {
             resolved.package.diagnostics
         );
         assert_eq!(resolved.skills.len(), 1);
-        let command_path = markdown_files(&resolved.commands).pop().unwrap();
+        let command_path = resolved.commands.last().unwrap();
         let command = component_markdown(&command_path).unwrap();
         let detail = crate::skills::parse_skill_markdown(&command, "plugin", None, vec![]).unwrap();
         assert_eq!(detail.meta.name, "check");
@@ -1432,6 +1524,7 @@ mod tests {
         fs::create_dir(dir.path().join(".codex-plugin")).unwrap();
         fs::create_dir(dir.path().join(".claude-plugin")).unwrap();
         fs::create_dir(dir.path().join("custom")).unwrap();
+        fs::write(dir.path().join("custom/SKILL.md"), "Custom skill").unwrap();
         fs::write(dir.path().join(".codex-plugin/plugin.json"), r#"{"name":"example","skills":"./custom","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo hello"}]}]}}"#).unwrap();
         fs::write(
             dir.path().join(".claude-plugin/plugin.json"),
@@ -1441,7 +1534,8 @@ mod tests {
         let resolved = resolve(dir.path(), fixture(), dir.path()).unwrap();
         assert_eq!(resolved.package.format, "codex");
         assert_eq!(resolved.hooks.len(), 1);
-        assert!(resolved.skills[0].ends_with("custom"));
+        assert_eq!(resolved.skills.len(), 1);
+        assert!(resolved.skills[0].ends_with("custom/SKILL.md"));
     }
     #[test]
     fn directory_components_are_counted_and_toml_agents_are_diagnosed() {

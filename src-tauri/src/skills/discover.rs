@@ -173,18 +173,35 @@ pub fn build_registry_in(
     extra_paths: &[String],
     project_cwd: Option<&Path>,
 ) -> Result<SkillRegistry, String> {
+    build_registry_with_plugins(
+        app,
+        extra_paths,
+        project_cwd,
+        &crate::plugins::packages::active(),
+    )
+}
+
+pub(crate) fn build_registry_with_plugins(
+    app: &AppHandle,
+    extra_paths: &[String],
+    project_cwd: Option<&Path>,
+    plugins: &[crate::plugins::packages::Resolved],
+) -> Result<SkillRegistry, String> {
     let roots = scan_root_entries(app, extra_paths, project_cwd)?;
     let mut registry = build_registry_from_roots(roots);
-    for plugin in crate::plugins::packages::active() {
+    for plugin in plugins {
         let mut bundled = SkillRegistry::default();
         for path in &plugin.skills {
-            if let Err(error) = collect_skill_files(path, 0, &mut bundled, "plugin") {
-                registry.scan_failed = true;
-                registry.warnings.push(error);
+            match load_skill_at(path, "plugin") {
+                Ok(record) => bundled.records.push(record),
+                Err(error) => {
+                    registry.scan_failed = true;
+                    registry.warnings.push(error);
+                }
             }
         }
-        for path in crate::plugins::packages::markdown_files(&plugin.commands) {
-            match load_plugin_command(&path) {
+        for path in &plugin.commands {
+            match load_plugin_command(path) {
                 Ok(record) => bundled.records.push(record),
                 Err(error) => {
                     registry.scan_failed = true;
@@ -356,18 +373,21 @@ description: Test skill.
         let skill = root.path().join("demo");
         write_skill(&skill, "demo");
         let path = skill.join("SKILL.md");
-        let sessions = super::super::SkillSessions::default();
+        let sessions = crate::chat::resources::ResourceSessions::default();
         let scan = || {
             let path = root.path().to_path_buf();
             move || {
-                Ok(build_registry_from_roots(vec![SkillScanRoot {
-                    path,
-                    source: "user",
-                }]))
+                Ok(crate::chat::resources::Catalog {
+                    skills: std::sync::Arc::new(build_registry_from_roots(vec![SkillScanRoot {
+                        path,
+                        source: "user",
+                    }])),
+                    ..Default::default()
+                })
             }
         };
         let first = sessions.load("a", false, scan()).await.unwrap();
-        assert!(first.find("demo").unwrap().body.is_empty());
+        assert!(first.skills.find("demo").unwrap().body.is_empty());
         fs::write(
             &path,
             "---\nname: demo\ndescription: Changed\n---\nUPDATED BODY",
@@ -375,13 +395,19 @@ description: Test skill.
         .unwrap();
         write_skill(&root.path().join("new-skill"), "new-skill");
         let next_turn = sessions.load("a", false, scan()).await.unwrap();
-        assert!(next_turn.find("new-skill").is_none());
-        assert_eq!(next_turn.find("demo").unwrap().meta.description, "demo");
-        let loaded = read_skill_record(next_turn.find("demo").unwrap()).unwrap();
+        assert!(next_turn.skills.find("new-skill").is_none());
+        assert_eq!(
+            next_turn.skills.find("demo").unwrap().meta.description,
+            "demo"
+        );
+        let loaded = read_skill_record(next_turn.skills.find("demo").unwrap()).unwrap();
         assert!(super::super::activate_skill(&loaded).contains("UPDATED BODY"));
         let reloaded = sessions.load("a", true, scan()).await.unwrap();
-        assert!(reloaded.find("new-skill").is_some());
-        assert_eq!(reloaded.find("demo").unwrap().meta.description, "Changed");
+        assert!(reloaded.skills.find("new-skill").is_some());
+        assert_eq!(
+            reloaded.skills.find("demo").unwrap().meta.description,
+            "Changed"
+        );
         fs::write(&path, "---\nname: demo\n---\ninvalid missing description").unwrap();
         assert!(sessions.load("a", true, scan()).await.is_err());
         assert_eq!(
@@ -389,6 +415,7 @@ description: Test skill.
                 .load("a", false, scan())
                 .await
                 .unwrap()
+                .skills
                 .find("demo")
                 .unwrap()
                 .meta
@@ -396,11 +423,12 @@ description: Test skill.
             "Changed"
         );
         fs::remove_file(&path).unwrap();
-        assert!(read_skill_record(first.find("demo").unwrap()).is_err());
+        assert!(read_skill_record(first.skills.find("demo").unwrap()).is_err());
         assert!(sessions
             .load("a", true, scan())
             .await
             .unwrap()
+            .skills
             .find("demo")
             .is_none());
     }

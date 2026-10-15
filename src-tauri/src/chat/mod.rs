@@ -33,6 +33,7 @@ pub mod protocol;
 pub(crate) mod provider_runtime;
 pub mod repository;
 pub mod request_debug;
+pub(crate) mod resources;
 pub(crate) mod route_contract;
 pub(crate) mod runtime_state;
 pub(crate) mod slash_commands;

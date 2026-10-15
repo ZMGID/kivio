@@ -453,9 +453,9 @@ pub(super) async fn complete_assistant_reply_inner(
         &settings.chat_tools.native_tools.working_directory,
     )
     .ok();
-    let skill_registry = state
+    let resources = state
         .chat_runtime()
-        .skill_registry(
+        .resource_catalog(
             app,
             &conversation.id,
             &settings.chat_tools.skill_scan_paths,
@@ -463,6 +463,7 @@ pub(super) async fn complete_assistant_reply_inner(
             false,
         )
         .await?;
+    let skill_registry = resources.skills.clone();
     let mut effective_chat_tools = settings.chat_tools.clone();
     // Read the stored text, before attachment/vision augmentation, so those
     // documents never become slash arguments. This also covers edited retries.
@@ -621,23 +622,12 @@ pub(super) async fn complete_assistant_reply_inner(
     {
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
-    // Resolved here (rather than further down with the other prompt context) so
-    // the sub-agent role registry below can reuse the project root instead of
-    // resolving the conversation's project a second time.
     let project_prompt_context = project_prompt_context_for(app, conversation);
     // Multi-agent spawn tool (P3): exposure is mode-controlled. Act and
     // Orchestrate both expose the `agent` tool; Plan / Chat exclude it (spawn is a
     // side-effecting, non-read-only capability).
     if !plan_mode && !chat_mode && !builder_mode {
-        // Load the role registry (built-in + user + project) so the `agent`
-        // tool's schema lists the roles that actually exist for this
-        // conversation — the model must not have to guess role names.
-        let project_root = project_prompt_context
-            .as_ref()
-            .and_then(|context| context.root_path.as_deref())
-            .map(std::path::Path::new);
-        let agent_defs = crate::agents::load_agent_definitions(app, project_root);
-        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &agent_defs);
+        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &resources.agents);
     }
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
@@ -759,6 +749,7 @@ pub(super) async fn complete_assistant_reply_inner(
             Default::default()
         } else {
             crate::plugins::packages::hook_runtime(
+                &resources.hooks,
                 workbench_dir
                     .as_deref()
                     .map(PathBuf::from)

@@ -647,6 +647,16 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
             ]
         });
 
+    let resources = state
+        .chat_runtime()
+        .resource_catalog(
+            &app,
+            &req.parent_conversation_id,
+            &req.settings.chat_tools.skill_scan_paths,
+            req.skill_project_cwd.as_deref(),
+            false,
+        )
+        .await?;
     let host = SubAgentHost {
         managed: req.managed.as_ref().map(|r| {
             (
@@ -655,6 +665,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
             )
         }),
         workflow_hooks: crate::plugins::packages::hook_runtime(
+            &resources.hooks,
             req.skill_project_cwd
                 .clone()
                 .unwrap_or_else(std::env::temp_dir),
@@ -719,16 +730,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_registry: state
-            .chat_runtime()
-            .skill_registry(
-                &app,
-                &req.parent_conversation_id,
-                &req.settings.chat_tools.skill_scan_paths,
-                req.skill_project_cwd.as_deref(),
-                false,
-            )
-            .await?,
+        skill_registry: resources.skills.clone(),
         // Workers never see or touch the parent's todo list.
         todo_state: Default::default(),
     };
@@ -979,15 +981,26 @@ pub fn handle_agent_spawn<'a>(
         let settings = ctx.state.settings_read().clone();
         let language = crate::settings::resolve_chat_language(&settings);
 
-        // Resolve agent definition (built-in + user + project layers).
-        let project_root =
-            crate::chat::storage::resolve_conversation_project(ctx.app, &parent_conversation)
-                .ok()
-                .flatten()
-                .and_then(|p| p.root_path)
-                .map(std::path::PathBuf::from);
-        let defs = crate::agents::load_agent_definitions(ctx.app, project_root.as_deref());
-        let Some(def) = crate::agents::find_definition(&defs, &agent_type) else {
+        // Reuse the parent's catalog so advertised roles and spawned roles agree.
+        let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
+            ctx.app,
+            &parent_conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )
+        .ok();
+        let resources = ctx
+            .state
+            .chat_runtime()
+            .resource_catalog(
+                ctx.app,
+                &parent_conversation.id,
+                &settings.chat_tools.skill_scan_paths,
+                skill_cwd.as_deref(),
+                false,
+            )
+            .await?;
+        let defs = &resources.agents;
+        let Some(def) = crate::agents::find_definition(defs, &agent_type) else {
             return Ok(err_result(format!(
                 "Unknown sub-agent type '{agent_type}'. Available: {}",
                 defs.iter()
@@ -1075,23 +1088,7 @@ pub fn handle_agent_spawn<'a>(
         // so the skill tools the filter deliberately keeps had nothing to find).
         // Always the FULL registry: `def.skills` is a preload list, not a
         // visibility narrowing, so the sub-agent can still activate other skills.
-        let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
-            ctx.app,
-            &parent_conversation,
-            &settings.chat_tools.native_tools.working_directory,
-        )
-        .ok();
-        let skill_registry = ctx
-            .state
-            .chat_runtime()
-            .skill_registry(
-                ctx.app,
-                &parent_conversation.id,
-                &settings.chat_tools.skill_scan_paths,
-                skill_cwd.as_deref(),
-                false,
-            )
-            .await?;
+        let skill_registry = resources.skills.clone();
         let catalog = skill_registry.clone();
         let selected = def.skills.clone();
         let preload_registry =

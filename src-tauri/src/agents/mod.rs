@@ -38,13 +38,14 @@ pub fn user_agents_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// earlier ones. Parse failures are skipped (never fatal) so a malformed file
 /// can't break spawning.
 pub fn load_agent_definitions(
-    app: &AppHandle,
+    user_dir: Option<&Path>,
     project_root: Option<&Path>,
+    plugins: &[crate::plugins::packages::Resolved],
 ) -> Vec<AgentDefinition> {
     let mut defs = builtin_agent_definitions();
-    for plugin in crate::plugins::packages::active() {
-        for path in crate::plugins::packages::markdown_files(&plugin.agents) {
-            if let Ok(raw) = crate::plugins::packages::component_markdown(&path) {
+    for plugin in plugins {
+        for path in &plugin.agents {
+            if let Ok(raw) = crate::plugins::packages::component_markdown(path) {
                 let fallback = path.file_stem().and_then(|s| s.to_str()).unwrap_or("agent");
                 if let Some(mut def) = parse::parse_agent_markdown(
                     fallback,
@@ -74,8 +75,8 @@ pub fn load_agent_definitions(
         }
     }
 
-    if let Ok(dir) = user_agents_dir(app) {
-        merge_dir(&mut defs, &dir, "user");
+    if let Some(dir) = user_dir {
+        merge_dir(&mut defs, dir, "user");
     }
     if let Some(root) = project_root {
         merge_dir(&mut defs, &root.join(".kivio").join("agents"), "project");
