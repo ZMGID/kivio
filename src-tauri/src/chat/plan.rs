@@ -40,6 +40,12 @@ pub fn with_mode(current: &AgentPlanState, mode: AgentPlanMode) -> AgentPlanStat
 }
 
 pub fn format_prompt(state: &AgentPlanState) -> String {
+    if state.mode == AgentPlanMode::Act
+        && state.document.is_none()
+        && current_plan_text(state).is_none()
+    {
+        return "Current mode: act.".into();
+    }
     let status = status_name(&state.status);
     let current_plan = if let Some(document) = &state.document {
         let text = if state.mode == AgentPlanMode::Plan {
@@ -71,7 +77,7 @@ pub fn format_prompt(state: &AgentPlanState) -> String {
         )
     } else {
         format!(
-            "Agent plan context (internal runtime state): current mode is act and plan status is {status}. If the user asks to continue or execute the plan, use the saved plan below as context; if the user changes requirements, follow the latest user message and note that the plan needs adjustment. Treat the saved plan as task context. Create reminders only when the user requests them, using the scheduling tools available in this conversation.\n\nCurrent saved plan:\n{current_plan}"
+            "Current mode: act. Saved plan status: {status}. Use the saved plan as context when relevant, following the user's latest request.\n\nCurrent saved plan:\n{current_plan}"
         )
     }
 }
@@ -149,10 +155,23 @@ mod tests {
     }
 
     #[test]
-    fn act_plan_context_leaves_user_requested_reminders_available() {
-        let prompt = format_prompt(&AgentPlanState::default());
-        assert!(prompt.contains("Create reminders only when the user requests them"));
-        assert!(!prompt.contains("do not create reminders"));
+    fn act_plan_context_only_includes_saved_plan_when_present() {
+        for plan in [None, Some("   ".into())] {
+            let state = AgentPlanState {
+                plan,
+                ..Default::default()
+            };
+            assert_eq!(format_prompt(&state), "Current mode: act.");
+        }
+        let state = AgentPlanState {
+            plan: Some("Inspect markdown, then fix rendering.".into()),
+            status: AgentPlanStatus::Approved,
+            ..Default::default()
+        };
+        let prompt = format_prompt(&state);
+        assert!(prompt.contains("approved"));
+        assert!(prompt.contains(state.plan.as_deref().unwrap()));
+        assert!(!prompt.contains("reminders"));
     }
 
     #[test]

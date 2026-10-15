@@ -758,7 +758,6 @@ pub fn run() {
             mcp::registry::chat_mcp_warmup,
             connectors::connector_oauth_connect,
             connectors::connector_oauth_cancel,
-            connectors::obsidian::list_obsidian_vaults_cmd,
             market::market_snapshot,
             market::market_install,
             market::market_uninstall,

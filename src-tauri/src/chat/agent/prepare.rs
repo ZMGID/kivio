@@ -44,9 +44,8 @@ pub fn skill_allowed_for_conversation(
     chat_tools: &crate::settings::ChatToolsConfig,
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
     skill_id: &str,
-    obsidian_vault_configured: bool,
 ) -> bool {
-    if !crate::settings::skill_globally_available(chat_tools, skill_id, obsidian_vault_configured) {
+    if !crate::settings::skill_globally_available(chat_tools, skill_id) {
         return false;
     }
     match assistant_snapshot {
@@ -154,7 +153,6 @@ pub fn build_chat_system_prompt(
     project_context: Option<&ProjectPromptContext>,
     workbench_dir: Option<&str>,
     knowledge_base_prompt: Option<&str>,
-    obsidian_vault_path: Option<&str>,
     additional_directories: &[AdditionalDirectory],
 ) -> String {
     build_chat_system_prompt_with_segments(
@@ -177,7 +175,6 @@ pub fn build_chat_system_prompt(
         project_context,
         workbench_dir,
         knowledge_base_prompt,
-        obsidian_vault_path,
         additional_directories,
     )
     .0
@@ -256,7 +253,7 @@ fn computer_control_system_prompt(
 
     let skill_available = |skill_id: &str| {
         registry.find(skill_id).is_some()
-            && skill_allowed_for_conversation(chat_tools, assistant_snapshot, skill_id, false)
+            && skill_allowed_for_conversation(chat_tools, assistant_snapshot, skill_id)
     };
     let mut lines = Vec::new();
 
@@ -297,7 +294,6 @@ pub fn build_chat_system_prompt_with_segments(
     project_context: Option<&ProjectPromptContext>,
     workbench_dir: Option<&str>,
     knowledge_base_prompt: Option<&str>,
-    obsidian_vault_path: Option<&str>,
     additional_directories: &[AdditionalDirectory],
 ) -> (String, Vec<ContextUsageSegment>) {
     let skill_tool_available = tools_available
@@ -415,28 +411,6 @@ pub fn build_chat_system_prompt_with_segments(
     // Chat 没有文件/shell/skill 激活：这些段会教模型去 read / bash，
     // 和「写文件 / Shell 只在 Agent 可用」矛盾，故整段跳过。
     if !is_chat_runtime {
-        if let Some(path) = obsidian_vault_path
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            let text = format!(
-                "Obsidian vault path: {path}\n\
-                 This is a local Obsidian markdown vault. Use the native file tools: \
-                 read with the vault directory path to browse, glob with that path to find *.md by name, \
-                 grep with that path to search by content/keyword, read with a note's path to read it. Use only tools declared in this request; \
-                 notes cross-reference each other via [[wikilink]].\n\
-                 For Obsidian syntax or file-format details, activate the obsidian-markdown / \
-                 obsidian-bases / json-canvas / obsidian-cli skills."
-            );
-            append_context_segment(
-                &mut prompt,
-                &mut segments,
-                "runtime_context",
-                "Runtime context",
-                &text,
-            );
-        }
-
         // 能力插件：仅「已安装且启用」时注入短 systemHint；关闭则零注入。
         if let Some(text) = crate::plugins::enabled_system_prompt()
             .as_deref()
@@ -507,51 +481,14 @@ pub fn build_chat_system_prompt_with_segments(
         None
     };
 
-    if tools_available && !is_chat_runtime {
-        append_context_segment(
-            &mut prompt, &mut segments, "runtime_context", "Runtime context",
-            "Use the enabled tools to carry out action requests. Follow their descriptions and schemas, and ground action and completion claims in their results.",
-        );
-        // Runtime control semantics are described by the sub-agent tools.
-        if available_builtin_tools
-            .iter()
-            .any(|tool| tool.as_str() == crate::chat::sub_agent::AGENT_TOOL_NAME)
-        {
-            // Roles are data, not code: the available ones are listed in the
-            // `agent` tool's `subagent_type` description, and a new permanent
-            // role is just a `.md` file the model can write with its own tools.
-            let agents_dir = crate::app_data::app_data_dir()
-                .map(|dir| dir.join("agents").display().to_string())
-                .unwrap_or_else(|| "<app_data>/agents".to_string());
-            let roles_prompt = format!(
-                "Sub-agent roles: the roles available right now are listed in the agent tool's subagent_type description. For a one-off role, skip subagent_type and pass system_prompt/tools inline. To add a PERMANENT role, write a Markdown file to {agents_dir} with YAML frontmatter (name, description, tools, disallowedTools, skills, model) whose body is the role's system prompt; tools/disallowedTools accept `mcp__<server>__*`, `mcp__*` and `*`, and disallowedTools is applied before tools."
-            );
-            append_context_segment(
-                &mut prompt,
-                &mut segments,
-                "native_tools",
-                "Native tools",
-                &roles_prompt,
-            );
-        }
-    }
-
     // Chat 不能激活 skill / 改工作区，目录和「去调 skill 工具」会直接教错。
     let include_catalog = !is_chat_runtime
         && (chat_tools.skill_auto_match
             || active_skill_id.is_some()
             || chat_tools.skill_fallback_mode != "legacy_full_body");
     if include_catalog {
-        let obsidian_vault_configured = obsidian_vault_path
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
         let catalog = skills::format_catalog(registry, active_skill_id, |skill_id| {
-            skill_allowed_for_conversation(
-                chat_tools,
-                assistant_snapshot,
-                skill_id,
-                obsidian_vault_configured,
-            )
+            skill_allowed_for_conversation(chat_tools, assistant_snapshot, skill_id)
         });
         if !catalog.is_empty() {
             append_context_segment(&mut prompt, &mut segments, "skills", "Skills", &catalog);
@@ -999,11 +936,10 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
-        assert!(prompt.contains("Follow their descriptions and schemas"));
+        assert!(prompt.contains("following their descriptions and schemas"));
         assert!(!prompt.contains("web_search"));
         assert!(!prompt.contains("web_fetch"));
     }
@@ -1035,7 +971,6 @@ mod tests {
                 None,
                 "",
                 false,
-                None,
                 None,
                 None,
                 None,
@@ -1126,7 +1061,6 @@ mod tests {
             None,
             Some("/Users/me/Kivio/workspace/conv_abc"),
             None,
-            None,
             &[],
         );
 
@@ -1146,7 +1080,7 @@ mod tests {
             .expect("workbench path");
         assert!(
             prompt
-                .find("Follow their descriptions and schemas")
+                .find("following their descriptions and schemas")
                 .expect("tool guidance")
                 < path_at
         );
@@ -1192,7 +1126,6 @@ mod tests {
             None,
             None,
             Some("/Users/me/Kivio/workspace/conv_abc"),
-            None,
             None,
             &extra,
         );
@@ -1243,7 +1176,6 @@ mod tests {
                 None,
                 Some(&project),
                 Some(root),
-                None,
                 None,
                 &[],
             )
@@ -1303,7 +1235,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
                 &[],
             );
             assert!(prompt.contains("Trust and authorization:"));
@@ -1314,38 +1245,6 @@ mod tests {
             assert!(!prompt.contains("How you work:"));
             assert!(!prompt.contains(&default_chat_system_prompt(false)));
         }
-    }
-
-    #[test]
-    fn chat_prompt_includes_obsidian_vault_path() {
-        let registry = skills::SkillRegistry::default();
-        let chat_tools = crate::settings::ChatToolsConfig::default();
-
-        let prompt = build_chat_system_prompt(
-            "zh-CN",
-            false,
-            false,
-            &registry,
-            &chat_tools,
-            false,
-            &[],
-            None,
-            None,
-            None,
-            None,
-            "",
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("/Users/me/Obsidian/MyVault"),
-            &[],
-        );
-
-        assert!(prompt.contains("Obsidian vault path: /Users/me/Obsidian/MyVault"));
     }
 
     #[test]
@@ -1367,7 +1266,6 @@ mod tests {
             Some("Always answer in 文言文."),
             "",
             false,
-            None,
             None,
             None,
             None,
@@ -1396,7 +1294,6 @@ mod tests {
             Some("   "),
             "",
             false,
-            None,
             None,
             None,
             None,
@@ -1458,41 +1355,15 @@ mod tests {
             &chat_tools,
             Some(&assistant),
             "doc",
-            false,
         ));
         // 不在白名单内的技能被拒。
         assert!(!skill_allowed_for_conversation(
             &chat_tools,
             Some(&assistant),
             "pdf",
-            false,
         ));
         // 无助手 = 不限(只看全局 enable)。
-        assert!(skill_allowed_for_conversation(
-            &chat_tools,
-            None,
-            "pdf",
-            false
-        ));
-    }
-
-    #[test]
-    fn skill_allowed_hides_obsidian_skill_without_vault() {
-        let chat_tools = crate::settings::ChatToolsConfig::default();
-        // No vault → Obsidian skills are unavailable at the conversation level.
-        assert!(!skill_allowed_for_conversation(
-            &chat_tools,
-            None,
-            "obsidian-markdown",
-            false,
-        ));
-        // Vault configured → available.
-        assert!(skill_allowed_for_conversation(
-            &chat_tools,
-            None,
-            "obsidian-markdown",
-            true,
-        ));
+        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf"));
     }
 
     #[test]
@@ -1556,7 +1427,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
 
@@ -1608,7 +1478,6 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
         assert!(prompt.contains("Speak like a careful editor."), "{prompt}");
@@ -1643,7 +1512,6 @@ mod tests {
             None,
             None,
             Some("This conversation has knowledge bases attached: Docs."),
-            None,
             &[],
         );
         assert!(
@@ -1704,12 +1572,11 @@ mod tests {
             None,
             None,
             None,
-            None,
             &[],
         );
         assert!(prompt.contains("advance the main task yourself"));
         assert!(prompt.contains("specific results you need"));
-        assert!(prompt.contains("Sub-agent roles:"));
+        assert!(!prompt.contains("To add a PERMANENT role"));
         assert!(!prompt.contains("each agent call BLOCKS"));
         assert!(!prompt.contains("There is no polling or collection tool"));
         assert!(!prompt.contains("Required flow"));
@@ -1761,7 +1628,6 @@ mod tests {
                 None,
                 "",
                 false,
-                None,
                 None,
                 None,
                 None,
@@ -1838,7 +1704,6 @@ mod tests {
             None,
             Some("/tmp/work"),
             None,
-            None,
             &[],
         );
         let default_prompt = default_chat_system_prompt(false);
@@ -1846,7 +1711,8 @@ mod tests {
         assert!(prompt.contains("How you work:"));
         assert!(prompt.contains("Response style:"));
         assert!(prompt.contains("Once the requested outcome is achieved and checked"));
-        assert!(prompt.contains("Follow their descriptions and schemas"));
+        assert!(prompt.contains("following their descriptions and schemas"));
+        assert!(!prompt.contains("Use the enabled tools to carry out action requests."));
         assert!(prompt.contains("/tmp/work"));
         for procedure in [
             "Do not background finite jobs",

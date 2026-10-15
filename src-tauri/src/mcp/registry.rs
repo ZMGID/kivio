@@ -1017,7 +1017,6 @@ async fn call_skill_tool(
     if let Some(err) = crate::settings::skill_global_unavailable_error(
         &settings.chat_tools,
         &record.meta.id,
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
         &skill_name,
     ) {
         return Err(err);

@@ -32,13 +32,12 @@ pub(super) fn allowed_mcp_server_ids<'a>(
 /// `disable_model_invocation` only gates *model* auto-invocation, so it is
 /// intentionally ignored here — an explicit user slash command may still trigger
 /// such a skill. Availability is gated by `skill_allowed_for_conversation`
-/// (Settings enable list, connector prerequisites, assistant allow-list).
+/// (Settings enable list, plugin availability, assistant allow-list).
 pub(super) fn try_apply_skill_slash_trigger(
     registry: &skills::SkillRegistry,
     chat_tools: &crate::settings::ChatToolsConfig,
     assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     content: &str,
-    obsidian_vault_configured: bool,
 ) -> Option<(String, String)> {
     let matches: Vec<_> = crate::chat::slash_commands::command_ranges(content)
         .into_iter()
@@ -48,7 +47,6 @@ pub(super) fn try_apply_skill_slash_trigger(
                 chat_tools,
                 assistant_snapshot,
                 &record.meta.id,
-                obsidian_vault_configured,
             )
             .then_some((range, record))
         })
@@ -80,21 +78,13 @@ pub(super) fn resolve_request_skill(
     assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     content: &str,
     requested: Option<&str>,
-    obsidian_vault_configured: bool,
 ) -> (Option<String>, Option<skills::SkillDetail>) {
-    let slash = try_apply_skill_slash_trigger(
-        registry,
-        chat_tools,
-        assistant_snapshot,
-        content,
-        obsidian_vault_configured,
-    );
+    let slash = try_apply_skill_slash_trigger(registry, chat_tools, assistant_snapshot, content);
     let id = resolve_forced_skill_id(
         chat_tools,
         assistant_snapshot,
         registry,
         slash.as_ref().map(|(id, _)| id.as_str()).or(requested),
-        obsidian_vault_configured,
     );
     let detail = id
         .as_deref()
@@ -117,7 +107,6 @@ pub(super) fn resolve_forced_skill_id(
     assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     registry: &skills::SkillRegistry,
     requested: Option<&str>,
-    obsidian_vault_configured: bool,
 ) -> Option<String> {
     let requested = requested.map(str::trim).filter(|id| !id.is_empty())?;
     let enabled = registry
@@ -128,7 +117,6 @@ pub(super) fn resolve_forced_skill_id(
                 chat_tools,
                 assistant_snapshot,
                 &record.meta.id,
-                obsidian_vault_configured,
             )
         })
         .any(|record| {

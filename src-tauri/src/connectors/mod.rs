@@ -5,9 +5,6 @@
 
 mod github_device;
 pub mod oauth;
-pub mod obsidian;
-
-pub use obsidian::list_obsidian_vaults_cmd;
 
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{AppHandle, State};

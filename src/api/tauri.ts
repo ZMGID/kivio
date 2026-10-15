@@ -1297,8 +1297,6 @@ export type Settings = {
   imageArchiveEnabled?: boolean
   /** 自动归档目标目录路径 */
   imageArchivePath?: string
-  /** Obsidian 笔记库本地路径（空表示未配置） */
-  obsidianVaultPath?: string
   /** 收藏并置顶的模型键（"providerId:model"）；顺序即置顶顺序。chat 模型选择器用。 */
   favoriteModels: string[]
 }
@@ -1946,9 +1944,6 @@ export const api = {
       channel.onmessage = () => {}
     }
   },
-
-  listObsidianVaults: () =>
-    invoke<{ name: string; path: string }[]>('list_obsidian_vaults_cmd'),
 
   /** 能力插件列表（目录 + 安装/启用状态） */
   pluginsList: () => invoke<PluginStatus[]>('plugins_list'),

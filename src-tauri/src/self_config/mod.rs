@@ -144,7 +144,7 @@ pub fn inspect(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 )?;
                 json!({"skills":registry.metas().iter().map(|m| json!({
                     "id":m.id,"name":m.name,"source":m.source,"path":m.path,
-                    "globallyAvailable":crate::settings::skill_globally_available(&settings.chat_tools, &m.id, crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path)),
+                    "globallyAvailable":crate::settings::skill_globally_available(&settings.chat_tools, &m.id),
                     "disableModelInvocation":m.disable_model_invocation
                 })).collect::<Vec<_>>(),"warnings":registry.warnings,
                 "note":"Registry and global gates only; the conversation assistant allow-list and model tools can still restrict activation."})

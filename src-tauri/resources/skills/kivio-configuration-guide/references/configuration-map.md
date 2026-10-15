@@ -46,6 +46,12 @@
 - 个人子代理：`<app_data>/agents/*.md`；项目子代理：`<项目>/.kivio/agents/*.md`；不要套用 skill 的优先级，它们使用另一套合并规则。
 - 对话：`<app_data>/conversations/`；不要为排扩展故障删对话。
 
+## 持久子代理角色
+
+当前可用角色以 `agent` 工具的 `subagent_type` 描述为准。一次性角色可直接传 `system_prompt` 和 `tools`；需要复用的角色可保存为上面个人或项目目录内的 Markdown 文件。
+
+文件使用 YAML frontmatter 描述 `name`、`description`、`tools`、`disallowedTools`、`skills`、`model`，正文是角色系统提示词。按需要填写字段，缺省值沿用运行时默认行为。`tools` 和 `disallowedTools` 支持工具名及 `mcp__<server>__*`、`mcp__*`、`*` 通配模式；先应用排除列表，再应用允许列表。角色配置只能筛选当前可用能力。保存后检查后续请求的 `subagent_type` 列表，确认角色已经加载。
+
 ## 源码定位（维护时使用）
 
 仓库相对位置：`src-tauri/src/app_data.rs`；`settings.rs::{ChatToolsConfig,ChatMcpServer,ProviderApiFormat,persist_settings,load_settings}`；`commands.rs::{save_settings,apply_settings}`；`chat/agent/prepare.rs::build_chat_system_prompt_with_segments`；`agents/mod.rs`。这些文件不会随普通 skill 单独分发，不能要求终端用户必须拥有源码。

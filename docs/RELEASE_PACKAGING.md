@@ -124,8 +124,7 @@ the staged contents before compression. Portable packaging also rejects an EXE
 whose embedded product version differs from the requested ZIP version.
 
 > The four `obsidian-*` / `json-canvas` skills (adapted from kepano/obsidian-skills, MIT —
-> see `resources/skills/NOTICE.md`) are gated at runtime on the Obsidian connector (a
-> configured vault path), so they only surface to the model once the user sets an Obsidian vault.
+> see `resources/skills/NOTICE.md`) follow the same skill enable settings and assistant allow-lists as other bundled skills.
 
 ## Release Verification
 

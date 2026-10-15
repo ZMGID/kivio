@@ -480,7 +480,6 @@ pub(super) async fn complete_assistant_reply_inner(
             user_content
         },
         active_skill_id.or(conversation.active_skill_id.as_deref()),
-        crate::settings::obsidian_connector_configured(&settings.obsidian_vault_path),
     );
     if skill_id.is_none() && conversation.active_skill_id.is_some() {
         conversation.active_skill_id = None;
@@ -625,8 +624,6 @@ pub(super) async fn complete_assistant_reply_inner(
     .map(|path| path.display().to_string());
     // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
     let set_system_prompt = live_set_system_prompt(app, conversation);
-    let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
-        .then_some(settings.obsidian_vault_path.as_str());
     let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
         app,
         &conversation.knowledge_base_ids,
@@ -652,7 +649,6 @@ pub(super) async fn complete_assistant_reply_inner(
         project_prompt_context.as_ref(),
         workbench_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
         &conversation.additional_directories,
     );
     // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
@@ -720,7 +716,6 @@ pub(super) async fn complete_assistant_reply_inner(
         project_prompt_context.as_ref(),
         workbench_dir.as_deref(),
         knowledge_base_prompt.as_deref(),
-        obsidian_vault_path,
         &conversation.additional_directories,
     );
 

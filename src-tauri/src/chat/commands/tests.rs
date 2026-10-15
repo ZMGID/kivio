@@ -270,7 +270,7 @@ fn slash_trigger_prepares_instructions_and_pins_skill() {
     let chat_tools = crate::settings::ChatToolsConfig::default();
 
     let (skill_id, rewritten) =
-        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix login", false)
+        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix login")
             .expect("slash trigger should match");
 
     assert_eq!(skill_id, "commit");
@@ -301,7 +301,6 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
                 None,
                 input,
                 Some("another-skill"),
-                false,
             );
             assert_eq!(id.as_deref(), Some("frontend-design"));
             let prompt = agent_prepare::build_chat_system_prompt(
@@ -318,7 +317,6 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
                 None,
                 "",
                 false,
-                None,
                 None,
                 None,
                 None,
@@ -353,7 +351,7 @@ fn slash_trigger_resolves_arguments_without_changing_registry_or_other_turns() {
         ("/ci fix logout", "fix logout"),
     ] {
         let mut config = crate::settings::ChatToolsConfig::default();
-        let (_, detail) = resolve_request_skill(&registry, &mut config, None, input, None, false);
+        let (_, detail) = resolve_request_skill(&registry, &mut config, None, input, None);
         assert!(detail
             .unwrap()
             .body
@@ -362,8 +360,7 @@ fn slash_trigger_resolves_arguments_without_changing_registry_or_other_turns() {
     assert!(registry.records[0].body.contains("$ARGUMENTS"));
     let mut config = crate::settings::ChatToolsConfig::default();
     config.skill_fallback_mode = "progressive".to_string();
-    let (id, detail) =
-        resolve_request_skill(&registry, &mut config, None, "next task", None, false);
+    let (id, detail) = resolve_request_skill(&registry, &mut config, None, "next task", None);
     assert!(id.is_none() && detail.is_none());
     assert_eq!(config.skill_fallback_mode, "progressive");
 }
@@ -373,12 +370,8 @@ fn slash_trigger_ignores_non_slash_and_unknown() {
     let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
     let chat_tools = crate::settings::ChatToolsConfig::default();
 
-    assert!(
-        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "commit fix", false).is_none()
-    );
-    assert!(
-        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x", false).is_none()
-    );
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "commit fix").is_none());
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x").is_none());
 }
 
 #[test]
@@ -390,8 +383,7 @@ fn slash_trigger_activates_inline_skills_without_losing_the_task() {
         "please /commit fix login",
         "please\n/commit fix login",
     ] {
-        let (id, body) =
-            try_apply_skill_slash_trigger(&registry, &config, None, content, false).unwrap();
+        let (id, body) = try_apply_skill_slash_trigger(&registry, &config, None, content).unwrap();
         assert_eq!(id, "commit");
         assert!(body.contains("Write a commit for: fix login"));
     }
@@ -401,7 +393,7 @@ fn slash_trigger_activates_inline_skills_without_losing_the_task() {
         "/commit/file",
         "> /commit",
     ] {
-        assert!(try_apply_skill_slash_trigger(&registry, &config, None, content, false).is_none());
+        assert!(try_apply_skill_slash_trigger(&registry, &config, None, content).is_none());
     }
 }
 
@@ -421,7 +413,6 @@ fn slash_trigger_loads_multiple_inline_skills_once() {
         None,
         "please /review changes then /commit fix login /review again",
         None,
-        false,
     );
     assert_eq!(id.as_deref(), Some("review"));
     let body = detail.unwrap().body;
@@ -436,9 +427,7 @@ fn slash_trigger_skips_disabled_skill() {
     let mut chat_tools = crate::settings::ChatToolsConfig::default();
     chat_tools.disabled_skill_ids = vec!["commit".to_string()];
 
-    assert!(
-        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix", false).is_none()
-    );
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix").is_none());
 }
 
 #[test]
@@ -448,7 +437,7 @@ fn slash_trigger_respects_assistant_policy_but_allows_explicit_only_skills() {
     let registry = slash_skill_registry(record);
     let mut config = crate::settings::ChatToolsConfig::default();
     config.skill_fallback_mode = "progressive".to_string();
-    let (id, _) = resolve_request_skill(&registry, &mut config, None, "/commit fix", None, false);
+    let (id, _) = resolve_request_skill(&registry, &mut config, None, "/commit fix", None);
     assert_eq!(id.as_deref(), Some("commit"));
 
     let assistant = crate::chat::types::ChatAssistantSnapshot {
@@ -469,7 +458,6 @@ fn slash_trigger_respects_assistant_policy_but_allows_explicit_only_skills() {
         Some(&assistant),
         "/commit fix",
         None,
-        false,
     );
     assert!(id.is_none() && detail.is_none());
     assert_eq!(config.skill_fallback_mode, "progressive");

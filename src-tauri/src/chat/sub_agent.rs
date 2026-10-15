@@ -1108,8 +1108,6 @@ pub fn handle_agent_spawn<'a>(
             .map(|path| path.display().to_string())
             .as_deref(),
             None,
-            (!settings.obsidian_vault_path.trim().is_empty())
-                .then_some(settings.obsidian_vault_path.as_str()),
             &parent_conversation.additional_directories,
         );
 

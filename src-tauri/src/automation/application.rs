@@ -482,8 +482,6 @@ async fn run_builtin_agent_node(
         .clone()
         .unwrap_or_else(|| "zh".to_string());
     let custom_system_prompt = settings.chat.system_prompt.clone();
-    let obsidian_vault_path = (!settings.obsidian_vault_path.trim().is_empty())
-        .then_some(settings.obsidian_vault_path.as_str());
     let additional_directories: [crate::chat::types::AdditionalDirectory; 0] = [];
     let mut system_prompt = build_chat_system_prompt(
         &language,
@@ -505,7 +503,6 @@ async fn run_builtin_agent_node(
         None,
         workdir_str.as_deref(),
         None,
-        obsidian_vault_path,
         &additional_directories,
     );
     if let Some(extra) = extra_skill_bodies(

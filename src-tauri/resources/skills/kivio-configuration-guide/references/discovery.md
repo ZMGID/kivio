@@ -32,7 +32,7 @@ arguments: [focus]
 - `recommended-tools`、`mcp-tools`、`allowed-tools` 被读成推荐工具，**不是**工具权限配置。
 - `triggers`、`argument-hint`、`arguments` 供斜杠机制使用。描述只用单行，列表只用简单标量。
 
-全局 `chatTools.disabledSkillIds` 缺省表示启用；同时要满足插件状态/Obsidian 连接器要求。具备助手快照时按 `skillIds` 白名单过滤，空列表可导致全部不可用。`chatTools.nativeTools.skillRuntime` 控制 skill 工具；模型不支持工具时只能依实际 fallback 读取正文，不能假装调用了脚本。
+全局 `chatTools.disabledSkillIds` 缺省表示启用；插件附属技能还要满足对应插件的启用状态。具备助手快照时按 `skillIds` 白名单过滤，空列表可导致全部不可用。`chatTools.nativeTools.skillRuntime` 控制 skill 工具；模型不支持工具时只能依实际 fallback 读取正文，不能假装调用了脚本。
 
 ## 操作入口与验证
 

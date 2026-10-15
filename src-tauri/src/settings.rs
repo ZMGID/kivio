@@ -2048,9 +2048,6 @@ pub struct Settings {
     /// 自动归档目标目录路径（空字符串表示未设置）
     #[serde(default)]
     pub image_archive_path: String,
-    /// 用户 Obsidian 笔记库本地路径（空表示未配置）；注入系统提示供 agent 读取笔记。
-    #[serde(default)]
-    pub obsidian_vault_path: String,
     /// 收藏并置顶的模型键（"providerId:model"）；列表顺序即置顶顺序。
     /// 只在 chat 模型选择器里展示为顶部"收藏"组；失效项（provider 删/禁用/模型没了）展示时过滤。
     #[serde(default)]
@@ -2214,7 +2211,6 @@ impl Default for Settings {
             auto_check_update: true,
             image_archive_enabled: false,
             image_archive_path: String::new(),
-            obsidian_vault_path: String::new(),
             favorite_models: Vec::new(),
             openai: None,
         }
@@ -2257,47 +2253,19 @@ pub fn is_skill_enabled(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
         .any(|disabled| disabled == skill_id)
 }
 
-/// Bundled skill ids for the Obsidian connector — hidden until a vault path is
-/// configured. Adapted from kepano/obsidian-skills (see resources/skills/NOTICE.md).
-pub const OBSIDIAN_CONNECTOR_SKILL_IDS: &[&str] = &[
-    "obsidian-markdown",
-    "obsidian-bases",
-    "json-canvas",
-    "obsidian-cli",
-];
-
-/// The Obsidian connector is "configured" once a vault path is set.
-pub fn obsidian_connector_configured(vault_path: &str) -> bool {
-    !vault_path.trim().is_empty()
-}
-
-/// Connector-backed skills stay unavailable until their connector is configured.
-pub fn skill_connector_satisfied(skill_id: &str, obsidian_vault_configured: bool) -> bool {
-    if OBSIDIAN_CONNECTOR_SKILL_IDS.contains(&skill_id) {
-        return obsidian_vault_configured;
-    }
-    true
-}
-
-/// Global skill gate: Settings enable list + connector prerequisites + 插件门闸。
+/// Global skill gate: Settings enable list + 插件门闸。
 /// 插件附属 skill（如 officecli）仅在对应插件「已安装且启用」时可用。
-pub fn skill_globally_available(
-    chat_tools: &ChatToolsConfig,
-    skill_id: &str,
-    obsidian_vault_configured: bool,
-) -> bool {
+pub fn skill_globally_available(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
     if !crate::plugins::plugin_skill_available(skill_id) {
         return false;
     }
     is_skill_enabled(chat_tools, skill_id)
-        && skill_connector_satisfied(skill_id, obsidian_vault_configured)
 }
 
 /// When [`skill_globally_available`] is false, returns a loop/UI-friendly error.
 pub fn skill_global_unavailable_error(
     chat_tools: &ChatToolsConfig,
     skill_id: &str,
-    obsidian_vault_configured: bool,
     skill_name: &str,
 ) -> Option<String> {
     if !crate::plugins::plugin_skill_available(skill_id) {
@@ -2310,11 +2278,6 @@ pub fn skill_global_unavailable_error(
     }
     if !is_skill_enabled(chat_tools, skill_id) {
         return Some(format!("Skill is disabled in Settings: {skill_name}"));
-    }
-    if !skill_connector_satisfied(skill_id, obsidian_vault_configured) {
-        return Some(format!(
-            "Skill requires a configured Obsidian connector: {skill_name}"
-        ));
     }
     None
 }
@@ -3154,7 +3117,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     // 清理归档目录路径（去除首尾空白）
     settings.image_archive_path = settings.image_archive_path.trim().to_string();
-    settings.obsidian_vault_path = settings.obsidian_vault_path.trim().to_string();
 
     settings.retry_attempts = clamp_retry_attempts(settings.retry_attempts);
 
@@ -5805,59 +5767,25 @@ mod tests {
     }
 
     #[test]
-    fn skill_globally_available_hides_obsidian_without_vault() {
-        let chat_tools = ChatToolsConfig::default();
-        for id in OBSIDIAN_CONNECTOR_SKILL_IDS {
-            // No vault configured → each Obsidian skill is unavailable.
-            assert!(
-                !skill_globally_available(&chat_tools, id, false),
-                "{id} should be hidden without a vault"
-            );
-            assert!(!skill_connector_satisfied(id, false));
-            assert!(
-                skill_globally_available(&chat_tools, id, true),
-                "{id} should be available with a vault"
-            );
-            assert!(skill_connector_satisfied(id, true));
-        }
-        // Non-connector skills are unaffected by vault state.
-        assert!(skill_globally_available(&chat_tools, "pdf", false));
-    }
-
-    #[test]
-    fn skill_global_unavailable_error_distinguishes_disabled_and_connector() {
-        let mut chat_tools = ChatToolsConfig::default();
-        chat_tools.disabled_skill_ids = vec!["obsidian-markdown".to_string()];
+    fn standalone_obsidian_skills_follow_normal_enable_rules() {
+        let mut legacy = serde_json::to_value(Settings::default()).unwrap();
+        legacy["obsidianVaultPath"] = serde_json::json!("/old/vault");
+        let restored: Settings = serde_json::from_value(legacy).unwrap();
+        assert!(serde_json::to_value(&restored)
+            .unwrap()
+            .get("obsidianVaultPath")
+            .is_none());
+        let mut config = restored.chat_tools;
+        assert!(skill_globally_available(&config, "obsidian-markdown"));
         assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                true,
-                "obsidian-markdown",
-            )
-            .as_deref(),
-            Some("Skill is disabled in Settings: obsidian-markdown")
-        );
-
-        chat_tools.disabled_skill_ids.clear();
-        assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                false,
-                "obsidian-markdown"
-            )
-            .as_deref(),
-            Some("Skill requires a configured Obsidian connector: obsidian-markdown")
-        );
-        assert_eq!(
-            skill_global_unavailable_error(
-                &chat_tools,
-                "obsidian-markdown",
-                true,
-                "obsidian-markdown"
-            ),
+            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian"),
             None
+        );
+        config.disabled_skill_ids = vec!["obsidian-markdown".into()];
+        assert!(!skill_globally_available(&config, "obsidian-markdown"));
+        assert_eq!(
+            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian").as_deref(),
+            Some("Skill is disabled in Settings: Obsidian")
         );
     }
 
