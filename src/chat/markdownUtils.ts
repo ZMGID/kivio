@@ -1,13 +1,23 @@
-/** Run `transform` only outside fenced/inline code so LaTeX/table fixes never touch code. */
+/** Transform prose while preserving matching code spans and fenced code, including unfinished fences. */
 function outsideCode(content: string, transform: (text: string) => string): string {
-  // split keeps the code segments (odd indices) verbatim; even indices are prose.
-  // The second alternative catches an **unterminated** fence: mid-stream a code block
-  // has no closing ``` yet, and without this branch the table/LaTeX rewrites would
-  // reach inside it and mangle the code the user is watching arrive.
-  return content
-    .split(/(```[\s\S]*?```|```[\s\S]*$|`[^`\n]*`)/g)
-    .map((part, i) => (i % 2 === 0 ? transform(part) : part))
-    .join('')
+  const tokens = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|(`+)/gm
+  let output = ''
+  let start = 0
+  for (let token = tokens.exec(content); token; token = tokens.exec(content)) {
+    const fence = token[1]
+    const marker = fence ?? token[2]
+    const closer = fence
+      ? new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?=\\n|$)`, 'gm')
+      : new RegExp('(?<!`)`{' + marker.length + '}(?!`)', 'g')
+    closer.lastIndex = tokens.lastIndex
+    const close = closer.exec(content)
+    if (!close && !fence) continue
+    const end = close ? closer.lastIndex : content.length
+    output += transform(content.slice(start, token.index)) + content.slice(token.index, end)
+    start = end
+    tokens.lastIndex = end
+  }
+  return output + transform(content.slice(start))
 }
 
 /** GFM 表格的分隔行（`| --- |`、`| :-: |`）。remark-gfm 见不到它就不认表格。 */
@@ -51,11 +61,45 @@ function fixSquashedTables(text: string): string {
   return out.join('\n')
 }
 
+function preserveCurrency(text: string): string {
+  // Leave explicit math intact; amounts may have a space after $ (e.g. R$ 20.00).
+  // Horizontal spaces include the non-breaking variants used in currency formatting.
+  const tokens = /\\[\s\S]|\]\([^\n)]*\)|https?:\/\/[^\s<>]+|^ {0,3}(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[ \t]*(?=\n|$)|(?![\s\S]))|\$\$[\s\S]*?(?:\$\$|$)|\$/gm
+  let output = ''
+  let start = 0
+  for (let token = tokens.exec(text); token; token = tokens.exec(text)) {
+    if (token[0] !== '$') continue
+    // Currency labels also occur without amounts: R$（雷亚尔）, **D$**.
+    // Handle them before searching for a math closer, which could swallow prose.
+    const currencyLabel = /(?:^|[^A-Za-z])(?:R|D|US|CA|C|AU|A|NZ|HK|SG|S|NT|MX|AR|CL|CO)$/.test(text.slice(0, token.index))
+    if (currencyLabel) {
+      output += text.slice(start, token.index) + '\\$'
+      start = tokens.lastIndex
+      continue
+    }
+    const tail = text.slice(tokens.lastIndex)
+    const closing = /(?<!\\)\$|\n/.exec(tail)
+    const hasClosing = closing?.[0] === '$'
+    const amount = /^[ \t\u00a0\u202f]*[+−-]?\d+(?:,\d{3})*(?:\.\d+)?/.exec(tail)
+    const suffix = amount ? tail.slice(amount[0].length) : ''
+    const prose = /^\s*(?:[，。；：！？、!?]|[.,;:]\s+(?:[A-Za-z]|$)|\]\(|\*\*|[A-Za-z]{2,}\b|\p{Script=Han})/u.test(suffix)
+    const nextAmount = hasClosing && /^[ \t\u00a0\u202f]*[+−-]?\d/.test(tail.slice(closing!.index + 1))
+    if (amount && (!hasClosing || prose || nextAmount)) {
+      output += text.slice(start, token.index) + '\\$'
+      start = tokens.lastIndex
+    } else if (hasClosing) {
+      tokens.lastIndex += closing!.index + 1
+    }
+  }
+  return output + text.slice(start)
+}
+
 /**
  * 送进 remark 之前的字符串级修补（对齐 Streamdown/remend 的思路：解析器不动，先把
  * 流式中不完整/不规范的写法补成合法 markdown）。
  *
  * - GFM 表格：挤成一行的拆回多行、缺分隔行的补上（见 `fixSquashedTables`）。
+ * - 货币：保护金额和货币标记中的 $，保留真正的数学公式。
  * - LaTeX：`\[...\]` / `\(...\)` 转成 remark-math 认识的 `$$...$$` / `$...$`。
  *   非贪婪配对，未闭合的 `\[` 原样留着（流式中正确的行为）；行内公式要 trim，
  *   因为 remark-math 不接受 `$` 后面紧跟空白。
@@ -63,7 +107,7 @@ function fixSquashedTables(text: string): string {
 export function normalizeMarkdownForRender(content: string): string {
   return outsideCode(content, (text) =>
     fixSquashedTables(
-      text
+      preserveCurrency(text)
         .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => `\n$$\n${body.trim()}\n$$\n`)
         .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => `$${body.trim()}$`),
     ),

@@ -253,7 +253,7 @@ pub fn native_skill_activate_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "skill__activate".to_string(),
         name: "skill".to_string(),
-        description: "Load a specialized skill when the task at hand matches one of the skills listed in the system prompt. Injects the skill's instructions and resources into the current conversation — the output may contain detailed workflow guidance plus references to scripts and files in the skill directory (use `read` for files and `bash` for scripts when those tools are declared in this request). The skill name must match one listed in available_skills.".to_string(),
+        description: "Load the instructions for a listed skill according to the session's skill activation policy. Injects the skill's instructions and resources into the current conversation — the output may contain detailed workflow guidance plus references to scripts and files in the skill directory (use `read` for files and `bash` for scripts when those tools are declared in this request). The skill name must match one listed in available_skills.".to_string(),
         source: "skill".to_string(),
         server_id: None,
         server_name: Some("Skill".to_string()),
@@ -394,7 +394,7 @@ pub fn native_write_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__write_file".to_string(),
         name: "write".to_string(),
-        description: "Write a full text file: create it if missing, overwrite it if it exists. Use this when the user explicitly asks to save/write/create a local file or gives a target path; for small changes to an existing file prefer edit. Do not call it just because the user asked for a code block or inline code — answer directly instead. Returns structured file mutation metadata including diff stats.".to_string(),
+        description: "Write a full text file: create it if missing, overwrite it if it exists. Use this for requested deliverables and necessary supporting files within the user's task scope; preserve unrelated files. For small changes to an existing file prefer edit. For a code block without saving, answer inline. Returns structured file mutation metadata including diff stats.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -447,14 +447,11 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
 }
 
 pub fn native_run_command_tool() -> ChatToolDefinition {
-    // 描述按实际选中的 shell 动态生成(opencode #16479 教训:shell 自动检测对模型
-    // 不可见 → 模型猜错语法)。Windows 检出 Git Bash 时追加 bash 语法 + 正斜杠路径
-    // 提示;PowerShell 回落 / 非 Windows 时该 hint 为空串,描述与旧版逐字一致。
     let shell_hint = crate::native_tools::run_command_shell_hint();
     ChatToolDefinition {
         id: "native__run_command".to_string(),
         name: "bash".to_string(),
-        description: format!("Run a host shell command (build, test, etc.).{shell_hint} With cwd omitted, start in the current working directory (project root or conversation workbench). An explicit absolute or ~/ cwd can point outside it and must be an existing directory; it is a startup directory, not a filesystem boundary. Normal OS permissions and tool approvals apply. Do not use `cd path && command` when the path contains spaces—pass `cwd` and run only the remaining command. Do not combine `cwd` with a leading `cd ... &&` prefix. Foreground commands wait until they exit — omit timeout_ms unless you want the process killed at a deadline. Do not background finite jobs (builds, tests, image-generation batches); put parallel work inside one command. Long-running never-ending servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a job_id. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Host Python package installs require an explicit user request and allow_host_python_package_install=true."),
+        description: format!("Run a host shell command (build, test, etc.).{shell_hint} Each call starts a fresh process; use cwd and command-local environment variables for the current call. With cwd omitted, start in the current working directory (project root or conversation workbench). An explicit absolute or ~/ cwd can point outside it and must be an existing directory; it is a startup directory, not a filesystem boundary. Normal OS permissions and tool approvals apply. Pass the startup directory through `cwd`, including paths with spaces, and put the operation itself in `command`. Foreground commands wait until they exit — omit timeout_ms unless you want the process killed at a deadline. Do not background finite jobs (builds, tests, image-generation batches); put parallel work inside one command. Long-running never-ending servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a job_id. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Host Python package installs require an explicit user request and allow_host_python_package_install=true."),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -479,7 +476,7 @@ pub fn native_bash_output_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__bash_output".to_string(),
         name: "bash_output".to_string(),
-        description: "Inspect background commands started by bash (background:true / auto-detected never-ending servers). With a job_id: waits until that process exits or wait_ms elapses (default 30000; 0 = return immediately), then returns captured stdout/stderr since since_offset (default 0), status (running / exited with exit_code / killed / error), and next_offset. New log lines do not end the wait. Finite jobs should use foreground bash (wait until exit) instead of this tool. With NO job_id: lists all background commands tracked in this app session (job_id, status, command, working directory, age) — background commands survive across turns until killed or the app exits. Always refresh once with bash_output before reporting a background command's result to the user.".to_string(),
+        description: "Inspect background commands started by bash (background:true / auto-detected never-ending servers). With a job_id: waits until that process exits or wait_ms elapses (default 30000; 0 = return immediately), then returns captured stdout/stderr since since_offset (default 0), status (running / exited with exit_code / killed / error), and next_offset; pass the returned next_offset as since_offset for the next read. New log lines do not end the wait. Finite jobs should use foreground bash (wait until exit) instead of this tool. With NO job_id: lists all background commands tracked in this app session (job_id, status, command, working directory, age) — background commands survive across turns until killed or the app exits. Always refresh once with bash_output before reporting a background command's result to the user.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -553,7 +550,7 @@ pub fn native_present_artifacts_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__present_artifacts".to_string(),
         name: "present_artifacts".to_string(),
-        description: "Prepare selected deliverables for final-answer references (default mode: prepare). For an existing local file, pass its path to obtain an art_ ID. In the final answer, place [label](artifact:art_ID) for a file or ![description](artifact:art_ID) for an image at the relevant paragraph. Files that already have IDs can be referenced directly without calling this tool. Use mode preview only when the user explicitly requests an immediate preview or must inspect alternatives before you continue. Do not present internal QA screenshots, extracted frames, drafts, or failed attempts by default. Pass only a short JSON of identifiers: copy `art_…` ids from tool results into artifact_ids, or pass existing disk paths. Never both for the same file. Never invent a path for a generated file. Never put file contents, image bytes, base64, or data URLs in any field. Caption is optional plain text. Max 16 files. Unselected files stay hidden. Example: {\"artifact_ids\":[\"art_…\"]}".to_string(),
+        description: "Prepare selected deliverables for final-answer references (default mode: prepare). For an existing local file, pass its path to obtain an art_ ID. In the final answer, place [label](artifact:art_ID) for a file or ![description](artifact:art_ID) for an image. Files that already have IDs can be referenced directly without calling this tool. Use mode preview only when the user explicitly requests an immediate preview or must inspect alternatives before you continue. Do not present internal QA screenshots, extracted frames, drafts, or failed attempts by default. Pass only a short JSON of identifiers: copy `art_…` ids from tool results into artifact_ids, or pass existing disk paths. Never both for the same file. Never invent a path for a generated file. Never put file contents, image bytes, base64, or data URLs in any field. Caption is optional plain text. Max 16 files. Unselected files stay hidden. Example: {\"artifact_ids\":[\"art_…\"]}".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -1323,7 +1320,8 @@ mod tests {
     fn write_file_tool_description_discourages_inline_code_requests() {
         let tool = native_write_file_tool();
 
-        assert!(tool.description.contains("explicitly asks"));
+        assert!(tool.description.contains("necessary supporting files"));
+        assert!(tool.description.contains("answer inline"));
         assert!(tool.description.contains("code block"));
         assert!(tool.description.contains("prefer edit"));
         assert!(tool

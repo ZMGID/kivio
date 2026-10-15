@@ -60,4 +60,14 @@ describe('normalizeMarkdownForRender', () => {
     const input = 'see:\n```md\n| a | b | | c | d |\n\\[x\\]'
     expect(normalizeMarkdownForRender(input)).toBe(input)
   })
+
+  it.each([
+    '~~~md\n| a | b | | c | d |\n\\[x\\]\n~~~',
+    '~~~md\n\\(x\\)\n$10 and $20',
+    '````md\n```\n\\(x\\)\n````',
+    '``a ` \\(x\\) $10``',
+  ])('keeps extended and unfinished code delimiters intact: %s', (input) => {
+    expect(normalizeMarkdownForRender(input)).toBe(input)
+  })
+
 })

@@ -239,19 +239,19 @@ fn is_wsl_bash_path(path: &Path) -> bool {
         || lowered.ends_with(r"\windows\sysnative\bash.exe")
 }
 
-/// Shell-syntax sentence appended to the `bash` tool description so the model
-/// always knows which shell its commands actually run in (opencode #16479:
-/// invisible shell auto-detection makes models guess the wrong syntax). Only
-/// non-empty on Windows when Git Bash was selected — the PowerShell fallback
-/// keeps the existing description untouched, and Unix is bash-like already.
-/// The forward-slash rule guards against opencode #15810: models writing
-/// `C:\Users\...` into bash, where `\U` is eaten as an escape sequence.
+/// Describe the shell selected by `build_shell_command` in the tool contract.
 pub fn run_command_shell_hint() -> &'static str {
     #[cfg(target_os = "windows")]
-    if find_git_bash().is_some() {
-        return " On this machine commands run in Git Bash — use bash syntax (pipes, heredoc, `$VAR`, `$(seq ...)`), NOT PowerShell cmdlets. Write Windows paths with forward slashes (C:/Users/...) — backslashes are escape characters in bash.";
+    {
+        if find_git_bash().is_some() {
+            return " Commands run in Git Bash; use bash syntax and Windows paths with forward slashes (C:/Users/...).";
+        }
+        " Commands run in PowerShell; use PowerShell syntax and cmdlets, with $env:NAME for environment variables."
     }
-    ""
+    #[cfg(not(target_os = "windows"))]
+    {
+        " Commands run through sh -c; use POSIX shell syntax."
+    }
 }
 
 /// Build the PowerShell invocation of `command` (`<pwsh|powershell> -NoLogo
@@ -2443,7 +2443,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         let workspace = NativeToolWorkspace::global(&[dir.to_string_lossy().into_owned()]);
         #[cfg(target_os = "windows")]
-        let command = if run_command_shell_hint().is_empty() {
+        let command = if find_git_bash().is_none() {
             "Write-Output started; Start-Sleep -Seconds 20"
         } else {
             "printf 'started\\n'; sleep 20"

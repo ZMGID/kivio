@@ -71,7 +71,7 @@ pub fn format_prompt(state: &AgentPlanState) -> String {
         )
     } else {
         format!(
-            "Agent plan context (internal runtime state): current mode is act and plan status is {status}. If the user asks to continue or execute the plan, use the saved plan below as context; if the user changes requirements, follow the latest user message and note that the plan needs adjustment. Do not treat the plan as a user-editable todo list, and do not create reminders or calendar items.\n\nCurrent saved plan:\n{current_plan}"
+            "Agent plan context (internal runtime state): current mode is act and plan status is {status}. If the user asks to continue or execute the plan, use the saved plan below as context; if the user changes requirements, follow the latest user message and note that the plan needs adjustment. Treat the saved plan as task context. Create reminders only when the user requests them, using the scheduling tools available in this conversation.\n\nCurrent saved plan:\n{current_plan}"
         )
     }
 }
@@ -146,6 +146,13 @@ mod tests {
         assert!(!prompt.contains("todo_write"));
         assert!(!prompt.contains("must be delegated"));
         assert_eq!(with_mode(&state, AgentPlanMode::Act).plan, draft.plan);
+    }
+
+    #[test]
+    fn act_plan_context_leaves_user_requested_reminders_available() {
+        let prompt = format_prompt(&AgentPlanState::default());
+        assert!(prompt.contains("Create reminders only when the user requests them"));
+        assert!(!prompt.contains("do not create reminders"));
     }
 
     #[test]

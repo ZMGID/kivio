@@ -3,7 +3,6 @@ use super::types::SkillRegistry;
 pub fn format_catalog(
     registry: &SkillRegistry,
     explicit_skill_id: Option<&str>,
-    tools_available: bool,
     skill_enabled: impl Fn(&str) -> bool,
 ) -> String {
     let explicit_skill_id = explicit_skill_id.filter(|id| !id.trim().is_empty());
@@ -30,13 +29,7 @@ pub fn format_catalog(
 
     skills.sort_by(|a, b| a.meta.name.cmp(&b.meta.name));
 
-    let header = if tools_available {
-        "The following Agent Skills are specialized playbooks for specific kinds of work. When the current task matches a skill's description, call the skill tool for that skill proactively — you do NOT need the user to name it or ask for it; matching the description is enough. Activating a skill loads its full step-by-step instructions and bundled resources, which produce markedly better results than improvising. After activating: use `read` for bundled files and `bash` for scripts when those tools are declared in this request.\n\n"
-    } else {
-        "The following Agent Skills are available for reference. Tool-based skill activation is unavailable in this request. Use the catalog only as reference; this alone does not identify a model capability or permission failure. A selected skill may still be supplied through the SKILL.md-only fallback.\n\n"
-    };
-
-    let mut out = String::from(header);
+    let mut out = String::new();
     out.push_str("<available_skills>\n");
     for record in skills {
         out.push_str("  <skill>\n");
@@ -102,26 +95,26 @@ mod tests {
             warnings: vec![],
         };
 
-        let catalog = format_catalog(&registry, None, true, |_| true);
+        let catalog = format_catalog(&registry, None, |_| true);
         assert!(catalog.contains("auto"));
         assert!(!catalog.contains("manual"));
         assert!(catalog.contains("<location>/skills/auto/SKILL.md</location>"));
 
-        let explicit = format_catalog(&registry, Some("manual"), true, |_| true);
+        let explicit = format_catalog(&registry, Some("manual"), |_| true);
         assert!(explicit.contains("manual"));
         assert!(explicit.contains("<location>/skills/manual/SKILL.md</location>"));
     }
 
     #[test]
-    fn catalog_without_tools_omits_activate_instructions() {
+    fn catalog_contains_metadata_without_activation_policy() {
         let registry = SkillRegistry {
             records: vec![sample_record("auto", "auto", false)],
             warnings: vec![],
         };
 
-        let catalog = format_catalog(&registry, None, false, |_| true);
+        let catalog = format_catalog(&registry, None, |_| true);
         assert!(!catalog.contains("call the skill tool"));
-        assert!(catalog.contains("unavailable in this request"));
+        assert!(catalog.starts_with("<available_skills>"));
         assert!(catalog.contains("<location>/skills/auto/SKILL.md</location>"));
     }
 
@@ -135,7 +128,7 @@ mod tests {
             warnings: vec![],
         };
 
-        let catalog = format_catalog(&registry, None, true, |id| id != "off");
+        let catalog = format_catalog(&registry, None, |id| id != "off");
         assert!(catalog.contains("auto"));
         assert!(!catalog.contains("off"));
     }
