@@ -1,19 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CONNECTOR_CATALOG,
   adoptFreshPluginManagedServers,
   isPluginManagedServer,
   preservePluginManagedServers,
 } from './connectorCatalog'
 
-it('offers GitHub browser authorization without asking users for a PAT', () => {
-  const github = CONNECTOR_CATALOG.find(entry => entry.id === 'github')!
-  expect(github.authKind).toBe('oauth')
-  expect(github.tokenHint).toBeUndefined()
-})
-
 describe('isPluginManagedServer', () => {
-  it('hides plugin MCP rows from the connectors page', () => {
+  it('identifies plugin-managed MCP rows', () => {
     expect(
       isPluginManagedServer({
         id: 'plugin-officecli',

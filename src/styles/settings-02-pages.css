@@ -2923,16 +2923,6 @@ dialog.kv-modal::backdrop {
   color: var(--text-muted);
 }
 
-/* 连接器详情弹层 */
-.kv-modal.kv-connector-detail {
-  max-width: 640px;
-  padding: 14px 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: min(82vh, 600px);
-}
-
 /* 虚拟文本附件编辑弹窗（粘贴长文本转虚拟 txt 后点击打开） */
 .kv-modal.kv-pasted-text-editor {
   max-width: min(720px, calc(100vw - 32px));
@@ -2960,120 +2950,6 @@ dialog.kv-modal::backdrop {
 .kv-pasted-text-editor-textarea:focus {
   border-color: var(--ring, color-mix(in srgb, var(--accent) 45%, transparent));
 }
-.kv-connector-detail-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.kv-connector-detail-body {
-  display: flex;
-  gap: 16px;
-  overflow: auto;
-}
-.kv-connector-detail-left {
-  flex: 0 0 40%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.kv-connector-detail-right {
-  flex: 1 1 60%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-left: 1px solid var(--border);
-  padding-left: 16px;
-}
-.kv-connector-detail-section-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0 0 4px;
-}
-.kv-connector-detail-overview {
-  list-style: disc;
-  padding-left: 16px;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.kv-connector-detail-link {
-  align-self: flex-start;
-  border: none;
-  background: transparent;
-  padding: 0;
-  font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
-  text-decoration: underline;
-  font-family: inherit;
-}
-.kv-connector-detail-account {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text);
-  min-width: 0;
-}
-.kv-connector-detail-right-header {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg);
-  padding-bottom: 4px;
-}
-.kv-connector-detail-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.kv-connector-detail-tools {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow: auto;
-  max-height: 360px;
-}
-.kv-connector-detail-tool {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
-}
-.kv-connector-detail-tool:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-}
-
-@media (max-width: 560px) {
-  .kv-connector-detail-body {
-    flex-direction: column;
-  }
-  .kv-connector-detail-left,
-  .kv-connector-detail-right {
-    flex: 1 1 auto;
-  }
-  .kv-connector-detail-right {
-    border-left: none;
-    padding-left: 0;
-    border-top: 1px solid var(--border);
-    padding-top: 12px;
-  }
-}
-
 .kv-model-picker-header {
   display: flex;
   align-items: center;

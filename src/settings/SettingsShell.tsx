@@ -32,7 +32,7 @@ import { applyProviderDraftIntent, type ProviderDraftIntent } from './providerDr
 import { i18n, type Lang } from '../components/i18n'
 import {
   GeneralIcon, HotkeysIcon, TranslateIcon, LensIcon, ChatIcon, MemoryIcon, MixerIcon,
-  CliIcon, ComputerIcon, WebSearchIcon, ConnectorsIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
+  CliIcon, ComputerIcon, WebSearchIcon, SessionsIcon, UsageIcon, ProvidersIcon, AboutIcon, HooksIcon,
 } from './NavIcons'
 import { formatHotkeyError, getPlatform } from './utils'
 import { type ProviderPreset } from './providerPresets'
@@ -75,10 +75,9 @@ import {
   SettingRow,
   SettingsGroup,
 } from './components'
-import { ConnectorsPanel } from './ConnectorsPanel'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'connectors' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'sessions' | 'usage' | 'providers' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -854,7 +853,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
     { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: ComputerIcon },
     { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
-    { id: 'connectors' as const, label: t.tabConnectors, icon: ConnectorsIcon },
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
@@ -913,10 +911,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     hooks: {
       title: t.tabHooks,
       subtitle: t.hooksPageSubtitle,
-    },
-    connectors: {
-      title: t.tabConnectors,
-      subtitle: t.pluginCenterConnectorsSubtitle,
     },
     sessions: {
       title: t.tabSessions,
@@ -1248,29 +1242,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 lang={lang}
                 hooks={settings.chatTools.hooks ?? []}
                 onChange={(hooks) => updateChatTools({ hooks })}
-              />
-            )}
-
-            {/* ===== 连接器；通用插件包由插件市场管理 ===== */}
-            {activeTab === 'connectors' && (
-              <ConnectorsPanel
-                servers={settings.chatTools.servers}
-                updateChatTools={updateChatTools}
-                obsidianVaultPath={settings?.obsidianVaultPath ?? ''}
-                onObsidianVaultPathChange={(path) => updateSettings({ obsidianVaultPath: path })}
-                lang={lang}
-                testServer={async (server) => {
-                  try {
-                    const result = await api.chatMcpTestServer(server, settings?.chatTools?.toolTimeoutMs)
-                    return {
-                      ok: result.success,
-                      message: result.error || '',
-                      tools: result.tools,
-                    }
-                  } catch {
-                    return null
-                  }
-                }}
               />
             )}
 

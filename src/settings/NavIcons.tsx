@@ -174,19 +174,6 @@ export function McpIcon(props: IconProps) {
   )
 }
 
-// 连接器：两个斜向互扣的链环
-export function ConnectorsIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)}>
-      <g transform="rotate(-45 12 12)">
-        <rect x="1.25" y="8.5" width="12.5" height="7" rx="3.5" />
-        <rect x="10.25" y="8.5" width="12.5" height="7" rx="3.5" />
-      </g>
-    </svg>
-  )
-}
-
-
 // 作品：扁封套，口里露出折角 / 方片 / 圆片
 export function WorksIcon(props: IconProps) {
   return (

@@ -10,7 +10,7 @@ export function isBuiltinGithubOAuth(url: string | undefined): boolean {
   } catch { return false }
 }
 
-/** Shared authorization lifetime for the MCP page and connector directory. */
+/** Shared authorization lifetime for MCP authorization. */
 export function useConnectorOAuth() {
   const active = useRef<AbortController | null>(null)
   const [prompt, setPrompt] = useState<OAuthDevicePrompt | null>(null)
