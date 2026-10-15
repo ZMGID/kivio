@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSettingsCached } from '../api/settingsCache'
 import { chatApi } from './api'
+import { api, type UpdateInfo } from '../api/tauri'
 import * as dialogs from '../components/dialogQueue'
 import * as nativeDialog from '@tauri-apps/plugin-dialog'
 import { Sidebar, type SidebarProps } from './Sidebar'
@@ -49,6 +50,8 @@ afterEach(() => {
 })
 
 beforeEach(() => {
+  vi.spyOn(api, 'checkUpdate').mockResolvedValue({ available: false })
+  vi.spyOn(api, 'onUpdateAvailable').mockResolvedValue(() => {})
   vi.mocked(getSettingsCached).mockResolvedValue({ chat: {} } as Awaited<ReturnType<typeof getSettingsCached>>)
 })
 
@@ -408,6 +411,42 @@ describe('Sidebar refresh lifecycle', () => {
     }
     return { reads, props }
   }
+
+  it.each([
+    { available: false },
+    { available: false, checkFailed: true },
+    { available: true, version: '9.0.0' },
+  ])('only shows the update action for a confirmed new release: %j', async (info) => {
+    const { props } = setup()
+    vi.mocked(api.checkUpdate).mockResolvedValue(info)
+    const openSettings = vi.fn()
+    render(<Sidebar {...props} onOpenSettings={openSettings} />)
+    await act(async () => {})
+    if (info.available) {
+      await userEvent.click(screen.getByRole('button', { name: '发现新版本' }))
+      expect(openSettings).toHaveBeenCalledWith('about')
+    } else {
+      expect(screen.queryByRole('button', { name: '发现新版本' })).toBeNull()
+    }
+  })
+
+  it('honors disabled auto checks while accepting update notifications and disposing the listener', async () => {
+    const { props } = setup()
+    vi.mocked(getSettingsCached).mockResolvedValue({ chat: {}, autoCheckUpdate: false } as Awaited<ReturnType<typeof getSettingsCached>>)
+    let notify: (info: UpdateInfo) => void = () => {}
+    const dispose = vi.fn()
+    vi.mocked(api.onUpdateAvailable).mockImplementation(async (listener) => { notify = listener; return dispose })
+    const view = render(<Sidebar {...props} />)
+    await act(async () => {})
+    expect(api.checkUpdate).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: '发现新版本' })).toBeNull()
+    act(() => notify({ available: true, version: '9.0.0' }))
+    expect(screen.getByRole('button', { name: '发现新版本' })).toBeTruthy()
+    act(() => notify({ available: false }))
+    expect(screen.queryByRole('button', { name: '发现新版本' })).toBeNull()
+    view.unmount()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
 
   it('does not reload the catalog when navigation callbacks or the selected group change', async () => {
     const { reads, props } = setup()

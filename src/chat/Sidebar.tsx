@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
   ChevronRight,
+  CircleArrowUp,
   Folder,
   FolderPlus,
   Layers,
@@ -26,6 +27,7 @@ import { SetDialog } from './SetDialog'
 import { SidebarAccountMenu } from './SidebarAccountMenu'
 import { getSettingsCached } from '../api/settingsCache'
 import { IconButton } from '../components/Button'
+import { api } from '../api/tauri'
 import { Select } from '../settings/public/controls'
 import { chatApi } from './api'
 import { applyIdOrder, moveIdToIndex } from '../utils/pointerReorder'
@@ -209,7 +211,7 @@ export interface SidebarProps {
   onForceDropConversation?: (id: string) => void
   /** 真实会话列表 refetch 落地后回调（父组件据此剪枝乐观条目，见 visibleConversations 注释）。 */
   onConversationsLoaded?: () => void
-  onOpenSettings: () => void
+  onOpenSettings: (tab?: 'about') => void
   onOpenExtensionsItem: (item: ExtensionsNavItem) => void
   onSelectLang: (lang: Lang) => void
   onOpenUsage: () => void
@@ -237,13 +239,40 @@ function SidebarUserFooter({
   profile: ChatUserProfile
   lang: Lang
   settingsActive: boolean
-  onOpenSettings: () => void
+  onOpenSettings: (tab?: 'about') => void
   onSelectLang: (lang: Lang) => void
   onOpenUsage: () => void
 }) {
   const [menuRect, setMenuRect] = useState<{ left: number; top: number; width: number } | null>(null)
   const rowRef = useRef<HTMLDivElement>(null)
   const t = i18n[lang]
+
+  const [updateAvailable, setUpdateAvailable] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    let receivedEvent = false
+    void (async () => {
+      try {
+        const dispose = await api.onUpdateAvailable((info) => {
+          if (cancelled) return
+          receivedEvent = true
+          setUpdateAvailable(info.available && !info.checkFailed)
+        })
+        if (cancelled) { dispose(); return }
+        unlisten = dispose
+        const settings = await getSettingsCached()
+        if (cancelled || settings.autoCheckUpdate === false) return
+        // The sidebar may mount after the startup notification has already fired.
+        const info = await api.checkUpdate()
+        if (!cancelled && !receivedEvent) setUpdateAvailable(info.available && !info.checkFailed)
+      } catch {
+        // An unavailable check must not advertise a new version.
+      }
+    })()
+    return () => { cancelled = true; unlisten?.() }
+  }, [])
 
   const toggleMenu = () => {
     if (menuRect) {
@@ -283,6 +312,18 @@ function SidebarUserFooter({
             {profile.displayName || 'Kivio'}
           </span>
         </button>
+        {updateAvailable && (
+          <IconButton
+            size="xs"
+            label={lang === 'zh' ? '发现新版本' : 'Update available'}
+            onClick={() => {
+              setMenuRect(null)
+              onOpenSettings('about')
+            }}
+          >
+            <CircleArrowUp strokeWidth={1.75} color="var(--accent)" />
+          </IconButton>
+        )}
         <IconButton
           size="xs"
           label={`${t.settings} (${isMac ? '⌘,' : 'Ctrl+,'})`}

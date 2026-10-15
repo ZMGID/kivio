@@ -45,7 +45,7 @@ interface UseChatRoutingParams {
   requestTasksLeave?: () => Promise<boolean>
 }
 
-type SettingsOpenTab = 'chat' | 'connectors' | 'sessions' | 'usage'
+type SettingsOpenTab = 'chat' | 'connectors' | 'sessions' | 'usage' | 'about'
 
 /**
  * 聊天窗口的 hash 路由。

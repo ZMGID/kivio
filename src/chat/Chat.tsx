@@ -2494,9 +2494,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     runAfterLeavingEditors(() => openExtensionsItem(item))
   }, [openExtensionsItem, runAfterLeavingEditors])
 
-  const handleSidebarOpenSettings = useCallback(() => {
+  const handleSidebarOpenSettings = useCallback((tab?: 'about') => {
     const settingsPanelOpen = chatView === 'settings' && extensionsNavItem === null
-    if (settingsPanelOpen) {
+    if (settingsPanelOpen && !tab) {
       if (settingsRef.current) {
         settingsRef.current.requestClose()
       } else {
@@ -2506,7 +2506,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
     runAfterLeavingEditors(() => {
       setExtensionsNavItem(null)
-      openEmbeddedSettings('chat')
+      openEmbeddedSettings(tab ?? 'chat')
     })
   }, [chatView, extensionsNavItem, handleSettingsClose, openEmbeddedSettings, runAfterLeavingEditors])
 
