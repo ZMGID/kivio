@@ -1,18 +1,15 @@
 use serde_json::Value;
 
-use super::{
-    discover::build_registry_in,
-    types::{SkillFileKind, SkillRecord, SkillRegistry},
-};
-use tauri::AppHandle;
+use super::types::{SkillRecord, SkillRegistry};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct SkillRunContext {
     /// 当前对话助手允许激活的技能 id 白名单(冻结自助手快照)。
     /// `None` = 无助手限制(全局行为);`Some(ids)` = 仅这些技能可激活,空集合 = 一个都不可。
     allowed_skill_ids: Option<Vec<String>>,
-    /// 对话工作目录：扫描项目 `.kivio/skills` 与 `.agents/skills`（cwd → git 根）。
-    project_cwd: Option<std::path::PathBuf>,
+    /// Frozen catalog shared with the conversation; bodies are read on demand.
+    registry: Arc<SkillRegistry>,
 }
 
 impl SkillRunContext {
@@ -21,8 +18,8 @@ impl SkillRunContext {
         self.allowed_skill_ids = ids;
     }
 
-    pub fn set_project_cwd(&mut self, cwd: Option<std::path::PathBuf>) {
-        self.project_cwd = cwd;
+    pub fn set_registry(&mut self, registry: Arc<SkillRegistry>) {
+        self.registry = registry;
     }
 
     /// 某技能 id 是否在助手白名单内(无助手 = 不限)。
@@ -33,15 +30,8 @@ impl SkillRunContext {
         }
     }
 
-    /// Resolve against current files and enabled plugin packages on each explicit
-    /// load. A previous tool result may have been compacted, trimmed or discarded;
-    /// it is not evidence that the model still has these instructions.
-    pub fn registry_for(
-        &self,
-        app: &AppHandle,
-        scan_paths: &[String],
-    ) -> Result<SkillRegistry, String> {
-        build_registry_in(app, scan_paths, self.project_cwd.as_deref())
+    pub fn registry(&self) -> &SkillRegistry {
+        &self.registry
     }
 }
 
@@ -138,17 +128,6 @@ pub fn activate_skill(record: &SkillRecord) -> String {
     out.push_str(&record.base_dir.display().to_string());
     out.push_str("\nRelative paths in this skill are relative to the skill directory.\n");
 
-    if !record.meta.files.is_empty() {
-        out.push_str("\n<skill_resources>\n");
-        for file in &record.meta.files {
-            out.push_str(&format!(
-                "  <file kind=\"{}\">{}</file>\n",
-                skill_file_kind_label(file.kind),
-                xml_escape(&file.relative_path)
-            ));
-        }
-        out.push_str("</skill_resources>\n");
-    }
     out.push_str("</skill_content>");
     out
 }
@@ -173,16 +152,6 @@ fn xml_escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn skill_file_kind_label(kind: SkillFileKind) -> &'static str {
-    match kind {
-        SkillFileKind::SkillMd => "skillmd",
-        SkillFileKind::Reference => "reference",
-        SkillFileKind::Script => "script",
-        SkillFileKind::Asset => "asset",
-        SkillFileKind::Other => "other",
-    }
 }
 
 #[cfg(test)]

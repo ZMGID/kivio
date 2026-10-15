@@ -769,7 +769,7 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_project_cwd: None,
+        skill_registry: Default::default(),
         todo_state: Default::default(),
     }
 }

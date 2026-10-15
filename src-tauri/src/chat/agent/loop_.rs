@@ -390,7 +390,7 @@ pub async fn run_agent_loop(
     );
     state
         .skill_context
-        .set_project_cwd(config.skill_project_cwd.clone());
+        .set_registry(config.skill_registry.clone());
     let hooks = host.hooks();
     // agent_start 在 guard 之前发：guard 的 Drop 负责成对的 agent_end。
     if let Some(hooks) = hooks {

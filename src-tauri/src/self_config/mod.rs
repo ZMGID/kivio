@@ -137,7 +137,7 @@ pub fn inspect(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let value = match args.topic.as_str() {
             "status" => status_summary(&settings, cwd(&ctx).as_deref()),
             "skills" => {
-                let registry = crate::skills::build_registry_metadata_in(
+                let registry = crate::skills::build_registry_in(
                     ctx.app,
                     &settings.chat_tools.skill_scan_paths,
                     cwd(&ctx).as_deref(),
@@ -239,7 +239,7 @@ async fn configure_action(ctx: &NativeCallCtx<'_>, action: Action) -> Result<Val
         }
         Action::SkillSetEnabled { id, enabled } => {
             let settings = ctx.state.settings_read().clone();
-            let registry = crate::skills::build_registry_metadata_in(
+            let registry = crate::skills::build_registry_in(
                 ctx.app,
                 &settings.chat_tools.skill_scan_paths,
                 cwd(ctx).as_deref(),

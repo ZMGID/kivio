@@ -261,6 +261,7 @@ fn slash_skill_registry(record: skills::SkillRecord) -> skills::SkillRegistry {
     skills::SkillRegistry {
         records: vec![record],
         warnings: vec![],
+        scan_failed: false,
     }
 }
 
@@ -405,6 +406,7 @@ fn slash_trigger_loads_multiple_inline_skills_once() {
             slash_skill_record("commit", "Commit", vec![]),
         ],
         warnings: vec![],
+        scan_failed: false,
     };
     let mut config = crate::settings::ChatToolsConfig::default();
     let (id, detail) = resolve_request_skill(

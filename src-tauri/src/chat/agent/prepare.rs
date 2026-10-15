@@ -949,6 +949,7 @@ mod tests {
         let registry = skills::SkillRegistry {
             records: vec![test_skill_record("playwright-cli")],
             warnings: Vec::new(),
+            scan_failed: false,
         };
         let mut chat_tools = crate::settings::ChatToolsConfig::default();
         chat_tools.enabled = true;
@@ -1010,6 +1011,7 @@ mod tests {
         let registry = skills::SkillRegistry {
             records: vec![test_skill_record("cua-driver")],
             warnings: Vec::new(),
+            scan_failed: false,
         };
         let mut chat_tools = crate::settings::ChatToolsConfig::default();
         chat_tools.enabled = true;
@@ -1587,6 +1589,7 @@ mod tests {
         let registry = skills::SkillRegistry {
             records: vec![test_skill_record("pdf")],
             warnings: vec![],
+            scan_failed: false,
         };
         for (auto_match, skill_available, pinned, loaded) in [
             (false, true, false, false),

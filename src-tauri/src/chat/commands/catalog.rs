@@ -140,6 +140,45 @@ pub(crate) async fn chat_query_conversations(
     }))
 }
 
+/// Initialize or explicitly reload one conversation's skill catalog. No model request.
+#[tauri::command]
+pub(crate) async fn chat_session_skills(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    reload: Option<bool>,
+) -> Result<skills::SkillListResult, String> {
+    let conversation = crate::chat::repository::repository(&app)
+        .get(&app, &conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+    if conversation.agent_runtime.is_external() {
+        return Err("External CLI skills are managed by their own runtime".into());
+    }
+    let settings = state.settings_read().clone();
+    let cwd = crate::chat::storage::resolve_conversation_working_directory(
+        &app,
+        &conversation,
+        &settings.chat_tools.native_tools.working_directory,
+    )?;
+    let registry = state
+        .chat_runtime()
+        .skill_registry(
+            &app,
+            &conversation_id,
+            &settings.chat_tools.skill_scan_paths,
+            Some(&cwd),
+            reload.unwrap_or(false),
+        )
+        .await?;
+    Ok(skills::SkillListResult {
+        success: true,
+        skills: registry.metas(),
+        warnings: registry.warnings.clone(),
+        error: None,
+    })
+}
+
 /// 获取对话详情
 #[tauri::command]
 pub(crate) async fn chat_get_conversation(
@@ -645,6 +684,34 @@ pub(crate) async fn create_chat_conversation_internal(
         }
     };
 
+    if !conversation.agent_runtime.is_external() {
+        let initialization = async {
+            let cwd = crate::chat::storage::resolve_conversation_working_directory(
+                app,
+                &conversation,
+                &settings.chat_tools.native_tools.working_directory,
+            )?;
+            state
+                .chat_runtime()
+                .skill_registry(
+                    app,
+                    &conversation.id,
+                    &settings.chat_tools.skill_scan_paths,
+                    Some(&cwd),
+                    false,
+                )
+                .await
+        }
+        .await;
+        if let Err(error) = initialization {
+            // Creation has committed. Loading the catalog can retry through the
+            // session endpoint without reporting the saved conversation as lost.
+            eprintln!(
+                "Initialize conversation skills failed ({}): {error}",
+                conversation.id
+            );
+        }
+    }
     Ok(conversation)
 }
 

@@ -999,12 +999,18 @@ async fn call_skill_tool(
     let settings = state.settings_read().clone();
     let skill_name = crate::skills::extract_skill_name(&arguments)?;
 
-    // Discovery is refreshed only on an explicit skill call, not every model step.
-    // This also picks up edits, removals and current plugin body expansion.
+    let fallback;
     let registry = if let Some(context) = skill_context.as_deref() {
-        context.registry_for(app, &settings.chat_tools.skill_scan_paths)?
+        context.registry()
     } else {
-        crate::skills::build_registry(app, &settings.chat_tools.skill_scan_paths)?
+        let app = app.clone();
+        let paths = settings.chat_tools.skill_scan_paths.clone();
+        fallback = tauri::async_runtime::spawn_blocking(move || {
+            crate::skills::build_registry(&app, &paths)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        &fallback
     };
     let record = crate::skills::lookup_skill(&registry, &skill_name)
         .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
@@ -1024,8 +1030,13 @@ async fn call_skill_tool(
         }
     }
 
+    let record = record.clone();
+    let record =
+        tauri::async_runtime::spawn_blocking(move || crate::skills::read_skill_record(&record))
+            .await
+            .map_err(|e| e.to_string())??;
     let content = match tool.name.as_str() {
-        "skill" => crate::skills::activate_skill(record),
+        "skill" => crate::skills::activate_skill(&record),
         other => return Err(format!("Unknown skill tool: {other}")),
     };
 

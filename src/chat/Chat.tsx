@@ -1135,26 +1135,25 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [setDraftModel, setDraftProviderId])
 
   const skillProjectCwdRef = useRef('')
-  const loadSkills = useCallback(async () => {
-    if (!isTauriRuntime()) {
-      setSkills([])
-      return
-    }
+  const skillLoadEpochRef = useRef(0)
+  const loadSkills = useCallback(async (reload = false) => {
+    const epoch = ++skillLoadEpochRef.current
+    const id = currentConversationIdRef.current
+    if (!isTauriRuntime()) { setSkills([]); return }
     try {
-      const result = await api.chatSkillsList(undefined, skillProjectCwdRef.current || undefined)
-      if (result.success) {
-        setSkills(result.skills.map(normalizeSkill))
-        if (result.error) {
-          console.warn('Some chat skills could not be loaded:', result.error)
-        }
-      } else {
-        setSkills([])
-        console.error('Failed to load chat skills:', result.error)
-      }
+      const result = id && !usesExternalRuntime
+        ? await api.chatSessionSkills(id, reload)
+        : await api.chatSkillsList(undefined, skillProjectCwdRef.current || undefined)
+      if (epoch !== skillLoadEpochRef.current || id !== currentConversationIdRef.current) return
+      if (!result.success) throw new Error(result.error || i18n[uiLang].chatSkillListLoadFailed)
+      setSkills(result.skills.map(normalizeSkill))
     } catch (err) {
+      if (reload) throw err
+      if (epoch === skillLoadEpochRef.current && id === currentConversationIdRef.current) setSkills([])
       console.error('Failed to load chat skills:', err)
     }
-  }, [])
+  }, [currentConversationIdRef, uiLang, usesExternalRuntime])
+  const handleReloadSkills = useCallback(() => loadSkills(true), [loadSkills])
 
   useEffect(() => {
     void loadDefaultModel()
@@ -1942,7 +1941,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   ])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
   // 插件市场“使用”：新建对话并发出开场消息；原有单入口插件仍兼容 Skill 绑定。
-  // Skill 由会话的 activeSkillId 决定（后端每次发送都会重新扫描），不依赖本地 skills 列表是否已刷新。
+  // Skill 由会话的 activeSkillId 决定（后端在对话初始化时发现技能），不依赖本地 skills 列表是否已刷新。
   const handleMarketUse = useCallback(async (plugin: MarketPlugin) => {
     if (usesExternalRuntime || usesChatRuntime) {
       throw new Error(uiLang === 'zh' ? '请先切换到内置 Agent 模式，再使用插件。' : 'Switch to the built-in agent to use plugins.')
@@ -2401,10 +2400,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   } = dock
 
   useEffect(() => {
-    const prev = skillProjectCwdRef.current
     skillProjectCwdRef.current = dockWorkdir
-    if (prev !== dockWorkdir) void loadSkills()
-  }, [dockWorkdir, loadSkills])
+    void loadSkills()
+  }, [currentConversation?.id, dockWorkdir, loadSkills])
 
   const handleSidebarSelectProject = useCallback((project: ChatProject | null) => {
     runAfterLeavingEditors(() => handleSelectProject(project))
@@ -2672,6 +2670,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onOpenSettings: handleOpenChatSettings,
     onOpenTools: openSkillCenter,
     onNewChat: handleNewConversation,
+    onReloadSkills: handleReloadSkills,
     onCompactContext: handleCompressContext,
     onClearChat: handleClearChat,
     enabledTools,
@@ -2746,6 +2745,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     dockWorkdir,
     enabledTools,
     handleAgentPlanModeChange,
+    handleReloadSkills,
     handleCancelStream,
     handleChangeKnowledgeBaseIds,
     handleChangeAdditionalDirectories,

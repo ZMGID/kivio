@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{
     parse::parse_skill_record,
-    types::{SkillFileEntry, SkillFileKind, SkillRegistry},
+    types::{SkillRecord, SkillRegistry},
 };
 
 const MAX_SCAN_DEPTH: usize = 6;
@@ -173,54 +173,34 @@ pub fn build_registry_in(
     extra_paths: &[String],
     project_cwd: Option<&Path>,
 ) -> Result<SkillRegistry, String> {
-    build_registry_inner(app, extra_paths, project_cwd, true)
-}
-
-pub fn build_registry_metadata(
-    app: &AppHandle,
-    extra_paths: &[String],
-) -> Result<SkillRegistry, String> {
-    build_registry_inner(app, extra_paths, None, false)
-}
-
-pub fn build_registry_metadata_in(
-    app: &AppHandle,
-    extra_paths: &[String],
-    project_cwd: Option<&Path>,
-) -> Result<SkillRegistry, String> {
-    build_registry_inner(app, extra_paths, project_cwd, false)
-}
-
-fn build_registry_inner(
-    app: &AppHandle,
-    extra_paths: &[String],
-    project_cwd: Option<&Path>,
-    include_files: bool,
-) -> Result<SkillRegistry, String> {
     let roots = scan_root_entries(app, extra_paths, project_cwd)?;
-    let mut registry = build_registry_from_roots(roots, include_files);
+    let mut registry = build_registry_from_roots(roots);
     for plugin in crate::plugins::packages::active() {
         let mut bundled = SkillRegistry::default();
         for path in &plugin.skills {
-            if let Err(error) = collect_skill_files(path, 0, &mut bundled, "plugin", include_files)
-            {
+            if let Err(error) = collect_skill_files(path, 0, &mut bundled, "plugin") {
+                registry.scan_failed = true;
                 registry.warnings.push(error);
             }
         }
         for path in crate::plugins::packages::markdown_files(&plugin.commands) {
             match load_plugin_command(&path) {
                 Ok(record) => bundled.records.push(record),
-                Err(error) => registry.warnings.push(error),
+                Err(error) => {
+                    registry.scan_failed = true;
+                    registry.warnings.push(error);
+                }
             }
         }
         for mut record in bundled.records {
-            record.body = plugin.expand_body(&record.body);
+            record.body.clear();
             let original = record.meta.id.clone();
             record.meta.id = format!("pkg-{}-{original}", plugin.package.id);
             record.meta.name = format!("{}:{}", plugin.package.name, record.meta.name);
             record.meta.triggers = vec![format!("/{}:{original}", plugin.package.name)];
             registry.records.push(record);
         }
+        registry.scan_failed |= bundled.scan_failed;
         registry.warnings.extend(bundled.warnings);
     }
     Ok(registry)
@@ -231,12 +211,11 @@ fn load_plugin_command(path: &Path) -> Result<super::types::SkillRecord, String>
     super::parse::parse_skill_record(path, &raw, "plugin", vec![], &mut vec![])
 }
 
-fn build_registry_from_roots(roots: Vec<SkillScanRoot>, include_files: bool) -> SkillRegistry {
+fn build_registry_from_roots(roots: Vec<SkillScanRoot>) -> SkillRegistry {
     let mut registry = SkillRegistry::default();
     for root in roots {
-        if let Err(err) =
-            collect_skill_files(&root.path, 0, &mut registry, root.source, include_files)
-        {
+        if let Err(err) = collect_skill_files(&root.path, 0, &mut registry, root.source) {
+            registry.scan_failed = true;
             registry
                 .warnings
                 .push(format!("Scan {} failed: {err}", root.path.display()));
@@ -277,7 +256,6 @@ fn collect_skill_files(
     depth: usize,
     registry: &mut SkillRegistry,
     source: &str,
-    include_files: bool,
 ) -> Result<(), String> {
     if depth > MAX_SCAN_DEPTH || !root.is_dir() {
         return Ok(());
@@ -285,11 +263,17 @@ fn collect_skill_files(
 
     let skill_md = root.join("SKILL.md");
     if skill_md.is_file() {
-        match load_skill_at(&skill_md, source, include_files) {
-            Ok(record) => registry.records.push(record),
-            Err(err) => registry
-                .warnings
-                .push(format!("Parse skill {} failed: {err}", skill_md.display())),
+        match load_skill_at(&skill_md, source) {
+            Ok(mut record) => {
+                record.body.clear();
+                registry.records.push(record);
+            }
+            Err(err) => {
+                registry.scan_failed = true;
+                registry
+                    .warnings
+                    .push(format!("Parse skill {} failed: {err}", skill_md.display()));
+            }
         }
         return Ok(());
     }
@@ -311,96 +295,36 @@ fn collect_skill_files(
         if SKIP_DIR_NAMES.contains(&name) {
             continue;
         }
-        collect_skill_files(&path, depth + 1, registry, source, include_files)?;
+        collect_skill_files(&path, depth + 1, registry, source)?;
     }
     Ok(())
 }
 
-fn load_skill_at(
-    skill_md_path: &Path,
-    source: &str,
-    include_files: bool,
-) -> Result<super::types::SkillRecord, String> {
+fn load_skill_at(skill_md_path: &Path, source: &str) -> Result<super::types::SkillRecord, String> {
     let raw = if source == "plugin" {
         crate::plugins::packages::component_markdown(skill_md_path)?
     } else {
         fs::read_to_string(skill_md_path)
             .map_err(|err| format!("Read skill {} failed: {err}", skill_md_path.display()))?
     };
-    let base_dir = skill_md_path
-        .parent()
-        .ok_or_else(|| "Skill path has no parent directory".to_string())?;
-    let files = if include_files {
-        index_skill_files(base_dir)?
-    } else {
-        Vec::new()
-    };
     let mut warnings = Vec::new();
-    parse_skill_record(skill_md_path, &raw, source, files, &mut warnings)
+    parse_skill_record(skill_md_path, &raw, source, Vec::new(), &mut warnings)
 }
 
-pub fn index_skill_files(base_dir: &Path) -> Result<Vec<SkillFileEntry>, String> {
-    let mut files = Vec::new();
-    walk_files(base_dir, base_dir, 0, &mut files)?;
-    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    Ok(files)
-}
-
-fn walk_files(
-    base_dir: &Path,
-    current: &Path,
-    depth: usize,
-    out: &mut Vec<SkillFileEntry>,
-) -> Result<(), String> {
-    if depth > MAX_SCAN_DEPTH {
-        return Ok(());
+/// Load only the known skill file. The session's identity and metadata stay stable
+/// until /reload; instruction edits take effect on the next explicit use.
+pub fn read_skill_record(record: &SkillRecord) -> Result<SkillRecord, String> {
+    let mut loaded = load_skill_at(&record.location, &record.meta.source)?;
+    loaded.meta = record.meta.clone();
+    loaded.meta.files.clear();
+    if record.meta.source == "plugin" && record.meta.id.starts_with("pkg-") {
+        loaded.body = crate::plugins::packages::expand_skill_body(
+            &record.meta.id,
+            &record.location,
+            &loaded.body,
+        )?;
     }
-    let entries = fs::read_dir(current).map_err(|err| err.to_string())?;
-    for entry in entries {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
-        if path.is_dir() {
-            if SKIP_DIR_NAMES.iter().any(|skip| *skip == name.as_ref()) {
-                continue;
-            }
-            walk_files(base_dir, &path, depth + 1, out)?;
-            continue;
-        }
-        if !path.is_file() {
-            continue;
-        }
-        let relative = path
-            .strip_prefix(base_dir)
-            .map_err(|err| err.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        if relative == "SKILL.md" {
-            continue;
-        }
-        let size_bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-        out.push(SkillFileEntry {
-            relative_path: relative.clone(),
-            kind: classify_file(&relative),
-            size_bytes,
-        });
-    }
-    Ok(())
-}
-
-fn classify_file(relative_path: &str) -> SkillFileKind {
-    let normalized = relative_path.replace('\\', "/");
-    if normalized.starts_with("scripts/") {
-        return SkillFileKind::Script;
-    }
-    if normalized.starts_with("references/") || normalized.ends_with(".md") {
-        return SkillFileKind::Reference;
-    }
-    if normalized.starts_with("assets/") {
-        return SkillFileKind::Asset;
-    }
-    SkillFileKind::Other
+    Ok(loaded)
 }
 
 #[cfg(test)]
@@ -426,56 +350,78 @@ description: Test skill.
         dir
     }
 
-    #[test]
-    fn explicit_skill_discovery_observes_edits_removal_and_new_skills() {
+    #[tokio::test]
+    async fn session_catalog_is_stable_until_reload_but_bodies_are_read_on_demand() {
         let root = tempfile::tempdir().unwrap();
         let skill = root.path().join("demo");
-        fs::create_dir_all(&skill).unwrap();
+        write_skill(&skill, "demo");
         let path = skill.join("SKILL.md");
+        let sessions = super::super::SkillSessions::default();
         let scan = || {
-            build_registry_from_roots(
-                vec![SkillScanRoot {
-                    path: root.path().to_path_buf(),
+            let path = root.path().to_path_buf();
+            move || {
+                Ok(build_registry_from_roots(vec![SkillScanRoot {
+                    path,
                     source: "user",
-                }],
-                true,
-            )
+                }]))
+            }
         };
+        let first = sessions.load("a", false, scan()).await.unwrap();
+        assert!(first.find("demo").unwrap().body.is_empty());
         fs::write(
             &path,
-            "---\nname: demo\ndescription: Demo\n---\nFIRST VERSION",
+            "---\nname: demo\ndescription: Changed\n---\nUPDATED BODY",
         )
         .unwrap();
-        let first = scan();
-        assert!(super::super::activate_skill(first.find("demo").unwrap()).contains("FIRST VERSION"));
-        fs::write(
-            &path,
-            "---\nname: demo\ndescription: Demo\n---\nUPDATED VERSION",
-        )
-        .unwrap();
-        let updated = scan();
-        let content = super::super::activate_skill(updated.find("demo").unwrap());
-        assert!(content.contains("UPDATED VERSION"));
-        assert!(!content.contains("FIRST VERSION"));
-        fs::remove_file(&path).unwrap();
-        assert!(scan().find("demo").is_none());
         write_skill(&root.path().join("new-skill"), "new-skill");
-        assert!(scan().find("new-skill").is_some());
+        let next_turn = sessions.load("a", false, scan()).await.unwrap();
+        assert!(next_turn.find("new-skill").is_none());
+        assert_eq!(next_turn.find("demo").unwrap().meta.description, "demo");
+        let loaded = read_skill_record(next_turn.find("demo").unwrap()).unwrap();
+        assert!(super::super::activate_skill(&loaded).contains("UPDATED BODY"));
+        let reloaded = sessions.load("a", true, scan()).await.unwrap();
+        assert!(reloaded.find("new-skill").is_some());
+        assert_eq!(reloaded.find("demo").unwrap().meta.description, "Changed");
+        fs::write(&path, "---\nname: demo\n---\ninvalid missing description").unwrap();
+        assert!(sessions.load("a", true, scan()).await.is_err());
+        assert_eq!(
+            sessions
+                .load("a", false, scan())
+                .await
+                .unwrap()
+                .find("demo")
+                .unwrap()
+                .meta
+                .description,
+            "Changed"
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(read_skill_record(first.find("demo").unwrap()).is_err());
+        assert!(sessions
+            .load("a", true, scan())
+            .await
+            .unwrap()
+            .find("demo")
+            .is_none());
     }
 
     #[test]
-    fn metadata_registry_skips_bundled_file_indexing() {
+    fn discovery_does_not_index_skill_resources() {
         let dir = temp_skill_dir();
-        let skill_md = dir.join("SKILL.md");
-
-        let metadata_record = load_skill_at(&skill_md, "user", false).unwrap();
-        assert!(metadata_record.meta.files.is_empty());
-
-        let full_record = load_skill_at(&skill_md, "user", true).unwrap();
-        assert_eq!(full_record.meta.files.len(), 1);
-        assert_eq!(full_record.meta.files[0].relative_path, "scripts/run.sh");
-
+        fs::create_dir_all(dir.join("artifacts/nested")).unwrap();
+        fs::write(dir.join("artifacts/nested/output.txt"), "generated").unwrap();
+        write_skill(&dir.join("artifacts/nested/fake-skill"), "nested-artifact");
+        let registry = build_registry_from_roots(vec![SkillScanRoot {
+            path: dir.clone(),
+            source: "user",
+        }]);
         fs::remove_dir_all(dir).unwrap();
+        assert_eq!(registry.records.len(), 1);
+        assert!(
+            registry.records[0].meta.files.is_empty(),
+            "discovery must not enumerate skill resources"
+        );
+        assert!(registry.records[0].body.is_empty());
     }
 
     fn write_skill(dir: &Path, id: &str) {
@@ -536,19 +482,16 @@ description: Test skill.
         write_skill(&project_root.join("shared"), "shared");
         write_skill(&agents_root.join("shared"), "shared");
 
-        let registry = build_registry_from_roots(
-            vec![
-                SkillScanRoot {
-                    path: project_root,
-                    source: "project",
-                },
-                SkillScanRoot {
-                    path: agents_root,
-                    source: "agents",
-                },
-            ],
-            false,
-        );
+        let registry = build_registry_from_roots(vec![
+            SkillScanRoot {
+                path: project_root,
+                source: "project",
+            },
+            SkillScanRoot {
+                path: agents_root,
+                source: "agents",
+            },
+        ]);
         assert_eq!(registry.records.len(), 1);
         assert_eq!(registry.records[0].meta.source, "project");
         assert!(
@@ -569,19 +512,16 @@ description: Test skill.
         write_skill(&one.join("shared"), "shared");
         write_skill(&two.join("shared"), "shared");
 
-        let registry = build_registry_from_roots(
-            vec![
-                SkillScanRoot {
-                    path: one,
-                    source: "user",
-                },
-                SkillScanRoot {
-                    path: two,
-                    source: "user",
-                },
-            ],
-            false,
-        );
+        let registry = build_registry_from_roots(vec![
+            SkillScanRoot {
+                path: one,
+                source: "user",
+            },
+            SkillScanRoot {
+                path: two,
+                source: "user",
+            },
+        ]);
         assert_eq!(registry.records.len(), 1);
         assert_eq!(registry.warnings.len(), 1);
         assert!(

@@ -2362,6 +2362,10 @@ export const api = {
     if (!isTauriRuntime()) return Promise.resolve()
     return invoke<void>('chat_mcp_warmup', { serverIds })
   },
+  chatSessionSkills: (conversationId: string, reload = false) =>
+    invoke<{ success: boolean; skills: SkillMeta[]; warnings?: string[]; error?: string | null }>(
+      'chat_session_skills', { conversationId, reload },
+    ),
   chatSkillsList: (skillScanPaths?: string[], projectCwd?: string) =>
     invoke<{ success: boolean; skills: SkillMeta[]; warnings?: string[]; error?: string | null }>(
       'chat_skills_list',

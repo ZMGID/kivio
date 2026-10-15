@@ -457,22 +457,28 @@ async fn run_builtin_agent_node(
         automation_id,
     );
     let workdir_str = workdir.as_ref().map(|p| p.to_string_lossy().into_owned());
-    let registry = skills::build_registry_in(
-        app,
-        &settings.chat_tools.skill_scan_paths,
-        workdir.as_deref(),
-    )
-    .unwrap_or_default();
-    let active_skill_id = spec.skill_ids.first().map(|id| id.as_str());
-    let active_skill_detail = active_skill_id.and_then(|id| {
-        skills::read_skill_detail_in(
+    let registry = state
+        .chat_runtime()
+        .skill_registry(
             app,
+            &conversation_id,
             &settings.chat_tools.skill_scan_paths,
-            id,
             workdir.as_deref(),
+            false,
         )
-        .ok()
-    });
+        .await?;
+    let catalog = registry.clone();
+    let selected = spec.skill_ids.clone();
+    let loaded = tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
+        .await
+        .map_err(|e| e.to_string())??;
+    let active_skill_id = spec.skill_ids.first().map(|id| id.as_str());
+    let active_skill_detail = active_skill_id
+        .and_then(|id| loaded.find(id))
+        .map(|record| skills::SkillDetail {
+            meta: record.meta.clone(),
+            body: record.body.clone(),
+        });
 
     let mut effective_chat_tools = settings.chat_tools.clone();
     effective_chat_tools.approval_policy = "auto".to_string();
@@ -505,12 +511,7 @@ async fn run_builtin_agent_node(
         None,
         &additional_directories,
     );
-    if let Some(extra) = extra_skill_bodies(
-        app,
-        &settings.chat_tools.skill_scan_paths,
-        workdir.as_deref(),
-        &spec.skill_ids,
-    ) {
+    if let Some(extra) = extra_loaded_skill_bodies(&loaded, &spec.skill_ids) {
         system_prompt.push_str("\n\n");
         system_prompt.push_str(&extra);
     }
@@ -559,7 +560,7 @@ async fn run_builtin_agent_node(
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_project_cwd: workdir,
+        skill_registry: registry,
         todo_state: Default::default(),
     };
 
@@ -663,9 +664,18 @@ fn extra_skill_bodies(
     if skill_ids.len() <= 1 {
         return None;
     }
+    let registry = skills::build_registry_in(app, scan_paths, workdir).ok()?;
+    let loaded = registry.read_selected(skill_ids).ok()?;
+    extra_loaded_skill_bodies(&loaded, skill_ids)
+}
+
+fn extra_loaded_skill_bodies(
+    registry: &skills::SkillRegistry,
+    skill_ids: &[String],
+) -> Option<String> {
     let mut parts = Vec::new();
     for id in skill_ids.iter().skip(1) {
-        let Ok(detail) = skills::read_skill_detail_in(app, scan_paths, id, workdir) else {
+        let Some(detail) = registry.find(id) else {
             continue;
         };
         let name = if detail.meta.name.trim().is_empty() {

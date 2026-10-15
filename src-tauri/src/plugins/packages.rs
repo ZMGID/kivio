@@ -1005,18 +1005,35 @@ impl Resolved {
         self
     }
     pub fn expand_body(&self, body: &str) -> String {
-        let data = self.root.parent().unwrap_or(&self.root).join("data");
-        let env = [
-            ("PLUGIN_ROOT", &self.root),
-            ("CLAUDE_PLUGIN_ROOT", &self.root),
-            ("PLUGIN_DATA", &data),
-            ("CLAUDE_PLUGIN_DATA", &data),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.into(), v.display().to_string()))
-        .collect();
-        workflow_hooks::expand(body, &env)
+        expand_body_at(&self.root, body)
     }
+}
+
+fn expand_body_at(root: &Path, body: &str) -> String {
+    let data = root.parent().unwrap_or(root).join("data");
+    let env = [
+        ("PLUGIN_ROOT", root),
+        ("CLAUDE_PLUGIN_ROOT", root),
+        ("PLUGIN_DATA", data.as_path()),
+        ("CLAUDE_PLUGIN_DATA", data.as_path()),
+    ]
+    .into_iter()
+    .map(|(key, path)| (key.into(), path.display().to_string()))
+    .collect();
+    workflow_hooks::expand(body, &env)
+}
+
+/// Resolve a known package skill without rediscovering any package components.
+pub(crate) fn expand_skill_body(id: &str, location: &Path, body: &str) -> Result<String, String> {
+    let owner = id
+        .strip_prefix("pkg-")
+        .and_then(|id| id.get(..36))
+        .ok_or("Invalid package skill id")?;
+    let root = package_dir(owner)?.join("content");
+    if !owner_enabled(owner) || !location.starts_with(&root) {
+        return Err(format!("Skill plugin is unavailable: {id}"));
+    }
+    Ok(expand_body_at(&root, body))
 }
 
 fn hooks_path() -> Result<PathBuf, String> {

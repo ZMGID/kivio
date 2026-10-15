@@ -719,7 +719,16 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_project_cwd: req.skill_project_cwd.clone(),
+        skill_registry: state
+            .chat_runtime()
+            .skill_registry(
+                &app,
+                &req.parent_conversation_id,
+                &req.settings.chat_tools.skill_scan_paths,
+                req.skill_project_cwd.as_deref(),
+                false,
+            )
+            .await?,
         // Workers never see or touch the parent's todo list.
         todo_state: Default::default(),
     };
@@ -1072,14 +1081,28 @@ pub fn handle_agent_spawn<'a>(
             &settings.chat_tools.native_tools.working_directory,
         )
         .ok();
-        let skill_registry = crate::skills::build_registry_in(
-            ctx.app,
-            &settings.chat_tools.skill_scan_paths,
-            skill_cwd.as_deref(),
-        )
-        .unwrap_or_default();
-        let persona =
-            compose_persona_with_preloaded_skills(&def.system_prompt, &skill_registry, &def.skills);
+        let skill_registry = ctx
+            .state
+            .chat_runtime()
+            .skill_registry(
+                ctx.app,
+                &parent_conversation.id,
+                &settings.chat_tools.skill_scan_paths,
+                skill_cwd.as_deref(),
+                false,
+            )
+            .await?;
+        let catalog = skill_registry.clone();
+        let selected = def.skills.clone();
+        let preload_registry =
+            tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
+                .await
+                .map_err(|e| e.to_string())??;
+        let persona = compose_persona_with_preloaded_skills(
+            &def.system_prompt,
+            &preload_registry,
+            &def.skills,
+        );
         let system_prompt = build_chat_system_prompt(
             &language,
             false,
@@ -1544,6 +1567,7 @@ mod tests {
                 skill_record("docx", "DOCX STEPS BODY"),
             ],
             warnings: Vec::new(),
+            scan_failed: false,
         };
         let persona = compose_persona_with_preloaded_skills(
             "You analyse documents.",
@@ -1560,6 +1584,7 @@ mod tests {
         let registry = SkillRegistry {
             records: vec![skill_record("pdf", "PDF STEPS BODY")],
             warnings: Vec::new(),
+            scan_failed: false,
         };
         let plain = compose_persona("You analyse documents.");
         assert_eq!(

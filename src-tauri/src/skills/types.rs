@@ -97,11 +97,30 @@ pub struct SkillOpenFolderResult {
 
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
+    pub scan_failed: bool,
     pub records: Vec<SkillRecord>,
     pub warnings: Vec<String>,
 }
 
 impl SkillRegistry {
+    /// Hydrate only explicitly selected instructions; the cached catalog stays metadata-only.
+    pub fn read_selected(&self, ids: &[String]) -> Result<Self, String> {
+        let mut loaded = self.clone();
+        for id in ids {
+            if let Some(record) = self.find(id) {
+                let fresh = super::read_skill_record(record)?;
+                if let Some(target) = loaded
+                    .records
+                    .iter_mut()
+                    .find(|item| item.meta.id == record.meta.id)
+                {
+                    *target = fresh;
+                }
+            }
+        }
+        Ok(loaded)
+    }
+
     pub fn find(&self, id_or_name: &str) -> Option<&SkillRecord> {
         let needle = id_or_name.trim();
         if needle.is_empty() {
@@ -245,6 +264,7 @@ mod tests {
         SkillRegistry {
             records,
             warnings: vec![],
+            scan_failed: false,
         }
     }
 

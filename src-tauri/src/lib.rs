@@ -814,6 +814,7 @@ pub fn run() {
             scheduled_tasks::commands::scheduled_task_runs,
             scheduled_tasks::commands::scheduled_task_preview,
             scheduled_tasks::commands::scheduled_task_run_delete,
+            chat::commands::catalog::chat_session_skills,
             skills::chat_skills_list,
             skills::chat_skills_read,
             skills::chat_skills_import,

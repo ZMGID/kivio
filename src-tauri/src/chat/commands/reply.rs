@@ -21,7 +21,6 @@ use crate::chat::{
     chat_missing_model_error, format_chat_login_required_error, session_model_for_conversation,
     Conversation, ToolCallStatus,
 };
-use crate::skills;
 use crate::state::AppState;
 
 #[cfg(debug_assertions)]
@@ -454,12 +453,16 @@ pub(super) async fn complete_assistant_reply_inner(
         &settings.chat_tools.native_tools.working_directory,
     )
     .ok();
-    let skill_registry = skills::build_registry_in(
-        app,
-        &settings.chat_tools.skill_scan_paths,
-        skill_cwd.as_deref(),
-    )
-    .unwrap_or_default();
+    let skill_registry = state
+        .chat_runtime()
+        .skill_registry(
+            app,
+            &conversation.id,
+            &settings.chat_tools.skill_scan_paths,
+            skill_cwd.as_deref(),
+            false,
+        )
+        .await?;
     let mut effective_chat_tools = settings.chat_tools.clone();
     // Read the stored text, before attachment/vision augmentation, so those
     // documents never become slash arguments. This also covers edited retries.
@@ -470,8 +473,40 @@ pub(super) async fn complete_assistant_reply_inner(
         .find(|message| message.role == "user")
         .map(|message| message.content.as_str())
         .unwrap_or_default();
+    let requested_skill = active_skill_id.or(conversation.active_skill_id.as_deref());
+    let mut selected: Vec<String> = if conversation.agent_runtime.is_chat() {
+        Vec::new()
+    } else {
+        crate::chat::slash_commands::command_ranges(user_content)
+            .into_iter()
+            .filter_map(|range| skill_registry.find_by_trigger(&user_content[range]))
+            .map(|record| record.meta.id.clone())
+            .collect()
+    };
+    if let Some(record) = requested_skill.and_then(|id| skill_registry.find(id)) {
+        selected.push(record.meta.id.clone());
+    }
+    selected.retain(|id| {
+        agent_prepare::skill_allowed_for_conversation(
+            &effective_chat_tools,
+            conversation.assistant_snapshot.as_ref(),
+            id,
+        )
+    });
+    selected.sort();
+    selected.dedup();
+    let request_registry = if selected.is_empty() {
+        skill_registry.clone()
+    } else {
+        let catalog = skill_registry.clone();
+        std::sync::Arc::new(
+            tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
+                .await
+                .map_err(|e| e.to_string())??,
+        )
+    };
     let (skill_id, active_skill_detail) = resolve_request_skill(
-        &skill_registry,
+        &request_registry,
         &mut effective_chat_tools,
         conversation.assistant_snapshot.as_ref(),
         if conversation.agent_runtime.is_chat() {
@@ -836,7 +871,7 @@ pub(super) async fn complete_assistant_reply_inner(
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
-            skill_project_cwd: skill_cwd.clone(),
+            skill_registry: skill_registry.clone(),
             todo_state: conversation.agent_todo_state.clone(),
         },
         host,

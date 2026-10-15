@@ -154,6 +154,7 @@ type SlashCommandId =
   | 'plan'
   | 'orchestrate'
   | 'new'
+  | 'reload'
   | 'compact'
   | 'clear'
   | 'settings'
@@ -163,6 +164,11 @@ type LocalSlashCommand = SlashCommandDefinition & { id: SlashCommandId; kind: 'a
 
 
 const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
+  {
+    id: 'reload', slash: '/reload', title: '/reload',
+    description: 'Reload skills for this conversation', category: 'Local', kind: 'action',
+    keywords: ['reload', 'skills', '刷新', '重新加载', '技能'],
+  },
   {
     id: 'help',
     slash: '/help',
@@ -330,6 +336,7 @@ export interface InputBarProps {
   onOpenSettings?: () => void
   onOpenTools?: () => void
   onNewChat?: () => void | Promise<void>
+  onReloadSkills?: () => void | Promise<void>
   onCompactContext?: () => void | Promise<void>
   onClearChat?: () => void | Promise<void>
   enabledTools?: ChatToolDefinition[]
@@ -423,6 +430,7 @@ export const InputBar = memo(function InputBar({
   onOpenSettings,
   onOpenTools,
   onNewChat,
+  onReloadSkills,
   onCompactContext,
   onClearChat,
   enabledTools = [],
@@ -519,6 +527,7 @@ export const InputBar = memo(function InputBar({
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const [activeSlashToken, setActiveSlashToken] = useState<ActiveSlashToken | null>(null)
   const [commandError, setCommandError] = useState('')
+  const [commandStatus, setCommandStatus] = useState('')
   const [externalCliSlashCommands, setExternalCliSlashCommands] = useState<SlashCommandDefinition[]>([])
   const [externalCliSlashHint, setExternalCliSlashHint] = useState<string | null>(null)
   const [externalCliSlashLoading, setExternalCliSlashLoading] = useState(false)
@@ -559,6 +568,7 @@ export const InputBar = memo(function InputBar({
     setActiveSlashToken(null)
     setSlashPanelOpen(false)
     setCommandError('')
+    setCommandStatus('')
     draftScopeRef.current.key = draftKeyValue
     // Creation commits migrate the store before this binding changes. Ordinary
     // navigation only loads the target draft; it never transfers ownership.
@@ -823,9 +833,10 @@ export const InputBar = memo(function InputBar({
       const local = usesChatRuntime
         ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'plan' && command.id !== 'orchestrate')
         : LOCAL_SLASH_COMMANDS
-      return buildSlashCommands(local, usesChatRuntime ? [] : enabledSkills)
+      return buildSlashCommands(local.map(command => command.id === 'reload'
+        ? { ...command, description: t.chatSkillReloadDescription } : command), usesChatRuntime ? [] : enabledSkills)
     },
-    [enabledSkills, externalCliSlashCommands, usesChatRuntime, usesExternalRuntime],
+    [enabledSkills, externalCliSlashCommands, usesChatRuntime, usesExternalRuntime, t.chatSkillReloadDescription],
   )
 
   useEffect(() => {
@@ -1084,6 +1095,9 @@ export const InputBar = memo(function InputBar({
         setAttachmentError('')
         await onNewChat?.()
         return
+      case 'reload':
+        await onReloadSkills?.()
+        return
       case 'compact':
         await onCompactContext?.()
         return
@@ -1182,8 +1196,9 @@ export const InputBar = memo(function InputBar({
 
   const handleSend = async () => {
     const trimmed = input.trim()
-    if (sendPending || (!trimmed && quotes.length === 0 && attachments.length === 0) || sendDisabledReason) return
+    if (sendPending || (!trimmed && quotes.length === 0 && attachments.length === 0)) return
     const action = findComposerCommands(input, allSlashCommands).find(item => item.command.kind === 'action' && item.command.id !== 'goal')
+    if (sendDisabledReason && action?.command.id !== 'reload') return
     if (action) {
       if (disabled) return
       const scope = beginComposerDraftOperation(draftScopeRef.current.key)
@@ -1191,8 +1206,12 @@ export const InputBar = memo(function InputBar({
       const remaining = `${input.slice(0, action.start)}${input.slice(action.end)}`
       setSendPending(true)
       setCommandError('')
+      setCommandStatus('')
       try {
         await executeSlashAction(action.command, action.start, action.end)
+        if (action.command.id === 'reload' && mountedRef.current && draftScopeRef.current.key === scope.key) {
+          setCommandStatus(t.chatSkillReloaded)
+        }
       } catch (error) {
         updateComposerDraft(scope.key, draft => (
           draft.input === remaining || !draft.input ? { ...draft, ...snapshot } : draft
@@ -1387,6 +1406,7 @@ export const InputBar = memo(function InputBar({
     historyReadRef.current = null
     setInput(nextValue)
     setCommandError('')
+    setCommandStatus('')
     syncSlashToken(nextValue, cursor)
   }
 
@@ -2081,6 +2101,9 @@ export const InputBar = memo(function InputBar({
                 onEditAttachment={setEditingAttachment}
               />
             </div>
+          )}
+          {commandStatus && !commandError && (
+            <div role="status" className="text-xs text-muted">{commandStatus}</div>
           )}
           {attachmentError && (
             <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">

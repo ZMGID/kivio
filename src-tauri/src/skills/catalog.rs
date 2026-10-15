@@ -93,6 +93,7 @@ mod tests {
                 sample_record("manual", "manual", true),
             ],
             warnings: vec![],
+            scan_failed: false,
         };
 
         let catalog = format_catalog(&registry, None, |_| true);
@@ -110,6 +111,7 @@ mod tests {
         let registry = SkillRegistry {
             records: vec![sample_record("auto", "auto", false)],
             warnings: vec![],
+            scan_failed: false,
         };
 
         let catalog = format_catalog(&registry, None, |_| true);
@@ -126,6 +128,7 @@ mod tests {
                 sample_record("off", "off", false),
             ],
             warnings: vec![],
+            scan_failed: false,
         };
 
         let catalog = format_catalog(&registry, None, |id| id != "off");

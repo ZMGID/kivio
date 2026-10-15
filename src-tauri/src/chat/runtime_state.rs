@@ -17,6 +17,7 @@ use super::types::ContextUsageSegment;
 /// ending one run must never retire its siblings.
 #[derive(Default)]
 pub(crate) struct ChatRuntimeState {
+    skills: crate::skills::SkillSessions,
     next_generation: AtomicU64,
     runs: Mutex<ChatRunIndexes>,
     /// Signalled whenever a conversation's last reply slot is retired, so a
@@ -40,6 +41,24 @@ struct ChatRunIndexes {
 }
 
 impl ChatRuntimeState {
+    pub(crate) async fn skill_registry(
+        &self,
+        app: &tauri::AppHandle,
+        conversation_id: &str,
+        scan_paths: &[String],
+        cwd: Option<&std::path::Path>,
+        reload: bool,
+    ) -> Result<std::sync::Arc<crate::skills::SkillRegistry>, String> {
+        let app = app.clone();
+        let paths = scan_paths.to_vec();
+        let cwd = cwd.map(std::path::Path::to_path_buf);
+        self.skills
+            .load(conversation_id, reload, move || {
+                crate::skills::build_registry_in(&app, &paths, cwd.as_deref())
+            })
+            .await
+    }
+
     pub(crate) fn begin_generation(&self, conversation_id: &str) -> u64 {
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.indexes()
@@ -186,6 +205,7 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn forget_conversation(&self, conversation_id: &str) {
+        self.skills.forget(conversation_id);
         {
             let mut indexes = self.indexes();
             indexes.active_generations.remove(conversation_id);

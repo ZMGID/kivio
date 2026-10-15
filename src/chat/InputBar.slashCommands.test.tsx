@@ -47,6 +47,20 @@ describe('InputBar with real command editor', () => {
     expect(getComposerDraft('inline-settings')?.input).toBe('前文  后文')
   })
 
+  it('reloads skills locally and keeps the surrounding draft without sending a model request', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined)
+    const send = vi.fn()
+    render(<InputBar onSend={send} onReloadSkills={reload} conversationId="reload-skills" usesChatRuntime />)
+    paste('前文 /relo')
+    fireEvent.click(await screen.findByText('/reload'))
+    paste('后文')
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+    expect(send).not.toHaveBeenCalled()
+    expect(getComposerDraft('reload-skills')?.input).toBe('前文  后文')
+    expect(await screen.findByRole('status')).toHaveTextContent(/技能列表已重新加载|Skills reloaded/)
+  })
+
   it('restores command chips when returning to a draft without leaking undo history', async () => {
     const props = { onSend: vi.fn() }
     const { rerender } = render(<InputBar {...props} conversationId="inline-draft-a" />)
@@ -80,17 +94,17 @@ describe('InputBar with real command editor', () => {
     await waitFor(() => expect(send).toHaveBeenCalledWith('请执行/compact', [], expect.anything()))
   })
 
-  it('restores a failed action to its original draft even after navigation', async () => {
+  it.each(['compact', 'reload'] as const)('restores a failed %s action to its original draft even after navigation', async (command) => {
     let reject!: (error: Error) => void
     const compact = vi.fn(() => new Promise<void>((_resolve, fail) => { reject = fail }))
-    const props = { onSend: vi.fn(), onCompactContext: compact }
-    const { rerender } = render(<InputBar {...props} conversationId="action-origin" />)
-    paste('前文 /compact 后文')
+    const props = { onSend: vi.fn(), onCompactContext: compact, onReloadSkills: compact }
+    const { rerender } = render(<InputBar {...props} conversationId={`action-origin-${command}`} />)
+    paste(`前文 /${command} 后文`)
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
     expect(compact).toHaveBeenCalledOnce()
-    rerender(<InputBar {...props} conversationId="action-other" />)
+    rerender(<InputBar {...props} conversationId={`action-other-${command}`} />)
     await act(async () => reject(new Error('compaction failed')))
-    expect(getComposerDraft('action-origin')?.input).toBe('前文 /compact 后文')
-    expect(getComposerDraft('action-other')).toBeUndefined()
+    expect(getComposerDraft(`action-origin-${command}`)?.input).toBe(`前文 /${command} 后文`)
+    expect(getComposerDraft(`action-other-${command}`)).toBeUndefined()
   })
 })
