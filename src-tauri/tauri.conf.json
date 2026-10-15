@@ -13,8 +13,8 @@
     "windows": [],
     "macOSPrivateApi": true,
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; media-src 'self' asset: http://asset.localhost https: data: blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; frame-src kivio-preview: http://kivio-preview.localhost https://kivio-preview.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
-      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; media-src 'self' asset: http://asset.localhost https: data: blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5713; frame-src kivio-preview: http://kivio-preview.localhost https://kivio-preview.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; media-src 'self' asset: http://asset.localhost https: data: blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://clawhub.ai; frame-src kivio-preview: http://kivio-preview.localhost https://kivio-preview.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https: data: blob:; font-src 'self' data:; media-src 'self' asset: http://asset.localhost https: data: blob:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost https://clawhub.ai ws://localhost:5713; frame-src kivio-preview: http://kivio-preview.localhost https://kivio-preview.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {

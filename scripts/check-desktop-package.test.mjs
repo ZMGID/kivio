@@ -30,6 +30,17 @@ test('all checked-in versions and resource sources agree', () => {
   assert.ok(checkResources(root) > 0)
 })
 
+test('desktop CSP permits the ClawHub API in production and development', () => {
+  const { app: { security } } = JSON.parse(readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
+  for (const key of ['csp', 'devCsp']) {
+    const connect = security[key].split(';')
+      .map(directive => directive.trim().split(/\s+/))
+      .find(([name]) => name === 'connect-src')
+    assert.ok(connect?.includes('https://clawhub.ai'), `${key} must allow the skill market API origin`)
+    assert.ok(!connect.includes('*') && !connect.includes('https:'), `${key} must not allow arbitrary remote origins`)
+  }
+})
+
 test('translator overlay disables native drag-region double-click maximization', () => {
   // This builder flag is also the guard used by Tauri's internal_toggle_maximize.
   // Checking the shipped window configuration avoids rebuilding a native app just for this contract.
