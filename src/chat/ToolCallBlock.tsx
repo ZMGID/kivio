@@ -1608,6 +1608,9 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
   const path = toolPathArgument(args)
   const primary = ((): string => {
     switch (raw) {
+      case 'skill':
+      case 'skill_activate':
+        return firstString(args?.name, args?.skill)
       case 'read':
       case 'read_file':
         return [basename(path), readLineLabel(toolCall, args)].filter(Boolean).join(' ')

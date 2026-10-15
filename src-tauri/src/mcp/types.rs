@@ -253,7 +253,7 @@ pub fn native_skill_activate_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "skill__activate".to_string(),
         name: "skill".to_string(),
-        description: "Load the instructions for a listed skill according to the session's skill activation policy. Injects the skill's instructions and resources into the current conversation — the output may contain detailed workflow guidance plus references to scripts and files in the skill directory (use `read` for files and `bash` for scripts when those tools are declared in this request). The skill name must match one listed in available_skills.".to_string(),
+        description: "Load the instructions for a listed skill according to the session's skill activation policy. Injects the skill's instructions and resources into the current conversation — the output may contain detailed workflow guidance plus references to scripts and files in the skill directory (use `read` for files and `bash` for scripts when those tools are declared in this request). The skill name must match one listed in available_skills. A previous activation is not proof that its instructions remain in context. Reload when needed after compaction or history changes, or when the skill files change. If the output is truncated, read the skill file in sections instead of repeatedly loading the same truncated output.".to_string(),
         source: "skill".to_string(),
         server_id: None,
         server_name: Some("Skill".to_string()),

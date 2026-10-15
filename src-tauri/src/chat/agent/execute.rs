@@ -40,7 +40,7 @@ pub trait ToolExecutor: Send + Sync {
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_cache: Option<&'a mut skills::SkillRunCache>,
+        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a>;
 }
 
@@ -160,7 +160,7 @@ pub async fn execute_tool_call(
     ctx: &ToolExecutionContext<'_>,
     tool: &ChatToolDefinition,
     call: PendingToolCall,
-    skill_cache: Option<&mut skills::SkillRunCache>,
+    skill_context: Option<&mut skills::SkillRunContext>,
 ) -> (ToolCallRecord, String, Vec<Value>) {
     // 宽容 coercion（对齐 pi validateToolArguments 的 Value.Convert + coerceWithJsonSchema）：
     // 校验前先按 schema 把「差一层类型」的参数掰正（"5"→5、"true"→true、5→"5"），
@@ -343,7 +343,7 @@ pub async fn execute_tool_call(
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
     let call_fut = async {
         let output = executor
-            .call(ctx, tool, call.arguments.clone(), skill_cache)
+            .call(ctx, tool, call.arguments.clone(), skill_context)
             .await?;
         executor
             .prepare_result(ctx, tool, &call.arguments, output)
@@ -1259,7 +1259,7 @@ mod tests {
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
-            _skill_cache: Option<&'a mut skills::SkillRunCache>,
+            _skill_context: Option<&'a mut skills::SkillRunContext>,
         ) -> ToolExecutorFuture<'a> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let content = format!("result:{}", tool.name);

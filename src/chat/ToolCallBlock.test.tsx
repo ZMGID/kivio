@@ -37,6 +37,20 @@ function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord 
 }
 
 describe('ToolCallBlock', () => {
+  it.each([
+    ['skill', { name: 'pdf', arguments: 'extract tables' }],
+    ['skill_activate', { name: 'pdf', arguments: 'extract tables' }],
+    ['Skill', { skill: 'pdf', args: 'extract tables' }],
+  ])('shows the skill name for %s while retaining arguments in details', async (toolName, args) => {
+    render(<ToolCallBlock toolCall={buildToolCall({
+      toolName, arguments: args, argument_preview: JSON.stringify(args),
+    })} />)
+    const header = screen.getByRole('button', { name: 'Activate skill pdf' })
+    expect(within(header).queryByText(/extract tables/)).not.toBeInTheDocument()
+    await userEvent.click(header)
+    expect(screen.getByText(/extract tables/)).toBeInTheDocument()
+  })
+
   it.each(['pending', 'running'] as const)('does not claim a %s image read is already viewed', status => {
     render(<ToolCallBlock toolCall={buildToolCall({
       toolName: 'read', status, arguments: { path: '/tmp/one.png' },

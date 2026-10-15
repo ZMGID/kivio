@@ -606,7 +606,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_cache: Option<&'a mut skills::SkillRunCache>,
+        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
             if ctx.depth == 0 {
@@ -649,7 +649,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
                 self.state,
                 tool,
                 arguments,
-                skill_cache,
+                skill_context,
                 Some(native_ctx),
             )
             .await;

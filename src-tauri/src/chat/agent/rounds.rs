@@ -75,7 +75,7 @@ pub(crate) async fn run_tool_round(
         &state.tools,
         &state.blocked_tool_calls,
         planned.tool_calls,
-        &mut state.skill_cache,
+        &mut state.skill_context,
     )
     .await;
     let round_cancelled = round_result.cancelled;
@@ -164,7 +164,7 @@ pub(crate) async fn execute_tool_round(
     tools: &[ChatToolDefinition],
     blocked_tool_calls: &[ChatToolDefinition],
     tool_calls: Vec<PendingToolCall>,
-    skill_cache: &mut skills::SkillRunCache,
+    skill_context: &mut skills::SkillRunContext,
 ) -> ToolRoundResult {
     // 对齐 pi `failToolCallsFromTruncatedMessage`：finish_reason=="length" 说明整条响应
     // 在 max_output_tokens 处被拦腰截断——流式工具参数经 salvage 收尾后完全可能「JSON 合法
@@ -326,9 +326,16 @@ pub(crate) async fn execute_tool_round(
             );
             break;
         }
-        let result =
-            execute_serial_tool_call(host, executor, settings, &ctx, tool, tool_call, skill_cache)
-                .await;
+        let result = execute_serial_tool_call(
+            host,
+            executor,
+            settings,
+            &ctx,
+            tool,
+            tool_call,
+            skill_context,
+        )
+        .await;
         if push_tool_execution_result(result, &mut response_messages, &mut tool_records) {
             cancelled = true;
             push_cancelled_tool_calls(
@@ -460,7 +467,7 @@ async fn execute_serial_tool_call(
     ctx: &ToolRoundContext<'_>,
     tool: &ChatToolDefinition,
     tool_call: PendingToolCall,
-    skill_cache: &mut skills::SkillRunCache,
+    skill_context: &mut skills::SkillRunContext,
 ) -> ToolExecutionResult {
     execute_tool_call_result(
         host,
@@ -469,7 +476,7 @@ async fn execute_serial_tool_call(
         ctx,
         tool,
         tool_call,
-        Some(skill_cache),
+        Some(skill_context),
     )
     .await
 }
@@ -481,7 +488,7 @@ async fn execute_tool_call_result(
     round_ctx: &ToolRoundContext<'_>,
     tool: &ChatToolDefinition,
     tool_call: PendingToolCall,
-    skill_cache: Option<&mut skills::SkillRunCache>,
+    skill_context: Option<&mut skills::SkillRunContext>,
 ) -> ToolExecutionResult {
     let tool_call_id = tool_call.id.clone();
     let execution_ctx = ToolExecutionContext {
@@ -512,7 +519,7 @@ async fn execute_tool_call_result(
         &execution_ctx,
         tool,
         tool_call,
-        skill_cache,
+        skill_context,
     )
     .await;
     if let Some(hooks) = hooks {

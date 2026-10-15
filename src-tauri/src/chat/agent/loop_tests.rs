@@ -452,7 +452,7 @@ impl ToolExecutor for RecordingExecutor {
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         let name = tool.name.clone();
         let events = self.events.clone();
@@ -504,7 +504,7 @@ impl ToolExecutor for CancelAfterToolExecutor {
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         let name = tool.name.clone();
         let cancel_flag = self.cancel_flag.clone();
@@ -923,7 +923,7 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
     let executor = RecordingExecutor::default();
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".into();
-    let mut cache = skills::SkillRunCache::default();
+    let mut cache = skills::SkillRunContext::default();
     let result = execute_tool_round(
         &host,
         &executor,
@@ -1014,7 +1014,7 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
             native_web_fetch_tool(),
             native_run_command_tool(),
         ];
-        let mut skill_cache = skills::SkillRunCache::default();
+        let mut skill_context = skills::SkillRunContext::default();
         let result = execute_tool_round(
             &host,
             &executor,
@@ -1026,7 +1026,7 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
                 pending_tool_call("call_read", "read"),
                 pending_tool_call("call_next", trailing),
             ],
-            &mut skill_cache,
+            &mut skill_context,
         )
         .await;
         assert!(!result.cancelled);
@@ -1051,7 +1051,7 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1064,7 +1064,7 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
             pending_tool_call("call_read", "read"),
             pending_tool_call("call_fetch", "web_fetch"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1129,7 +1129,7 @@ async fn tool_round_runs_read_only_mcp_tools_concurrently() {
         test_mcp_tool("search_a", serde_json::json!({ "readOnlyHint": true })),
         test_mcp_tool("search_b", serde_json::json!({ "readOnlyHint": true })),
     ];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1142,7 +1142,7 @@ async fn tool_round_runs_read_only_mcp_tools_concurrently() {
             pending_tool_call("call_mcp_a", "search_a"),
             pending_tool_call("call_mcp_b", "search_b"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1164,7 +1164,7 @@ async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
     let settings = Settings::default();
     let mut tools = vec![native_read_file_tool(), native_web_fetch_tool()];
     crate::chat::ask_user::append_tool_definitions(&mut tools);
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1178,7 +1178,7 @@ async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
             pending_tool_call("call_ask", "ask_user"),
             pending_tool_call("call_fetch", "web_fetch"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1223,7 +1223,7 @@ async fn tool_round_keeps_destructive_mcp_tools_serial() {
         "write_remote",
         serde_json::json!({ "destructiveHint": true }),
     )];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1236,7 +1236,7 @@ async fn tool_round_keeps_destructive_mcp_tools_serial() {
             pending_tool_call("call_mcp_write_1", "write_remote"),
             pending_tool_call("call_mcp_write_2", "write_remote"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1257,7 +1257,7 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
         "remote_search",
         serde_json::json!({ "readOnlyHint": true, "openWorldHint": true }),
     )];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1270,7 +1270,7 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
             pending_tool_call("call_mcp_remote_1", "remote_search"),
             pending_tool_call("call_mcp_remote_2", "remote_search"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1289,7 +1289,7 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
     let mut invalid_fetch = pending_tool_call("call_bad_args", "web_fetch");
     invalid_fetch.arguments_parse_error = Some("expected compact object".to_string());
 
@@ -1308,7 +1308,7 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
             invalid_fetch,
             pending_tool_call("call_final", "read"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1394,7 +1394,7 @@ async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1404,7 +1404,7 @@ async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
         &tools,
         &[],
         vec![pending_tool_call("call_cap_read", "Read")],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1431,7 +1431,7 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
     let settings = Settings::default();
     let tools = vec![native_read_file_tool()];
     let blocked = vec![native_run_command_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1441,7 +1441,7 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
         &tools,
         &blocked,
         vec![pending_tool_call("call_bash", "bash")],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1472,7 +1472,7 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_run_command_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1485,7 +1485,7 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
             pending_tool_call("call_read", "read"),
             pending_tool_call("call_bash", "bash"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -1613,7 +1613,7 @@ async fn tool_round_keeps_serial_only_tools_non_overlapping() {
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_run_command_tool()];
-    let mut skill_cache = skills::SkillRunCache::default();
+    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1626,7 +1626,7 @@ async fn tool_round_keeps_serial_only_tools_non_overlapping() {
             pending_tool_call("call_bash_1", "bash"),
             pending_tool_call("call_bash_2", "bash"),
         ],
-        &mut skill_cache,
+        &mut skill_context,
     )
     .await;
 
@@ -2460,7 +2460,7 @@ impl ToolExecutor for HugeResultExecutor {
         _ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_cache: Option<&'a mut skills::SkillRunCache>,
+        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
             Ok(McpToolCallResult {
@@ -3723,7 +3723,7 @@ async fn managed_worker_stop_keeps_tool_owned_until_it_returns() {
             _ctx: &'a ToolExecutionContext<'a>,
             _tool: &'a ChatToolDefinition,
             _arguments: Value,
-            _cache: Option<&'a mut skills::SkillRunCache>,
+            _cache: Option<&'a mut skills::SkillRunContext>,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
                 self.entered.notify_one();
@@ -5889,6 +5889,54 @@ async fn local_safety_floor_triggers_compaction_despite_small_reported_anchor() 
     assert_eq!(result.content, "continued after safe compaction");
     assert!(result.compacted_history.is_some());
     assert!(server.captured_bodies()[1].contains("SAFETY_FLOOR_SUMMARY"));
+}
+
+#[tokio::test]
+async fn compaction_preserves_skill_reload_notice_in_replay_without_old_body() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        long_summary_sse_tagged("skill handoff"),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let mut messages = tool_round_history();
+    messages[2]["tool_calls"][0]["function"] = serde_json::json!({
+        "name":"Skill", "arguments":"{\"name\":\"pdf\"}"});
+    messages[3]["content"] = serde_json::json!(format!(
+        "<skill_content name=\"pdf\">{}</skill_content>",
+        archived_work("OLD_SKILL_INSTRUCTIONS")
+    ));
+    let outcome = compaction::summarize_history(
+        &state,
+        &config.provider,
+        &config.model,
+        &messages,
+        false,
+        &[],
+        16_384,
+        "test",
+        "reply",
+        None,
+        None,
+    )
+    .await;
+    let compaction::CompactOutcome::Compacted(history, _) = outcome else {
+        panic!("skill history should compact");
+    };
+    let replay = compaction::replacement_body(&history);
+    let notices: Vec<_> = replay
+        .iter()
+        .filter(|m| m["_skill_reload"] == "pdf")
+        .collect();
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("load it again"));
+    assert!(!serde_json::to_string(&history)
+        .unwrap()
+        .contains("OLD_SKILL_INSTRUCTIONS"));
+    assert!(server.captured_bodies()[0].contains("OLD_SKILL_INSTRUCTIONS"));
 }
 
 #[tokio::test]

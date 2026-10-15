@@ -442,7 +442,7 @@ impl ToolExecutor for SubAgentToolExecutor {
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_cache: Option<&'a mut crate::skills::SkillRunCache>,
+        skill_context: Option<&'a mut crate::skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             if let Some((conversation, id, run)) = &self.managed {
@@ -462,7 +462,7 @@ impl ToolExecutor for SubAgentToolExecutor {
                 &self.app.state::<AppState>(),
                 tool,
                 arguments,
-                skill_cache,
+                skill_context,
                 Some(native_ctx),
             )
             .await;

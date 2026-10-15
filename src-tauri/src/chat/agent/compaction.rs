@@ -125,6 +125,79 @@ pub(crate) fn is_replayable(message: &Value) -> bool {
     message["role"] != "system"
 }
 
+/// Reload notices are context, not an activation cache. Carry them across repeated
+/// compactions until a complete skill result is preserved in the recent tail.
+fn skill_reload_reminders(old: &[Value], kept: &[Value], mut budget: usize) -> Vec<Value> {
+    fn entries(messages: &[Value]) -> Vec<(String, bool)> {
+        let mut calls = std::collections::HashMap::new();
+        let mut entries = Vec::new();
+        for message in messages {
+            if let Some(name) = message["_skill_reload"].as_str() {
+                // A retained notice already asks for a reload; don't duplicate it.
+                entries.push((name.to_string(), true));
+            }
+            if let Some(tool_calls) = message["tool_calls"].as_array() {
+                for call in tool_calls {
+                    if !call["function"]["name"].as_str().is_some_and(|name| {
+                        name.eq_ignore_ascii_case("skill")
+                            || name.eq_ignore_ascii_case("skill_activate")
+                    }) {
+                        continue;
+                    }
+                    let args = call["function"]["arguments"]
+                        .as_str()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+                    if let (Some(id), Some(name)) = (
+                        call["id"].as_str(),
+                        args.as_ref().and_then(|args| args["name"].as_str()),
+                    ) {
+                        calls.insert(id.to_string(), name.to_string());
+                    }
+                }
+            }
+            if message["role"] != "tool" {
+                continue;
+            }
+            let Some(name) = message["tool_call_id"]
+                .as_str()
+                .and_then(|id| calls.get(id))
+            else {
+                continue;
+            };
+            let Some(content) = message["content"].as_str() else {
+                continue;
+            };
+            // Errors and legacy "already active" responses are not loaded content.
+            if content.starts_with("<skill_content name=") {
+                entries.push((
+                    name.clone(),
+                    content.ends_with("</skill_content>")
+                        && !content.contains("[Tool output truncated:"),
+                ));
+            }
+        }
+        entries
+    }
+    let mut covered: std::collections::HashSet<_> = entries(kept)
+        .into_iter()
+        .filter(|(_, complete_or_notice)| *complete_or_notice)
+        .map(|(name, _)| name)
+        .collect();
+    let mut notices: Vec<_> = entries(old).into_iter().rev().filter(|(name, _)| covered.insert(name.clone()))
+        .take(5).filter_map(|(name, _)| {
+            let notice = json!({"role":"user", "content":format!(
+                "Previously used skill {}: its earlier instructions are no longer preserved in full here. If still needed and allowed by the current skill policy, load it again with the skill tool before continuing its workflow. A summary or earlier activation is not the full skill instructions.",
+                serde_json::to_string(&name).unwrap_or_default()), "_skill_reload":name});
+            let tokens = estimate_message_tokens(&notice);
+            if tokens > budget { return None; }
+            budget -= tokens;
+            Some(notice)
+        }).collect();
+    // Store oldest first, so a later compaction retains the same recency order.
+    notices.reverse();
+    notices
+}
+
 fn read_reminders(old: &[Value], kept: &[Value], mut budget: usize) -> Vec<Value> {
     let mut reads = std::collections::HashMap::new();
     let mut candidates = Vec::new();
@@ -504,12 +577,14 @@ pub(crate) async fn summarize_history(
                     if after >= before {
                         return CompactOutcome::Failed;
                     }
-                    // Read reminders are optional; never let them undo compression.
-                    compacted.extend(read_reminders(
-                        &messages[prefix..end],
-                        kept,
-                        2_000usize.min((before - after) / 4),
-                    ));
+                    // Share one bounded budget; reload notices must not undo compression.
+                    let reminder_budget = 2_000usize.min((before - after) / 4);
+                    let skill_notices =
+                        skill_reload_reminders(&messages[prefix..end], kept, reminder_budget);
+                    let read_budget =
+                        reminder_budget.saturating_sub(estimate_messages_tokens(&skill_notices));
+                    compacted.extend(skill_notices);
+                    compacted.extend(read_reminders(&messages[prefix..end], kept, read_budget));
                     return CompactOutcome::Compacted(compacted, text);
                 } else {
                     "Empty or incomplete compaction summary".to_string()
@@ -1421,6 +1496,49 @@ mod tests {
             super::super::stop::step_limit_system_message(),
         ];
         assert_eq!(replacement_body(&messages), vec![tail, result]);
+    }
+
+    #[test]
+    fn skill_reload_notices_survive_compaction_until_full_instructions_are_kept() {
+        let call = json!({"role":"assistant", "tool_calls":[{"id":"s", "function":{
+            "name":"skill", "arguments":"{\"name\":\"pdf\"}"}}]});
+        let result = json!({"role":"tool", "tool_call_id":"s", "content":
+            "<skill_content name=\"pdf\">full instructions</skill_content>"});
+        let old = vec![call.clone(), result.clone()];
+        let first = skill_reload_reminders(&old, &[], 2_000);
+        assert_eq!(first.len(), 1);
+        assert!(first[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("load it again"));
+        let replay =
+            replacement_body(&[vec![summary_message("checkpoint")], first.clone()].concat());
+        assert_eq!(skill_reload_reminders(&replay, &[], 2_000), first);
+        assert!(skill_reload_reminders(&old, &first, 2_000).is_empty());
+        assert!(skill_reload_reminders(&replay, &old, 2_000).is_empty());
+        let mut truncated = result.clone();
+        truncated["content"] =
+            json!("<skill_content name=\"pdf\">[Tool output truncated: omitted]</skill_content>");
+        assert_eq!(
+            skill_reload_reminders(&old, &[call.clone(), truncated], 2_000).len(),
+            1
+        );
+        let mut failed = result;
+        failed["content"] = json!("Skill not found: pdf");
+        assert!(skill_reload_reminders(&[call, failed], &[], 2_000).is_empty());
+        assert!(skill_reload_reminders(&old, &[], 0).is_empty());
+    }
+
+    #[test]
+    fn skill_reload_notices_are_bounded_and_prefer_recent_skills() {
+        let old: Vec<_> = (0..10)
+            .map(|n| json!({"role":"user", "_skill_reload":format!("skill-{n}")}))
+            .collect();
+        let notices = skill_reload_reminders(&old, &[], 2_000);
+        assert_eq!(notices.len(), 5);
+        assert_eq!(notices.last().unwrap()["_skill_reload"], "skill-9");
+        assert_eq!(skill_reload_reminders(&notices, &[], 2_000), notices);
+        assert!(estimate_messages_tokens(&notices) <= 2_000);
     }
 
     #[test]

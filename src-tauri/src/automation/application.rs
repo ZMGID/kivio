@@ -295,7 +295,7 @@ impl ToolExecutor for WorkflowToolExecutor {
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_cache: Option<&'a mut skills::SkillRunCache>,
+        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             let native_ctx = crate::mcp::registry::NativeToolContext {
@@ -312,7 +312,7 @@ impl ToolExecutor for WorkflowToolExecutor {
                 &self.app.state::<AppState>(),
                 tool,
                 arguments,
-                skill_cache,
+                skill_context,
                 Some(native_ctx),
             )
             .await

@@ -122,7 +122,7 @@ pub(crate) struct RunState {
     pub(crate) pending_steering: std::collections::VecDeque<super::steering::SteeringMessage>,
     /// 原生 follow-up 本地队列。只在 FinalAnswer 边界取信箱、注入，不进轮首——那是 steer。
     pub(crate) pending_follow_up: std::collections::VecDeque<super::steering::SteeringMessage>,
-    pub(crate) skill_cache: skills::SkillRunCache,
+    pub(crate) skill_context: skills::SkillRunContext,
     /// 本轮全部模型调用（规划/合成/压缩摘要）的 usage 累计；provider 不报则保持 None。
     pub(crate) usage: Option<crate::chat::model::ModelUsage>,
     pub(crate) cache_pairs: Option<(u64, u64)>,
@@ -363,7 +363,7 @@ pub async fn run_agent_loop(
         todo_final_check_sent: false,
         pending_steering: std::collections::VecDeque::new(),
         pending_follow_up: std::collections::VecDeque::new(),
-        skill_cache: skills::SkillRunCache::default(),
+        skill_context: skills::SkillRunContext::default(),
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
@@ -380,16 +380,16 @@ pub async fn run_agent_loop(
         degraded: None,
         tool_schema_tokens_cache: None,
     };
-    // 把助手的技能白名单冻结进 skill_cache,作为 skill_activate 执行派发的硬 gate。
+    // 把助手的技能白名单冻结进 skill_context,作为 skill 执行派发的硬 gate。
     // 无助手 = None = 不限(全局行为)。
-    state.skill_cache.set_allowed_skill_ids(
+    state.skill_context.set_allowed_skill_ids(
         config
             .assistant_snapshot
             .as_ref()
             .map(|assistant| assistant.skill_ids.clone()),
     );
     state
-        .skill_cache
+        .skill_context
         .set_project_cwd(config.skill_project_cwd.clone());
     let hooks = host.hooks();
     // agent_start 在 guard 之前发：guard 的 Drop 负责成对的 agent_end。

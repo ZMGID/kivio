@@ -427,6 +427,43 @@ description: Test skill.
     }
 
     #[test]
+    fn explicit_skill_discovery_observes_edits_removal_and_new_skills() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("demo");
+        fs::create_dir_all(&skill).unwrap();
+        let path = skill.join("SKILL.md");
+        let scan = || {
+            build_registry_from_roots(
+                vec![SkillScanRoot {
+                    path: root.path().to_path_buf(),
+                    source: "user",
+                }],
+                true,
+            )
+        };
+        fs::write(
+            &path,
+            "---\nname: demo\ndescription: Demo\n---\nFIRST VERSION",
+        )
+        .unwrap();
+        let first = scan();
+        assert!(super::super::activate_skill(first.find("demo").unwrap()).contains("FIRST VERSION"));
+        fs::write(
+            &path,
+            "---\nname: demo\ndescription: Demo\n---\nUPDATED VERSION",
+        )
+        .unwrap();
+        let updated = scan();
+        let content = super::super::activate_skill(updated.find("demo").unwrap());
+        assert!(content.contains("UPDATED VERSION"));
+        assert!(!content.contains("FIRST VERSION"));
+        fs::remove_file(&path).unwrap();
+        assert!(scan().find("demo").is_none());
+        write_skill(&root.path().join("new-skill"), "new-skill");
+        assert!(scan().find("new-skill").is_some());
+    }
+
+    #[test]
     fn metadata_registry_skips_bundled_file_indexing() {
         let dir = temp_skill_dir();
         let skill_md = dir.join("SKILL.md");
