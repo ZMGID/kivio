@@ -40,7 +40,6 @@ use crate::external_agents::types::{
     UnifiedAgentEvent,
 };
 use crate::external_agents::workspace::{ensure_effective_cwd, extra_allowed_dirs_for_agent};
-use crate::skills::read_skill_detail_in;
 use crate::state::AppState;
 
 /// Emitted (as a leading text banner) when a persistent-session turn expected to resume a native
@@ -230,18 +229,33 @@ pub(crate) async fn run_external_cli_reply_in(
     let latest_user_message = inline_prompt.as_deref().unwrap_or(latest_user_message);
     let is_slash = is_cli_slash_input(latest_user_message);
 
-    let skill_detail = if is_slash {
-        None
-    } else if let Some(skill_id) = active_skill_id.filter(|s| !s.is_empty()) {
-        read_skill_detail_in(
-            app,
-            &settings.chat_tools.skill_scan_paths,
-            skill_id,
-            Some(cwd.as_path()),
+    // Kivio-attached skills share the conversation catalog; native CLI command
+    // discovery and native session history remain owned by the CLI.
+    let resources = if active_skill_id.is_some_and(|id| !id.is_empty())
+        || latest_user_message.trim() == "/reload"
+    {
+        Some(
+            state
+                .chat_runtime()
+                .resource_catalog(
+                    app,
+                    &conversation.id,
+                    &settings.chat_tools.skill_scan_paths,
+                    Some(&cwd),
+                    latest_user_message.trim() == "/reload",
+                )
+                .await?,
         )
-        .ok()
     } else {
         None
+    };
+    let skill_detail = if is_slash {
+        None
+    } else {
+        active_skill_id
+            .and_then(|id| resources.as_ref()?.skills.find(id))
+            .map(crate::skills::read_skill_record)
+            .transpose()?
     };
 
     let memory_body = if is_slash || !settings.chat_memory.enabled {
@@ -327,13 +341,39 @@ pub(crate) async fn run_external_cli_reply_in(
         is_slash,
     );
 
-    let skill_dir = skill_detail.as_ref().and_then(|d| d.meta.path.clone());
+    let skill_dir = skill_detail
+        .as_ref()
+        .map(|record| record.base_dir.to_string_lossy().into_owned());
     let skill_body = skill_detail.as_ref().map(|d| d.body.clone());
-    let skill_folder = skill_dir.as_deref().map(skill_cwd_alias_segment);
+    let skill_folder = skill_dir.as_deref().map(|dir| {
+        format!(
+            "{}-{}",
+            skill_cwd_alias_segment(dir),
+            stable_prompt_hash(&conversation.id)
+        )
+    });
 
     if !is_slash {
         if let (Some(dir), Some(folder)) = (skill_dir.as_deref(), skill_folder.as_deref()) {
-            let _ = stage_active_skill(&cwd, folder, std::path::Path::new(dir));
+            let cwd = cwd.clone();
+            let source = PathBuf::from(dir);
+            let folder = folder.to_owned();
+            let revision = format!(
+                "{}:{}",
+                resources.as_ref().unwrap().staging_revision,
+                stable_prompt_hash(skill_body.as_deref().unwrap_or_default())
+            );
+            let staged = tauri::async_runtime::spawn_blocking(move || {
+                stage_active_skill(&cwd, &folder, &source, &revision)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            if !staged.staged {
+                return Err(format!(
+                    "Stage active skill: {}",
+                    staged.reason.unwrap_or_default()
+                ));
+            }
         }
     }
 

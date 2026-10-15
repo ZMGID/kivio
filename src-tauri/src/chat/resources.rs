@@ -5,11 +5,22 @@ use std::{
 
 use crate::{agents::AgentDefinition, chat::workflow_hooks::Hook, skills::SkillRegistry};
 
-#[derive(Default)]
 pub(crate) struct Catalog {
+    pub staging_revision: String,
     pub skills: Arc<SkillRegistry>,
     pub agents: Vec<AgentDefinition>,
     pub hooks: Vec<Hook>,
+}
+
+impl Default for Catalog {
+    fn default() -> Self {
+        Self {
+            staging_revision: uuid::Uuid::new_v4().to_string(),
+            skills: Default::default(),
+            agents: vec![],
+            hooks: vec![],
+        }
+    }
 }
 
 impl Catalog {
@@ -43,6 +54,7 @@ impl Catalog {
             skills: Arc::new(skills),
             agents,
             hooks,
+            ..Default::default()
         })
     }
 }

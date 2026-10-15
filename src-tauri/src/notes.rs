@@ -8,7 +8,13 @@
 //! - 空文件夹也要留存，故文件夹清单单独存 `<app_data>/notes/folders.json`（有序数组）。
 //! 文件始终扁平存放（id=文件名），移动文件夹只改 frontmatter，查找保持 O(1)。
 
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::SystemTime,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -113,13 +119,22 @@ const PREVIEW_MAX_CHARS: usize = 160;
 
 /// 列表卡片预览：正文空白压平后截前 N 字符。
 fn make_preview(content: &str) -> String {
-    content
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(PREVIEW_MAX_CHARS)
-        .collect()
+    let mut preview = String::new();
+    let mut count = 0;
+    for word in content.split_whitespace() {
+        if count >= PREVIEW_MAX_CHARS {
+            break;
+        }
+        if count > 0 {
+            preview.push(' ');
+            count += 1;
+        }
+        for ch in word.chars().take(PREVIEW_MAX_CHARS - count) {
+            preview.push(ch);
+            count += 1;
+        }
+    }
+    preview
 }
 
 /// 从 `{id}.md` 原始文本解析；frontmatter 缺失/损坏时回退到文件名标题与文件
@@ -185,21 +200,94 @@ fn note_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(notes_dir(app)?.join(format!("{id}.md")))
 }
 
-/// 遍历所有笔记文件，返回 (path, Note)。列表 / 文件夹改名删除共用。
-fn read_all_notes(app: &AppHandle) -> Result<Vec<(PathBuf, Note)>, String> {
-    let dir = notes_dir(app)?;
-    let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir).map_err(|err| format!("read notes dir failed: {err}"))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+/// Read only enough for the complete header and preview. Grow the prefix for
+/// long headers/leading whitespace; a byte cutoff must not change note metadata.
+fn read_note_meta(
+    mut reader: impl Read,
+    id: &str,
+    mtime: Option<DateTime<Utc>>,
+) -> Option<NoteMeta> {
+    let mut raw = Vec::new();
+    loop {
+        let chunk = raw.len().max(4096);
+        let read = reader
+            .by_ref()
+            .take(chunk as u64)
+            .read_to_end(&mut raw)
+            .ok()?;
+        let eof = read < chunk;
+        // An incomplete final UTF-8 character belongs to the next chunk, not
+        // the preview. Preserve the usual lossy fallback for malformed files.
+        let valid_len = std::str::from_utf8(&raw)
+            .err()
+            .filter(|error| error.error_len().is_none())
+            .map_or(raw.len(), |error| error.valid_up_to());
+        let text = String::from_utf8_lossy(&raw[..if eof { raw.len() } else { valid_len }]);
+        let trimmed = text.trim_start();
+        let incomplete_header = "---".starts_with(trimmed)
+            || trimmed
+                .strip_prefix("---")
+                .is_some_and(|rest| !rest.contains("\n---"));
+        if !eof && incomplete_header {
             continue;
         }
-        if let Some(note) = read_note_file(&path) {
-            out.push((path, note));
+        let note = parse_note(id, &text, mtime);
+        let preview = make_preview(&note.content);
+        if eof || preview.chars().count() == PREVIEW_MAX_CHARS {
+            return Some(NoteMeta {
+                id: note.id,
+                title: note.title,
+                preview,
+                folder: note.folder,
+                origin: note.origin,
+                created_at: note.created_at,
+                updated_at: note.updated_at,
+            });
         }
     }
-    Ok(out)
+}
+
+#[derive(Default)]
+pub(crate) struct NoteCatalog(Mutex<HashMap<PathBuf, (Option<SystemTime>, u64, NoteMeta)>>);
+impl NoteCatalog {
+    fn list(&self, dir: &Path) -> Result<Vec<NoteMeta>, String> {
+        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = HashMap::new();
+        for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            let stamp = metadata.modified().ok();
+            let len = metadata.len();
+            if let Some((old_stamp, old_len, meta)) = cached.get(&path) {
+                if stamp.is_some() && *old_stamp == stamp && *old_len == len {
+                    next.insert(path, (stamp, len, meta.clone()));
+                    continue;
+                }
+            }
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            if let Some(meta) = read_note_meta(file, id, stamp.map(DateTime::<Utc>::from)) {
+                next.insert(path, (stamp, len, meta));
+            }
+        }
+        let mut metas: Vec<_> = next.values().map(|(_, _, meta)| meta.clone()).collect();
+        *cached = next;
+        metas.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(metas)
+    }
 }
 
 /* ===== 文件夹清单（folders.json，有序） ===== */
@@ -222,27 +310,16 @@ fn write_folders(app: &AppHandle, folders: &[String]) -> Result<(), String> {
 
 #[tauri::command]
 pub fn notes_list(app: AppHandle) -> Result<Vec<NoteMeta>, String> {
-    let mut metas: Vec<NoteMeta> = read_all_notes(&app)?
-        .into_iter()
-        .map(|(_, note)| NoteMeta {
-            id: note.id,
-            title: note.title,
-            preview: make_preview(&note.content),
-            folder: note.folder,
-            origin: note.origin,
-            created_at: note.created_at,
-            updated_at: note.updated_at,
-        })
-        .collect();
-    metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(metas)
+    app.state::<crate::state::AppState>()
+        .note_catalog
+        .list(&notes_dir(&app)?)
 }
 
 /// 文件夹清单：folders.json 顺序在前，追加被笔记引用但清单里没有的（容错）。
 #[tauri::command]
 pub fn notes_folders_list(app: AppHandle) -> Result<Vec<String>, String> {
     let mut folders = read_folders_raw(&app);
-    for (_, note) in read_all_notes(&app)? {
+    for note in notes_list(app.clone())? {
         let f = note.folder.trim();
         if !f.is_empty() && !folders.iter().any(|x| x == f) {
             folders.push(f.to_string());
@@ -287,8 +364,12 @@ pub fn notes_folder_rename(
     }
     write_folders(&app, &folders)?;
     // 归属该文件夹的笔记改到新名。
-    for (path, mut note) in read_all_notes(&app)? {
-        if note.folder == old {
+    for meta in notes_list(app.clone())?
+        .into_iter()
+        .filter(|meta| meta.folder == old)
+    {
+        let path = note_path(&app, &meta.id)?;
+        if let Some(mut note) = read_note_file(&path) {
             note.folder = new.clone();
             note.updated_at = now_iso();
             std::fs::write(&path, serialize_note(&note))
@@ -304,8 +385,12 @@ pub fn notes_folder_delete(app: AppHandle, name: String) -> Result<Vec<String>, 
     let mut folders = read_folders_raw(&app);
     folders.retain(|x| x != &name);
     write_folders(&app, &folders)?;
-    for (path, mut note) in read_all_notes(&app)? {
-        if note.folder == name {
+    for meta in notes_list(app.clone())?
+        .into_iter()
+        .filter(|meta| meta.folder == name)
+    {
+        let path = note_path(&app, &meta.id)?;
+        if let Some(mut note) = read_note_file(&path) {
             note.folder = String::new();
             note.updated_at = now_iso();
             std::fs::write(&path, serialize_note(&note))
@@ -413,6 +498,65 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-02T00:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn metadata_preserves_long_headers_and_previews_after_leading_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut note = sample("folder", ORIGIN_CHAT);
+        note.title = "长标题".repeat(24 * 1024);
+        note.content = format!("{}可见正文", " \n".repeat(40 * 1024));
+        std::fs::write(dir.path().join("long.md"), serialize_note(&note)).unwrap();
+        let metas = NoteCatalog::default().list(dir.path()).unwrap();
+        assert!(
+            metas[0].title == note.title,
+            "the complete title must survive metadata reads"
+        );
+        assert_eq!(metas[0].folder, "folder");
+        assert_eq!(metas[0].origin, ORIGIN_CHAT);
+        assert_eq!(metas[0].preview, "可见正文");
+        std::fs::write(
+            dir.path().join("plain.md"),
+            format!("{}正文", " ".repeat(80 * 1024)),
+        )
+        .unwrap();
+        let metas = NoteCatalog::default().list(dir.path()).unwrap();
+        assert_eq!(
+            metas.iter().find(|m| m.id == "plain").unwrap().preview,
+            "正文"
+        );
+    }
+
+    #[test]
+    fn metadata_does_not_read_large_note_bodies_and_tracks_external_edits() {
+        let mut note = sample("old", ORIGIN_USER);
+        note.content = "正文 ".repeat(1024 * 1024);
+        let raw = serialize_note(&note);
+        let mut reader = std::io::Cursor::new(raw.as_bytes());
+        let meta = read_note_meta(&mut reader, "x", None).unwrap();
+        assert_eq!(meta.preview, make_preview(&note.content));
+        assert!(
+            reader.position() <= 64 * 1024,
+            "listing must not read the full multi-MB body"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.md");
+        std::fs::write(&path, raw).unwrap();
+        let catalog = NoteCatalog::default();
+        assert_eq!(catalog.list(dir.path()).unwrap()[0].folder, "old");
+        note.folder = "new folder".into();
+        note.content = "changed".into();
+        std::fs::write(&path, serialize_note(&note)).unwrap();
+        let updated = catalog.list(dir.path()).unwrap();
+        assert_eq!(updated[0].folder, "new folder");
+        assert_eq!(updated[0].preview, "changed");
+        std::fs::remove_file(path).unwrap();
+        assert!(catalog.list(dir.path()).unwrap().is_empty());
+        std::fs::write(dir.path().join("external.md"), "external note").unwrap();
+        assert_eq!(
+            catalog.list(dir.path()).unwrap()[0].preview,
+            "external note"
+        );
     }
 
     #[test]

@@ -152,15 +152,20 @@ pub(crate) async fn chat_session_skills(
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    if conversation.agent_runtime.is_external() {
-        return Err("External CLI skills are managed by their own runtime".into());
-    }
     let settings = state.settings_read().clone();
-    let cwd = crate::chat::storage::resolve_conversation_working_directory(
-        &app,
-        &conversation,
-        &settings.chat_tools.native_tools.working_directory,
-    )?;
+    let cwd = if conversation.agent_runtime.is_external() {
+        crate::external_agents::workspace::resolve_effective_cwd(
+            &app,
+            &conversation.id,
+            conversation.project_id.as_deref(),
+        )?
+    } else {
+        crate::chat::storage::resolve_conversation_working_directory(
+            &app,
+            &conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )?
+    };
     let registry = state
         .chat_runtime()
         .skill_registry(

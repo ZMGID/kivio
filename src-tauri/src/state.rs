@@ -57,9 +57,11 @@ pub struct AppState {
     provider_runtime: crate::chat::provider_runtime::ProviderRuntimeState,
     /// MCP 会话池与持久化工具 schema 快照的领域句柄；内部索引只由 mcp 模块拥有。
     mcp_runtime: crate::mcp::McpRuntimeState,
+    pub(crate) note_catalog: crate::notes::NoteCatalog,
     /// Token usage ledger directory under app data. Model providers can append records
     /// without needing an AppHandle threaded through every call path.
     pub usage_dir: PathBuf,
+    pub(crate) usage_ledger: crate::usage::UsageLedger,
     pub http: Client,
     /// 直连客户端（忽略系统/环境代理）。只有当某个供应商关掉「跟随系统代理」时才构造，
     /// 默认全跟随系统代理的用户不会多出一个连接池。
@@ -198,6 +200,8 @@ impl AppState {
             provider_runtime,
             mcp_runtime,
             usage_dir,
+            usage_ledger: Default::default(),
+            note_catalog: Default::default(),
             http,
             http_direct: std::sync::OnceLock::new(),
             #[cfg(target_os = "macos")]

@@ -829,14 +829,21 @@ export const InputBar = memo(function InputBar({
 
   const allSlashCommands = useMemo(
     () => {
-      if (usesExternalRuntime) return externalCliSlashCommands
+      if (usesExternalRuntime) {
+        // Keep native commands authoritative. CLIs without a native /reload can
+        // refresh Kivio-attached skills locally, without prompting the model.
+        if (externalCliSlashLoading || externalCliSlashCommands.some(command => command.slash === '/reload')) return externalCliSlashCommands
+        const reload = LOCAL_SLASH_COMMANDS.filter(command => command.id === 'reload')
+          .map(command => ({ ...command, description: t.chatSkillReloadDescription }))
+        return [...buildSlashCommands(reload, []), ...externalCliSlashCommands]
+      }
       const local = usesChatRuntime
         ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'plan' && command.id !== 'orchestrate')
         : LOCAL_SLASH_COMMANDS
       return buildSlashCommands(local.map(command => command.id === 'reload'
         ? { ...command, description: t.chatSkillReloadDescription } : command), usesChatRuntime ? [] : enabledSkills)
     },
-    [enabledSkills, externalCliSlashCommands, usesChatRuntime, usesExternalRuntime, t.chatSkillReloadDescription],
+    [enabledSkills, externalCliSlashCommands, externalCliSlashLoading, usesChatRuntime, usesExternalRuntime, t.chatSkillReloadDescription],
   )
 
   useEffect(() => {

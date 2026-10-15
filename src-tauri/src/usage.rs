@@ -1,8 +1,9 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike};
@@ -235,7 +236,7 @@ pub fn record_model_call(state: &AppState, input: UsageRecordInput<'_>) {
         error_kind: input.error_kind,
     };
     apply_cost(input.provider, &mut record);
-    if let Err(err) = append_record(&state.usage_dir, &record) {
+    if let Err(err) = state.usage_ledger.append(&state.usage_dir, &record) {
         eprintln!("Failed to record usage: {err}");
     }
 }
@@ -398,16 +399,22 @@ pub fn today_usage(dir: &Path) -> Result<TodayUsage, String> {
 }
 
 #[tauri::command]
-pub fn usage_get_conversation_cost(
+pub async fn usage_get_conversation_cost(
     app: AppHandle,
-    state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<ConversationCost, String> {
-    let children = crate::chat::sub_agent::control::runtime(&app)?;
-    conversation_cost(&state.usage_dir, &conversation_id, &children)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let children = crate::chat::sub_agent::control::runtime(&app)?;
+        state
+            .usage_ledger
+            .conversation_cost(&state.usage_dir, &conversation_id, &children)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationCost {
     pub cost_usd: Option<f64>,
@@ -415,31 +422,17 @@ pub struct ConversationCost {
     pub skipped_records: usize,
 }
 
-// Use recorded request costs, not the visible history window or today's prices.
-// Deleted messages and older tool requests still incurred their original cost.
-fn conversation_cost(
-    dir: &Path,
-    conversation_id: &str,
-    children: &crate::chat::sub_agent::runtime::Runtime,
-) -> Result<ConversationCost, String> {
-    // Durable child identities include every execution of each child, even
-    // after restart. All children belong to the root conversation; nesting is
-    // currently forbidden. Scan each request once, not once per execution.
-    let mut ids = std::collections::HashSet::from([conversation_id.to_owned()]);
-    for child in children.list(conversation_id)? {
-        ids.insert(format!("subagent-{}", child.id));
-    }
-    let (records, skipped_records) = read_records(dir, None);
-    let mut result = ConversationCost {
-        skipped_records,
-        ..Default::default()
-    };
-    for record in records.iter().filter(|record| {
-        record
-            .conversation_id
-            .as_ref()
-            .is_some_and(|id| ids.contains(id))
-    }) {
+#[derive(Default)]
+struct CostIndex {
+    conversations: BTreeMap<String, ConversationCost>,
+    skipped: usize,
+}
+impl CostIndex {
+    fn add(&mut self, record: &UsageRecord) {
+        let Some(id) = &record.conversation_id else {
+            return;
+        };
+        let result = self.conversations.entry(id.clone()).or_default();
         match record
             .cost_usd
             .filter(|cost| cost.is_finite() && *cost >= 0.0)
@@ -449,7 +442,107 @@ fn conversation_cost(
             None => result.unpriced_requests += 1,
         }
     }
-    Ok(result)
+    fn recover(dir: &Path) -> Result<Self, String> {
+        let mut index = Self::default();
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(index),
+            Err(e) => return Err(e.to_string()),
+        };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // Do not cache a partial aggregate after a transient I/O failure.
+            // Leave initialization retryable; malformed records still count as skipped.
+            let file = fs::File::open(&path)
+                .map_err(|error| format!("open usage file {}: {error}", path.display()))?;
+            // Recover once without retaining the global request history in memory.
+            for line in BufReader::new(file).lines() {
+                match line {
+                    Ok(line) if line.trim().is_empty() => {}
+                    Ok(line) => match serde_json::from_str::<UsageRecord>(&line) {
+                        Ok(record) => index.add(&record),
+                        Err(_) => index.skipped += 1,
+                    },
+                    Err(error) => {
+                        return Err(format!("read usage file {}: {error}", path.display()))
+                    }
+                }
+            }
+        }
+        Ok(index)
+    }
+}
+
+/// Owns append, clear and the process-local aggregate under one lock. The JSONL
+/// ledger stays authoritative; a restart rebuilds only on the first cost query.
+#[derive(Default)]
+pub(crate) struct UsageLedger(Mutex<Option<CostIndex>>);
+impl UsageLedger {
+    fn append(&self, dir: &Path, record: &UsageRecord) -> Result<(), String> {
+        let mut index = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(error) = append_record(dir, record) {
+            // A partial append may have reached disk; rebuild rather than guess.
+            *index = None;
+            return Err(error);
+        }
+        if let Some(index) = index.as_mut() {
+            index.add(record);
+        }
+        Ok(())
+    }
+
+    fn conversation_cost(
+        &self,
+        dir: &Path,
+        conversation_id: &str,
+        children: &crate::chat::sub_agent::runtime::Runtime,
+    ) -> Result<ConversationCost, String> {
+        let mut ids = vec![conversation_id.to_owned()];
+        ids.extend(
+            children
+                .list(conversation_id)?
+                .into_iter()
+                .map(|c| format!("subagent-{}", c.id)),
+        );
+        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if cached.is_none() {
+            *cached = Some(CostIndex::recover(dir)?);
+        }
+        let index = cached.as_ref().unwrap();
+        let mut result = ConversationCost {
+            skipped_records: index.skipped,
+            ..Default::default()
+        };
+        for id in ids {
+            if let Some(cost) = index.conversations.get(&id) {
+                if let Some(value) = cost.cost_usd {
+                    *result.cost_usd.get_or_insert(0.0) += value;
+                }
+                result.unpriced_requests += cost.unpriced_requests;
+            }
+        }
+        Ok(result)
+    }
+
+    fn clear(&self, dir: &Path) -> Result<(), String> {
+        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        // Invalidate first: a failed partial clear must never expose old totals.
+        *cached = None;
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(dir).map_err(|e| format!("read usage dir: {e}"))? {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+                fs::remove_file(&path).map_err(|e| format!("remove usage file: {e}"))?;
+            }
+        }
+        *cached = Some(CostIndex::default());
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -482,17 +575,7 @@ pub fn usage_get_stats(
 
 #[tauri::command]
 pub fn usage_clear(state: State<'_, AppState>) -> Result<(), String> {
-    if !state.usage_dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(&state.usage_dir).map_err(|e| format!("read usage dir: {e}"))? {
-        let entry = entry.map_err(|e| format!("read usage entry: {e}"))?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-            fs::remove_file(&path).map_err(|e| format!("remove usage file: {e}"))?;
-        }
-    }
-    Ok(())
+    state.usage_ledger.clear(&state.usage_dir)
 }
 
 fn filter_records(mut records: Vec<UsageRecord>, query: &UsageStatsQuery) -> Vec<UsageRecord> {
@@ -1078,6 +1161,7 @@ mod tests {
     fn conversation_cost_includes_durable_children_and_continuations_once() {
         use crate::chat::sub_agent::runtime::{Profile, Runtime};
         let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
         let children_dir = dir.path().join("children");
         let runtime = Runtime::open(children_dir.clone()).unwrap();
         let child = runtime
@@ -1120,18 +1204,129 @@ mod tests {
             let mut record = base_record("openai_chat");
             record.conversation_id = Some(id.into());
             record.cost_usd = cost;
-            append_record(&usage_dir, &record).unwrap();
+            ledger.append(&usage_dir, &record).unwrap();
         }
         drop(runtime);
         let reopened = Runtime::open(children_dir).unwrap();
-        let cost = conversation_cost(&usage_dir, "parent", &reopened).unwrap();
+        let cost = ledger
+            .conversation_cost(&usage_dir, "parent", &reopened)
+            .unwrap();
         assert_eq!(cost.cost_usd, Some(0.875));
         assert_eq!(cost.unpriced_requests, 1);
+        // Warm queries must use the aggregate, not reread the global ledger.
+        let ledger_path = usage_dir.join(monthly_file_name(Local::now().timestamp()));
+        let hidden = ledger_path.with_extension("held");
+        fs::rename(&ledger_path, &hidden).unwrap();
+        let cached = ledger
+            .conversation_cost(&usage_dir, "parent", &reopened)
+            .unwrap();
+        assert_eq!(cached.cost_usd, Some(0.875));
+        fs::rename(hidden, ledger_path).unwrap();
+        let mut extra = base_record("openai_chat");
+        extra.conversation_id = Some("parent".into());
+        extra.cost_usd = Some(0.125);
+        ledger.append(&usage_dir, &extra).unwrap();
+        assert_eq!(
+            ledger
+                .conversation_cost(&usage_dir, "parent", &reopened)
+                .unwrap()
+                .cost_usd,
+            Some(1.0)
+        );
+        let restart = UsageLedger::default();
+        assert_eq!(
+            restart
+                .conversation_cost(&usage_dir, "parent", &reopened)
+                .unwrap()
+                .cost_usd,
+            Some(1.0)
+        );
+        ledger.clear(&usage_dir).unwrap();
+        assert_eq!(
+            ledger
+                .conversation_cost(&usage_dir, "parent", &reopened)
+                .unwrap()
+                .cost_usd,
+            None
+        );
+        ledger.append(&usage_dir, &extra).unwrap();
+        assert_eq!(
+            ledger
+                .conversation_cost(&usage_dir, "parent", &reopened)
+                .unwrap()
+                .cost_usd,
+            Some(0.125)
+        );
+    }
+
+    #[test]
+    fn concurrent_appends_and_failed_writes_preserve_the_cost_aggregate() {
+        let dir = tempfile::tempdir().unwrap();
+        let children =
+            crate::chat::sub_agent::runtime::Runtime::open(dir.path().join("children")).unwrap();
+        let ledger = UsageLedger::default();
+        ledger
+            .conversation_cost(dir.path(), "parent", &children)
+            .unwrap();
+        let mut record = base_record("openai_chat");
+        record.conversation_id = Some("parent".into());
+        record.cost_usd = Some(0.125);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..16 {
+                        ledger.append(dir.path(), &record).unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            ledger
+                .conversation_cost(dir.path(), "parent", &children)
+                .unwrap()
+                .cost_usd,
+            Some(16.0)
+        );
+        assert_eq!(
+            UsageLedger::default()
+                .conversation_cost(dir.path(), "parent", &children)
+                .unwrap()
+                .cost_usd,
+            Some(16.0)
+        );
+        // A failed append is not added to the aggregate and can recover afterward.
+        let path = dir.path().join(monthly_file_name(record.created_at));
+        let held = path.with_extension("held");
+        fs::rename(&path, &held).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(ledger.append(dir.path(), &record).is_err());
+        let cold = UsageLedger::default();
+        assert!(
+            cold.conversation_cost(dir.path(), "parent", &children)
+                .is_err(),
+            "an unreadable ledger must not become a permanent partial aggregate"
+        );
+        fs::remove_dir(&path).unwrap();
+        fs::rename(&held, &path).unwrap();
+        assert_eq!(
+            cold.conversation_cost(dir.path(), "parent", &children)
+                .unwrap()
+                .cost_usd,
+            Some(16.0)
+        );
+        assert_eq!(
+            ledger
+                .conversation_cost(dir.path(), "parent", &children)
+                .unwrap()
+                .cost_usd,
+            Some(16.0)
+        );
     }
 
     #[test]
     fn conversation_cost_covers_all_recorded_requests_without_conflating_unknown_and_free() {
         let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
         let children =
             crate::chat::sub_agent::runtime::Runtime::open(dir.path().join("children")).unwrap();
         for (id, age_days, cost, usage_source) in [
@@ -1147,20 +1342,24 @@ mod tests {
             record.created_at -= age_days * 86400;
             record.cost_usd = cost;
             record.usage_source = usage_source.into();
-            append_record(dir.path(), &record).unwrap();
+            ledger.append(dir.path(), &record).unwrap();
         }
-        let cost = conversation_cost(dir.path(), "a", &children).unwrap();
+        let cost = ledger
+            .conversation_cost(dir.path(), "a", &children)
+            .unwrap();
         assert_eq!(cost.cost_usd, Some(0.375));
         assert_eq!(cost.unpriced_requests, 2);
         assert_eq!(cost.skipped_records, 0);
         assert_eq!(
-            conversation_cost(dir.path(), "free", &children)
+            ledger
+                .conversation_cost(dir.path(), "free", &children)
                 .unwrap()
                 .cost_usd,
             Some(0.0)
         );
         assert_eq!(
-            conversation_cost(dir.path(), "absent", &children)
+            ledger
+                .conversation_cost(dir.path(), "absent", &children)
                 .unwrap()
                 .cost_usd,
             None

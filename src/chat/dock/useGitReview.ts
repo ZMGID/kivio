@@ -36,12 +36,15 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
   const lastRevisionRef = useRef(-1)
   const fileDiffEpochRef = useRef(0)
   const fileStatsKeyRef = useRef('')
+  const statusEpochRef = useRef(0)
+  const mountedRef = useRef(false)
+  const refreshQueue = useRef<{ pending: boolean; force: boolean; promise: Promise<void> | null }>({ pending: false, force: false, promise: null })
 
-  /** 拉逐文件 numstat；内容没变则保持原引用（配合签名守卫，只在状态变化时被调用）。 */
-  const loadFileStats = useCallback(async (currentWorkdir: string) => {
+  /** 与 status 串行拉取 numstat；同一修改文件的内容变了也会更新行数。 */
+  const loadFileStats = useCallback(async (currentWorkdir: string, epoch: number) => {
     try {
       const stat = await dockApi.gitDiffStat(currentWorkdir)
-      if (workdirRef.current !== currentWorkdir) return
+      if (!mountedRef.current || statusEpochRef.current !== epoch) return
       const key = stat.files.map((f) => `${f.path}:${f.additions}:${f.deletions}`).join(';')
       if (key === fileStatsKeyRef.current) return
       fileStatsKeyRef.current = key
@@ -53,36 +56,61 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
     }
   }, [])
 
-  const refresh = useCallback(async (options: { silent?: boolean; force?: boolean } = {}) => {
-    const { silent = false, force = false } = options
-    const currentWorkdir = workdirRef.current
-    if (!currentWorkdir) return
-    if (!silent) setStatusLoading(true)
-    try {
-      const next = await dockApi.gitStatus(currentWorkdir)
-      if (workdirRef.current !== currentWorkdir) return
-      const signature = gitStatusSignature(next)
-      if (force || signature !== signatureRef.current) {
-        signatureRef.current = signature
-        setStatus(next)
-        if (next.status === 'ready') {
-          void loadFileStats(currentWorkdir)
-        } else {
-          fileStatsKeyRef.current = ''
-          setFileStats({})
+  const refresh = useCallback((options: { silent?: boolean; force?: boolean } = {}): Promise<void> => {
+    const queue = refreshQueue.current
+    if (!workdirRef.current || !mountedRef.current) return Promise.resolve()
+    queue.pending = true
+    queue.force ||= options.force ?? false
+    if (!options.silent) setStatusLoading(true)
+    if (queue.promise) return queue.promise
+    queue.promise = (async () => {
+      try {
+        // Serialize status + numstat, retaining only one followup for an edit burst.
+        while (queue.pending && mountedRef.current) {
+          queue.pending = false
+          const force = queue.force
+          queue.force = false
+          const currentWorkdir = workdirRef.current
+          const epoch = statusEpochRef.current
+          if (!currentWorkdir) break
+          try {
+            const next = await dockApi.gitStatus(currentWorkdir)
+            if (!mountedRef.current || statusEpochRef.current !== epoch) continue
+            const signature = gitStatusSignature(next)
+            if (force || signature !== signatureRef.current) {
+              signatureRef.current = signature
+              setStatus(next)
+            }
+            if (next.status === 'ready') {
+              await loadFileStats(currentWorkdir, epoch)
+            } else {
+              fileStatsKeyRef.current = ''
+              setFileStats({})
+            }
+            if (mountedRef.current && statusEpochRef.current === epoch) setViewError('')
+          } catch (err) {
+            if (mountedRef.current && statusEpochRef.current === epoch) {
+              setViewError(err instanceof Error ? err.message : String(err))
+            }
+          }
         }
+      } finally {
+        // Release in the worker itself, before another microtask can enqueue a
+        // refresh against a settled promise whose pending flag nobody consumes.
+        queue.promise = null
+        if (mountedRef.current) setStatusLoading(false)
       }
-      setViewError('')
-    } catch (err) {
-      if (workdirRef.current !== currentWorkdir) return
-      setViewError(err instanceof Error ? err.message : String(err))
-    } finally {
-      if (!silent && workdirRef.current === currentWorkdir) setStatusLoading(false)
-    }
+    })()
+    return queue.promise
   }, [loadFileStats])
 
   // workdir 变化：清空全部 git 状态并立即重拉。
   useEffect(() => {
+    const queue = refreshQueue.current
+    mountedRef.current = true
+    statusEpochRef.current += 1
+    fileDiffEpochRef.current += 1
+    statusRef.current = null
     signatureRef.current = ''
     lastRevisionRef.current = -1
     dirtyRef.current = false
@@ -92,17 +120,27 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
     setFileDiff(null)
     fileStatsKeyRef.current = ''
     setFileStats({})
-    if (workdir && active) void refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setStatusLoading(false)
+    setFileDiffLoading(false)
+    return () => {
+      mountedRef.current = false
+      statusEpochRef.current += 1
+      fileDiffEpochRef.current += 1
+      queue.pending = false
+    }
   }, [workdir])
 
   // active 由 false → true：冲刷脏标记。
   useEffect(() => {
-    if (!active || !workdir) return
-    if (!statusRef.current) void refresh({ silent: true })
-    if (dirtyRef.current) {
+    if (!active) {
+      dirtyRef.current ||= refreshQueue.current.pending
+      refreshQueue.current.pending = false
+      return
+    }
+    if (!workdir) return
+    if (!statusRef.current || dirtyRef.current) {
       dirtyRef.current = false
-      void refresh({ silent: true })
+      void refresh({ silent: Boolean(statusRef.current) })
     }
   }, [active, workdir, refresh])
 
@@ -112,7 +150,7 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
     return workspaceActivity.subscribe(workdir, (activity) => {
       const regressed = activity.revision < lastRevisionRef.current
       lastRevisionRef.current = Math.max(lastRevisionRef.current, activity.revision)
-      if (!activity.fs && !activity.git) return
+      if (!activity.fs && !activity.git && !activity.truncated) return
       if (!activeRef.current) {
         dirtyRef.current = true
         return
@@ -171,6 +209,7 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
   const runMutation = useCallback(
     async (action: () => Promise<GitMutationResult>): Promise<void> => {
       if (busyRef.current) return
+      const epoch = statusEpochRef.current
       busyRef.current = true
       setBusy(true)
       setMutationError('')
@@ -179,6 +218,9 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
         if (!result.ok) {
           throw new Error(result.message || result.stderr || 'git operation failed')
         }
+        if (!mountedRef.current || statusEpochRef.current !== epoch) return
+        // Retire any pre-mutation query; its response cannot overwrite this state.
+        statusEpochRef.current += 1
         const signature = gitStatusSignature(result.state)
         if (signature !== signatureRef.current) {
           signatureRef.current = signature
@@ -187,7 +229,7 @@ export function useGitReview({ workdir, active }: UseGitReviewOptions) {
         void refresh({ silent: true })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        setMutationError(message)
+        if (mountedRef.current && statusEpochRef.current === epoch) setMutationError(message)
         throw err
       } finally {
         busyRef.current = false

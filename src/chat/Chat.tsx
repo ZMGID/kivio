@@ -1141,7 +1141,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const id = currentConversationIdRef.current
     if (!isTauriRuntime()) { setSkills([]); return }
     try {
-      const result = id && !usesExternalRuntime
+      const result = id
         ? await api.chatSessionSkills(id, reload)
         : await api.chatSkillsList(undefined, skillProjectCwdRef.current || undefined)
       if (epoch !== skillLoadEpochRef.current || id !== currentConversationIdRef.current) return
@@ -1152,7 +1152,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (epoch === skillLoadEpochRef.current && id === currentConversationIdRef.current) setSkills([])
       console.error('Failed to load chat skills:', err)
     }
-  }, [currentConversationIdRef, uiLang, usesExternalRuntime])
+  }, [currentConversationIdRef, uiLang])
   const handleReloadSkills = useCallback(() => loadSkills(true), [loadSkills])
 
   useEffect(() => {
