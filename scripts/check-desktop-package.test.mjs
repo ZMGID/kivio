@@ -30,13 +30,20 @@ test('all checked-in versions and resource sources agree', () => {
   assert.ok(checkResources(root) > 0)
 })
 
-test('desktop CSP permits the ClawHub API in production and development', () => {
+test('desktop CSP permits skill and MCP market APIs in production and development', () => {
   const { app: { security } } = JSON.parse(readFileSync(path.join(root, 'src-tauri/tauri.conf.json'), 'utf8'))
   for (const key of ['csp', 'devCsp']) {
     const connect = security[key].split(';')
       .map(directive => directive.trim().split(/\s+/))
       .find(([name]) => name === 'connect-src')
-    assert.ok(connect?.includes('https://clawhub.ai'), `${key} must allow the skill market API origin`)
+    for (const origin of [
+      'https://clawhub.ai',
+      'https://registry.modelcontextprotocol.io',
+      'https://api.smithery.ai',
+      'https://glama.ai',
+    ]) {
+      assert.ok(connect?.includes(origin), `${key} must allow the market API origin ${origin}`)
+    }
     assert.ok(!connect.includes('*') && !connect.includes('https:'), `${key} must not allow arbitrary remote origins`)
   }
 })
