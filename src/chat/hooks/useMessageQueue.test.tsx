@@ -35,6 +35,44 @@ beforeEach(() => {
 })
 
 describe('useMessageQueue', () => {
+  it('running send steers immediately even when native follow-up is available', async () => {
+    const { result, onSendMessage } = setup()
+    await act(async () => {
+      result.current.commands.sendWhileRunning(conversation, '改用 rg', [], {
+        canSteer: true, canFollowUp: true,
+      })
+    })
+    const message = result.current.queued['conv-1'][0]
+    expect(mockSteer).toHaveBeenCalledWith('conv-1', message.id, '改用 rg', [])
+    expect(mockFollowUp).not.toHaveBeenCalled()
+    expect(message.steering).toBe(true)
+    expect(onSendMessage).not.toHaveBeenCalled()
+    act(() => result.current.confirm('conv-1', message.id))
+    await act(async () => { await result.current.settleAfterRun('conv-1', conversation) })
+    expect(onSendMessage).not.toHaveBeenCalled()
+    expect(result.current.queued['conv-1']).toBeUndefined()
+  })
+
+  it.each(['unsupported', 'rejected', 'attachments'] as const)(
+    'running send preserves %s input for delivery after the run', async (kind) => {
+      mockSteer.mockResolvedValue(false)
+      const { result, onSendMessage } = setup()
+      const attachments = kind === 'attachments'
+        ? [{ id: 'image', type: 'image' as const, name: 'a.png', path: '/tmp/a.png' }] : []
+      await act(async () => {
+        result.current.commands.sendWhileRunning(conversation, '请检查', attachments, {
+          canSteer: kind !== 'unsupported', canFollowUp: false,
+        })
+      })
+      expect(result.current.queued['conv-1'][0]).toMatchObject({
+        content: '请检查', attachments, steering: false, steerRejected: true,
+      })
+      await act(async () => { await result.current.settleAfterRun('conv-1', conversation) })
+      expect(onSendMessage).toHaveBeenCalledTimes(1)
+      expect(onSendMessage).toHaveBeenCalledWith('请检查', attachments, { conversationOverride: conversation })
+    },
+  )
+
   it.each(['steer', 'followUp'] as const)('deferred skill %s preserves the original task and attachments for normal sending', async (kind) => {
     mockSteer.mockResolvedValue(false)
     mockFollowUp.mockResolvedValue(false)
@@ -195,6 +233,38 @@ describe('useMessageQueue', () => {
     })
 
     expect(onSendMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('a late steering acknowledgement cannot relock input after run failure', async () => {
+    let accept!: (value: boolean) => void
+    mockSteer.mockReturnValue(new Promise(resolve => { accept = resolve }))
+    const { result } = setup()
+    let id = ''
+    act(() => { id = result.current.enqueue('conv-1', '保留这条', [])!.id })
+    let submission!: Promise<boolean>
+    act(() => { submission = result.current.steer('conv-1', id) })
+    act(() => { result.current.settleAfterRun('conv-1') })
+    await act(async () => { accept(true); await submission })
+    expect(result.current.queued['conv-1'][0].steering).toBe(false)
+    act(() => result.current.remove('conv-1', id))
+    expect(result.current.queued['conv-1']).toBeUndefined()
+  })
+
+  it('steering awaiting acknowledgement cannot be submitted or drained twice', async () => {
+    let accept!: (value: boolean) => void
+    mockSteer.mockReturnValue(new Promise((resolve) => { accept = resolve }))
+    const { result, onSendMessage } = setup()
+    let id = ''
+    act(() => { id = result.current.enqueue('conv-1', '改用 rg', [])!.id })
+    let first!: Promise<boolean>
+    act(() => { first = result.current.steer('conv-1', id) })
+    await act(async () => {
+      void result.current.steer('conv-1', id)
+      await result.current.drain(conversation)
+    })
+    expect(mockSteer).toHaveBeenCalledTimes(1)
+    expect(onSendMessage).not.toHaveBeenCalled()
+    await act(async () => { accept(true); await first })
   })
 
   it('立刻引导成功只标记 steering，不出队；确认后才出队', async () => {

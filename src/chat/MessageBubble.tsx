@@ -7,7 +7,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  CornerDownRight,
   GitBranch,
   ListChecks,
   Play,
@@ -422,18 +421,9 @@ function MissingToolSegment({ toolCallId }: { toolCallId: string }) {
 function UserSteerSegment({ toolCall }: { toolCall: ToolCallRecord }) {
   const text = isUserFollowUpToolCall(toolCall) ? userFollowUpText(toolCall) : userSteerText(toolCall)
   if (!text.trim()) return null
-  return (
-    <div className="not-prose flex justify-end">
-      <div className="flex max-w-[85%] items-start gap-1.5 rounded-md bg-neutral-100 px-2.5 py-1.5 text-[12.5px] leading-5 text-neutral-700">
-        <CornerDownRight
-          size={13}
-          strokeWidth={1.9}
-          className="mt-0.5 shrink-0 text-neutral-400 dark:text-neutral-500"
-        />
-        <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
-      </div>
-    </div>
-  )
+  return <MessageBubble message={{
+    id: toolRecordId(toolCall), role: 'user', content: text, timestamp: 0,
+  }} />
 }
 
 function isUserInjectedToolCall(toolCall: ToolCallRecord): boolean {
@@ -1006,7 +996,7 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && isVisibleArtifactPresentation(tool))
+        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')

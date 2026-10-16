@@ -97,8 +97,6 @@ export interface ChatConversationPaneProps {
   goalSlot?: ReactNode
   subAgentSlot?: ReactNode
   queuedMessages: QueuedMessage[]
-  canSteerQueuedMessages: boolean
-  onSteerQueuedMessage: (messageId: string) => void
   onRemoveQueuedMessage: (id: string) => void
   onRestoreQueuedMessage: (messageId: string) => void
   lang: Lang
@@ -138,8 +136,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   goalSlot,
   subAgentSlot,
   queuedMessages,
-  canSteerQueuedMessages,
-  onSteerQueuedMessage,
   onRemoveQueuedMessage,
   onRestoreQueuedMessage,
   lang,
@@ -248,7 +244,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
-                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} />
+                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} pendingInjections={queuedMessages} />
               </Profiler>
             </Suspense>
 
@@ -259,8 +255,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                 <div className="mx-auto w-full max-w-4xl">
                   <QueuedMessages
                     messages={queuedMessages}
-                    canSteer={canSteerQueuedMessages}
-                    onSteer={onSteerQueuedMessage}
                     onRemove={onRemoveQueuedMessage}
                     onRestore={onRestoreQueuedMessage}
                     lang={lang}

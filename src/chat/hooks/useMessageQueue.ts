@@ -48,8 +48,8 @@ function nextQueuedId(): string {
 }
 
 /**
- * 运行中的消息队列（Codex 式）：生成期间发的消息先排队，本轮结束后逐条自动发出；
- * 也可以点「立刻引导」注入正在跑的这一轮。
+ * 运行中的消息队列（Codex 式）：生成期间默认直接注入当前运行；
+ * 仅不支持注入或未受理的消息保留到轮末发送。
  *
  * 只在内存里。`steer` / `followUp` 成功只标记已提交，**不出队**；出队等插话卡
  * （实时事件或落库对账）。收尾一律走 `settleAfterRun`。
@@ -203,8 +203,9 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     const message = find(conversationId, messageId)
     if (!message || message.kind === 'compact' || isQueuedSubmitted(message)) return false
     patch(conversationId, (items) => items.map((item) => (
-      item.id === messageId ? { ...item, steerRejected: false } : item
+      item.id === messageId ? { ...item, steering: true, steerRejected: false } : item
     )))
+    const submitted = find(conversationId, messageId)
     let accepted = false
     try {
       const hasUnsupportedAttachments = message.attachments.some(
@@ -222,7 +223,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
       console.error('Failed to steer the running turn:', err)
     }
     patch(conversationId, (items) => items.map((item) => (
-      item.id === messageId
+      item === submitted
         ? { ...item, steering: accepted, steerRejected: !accepted }
         : item
     )))
@@ -302,11 +303,31 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     releaseSubmitted(conversationId)
   }, [confirm, drain, releaseSubmitted])
 
+  /** One entry point for messages sent while running: steering takes priority over follow-up. */
+  const sendWhileRunning = useCallback((
+    conversation: Conversation,
+    content: string,
+    attachments: PendingAttachment[],
+    capabilities: { canSteer: boolean; canFollowUp: boolean },
+  ) => {
+    const message = enqueue(conversation.id, content, attachments)
+    if (!message) return
+    if (capabilities.canSteer) {
+      void steer(conversation.id, message.id)
+    } else if (capabilities.canFollowUp) {
+      void followUp(conversation, message.id)
+    } else {
+      patch(conversation.id, (items) => items.map((item) => (
+        item.id === message.id ? { ...item, steerRejected: true } : item
+      )))
+    }
+  }, [enqueue, steer, followUp, patch])
+
   const commands = useMemo(() => ({
     enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
-    drain, steer, followUp, confirm, settleAfterRun,
+    drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning,
   }), [enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
-    drain, steer, followUp, confirm, settleAfterRun])
+    drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning])
 
   return {
     queued,

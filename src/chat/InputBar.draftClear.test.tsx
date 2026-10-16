@@ -3,6 +3,9 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
+import { useMessageQueue } from './hooks/useMessageQueue'
+import { chatApi } from './api'
+import type { Conversation } from './types'
 import { InputBar } from './InputBar'
 import { insertTextIntoComposer } from './composerInsert'
 import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
@@ -18,6 +21,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 vi.mock('../api/tauri', () => ({ api: {}, isTauriRuntime: () => false }))
 vi.mock('./api', () => ({
   chatApi: {
+    steerMessage: vi.fn().mockResolvedValue(true),
     getProjects: () => Promise.resolve([]),
     listExternalCliSlashCommands: () => Promise.resolve({ commands: [] }),
   },
@@ -60,6 +64,28 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 发送清草稿', () => {
+  it.each(['enter', 'button'])('running %s sends directly to steering and clears the draft', async (trigger) => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    function RunningComposer() {
+      const queue = useMessageQueue({ onSendMessage: onSend, onRestoreToComposer: vi.fn() })
+      return <InputBar disabled cancelVisible onCancel={() => {}} onSend={onSend}
+        conversationId={`direct-steer-${trigger}`}
+        onSendWhileRunning={(content, attachments) => queue.commands.sendWhileRunning(
+          { id: 'running' } as Conversation, content, attachments, { canSteer: true, canFollowUp: true },
+        )} />
+    }
+    vi.mocked(chatApi.steerMessage).mockClear()
+    render(<RunningComposer />)
+    const input = screen.getByRole('textbox')
+    fireEvent.change(input, { target: { value: '继续，但先检查测试' } })
+    if (trigger === 'enter') fireEvent.keyDown(input, { key: 'Enter' })
+    else fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(chatApi.steerMessage).toHaveBeenCalledTimes(1))
+    expect(chatApi.steerMessage).toHaveBeenCalledWith('running', expect.any(String), '继续，但先检查测试', [])
+    expect(input).toHaveValue('')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
   it('appends an inserted reference exactly once without remounting', () => {
     render(<InputBar onSend={() => {}} conversationId="insert-once" />)
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'existing draft' } })

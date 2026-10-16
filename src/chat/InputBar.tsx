@@ -324,12 +324,12 @@ export interface InputBarProps {
   ) => boolean | void | Promise<boolean | void>
   disabled?: boolean
   /**
-   * 生成中（`disabled`）时的排队入口。传了它 = 运行中不再吞掉发送，而是把这条排进队列，
-   * 本轮结束后自动发出（也可以在队列条上点「立刻引导」注入当前运行）。
+   * 生成中（`disabled`）时的发送入口。默认直接注入当前运行，
+   * 不支持注入时由发送负责人保留消息并说明回退行为。
    * 传了它还会放开附件相关的门（选择 / 粘贴 / 拖入）——那些是纯本地状态，运行中做没有风险；
    * 斜杠命令 / 项目 / 模式 / 知识库仍按 `disabled` 锁住（它们要打后端）。
    */
-  onQueue?: (content: string, attachments: PendingAttachment[]) => void
+  onSendWhileRunning?: (content: string, attachments: PendingAttachment[]) => void
   onCancel?: () => void
   cancelVisible?: boolean
   cancelling?: boolean
@@ -423,7 +423,7 @@ export interface InputBarProps {
 export const InputBar = memo(function InputBar({
   onSend,
   disabled,
-  onQueue,
+  onSendWhileRunning,
   onCancel,
   cancelVisible,
   cancelling,
@@ -490,11 +490,11 @@ export const InputBar = memo(function InputBar({
   usageSlot,
 }: InputBarProps) {
   const t = useT()
-  // 生成中的排队模式：Enter 改成入队，且只锁「要打后端」的入口。附件的选择 / 粘贴 / 拖入
+  // 生成中的输入模式：Enter 直接发送补充消息，且只锁「要打后端」的入口。附件的选择 / 粘贴 / 拖入
   // 是纯本地状态，运行中做没有风险，所以走 composerLocked（比 disabled 宽）这道门。
-  const queueMode = Boolean(disabled && onQueue)
+  const runningInputMode = Boolean(disabled && onSendWhileRunning)
   const [sendPending, setSendPending] = useState(false)
-  const composerLocked = (Boolean(disabled) || sendPending) && !queueMode
+  const composerLocked = (Boolean(disabled) || sendPending) && !runningInputMode
   const draftKeyValue = draftKey(conversationId)
   const [input, setInput] = useState(() => getComposerDraft(draftKeyValue)?.input ?? '')
   const historyRef = useRef<{ entries: string[]; index: number; draft: string } | null>(null)
@@ -1233,16 +1233,16 @@ export const InputBar = memo(function InputBar({
       return
     }
     historyReadRef.current = null
-    // 生成中：有排队入口就排队（本轮结束后自动发出），没有就照旧什么都不做。
-    if (disabled && !onQueue) return
+    // 生成中通过同一个运行时发送入口提交补充消息。
+    if (disabled && !onSendWhileRunning) return
     const quotedBlock = quotes
       .map((q) => q.split('\n').map((line) => `> ${line}`).join('\n'))
       .join('\n\n')
     const content = quotedBlock
       ? (trimmed ? `${quotedBlock}\n\n${trimmed}` : quotedBlock)
       : trimmed
-    if (disabled && onQueue) {
-      onQueue(content, attachments)
+    if (disabled && onSendWhileRunning) {
+      onSendWhileRunning(content, attachments)
       clearSentDraft(draftScopeRef.current.key)
     } else {
       const sendingScope = beginComposerDraftOperation(draftScopeRef.current.key)
@@ -1260,7 +1260,7 @@ export const InputBar = memo(function InputBar({
         // Creation may migrate the scope even if the welcome composer unmounted.
         clearedDraftKey = sendingScope.key
         clearSentDraft(clearedDraftKey)
-        // 后端生成仍在继续，但输入框已经可以接收下一条排队消息。
+        // 后端生成仍在继续，但输入框已经可以接收下一条补充消息。
         setSendPending(false)
       }
       const restoreRejectedDraft = () => {
@@ -1774,13 +1774,13 @@ export const InputBar = memo(function InputBar({
 
   const canSend = (Boolean(input.trim()) || attachments.length > 0)
     && !slashPanelOpen
-    && (!disabled || queueMode)
+    && (!disabled || runningInputMode)
     && !sendDisabledReason
     && !sendPending
   // 发送键与停止键共用输入行右侧那一个槽位（crossfade）。生成中**有东西可发**时把槽位还给
-  // 发送键 —— 就是原本那个键、原本的样子，按下去这一条进队列。这一刻停止走 Esc（见
+  // 发送键 —— 就是原本那个键、原本的样子，按下去直接发送补充消息。这一刻停止走 Esc（见
   // handleKeyDown）或清空输入框让停止键回来；否则用户在生成中打完字会发现没有键可按。
-  const stopOwnsSendSlot = Boolean(cancelVisible && onCancel) && !(queueMode && canSend)
+  const stopOwnsSendSlot = Boolean(cancelVisible && onCancel) && !(runningInputMode && canSend)
   const cliAgentLabel = externalCliAgentLabel(externalAgentName)
 
   const wrapperClass =

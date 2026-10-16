@@ -98,7 +98,9 @@ describe('selected final deliverables', () => {
   it.each(['cancelled', 'error'])('keeps prepared files accessible inside Work after %s without claiming final delivery', outcome => {
     render(<MessageBubble message={{ ...prepared, stream_outcome: outcome }} />)
     expect(screen.queryByLabelText('交付文件')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    const work = screen.getByRole('button', { name: /^Worked/ })
+    expect(work).toHaveAttribute('aria-expanded', outcome === 'cancelled' ? 'true' : 'false')
+    if (outcome !== 'cancelled') fireEvent.click(work)
     const summary = screen.getByText('已准备 2 个文件')
     expect(summary.closest('[aria-label="过程分组"]')).not.toBeNull()
     expect(summary.closest('details')?.querySelectorAll('button')).toHaveLength(2)
@@ -130,4 +132,19 @@ describe('selected final deliverables', () => {
     render(<MessageBubble message={message} messageStreaming />)
     expect(screen.getAllByRole('button', { name: '打开文件 demo.mp4' })).toHaveLength(1)
   })
+})
+
+it('keeps delivered user steering visible outside the folded work', () => {
+  const message: ChatMessage = {
+    id: 'steered', role: 'assistant', timestamp: 1, content: '完成',
+    tool_calls: [{ id: 'steer-q1', name: 'user_steer', source: 'native', status: 'completed',
+      structured_content: { type: 'user_steer', steer_id: 'q1', text: '就是 codex 占用什么的' } }],
+    segments: [
+      { id: 's1', kind: 'tool', phase: 'tool_loop', order: 0, tool_call_id: 'steer-q1' },
+      { id: 's2', kind: 'text', phase: 'synthesis', order: 1, text: '完成' },
+    ],
+  }
+  render(<MessageBubble message={message} />)
+  expect(screen.getByText('就是 codex 占用什么的')).toBeVisible()
+  expect(screen.getByText('就是 codex 占用什么的').closest('[aria-label="过程分组"]')).toBeNull()
 })

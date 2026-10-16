@@ -8,6 +8,8 @@ import {
   type ReactVirtualizerOptions,
 } from '@tanstack/react-virtual'
 import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, ConversationContextState, DegradedAnswer } from './types'
+import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
+import { userSteerId, userFollowUpId } from './segments'
 import { MessageBubble } from './MessageBubble'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
@@ -89,6 +91,7 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 export interface MessageListProps {
   conversationId?: string | null
   messages: ChatMessage[]
+  pendingInjections?: QueuedMessage[]
   historyStart?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
   historyArtifacts?: ChatToolArtifact[]
@@ -222,6 +225,7 @@ type GroupModelLabel = { providerId: string | null; model: string | null }
 function MessageListBase({
   conversationId,
   messages: storedMessages,
+  pendingInjections,
   renderRequestId = 0,
   onInitialRender,
   agentPlanState = null,
@@ -2374,6 +2378,15 @@ function MessageListBase({
   const rows: Array<{ item: RenderItem; virtualItem?: (typeof virtualItems)[number] }> = visibleRows
   if (liveItem) rows.push({ item: liveItem })
 
+  // Delivery events and queue receipts may render in either order. Match by identity,
+  // not text, so repeated user messages remain distinct and acknowledgements never duplicate them.
+  const deliveredInjectionIds = useMemo(() => new Set([
+    ...snapshot.toolCalls,
+    ...messages.flatMap(message => message.tool_calls ?? message.toolCalls ?? []),
+  ].flatMap(tool => [userSteerId(tool), userFollowUpId(tool)].filter(Boolean))), [snapshot.toolCalls, messages])
+  const visibleInjections = (pendingInjections ?? []).filter(message =>
+    isQueuedSubmitted(message) && !deliveredInjectionIds.has(message.id))
+
   const renderTail = () => (
     <div ref={tailWrapRef}>
       {rows.map(({ item, virtualItem }) => (
@@ -2406,6 +2419,14 @@ function MessageListBase({
           <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} />
         </div>
       )}
+      {visibleInjections.map(message => (
+        <div key={message.id} className="chat-reading-content" data-chat-message-list-item="injected-user">
+          <MessageBubble conversationId={conversationId} message={{
+            id: message.id, role: 'user', content: message.content, timestamp: 0,
+            attachments: message.attachments,
+          }} />
+        </div>
+      ))}
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
   )

@@ -13,21 +13,18 @@ function queued(overrides: Partial<QueuedMessage> = {}): QueuedMessage {
   }
 }
 
-function setup(messages: QueuedMessage[], canSteer = true) {
-  const onSteer = vi.fn()
+function setup(messages: QueuedMessage[]) {
   const onRemove = vi.fn()
   const onRestore = vi.fn()
   render(
     <QueuedMessages
       messages={messages}
-      canSteer={canSteer}
-      onSteer={onSteer}
       onRemove={onRemove}
       onRestore={onRestore}
       lang="zh"
     />,
   )
-  return { onSteer, onRemove, onRestore }
+  return { onRemove, onRestore }
 }
 
 describe('QueuedMessages', () => {
@@ -35,8 +32,6 @@ describe('QueuedMessages', () => {
     const { container } = render(
       <QueuedMessages
         messages={[]}
-        canSteer
-        onSteer={vi.fn()}
         onRemove={vi.fn()}
         onRestore={vi.fn()}
         lang="zh"
@@ -45,41 +40,19 @@ describe('QueuedMessages', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('逐条列出，每条都有引导与删除入口', () => {
-    const { onSteer, onRemove } = setup([queued(), queued({ id: 'q2', content: '再看下测试' })])
+  it('逐条列出，无需手动引导，未提交条目可以删除', () => {
+    const { onRemove } = setup([queued(), queued({ id: 'q2', content: '再看下测试' })])
     expect(screen.getByText('改用 rg')).toBeTruthy()
     expect(screen.getByText('再看下测试')).toBeTruthy()
-    const steerButtons = screen.getAllByLabelText(/立刻引导/)
-    expect(steerButtons).toHaveLength(2)
-    steerButtons[1].click()
-    expect(onSteer).toHaveBeenCalledWith('q2')
+    expect(screen.queryByLabelText(/立刻引导/)).toBeNull()
     screen.getAllByLabelText('移出队列')[0].click()
     expect(onRemove).toHaveBeenCalledWith('q1')
   })
 
-  // 外部 CLI / 多模型一问多答下后端注入不了：入口必须消失，而不是点了没反应。
-  it('不支持引导时只保留删除', () => {
-    setup([queued()], false)
-    expect(screen.queryByLabelText(/立刻引导/)).toBeNull()
-    expect(screen.getByLabelText('移出队列')).toBeTruthy()
-  })
-
-  // 等待态不写字（转圈就够看），文案只留在 title 里。
-  it('已提交引导的那条转成等待态：不能撤回、不再给按钮', () => {
-    const { onRestore } = setup([queued({ steering: true })])
-    expect(screen.queryByLabelText(/立刻引导/)).toBeNull()
+  it.each([{ steering: true }, { followingUp: true }])('submitted messages leave the composer strip: %j', (state) => {
+    setup([queued(state)])
+    expect(screen.queryByText('改用 rg')).toBeNull()
     expect(screen.queryByLabelText('移出队列')).toBeNull()
-    screen.getByTitle('已提交，下一轮生效').click()
-    expect(onRestore).not.toHaveBeenCalled()
-  })
-
-  it('Pi follow-up 提交中显示独立状态并锁定操作', () => {
-    const { onRestore } = setup([queued({ followingUp: true })])
-    expect(screen.getByTitle('正在排入下一轮')).toBeTruthy()
-    expect(screen.queryByLabelText(/立刻引导/)).toBeNull()
-    expect(screen.queryByLabelText('移出队列')).toBeNull()
-    screen.getByTitle('正在排入下一轮').click()
-    expect(onRestore).not.toHaveBeenCalled()
   })
 
   // 撤回只把文字还给输入框，所以带附件的不给撤——否则附件会静默消失。
@@ -92,16 +65,16 @@ describe('QueuedMessages', () => {
     expect(onRestore).not.toHaveBeenCalled()
   })
 
-  it('引导被拒时在条目上说明，按钮仍在（可重试）', () => {
+  it('引导被拒时说明轮末发送并允许删除', () => {
     setup([queued({ steerRejected: true })])
-    expect(screen.getByText('插不进这轮')).toBeTruthy()
-    expect(screen.getByLabelText(/立刻引导/)).toBeTruthy()
+    expect(screen.getByText('暂不能插入，将在本轮结束后发送')).toBeTruthy()
+    expect(screen.getByLabelText('移出队列')).toBeTruthy()
   })
 
   it('Pi follow-up 被拒时说明会降级为轮末发送', () => {
     setup([queued({ followUpRejected: true })])
     expect(screen.getByText('排队失败，轮末发送')).toBeTruthy()
-    expect(screen.getByLabelText(/立刻引导/)).toBeTruthy()
+    expect(screen.getByLabelText('移出队列')).toBeTruthy()
   })
 
   it('普通条目点文本即撤回', () => {
