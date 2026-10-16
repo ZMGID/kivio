@@ -1129,6 +1129,7 @@ pub async fn import_one_session(
         .unwrap_or_else(|| format!("{} 导入的会话", def.name));
 
     let conversation = Conversation {
+        study_context: None,
         id: conversation_id.clone(),
         revision: 0,
         title,

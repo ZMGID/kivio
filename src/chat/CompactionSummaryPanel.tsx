@@ -4,11 +4,12 @@ import { i18n, type Lang } from '../components/i18n'
 import { compactionRecordTokens, type CompactionBoundaryView } from './compactionBoundary'
 
 interface CompactionSummaryPanelProps {
+  readOnly?: boolean
   boundary: CompactionBoundaryView
   lang?: Lang
 }
 
-export function CompactionSummaryPanel({ boundary, lang = 'zh' }: CompactionSummaryPanelProps) {
+export function CompactionSummaryPanel({ boundary, lang = 'zh', readOnly = false }: CompactionSummaryPanelProps) {
   const t = i18n[lang]
   const [open, setOpen] = useState(false)
   const summary = compactionRecordTokens(boundary.record).summary.trim()
@@ -26,7 +27,7 @@ export function CompactionSummaryPanel({ boundary, lang = 'zh' }: CompactionSumm
       </button>
       <div className={`chat-motion-reveal ${open ? 'is-open' : ''}`} aria-hidden={!open}>
         <div className="chat-compaction-summary-body">
-          <ChatMarkdown content={summary} />
+          <ChatMarkdown content={summary} readOnly={readOnly} />
         </div>
       </div>
     </div>

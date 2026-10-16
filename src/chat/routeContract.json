@@ -13,6 +13,7 @@
     "notes",
     "artifacts",
     "media",
+    "study",
     "onboarding",
     "popout"
   ],
@@ -27,9 +28,11 @@
     "knowledge",
     "notes",
     "artifacts",
-    "media"
+    "media",
+    "study"
   ],
   "cases": [
+    { "name": "study workspace", "raw": "#chat/study", "path": "chat/study", "kind": "study", "decodedConversationId": null, "rememberable": true, "restorable": true },
     { "name": "media station", "raw": "#chat/media", "path": "chat/media", "kind": "media", "decodedConversationId": null, "rememberable": true, "restorable": true },
     { "name": "scheduled tasks", "raw": "#chat/schedules", "path": "chat/schedules", "kind": "schedules", "decodedConversationId": null, "rememberable": true, "restorable": true },
     {

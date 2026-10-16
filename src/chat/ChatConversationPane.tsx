@@ -73,6 +73,8 @@ function EmptyHeroHeading({
 }
 
 export interface ChatConversationPaneProps {
+  presentation?: 'chat' | 'reading'
+  emptyStateSlot?: ReactNode
   titlebarControls: ReactNode
   usesNativeTitlebar: boolean
   sidebarCollapsed: boolean
@@ -112,6 +114,8 @@ export interface ChatConversationPaneProps {
  * 侧栏/设置切换不再让 Chat.tsx 直接重建这段巨型 JSX。
  */
 export const ChatConversationPane = memo(function ChatConversationPane({
+  presentation = 'chat',
+  emptyStateSlot,
   titlebarControls,
   usesNativeTitlebar,
   sidebarCollapsed,
@@ -143,11 +147,12 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onCloseImageViewer,
   onRender,
 }: ChatConversationPaneProps) {
+  const isReading = presentation === 'reading'
   const transition = useConversationTransition()
   const conversationLoading = transition.loading
   return (
-    <div className="chat-motion-pane-in chat-main-pane relative flex min-w-0 flex-1 flex-col">
-      {usesNativeTitlebar && (
+    <div className={`chat-motion-pane-in chat-main-pane relative flex min-h-0 min-w-0 flex-1 flex-col${isReading ? ' chat-main-pane--reading' : ''}`}>
+      {!isReading && usesNativeTitlebar && (
         <header
           className={`chat-titlebar-row ${titlebarRowClass} min-w-0 gap-2 ${
             sidebarCollapsed
@@ -178,7 +183,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
       )}
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {showEmptyHero ? (
+        {showEmptyHero && !isReading ? (
           <div className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading
@@ -242,9 +247,12 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
+            {isReading && showEmptyHero && emptyStateSlot && (
+              <div className="chat-reading-empty-state">{emptyStateSlot}</div>
+            )}
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
-                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} pendingInjections={queuedMessages} />
+                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} pendingInjections={queuedMessages} presentation={presentation} />
               </Profiler>
             </Suspense>
 
@@ -263,7 +271,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
-            <InputBar {...inputBarProps} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
+            <InputBar {...inputBarProps} presentation={presentation} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
           </>
         )}
         {conversationLoading && (
@@ -271,7 +279,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
         )}
       </div>
 
-      {imageViewerItem && (
+      {!isReading && imageViewerItem && (
         <div className="absolute inset-0 z-40 flex flex-col">
           <ChatImageViewer item={imageViewerItem} onClose={onCloseImageViewer} />
         </div>

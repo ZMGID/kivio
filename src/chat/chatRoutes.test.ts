@@ -142,6 +142,7 @@ describe('conversationHash', () => {
 
 describe('extensionsNavItemForView', () => {
   it('maps center views to the extensions nav item and ignores the rest', () => {
+    expect(extensionsNavItemForView('study')).toBe('study')
     expect(extensionsNavItemForView('assistants')).toBe('assistants')
     expect(extensionsNavItemForView('skill')).toBe('plugins')
     expect(extensionsNavItemForView('mcp')).toBe('plugins')

@@ -45,6 +45,30 @@ function harness(
 }
 
 describe('chat send controller', () => {
+  it('carries a pinned source through normal acceptance, optimistic display and shared send after navigation', async () => {
+    let finish!: (value: Conversation) => void
+    const bound = conversation('a', { study_context: { materialId: 'a'.repeat(64), page: 4 }, agent_runtime: { kind: 'chat' } })
+    const persistence = { createConversation: vi.fn(), updateConversation: vi.fn(), setAgentRuntime: vi.fn(), sendMessage: vi.fn<Parameters<typeof createChatSendController>[0]['persistence']['sendMessage']>(() => new Promise<Conversation>(resolve => { finish = resolve })) }
+    let visible = 'a'
+    const state = harness(persistence, () => visible)
+    const source = { page: 4, region: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }, mode: 'solution' as const, attempt: 'Original' }
+    const accepted = vi.fn()
+    const pending = state.controller.send({ content: 'Read this source', attachments: [], preparation: { ...preparation(bound), override: true }, attachmentSkillId: null, disabledReason: '', studySource: source, onAccepted: accepted })
+    source.page = 9; source.region.x = 0.7; source.attempt = 'Later'
+    visible = 'b'
+    await vi.waitFor(() => expect(persistence.sendMessage).toHaveBeenCalledTimes(1))
+    const expected = { page: 4, region: { x: 0.1, y: 0.2, width: 0.5, height: 0.4 }, mode: 'solution', attempt: 'Original' }
+    expect(persistence.sendMessage.mock.calls[0][0]).toBe('a')
+    expect(persistence.sendMessage.mock.calls[0][6]).toEqual(expected)
+    expect(state.executionOwner.overlayMessages('a', [])[0].study_source).toEqual(expected)
+    expect(state.executionOwner.overlayMessages('b', [])).toEqual([])
+    expect(accepted).toHaveBeenCalledOnce()
+    finish(bound)
+    expect((await pending).kind).toBe('persisted')
+    expect(state.executionOwner.overlayMessages('a', [])).toEqual([])
+    state.previewOwner.dispose()
+  })
+
   it('a rejected duplicate send cannot invalidate the first pending creation commit', async () => {
     let resolveCreate!: (value: Conversation) => void
     const persistence = {

@@ -265,6 +265,7 @@ mod tests {
 
     fn conversation() -> Conversation {
         Conversation {
+            study_context: None,
             id: "conv_test".to_string(),
             revision: 0,
             title: "Export test".to_string(),
@@ -272,6 +273,8 @@ mod tests {
             model: "gpt-test".to_string(),
             messages: vec![
                 ChatMessage {
+                    study_source: None,
+                    study_legacy_error: None,
                     id: "user_1".to_string(),
                     role: "user".to_string(),
                     content: "Hello".to_string(),
@@ -303,6 +306,8 @@ mod tests {
                     degraded: None,
                 },
                 ChatMessage {
+                    study_source: None,
+                    study_legacy_error: None,
                     id: "assistant_1".to_string(),
                     role: "assistant".to_string(),
                     content: "Final answer".to_string(),
@@ -396,6 +401,8 @@ mod tests {
     fn renders_english_labels_and_skips_empty_internal_only_messages() {
         let mut conversation = conversation();
         conversation.messages.push(ChatMessage {
+            study_source: None,
+            study_legacy_error: None,
             id: "assistant_empty".to_string(),
             role: "assistant".to_string(),
             content: String::new(),

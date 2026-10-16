@@ -23,6 +23,9 @@ import type {
   AgentPlanMode,
   GoalState,
   PendingAttachment,
+  StudyConversationContext,
+  StudyConversationImport,
+  StudyMessageSource,
 } from './types'
 import type { ThinkingLevel, WebSearchMode, ModelRef, AdditionalDirectory } from './types'
 import type { CliImportResult, ImportableCliSession } from './types'
@@ -394,19 +397,39 @@ const mockChatApi = {
     folder?: string,
     projectId?: string | null,
     assistantId?: string | null,
+    studyContext?: StudyConversationContext,
+    studyImport?: StudyConversationImport,
   ): Promise<Conversation> {
     const now = nowSeconds()
-    const assistant = assistantId
+    const studyId = studyContext ? `conv_study_${studyContext.materialId}_${studyContext.page}` : undefined
+    const existing = studyId ? loadMockConversations().find(item => item.id === studyId) : undefined
+    if (existing) {
+      if (existing.study_context?.materialId !== studyContext?.materialId
+        || existing.study_context?.page !== studyContext?.page
+        || existing.study_context?.legacyImport?.fingerprint !== studyImport?.fingerprint) {
+        throw new Error('This Study conversation has a different saved source. Existing work was preserved.')
+      }
+      return existing
+    }
+    const assistant = !studyContext && assistantId
       ? loadMockAssistants().find((item) => item.id === assistantId && !item.archived && item.enabled !== false)
       : undefined
     const snapshot = assistant ? assistantSnapshot(assistant) : null
     const conversation: Conversation = {
-      id: `conv_dev_${crypto.randomUUID()}`,
+      id: studyId ?? `conv_dev_${crypto.randomUUID()}`,
+      ...(studyContext ? { study_context: { ...studyContext, ...(studyImport ? { legacyImport: { version: 1 as const, fingerprint: studyImport.fingerprint } } : {}) }, agent_runtime: { ...CHAT_AGENT_RUNTIME }, web_search_mode: 'off' as const } : {}),
       revision: 0,
-      title: '新对话',
+      title: studyContext ? `Study · Page ${studyContext.page}` : '新对话',
       provider_id: providerId?.trim() || snapshot?.provider_id || snapshot?.providerId || 'dev-provider',
       model: model?.trim() || snapshot?.model || 'dev-model',
-      messages: [],
+      messages: studyImport?.messages.map(message => ({
+        id: message.id, role: message.role, content: message.content, timestamp: message.timestamp,
+        ...(message.studySource ? { study_source: message.studySource } : {}),
+        ...(message.streamOutcome ? { stream_outcome: message.streamOutcome } : {}),
+        ...(message.providerId ? { provider_id: message.providerId } : {}),
+        ...(message.model ? { model: message.model } : {}),
+        ...(message.error ? { study_legacy_error: message.error } : {}),
+      })) ?? [],
       active_skill_id: null,
       activeSkillId: null,
       assistant_id: snapshot?.id ?? null,
@@ -595,6 +618,7 @@ const mockChatApi = {
     activeSkillId?: string | null,
     planMessageId?: string,
     userMessageId?: string,
+    studySource?: StudyMessageSource,
   ): Promise<Conversation> {
     if (planMessageId !== undefined) throw new Error('请在桌面应用中执行计划文档')
     const conversations = loadMockConversations()
@@ -610,6 +634,7 @@ const mockChatApi = {
         id: userMessageId ?? `msg_dev_${crypto.randomUUID()}`,
         role: 'user',
         content,
+        ...(studySource ? { study_source: studySource } : {}),
         attachments: attachments.map((attachment) => ({
           id: attachment.id,
           type: attachment.type,
@@ -877,6 +902,12 @@ const mockChatApi = {
     const messageIndex = conversation.messages.findIndex((message) => message.id === messageId)
     if (messageIndex < 0) throw new Error('Message not found')
     const target = conversation.messages[messageIndex]
+    if (conversation.study_context) {
+      const sourceMessage = target.role === 'user' ? target : conversation.messages[messageIndex - 1]
+      if (!sourceMessage?.study_source || !sourceMessage.attachments?.some(attachment => attachment.type === 'image')) {
+        throw new Error('This earlier Study reply has no saved page image. Select its original page or region and send the question again.')
+      }
+    }
     if (target.role === 'user') {
       // 编辑提问并重新生成（镜像后端 chat_regenerate_message 的 user 分支）。
       const trimmed = (newContent ?? '').trim()
@@ -1280,11 +1311,13 @@ export const chatApi = {
     projectId?: string | null,
     assistantId?: string | null,
     setId?: string | null,
+    studyContext?: StudyConversationContext,
+    studyImport?: StudyConversationImport,
   ): Promise<Conversation> {
-    if (!isTauriRuntime()) return mockChatApi.createConversation(providerId, model, folder, projectId, assistantId)
+    if (!isTauriRuntime()) return mockChatApi.createConversation(providerId, model, folder, projectId, assistantId, studyContext, studyImport)
     const result = await invoke<{ success: boolean; conversation: Conversation }>(
       'chat_create_conversation',
-      { providerId, model, folder, projectId, setId, assistantId }
+      { providerId, model, folder, projectId, setId, assistantId, ...(studyContext ? { studyContext } : {}), ...(studyImport ? { studyImport } : {}) }
     )
     if (!result.success) {
       throw new Error('Failed to create conversation')
@@ -1576,9 +1609,10 @@ export const chatApi = {
     activeSkillId?: string | null,
     planMessageId?: string,
     userMessageId?: string,
+    studySource?: StudyMessageSource,
   ): Promise<Conversation> {
     if (!isTauriRuntime()) {
-      return mockChatApi.sendMessage(conversationId, content, attachments, activeSkillId, planMessageId, userMessageId)
+      return mockChatApi.sendMessage(conversationId, content, attachments, activeSkillId, planMessageId, userMessageId, studySource)
     }
     // 磁盘附件传路径；内存文本附件（粘贴长文本虚拟 txt）直接传内容，由后端注入 prompt，不落盘。
     const diskPaths = attachments.filter((a) => a.content === undefined).map((a) => a.path)
@@ -1595,6 +1629,7 @@ export const chatApi = {
         activeSkillId,
         planMessageId,
         userMessageId,
+        ...(studySource ? { studySource } : {}),
       }
     )
     if (!result.success || !result.conversation) {

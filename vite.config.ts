@@ -8,7 +8,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 /** Compile generated schemas in Node; the WebView CSP forbids runtime code generation. */
-function chatProtocolValidators(): Plugin {
+export function chatProtocolValidators(): Plugin {
   const moduleId = 'virtual:chat-protocol-validators'
   const resolvedId = `\0${moduleId}`
   return {

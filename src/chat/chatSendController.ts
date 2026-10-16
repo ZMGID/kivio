@@ -2,7 +2,7 @@ import { chatApi } from './api'
 import { createChatExecutionOwner, type ExecutionLease, type PreparedRunOutcome } from './chatExecutionOwner'
 import { prepareConversationForSend, type SendPreparationIntent } from './prepareConversationForSend'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
-import type { Conversation, PendingAttachment } from './types'
+import type { Conversation, PendingAttachment, StudyMessageSource } from './types'
 
 type ExecutionOwner = ReturnType<typeof createChatExecutionOwner>
 type PreviewOwner = ReturnType<typeof createStreamPreviewOwner>
@@ -34,6 +34,7 @@ export interface SendIntent {
   attachments: PendingAttachment[]
   preparation: SendPreparationIntent
   attachmentSkillId: string | null
+  studySource?: StudyMessageSource
   disabledReason: string
   planMessageId?: string
   onPartialConversation?: (conversation: Conversation) => void
@@ -71,6 +72,7 @@ export function createChatSendController({
     async send(intent: SendIntent): Promise<SendResult> {
       const content = intent.content.trim()
       const attachments = intent.attachments
+      const studySource = intent.studySource ? structuredClone(intent.studySource) : undefined
       const startingConversationId = presentation.currentConversationId()
       let creation: SendCreationCommit | null = null
       const reject = (error: Error, conversationId: string | null, partialConversation?: Conversation): SendResult => {
@@ -122,7 +124,7 @@ export function createChatSendController({
         const startedAt = now()
         lease = executionOwner.begin({
           conversationId: conversation.id, kind: 'send', startedAt, claim,
-          optimistic: { content, attachments },
+          optimistic: { content, attachments, ...(studySource ? { studySource } : {}) },
           group: fanOut ? {
             groupId: `grp-local-${startedAt}`,
             arms: replyArms.map((ref) => ({ providerId: ref.provider_id, model: ref.model })),
@@ -139,6 +141,7 @@ export function createChatSendController({
           lease, content, attachments,
           attachmentSkillId: intent.attachmentSkillId,
           planMessageId: intent.planMessageId,
+          ...(studySource ? { studySource } : {}),
         }, {
           ...settlementPorts,
           onOutcome: (outcome) => presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome }),

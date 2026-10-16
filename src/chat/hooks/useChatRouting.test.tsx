@@ -101,6 +101,7 @@ describe('useChatRouting 分支顺序', () => {
     ['#chat/notes', 'notes'],
     ['#chat/artifacts', 'artifacts'],
     ['#chat/media', 'media'],
+    ['#chat/study', 'study'],
     ['#chat/automations', 'automations'],
     ['#chat/automations/a%2Fb', 'automations'],
     ['#chat/schedules', 'schedules'],

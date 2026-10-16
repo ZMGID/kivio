@@ -646,6 +646,8 @@ mod tests {
 
     fn test_chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            study_source: None,
+            study_legacy_error: None,
             id: format!("msg_{role}"),
             role: role.to_string(),
             content: content.to_string(),

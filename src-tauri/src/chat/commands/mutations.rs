@@ -323,6 +323,14 @@ pub(super) fn apply_regenerate_truncation(
     idx: usize,
     new_content: Option<String>,
 ) -> Result<(), String> {
+    if let Some(binding) = conversation.study_context.as_ref() {
+        let user = if conversation.messages[idx].role == "user" {
+            Some(&conversation.messages[idx])
+        } else {
+            conversation.messages[..idx].iter().rev().find(|message| message.role == "user")
+        }.ok_or("Study needs the original user turn before retrying.")?;
+        crate::chat::study_context::validate_reply_message(binding, user)?;
+    }
     match conversation.messages[idx].role.as_str() {
         "assistant" => {
             if new_content.is_some() {
@@ -402,6 +410,15 @@ pub(crate) async fn chat_regenerate_message(
                 apply_regenerate_truncation(latest, idx, next_content)?;
                 if latest.messages.last().map(|message| message.role.as_str()) != Some("user") {
                     return Err("缺少对应的用户消息，无法重新生成".to_string());
+                }
+                if latest.study_context.is_some() {
+                    // Preflight before committing truncation: legacy or missing-image
+                    // retries must not erase the old answer before reporting a blocker.
+                    crate::chat::study_context::validate_conversation(latest)?;
+                    crate::chat::study_context::saved_image_paths(&app, latest)?;
+                    let settings = state.settings_read();
+                    let provider = settings.get_provider(&latest.provider_id).ok_or("Chat provider not found")?;
+                    crate::chat::study_context::validate_provider(provider, &latest.model)?;
                 }
                 let existing_ids: std::collections::HashSet<String> = latest
                     .messages
@@ -834,6 +851,7 @@ pub(crate) async fn chat_fork_conversation(
     // The branch keeps the todo list as it stood at the fork point.
     let agent_todo_state = crate::chat::todo::state_from_messages(&messages, &group_selections);
     let conversation = Conversation {
+        study_context: source.study_context.clone(),
         id: new_id,
         revision: 0,
         title,

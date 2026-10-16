@@ -6,11 +6,15 @@ import { useT } from '../components/i18n'
 import { isProviderEnabled } from '../settings/public/providers'
 import { ModelIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
+import { resolveModelInfo } from '../data/modelMatching'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import { chatTitlebarPillButtonClass } from './platform'
 import { usePopoverMenu } from './usePopoverMenu'
 
 interface ModelSelectorProps {
+  visionOnly?: boolean
+  placement?: 'up' | 'down'
+  preserveLabel?: boolean
   currentProviderId: string
   currentModel: string
   onModelChange: (providerId: string, model: string) => void
@@ -25,6 +29,9 @@ const parseFavKey = (key: string): { providerId: string; model: string } | null 
 }
 
 function ModelSelectorBase({
+  visionOnly = false,
+  placement = 'down',
+  preserveLabel = false,
   currentProviderId,
   currentModel,
   onModelChange,
@@ -35,7 +42,7 @@ function ModelSelectorBase({
   const [favorites, setFavorites] = useState<string[]>([])
   const menuRef = useRef<HTMLDivElement>(null)
   usePopoverMenu(open, () => setOpen(false), menuRef)
-  const maxH = usePopoverMaxHeight(open, menuRef, 'down', 400)
+  const maxH = usePopoverMaxHeight(open, menuRef, placement, 400)
 
   const loadSettings = useCallback(async () => {
     try {
@@ -75,7 +82,8 @@ function ModelSelectorBase({
   const visibleProviders = activeProviders
     .map((provider) => ({
       provider,
-      models: provider.enabledModels.length > 0 ? provider.enabledModels : provider.availableModels,
+      models: (provider.enabledModels.length > 0 ? provider.enabledModels : provider.availableModels)
+        .filter(model => !visionOnly || resolveModelInfo(model, provider.modelOverrides, provider).capabilities?.vision),
     }))
     .filter((entry) => entry.models.length > 0)
   const currentProvider = activeProviders.find((p) => p.id === currentProviderId)
@@ -164,7 +172,7 @@ function ModelSelectorBase({
   }
 
   return (
-    <div className="relative max-w-full min-w-0" data-tauri-drag-region="false">
+    <div className={`relative max-w-full min-w-0${preserveLabel ? ' chat-model-selector--labeled' : ''}`} data-tauri-drag-region="false">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -186,7 +194,7 @@ function ModelSelectorBase({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div ref={menuRef} style={{ maxHeight: maxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[240px] overflow-y-auto kv-menu">
+          <div ref={menuRef} style={{ maxHeight: maxH }} className={`chat-model-selector-menu chat-motion-popover absolute left-0 z-20 min-w-[240px] overflow-y-auto custom-scrollbar kv-menu ${placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'}`}>
             {favoriteEntries.length > 0 && (
               <div className="px-1 py-1">
                 <div className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-500">

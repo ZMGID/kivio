@@ -101,6 +101,8 @@ impl Pending {
             (!self.reasoning.trim().is_empty()).then(|| self.reasoning.trim().to_string());
         Some(ImportedMessage {
             message: ChatMessage {
+                study_source: None,
+                study_legacy_error: None,
                 id: Uuid::new_v4().to_string(),
                 role: self.role,
                 content: self.text.trim().to_string(),

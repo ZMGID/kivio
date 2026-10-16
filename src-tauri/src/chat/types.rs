@@ -420,10 +420,62 @@ pub struct ChatMessageSegment {
     pub tool_call_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudyImportReceipt {
+    pub version: u32,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudyConversationContext {
+    pub material_id: String,
+    pub page: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_import: Option<StudyImportReceipt>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StudyMode {
+    Read,
+    Hint,
+    Explain,
+    Check,
+    Solution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct StudyRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudyMessageSource {
+    pub page: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<StudyRegion>,
+    pub mode: StudyMode,
+    #[serde(default)]
+    pub attempt: String,
+}
+
 /// 对话消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
+    /// Immutable source selection on the user turn. Retries use this saved source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study_source: Option<StudyMessageSource>,
+    /// Display-only legacy failure, retained without making it provider input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study_legacy_error: Option<String>,
     pub role: String, // "user" | "assistant"
     pub content: String,
     #[serde(default)]
@@ -610,6 +662,8 @@ impl WebSearchMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study_context: Option<StudyConversationContext>,
     /// Monotonic on-disk revision maintained by `ConversationRepository`.
     /// Legacy conversation files deserialize as revision 0.
     #[serde(default)]
@@ -780,6 +834,8 @@ pub struct ForkOrigin {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationListItem {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub study_context: Option<StudyConversationContext>,
     /// `None` identifies a legacy index entry that must be reconciled from the
     /// conversation file before the index can be trusted again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1015,6 +1071,7 @@ impl From<&Conversation> for ConversationListItem {
             .unwrap_or_default();
 
         ConversationListItem {
+            study_context: conv.study_context.clone(),
             id: conv.id.clone(),
             revision: Some(conv.revision),
             title: conv.title.clone(),

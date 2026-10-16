@@ -3,7 +3,7 @@ import { createChatRunSettlement, type ChatRunTerminal } from './chatRunSettleme
 import { createChatSendReservations } from './chatSendReservations'
 import { createOptimisticUserPresentation } from './optimisticUserPresentation'
 import { chatApi } from './api'
-import type { Conversation, PendingAttachment } from './types'
+import type { Conversation, PendingAttachment, StudyMessageSource } from './types'
 
 type Reservation = NonNullable<ReturnType<ReturnType<typeof createChatSendReservations>['claim']>>
 type SettlementPorts = Parameters<ReturnType<typeof createChatRunSettlement>['settleInvoke']>[3]
@@ -50,6 +50,7 @@ type PreparedRunIntent = {
   attachments: PendingAttachment[]
   attachmentSkillId: string | null
   planMessageId?: string
+  studySource?: StudyMessageSource
 }
 
 type PreparedRunEffects = SettlementPorts & {
@@ -60,7 +61,7 @@ type BeginIntent = {
   conversationId: string
   kind: 'send' | 'regenerate' | 'replyWithModel'
   startedAt: number
-  optimistic?: { content: string; attachments: PendingAttachment[] }
+  optimistic?: { content: string; attachments: PendingAttachment[]; studySource?: StudyMessageSource }
   group?: { groupId: string; arms: GroupArmSeed[] }
   claim?: SendClaim
 }
@@ -222,7 +223,7 @@ export function createChatExecutionOwner(
       const optimisticClaim = intent.optimistic
         ? optimistic.begin(
           id, intent.optimistic.content, intent.optimistic.attachments,
-          intent.startedAt,
+          intent.startedAt, intent.optimistic.studySource,
         )
         : null
       const optimisticToken = optimisticClaim?.token ?? null
@@ -391,14 +392,16 @@ export function createChatExecutionOwner(
       let outcome: PreparedRunOutcome
       let persistedForSettlement: Conversation | null = null
       try {
-        const conversation = await sendPort.sendMessage(
+        const args: Parameters<typeof sendPort.sendMessage> = [
           intent.lease.conversationId,
           intent.content,
           intent.attachments,
           intent.attachmentSkillId,
           intent.planMessageId,
           active.get(intent.lease.conversationId)?.userMessageId ?? undefined,
-        )
+        ]
+        if (intent.studySource) args.push(intent.studySource)
+        const conversation = await sendPort.sendMessage(...args)
         persistedForSettlement = conversation
         outcome = { kind: 'persisted', conversation }
       } catch (value) {

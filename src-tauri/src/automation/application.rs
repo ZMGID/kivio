@@ -701,6 +701,8 @@ fn extra_loaded_skill_bodies(
 
 fn workflow_user_message(content: String) -> ChatMessage {
     ChatMessage {
+        study_source: None,
+        study_legacy_error: None,
         id: format!("msg_{}", uuid::Uuid::new_v4()),
         role: "user".to_string(),
         content,
@@ -832,6 +834,7 @@ async fn load_or_create_external_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        study_context: None,
         id,
         revision: 0,
         title: format!("Automation {automation_id}"),

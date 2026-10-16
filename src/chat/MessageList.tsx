@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { flushSync } from 'react-dom'
 import { ChevronDown, RotateCw } from 'lucide-react'
 import {
@@ -89,6 +89,9 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
+  presentation?: 'chat' | 'reading'
+  renderMessageAnnotation?: (message: ChatMessage) => ReactNode
+  answerDisclosureLabel?: (message: ChatMessage) => string | undefined
   conversationId?: string | null
   messages: ChatMessage[]
   pendingInjections?: QueuedMessage[]
@@ -223,6 +226,9 @@ function streamErrorDegraded(error: string): DegradedAnswer {
 type GroupModelLabel = { providerId: string | null; model: string | null }
 
 function MessageListBase({
+  presentation = 'chat',
+  renderMessageAnnotation,
+  answerDisclosureLabel,
   conversationId,
   messages: storedMessages,
   pendingInjections,
@@ -257,6 +263,7 @@ function MessageListBase({
   historyLoadError,
   onFocusHistoryMessage,
 }: MessageListProps) {
+  const isReading = presentation === 'reading'
   // Durable worker receipts belong to the model context and the task dock,
   // not the parent timeline. Use the backend's reserved receipt identity so
   // existing conversations are covered without hiding quoted report text.
@@ -814,7 +821,7 @@ function MessageListBase({
   const [multiAnswerViewMode] = useMultiAnswerViewMode()
   const hasWideGroups = multiAnswerViewMode === 'columns'
     && (Boolean(liveGroup) || historyItems.some((item) => item.kind === 'group'))
-  const layoutKey = `${conversationId ?? 'empty'}:${contentWidth}:${multiAnswerViewMode}`
+  const layoutKey = `${conversationId ?? 'empty'}:${contentWidth}:${multiAnswerViewMode}${isReading ? ':reading' : ''}`
   const rememberedReadingPosition = useMemo(
     () => conversationId ? recallChatReadingPosition(conversationId) : null,
     [conversationId],
@@ -2202,6 +2209,9 @@ function MessageListBase({
             : undefined
           return (
             <MessageBubble
+              presentation={presentation}
+              annotation={renderMessageAnnotation?.(msg)}
+              answerDisclosureLabel={answerDisclosureLabel?.(msg)}
               message={msg}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
@@ -2242,6 +2252,8 @@ function MessageListBase({
           const selectedMessageId = groupSelections[item.groupId] ?? null
           return (
             <MessageGroup
+              presentation={presentation}
+              answerDisclosureLabel={answerDisclosureLabel}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
               groupId={item.groupId}
@@ -2274,6 +2286,8 @@ function MessageListBase({
         case 'live-group':
           return (
             <MessageGroup
+              presentation={presentation}
+              answerDisclosureLabel={answerDisclosureLabel}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
               groupId={item.groupId}
@@ -2284,6 +2298,8 @@ function MessageListBase({
         case 'streaming':
           return (
             <MessageBubble
+              presentation={presentation}
+              answerDisclosureLabel={answerDisclosureLabel?.(item.message)}
               message={item.message}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
@@ -2305,6 +2321,7 @@ function MessageListBase({
         case 'compaction-summary':
           return (
             <CompactionSummaryPanel
+              readOnly={isReading}
               boundary={item.boundary}
               lang={lang}
             />
@@ -2338,6 +2355,10 @@ function MessageListBase({
       }
     },
     [
+      isReading,
+      presentation,
+      renderMessageAnnotation,
+      answerDisclosureLabel,
       conversationId,
       conversationArtifactsById,
       assistantStreamStatsByMessageId,
@@ -2432,7 +2453,7 @@ function MessageListBase({
   )
 
   return (
-    <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
+    <div data-message-presentation={presentation} className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
       {activeOutlineOwnerId && activeOutlineItems.length >= 2 && (
         <ChatHeadingOutline
           conversationId={conversationId}
@@ -2467,7 +2488,7 @@ function MessageListBase({
 
       >
         <ScrollFollowingContext.Provider value={followContext}>
-        <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
+        <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${isReading ? 'chat-message-list-inner--reading' : ''} ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
           <div data-chat-rows-root className="relative w-full">
             <div aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
             <div data-chat-message-list-item="tail" className="w-full pb-0.5">
