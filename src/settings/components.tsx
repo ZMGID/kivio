@@ -121,7 +121,6 @@ function SelectMenuPortal({
   value,
   onPick,
   compact = false,
-  optionTabIndex,
 }: {
   open: boolean
   triggerRef: RefObject<HTMLElement | null>
@@ -131,7 +130,6 @@ function SelectMenuPortal({
   value: string
   onPick: (value: string) => void
   compact?: boolean
-  optionTabIndex?: number
 }) {
   useLayoutEffect(() => {
     if (!open) return
@@ -158,7 +156,6 @@ function SelectMenuPortal({
             key={opt.value}
             type="button"
             role="option"
-            tabIndex={optionTabIndex}
             aria-selected={active}
             onClick={() => onPick(opt.value)}
             title={opt.title || opt.label}
@@ -199,7 +196,6 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
-  const focusOnOpenRef = useRef(false)
   const selected = options.find(opt => opt.value === value)
   const displayLabel = selected?.label || value
   const displayTitle = selected?.title || displayLabel
@@ -207,55 +203,6 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   const compact = size === 'sm'
   const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, triggerRef, triggerIcon || triggerLabel !== undefined ? (compact ? 156 : 200) : 0, compact)
   useSelectMenuOpen(open, setOpen, triggerRef, menuRef, updateMenuRect)
-
-  const enabledOptions = () => Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>(
-    '[role="option"]:not(:disabled):not([aria-disabled="true"])',
-  ) ?? [])
-  const focusSelectedOption = () => {
-    const options = enabledOptions()
-    const selected = options.find(option => option.getAttribute('aria-selected') === 'true')
-    const target = selected ?? options[0]
-    target?.focus()
-  }
-
-  useLayoutEffect(() => {
-    if (open && focusOnOpenRef.current) {
-      focusOnOpenRef.current = false
-      if (!triggerRef.current?.matches(':disabled')) focusSelectedOption()
-    }
-  })
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (triggerRef.current?.matches(':disabled')) return
-    if (event.key === 'Tab' && open) {
-      // The portal is outside the trigger's DOM order. Let native Tab continue
-      // from the trigger instead of the option at the end of the document.
-      triggerRef.current?.focus({ preventScroll: true })
-      setOpen(false)
-      return
-    }
-    if (event.target === triggerRef.current) {
-      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) {
-        event.preventDefault()
-        if (open) focusSelectedOption()
-        else {
-          focusOnOpenRef.current = true
-          setOpen(true)
-        }
-      }
-      return
-    }
-    if (!open || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    const options = enabledOptions()
-    if (!options.length) return
-    event.preventDefault()
-    const current = options.indexOf(document.activeElement as HTMLButtonElement)
-    const next = event.key === 'Home' ? 0
-      : event.key === 'End' ? options.length - 1
-        : event.key === 'ArrowDown' ? (current + 1) % options.length
-          : (current - 1 + options.length) % options.length
-    options[next]?.focus()
-  }
 
   const triggerProps = {
     ref: (node: HTMLButtonElement | null) => {
@@ -265,9 +212,14 @@ export function Select({ value, onChange, options, className = '', disabled: dis
     },
     disabled,
     onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!event.currentTarget.matches(':disabled')) setOpen(v => !v)
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
       if (event.currentTarget.matches(':disabled')) return
-      focusOnOpenRef.current = false
-      setOpen(v => !v)
+      if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        setOpen(true)
+      }
     },
     'aria-haspopup': 'listbox' as const,
     'aria-expanded': open,
@@ -276,13 +228,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
   }
 
   return (
-    <div
-      className={`relative ${className}`}
-      onKeyDown={handleKeyDown}
-      onBlur={(event) => {
-        if (!triggerRef.current?.contains(event.relatedTarget) && !menuRef.current?.contains(event.relatedTarget)) setOpen(false)
-      }}
-    >
+    <div className={`relative ${className}`}>
       {triggerLabel !== undefined ? (
         <Button {...triggerProps} variant="ghost" size={size} className="max-w-full min-w-0" aria-label={ariaLabel}>
           {triggerIcon && <span className="flex shrink-0 items-center">{triggerIcon}</span>}
@@ -317,7 +263,6 @@ export function Select({ value, onChange, options, className = '', disabled: dis
         menuRect={menuRect}
         options={options}
         value={value}
-        optionTabIndex={-1}
         onPick={(next) => {
           if (triggerRef.current?.matches(':disabled')) return
           onChange(next)
@@ -437,25 +382,15 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
 /**
  * 多行文本输入 — 默认 sans
  */
-const TEXTAREA_MEASUREMENT_STYLES = [
-  'boxSizing', 'width', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-  'borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderStyle',
-  'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing',
-  'wordSpacing', 'textIndent', 'textTransform', 'direction', 'tabSize', 'wordBreak',
-  'overflowWrap', 'whiteSpace',
-] as const
-
 export function TextArea({
   variant = 'default',
-  maxRows: legacyMaxRows,
+  maxRows,
   value,
   onChange,
   placeholder = '',
   rows = 2,
   mono = false,
   className = '',
-  autoSize,
-  style,
   onContextMenu,
   ...props
 }: {
@@ -467,64 +402,10 @@ export function TextArea({
   variant?: 'default' | 'plain'
   /** 设置后随内容增长，rows 为最小行数，maxRows 为上限。 */
   maxRows?: number
-  /** 按内容自动增减高度；超过最大行数后内部滚动，不显示手动缩放手柄。 */
-  autoSize?: { minRows: number; maxRows: number }
 } & Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'value' | 'onChange'>) {
   const ref = useRef<HTMLTextAreaElement | null>(null)
   const caretRef = useRef<{ start: number; end: number } | null>(null)
   const [menu, setMenu] = useState<{ left: number; top: number; start: number; end: number } | null>(null)
-  const [sizing, setSizing] = useState<{ height: number; overflowY: 'auto' | 'hidden' }>()
-  const minRows = autoSize ? Math.max(1, Math.floor(autoSize.minRows)) : legacyMaxRows === undefined ? 0 : rows
-  const maxRows = autoSize ? Math.max(minRows, Math.floor(autoSize.maxRows)) : Math.max(minRows, legacyMaxRows ?? 0)
-
-  const updateHeight = useCallback(() => {
-    const el = ref.current
-    if (!el || !minRows || !el.getBoundingClientRect().width) return
-    const computed = getComputedStyle(el)
-    // Measure offscreen rather than collapsing the live field: collapsing can
-    // clamp its scroll position and move the surrounding scroll container.
-    const measure = document.createElement('textarea')
-    measure.setAttribute('aria-hidden', 'true')
-    measure.tabIndex = -1
-    for (const property of TEXTAREA_MEASUREMENT_STYLES) measure.style[property] = computed[property]
-    Object.assign(measure.style, {
-      position: 'fixed', top: '0', left: '0', visibility: 'hidden', pointerEvents: 'none',
-      height: '0', minHeight: '0', maxHeight: 'none', overflow: 'hidden',
-    })
-    document.body.appendChild(measure)
-    const padding = parseFloat(computed.paddingTop) + parseFloat(computed.paddingBottom)
-    const border = parseFloat(computed.borderTopWidth) + parseFloat(computed.borderBottomWidth)
-    measure.value = 'x'
-    const lineHeight = parseFloat(computed.lineHeight) || measure.scrollHeight - padding
-    measure.value = el.value || el.placeholder || ' '
-    const contentHeight = measure.scrollHeight + border
-    measure.remove()
-    const maximumHeight = maxRows * lineHeight + padding + border
-    const outerHeight = Math.min(maximumHeight, Math.max(minRows * lineHeight + padding + border, contentHeight))
-    const height = computed.boxSizing === 'border-box' ? outerHeight : outerHeight - padding - border
-    const overflowY = contentHeight > maximumHeight ? 'auto' : 'hidden'
-    setSizing(previous => previous?.height === height && previous.overflowY === overflowY ? previous : { height, overflowY })
-  }, [minRows, maxRows])
-
-  useLayoutEffect(() => {
-    updateHeight()
-  }, [updateHeight, value, placeholder, className, mono, style])
-
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el || !minRows) return
-    let width = el.getBoundingClientRect().width
-    const observer = new ResizeObserver(() => {
-      const nextWidth = el.getBoundingClientRect().width
-      // Ignore our own height changes, but include 0 -> visible transitions for
-      // textareas mounted inside a closed details section or hidden panel.
-      if (nextWidth === width) return
-      width = nextWidth
-      updateHeight()
-    })
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [minRows, updateHeight])
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -534,6 +415,30 @@ export function TextArea({
     el.focus()
     el.setSelectionRange(caret.start, caret.end)
   }, [value])
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || maxRows === undefined) return
+    const resize = () => {
+      const style = getComputedStyle(el)
+      const line = parseFloat(style.lineHeight)
+      const inset = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+        + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)
+      el.style.height = '0px'
+      const height = Math.max(line * rows + inset, Math.min(el.scrollHeight + parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth), line * Math.max(rows, maxRows) + inset))
+      el.style.height = `${height}px`
+    }
+    resize()
+    if (typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      resize()
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [value, rows, maxRows])
 
   const applyEdit = (next: string, start: number, end: number) => {
     const el = ref.current
@@ -554,9 +459,9 @@ export function TextArea({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        rows={minRows || rows}
-        style={minRows ? { ...style, ...sizing, resize: 'none' } : style}
+        rows={rows}
         className={`kv-textarea custom-scrollbar w-full ${variant === 'plain' ? 'plain' : ''} ${mono ? 'mono' : ''} ${className}`}
+        style={{ ...props.style, ...(maxRows === undefined ? {} : { resize: 'none' }) }}
         data-tauri-drag-region="false"
         onContextMenu={(event) => {
           onContextMenu?.(event)

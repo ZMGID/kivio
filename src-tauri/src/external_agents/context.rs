@@ -519,7 +519,6 @@ mod tests {
 
     fn empty_conversation() -> Conversation {
         Conversation {
-            study_context: None,
             id: "c1".to_string(),
             revision: 0,
             title: "t".to_string(),
@@ -561,8 +560,6 @@ mod tests {
 
     fn message(id: &str, role: &str, content: &str, usage: Option<ModelUsage>) -> ChatMessage {
         ChatMessage {
-            study_source: None,
-            study_legacy_error: None,
             id: id.to_string(),
             role: role.to_string(),
             content: content.to_string(),

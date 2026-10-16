@@ -193,8 +193,6 @@ mod tests {
 
     fn draft(id: &str, content: &str) -> ChatMessage {
         ChatMessage {
-            study_source: None,
-            study_legacy_error: None,
             id: id.to_string(),
             role: "assistant".to_string(),
             content: content.to_string(),

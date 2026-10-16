@@ -11,7 +11,6 @@ import {
   isChatNotesPath,
   isChatArtifactsPath,
   isChatMediaPath,
-  isChatStudyPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
   isChatSessionCenterPath,
@@ -123,11 +122,6 @@ export function useChatRouting({
       if (isChatNotesPath(path)) {
         onLeaveConversation()
         onViewChange('notes')
-        return
-      }
-      if (isChatStudyPath(path)) {
-        onLeaveConversation()
-        onViewChange('study')
         return
       }
       if (isChatMediaPath(path)) {
@@ -279,11 +273,6 @@ export function useChatRouting({
     setExtensionsNavItem(item)
     if (item === 'tasks') {
       openTasksCenter()
-      return
-    }
-    if (item === 'study') {
-      onViewChange('study')
-      syncNonConversationRoute('#chat/study')
       return
     }
     if (item === 'media') {

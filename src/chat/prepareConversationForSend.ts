@@ -64,7 +64,6 @@ export async function prepareConversationForSend(
   let created = false
   if (
     conversation
-    && !conversation.study_context
     && !intent.override
     && conversation.messages.length === 0
     && !(conversation.assistant_id ?? conversation.assistantId)
@@ -104,10 +103,6 @@ export async function prepareConversationForSend(
       return failed(stage, error)
     }
   }
-
-  // A material-bound conversation is already created with its durable reading
-  // profile. Ordinary draft tools/runtime/KB choices must never be copied into it.
-  if (conversation.study_context) return { ok: true, conversation, created }
 
   const draft = intent.draft
   if (conversation.messages.length === 0 && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draft.agentRuntime)) {

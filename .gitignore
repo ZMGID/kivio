@@ -74,7 +74,3 @@ MEMORY.md
 
 # Local models:sync provenance (CI retains its copy as an artifact)
 src/data/modelDatabase.json.source.json
-
-# Browser regression output
-playwright-study-report/
-test-results/

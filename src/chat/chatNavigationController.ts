@@ -276,8 +276,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     return reloadConversation(conversationId, { force: true, transitionRequestId: requestId })
   }
 
-  const selectConversation = async (conversationId: string, hint?: ConversationLoadHint, options?: { preserveRoute?: boolean }) => {
-    const syncSelectedRoute = (id: string | null) => { if (!options?.preserveRoute) syncConversationRoute(id) }
+  const selectConversation = async (conversationId: string, hint?: ConversationLoadHint) => {
     const current = ports.currentConversation()
     const alreadyOpen = ports.currentConversationId() === conversationId
       && current?.id === conversationId
@@ -297,7 +296,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
         return
       }
       ports.prepareSelection(hint?.focusMessageId ?? null, false)
-      syncSelectedRoute(conversationId)
+      syncConversationRoute(conversationId)
       return
     }
     const requestId = beginConversationTransition(conversationId, hint)
@@ -321,12 +320,12 @@ export function createChatNavigationController(ports: NavigationPorts) {
       if (conversation.messages.length === 0) {
         window.requestAnimationFrame(() => completeConversationTransition(conversationId, requestId))
       }
-      syncSelectedRoute(conversationId)
+      syncConversationRoute(conversationId)
     } catch (value) {
       if (!isCurrentConversationTransition(requestId, conversationId)) return
       ports.discardConversation(conversationId, asError(value), true)
       forgetRememberedChatRoute()
-      syncSelectedRoute(null)
+      syncConversationRoute(null)
       cancelConversationTransition(requestId)
     }
   }

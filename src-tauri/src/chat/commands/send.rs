@@ -76,7 +76,6 @@ pub(crate) async fn chat_send_message(
     active_skill_id: Option<String>,
     plan_message_id: Option<String>,
     user_message_id: Option<String>,
-    study_source: Option<crate::chat::StudyMessageSource>,
 ) -> Result<serde_json::Value, String> {
     // Busy 拒绝：该会话仍有任意一条 run 在跑（含多模型并发组）时不允许再发新消息。
     // 用原子的哨兵预留替代「先 check 后 register」，关闭并发发送同时通过 busy 检查的 TOCTOU 窗口。
@@ -99,7 +98,6 @@ pub(crate) async fn chat_send_message(
         active_skill_id,
         plan_message_id,
         user_message_id,
-        study_source,
         None,
     )
     .await
@@ -154,7 +152,6 @@ pub(crate) async fn send_user_message_when_idle(
         None,
         None,
         None,
-        None,
         Some(on_user_message_saved),
     )
     .await?;
@@ -181,7 +178,6 @@ async fn send_reserved(
     active_skill_id: Option<String>,
     plan_message_id: Option<String>,
     user_message_id: Option<String>,
-    study_source: Option<crate::chat::StudyMessageSource>,
     on_user_message_saved: Option<&(dyn Fn() + Send + Sync)>,
 ) -> Result<serde_json::Value, String> {
     let user_message_id = match user_message_id {
@@ -199,24 +195,6 @@ async fn send_reserved(
     let mut text_attachments = text_attachments.unwrap_or_default();
 
     let mut conversation = load_conversation(&app, &conversation_id)?;
-    crate::chat::study_context::validate_conversation(&conversation)?;
-    match (&conversation.study_context, &study_source) {
-        (Some(binding), Some(source)) => {
-            crate::chat::study_context::validate_source(binding, source, &content)?;
-            if active_skill_id.is_some() || plan_message_id.is_some() || !text_attachments.is_empty()
-                || attachments.len() != 1
-            {
-                return Err("Study requires one original source image and does not accept skills, plans or text attachments.".into());
-            }
-            crate::chat::study_context::validate_image(std::path::Path::new(&attachments[0]))?;
-            let settings = state.settings_read();
-            let provider = settings.get_provider(&conversation.provider_id).ok_or("Chat provider not found")?;
-            crate::chat::study_context::validate_provider(provider, &conversation.model)?;
-        }
-        (Some(_), None) => return Err("Select the original Study page or region before sending.".into()),
-        (None, Some(_)) => return Err("Study source metadata requires a source-bound conversation.".into()),
-        (None, None) => {}
-    }
     if conversation
         .messages
         .iter()
@@ -225,19 +203,14 @@ async fn send_reserved(
         return Err("User message already exists".into());
     }
 
-    let source_only = conversation.study_context.is_some();
-    let plan_message_id = if source_only {
-        None
-    } else {
-        plan_message_id.or_else(|| {
-            (conversation.agent_plan_state.document.is_some()
-                && matches!(
-                    content.trim(),
-                    "开始执行" | "按计划执行" | "执行计划" | "按这条计划开始执行。"
-                ))
-            .then(String::new)
-        })
-    };
+    let plan_message_id = plan_message_id.or_else(|| {
+        (conversation.agent_plan_state.document.is_some()
+            && matches!(
+                content.trim(),
+                "开始执行" | "按计划执行" | "执行计划" | "按这条计划开始执行。"
+            ))
+        .then(String::new)
+    });
     let selected_plan = if let Some(id) = plan_message_id.as_deref() {
         let snapshot = crate::chat::plan_document::prepare_execution(&app, &mut conversation, id)?;
         text_attachments.push(TextAttachmentInput {
@@ -249,7 +222,7 @@ async fn send_reserved(
         None
     };
 
-    if !source_only && content.trim() == "/goal" {
+    if content.trim() == "/goal" {
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({
             "success": true,
@@ -257,13 +230,7 @@ async fn send_reserved(
         }));
     }
 
-    // A source question can contain literal /goal or /plan text. It never
-    // becomes an execution command in a reading conversation.
-    let goal_started = if source_only {
-        None
-    } else {
-        crate::chat::slash_commands::goal_objective(&content)
-    };
+    let goal_started = crate::chat::slash_commands::goal_objective(&content);
     if goal_started.is_some()
         && conversation.goal_state.as_ref().is_some_and(|goal| {
             !matches!(
@@ -340,8 +307,6 @@ async fn send_reserved(
 
     // 创建用户消息
     let user_message = ChatMessage {
-        study_source,
-        study_legacy_error: None,
         id: user_message_id,
         role: "user".to_string(),
         content: content.clone(),

@@ -106,8 +106,6 @@ pub(crate) async fn run_chat_probe(
         });
     }
     let user_message = ChatMessage {
-        study_source: None,
-        study_legacy_error: None,
         id: format!("msg_{}", Uuid::new_v4()),
         role: "user".to_string(),
         content: req.prompt.clone(),

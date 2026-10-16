@@ -15,7 +15,6 @@ export type ChatRouteKind =
   | 'notes'
   | 'artifacts'
   | 'media'
-  | 'study'
   | 'onboarding'
   | 'popout'
   | 'other'

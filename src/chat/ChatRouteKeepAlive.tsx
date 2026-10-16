@@ -1,5 +1,4 @@
 import { useRef, type ReactNode } from 'react'
-import { ChatSurfaceActivityContext } from './chatSurfaceActivity'
 
 interface ChatRouteKeepAliveProps {
   activeKey: string
@@ -18,17 +17,14 @@ interface ChatRouteKeepAliveProps {
  */
 export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAliveProps) {
   const cacheRef = useRef(new Map<string, ReactNode>())
-  // Study embeds the same Chat conversation surface. It replaces the cached
-  // conversation view so only one composer owns draft/insert listeners.
-  const cacheKey = activeKey === 'study' ? 'conversation' : activeKey
-  const keep = cacheKey === 'conversation' || cacheKey === 'settings'
-  if (keep) cacheRef.current.set(cacheKey, children)
+  const keep = activeKey === 'conversation' || activeKey === 'settings'
+  if (keep) cacheRef.current.set(activeKey, children)
 
   return (
     // 页面自身会淡入/位移；阅读底色留在常驻层，避免半透明窗口在切换时露出原生材质。
     <div className="chat-themed-surface flex min-h-0 min-w-0 flex-1">
       {[...cacheRef.current.entries()].map(([key, node]) => {
-        const active = key === cacheKey
+        const active = key === activeKey
         return (
           <div
             key={key}
@@ -37,7 +33,7 @@ export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAlivePr
             aria-hidden={active ? undefined : true}
             {...(active ? {} : { inert: '' })}
           >
-            <ChatSurfaceActivityContext.Provider value={active}>{node}</ChatSurfaceActivityContext.Provider>
+            {node}
           </div>
         )
       })}

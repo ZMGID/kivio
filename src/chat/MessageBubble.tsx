@@ -65,10 +65,6 @@ const handleChatImageClick = (src: string, alt: string, name?: string) =>
 
 interface MessageBubbleProps {
   readOnly?: boolean
-  /** Reading opts into safe text/math without remote media or tool previews. */
-  presentation?: 'chat' | 'reading'
-  annotation?: ReactNode
-  answerDisclosureLabel?: string
   message: ChatMessage
   conversationId?: string | null
   conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
@@ -1147,9 +1143,6 @@ function TimelineSegments({
 
 function MessageBubbleComponent({
   readOnly = false,
-  presentation = 'chat',
-  annotation,
-  answerDisclosureLabel,
   message,
   conversationId,
   conversationArtifactsById,
@@ -1173,7 +1166,6 @@ function MessageBubbleComponent({
   outlineEligible = false,
   onOutlineSourceChange,
 }: MessageBubbleProps) {
-  const isReading = presentation === 'reading'
   const isUser = message.role === 'user'
   const streamOutcome = message.stream_outcome ?? message.streamOutcome
   const cancelled = streamOutcome === 'cancelled'
@@ -1302,7 +1294,6 @@ function MessageBubbleComponent({
   // 同样的信息 —— 这里不再把它当正文渲染，避免一模一样的内容出现两遍。
   const [copied, setCopied] = useState(false)
   const [toolsExpanded, setToolsExpanded] = useState(false)
-  const [answerExpanded, setAnswerExpanded] = useState(false)
   // 消息级悬停：鼠标在这条消息上 → 底部操作/元信息条显示，移走 → 隐藏。
   // 显示走 onPointerEnter（送达可靠）；**隐藏不依赖 pointerleave**——悬停期间挂一个
   // document 级 pointermove，指针落在消息外即收起。移动事件是持续流，漏一帧还有
@@ -1373,7 +1364,6 @@ function MessageBubbleComponent({
         className={`flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
       >
         <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1">
-          {annotation}
           {showModelTags && (
             <div className="flex flex-wrap items-center justify-end gap-1.5 pr-0.5">
               {replyModelTags.map((tag, index) => (
@@ -1388,7 +1378,7 @@ function MessageBubbleComponent({
               ))}
             </div>
           )}
-          {!isReading && attachments.length > 0 && (
+          {attachments.length > 0 && (
             <ChatAttachments
               attachments={attachments}
               conversationId={conversationId}
@@ -1413,7 +1403,7 @@ function MessageBubbleComponent({
               >
                 {copied ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={13} strokeWidth={2} />}
               </IconButton>
-              {!isReading && onRewindMessage && (
+              {onRewindMessage && (
                 <IconButton
                   size="xs"
                   onClick={() => void onRewindMessage(message.id)}
@@ -1423,7 +1413,7 @@ function MessageBubbleComponent({
                   <RotateCcw size={13} strokeWidth={2} />
                 </IconButton>
               )}
-              {!isReading && onForkMessage && (
+              {onForkMessage && (
                 <IconButton
                   size="xs"
                   onClick={() => void onForkMessage(message.id)}
@@ -1448,30 +1438,6 @@ function MessageBubbleComponent({
       data-chat-outline-owner={outlineEligible ? message.id : undefined}
     >
       <div className="w-full min-w-0">
-        {annotation}
-        {isReading ? (
-          bodyText.trim() && bodyText.trim() !== degraded?.text.trim() ? (
-            <section aria-label="回答">
-              {answerDisclosureLabel ? (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setAnswerExpanded(value => !value)}
-                    aria-expanded={answerExpanded}
-                    data-chat-disclosure
-                  >
-                    <ChevronRight size={14} className={answerExpanded ? 'rotate-90' : undefined} />
-                    {answerDisclosureLabel}
-                  </Button>
-                  <ChatDisclosureBody open={answerExpanded}>
-                    <ChatMarkdown content={bodyText} readOnly outlineSource={outlineSource} />
-                  </ChatDisclosureBody>
-                </>
-              ) : <ChatMarkdown content={bodyText} readOnly outlineSource={outlineSource} />}
-            </section>
-          ) : null
-        ) : <>
         {toolCalls.length > 0 && !hasTimelineSegments && (
           <section
             aria-label="工具调用"
@@ -1578,12 +1544,10 @@ function MessageBubbleComponent({
           )
         )}
 
-        </>}
-
         {/* 降级兜底渲染成独立卡片：故障不混进正文，也不会被复制/回灌给模型。 */}
         {degraded && <DegradedAnswerCard degraded={degraded} />}
 
-        {!isReading && isAgentPlanMessage && !isDirectImageGenerationPending && (
+        {isAgentPlanMessage && !isDirectImageGenerationPending && (
           <AgentPlanAction
             messageId={message.id}
             planState={agentPlan}
@@ -1592,10 +1556,9 @@ function MessageBubbleComponent({
           />
         )}
 
-        {(bodyText.trim().length > 0 || (isReading && onRegenerateMessage)) && !isDirectImageGenerationPending && (
+        {bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
           <AssistantMessageMeta
             readOnly={readOnly}
-            presentation={presentation}
             content={bodyText}
             reasoning={message.reasoning}
             timestamp={message.timestamp}
@@ -1604,7 +1567,7 @@ function MessageBubbleComponent({
             streamOutcome={message.stream_outcome ?? message.streamOutcome}
             usage={message.usage}
             onRegenerate={
-              (isReading ? Boolean(onRegenerateMessage) : canMutate)
+              canMutate
                 ? () => {
                     void onRegenerateMessage!(message.id)
                   }
@@ -1633,7 +1596,7 @@ function MessageBubbleComponent({
           />
         )}
 
-        {!isReading && attachments.length > 0 && (
+        {attachments.length > 0 && (
           <ChatAttachments
             attachments={attachments}
             conversationId={conversationId}

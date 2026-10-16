@@ -621,7 +621,7 @@ impl OpenAiResponsesProvider<'_> {
                 .as_deref()
                 .filter(|id| !id.is_empty())
             {
-                body["prompt_cache_key"] = Value::String(crate::provider_request::wire_session_key(conversation_id));
+                body["prompt_cache_key"] = Value::String(conversation_id.to_string());
                 if matches!(
                     self.provider.cache_retention(),
                     crate::settings::CacheRetention::Long
