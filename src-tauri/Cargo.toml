@@ -75,9 +75,11 @@ rmcp = { version = "=3.5.1", default-features = false, features = [
 process-wrap = { version = "10.0.1", features = ["tokio1"] }
 
 # HTTP 客户端与异步运行时
-reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form"] }
+reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream"] }
 tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
+tokio-util = { version = "0.7", features = ["io"] }
 scraper = "0.23"
 html-escape = "0.2"
 regex = "1"

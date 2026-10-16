@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Download, Upload } from 'lucide-react'
+import './backup.css'
+import { WebDavBackupSection } from './WebDavBackupSection'
+import { Download, Upload, HardDrive, Layers, ShieldCheck } from 'lucide-react'
 import { Button } from '../components/Button'
 import { Toggle } from './public/controls'
-import { SettingsGroup } from './components'
 import type { Lang } from '../components/i18n'
 import type { useSettingsBackupController } from './useSettingsBackupController'
 
@@ -13,38 +14,39 @@ export function BackupSection({ controller, lang }: {
   const [trusted, setTrusted] = useState(false)
   const zh = lang === 'zh'
   const disabled = controller.busy || controller.restartRequired
-  return <SettingsGroup title={zh ? '备份与恢复' : 'Backup & restore'}>
-    <div className="flex flex-wrap items-start gap-x-6 gap-y-2 pb-2">
-      <div className="min-w-0">
-        <Button size="sm" disabled={disabled} onClick={controller.exportBackup}><Upload size={11} />{zh ? '配置导出' : 'Export configuration'}</Button>
-        <p className="kv-row-desc mt-2">{zh ? '设置、供应商、模型、助手和集。' : 'Settings, providers, models, assistants and sets.'}</p>
+  return <div className="backup-page">
+    {controller.restartRequired && <div className="backup-row backup-restart">
+      <div className="backup-copy"><p className="kv-row-label">{zh ? '备份已就绪，重启后完成恢复' : 'Ready to restore after restart'}</p><p className="kv-row-desc">{zh ? '重启前，当前数据仍保持不变。' : 'Current data stays unchanged until restart.'}</p></div>
+      <Button size="sm" variant="primary" disabled={controller.busy} onClick={controller.restart}>{zh ? '重启并完成恢复' : 'Restart and restore'}</Button>
+    </div>}
+    <section className="backup-section"><h3 className="backup-section-title"><HardDrive size={16} />{zh ? '本地备份' : 'Local backup'}</h3><div className="backup-surface">
+      <div className="backup-row">
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '配置备份' : 'Configuration backup'}</p><p className="kv-row-desc">{zh ? '设置、供应商、模型、助手和集。' : 'Settings, providers, models, assistants and sets.'}</p></div>
+        <Button size="sm" disabled={disabled} onClick={controller.exportBackup}><Upload size={13} />{zh ? '导出配置' : 'Export configuration'}</Button>
       </div>
-      <div className="min-w-0">
-        <Button size="sm" disabled={disabled} onClick={controller.exportFullBackup}><Upload size={11} />{zh ? '完全导出' : 'Export everything'}</Button>
-        <p className="kv-row-desc mt-2">{zh ? '全部 Kivio 数据、对话、附件及项目文件。' : 'All Kivio data, conversations, attachments and project files.'}</p>
+      <div className="backup-row">
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '完全备份' : 'Full backup'}</p><p className="kv-row-desc">{zh ? '全部 Kivio 数据，包含对话、附件和项目文件。' : 'All Kivio data, including conversations, attachments and project files.'}</p></div>
+        <Button size="sm" disabled={disabled} onClick={controller.exportFullBackup}><Upload size={13} />{zh ? '导出全部' : 'Export everything'}</Button>
       </div>
-    </div>
-    <div className="flex flex-wrap items-center gap-3 border-t py-2" style={{ borderColor: 'var(--border)' }}>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" disabled={disabled} onClick={trusted ? controller.restoreBackup : controller.importBackup}><Download size={11} />{zh ? '导入备份' : 'Import backup'}</Button>
-        {controller.restartRequired && <Button size="sm" disabled={controller.busy} onClick={controller.restart}>{zh ? '重启并完成恢复' : 'Restart and restore'}</Button>}
+      <div className="backup-divider">
+        <div className="backup-row">
+          <div className="backup-copy"><p className="kv-row-label">{zh ? '从文件恢复' : 'Restore from a file'}</p><p className="kv-row-desc">{zh ? '选择配置或完全备份。完全恢复会替换当前数据，重启生效。' : 'Choose a configuration or full backup. Full restore replaces current data after restart.'}</p></div>
+          <Button size="sm" disabled={disabled} onClick={trusted ? controller.restoreBackup : controller.importBackup}><Download size={13} />{zh ? '导入备份' : 'Import backup'}</Button>
+        </div>
+        <div className="backup-trust">
+          <Toggle ariaLabel={zh ? '信任此备份' : 'Trust this backup'} checked={trusted} onChange={setTrusted} disabled={disabled} />
+          <span className="kv-row-desc">{zh ? '信任此备份，保留权限与任务状态' : 'Trust this backup and retain permissions and task states'}</span>
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        <Toggle ariaLabel={zh ? '信任此备份' : 'Trust this backup'} checked={trusted} onChange={setTrusted} disabled={disabled} />
-        <span className="kv-row-desc">{zh ? '信任备份，保留权限与任务状态' : 'Trust backup and retain permissions and task states'}</span>
-      </div>
-    </div>
-    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-      <p className="kv-row-desc">{zh ? '完全恢复将替换当前数据，重启生效。' : 'Full restore replaces current data after restart.'}</p>
-    <details className="text-sm" style={{ color: 'var(--text-muted)' }}>
-      <summary className="cursor-pointer">{zh ? '备份须知' : 'Backup details'}</summary>
-      <p>{zh
-        ? '备份含密钥，请勿分享。完全导出前请停止任务，保存到项目目录之外。项目文件恢复到独立目录；外部 CLI 历史、系统授权及外部登录需另行迁移。不信任备份时，恢复会停用插件、MCP、hooks 和任务，并保留本机 CLI 配置。'
-        : 'Backups contain secrets. Stop tasks before full export and save outside project folders. Projects restore into separate folders. External CLI history, OS permissions and external sign-ins require separate migration. Untrusted restore disables plugins, MCP, hooks and tasks, and retains local CLI configuration.'}</p>
-    </details>
-    </div>
-    {(controller.busy || controller.status) && <p role="status" aria-live="polite" className="text-sm" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>
+    </div></section>
+    <WebDavBackupSection controller={controller} lang={lang} />
+    <section className="backup-section"><h3 className="backup-section-title"><Layers size={16} />{zh ? '备份范围' : 'Backup scope'}</h3><div className="backup-surface">
+      <div className="backup-scope-row"><span className="backup-tag">{zh ? '配置' : 'Configuration'}</span><p className="kv-row-desc">{zh ? '设置 · 供应商 · 模型 · 助手 · 集' : 'Settings · Providers · Models · Assistants · Sets'}</p></div>
+      <div className="backup-scope-row"><span className="backup-tag">{zh ? '完全' : 'Full'}</span><p className="kv-row-desc">{zh ? '全部配置，以及对话、附件和项目文件' : 'All configuration, conversations, attachments and project files'}</p></div>
+    </div></section>
+    <div className="backup-note"><ShieldCheck size={16} /><span>{zh ? '备份含密钥，请妥善保管。完全导出前请停止任务。' : 'Backups contain secrets. Keep them safe and stop tasks before full export.'}</span></div>
+    {controller.statusSource === 'local' && (controller.busy || controller.status) && <p role="status" aria-live="polite" className="text-sm" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>
       {controller.busy ? (zh ? '正在处理备份，请稍候…' : 'Processing backup…') : controller.status?.msg}
     </p>}
-  </SettingsGroup>
+  </div>
 }

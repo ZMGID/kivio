@@ -1,5 +1,6 @@
 //! Portable application backups. Restoration is staged and committed before any
 //! stores, workers or windows start; live stores never observe a partial restore.
+pub mod webdav;
 use crate::{settings::Settings, state::AppState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

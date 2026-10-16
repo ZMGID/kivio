@@ -1,0 +1,41 @@
+.backup-page { container-type: inline-size; display: flex; flex-direction: column; gap: 24px; }
+.backup-section-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--text); }
+.backup-section-title > svg { color: var(--text-muted); }
+.backup-surface { padding: 4px 18px; background: var(--bg-input-subtle, var(--bg-sidebar)); border: 1px solid var(--border); border-radius: 12px; }
+.backup-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 16px; }
+.backup-copy { flex: 1; min-width: 0; }
+.backup-copy .kv-row-desc { margin-top: 4px; line-height: 1.6; }
+.backup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.backup-divider { border-top: 1px solid var(--border); }
+.backup-trust { display: flex; align-items: center; gap: 10px; padding-block: 4px 16px; }
+.backup-connection { padding-top: 16px; }
+.backup-empty { padding: 24px 0; text-align: center; }
+.backup-file { display: flex; align-items: center; gap: 16px; padding-block: 14px; border-top: 1px solid var(--border); }
+.backup-file-meta { font-variant-numeric: tabular-nums; }
+.backup-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backup-tag { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 6px; background: var(--bg-pill); color: var(--text-muted); font-size: 11px; font-weight: 500; flex-shrink: 0; }
+.backup-service-icon { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--border); border-radius: 12px; color: var(--accent); flex-shrink: 0; background: var(--bg); }
+.backup-scope-row { display: flex; align-items: center; gap: 12px; padding-block: 12px; }
+.backup-note { display: flex; align-items: flex-start; gap: 8px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.backup-note svg { flex-shrink: 0; margin-top: 2px; }
+.backup-status { margin-top: 12px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.kv-modal.backup-dialog { margin: auto; width: calc(100vw - 40px); max-width: 560px; max-height: calc(100dvh - 48px); }
+.backup-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.backup-dialog-heading h2 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+.backup-dialog-body { max-height: calc(100dvh - 180px); overflow-y: auto; padding-top: 16px; }
+.backup-fields { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+.backup-fields label:first-child { grid-column: 1 / -1; }
+.backup-fields label > span { display: block; margin-bottom: 6px; }
+.backup-provider-row { display: flex; align-items: center; gap: 12px; padding-block: 14px; border-bottom: 1px solid var(--border); }
+.backup-provider-row:last-child { border-bottom: 0; }
+.backup-provider-row > svg { color: var(--text-muted); flex-shrink: 0; }
+@container (max-width: 560px) {
+  .backup-row { flex-wrap: wrap; gap: 12px; }
+  .backup-row > .backup-actions { flex-basis: 100%; }
+}
+@media (max-width: 480px) {
+  .backup-fields { grid-template-columns: 1fr; }
+  .backup-file { flex-wrap: wrap; gap: 10px; }
+  .backup-file > .backup-copy { flex-basis: 100%; }
+}
+.backup-fields label:last-child { grid-column: 1 / -1; }

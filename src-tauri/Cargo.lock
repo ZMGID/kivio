@@ -3373,6 +3373,7 @@ dependencies = [
  "pdf-extract",
  "portable-pty",
  "process-wrap",
+ "quick-xml",
  "rand 0.8.5",
  "regex",
  "reqwest",
@@ -3398,6 +3399,7 @@ dependencies = [
  "tauri-plugin-store",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml 0.8.2",
  "ts-rs",
  "unicode-normalization",
@@ -5375,6 +5377,7 @@ checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "encoding_rs",
  "memchr",
+ "serde",
 ]
 
 [[package]]

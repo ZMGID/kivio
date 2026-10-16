@@ -2,7 +2,7 @@ import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  ArrowLeft, Palette,
+  ArrowLeft, Palette, CloudUpload,
 } from 'lucide-react'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
@@ -77,7 +77,7 @@ import {
 } from './components'
 import { WebSearchPanel } from './WebSearchPanel'
 
-export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'sessions' | 'usage' | 'providers' | 'about'
+export type SettingsTab = 'general' | 'themes' | 'hotkeys' | 'translate' | 'lens' | 'chat' | 'memory' | 'mixer' | 'externalAgents' | 'computerControl' | 'hooks' | 'webSearch' | 'sessions' | 'usage' | 'providers' | 'backup' | 'about'
 
 type SettingsData = SettingsType
 // UI 字号：以 px 展示、以整体缩放（zoom）实现。CSS 全是 px 硬编码，做不了真正的 rem 基准字号，
@@ -213,6 +213,25 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     apply: (id, updates) => editorController.edit((current) => applyProviderDraftIntent(current, { type: 'update', id, updates })),
   })
   const settingsBackup = useSettingsBackupController({
+    webdav: {
+      load: api.webdavLoad,
+      save: api.webdavSave,
+      test: api.webdavTest,
+      list: api.webdavList,
+      upload: async (kind) => {
+        if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+        return api.webdavUpload(kind, captureBackupInterface())
+      },
+      download: api.webdavDownload,
+      release: api.webdavRelease,
+      delete: api.webdavDelete,
+      confirmRestore: (kind) => confirm(kind === 'full'
+        ? (lang === 'zh' ? '此备份将在重启后替换当前 Kivio 数据，并保留恢复前的副本。请先停止正在运行的任务。继续？' : 'This backup replaces your Kivio data after restart and retains a recovery copy. Stop active tasks first. Continue?')
+        : (lang === 'zh' ? '将覆盖当前设置，并导入备份中的助手和集。继续？' : 'This replaces current settings and imports assistants and sets. Continue?'),
+      { title: lang === 'zh' ? '恢复远程备份' : 'Restore remote backup', kind: 'warning' }),
+      confirmDelete: (name) => confirm(lang === 'zh' ? `删除远程备份 ${name}？此操作无法撤销。` : `Delete remote backup ${name}? This cannot be undone.`,
+        { title: lang === 'zh' ? '删除备份' : 'Delete backup', kind: 'warning' }),
+    },
     pickImport: async () => {
       const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json', 'kivio', 'zip'] }] })
       return typeof selected === 'string' ? selected : null
@@ -856,10 +875,15 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
     { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
     { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
+    { id: 'backup' as const, label: lang === 'zh' ? '备份与同步' : 'Backup & sync', icon: CloudUpload },
     // 关于固定在分类列表最末
     { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: AboutIcon },
   ]
   const pageMeta: Record<typeof activeTab, { title: string; subtitle: string; right?: string }> = {
+    backup: {
+      title: lang === 'zh' ? '备份与同步' : 'Backup & sync',
+      subtitle: lang === 'zh' ? '管理本地备份、WebDAV 手动备份与恢复。' : 'Manage local backups, manual WebDAV backups, and restores.',
+    },
     general: {
       title: t.tabGeneral,
       subtitle: lang === 'zh' ? '外观、行为、归档和权限。' : 'Appearance, behavior, archive, and permissions.',
@@ -1046,6 +1070,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             key={activeTab}
             className={`kv-scroll custom-scrollbar settings-section-enter ${variant === 'embedded' ? 'settings-embedded-scroll' : ''}${activeTab === 'sessions' ? ' kv-scroll--fill' : ''}`}
           >
+            {activeTab === 'backup' && <BackupSection controller={settingsBackup} lang={lang} />}
+
             {activeTab === 'themes' && (
               <ThemeTab settings={settings} lang={lang} draft={themeDraft}
                 onDraftChange={setThemeDraft} onCommit={commitThemeSettings} />
@@ -1090,8 +1116,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     {onboarding.error && <span className="text-[12px] text-red-500" role="status">{onboarding.error}</span>}
                   </SettingRow>
                 </SettingsGroup>
-
-                <BackupSection controller={settingsBackup} lang={lang} />
 
                 {permissions.status?.platform === 'macos' && (
                   <PermissionsGroup
