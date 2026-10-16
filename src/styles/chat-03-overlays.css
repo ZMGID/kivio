@@ -117,5 +117,5 @@
 }
 
 .chat-conversation-loading {
-  background: var(--theme-surface-soft);
+  background: var(--theme-surface);
 }

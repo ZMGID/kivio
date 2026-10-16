@@ -880,7 +880,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-hotkey-clear:hover,
 .kv-icon-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--text);
 }
 .kv-icon-btn.danger:hover:not(:disabled) {
@@ -962,7 +962,7 @@ input[type="password"]::-ms-clear {
   background: transparent;
   box-shadow: none;
 }
-.kv-btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
+.kv-btn.ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .kv-btn.danger {
   color: var(--danger);
   border-color: transparent;
