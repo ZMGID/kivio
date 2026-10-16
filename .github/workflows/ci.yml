@@ -48,6 +48,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # 只缓存依赖产物；清理 workspace / incremental，PR 复用 main 缓存但不另存。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-workspace-crates: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Build Swift sidecar
         run: npm run build:swift
 
@@ -100,6 +108,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      # job / Rust host 自动隔离 Windows 与 macOS 缓存。
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-workspace-crates: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Prepare Windows sidecar
         run: npm run build:swift

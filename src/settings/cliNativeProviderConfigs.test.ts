@@ -398,39 +398,39 @@ describe('cliNativeProviderConfigs', () => {
     }])
   })
 
-  it('emits Pi sparse thinking mappings including xhigh and max', () => {
-    const model = emptyNativeModel('pi', 'deepseek-v4-flash')
-    expect(resolvePiModelMetadata(model).thinkingLevels).toEqual([
-      'off',
-      'low',
-      'high',
-      'xhigh',
-      'max',
-    ])
+  it.each([
+    {
+      id: 'deepseek-v4-flash',
+      levels: ['off', 'low', 'high', 'max'],
+      defaultLevel: 'max',
+      mapping: { minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' },
+    },
+    {
+      id: 'qwen3.8-flash-next',
+      levels: ['off', 'low', 'medium', 'xhigh'],
+      defaultLevel: 'xhigh',
+      mapping: { minimal: null, low: 'low', medium: 'medium', high: null, xhigh: 'xhigh', max: null },
+    },
+  ])('emits Pi sparse thinking mappings for $id', ({ id, levels, defaultLevel, mapping }) => {
+    const model = emptyNativeModel('pi', id)
+    expect(resolvePiModelMetadata(model).thinkingLevels).toEqual(levels)
 
-    const built = buildNativeCliProvider('pi', 'DeepSeek Relay', {
+    const built = buildNativeCliProvider('pi', 'Relay', {
       nativeProviderId: '',
       baseUrl: 'https://relay.example/v1',
       apiKey: 'sk-pi',
       api: 'openai-responses',
       models: [model],
       defaultModel: model.id,
-      defaultThinkingLevel: 'max',
+      defaultThinkingLevel: defaultLevel,
       sourceConfigJson: '',
     })
-    expect(JSON.parse(built.configJson!).models[0].thinkingLevelMap).toEqual({
-      minimal: null,
-      low: 'low',
-      medium: null,
-      high: 'high',
-      xhigh: 'xhigh',
-      max: 'max',
-    })
+    expect(JSON.parse(built.configJson!).models[0].thinkingLevelMap).toEqual(mapping)
     expect(readNativeCliProvider('pi', {
-      id: 'deepseek',
-      name: 'DeepSeek Relay',
+      id: 'relay',
+      name: 'Relay',
       ...built,
-    }).defaultThinkingLevel).toBe('max')
+    }).defaultThinkingLevel).toBe(defaultLevel)
   })
 
   it('uses Pi defaults for an unknown model and keeps manual overrides optional', () => {
