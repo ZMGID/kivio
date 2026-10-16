@@ -56,6 +56,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     setStatusSource('webdav')
     setStatus(null)
     const zh = langRef.current === 'zh'
+    let cleanupWarning = ''
     const phase = (text: string) => { if (live.current) setWebdavPhase(text) }
     try {
       if (await portRef.current.pendingRestore()) {
@@ -86,7 +87,12 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
             await portRef.current.importFull(download.path, action.trusted)
             if (live.current) setRestartRequired(true)
           } else await portRef.current.import(download.path, action.trusted)
-        } finally { await remote.release(download.id) }
+        } finally {
+          try { await remote.release(download.id) }
+          catch (error) {
+            cleanupWarning = ` ${zh ? '临时备份文件清理失败：' : 'Temporary backup cleanup failed: '}${error instanceof Error ? error.message : String(error)}`
+          }
+        }
       } else {
         if (action.type === 'upload') {
           phase(zh ? '正在生成并上传备份，请稍候…' : 'Creating and uploading backup…')
@@ -107,7 +113,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
           throw error
         }
       }
-      if (live.current) setStatus({ kind: 'ok', msg: action.type === 'restore'
+      if (live.current) setStatus({ kind: 'ok', msg: (action.type === 'restore'
         ? action.backup.kind === 'full'
           ? (zh ? '备份已校验，重启后完成恢复。当前数据会保留副本。' : 'Backup validated. Restart to restore; previous data will be retained.')
           : (zh ? '配置已恢复。' : 'Configuration restored.')
@@ -115,10 +121,10 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         : action.type === 'save' ? (zh ? 'WebDAV 配置已保存。' : 'WebDAV configuration saved.')
         : action.type === 'upload' ? (zh ? '备份已上传。' : 'Backup uploaded.')
         : action.type === 'delete' ? (zh ? '远程备份已删除。' : 'Remote backup deleted.')
-        : (zh ? '备份列表已更新。' : 'Backup list updated.') })
+        : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning })
       return true
     } catch (error) {
-      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}` })
+      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}${cleanupWarning}` })
       return false
     } finally {
       inFlight.current = false

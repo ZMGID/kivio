@@ -131,6 +131,21 @@ describe('manual WebDAV backup lifecycle', () => {
     expect(result.current.restartRequired).toBe(true)
   })
 
+  it.each(['configuration', 'full', 'invalid'] as const)('preserves the %s restore outcome when temporary cleanup fails', async (outcome) => {
+    const port = remotePort()
+    port.webdav!.release = vi.fn(async () => { throw new Error('Cleanup unavailable') })
+    if (outcome === 'invalid') port.importFull = async () => { throw new Error('Invalid checksum') }
+    const selected = { ...backup, kind: outcome === 'configuration' ? 'configuration' as const : 'full' as const }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    let restored = false
+    await act(async () => { restored = await result.current.runWebDav({ type: 'restore', backup: selected, trusted: false }) })
+    expect(restored).toBe(outcome !== 'invalid')
+    expect(result.current.restartRequired).toBe(outcome === 'full')
+    expect(result.current.status?.kind).toBe(outcome === 'invalid' ? 'err' : 'ok')
+    expect(result.current.status?.msg).toContain(outcome === 'invalid' ? 'Invalid checksum' : outcome === 'full' ? 'Restart to restore' : 'Configuration restored')
+    expect(result.current.status?.msg).toContain('Temporary backup cleanup failed')
+  })
+
   it('blocks overlapping local export and duplicate upload until remote upload completes', async () => {
     const pending = deferred<string>()
     const port = remotePort()

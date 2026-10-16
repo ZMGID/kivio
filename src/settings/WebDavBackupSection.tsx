@@ -15,13 +15,27 @@ export function WebDavBackupSection({ controller, lang }: {
   const config = controller.webdavConfig
   const [draft, setDraft] = useState<{ url: string; username: string; directory: string; password: string | null } | null>(null)
   const [editing, setEditing] = useState(false)
-  const [providerName, setProviderName] = useState('WebDAV')
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [choosing, setChoosing] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [kind, setKind] = useState<BackupKind>('configuration')
   const [trusted, setTrusted] = useState(false)
   const disabled = controller.busy || controller.restartRequired
   const values = draft ?? (config ? { url: config.url, username: config.username, directory: config.directory, password: null } : null)
+  const providers = [
+    { id: 'jianguoyun', name: zh ? '坚果云' : 'Jianguoyun', hint: 'dav.jianguoyun.com', url: 'https://dav.jianguoyun.com/dav/', placeholder: 'https://dav.jianguoyun.com/dav/', help: zh ? '账号填写坚果云注册邮箱，密码使用「安全选项 → 第三方应用管理」生成的应用密码。默认单文件上限 500M，单次列表最多 750 项；建议使用独立备份目录。' : 'Use your registered email and an app password from Security → Third-party applications. Default limit: 500M per file and 750 entries per listing. Use a dedicated backup folder.' },
+    { id: 'nextcloud', name: 'Nextcloud', hint: zh ? '自建云存储' : 'Self-hosted storage', url: '', placeholder: 'https://cloud.example.com/remote.php/dav/files/USERNAME/', help: zh ? '从 Nextcloud「文件 → 文件设置」复制个人 WebDAV 地址，使用安全设置中生成的应用密码；不要填写网页版或公开分享链接。' : 'Copy your personal WebDAV URL from Files → Files settings and use an app password. Do not use the web portal or a public share link.' },
+    { id: 'synology', name: zh ? '群晖 NAS' : 'Synology NAS', hint: 'WebDAV Server', url: '', placeholder: 'https://nas.example.com:5006/SHARED_FOLDER/', help: zh ? '先启用 WebDAV Server；HTTPS 默认端口 5006。地址包含已有共享文件夹，账号需有读写权限，证书需可信且匹配域名。' : 'Enable WebDAV Server (HTTPS default: 5006). Include an existing shared folder in the URL. Grant read/write access and use a trusted certificate matching the hostname.' },
+    { id: 'custom', name: zh ? '自定义 WebDAV' : 'Custom WebDAV', hint: zh ? '其他兼容 WebDAV 的服务' : 'Any compatible WebDAV service', url: '', placeholder: 'https://dav.example.com/', help: zh ? '填写服务商提供的 WebDAV 地址和凭据。测试连接会验证目录创建、上传、重命名、回读、列表和删除权限。' : 'Use the WebDAV endpoint and credentials from your provider. The connection test checks folder creation, upload, rename, read-back, listing and deletion.' },
+  ]
+  let detected = 'custom'
+  try {
+    const url = new URL(config?.url || '')
+    if (url.hostname === 'dav.jianguoyun.com') detected = 'jianguoyun'
+    else if (url.pathname.includes('/remote.php/dav/files/')) detected = 'nextcloud'
+    else if (url.port === '5005' || url.port === '5006') detected = 'synology'
+  } catch { /* An unconfigured connection starts with custom WebDAV. */ }
+  const provider = providers.find((item) => item.id === (selectedProvider ?? detected)) ?? providers[3]
   const dirty = values && config && (values.url !== config.url || values.username !== config.username || values.directory !== config.directory || values.password !== null)
   const ready = config?.url && !dirty
   const edit = (key: 'url' | 'username' | 'directory' | 'password', value: string) => {
@@ -54,16 +68,21 @@ export function WebDavBackupSection({ controller, lang }: {
       {dirty && <p className="kv-row-desc">{zh ? '连接有未保存的更改，请先保存或放弃更改。' : 'Save or discard connection changes before transferring backups.'}</p>}
     </div>
     {!editing && !browsing && status}
-    {editing && <BackupDialog title={choosing ? (zh ? '选择 WebDAV 服务' : 'Choose a WebDAV service') : `${providerName} ${zh ? '连接设置' : 'connection settings'}`} description={zh ? '连接信息仅保存在当前设备。' : 'Connection details are stored on this device only.'} closeLabel={zh ? '关闭' : 'Close'} locked={disabled} onClose={closeEditor}>
+    {editing && <BackupDialog title={choosing ? (zh ? '选择 WebDAV 服务' : 'Choose a WebDAV service') : `${provider.name} ${zh ? '连接设置' : 'connection settings'}`} description={zh ? '连接信息仅保存在当前设备。' : 'Connection details are stored on this device only.'} closeLabel={zh ? '关闭' : 'Close'} locked={disabled} onClose={closeEditor}>
       {choosing ? <div className="backup-providers">
-        {[{name: zh ? '坚果云' : 'Jianguoyun', hint: 'dav.jianguoyun.com', url: 'https://dav.jianguoyun.com/dav/'}, {name: 'Nextcloud', hint: zh ? '自建云存储' : 'Self-hosted storage', url: ''}, {name: zh ? '群晖 NAS' : 'Synology NAS', hint: 'WebDAV Server', url: ''}, {name: zh ? '自定义 WebDAV' : 'Custom WebDAV', hint: zh ? '其他兼容 WebDAV 的服务' : 'Any compatible WebDAV service', url: ''}].map((provider) => <div key={provider.name} className="backup-provider-row"><Server size={18} /><div className="backup-copy"><p className="kv-row-label">{provider.name}</p><p className="kv-row-desc">{provider.hint}</p></div><Button size="sm" disabled={disabled || !values} onClick={() => { if (provider.url) edit('url', provider.url); setProviderName(provider.name); setChoosing(false) }}>{zh ? `选择${provider.name}` : `Choose ${provider.name}`}</Button></div>)}
+        {providers.map((item) => <div key={item.id} className="backup-provider-row"><Server size={18} /><div className="backup-copy"><p className="kv-row-label">{item.name}</p><p className="kv-row-desc">{item.hint}</p></div><Button size="sm" disabled={disabled || !values} onClick={() => {
+          if (item.id !== provider.id && values) setDraft({ url: item.url, username: '', password: '', directory: 'Kivio' })
+          else if (item.url && !values?.url) edit('url', item.url)
+          setSelectedProvider(item.id); setChoosing(false)
+        }}>{zh ? `选择${item.name}` : `Choose ${item.name}`}</Button></div>)}
       </div> : <>
         <Button size="sm" variant="ghost" disabled={disabled} onClick={() => setChoosing(true)}><ArrowLeft size={13} />{zh ? '选择服务' : 'Choose service'}</Button>
+        <p className="kv-row-desc mt-3">{provider.help}</p>
         {values && <div className="backup-connection">
       <div className="backup-fields">
-        <label className="min-w-0"><span className="kv-row-desc">{zh ? '服务器地址' : 'Server URL'}</span><Input aria-label={zh ? 'WebDAV 服务器地址' : 'WebDAV server URL'} value={values.url} onChange={(value) => edit('url', value)} placeholder="https://dav.example.com/" disabled={disabled} /></label>
+        <label className="min-w-0"><span className="kv-row-desc">{zh ? '服务器地址' : 'Server URL'}</span><Input aria-label={zh ? 'WebDAV 服务器地址' : 'WebDAV server URL'} value={values.url} onChange={(value) => edit('url', value)} placeholder={provider.placeholder} disabled={disabled} /></label>
         <label className="min-w-0"><span className="kv-row-desc">{zh ? '账号' : 'Username'}</span><Input aria-label={zh ? 'WebDAV 账号' : 'WebDAV username'} value={values.username} onChange={(value) => edit('username', value)} autoComplete="off" disabled={disabled} /></label>
-        <label className="min-w-0"><span className="kv-row-desc">{zh ? '密码 / 应用密码' : 'Password / app password'}</span><Input aria-label={zh ? 'WebDAV 密码' : 'WebDAV password'} type="password" value={values.password ?? ''} onChange={(value) => edit('password', value)} placeholder={config?.hasPassword ? (zh ? '已保存，未修改则保留' : 'Saved; leave unchanged to keep') : ''} autoComplete="new-password" disabled={disabled} /></label>
+        <label className="min-w-0"><span className="kv-row-desc">{zh ? '密码 / 应用密码' : 'Password / app password'}</span><Input aria-label={zh ? 'WebDAV 密码' : 'WebDAV password'} type="password" value={values.password ?? ''} onChange={(value) => edit('password', value)} placeholder={config?.hasPassword && values.password === null ? (zh ? '已保存，未修改则保留' : 'Saved; leave unchanged to keep') : ''} autoComplete="new-password" disabled={disabled} /></label>
         <label className="min-w-0"><span className="kv-row-desc">{zh ? '远程目录' : 'Remote directory'}</span><Input aria-label={zh ? 'WebDAV 远程目录' : 'WebDAV remote directory'} value={values.directory} onChange={(value) => edit('directory', value)} placeholder="Kivio" disabled={disabled} /></label>
       </div>
       <div className="flex flex-wrap items-center gap-2 py-3">
@@ -73,7 +92,7 @@ export function WebDavBackupSection({ controller, lang }: {
       </div>
         </div>}
         <div className="backup-note"><ShieldCheck size={16} /><span>{zh ? '备份包含未加密的密钥，请使用可信的 HTTPS 服务。' : 'Backups contain unencrypted secrets. Use a trusted HTTPS service.'}</span></div>
-        {dirty && <Button size="sm" variant="ghost" disabled={disabled} onClick={() => setDraft(null)}>{zh ? '放弃更改' : 'Discard changes'}</Button>}
+        {dirty && <Button size="sm" variant="ghost" disabled={disabled} onClick={() => { setDraft(null); setSelectedProvider(null) }}>{zh ? '放弃更改' : 'Discard changes'}</Button>}
       </>}
       {status}
     </BackupDialog>}

@@ -32,3 +32,16 @@
 恢复前会确认覆盖范围，默认不信任远程备份的执行权限。配置恢复沿用设置版本检查与导入流程，下载后先把本机当前配置保存到应用数据目录的 `.backup-webdav-recovery/`；完全恢复沿用校验、重启替换与旧数据副本机制。下载临时文件在恢复成功或失败后清理。远程删除需要确认，且无法撤销。
 
 WebDAV 配置单独保存在应用数据目录旁的 `<应用数据目录名>.webdav.json`，不纳入常规应用数据备份，完全恢复不会替换它。密码不回传到前端，未修改密码框时保留已保存值；主动清空后保存会清除密码。该配置文件与现有备份均含未加密凭据（Unix 下配置文件权限为 0600），请使用可信的 HTTPS 服务并保护本机账户。HTTPS 保护传输，不代表远程备份文件已加密。
+
+### 服务填写与兼容性边界
+
+- **坚果云**：地址 `https://dav.jianguoyun.com/dav/`，账号填写注册邮箱，密码使用「安全选项 → 第三方应用管理」生成的应用密码。官方当前说明默认单文件上限为 500M，单次列表最多返回 750 个文件和目录；Kivio 尚未实现其扩展分页，不保证超过该数量时列表完整。建议使用独立备份目录；大体积完全备份可先导出本地检查体积。[官方说明](https://help.jianguoyun.com/?p=2064)
+- **Nextcloud**：从文件设置复制个人 WebDAV 地址，形如 `https://cloud.example.com/remote.php/dav/files/USERNAME/`，使用应用密码；本流程针对个人文件地址，非公开分享链接。[文件协议说明](https://docs.nextcloud.com/server/stable/developer_manual/client_apis/WebDAV/basic.html)
+- **群晖**：启用 WebDAV Server，HTTPS 默认端口为 5006。服务器地址应包含已有、可读写的共享文件夹；证书必须可信且匹配域名。[连接排查](https://kb.synology.com/en-my/DSM/tutorial/How_to_fix_WebDAV_connection_issues)
+- **自定义服务**：需要支持前述方法，尤其是 MOVE（发布临时上传）与 DELETE（清理和删除）。不支持 MOVE 的服务当前不能完成上传，不降级为直接暴露未完成文件。
+
+切换服务会清空上一服务的地址、账号和密码；自建服务使用地址示例作为提示，不把示例当成真实服务器保存。已存在目录遇到 MKCOL 405/409 时，以 Depth=0 PROPFIND 验证同一地址确实为 collection 后复用；空的、不支持的文件大小属性不会使整个列表失败。409、413、429 分别提示目录/权限、文件大小与请求频率问题。
+
+### 参考实现核对（2026-10-16）
+
+核对 Cherry Studio `825b4d3` 的 `src/main/services/WebDav.ts` 和 LiveAgent `85029b5` 的 `crates/agent-gui/src-tauri/src/services/webdav.rs`：前者通过 webdav 库检查目录并上传，后者在 MKCOL 冲突后探测目录；两者的连接测试主要检查可访问性。Kivio 保留包含写入、MOVE、回读、列表和删除的连接测试，因此“测试成功”覆盖实际备份所需权限。源码比对与本地 HTTP 测试不等于真实坚果云、Nextcloud 或群晖账号验收。

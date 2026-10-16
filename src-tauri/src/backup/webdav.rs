@@ -214,12 +214,40 @@ impl Dav {
                 .send()
                 .await
                 .map_err(network_error)?;
-            if response.status() == StatusCode::METHOD_NOT_ALLOWED {
+            if matches!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT
+            ) && self.collection_exists(&url).await?
+            {
                 continue;
             }
             checked(response)?;
         }
         Ok(())
+    }
+    async fn collection_exists(&self, url: &Url) -> Result<bool, String> {
+        let response = self
+            .request("PROPFIND", url.clone())
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(r#"<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>"#)
+            .send()
+            .await
+            .map_err(network_error)?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        let bytes = bounded_bytes(checked(response)?, 8 * 1024 * 1024).await?;
+        Ok(parse_multistatus(&bytes)?
+            .response
+            .into_iter()
+            .any(|entry| {
+                url.join(&entry.href).is_ok_and(|href| href == *url)
+                    && entry.propstat.iter().any(|props| {
+                        props.status.split_whitespace().nth(1) == Some("200")
+                            && props.prop.resourcetype.collection.is_some()
+                    })
+            }))
     }
     async fn delete(&self, name: &str) -> Result<(), String> {
         checked(
@@ -313,6 +341,9 @@ fn checked(response: Response) -> Result<Response, String> {
     let hint = match status.as_u16() {
         401 | 403 => "认证或权限不足 / Check credentials and permissions",
         404 => "远程文件或目录不存在 / File or directory not found",
+        409 => "目录冲突；请先在服务端创建目标目录，并确认上级目录与写入权限 / Create the directory on the server and check its parent and write permissions",
+        413 => "备份超过服务器单文件大小限制 / Backup exceeds the server's file size limit",
+        429 => "请求过于频繁，请稍后重试 / Too many requests; try again later",
         405 | 501 => "服务器不支持此 WebDAV 操作 / Unsupported WebDAV operation",
         507 => "远程存储空间不足 / Remote storage is full",
         300..=399 => "请填写重定向后的最终地址 / Use the final URL (redirect refused)",
@@ -365,7 +396,7 @@ struct PropStat {
 #[derive(Deserialize)]
 struct Properties {
     #[serde(default)]
-    getcontentlength: Option<u64>,
+    getcontentlength: Option<String>,
     #[serde(default)]
     getlastmodified: String,
     #[serde(default)]
@@ -377,7 +408,7 @@ struct ResourceType {
 }
 #[derive(Deserialize)]
 struct Collection {}
-fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, String> {
+fn parse_multistatus(bytes: &[u8]) -> Result<Listing, String> {
     let xml = std::str::from_utf8(bytes).map_err(err)?;
     // Serde ignores root names, so a successful HTTP login page must not look like an empty directory.
     let mut reader = quick_xml::Reader::from_str(xml);
@@ -395,8 +426,10 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
         }
     }
 
-    let listing: Listing =
-        quick_xml::de::from_str(xml).map_err(|e| format!("Invalid WebDAV listing: {e}"))?;
+    quick_xml::de::from_str(xml).map_err(|e| format!("Invalid WebDAV listing: {e}"))
+}
+fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, String> {
+    let listing = parse_multistatus(bytes)?;
     let mut results = BTreeMap::new();
     for entry in listing.response {
         let Ok(url) = directory.join(&entry.href) else {
@@ -421,7 +454,11 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
             {
                 continue;
             }
-            if let Some(size) = props.prop.getcontentlength {
+            if let Some(size) = props
+                .prop
+                .getcontentlength
+                .and_then(|value| value.trim().parse::<u64>().ok())
+            {
                 results.insert(
                     name.clone(),
                     WebDavBackup {
@@ -675,6 +712,7 @@ mod tests {
         );
         let (url, thread) = server(vec![
             ("MKCOL", "/Kivio/", 405, "".into()),
+            ("PROPFIND", "/Kivio/", 207, r#"<multistatus xmlns="DAV:"><response><href>/Kivio/</href><propstat><prop><resourcetype><collection/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>"#.into()),
             (
                 "PUT",
                 "/Kivio/kivio-configuration-20261016-test.json.partial",
@@ -714,7 +752,7 @@ mod tests {
         dav.download(&files[0].name, &target).await.unwrap();
         assert_eq!(std::fs::read(target).unwrap(), b"backup");
         dav.delete(name).await.unwrap();
-        assert_eq!(thread.join().unwrap()[1], b"backup");
+        assert_eq!(thread.join().unwrap()[2], b"backup");
     }
     #[tokio::test]
     async fn failed_publish_cleans_partial_file_and_reports_failure() {
@@ -787,6 +825,32 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn listing_accepts_empty_unsupported_properties_on_collections() {
+        let xml = br#"<d:multistatus xmlns:d="DAV:">
+          <d:response><d:href>/Kivio/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><d:getcontentlength/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
+          <d:response><d:href>/Kivio/kivio-full-ok.kivio</d:href><d:propstat><d:prop><d:getcontentlength>42</d:getcontentlength><d:getlastmodified>Fri, 16 Oct 2026 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+        </d:multistatus>"#;
+        let files = parse_listing(xml, &Url::parse("https://dav.test/Kivio/").unwrap()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].size, 42);
+    }
+
+    #[tokio::test]
+    async fn conflicting_mkcol_can_reuse_a_verified_existing_collection() {
+        let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/Kivio/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+        let (url, thread) = server(vec![
+            ("MKCOL", "/Kivio/", 409, "".into()),
+            ("PROPFIND", "/Kivio/", 207, xml.into()),
+        ]);
+        Dav::new(&config(url))
+            .unwrap()
+            .ensure_directory()
+            .await
+            .unwrap();
+        thread.join().unwrap();
+    }
+
     #[test]
     fn saved_password_is_preserved_without_exposing_it_and_explicit_clear_works() {
         let input = |password| WebDavConfigInput {
