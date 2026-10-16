@@ -1300,13 +1300,10 @@ mod tests {
 
     #[test]
     fn reasoning_efforts_resolve_from_db_family_and_default() {
-        // 模型库显式列表：DeepSeek V4 含 xhigh+max（含用户的代理别名变体，靠前缀匹配）。
+        // 原生档位独立于兼容映射：DeepSeek 的 xhigh 映射到 high，不是另一档。
         // 库里能查到时 provider 无关，传 None。
         let ds = reasoning_efforts_for_model(None, "DeepSeek-V4-Flash");
-        assert!(
-            ds.contains(&"max".to_string()) && ds.contains(&"xhigh".to_string()),
-            "{ds:?}"
-        );
+        assert_eq!(ds, vec!["low", "high", "max"]);
         // GPT-5：有 xhigh、无 max（max 是 5.6 一代才加的）。
         let gpt = reasoning_efforts_for_model(None, "gpt-5.5");
         assert!(

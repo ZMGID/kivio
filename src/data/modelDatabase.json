@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "2026-10-13.3",
+    "version": "2026-10-16.1",
     "schemaVersion": 1,
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
@@ -126,7 +126,16 @@
       "https://models.dev/api.json",
       "https://openrouter.ai/api/v1/models?output_modalities=all",
       "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-      "https://www.mongodb.com/docs/voyageai/models/"
+      "https://www.mongodb.com/docs/voyageai/models/",
+      "https://help.aliyun.com/en/model-studio/qwen-api-via-openai-chat-completions",
+      "https://huggingface.co/Qwen/Qwen3.8-Flash-Next",
+      "https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored/blob/main/chat_template.jinja",
+      "https://developers.openai.com/api/docs/models/gpt-5.5",
+      "https://developers.openai.com/api/docs/models/gpt-5.5-pro",
+      "https://developers.openai.com/api/docs/models/gpt-5.6",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
     ],
     "importSnapshot": {
       "date": "2026-10-13",
@@ -1550,7 +1559,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -1558,7 +1566,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash"
+    "aliasOf": "deepseek-v4-flash",
+    "thinkingOff": true
   },
   "accounts/fireworks/models/deepseek-v4-flash-0731": {
     "displayName": "accounts/fireworks/models/deepseek-v4-flash-0731",
@@ -1599,7 +1608,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -1607,7 +1615,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash-vision-exp"
+    "aliasOf": "deepseek-v4-flash-vision-exp",
+    "thinkingOff": true
   },
   "accounts/fireworks/models/deepseek-v4-pro": {
     "displayName": "DeepSeek V4 Pro",
@@ -1631,7 +1640,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -1639,7 +1647,8 @@
       "output": 3.96,
       "cachedInput": 0.044
     },
-    "aliasOf": "deepseek-v4-pro"
+    "aliasOf": "deepseek-v4-pro",
+    "thinkingOff": true
   },
   "accounts/fireworks/models/deepseek-v4-pro-0813": {
     "displayName": "accounts/fireworks/models/deepseek-v4-pro-0813",
@@ -2174,7 +2183,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "accounts/fireworks/models/glm-5p3-flash": {
     "displayName": "GLM-5.3 Flash",
@@ -2217,7 +2227,8 @@
       "output": 0.5,
       "cachedInput": 0.03
     },
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "accounts/fireworks/models/gpt-oss-120b": {
     "displayName": "GPT OSS 120B",
@@ -4525,7 +4536,11 @@
     },
     "releaseDate": "2026-08-03",
     "canonicalId": "alibaba/qwen3.8-max",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 2,
       "output": 6,
@@ -4914,7 +4929,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "accounts/fireworks/routers/glm-5p3-flash-us": {
     "displayName": "accounts/fireworks/routers/glm-5p3-flash-us",
@@ -4986,7 +5002,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "accounts/fireworks/routers/glm-flash-latest": {
     "displayName": "GLM-5.3 Flash",
@@ -5029,7 +5046,8 @@
       "output": 0.5,
       "cachedInput": 0.03
     },
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "accounts/fireworks/routers/glm-latest": {
     "displayName": "GLM-5.3",
@@ -5069,7 +5087,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "accounts/fireworks/routers/kimi-fast-latest": {
     "displayName": "Kimi K3",
@@ -5314,7 +5333,11 @@
     },
     "releaseDate": "2026-08-03",
     "canonicalId": "alibaba/qwen3.8-max",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 2,
       "output": 6,
@@ -7296,7 +7319,11 @@
     },
     "releaseDate": "2026-08-14",
     "canonicalId": "alibaba/qwen3.8-27b",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 0.425,
       "output": 2.55,
@@ -7333,7 +7360,11 @@
     },
     "releaseDate": "2026-08-26",
     "canonicalId": "alibaba/qwen3.8-flash",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 0.16,
       "output": 0.47,
@@ -7350,7 +7381,8 @@
       "audioInput": false,
       "functionCalling": true,
       "reasoning": true,
-      "structuredOutput": true
+      "structuredOutput": true,
+      "streaming": true
     },
     "modelType": "chat",
     "source": {
@@ -7369,7 +7401,12 @@
       ]
     },
     "releaseDate": "2026-08-27",
-    "canonicalId": "alibaba/qwen3.8-flash-next"
+    "canonicalId": "alibaba/qwen3.8-flash-next",
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ]
   },
   "alibaba/qwen3.8-max": {
     "displayName": "Qwen3.8 Max",
@@ -7401,7 +7438,11 @@
     },
     "releaseDate": "2026-08-03",
     "canonicalId": "alibaba/qwen3.8-max",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 2,
       "output": 6,
@@ -7447,7 +7488,6 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
       "xhigh"
     ],
     "aliasOf": "qwen3.8-max-0902"
@@ -7545,9 +7585,7 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
-      "xhigh",
-      "max"
+      "xhigh"
     ],
     "pricing": {
       "input": 0.15,
@@ -17241,7 +17279,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -17249,7 +17286,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash"
+    "aliasOf": "deepseek-v4-flash",
+    "thinkingOff": true
   },
   "deepseek-ai/deepseek-v4-flash-0731": {
     "displayName": "DeepSeek V4 Flash 0731",
@@ -17312,7 +17350,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -17320,7 +17357,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash-vision-exp"
+    "aliasOf": "deepseek-v4-flash-vision-exp",
+    "thinkingOff": true
   },
   "deepseek-ai/deepseek-v4-pro": {
     "displayName": "DeepSeek V4 Pro",
@@ -17353,7 +17391,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -17361,7 +17398,8 @@
       "output": 3.96,
       "cachedInput": 0.044
     },
-    "aliasOf": "deepseek-v4-pro"
+    "aliasOf": "deepseek-v4-pro",
+    "thinkingOff": true
   },
   "deepseek-ai/deepseek-v4-pro-0813": {
     "displayName": "DeepSeek V4 Pro 0813",
@@ -17657,14 +17695,14 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
       "input": 0.3,
       "output": 1.2,
       "cachedInput": 0.006
-    }
+    },
+    "thinkingOff": true
   },
   "deepseek-flash-latest": {
     "displayName": "DeepSeek Flash Latest",
@@ -18263,14 +18301,14 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
       "input": 0.3,
       "output": 1.2,
       "cachedInput": 0.006
-    }
+    },
+    "thinkingOff": true
   },
   "deepseek-v4-flash-0423": {
     "displayName": "DeepSeek V4 Flash 0423",
@@ -18330,6 +18368,7 @@
     "releaseDate": "2026-07-31",
     "canonicalId": "deepseek/deepseek-v4-flash-0731",
     "reasoningEfforts": [
+      "low",
       "high",
       "max"
     ],
@@ -18337,7 +18376,8 @@
       "input": 0.2,
       "output": 0.4,
       "cachedInput": 0.04
-    }
+    },
+    "thinkingOff": true
   },
   "deepseek-v4-flash-free": {
     "displayName": "DeepSeek V4 Flash Free",
@@ -18414,14 +18454,14 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
       "input": 0.3,
       "output": 1.2,
       "cachedInput": 0.006
-    }
+    },
+    "thinkingOff": true
   },
   "deepseek-v4-flash:0731": {
     "displayName": "DeepSeek V4.1 Flash (Legacy Alias)",
@@ -18454,7 +18494,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -18462,7 +18501,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash"
+    "aliasOf": "deepseek-v4-flash",
+    "thinkingOff": true
   },
   "deepseek-v4-pro": {
     "displayName": "DeepSeek V4 Pro",
@@ -18478,14 +18518,14 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
       "input": 1.32,
       "output": 3.96,
       "cachedInput": 0.044
-    }
+    },
+    "thinkingOff": true
   },
   "deepseek-v4-pro-0423": {
     "displayName": "DeepSeek V4 Pro 0423",
@@ -18531,7 +18571,13 @@
       "provider": "fireworks_ai",
       "sourceId": "fireworks_ai/deepseek-v4-pro-0813"
     },
-    "maxOutput": 131072
+    "maxOutput": 131072,
+    "reasoningEfforts": [
+      "low",
+      "high",
+      "max"
+    ],
+    "thinkingOff": true
   },
   "deepseek-v4-pro-ga-260813": {
     "displayName": "DeepSeek V4 Pro 0813",
@@ -18604,7 +18650,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -18612,7 +18657,8 @@
       "output": 3.96,
       "cachedInput": 0.044
     },
-    "aliasOf": "deepseek-v4-pro"
+    "aliasOf": "deepseek-v4-pro",
+    "thinkingOff": true
   },
   "deepseek-v4.1-flash": {
     "displayName": "DeepSeek V4.1 Flash",
@@ -18647,7 +18693,8 @@
       "low",
       "high",
       "max"
-    ]
+    ],
+    "thinkingOff": true
   },
   "deepseek-v4p1-flash": {
     "displayName": "deepseek-v4p1-flash",
@@ -19388,7 +19435,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -19396,7 +19442,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash"
+    "aliasOf": "deepseek-v4-flash",
+    "thinkingOff": true
   },
   "deepseek/deepseek-v4-flash-0423": {
     "displayName": "DeepSeek V4 Flash 0423",
@@ -19461,7 +19508,13 @@
     "pricingSource": {
       "provider": "openrouter",
       "url": "https://openrouter.ai/api/v1/models?output_modalities=all"
-    }
+    },
+    "reasoningEfforts": [
+      "low",
+      "high",
+      "max"
+    ],
+    "thinkingOff": true
   },
   "deepseek/deepseek-v4-flash-vision-exp": {
     "displayName": "DeepSeek V4.1 Flash (Legacy Vision Alias)",
@@ -19494,7 +19547,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -19502,7 +19554,8 @@
       "output": 1.2,
       "cachedInput": 0.006
     },
-    "aliasOf": "deepseek-v4-flash-vision-exp"
+    "aliasOf": "deepseek-v4-flash-vision-exp",
+    "thinkingOff": true
   },
   "deepseek/deepseek-v4-pro": {
     "displayName": "DeepSeek V4 Pro",
@@ -19534,7 +19587,6 @@
     "reasoningEfforts": [
       "low",
       "high",
-      "xhigh",
       "max"
     ],
     "pricing": {
@@ -19542,7 +19594,8 @@
       "output": 3.96,
       "cachedInput": 0.044
     },
-    "aliasOf": "deepseek-v4-pro"
+    "aliasOf": "deepseek-v4-pro",
+    "thinkingOff": true
   },
   "deepseek/deepseek-v4-pro-0423": {
     "displayName": "DeepSeek V4 Pro 0423",
@@ -19645,7 +19698,13 @@
     "pricingSource": {
       "provider": "openrouter",
       "url": "https://openrouter.ai/api/v1/models?output_modalities=all"
-    }
+    },
+    "reasoningEfforts": [
+      "low",
+      "high",
+      "max"
+    ],
+    "thinkingOff": true
   },
   "deepseek/deepseek-v4.1-flash:batch": {
     "displayName": "DeepSeek: DeepSeek V4.1 Flash (batch)",
@@ -21951,8 +22010,8 @@
       "cachedInput": 0.125
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 7e-7,
-      "output_cost_per_audio_token": 0.00002
+      "input_cost_per_audio_token": 7e-07,
+      "output_cost_per_audio_token": 2e-05
     }
   },
   "gemini-3-flash-preview": {
@@ -22420,7 +22479,7 @@
       "output": 0
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.0000065
+      "input_cost_per_audio_token": 6.5e-06
     }
   },
   "gemini-exp-1114": {
@@ -22591,7 +22650,7 @@
       "output": 9
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.0000015
+      "input_cost_per_audio_token": 1.5e-06
     }
   },
   "gemini-omni-flash-preview": {
@@ -22705,7 +22764,7 @@
       "cachedInput": 0.1
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.000001
+      "input_cost_per_audio_token": 1e-06
     }
   },
   "gemini-robotics-er-2-streaming-preview": {
@@ -22731,7 +22790,7 @@
       "output": 5
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.000001
+      "input_cost_per_audio_token": 1e-06
     }
   },
   "gemma-2b-it": {
@@ -23701,7 +23760,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.2"
+    "aliasOf": "glm-5.2",
+    "thinkingOff": true
   },
   "glm-5-3-flash-260828": {
     "displayName": "GLM-5.3 Flash",
@@ -23746,7 +23806,8 @@
       "cachedInput": 0.03
     },
     "temperature": 1,
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "glm-5-code": {
     "displayName": "glm-5-code",
@@ -23798,16 +23859,13 @@
       "streaming": true,
       "webSearch": false
     },
-    "reasoningEfforts": [
-      "low",
-      "high",
-      "max"
-    ],
+    "reasoningEfforts": [],
     "pricing": {
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
-    }
+    },
+    "thinkingOff": true
   },
   "glm-5.2": {
     "displayName": "GLM-5.2",
@@ -23829,7 +23887,8 @@
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
-    }
+    },
+    "thinkingOff": true
   },
   "glm-5.3": {
     "displayName": "GLM-5.3",
@@ -23851,7 +23910,8 @@
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
-    }
+    },
+    "thinkingOff": false
   },
   "glm-5.3-flash": {
     "displayName": "GLM-5.3 Flash",
@@ -23875,7 +23935,8 @@
       "input": 0.15,
       "output": 0.5,
       "cachedInput": 0.03
-    }
+    },
+    "thinkingOff": false
   },
   "glm-5.3-flashx": {
     "displayName": "GLM-5.3 FlashX",
@@ -23899,7 +23960,8 @@
       "input": 0.37,
       "output": 1.25,
       "cachedInput": 0.075
-    }
+    },
+    "thinkingOff": false
   },
   "glm-5p1": {
     "displayName": "glm-5p1",
@@ -24122,7 +24184,8 @@
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
-    }
+    },
+    "thinkingOff": false
   },
   "glm-flash-latest": {
     "displayName": "GLM-5.3 Flash",
@@ -24165,7 +24228,8 @@
       "input": 0.15,
       "output": 0.5,
       "cachedInput": 0.03
-    }
+    },
+    "thinkingOff": false
   },
   "glm-image": {
     "displayName": "GLM Image",
@@ -24218,7 +24282,8 @@
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
-    }
+    },
+    "thinkingOff": false
   },
   "google-paligemma": {
     "displayName": "paligemma",
@@ -26994,8 +27059,8 @@
       "output": 10
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.00004,
-      "output_cost_per_audio_token": 0.00008
+      "input_cost_per_audio_token": 4e-05,
+      "output_cost_per_audio_token": 8e-05
     }
   },
   "gpt-4o-audio-preview-2025-06-03": {
@@ -27019,8 +27084,8 @@
       "output": 10
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.00004,
-      "output_cost_per_audio_token": 0.00008
+      "input_cost_per_audio_token": 4e-05,
+      "output_cost_per_audio_token": 8e-05
     }
   },
   "gpt-4o-mini": {
@@ -27082,8 +27147,8 @@
       "output": 0.6
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.00001,
-      "output_cost_per_audio_token": 0.00002
+      "input_cost_per_audio_token": 1e-05,
+      "output_cost_per_audio_token": 2e-05
     }
   },
   "gpt-4o-mini-search-preview": {
@@ -27780,7 +27845,7 @@
   },
   "gpt-5.5": {
     "displayName": "GPT-5.5",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27799,7 +27864,8 @@
       "input": 5,
       "output": 30,
       "cachedInput": 0.5
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-5.5-2026-04-23": {
     "displayName": "gpt-5.5-2026-04-23",
@@ -27822,7 +27888,8 @@
       "input": 5,
       "output": 30,
       "cachedInput": 0.5
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-5.5-instant": {
     "displayName": "GPT-5.5 Instant",
@@ -27857,7 +27924,7 @@
   },
   "gpt-5.5-pro": {
     "displayName": "GPT-5.5 Pro",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27867,7 +27934,6 @@
       "webSearch": true
     },
     "reasoningEfforts": [
-      "low",
       "medium",
       "high",
       "xhigh"
@@ -27875,7 +27941,8 @@
     "pricing": {
       "input": 30,
       "output": 180
-    }
+    },
+    "thinkingOff": false
   },
   "gpt-5.5-pro-2026-04-23": {
     "displayName": "gpt-5.5-pro-2026-04-23",
@@ -27897,11 +27964,17 @@
     "pricing": {
       "input": 30,
       "output": 180
-    }
+    },
+    "thinkingOff": false,
+    "reasoningEfforts": [
+      "medium",
+      "high",
+      "xhigh"
+    ]
   },
   "gpt-5.6": {
     "displayName": "GPT-5.6",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27921,11 +27994,12 @@
       "input": 4,
       "output": 20,
       "cachedInput": 0.4
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-5.6-cyber": {
     "displayName": "GPT-5.6 Cyber",
-    "contextWindow": 256000,
+    "contextWindow": 400000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27949,7 +28023,7 @@
   },
   "gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27969,11 +28043,12 @@
       "input": 0.2,
       "output": 1.2,
       "cachedInput": 0.02
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-5.6-sol": {
     "displayName": "GPT-5.6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -27993,11 +28068,12 @@
       "input": 4,
       "output": 20,
       "cachedInput": 0.4
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -28017,11 +28093,12 @@
       "input": 2,
       "output": 12,
       "cachedInput": 0.2
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-6-astra": {
     "displayName": "GPT-6 Astra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -28041,7 +28118,8 @@
       "input": 10,
       "output": 50,
       "cachedInput": 1
-    }
+    },
+    "thinkingOff": false
   },
   "gpt-6-astra-fast": {
     "displayName": "GPT-6 Astra (Fast)",
@@ -28076,7 +28154,7 @@
   },
   "gpt-6-luna": {
     "displayName": "GPT-6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -28096,11 +28174,12 @@
       "input": 0.1,
       "output": 0.5,
       "cachedInput": 0.01
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-6-sol": {
     "displayName": "GPT-6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -28120,11 +28199,12 @@
       "input": 2,
       "output": 10,
       "cachedInput": 0.2
-    }
+    },
+    "thinkingOff": true
   },
   "gpt-6.1-sol": {
     "displayName": "GPT-6.1 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "maxOutput": 128000,
     "capabilities": {
       "vision": true,
@@ -28144,7 +28224,8 @@
       "input": 2,
       "output": 10,
       "cachedInput": 0.1
-    }
+    },
+    "thinkingOff": false
   },
   "gpt-audio": {
     "displayName": "gpt-audio",
@@ -28170,8 +28251,8 @@
       "output": 10
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.000032,
-      "output_cost_per_audio_token": 0.000064
+      "input_cost_per_audio_token": 3.2e-05,
+      "output_cost_per_audio_token": 6.4e-05
     }
   },
   "gpt-audio-1.5": {
@@ -28198,8 +28279,8 @@
       "output": 10
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.000032,
-      "output_cost_per_audio_token": 0.000064
+      "input_cost_per_audio_token": 3.2e-05,
+      "output_cost_per_audio_token": 6.4e-05
     }
   },
   "gpt-audio-2025-08-28": {
@@ -28226,8 +28307,8 @@
       "output": 10
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.000032,
-      "output_cost_per_audio_token": 0.000064
+      "input_cost_per_audio_token": 3.2e-05,
+      "output_cost_per_audio_token": 6.4e-05
     }
   },
   "gpt-audio-mini": {
@@ -28254,8 +28335,8 @@
       "output": 2.4
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.00001,
-      "output_cost_per_audio_token": 0.00002
+      "input_cost_per_audio_token": 1e-05,
+      "output_cost_per_audio_token": 2e-05
     }
   },
   "gpt-audio-mini-2025-12-15": {
@@ -28282,13 +28363,13 @@
       "output": 2.4
     },
     "unitPricing": {
-      "input_cost_per_audio_token": 0.00001,
-      "output_cost_per_audio_token": 0.00002
+      "input_cost_per_audio_token": 1e-05,
+      "output_cost_per_audio_token": 2e-05
     }
   },
   "gpt-daybreak-blue-latest": {
     "displayName": "GPT-5.6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -28328,11 +28409,12 @@
       "output": 20,
       "cachedInput": 0.4
     },
-    "aliasOf": "gpt-5.6-sol"
+    "aliasOf": "gpt-5.6-sol",
+    "thinkingOff": true
   },
   "gpt-daybreak-red-latest": {
     "displayName": "GPT-5.6 Cyber",
-    "contextWindow": 256000,
+    "contextWindow": 400000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -31267,7 +31349,7 @@
   },
   "in.openai.gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -31307,11 +31389,12 @@
       "output": 1.2,
       "cachedInput": 0.02
     },
-    "aliasOf": "gpt-5.6-luna"
+    "aliasOf": "gpt-5.6-luna",
+    "thinkingOff": true
   },
   "in.openai.gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -31351,7 +31434,8 @@
       "output": 12,
       "cachedInput": 0.2
     },
-    "aliasOf": "gpt-5.6-terra"
+    "aliasOf": "gpt-5.6-terra",
+    "thinkingOff": true
   },
   "inception/mercury-2": {
     "displayName": "Mercury 2",
@@ -48650,7 +48734,7 @@
   },
   "openai.gpt-5.5": {
     "displayName": "GPT-5.5",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48689,11 +48773,12 @@
       "output": 30,
       "cachedInput": 0.5
     },
-    "aliasOf": "gpt-5.5"
+    "aliasOf": "gpt-5.5",
+    "thinkingOff": true
   },
   "openai.gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48733,11 +48818,12 @@
       "output": 1.2,
       "cachedInput": 0.02
     },
-    "aliasOf": "gpt-5.6-luna"
+    "aliasOf": "gpt-5.6-luna",
+    "thinkingOff": true
   },
   "openai.gpt-5.6-sol": {
     "displayName": "GPT-5.6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48777,11 +48863,12 @@
       "output": 20,
       "cachedInput": 0.4
     },
-    "aliasOf": "gpt-5.6-sol"
+    "aliasOf": "gpt-5.6-sol",
+    "thinkingOff": true
   },
   "openai.gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48821,11 +48908,12 @@
       "output": 12,
       "cachedInput": 0.2
     },
-    "aliasOf": "gpt-5.6-terra"
+    "aliasOf": "gpt-5.6-terra",
+    "thinkingOff": true
   },
   "openai.gpt-6-astra": {
     "displayName": "GPT-6 Astra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48865,11 +48953,12 @@
       "output": 50,
       "cachedInput": 1
     },
-    "aliasOf": "gpt-6-astra"
+    "aliasOf": "gpt-6-astra",
+    "thinkingOff": false
   },
   "openai.gpt-6-luna": {
     "displayName": "GPT-6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48909,11 +48998,12 @@
       "output": 0.5,
       "cachedInput": 0.01
     },
-    "aliasOf": "gpt-6-luna"
+    "aliasOf": "gpt-6-luna",
+    "thinkingOff": true
   },
   "openai.gpt-6-sol": {
     "displayName": "GPT-6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48953,11 +49043,12 @@
       "output": 10,
       "cachedInput": 0.2
     },
-    "aliasOf": "gpt-6-sol"
+    "aliasOf": "gpt-6-sol",
+    "thinkingOff": true
   },
   "openai.gpt-6.1-sol": {
     "displayName": "GPT-6.1 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -48997,7 +49088,8 @@
       "output": 10,
       "cachedInput": 0.1
     },
-    "aliasOf": "gpt-6.1-sol"
+    "aliasOf": "gpt-6.1-sol",
+    "thinkingOff": false
   },
   "openai.gpt-oss-120b": {
     "displayName": "gpt-oss-120b",
@@ -50769,7 +50861,7 @@
   },
   "openai/gpt-5.5": {
     "displayName": "GPT-5.5",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -50807,7 +50899,8 @@
       "output": 30,
       "cachedInput": 0.5
     },
-    "aliasOf": "gpt-5.5"
+    "aliasOf": "gpt-5.5",
+    "thinkingOff": true
   },
   "openai/gpt-5.5-instant": {
     "displayName": "GPT-5.5 Instant",
@@ -50841,7 +50934,7 @@
   },
   "openai/gpt-5.5-pro": {
     "displayName": "GPT-5.5 Pro",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -50869,7 +50962,6 @@
     "releaseDate": "2026-04-23",
     "canonicalId": "openai/gpt-5.5-pro",
     "reasoningEfforts": [
-      "low",
       "medium",
       "high",
       "xhigh"
@@ -50878,7 +50970,8 @@
       "input": 30,
       "output": 180
     },
-    "aliasOf": "gpt-5.5-pro"
+    "aliasOf": "gpt-5.5-pro",
+    "thinkingOff": false
   },
   "openai/gpt-5.5-pro:batch": {
     "displayName": "GPT-5.5 Pro",
@@ -50916,12 +51009,12 @@
       "output": 90
     },
     "reasoningEfforts": [
-      "low",
       "medium",
       "high",
       "xhigh"
     ],
-    "variantOf": "gpt-5.5-pro"
+    "variantOf": "gpt-5.5-pro",
+    "thinkingOff": false
   },
   "openai/gpt-5.5:batch": {
     "displayName": "GPT-5.5",
@@ -50965,11 +51058,12 @@
       "high",
       "xhigh"
     ],
-    "variantOf": "gpt-5.5"
+    "variantOf": "gpt-5.5",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-cyber": {
     "displayName": "GPT-5.6 Cyber",
-    "contextWindow": 256000,
+    "contextWindow": 400000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51011,7 +51105,7 @@
   },
   "openai/gpt-5.6-luna": {
     "displayName": "GPT-5.6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51050,7 +51144,8 @@
       "output": 1.2,
       "cachedInput": 0.02
     },
-    "aliasOf": "gpt-5.6-luna"
+    "aliasOf": "gpt-5.6-luna",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-luna-pro": {
     "displayName": "OpenAI: GPT-5.6 Luna Pro",
@@ -51177,11 +51272,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-5.6-luna"
+    "variantOf": "gpt-5.6-luna",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-sol": {
     "displayName": "GPT-5.6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51220,7 +51316,8 @@
       "output": 20,
       "cachedInput": 0.4
     },
-    "aliasOf": "gpt-5.6-sol"
+    "aliasOf": "gpt-5.6-sol",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-sol-pro": {
     "displayName": "OpenAI: GPT-5.6 Sol Pro",
@@ -51347,11 +51444,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-5.6-sol"
+    "variantOf": "gpt-5.6-sol",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-terra": {
     "displayName": "GPT-5.6 Terra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51390,7 +51488,8 @@
       "output": 12,
       "cachedInput": 0.2
     },
-    "aliasOf": "gpt-5.6-terra"
+    "aliasOf": "gpt-5.6-terra",
+    "thinkingOff": true
   },
   "openai/gpt-5.6-terra-pro": {
     "displayName": "OpenAI: GPT-5.6 Terra Pro",
@@ -51517,11 +51616,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-5.6-terra"
+    "variantOf": "gpt-5.6-terra",
+    "thinkingOff": true
   },
   "openai/gpt-6-astra": {
     "displayName": "GPT-6 Astra",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51560,7 +51660,8 @@
       "output": 50,
       "cachedInput": 1
     },
-    "aliasOf": "gpt-6-astra"
+    "aliasOf": "gpt-6-astra",
+    "thinkingOff": false
   },
   "openai/gpt-6-astra-fast": {
     "displayName": "GPT-6 Astra (Fast)",
@@ -51717,11 +51818,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-6-astra"
+    "variantOf": "gpt-6-astra",
+    "thinkingOff": false
   },
   "openai/gpt-6-luna": {
     "displayName": "GPT-6 Luna",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51760,7 +51862,8 @@
       "output": 0.5,
       "cachedInput": 0.01
     },
-    "aliasOf": "gpt-6-luna"
+    "aliasOf": "gpt-6-luna",
+    "thinkingOff": true
   },
   "openai/gpt-6-luna-pro": {
     "displayName": "OpenAI: GPT-6 Luna Pro",
@@ -51887,11 +51990,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-6-luna"
+    "variantOf": "gpt-6-luna",
+    "thinkingOff": true
   },
   "openai/gpt-6-sol": {
     "displayName": "GPT-6 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -51930,7 +52034,8 @@
       "output": 10,
       "cachedInput": 0.2
     },
-    "aliasOf": "gpt-6-sol"
+    "aliasOf": "gpt-6-sol",
+    "thinkingOff": true
   },
   "openai/gpt-6-sol-pro": {
     "displayName": "OpenAI: GPT-6 Sol Pro",
@@ -52057,11 +52162,12 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-6-sol"
+    "variantOf": "gpt-6-sol",
+    "thinkingOff": true
   },
   "openai/gpt-6.1-sol": {
     "displayName": "GPT-6.1 Sol",
-    "contextWindow": 256000,
+    "contextWindow": 1050000,
     "capabilities": {
       "vision": true,
       "functionCalling": true,
@@ -52100,7 +52206,8 @@
       "output": 10,
       "cachedInput": 0.1
     },
-    "aliasOf": "gpt-6.1-sol"
+    "aliasOf": "gpt-6.1-sol",
+    "thinkingOff": false
   },
   "openai/gpt-6.1-sol-pro": {
     "displayName": "GPT-6.1 Sol Pro (OpenRouter)",
@@ -52212,7 +52319,8 @@
       "xhigh",
       "max"
     ],
-    "variantOf": "gpt-6.1-sol"
+    "variantOf": "gpt-6.1-sol",
+    "thinkingOff": false
   },
   "openai/gpt-audio": {
     "displayName": "OpenAI: GPT Audio",
@@ -55200,17 +55308,14 @@
       ]
     },
     "releaseDate": "2026-04-08",
-    "reasoningEfforts": [
-      "low",
-      "high",
-      "max"
-    ],
+    "reasoningEfforts": [],
     "pricing": {
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.1"
+    "aliasOf": "glm-5.1",
+    "thinkingOff": true
   },
   "pythia-12b": {
     "displayName": "accounts/fireworks/models/pythia-12b",
@@ -55358,7 +55463,11 @@
     },
     "releaseDate": "2026-08-14",
     "canonicalId": "alibaba/qwen3.8-27b",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 0.425,
       "output": 2.55,
@@ -55820,7 +55929,11 @@
     },
     "releaseDate": "2026-08-03",
     "canonicalId": "alibaba/qwen3.8-max",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "aliasOf": "qwen3.8-max",
     "pricing": {
       "input": 2,
@@ -58624,7 +58737,11 @@
       "output": 2.55,
       "cachedInput": 0.085
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "aliasOf": "qwen3.8-27b"
   },
   "qwen/qwen3.8-flash": {
@@ -58660,7 +58777,11 @@
       "output": 0.47,
       "cachedInput": 0.016
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "aliasOf": "qwen3.8-flash"
   },
   "qwen/qwen3.8-max": {
@@ -58694,7 +58815,11 @@
     },
     "releaseDate": "2026-08-03",
     "canonicalId": "alibaba/qwen3.8-max",
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 2,
       "output": 6,
@@ -58738,7 +58863,6 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
       "xhigh"
     ],
     "aliasOf": "qwen3.8-max-0902"
@@ -58822,9 +58946,7 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
-      "xhigh",
-      "max"
+      "xhigh"
     ],
     "aliasOf": "qwen3.8-omni-flash"
   },
@@ -61523,7 +61645,11 @@
       "streaming": true,
       "webSearch": false
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 0.425,
       "output": 2.55,
@@ -61541,7 +61667,11 @@
       "streaming": true,
       "webSearch": false
     },
-    "reasoningEfforts": []
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ]
   },
   "qwen3.8-flash": {
     "displayName": "Qwen3.8 Flash",
@@ -61554,7 +61684,11 @@
       "streaming": true,
       "webSearch": false
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 0.16,
       "output": 0.47,
@@ -61570,7 +61704,8 @@
       "audioInput": false,
       "functionCalling": true,
       "reasoning": true,
-      "structuredOutput": true
+      "structuredOutput": true,
+      "streaming": true
     },
     "modelType": "chat",
     "source": {
@@ -61590,7 +61725,12 @@
     },
     "releaseDate": "2026-08-27",
     "canonicalId": "alibaba/qwen3.8-flash-next",
-    "aliasOf": "alibaba/qwen3.8-flash-next"
+    "aliasOf": "alibaba/qwen3.8-flash-next",
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ]
   },
   "qwen3.8-max": {
     "displayName": "Qwen3.8 Max",
@@ -61603,7 +61743,11 @@
       "streaming": true,
       "webSearch": false
     },
-    "reasoningEfforts": [],
+    "reasoningEfforts": [
+      "low",
+      "medium",
+      "xhigh"
+    ],
     "pricing": {
       "input": 2,
       "output": 6,
@@ -61629,7 +61773,6 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
       "xhigh"
     ]
   },
@@ -61652,7 +61795,6 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
       "xhigh"
     ]
   },
@@ -61732,9 +61874,7 @@
     "reasoningEfforts": [
       "low",
       "medium",
-      "high",
-      "xhigh",
-      "max"
+      "xhigh"
     ],
     "pricing": {
       "input": 0.15,
@@ -70985,12 +71125,9 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "reasoningEfforts": [
-      "low",
-      "high",
-      "max"
-    ],
-    "aliasOf": "glm-5.1"
+    "reasoningEfforts": [],
+    "aliasOf": "glm-5.1",
+    "thinkingOff": true
   },
   "z-ai/glm-5.2": {
     "displayName": "GLM-5.2",
@@ -71028,7 +71165,8 @@
       "high",
       "max"
     ],
-    "aliasOf": "glm-5.2"
+    "aliasOf": "glm-5.2",
+    "thinkingOff": true
   },
   "z-ai/glm-5.3": {
     "displayName": "GLM-5.3",
@@ -71066,7 +71204,8 @@
       "high",
       "max"
     ],
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "z-ai/glm-5.3-flash": {
     "displayName": "GLM-5.3 Flash",
@@ -71108,7 +71247,8 @@
       "max"
     ],
     "temperature": 1,
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "z-ai/glm-5.3-flash:batch": {
     "displayName": "GLM-5.3 Flash",
@@ -71152,7 +71292,8 @@
       "max"
     ],
     "temperature": 1,
-    "variantOf": "glm-5.3-flash"
+    "variantOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "z-ai/glm-5.3-flashx": {
     "displayName": "GLM-5.3 FlashX",
@@ -71194,7 +71335,8 @@
       "max"
     ],
     "temperature": 1,
-    "aliasOf": "glm-5.3-flashx"
+    "aliasOf": "glm-5.3-flashx",
+    "thinkingOff": false
   },
   "z-ai/glm-5.3-prime": {
     "displayName": "Z.ai: GLM 5.3 Prime",
@@ -71272,7 +71414,8 @@
       "high",
       "max"
     ],
-    "variantOf": "glm-5.3"
+    "variantOf": "glm-5.3",
+    "thinkingOff": false
   },
   "z-ai/glm-5v-turbo": {
     "displayName": "GLM-5V Turbo",
@@ -71369,7 +71512,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "zai-glm-latest": {
     "displayName": "zai-glm-latest",
@@ -71769,7 +71913,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.2"
+    "aliasOf": "glm-5.2",
+    "thinkingOff": true
   },
   "zai-org/glm-5.3": {
     "displayName": "GLM-5.3",
@@ -71809,7 +71954,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "zai-org/glm-5.3-flash": {
     "displayName": "GLM-5.3 Flash",
@@ -71854,7 +72000,8 @@
       "output": 0.5,
       "cachedInput": 0.03
     },
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "zai-org/glm-5v-turbo": {
     "displayName": "GLM-5V Turbo",
@@ -72492,17 +72639,14 @@
     },
     "releaseDate": "2026-04-07",
     "canonicalId": "zhipuai/glm-5.1",
-    "reasoningEfforts": [
-      "low",
-      "high",
-      "max"
-    ],
+    "reasoningEfforts": [],
     "pricing": {
       "input": 1.4,
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.1"
+    "aliasOf": "glm-5.1",
+    "thinkingOff": true
   },
   "zhipuai/glm-5.2": {
     "displayName": "GLM-5.2",
@@ -72541,7 +72685,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.2"
+    "aliasOf": "glm-5.2",
+    "thinkingOff": true
   },
   "zhipuai/glm-5.3": {
     "displayName": "GLM-5.3",
@@ -72580,7 +72725,8 @@
       "output": 4.4,
       "cachedInput": 0.26
     },
-    "aliasOf": "glm-5.3"
+    "aliasOf": "glm-5.3",
+    "thinkingOff": false
   },
   "zhipuai/glm-5.3-flash": {
     "displayName": "GLM-5.3 Flash",
@@ -72624,7 +72770,8 @@
       "output": 0.5,
       "cachedInput": 0.03
     },
-    "aliasOf": "glm-5.3-flash"
+    "aliasOf": "glm-5.3-flash",
+    "thinkingOff": false
   },
   "zhipuai/glm-5v-turbo": {
     "displayName": "GLM-5V Turbo",

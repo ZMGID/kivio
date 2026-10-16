@@ -4360,6 +4360,8 @@ fn resolve_thinking_rejects_off_for_always_on_models() {
         "gemini-3.8-flash",
         "claude-opus-5.5",
         "grok-4.6",
+        "glm-5.3",
+        "z-ai/glm-5.3-flash",
     ] {
         let error = resolve_thinking(Some("off"), true, None, model).unwrap_err();
         assert!(error.contains("不支持关闭思考"), "{model}: {error}");
@@ -4376,6 +4378,18 @@ fn resolve_thinking_rejects_off_for_always_on_models() {
 
 #[test]
 fn resolve_thinking_checks_stored_levels_and_uses_an_available_default() {
+    for model in ["qwen3.8-flash-next", "Qwen/Qwen3.8-27B", "qwen3.8-max-0902"] {
+        assert_eq!(
+            resolve_thinking(None, true, None, model).unwrap(),
+            (true, Some("xhigh".into())),
+            "{model}"
+        );
+        assert_eq!(
+            resolve_thinking(Some("medium"), true, None, model).unwrap(),
+            (true, Some("medium".into()))
+        );
+        assert!(resolve_thinking(Some("high"), true, None, model).is_err());
+    }
     assert_eq!(
         resolve_thinking(Some("off"), true, None, "gpt-4o").unwrap(),
         (true, None)

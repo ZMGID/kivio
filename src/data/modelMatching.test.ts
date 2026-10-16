@@ -3,18 +3,41 @@ import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
 describe('matchModel', () => {
   it.each([
-    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored'],
-    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)'],
-  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName) => {
-    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: [] })
+    ['qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
+    ['alibaba/qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-27b', ['low', 'medium', 'xhigh']],
+    ['qwen/qwen3.8-27b', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-max-0902', ['low', 'medium', 'xhigh']],
+    ['qwen3.8-omni-flash', ['low', 'medium', 'xhigh']],
+    ['deepseek-flash', ['low', 'high', 'max']],
+    ['deepseek-v4-pro-0813', ['low', 'high', 'max']],
+    ['glm-5.1', []],
+    ['gpt-5.5-pro', ['medium', 'high', 'xhigh']],
+  ])('uses native effort values from the verified API contract for %s', (id, efforts) => {
+    expect(matchModel(id)?.reasoningEfforts).toEqual(efforts)
+    expect(resolveModelInfo(id, { [id]: { reasoningEfforts: ['low'] } }).reasoningEfforts).toEqual(['low'])
+  })
+
+  it.each(['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol'])(
+    'uses the official API context and output limits for %s', (id) => {
+      expect(matchModel(id)).toMatchObject({ contextWindow: 1_050_000, maxOutput: 128_000 })
+      expect(matchModel(`openai/${id}`)?.contextWindow).toBe(1_050_000)
+    },
+  )
+
+  it.each([
+    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored', ['low', 'medium', 'xhigh']],
+    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)', []],
+  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName, efforts) => {
+    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: efforts })
     expect(matchModel(id)?.pricing?.input).toBeUndefined()
     expect(matchModel(id)?.pricing?.output).toBeUndefined()
     expect(resolveModelInfo(id, { [id]: { maxOutput: 8192 } }).maxOutput).toBe(8192)
   })
 
   it.each([
-    ['openai/gpt-6-sol', 'GPT-6 Sol', 256000, 2, 10, 0.2],
-    ['openai/gpt-6-luna', 'GPT-6 Luna', 256000, 0.1, 0.5, 0.01],
+    ['openai/gpt-6-sol', 'GPT-6 Sol', 1050000, 2, 10, 0.2],
+    ['openai/gpt-6-luna', 'GPT-6 Luna', 1050000, 0.1, 0.5, 0.01],
     ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
     ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1048576, 0.435, 0.87, 0.0036],
     ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1048576, 0.14, 0.28, 0.0028],
@@ -78,7 +101,7 @@ describe('matchModel', () => {
 
   it('resolves September models through provider and effort aliases without losing variants', () => {
     expect(matchModel('gemini-3.8-flash-high')).toEqual(matchModelExact('gemini-3.8-flash'))
-    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(256000)
+    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(1050000)
     expect(matchModel('anthropic/claude-fable-5-1')?.displayName).toBe('Claude Fable 5.1')
     expect(matchModel('claude-mythos-5-1')?.displayName).toBe('Claude Mythos 5.1')
     expect(matchModel('meta/muse-spark-1.3-contributor')?.pricing?.input).toBe(0.1)
@@ -119,11 +142,6 @@ describe('matchModel', () => {
     expect(matchModel('gpt-5.6-luna')?.displayName).toBe('GPT-5.6 Luna')
     expect(matchModel('gpt-5.6-sol')?.displayName).toBe('GPT-5.6 Sol')
     expect(matchModel('gpt-5.6-terra')?.displayName).toBe('GPT-5.6 Terra')
-    expect(matchModel('gpt-5.6')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-sol')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-terra')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-5.6-luna')?.contextWindow).toBe(256_000)
-    expect(matchModel('gpt-6-astra')?.contextWindow).toBe(256_000)
     expect(matchModel('gpt-5.5')?.displayName).toBe('GPT-5.5')
     expect(matchModel('gpt-5')?.displayName).toBe('GPT-5')
   })
@@ -434,7 +452,7 @@ describe('matchModel', () => {
     expect(current?.contextWindow).toBe(1_048_576)
     expect(current?.maxOutput).toBe(384_000)
     expect(current?.capabilities?.vision).toBe(true)
-    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'xhigh', 'max'])
+    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'max'])
     expect(current?.pricing?.input).toBe(0.3)
 
     const flash = matchModel('deepseek-v4-flash')
@@ -456,7 +474,7 @@ describe('matchModel', () => {
     expect(matchModel('nex-agi/nex-n2.5-pro:free')?.displayName).toBe('Nex N2.5 Pro')
     expect(matchModel('sakana/fugu-max')?.contextWindow).toBe(1_000_000)
     expect(matchModel('sakana/fugu-ultra-v2')?.displayName).toBe('Fugu Ultra V2')
-    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(256_000)
+    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(400_000)
   })
 
   it('matches MiniMax M2.7 as a thinking model without collapsing onto highspeed', () => {

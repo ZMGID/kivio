@@ -22,13 +22,19 @@ pub fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
 }
 
 /// 判断 provider 是否支持 `thinking` 字段。
-/// 目前只有 DeepSeek 官方 API 和 Kimi 支持该字段；
+/// DeepSeek、Kimi 和智谱官方 API 支持该字段；
 /// 第三方代理（OpenRouter / 反代）做严格校验时会以 400 拒绝整个请求。
 pub fn provider_supports_thinking_field(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).ok().is_some_and(|url| {
         matches!(
             url.host_str(),
-            Some("api.deepseek.com" | "api.moonshot.cn" | "api.moonshot.ai")
+            Some(
+                "api.deepseek.com"
+                    | "api.moonshot.cn"
+                    | "api.moonshot.ai"
+                    | "api.z.ai"
+                    | "open.bigmodel.cn"
+            )
         )
     })
 }

@@ -616,7 +616,7 @@ impl OpenAiChatProvider<'_> {
         // 思考默认开、effort 默认 high；OpenAI 也把 none 列为一等 effort）。
         //
         // 两套 wire：
-        // - DeepSeek / Kimi 官方：Chat Completions 用 `thinking.type=disabled` 做开关
+        // - DeepSeek / Kimi / 智谱官方：Chat Completions 用 `thinking.type=disabled` 做开关
         //   （其 reasoning_effort 只认 low/high/max，没有 none）。开思考也显式
         //   `enabled`：官方样例都带；省略目前靠默认 enabled，默认一旦改掉就会
         //   和 GPT 没要 summary 一样空等无思维链。
@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_off_uses_thinking_disabled_on_deepseek_and_kimi() {
+    fn thinking_off_uses_native_switch_on_official_endpoints() {
         // DeepSeek / Kimi 官方 Chat Completions：开关是 thinking.type，不是
         // reasoning_effort:"none"（官方 schema 的 effort 只有 low/high/max）。
         let ds = build_openai_body_with(None, false, "https://api.deepseek.com/v1");
@@ -1513,6 +1513,18 @@ mod tests {
         let kimi = build_openai_body_with(None, false, "https://api.moonshot.cn/v1");
         assert_eq!(kimi["thinking"]["type"], "disabled", "body: {kimi}");
         assert!(kimi.get("reasoning_effort").is_none(), "body: {kimi}");
+
+        for base in [
+            "https://api.z.ai/api/paas/v4",
+            "https://open.bigmodel.cn/api/paas/v4",
+        ] {
+            let glm = build_openai_model_body(None, false, base, "glm-5.1");
+            assert_eq!(glm["thinking"]["type"], "disabled", "body: {glm}");
+            assert!(glm.get("reasoning_effort").is_none(), "body: {glm}");
+            let on = build_openai_model_body(Some("low"), true, base, "glm-5.3");
+            assert_eq!(on["thinking"]["type"], "enabled", "body: {on}");
+            assert_eq!(on["reasoning_effort"], "low");
+        }
     }
 
     #[test]
