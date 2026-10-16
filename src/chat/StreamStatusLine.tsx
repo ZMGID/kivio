@@ -103,7 +103,7 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
     // 生成 true→false 且没翻车、没被停：有概率进入「搞定」窗口。
     if (prevActiveRef.current && !active) {
       const coarse = getCoarse()
-      const celebrate = !coarse.streamError && !coarse.cancelling && Math.random() < BLOB_DONE_CHANCE
+      const celebrate = !coarse.streamError && !coarse.cancelling && getSnapshot().streamOutcome !== 'cancelled' && Math.random() < BLOB_DONE_CHANCE
       doneUntilRef.current = celebrate ? Date.now() + BLOB_DONE_MS : 0
     }
     prevActiveRef.current = active

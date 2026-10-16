@@ -131,7 +131,19 @@ describe('assistant body visibility', () => {
     expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
   })
 
-  it.each(['cancelled', undefined])('folds cancelled progress with outcome %s and preserves the partial answer', outcome => {
+  it.each([undefined, '已完成的思考'])('does not restore a legacy stop-only answer with reasoning %s', reasoning => {
+    render(<MessageBubble message={{
+      id: 'legacy-stop', role: 'assistant', timestamp: 1, content: '已停止生成。', reasoning,
+      stream_outcome: 'cancelled', segments: [
+        { id: 'seg_1000_cancelled_synthesis', kind: 'text', phase: 'synthesis', order: 1000, text: '已停止生成。' },
+      ],
+    }} />)
+    expect(screen.queryByText('已停止生成。')).not.toBeInTheDocument()
+    expect(screen.queryByText('已停止后继续')).not.toBeInTheDocument()
+    if (reasoning) expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it.each(['cancelled', undefined])('keeps cancelled progress and partial answer visible with outcome %s', outcome => {
     render(<MessageBubble message={{
       id: 'partial-answer', role: 'assistant', timestamp: 1, content: 'Useful partial answer', stream_outcome: outcome,
       segments: [
@@ -141,9 +153,9 @@ describe('assistant body visibility', () => {
         { id: 'seg_4_cancelled_synthesis', kind: 'text', phase: 'synthesis', order: 4, text: '已停止生成。' },
       ],
     }} />)
-    expect(screen.queryByText('Reading files now')).not.toBeInTheDocument()
+    expect(screen.getByText('Reading files now')).toBeVisible()
     expect(screen.getByText('Useful partial answer')).toBeVisible()
-    expect(screen.getByText('已停止生成。')).toBeVisible()
+    expect(screen.queryByText('已停止生成。')).not.toBeInTheDocument()
   })
 
   it.each(['cancelled', undefined])('keeps interrupted browser commentary inside Worked with outcome %s', outcome => {
@@ -161,13 +173,13 @@ describe('assistant body visibility', () => {
       ],
     }} />)
     const worked = screen.getByRole('button', { name: /^Worked/ })
-    expect(worked).toHaveAttribute('aria-expanded', 'false')
-    for (const text of progress) expect(screen.queryByText(text)).not.toBeInTheDocument()
-    expect(screen.queryByText('正在检查日志。')).not.toBeInTheDocument()
-    expect(screen.getByText('已停止生成。')).toBeVisible()
-    fireEvent.click(worked)
+    expect(worked).toHaveAttribute('aria-expanded', 'true')
     for (const text of progress) expect(screen.getByText(text)).toBeVisible()
     expect(screen.getByText('正在检查日志。')).toBeVisible()
+    expect(screen.queryByText('已停止生成。')).not.toBeInTheDocument()
+    fireEvent.click(worked)
+    for (const text of progress) expect(screen.queryByText(text)).not.toBeInTheDocument()
+    expect(screen.queryByText('正在检查日志。')).not.toBeInTheDocument()
   })
 
   it('uses one stable Work for subagents, waiting, final answer and history', () => {
@@ -208,7 +220,7 @@ describe('assistant body visibility', () => {
     expect(screen.getByText('项目用途已了解，等待子代理。')).toBeVisible()
   })
 
-  it.each(['cancelled', 'error', 'interrupted', 'recovered'])('folds progress after a %s outcome', outcome => {
+  it.each(['error', 'interrupted', 'recovered'])('folds progress after a %s outcome', outcome => {
     const message: ChatMessage = {
       id: 'stopped-run', role: 'assistant', timestamp: 1, content: 'Run stopped',
       stream_outcome: outcome,

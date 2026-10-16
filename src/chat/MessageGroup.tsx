@@ -63,6 +63,7 @@ function streamColumnToMessage(column: GroupColumnSnapshot): ChatMessage {
     id: column.messageId,
     role: 'assistant',
     content: column.content,
+    stream_outcome: column.streamOutcome,
     reasoning: column.reasoning || undefined,
     artifacts: [],
     tool_calls: column.toolCalls,

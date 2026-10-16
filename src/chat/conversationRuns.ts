@@ -5,6 +5,8 @@ export interface ConversationStreamSnapshot {
   /** 当前流对应的持久化 assistant 消息 id。恢复运行时用于避免历史草稿和实时预览双渲染。 */
   messageId: string | null
   streaming: boolean
+  /** Local cancellation is visible immediately, before the backend terminal. */
+  streamOutcome?: 'cancelled'
   content: string
   reasoning: string
   reasoningStreaming: boolean

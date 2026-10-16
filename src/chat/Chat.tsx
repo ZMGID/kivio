@@ -2270,7 +2270,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       conversationId,
       () => chatApi.cancelStream(conversationId),
       () => {
-        setStreamCoarse({ cancelling: true })
         interactionInbox.observe({ kind: 'drop', conversationId })
       },
     )

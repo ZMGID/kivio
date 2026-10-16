@@ -9,6 +9,7 @@ import {
   type ActiveGroupState,
   type GroupColumnSnapshot,
 } from './groupStreamingStore'
+import { normalizeToolCallStatus } from './toolStatus'
 import { type ConversationStreamSnapshot } from './conversationRuns'
 import { hasStreamPreview, isStreamTerminal } from './streamApply'
 import { applyConversationStreamEvent, beginRunSnapshot, restoreRunSnapshot } from './streamPresentation'
@@ -28,13 +29,21 @@ type CancellationFreeze =
     generation: number
     snapshot: ConversationStreamSnapshot
     reasoningStreaming: boolean
+    toolCalls: ConversationStreamSnapshot['toolCalls']
     terminal: boolean
   }
   | {
     kind: 'group'
     group: ActiveGroupState
-    runningArms: Map<GroupColumnSnapshot, boolean>
+    runningArms: Map<GroupColumnSnapshot, { reasoningStreaming: boolean; toolCalls: ConversationStreamSnapshot['toolCalls'] }>
   }
+
+function stopToolIndicators(tools: ConversationStreamSnapshot['toolCalls']): ConversationStreamSnapshot['toolCalls'] {
+  return tools.map(tool => {
+    const status = normalizeToolCallStatus(tool.status)
+    return status === 'running' || status === 'pending' ? { ...tool, status: 'cancelled' } : tool
+  })
+}
 
 function frameInterval(snapshot: ConversationStreamSnapshot): number {
   const contentSize = snapshot.content.length + snapshot.reasoning.length
@@ -186,9 +195,14 @@ export function createStreamPreviewOwner() {
     if (disposed) return false
     const group = getActiveGroup(conversationId)
     if (group) {
-      const runningArms = new Map<GroupColumnSnapshot, boolean>()
+      const runningArms = new Map<GroupColumnSnapshot, { reasoningStreaming: boolean; toolCalls: ConversationStreamSnapshot['toolCalls'] }>()
       for (const column of group.columns) {
-        if (column.streaming) runningArms.set(column, column.reasoningStreaming)
+        if (!column.streaming) continue
+        runningArms.set(column, { reasoningStreaming: column.reasoningStreaming, toolCalls: column.toolCalls })
+        column.toolCalls = stopToolIndicators(column.toolCalls)
+        column.streamOutcome = 'cancelled'
+        column.statusNote = null
+        column.retryStatus = null
         column.streaming = false
         column.reasoningStreaming = false
       }
@@ -197,7 +211,7 @@ export function createStreamPreviewOwner() {
       flushGroups(conversationId)
       if (selectedId === conversationId) {
         cancelFrame()
-        setCoarse({ streaming: false, streamFrozen: true })
+        setCoarse({ streaming: false, streamFrozen: true, cancelling: false })
       }
       return true
     }
@@ -208,14 +222,19 @@ export function createStreamPreviewOwner() {
       generation: generations.get(conversationId) ?? 0,
       snapshot,
       reasoningStreaming: snapshot.reasoningStreaming,
+      toolCalls: snapshot.toolCalls,
       terminal: false,
     })
+    snapshot.toolCalls = stopToolIndicators(snapshot.toolCalls)
+    snapshot.streamOutcome = 'cancelled'
+    snapshot.statusNote = null
+    snapshot.retryStatus = null
     snapshot.streaming = false
     snapshot.reasoningStreaming = false
     if (selectedId === conversationId) {
       cancelFrame()
       setSnapshot(snapshot)
-      setCoarse({ streaming: false, streamFrozen: hasStreamPreview(snapshot) })
+      setCoarse({ streaming: false, streamFrozen: hasStreamPreview(snapshot), cancelling: false })
     }
     return true
   }
@@ -399,10 +418,12 @@ export function createStreamPreviewOwner() {
       if (frozen.kind === 'group') {
         if (getActiveGroup(conversationId) !== frozen.group) return false
         let restored = 0
-        for (const [column, reasoningStreaming] of frozen.runningArms) {
+        for (const [column, before] of frozen.runningArms) {
           if (!frozen.group.columns.includes(column)) continue
+          column.streamOutcome = undefined
           column.streaming = true
-          column.reasoningStreaming = reasoningStreaming
+          column.reasoningStreaming = before.reasoningStreaming
+          column.toolCalls = before.toolCalls
           restored += 1
         }
         if (restored === 0) return false
@@ -412,8 +433,10 @@ export function createStreamPreviewOwner() {
         const snapshot = snapshots.get(conversationId)
         if (frozen.terminal || snapshot !== frozen.snapshot
           || generations.get(conversationId) !== frozen.generation) return false
+        snapshot.streamOutcome = undefined
         snapshot.streaming = true
         snapshot.reasoningStreaming = frozen.reasoningStreaming
+        snapshot.toolCalls = frozen.toolCalls
         if (selectedId === conversationId) setSnapshot(snapshot)
       }
       if (selectedId === conversationId) {

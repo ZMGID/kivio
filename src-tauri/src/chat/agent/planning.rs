@@ -195,7 +195,6 @@ pub(crate) async fn planning_step(
                         // dropped via a bare Err("cancelled").
                         return Ok(PlanningStepOutcome::Cancelled(
                             cancelled_tool_round_run_result(
-                                &config.language,
                                 &state.planning_reasoning_parts,
                                 std::mem::take(&mut state.tool_records),
                                 std::mem::take(&mut state.segment_builder).all(),

@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ToolCallStatus};
 
 use super::finalize::{
-    empty_synthesis_fallback_response, segment_phase_for_agent_phase, stopped_generation_content,
+    empty_synthesis_fallback_response, segment_phase_for_agent_phase,
     synthesis_failed_fallback_response, RunResultBuilder,
 };
 use super::loop_::{LoopEnv, RunState};
@@ -162,13 +162,8 @@ pub(crate) async fn synthesis_step(
     };
     if stream.cancelled {
         if !state.tool_records.is_empty() {
-            let stored_content = if stream.content.trim().is_empty() {
-                stopped_generation_content(&config.language)
-            } else {
-                stream.content.clone()
-            };
             return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, env.ids(), stored_content)
+                RunResultBuilder::new(host, env.ids(), stream.content.clone())
                     .segment(&response_segment)
                     .api_reasoning(stream.reasoning.clone())
                     .reasoning_tail(stream.reasoning)

@@ -328,7 +328,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     const result = await streamLifecycleOwner.cancelRun(
       conversationId,
       () => chatApi.cancelStream(conversationId),
-      () => setStreamCoarse({ cancelling: true }),
     )
     if (result.kind === 'failed') {
       console.error('Failed to cancel stream:', result.error)

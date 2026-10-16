@@ -19,6 +19,7 @@ export function applyConversationStreamEvent(
 ): boolean {
   if (!acceptStreamRun(snapshot, payload.runId)) return false
   if (payload.messageId) snapshot.messageId = payload.messageId
+  if (payload.type === 'run_cancelled') snapshot.streamOutcome = 'cancelled'
   if (streamTextDelta(payload) || streamReasoningDelta(payload) || isStreamTerminal(payload)) {
     snapshot.statusNote = null
     snapshot.retryStatus = null

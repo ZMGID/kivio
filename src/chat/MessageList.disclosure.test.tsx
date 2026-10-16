@@ -2,8 +2,12 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
-import { patchSnapshot, reset, setCoarse } from './streamingStore'
+import { getCoarse, patchSnapshot, reset, setCoarse } from './streamingStore'
 import type { ChatMessage } from './types'
+import type { ChatStreamPayload } from '../api/tauri'
+import { createChatExecutionOwner } from './chatExecutionOwner'
+import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
+import { createStreamPreviewOwner } from './streamPreviewOwner'
 
 let list: Virtualizer<Element, Element>
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
@@ -42,6 +46,42 @@ async function mount() {
 }
 
 describe('MessageList disclosure scroll anchoring', () => {
+  it('keeps a cancelled answer expanded without a stop notice after persistence and reopening', async () => {
+    const message: ChatMessage = {
+      id: 'cancelled-answer', role: 'assistant', content: '', timestamp: 1,
+      stream_outcome: 'cancelled', segments: [
+        { id: 'progress', kind: 'text', phase: 'tool_loop', order: 0, text: '正在核对实际结果' },
+      ],
+    }
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(createChatExecutionOwner(), preview)
+    preview.activate('cancelled')
+    const identity = { conversationId: 'cancelled', runId: 'run', messageId: message.id }
+    owner.receive({ ...identity, type: 'run_started' } as ChatStreamPayload)
+    owner.receive({ ...identity, type: 'text_delta', delta: '正在核对实际结果', segment: message.segments![0] } as ChatStreamPayload)
+    const { rerender } = render(<MessageList conversationId="cancelled" messages={[]} />)
+    let acknowledge!: () => void
+    let pending!: ReturnType<typeof owner.cancelRun>
+    act(() => { pending = owner.cancelRun('cancelled', () => new Promise<void>(resolve => { acknowledge = resolve })) })
+    expect(getCoarse()).toMatchObject({ streaming: false, cancelling: false })
+    expect(screen.getByText('正在核对实际结果')).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByText(/已停止|正在停止/)).not.toBeInTheDocument()
+    await act(async () => { acknowledge(); await pending })
+    act(() => { owner.receive({ ...identity, type: 'run_cancelled' } as ChatStreamPayload) })
+    rerender(<MessageList conversationId="cancelled" messages={[message]} />)
+    act(() => { preview.complete('cancelled', { kind: 'persisted', committedMessages: [message] }) })
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('正在核对实际结果')).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.queryByText(/已停止|正在停止/)).not.toBeInTheDocument()
+    rerender(<MessageList conversationId="other" messages={[]} />)
+    rerender(<MessageList conversationId="cancelled" messages={[message]} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('正在核对实际结果')).toBeVisible()
+    preview.dispose()
+  })
+
   it('collapses live thinking when the completed turn becomes stored history', async () => {
     const thought = { id: 'thought', kind: 'reasoning', phase: 'plain', order: 0, text: 'Live preview survives commit' } as const
     const answer = { id: 'answer', kind: 'text', phase: 'synthesis', order: 1, text: 'Done' } as const

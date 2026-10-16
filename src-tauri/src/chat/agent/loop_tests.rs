@@ -1553,7 +1553,6 @@ fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
     });
     let tool_response = tool_message("call_read".to_string(), "Tool call cancelled");
     let result = cancelled_tool_round_run_result(
-        "zh-CN",
         &["planning".to_string()],
         vec![tool_record.clone()],
         vec![ChatMessageSegment {
@@ -1569,23 +1568,22 @@ fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
         vec![assistant_message.clone(), tool_response.clone()],
     );
 
-    assert_eq!(result.content, "已停止生成。");
+    assert!(result.content.is_empty());
     assert_eq!(result.reasoning.as_deref(), Some("planning"));
     assert_eq!(result.tool_records.len(), 1);
     assert!(result.segments.iter().any(|segment| {
         segment.kind == ChatMessageSegmentKind::Tool
             && segment.tool_call_id.as_deref() == Some("call_read")
     }));
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Text
-            && segment.phase == ChatMessageSegmentPhase::Synthesis
-            && segment.text.as_deref() == Some("已停止生成。")
-    }));
+    assert!(!result
+        .segments
+        .iter()
+        .any(|segment| segment.kind == ChatMessageSegmentKind::Text));
     assert!(matches!(
         result.tool_records[0].status,
         ToolCallStatus::Cancelled
     ));
-    assert_eq!(result.api_messages.len(), 3);
+    assert_eq!(result.api_messages, vec![assistant_message, tool_response]);
     assert_eq!(
         result.api_messages[0]
             .get("tool_calls")
@@ -1598,12 +1596,6 @@ fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
             .get("tool_call_id")
             .and_then(Value::as_str),
         Some("call_read")
-    );
-    assert_eq!(
-        result.api_messages[2]
-            .get("content")
-            .and_then(Value::as_str),
-        Some("已停止生成。")
     );
 }
 
@@ -1678,8 +1670,6 @@ fn fallback_responses_are_bilingual() {
             tool_planning_failed_fallback_response("en-US"),
             "Tool-call argument generation failed before the write actually ran. This conversation was preserved; you can ask me to narrow the scope, use a patch, or regenerate."
         );
-    assert_eq!(stopped_generation_content("zh-CN"), "已停止生成。");
-    assert_eq!(stopped_generation_content("en-US"), "Generation stopped.");
 }
 
 /// Fallback A (helper level, deterministic): a planning stream dies while tool
@@ -2210,9 +2200,9 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
 }
 
 /// Fallback C: streamed synthesis is cancelled after tool results exist; the run
-/// returns Ok("cancelled") with the stopped-generation placeholder content.
+/// returns Ok("cancelled") without a synthetic assistant response.
 #[tokio::test]
-async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_content() {
+async fn run_loop_stream_synthesis_cancelled_returns_cancelled_without_placeholder() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::SseThenHang(Vec::new()),
@@ -2228,7 +2218,7 @@ async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_cont
         .expect("cancelled synthesis with tool records must not bubble Err");
 
     assert_eq!(result.stream_outcome, "cancelled");
-    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    assert!(result.content.is_empty());
     assert_eq!(result.tool_records.len(), 1);
     assert!(matches!(
         result.tool_records[0].status,
@@ -2239,18 +2229,18 @@ async fn run_loop_stream_synthesis_cancelled_returns_cancelled_with_stopped_cont
         result
             .api_messages
             .last()
-            .and_then(|message| message.get("content"))
+            .and_then(|m| m.get("role"))
             .and_then(Value::as_str),
-        Some("已停止生成。")
+        Some("tool")
     );
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Text
-            && segment.text.as_deref() == Some("已停止生成。")
-    }));
+    assert!(!result
+        .segments
+        .iter()
+        .any(|segment| segment.text.as_deref() == Some("已停止生成。")));
 }
 
 /// Fallback C variant: synthesis streamed some text before cancellation; the
-/// partial text must be kept instead of the stopped-generation placeholder.
+/// partial text must be kept.
 #[tokio::test]
 async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
     let server = MockModelServer::start(vec![
@@ -2307,7 +2297,7 @@ async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
         .expect("loop-top cancellation must return Ok, not bubble Err");
 
     assert_eq!(result.stream_outcome, "cancelled");
-    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    assert!(result.content.is_empty());
     // Round 1's tool record is preserved (the bug dropped it entirely).
     assert_eq!(result.tool_records.len(), 1);
     assert_eq!(result.tool_records[0].name, "read");
@@ -2321,9 +2311,8 @@ async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
         vec!["start:read".to_string(), "finish:read".to_string()]
     );
 
-    // The turn is persistable: the stopped-generation placeholder is appended
-    // as a synthesis api message + segment alongside the preserved records.
-    assert!(result.segments.iter().any(|segment| {
+    // Preserve tool history without inventing an assistant answer.
+    assert!(!result.segments.iter().any(|segment| {
         segment.kind == ChatMessageSegmentKind::Text
             && segment.text.as_deref() == Some("已停止生成。")
     }));
@@ -2400,7 +2389,7 @@ async fn run_loop_stream_planning_cancelled_orders_reasoning_before_text() {
 
 /// Bug fix regression (Fix 2): a plain-text stream cancelled before any text
 /// or tool draft was generated must now end with Ok(cancelled_result) carrying
-/// the stopped-generation placeholder — not a bare Err("cancelled") that
+/// the accumulated history — not a bare Err("cancelled") that
 /// skipped persistence. With no prior rounds there are no tool records to
 /// preserve, but the turn is still persistable.
 #[tokio::test]
@@ -2416,7 +2405,7 @@ async fn run_loop_stream_planning_cancelled_with_no_text_returns_cancelled() {
         .expect("cancelled stream with zero generated text must return Ok, not Err");
 
     assert_eq!(result.stream_outcome, "cancelled");
-    assert_eq!(result.content, stopped_generation_content("zh-CN"));
+    assert!(result.content.is_empty());
     assert!(result.tool_records.is_empty());
 }
 

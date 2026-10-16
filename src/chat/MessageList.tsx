@@ -710,6 +710,7 @@ function MessageListBase({
         // Prefer real message id when known so context-menu / navigator can target it;
         // the virtualizer row key is still liveRowKey (not this id).
         id: snapshot.messageId || 'streaming-assistant',
+        stream_outcome: snapshot.streamOutcome,
         role: 'assistant',
         content: streamingContent,
         reasoning: streamingReasoning || undefined,
@@ -725,6 +726,7 @@ function MessageListBase({
     liveRowKey,
     reasoningStreaming,
     snapshot.messageId,
+    snapshot.streamOutcome,
     streamFrozen,
     streaming,
     streamingContent,

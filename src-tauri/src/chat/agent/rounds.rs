@@ -88,7 +88,6 @@ pub(crate) async fn run_tool_round(
     state.tool_records.extend(round_result.tool_records);
     if round_cancelled {
         return ToolRoundOutcome::Cancelled(cancelled_tool_round_run_result(
-            &config.language,
             &state.planning_reasoning_parts,
             std::mem::take(&mut state.tool_records),
             std::mem::take(&mut state.segment_builder).all(),

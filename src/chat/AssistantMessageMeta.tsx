@@ -86,9 +86,7 @@ export function AssistantMessageMeta({
 
   const runEntryLabel = runEntry === 'regenerate' ? '已重新生成' : null
   const streamOutcomeLabel =
-    streamOutcome === 'cancelled'
-      ? '已停止后继续'
-      : streamOutcome === 'error'
+    streamOutcome === 'error'
         ? '生成异常结束'
         : streamOutcome === 'interrupted'
           ? '运行中断，未完成'

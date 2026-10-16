@@ -468,7 +468,7 @@ pub async fn run_agent_loop(
                 if let Some(hooks) = hooks {
                     hooks.cancel();
                 }
-                let result = cancelled_run_result_from_state(&env, &mut state);
+                let result = cancelled_run_result_from_state(&mut state);
                 return Ok(attach_usage(result, &mut state));
             }
 
@@ -544,7 +544,7 @@ pub async fn run_agent_loop(
                         if let Some(hooks) = hooks {
                             hooks.cancel();
                         }
-                        let result = cancelled_run_result_from_state(&env, &mut state);
+                        let result = cancelled_run_result_from_state(&mut state);
                         return Ok(attach_usage(result, &mut state));
                     }
                     if child_activity {
@@ -633,7 +633,7 @@ pub async fn run_agent_loop(
     // A managed tool may finish cleanup after cancellation. Recheck before
     // synthesis, including the tool-round-limit path that skips the loop top.
     if !host.is_generation_active(&config.conversation_id, config.generation) {
-        let result = cancelled_run_result_from_state(&env, &mut state);
+        let result = cancelled_run_result_from_state(&mut state);
         return Ok(attach_usage(result, &mut state));
     }
     let incoming = host
@@ -707,7 +707,7 @@ fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunRes
 pub(crate) use super::execute::ToolExecutionContext;
 #[cfg(test)]
 pub(crate) use super::finalize::{
-    cancelled_tool_round_run_result, empty_synthesis_fallback_response, stopped_generation_content,
+    cancelled_tool_round_run_result, empty_synthesis_fallback_response,
     synthesis_failed_fallback_response, tool_planning_failed_fallback_response,
     tool_planning_failed_run_result,
 };

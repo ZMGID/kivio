@@ -114,6 +114,12 @@ impl<'a> RunResultBuilder<'a> {
     }
 
     fn push_api_message(&self, generated_api_messages: &mut Vec<Value>) {
+        if self.outcome == "cancelled"
+            && self.content.is_empty()
+            && self.api_reasoning.as_deref().is_none_or(str::is_empty)
+        {
+            return;
+        }
         if self.push_api_always || !generated_api_messages.is_empty() {
             generated_api_messages.push(final_assistant_api_message(
                 &self.content,
@@ -406,14 +412,6 @@ pub(crate) fn tool_planning_failed_fallback_response(language: &str) -> String {
     }
 }
 
-pub(crate) fn stopped_generation_content(language: &str) -> String {
-    if language.starts_with("zh") {
-        "已停止生成。".to_string()
-    } else {
-        "Generation stopped.".to_string()
-    }
-}
-
 pub(crate) fn tool_planning_failed_run_result(
     host: &dyn AgentHost,
     config: &AgentRunConfig<'_>,
@@ -464,34 +462,13 @@ pub(crate) fn tool_planning_failed_run_result(
 }
 
 pub(crate) fn cancelled_tool_round_run_result(
-    language: &str,
     planning_reasoning_parts: &[String],
     tool_records: Vec<ToolCallRecord>,
-    mut segments: Vec<ChatMessageSegment>,
-    mut generated_api_messages: Vec<Value>,
+    segments: Vec<ChatMessageSegment>,
+    generated_api_messages: Vec<Value>,
 ) -> AgentRunResult {
-    let stopped_content = stopped_generation_content(language);
-    let next_order = segments
-        .iter()
-        .map(|segment| segment.order)
-        .max()
-        .unwrap_or(999)
-        .saturating_add(1);
-    segments.push(ChatMessageSegment {
-        id: format!("seg_{}_cancelled_synthesis", next_order),
-        kind: ChatMessageSegmentKind::Text,
-        phase: ChatMessageSegmentPhase::Synthesis,
-        order: next_order,
-        step_number: None,
-        round: None,
-        text: Some(stopped_content.clone()),
-        tool_call_id: None,
-    });
-    if !generated_api_messages.is_empty() {
-        generated_api_messages.push(final_assistant_api_message(&stopped_content, None));
-    }
     AgentRunResult {
-        content: stopped_content,
+        content: String::new(),
         reasoning: merge_reasoning(planning_reasoning_parts, None),
         tool_records,
         segments,
@@ -514,13 +491,8 @@ pub(crate) fn cancelled_tool_round_run_result(
 /// tool records / segments / api messages gathered up to the cancel point —
 /// mirroring the tool-round cancellation path so the whole turn is persisted
 /// instead of being dropped via a bare `Err("cancelled")`.
-pub(crate) fn cancelled_run_result_from_state(
-    env: &LoopEnv<'_>,
-    state: &mut RunState,
-) -> AgentRunResult {
-    let config = env.config;
+pub(crate) fn cancelled_run_result_from_state(state: &mut RunState) -> AgentRunResult {
     cancelled_tool_round_run_result(
-        &config.language,
         &state.planning_reasoning_parts,
         std::mem::take(&mut state.tool_records),
         std::mem::take(&mut state.segment_builder).all(),

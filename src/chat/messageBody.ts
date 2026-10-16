@@ -18,7 +18,7 @@ export function messageBodySegments(message: Pick<ChatMessage, 'content' | 'segm
       && text === parts.join('\n\n')) return false
     parts.push(text)
     if (segment.phase === 'plain' || segment.phase === 'synthesis') finalParts.push(text)
-    return true
+    return !/^seg_\d+_cancelled_synthesis$/.test(segment.id)
   })
   // The stored content may be a mirror of a segment, a full body, or an answer
   // absent from an older/partial timeline. Preserve the last case as a fallback.
@@ -46,5 +46,11 @@ export function messageBodyText(message: Pick<ChatMessage, 'role' | 'content' | 
     .map(segment => (segment.text ?? '').trim())
     .filter(Boolean)
     .join('\n\n')
-  return body || message.content
+  if (body) return body
+  // An old stop-only reply has no visible segments after filtering. Do not
+  // reintroduce its synthetic notice through the plain-content fallback.
+  if (message.segments?.some(segment => segment.kind === 'text'
+    && /^seg_\d+_cancelled_synthesis$/.test(segment.id)
+    && segment.text?.trim() === message.content.trim())) return ''
+  return message.content
 }
