@@ -25,94 +25,106 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::ShellExt;
 
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn chat_skills_list(
+pub async fn chat_skills_list(
     app: AppHandle,
-    state: State<'_, AppState>,
     skill_scan_paths: Option<Vec<String>>,
     project_cwd: Option<String>,
 ) -> SkillListResult {
-    let paths = skill_scan_paths
-        .unwrap_or_else(|| state.settings_read().chat_tools.skill_scan_paths.clone());
-    let cwd = project_cwd
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from);
-    match build_registry_in(&app, &paths, cwd.as_deref()) {
-        Ok(registry) => {
-            // 插件附属 skill 一并返回，技能页单独分区展示；
-            // 开关仍由「扩展 → 插件」统一管理（前端禁止在技能页改插件 skill）。
-            let skills = registry
-                .metas()
-                .into_iter()
-                .map(|mut meta| {
-                    if crate::plugins::skill_owned_by_plugin(&meta.id).is_some() {
-                        meta.source = "plugin".to_string();
-                    }
-                    meta
-                })
-                .collect();
-            SkillListResult {
-                success: true,
-                skills,
-                error: None,
-                warnings: registry.warnings,
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let paths = skill_scan_paths
+            .unwrap_or_else(|| state.settings_read().chat_tools.skill_scan_paths.clone());
+        let cwd = project_cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        match build_registry_in(&app, &paths, cwd.as_deref()) {
+            Ok(registry) => {
+                // 插件附属 skill 一并返回，技能页单独分区展示；
+                // 开关仍由「扩展 → 插件」统一管理（前端禁止在技能页改插件 skill）。
+                let skills = registry
+                    .metas()
+                    .into_iter()
+                    .map(|mut meta| {
+                        if crate::plugins::skill_owned_by_plugin(&meta.id).is_some() {
+                            meta.source = "plugin".to_string();
+                        }
+                        meta
+                    })
+                    .collect();
+                SkillListResult {
+                    success: true,
+                    skills,
+                    error: None,
+                    warnings: registry.warnings,
+                }
             }
+            Err(err) => SkillListResult {
+                success: false,
+                skills: Vec::new(),
+                warnings: Vec::new(),
+                error: Some(err),
+            },
         }
-        Err(err) => SkillListResult {
-            success: false,
-            skills: Vec::new(),
-            warnings: Vec::new(),
-            error: Some(err),
-        },
-    }
+    })
+    .await
+    .unwrap_or_else(|err| SkillListResult {
+        success: false,
+        skills: Vec::new(),
+        warnings: Vec::new(),
+        error: Some(format!("Skill detection failed: {err}")),
+    })
 }
 
 #[tauri::command]
-pub fn chat_skills_read(
+pub async fn chat_skills_read(
     app: AppHandle,
-    state: State<'_, AppState>,
     skill_id: String,
     project_cwd: Option<String>,
 ) -> SkillReadResult {
-    let settings = state.settings_read();
-    if let Some(err) =
-        crate::settings::skill_global_unavailable_error(&settings.chat_tools, &skill_id, &skill_id)
-    {
-        return SkillReadResult {
-            success: false,
-            skill: None,
-            error: Some(err),
-        };
-    }
-    let cwd = project_cwd
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from);
-    match read_skill_detail_in(
-        &app,
-        &settings.chat_tools.skill_scan_paths,
-        &skill_id,
-        cwd.as_deref(),
-    ) {
-        Ok(skill) => SkillReadResult {
-            success: true,
-            skill: Some(skill),
-            error: None,
-        },
-        Err(err) => SkillReadResult {
-            success: false,
-            skill: None,
-            error: Some(err),
-        },
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let settings = state.settings_read().chat_tools.clone();
+        if let Some(err) =
+            crate::settings::skill_global_unavailable_error(&settings, &skill_id, &skill_id)
+        {
+            return SkillReadResult {
+                success: false,
+                skill: None,
+                error: Some(err),
+            };
+        }
+        let cwd = project_cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
+        match read_skill_detail_in(&app, &settings.skill_scan_paths, &skill_id, cwd.as_deref()) {
+            Ok(skill) => SkillReadResult {
+                success: true,
+                skill: Some(skill),
+                error: None,
+            },
+            Err(err) => SkillReadResult {
+                success: false,
+                skill: None,
+                error: Some(err),
+            },
+        }
+    })
+    .await
+    .unwrap_or_else(|error| SkillReadResult {
+        success: false,
+        skill: None,
+        error: Some(format!("Skill read failed: {error}")),
+    })
 }
 
 #[tauri::command]
@@ -144,7 +156,17 @@ pub fn chat_skills_open_folder(app: AppHandle) -> SkillOpenFolderResult {
 }
 
 #[tauri::command]
-pub fn chat_skills_import(app: AppHandle, path: String) -> SkillImportResult {
+pub async fn chat_skills_import(app: AppHandle, path: String) -> SkillImportResult {
+    tauri::async_runtime::spawn_blocking(move || import_skill(app, path))
+        .await
+        .unwrap_or_else(|error| SkillImportResult {
+            success: false,
+            skill: None,
+            error: Some(format!("Skill import failed: {error}")),
+        })
+}
+
+pub(crate) fn import_skill(app: AppHandle, path: String) -> SkillImportResult {
     let source = PathBuf::from(path);
     let skills_dir = match user_skills_dir(&app) {
         Ok(path) => path,
@@ -186,25 +208,29 @@ pub fn chat_skills_import(app: AppHandle, path: String) -> SkillImportResult {
 /// 卸载用户技能：先删 `~/.kivio/skills/<id>`，再回退旧 `{app_data}/skills/<id>`。
 /// `~/.agents/skills` 是共享目录，不从这里删。内置与插件技能也无法经此删除。
 #[tauri::command]
-pub fn chat_skills_uninstall(app: AppHandle, id: String) -> Result<(), String> {
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
-        return Err("invalid skill id".to_string());
-    }
-    let mut candidates = Vec::new();
-    if let Ok(dir) = user_skills_dir(&app) {
-        candidates.push(dir.join(&id));
-    }
-    if let Some(dir) = legacy_app_data_skills_dir() {
-        candidates.push(dir.join(&id));
-    }
-    let dir = candidates
-        .into_iter()
-        .find(|path| path.is_dir())
-        .ok_or_else(|| {
-            "技能不存在或不可删除（仅 ~/.kivio/skills 与旧个人目录可删除）".to_string()
-        })?;
-    fs::remove_dir_all(&dir).map_err(|err| format!("删除技能失败: {err}"))?;
-    Ok(())
+pub async fn chat_skills_uninstall(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+            return Err("invalid skill id".to_string());
+        }
+        let mut candidates = Vec::new();
+        if let Ok(dir) = user_skills_dir(&app) {
+            candidates.push(dir.join(&id));
+        }
+        if let Some(dir) = legacy_app_data_skills_dir() {
+            candidates.push(dir.join(&id));
+        }
+        let dir = candidates
+            .into_iter()
+            .find(|path| path.is_dir())
+            .ok_or_else(|| {
+                "技能不存在或不可删除（仅 ~/.kivio/skills 与旧个人目录可删除）".to_string()
+            })?;
+        fs::remove_dir_all(&dir).map_err(|err| format!("删除技能失败: {err}"))?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("chat_skills_uninstall failed: {error}"))?
 }
 
 /// 技能包下载大小上限（与本地 zip 导入的隐含约束一致，防止误装超大包）。

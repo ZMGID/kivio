@@ -42,6 +42,10 @@ mod eval_tests;
 #[cfg(test)]
 mod live_e2e_tests;
 
+// Catalog read-modify-write operations are serialized independently of per-library indexing.
+// Listing reads an atomically published snapshot and never waits for this writer lock.
+static LIBRARY_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// A knowledge library. `embedding_dim` is 0 until the first chunk is indexed
 /// (the dimension is learned from the first embedding response).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -226,6 +230,7 @@ fn create_library_at(
     provider_id: &str,
     model: &str,
 ) -> Result<KnowledgeLibrary, String> {
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let name = name.trim();
     if name.is_empty() {
         return Err("Knowledge base name is empty".to_string());
@@ -253,6 +258,7 @@ fn create_library_at(
 }
 
 fn rename_library_at(root: &Path, kb_id: &str, name: &str) -> Result<(), String> {
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let name = name.trim();
     if name.is_empty() {
         return Err("Knowledge base name is empty".to_string());
@@ -268,6 +274,7 @@ fn rename_library_at(root: &Path, kb_id: &str, name: &str) -> Result<(), String>
 }
 
 fn delete_library_at(root: &Path, kb_id: &str) -> Result<(), String> {
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let mut libs = load_libraries_at(root)?;
     let before = libs.len();
     libs.retain(|l| l.id != kb_id);
@@ -282,6 +289,7 @@ fn delete_library_at(root: &Path, kb_id: &str) -> Result<(), String> {
 }
 
 fn refresh_library_counts_at(root: &Path, kb_id: &str) -> Result<(), String> {
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     let (ndocs, nchunks) = store::counts(&open_kb_at(root, kb_id)?)?;
     let mut libs = load_libraries_at(root)?;
     if let Some(lib) = libs.iter_mut().find(|l| l.id == kb_id) {
@@ -296,6 +304,7 @@ fn refresh_library_counts_at(root: &Path, kb_id: &str) -> Result<(), String> {
 /// Persist the learned embedding dimension on the library record (set on first
 /// successful index; dimension is fixed per library).
 fn set_library_dim_at(root: &Path, kb_id: &str, dim: usize) -> Result<(), String> {
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
     if dim == 0 {
         return Ok(());
     }
@@ -652,6 +661,25 @@ pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], force: bool) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_library_creation_preserves_every_committed_library() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let root = dir.path();
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for j in 0..4 {
+                        create_library_at(root, &format!("{i}-{j}"), "provider", "model").unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(load_libraries_at(dir.path()).unwrap().len(), 32);
+    }
 
     #[test]
     fn kb_id_validation() {

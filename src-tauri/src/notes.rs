@@ -24,6 +24,9 @@ use uuid::Uuid;
 
 use crate::skills::parse::split_frontmatter;
 
+// Preserve serialized note/folder writes after moving IPC work off the UI thread.
+static NOTE_WRITES: Mutex<()> = Mutex::new(());
+
 const ORIGIN_CHAT: &str = "chat";
 const ORIGIN_USER: &str = "user";
 
@@ -308,18 +311,16 @@ fn write_folders(app: &AppHandle, folders: &[String]) -> Result<(), String> {
     std::fs::write(&path, json).map_err(|err| format!("write folders failed: {err}"))
 }
 
-#[tauri::command]
-pub fn notes_list(app: AppHandle) -> Result<Vec<NoteMeta>, String> {
+fn list_notes(app: AppHandle) -> Result<Vec<NoteMeta>, String> {
     app.state::<crate::state::AppState>()
         .note_catalog
         .list(&notes_dir(&app)?)
 }
 
 /// 文件夹清单：folders.json 顺序在前，追加被笔记引用但清单里没有的（容错）。
-#[tauri::command]
-pub fn notes_folders_list(app: AppHandle) -> Result<Vec<String>, String> {
+fn list_folders(app: AppHandle) -> Result<Vec<String>, String> {
     let mut folders = read_folders_raw(&app);
-    for note in notes_list(app.clone())? {
+    for note in list_notes(app.clone())? {
         let f = note.folder.trim();
         if !f.is_empty() && !folders.iter().any(|x| x == f) {
             folders.push(f.to_string());
@@ -329,139 +330,181 @@ pub fn notes_folders_list(app: AppHandle) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn notes_folder_create(app: AppHandle, name: String) -> Result<Vec<String>, String> {
-    let name = sanitize_line(&name);
-    if name.is_empty() {
-        return Err("folder name empty".to_string());
-    }
-    let mut folders = read_folders_raw(&app);
-    if !folders.iter().any(|x| x == &name) {
-        folders.push(name);
-        write_folders(&app, &folders)?;
-    }
-    notes_folders_list(app)
+pub async fn notes_folder_create(app: AppHandle, name: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let name = sanitize_line(&name);
+        if name.is_empty() {
+            return Err("folder name empty".to_string());
+        }
+        let mut folders = read_folders_raw(&app);
+        if !folders.iter().any(|x| x == &name) {
+            folders.push(name);
+            write_folders(&app, &folders)?;
+        }
+        list_folders(app)
+    })
+    .await
+    .map_err(|error| format!("notes_folder_create failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn notes_folder_rename(
+pub async fn notes_folder_rename(
     app: AppHandle,
     old: String,
     new: String,
 ) -> Result<Vec<String>, String> {
-    let new = sanitize_line(&new);
-    if new.is_empty() {
-        return Err("folder name empty".to_string());
-    }
-    // 清单里替换（保序）。
-    let mut folders = read_folders_raw(&app);
-    for f in folders.iter_mut() {
-        if f == &old {
-            *f = new.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let new = sanitize_line(&new);
+        if new.is_empty() {
+            return Err("folder name empty".to_string());
         }
-    }
-    if !folders.iter().any(|x| x == &new) {
-        folders.push(new.clone());
-    }
-    write_folders(&app, &folders)?;
-    // 归属该文件夹的笔记改到新名。
-    for meta in notes_list(app.clone())?
-        .into_iter()
-        .filter(|meta| meta.folder == old)
-    {
-        let path = note_path(&app, &meta.id)?;
-        if let Some(mut note) = read_note_file(&path) {
-            note.folder = new.clone();
-            note.updated_at = now_iso();
-            std::fs::write(&path, serialize_note(&note))
-                .map_err(|err| format!("write note failed: {err}"))?;
+        // 清单里替换（保序）。
+        let mut folders = read_folders_raw(&app);
+        for f in folders.iter_mut() {
+            if f == &old {
+                *f = new.clone();
+            }
         }
-    }
-    notes_folders_list(app)
+        if !folders.iter().any(|x| x == &new) {
+            folders.push(new.clone());
+        }
+        write_folders(&app, &folders)?;
+        // 归属该文件夹的笔记改到新名。
+        for meta in list_notes(app.clone())?
+            .into_iter()
+            .filter(|meta| meta.folder == old)
+        {
+            let path = note_path(&app, &meta.id)?;
+            if let Some(mut note) = read_note_file(&path) {
+                note.folder = new.clone();
+                note.updated_at = now_iso();
+                std::fs::write(&path, serialize_note(&note))
+                    .map_err(|err| format!("write note failed: {err}"))?;
+            }
+        }
+        list_folders(app)
+    })
+    .await
+    .map_err(|error| format!("notes_folder_rename failed: {error}"))?
 }
 
 /// 删除文件夹：清单移除，其中的笔记回到库根（folder=""），不删笔记。
 #[tauri::command]
-pub fn notes_folder_delete(app: AppHandle, name: String) -> Result<Vec<String>, String> {
-    let mut folders = read_folders_raw(&app);
-    folders.retain(|x| x != &name);
-    write_folders(&app, &folders)?;
-    for meta in notes_list(app.clone())?
-        .into_iter()
-        .filter(|meta| meta.folder == name)
-    {
-        let path = note_path(&app, &meta.id)?;
-        if let Some(mut note) = read_note_file(&path) {
-            note.folder = String::new();
-            note.updated_at = now_iso();
-            std::fs::write(&path, serialize_note(&note))
-                .map_err(|err| format!("write note failed: {err}"))?;
+pub async fn notes_folder_delete(app: AppHandle, name: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut folders = read_folders_raw(&app);
+        folders.retain(|x| x != &name);
+        write_folders(&app, &folders)?;
+        for meta in list_notes(app.clone())?
+            .into_iter()
+            .filter(|meta| meta.folder == name)
+        {
+            let path = note_path(&app, &meta.id)?;
+            if let Some(mut note) = read_note_file(&path) {
+                note.folder = String::new();
+                note.updated_at = now_iso();
+                std::fs::write(&path, serialize_note(&note))
+                    .map_err(|err| format!("write note failed: {err}"))?;
+            }
         }
-    }
-    notes_folders_list(app)
+        list_folders(app)
+    })
+    .await
+    .map_err(|error| format!("notes_folder_delete failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn notes_read(app: AppHandle, id: String) -> Result<Note, String> {
-    let path = note_path(&app, &id)?;
-    read_note_file(&path).ok_or_else(|| format!("note not found: {id}"))
+pub async fn notes_read(app: AppHandle, id: String) -> Result<Note, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let path = note_path(&app, &id)?;
+        read_note_file(&path).ok_or_else(|| format!("note not found: {id}"))
+    })
+    .await
+    .map_err(|error| format!("notes_read failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn notes_create(
+pub async fn notes_create(
     app: AppHandle,
     title: String,
     content: String,
     folder: String,
     origin: String,
 ) -> Result<Note, String> {
-    let now = now_iso();
-    let note = Note {
-        id: Uuid::new_v4().to_string(),
-        title: sanitize_line(&title),
-        content,
-        folder: sanitize_line(&folder),
-        origin: normalize_origin(&origin),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    let path = note_path(&app, &note.id)?;
-    std::fs::write(&path, serialize_note(&note))
-        .map_err(|err| format!("write note failed: {err}"))?;
-    Ok(note)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let now = now_iso();
+        let note = Note {
+            id: Uuid::new_v4().to_string(),
+            title: sanitize_line(&title),
+            content,
+            folder: sanitize_line(&folder),
+            origin: normalize_origin(&origin),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let path = note_path(&app, &note.id)?;
+        std::fs::write(&path, serialize_note(&note))
+            .map_err(|err| format!("write note failed: {err}"))?;
+        Ok(note)
+    })
+    .await
+    .map_err(|error| format!("notes_create failed: {error}"))?
 }
 
 /// 更新：origin 保持不变（笔记来源不因编辑而变），folder 可改（移动文件夹）。
 #[tauri::command]
-pub fn notes_update(
+pub async fn notes_update(
     app: AppHandle,
     id: String,
     title: String,
     content: String,
     folder: String,
 ) -> Result<Note, String> {
-    let path = note_path(&app, &id)?;
-    let existing = read_note_file(&path).ok_or_else(|| format!("note not found: {id}"))?;
-    let note = Note {
-        id: existing.id,
-        title: sanitize_line(&title),
-        content,
-        folder: sanitize_line(&folder),
-        origin: existing.origin,
-        created_at: existing.created_at,
-        updated_at: now_iso(),
-    };
-    std::fs::write(&path, serialize_note(&note))
-        .map_err(|err| format!("write note failed: {err}"))?;
-    Ok(note)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let path = note_path(&app, &id)?;
+        let existing = read_note_file(&path).ok_or_else(|| format!("note not found: {id}"))?;
+        let note = Note {
+            id: existing.id,
+            title: sanitize_line(&title),
+            content,
+            folder: sanitize_line(&folder),
+            origin: existing.origin,
+            created_at: existing.created_at,
+            updated_at: now_iso(),
+        };
+        std::fs::write(&path, serialize_note(&note))
+            .map_err(|err| format!("write note failed: {err}"))?;
+        Ok(note)
+    })
+    .await
+    .map_err(|error| format!("notes_update failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn notes_delete(app: AppHandle, id: String) -> Result<(), String> {
-    let path = note_path(&app, &id)?;
-    if !path.exists() {
-        return Err(format!("note not found: {id}"));
-    }
-    std::fs::remove_file(&path).map_err(|err| format!("delete note failed: {err}"))
+pub async fn notes_delete(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+
+        let path = note_path(&app, &id)?;
+        if !path.exists() {
+            return Err(format!("note not found: {id}"));
+        }
+        std::fs::remove_file(&path).map_err(|err| format!("delete note failed: {err}"))
+    })
+    .await
+    .map_err(|error| format!("notes_delete failed: {error}"))?
 }
 
 /// 笔记目录的绝对路径。前端用它订阅 `workspace:activity`，这样用户往目录里拖进
@@ -585,4 +628,23 @@ mod tests {
         let raw = "---\ntitle: T\ncreated_at: a\nupdated_at: b\ncategory: 旧类\n---\n正文";
         assert_eq!(parse_note("x", raw, None).folder, "旧类");
     }
+}
+
+#[tauri::command]
+pub async fn notes_list(app: AppHandle) -> Result<Vec<NoteMeta>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        list_notes(app)
+    })
+    .await
+    .map_err(|error| format!("notes_list failed: {error}"))?
+}
+#[tauri::command]
+pub async fn notes_folders_list(app: AppHandle) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = NOTE_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        list_folders(app)
+    })
+    .await
+    .map_err(|error| format!("notes_folders_list failed: {error}"))?
 }

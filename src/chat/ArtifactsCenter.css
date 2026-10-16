@@ -73,3 +73,5 @@
 @container (max-width: 740px) { .kv-works-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 16px 12px; } }
 @container (max-width: 500px) { .kv-works-header { align-items: stretch; flex-direction: column; gap: 16px; } .kv-works-search { width: 100%; } .kv-works-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 10px; } .kv-work-file-cover { padding: 12px; } .kv-work-format { display: none; } .is-list .kv-work-meta { width: auto; flex-direction: column; margin-left: 0; } }
 @media (max-width: 650px) { .kv-works { padding: 18px 16px; } }
+
+.kv-works-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-block: 16px; }

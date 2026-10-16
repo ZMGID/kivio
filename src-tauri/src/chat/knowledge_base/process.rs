@@ -73,7 +73,10 @@ pub async fn process_document(
         // 内置无法栅格化扫描版 PDF（未引入 pdfium）——但配置了第三方回退时可以救。
         Err("强制 OCR 重扫扫描版 PDF 暂未启用（内置仅支持 PDF 文字层）".to_string())
     } else {
-        parse::parse_file(path)
+        let path = path.to_owned();
+        tauri::async_runtime::spawn_blocking(move || parse::parse_file(&path))
+            .await
+            .map_err(|e| e.to_string())?
     };
     match builtin {
         Ok(doc) => Ok(doc),

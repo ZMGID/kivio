@@ -85,11 +85,12 @@ pub(crate) async fn chat_get_conversations(
 #[tauri::command]
 pub(crate) async fn chat_search_conversations(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     query: String,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
     let conversations = crate::chat::repository::repository(&app)
-        .search(&app, &query, limit)
+        .search(&app, window.label(), &query, limit)
         .await
         .map_err(crate::chat::repository::repository_error)?;
     Ok(serde_json::json!({
@@ -842,12 +843,16 @@ fn non_empty_string(value: String) -> Option<String> {
 }
 
 #[tauri::command]
-pub(crate) fn chat_get_assistants(app: AppHandle) -> Result<serde_json::Value, String> {
-    let assistants = get_assistants(&app, false)?;
-    Ok(serde_json::json!({
-        "success": true,
-        "assistants": assistants,
-    }))
+pub(crate) async fn chat_get_assistants(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let assistants = get_assistants(&app, false)?;
+        Ok(serde_json::json!({
+            "success": true,
+            "assistants": assistants,
+        }))
+    })
+    .await
+    .map_err(|error| format!("chat_get_assistants failed: {error}"))?
 }
 
 #[tauri::command]
@@ -1113,18 +1118,28 @@ pub(crate) fn chat_delete_assistant(
 }
 
 #[tauri::command]
-pub(crate) fn chat_get_projects(app: AppHandle) -> Result<serde_json::Value, String> {
-    let projects = get_projects(&app)?;
-    Ok(serde_json::json!({
-        "success": true,
-        "projects": projects,
-    }))
+pub(crate) async fn chat_get_projects(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let projects = get_projects(&app)?;
+        Ok(serde_json::json!({
+            "success": true,
+            "projects": projects,
+        }))
+    })
+    .await
+    .map_err(|error| format!("chat_get_projects failed: {error}"))?
 }
 
 #[tauri::command]
-pub(crate) fn chat_get_conversation_pins(app: AppHandle) -> Result<serde_json::Value, String> {
-    let pins = crate::chat::storage::load_conversation_pins(&app)?;
-    Ok(serde_json::json!({ "success": true, "pins": pins }))
+pub(crate) async fn chat_get_conversation_pins(
+    app: AppHandle,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let pins = crate::chat::storage::load_conversation_pins(&app)?;
+        Ok(serde_json::json!({ "success": true, "pins": pins }))
+    })
+    .await
+    .map_err(|error| format!("chat_get_conversation_pins failed: {error}"))?
 }
 
 /// `group_id` 是集或项目的 id（前缀不同，不会撞）。空 pins 表示清掉该分组的钉子。
@@ -1256,9 +1271,13 @@ pub(crate) fn chat_project_open_folder(
 // ===== Chat 集(Set) 命令：仿 project 命令 =====
 
 #[tauri::command]
-pub(crate) fn chat_get_sets(app: AppHandle) -> Result<serde_json::Value, String> {
-    let sets = get_sets(&app)?;
-    Ok(serde_json::json!({ "success": true, "sets": sets }))
+pub(crate) async fn chat_get_sets(app: AppHandle) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let sets = get_sets(&app)?;
+        Ok(serde_json::json!({ "success": true, "sets": sets }))
+    })
+    .await
+    .map_err(|error| format!("chat_get_sets failed: {error}"))?
 }
 
 #[tauri::command]

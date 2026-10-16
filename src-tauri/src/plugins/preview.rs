@@ -58,6 +58,8 @@ struct PreviewRuntime {
     server_port: Option<u16>,
 }
 
+static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 static PREVIEW: Mutex<PreviewRuntime> = Mutex::new(PreviewRuntime {
     active_path: None,
     browser_opened: false,
@@ -119,7 +121,7 @@ pub fn note_after_officecli_tool(
                 return; // 有更新的调度
             }
         }
-        if let Err(err) = refresh_html_preview(&app, &path_for_task).await {
+        if let Err(err) = refresh_html_preview(&app, &path_for_task, gen).await {
             eprintln!("[plugins/preview] refresh failed: {err}");
         }
 
@@ -134,14 +136,15 @@ pub fn note_after_officecli_tool(
         }
         tokio::time::sleep(Duration::from_secs(PREVIEW_QUIESCE_SECS)).await;
         {
-            let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+            let guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
             if guard.generation != gen {
                 return; // 期间又有编辑，交给最新一次调度收口
             }
-            // 下次编辑重新打开浏览器视为新会话（旧标签页已停刷）
-            guard.browser_opened = false;
         }
-        if let Err(err) = finalize_html_preview().await {
+        let Some(out) = preview_html_path() else {
+            return;
+        };
+        if let Err(err) = finalize_html_preview(&out, gen).await {
             eprintln!("[plugins/preview] finalize failed: {err}");
         }
     });
@@ -194,10 +197,93 @@ fn kill_watch_leftovers() {
     }
 }
 
-async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), String> {
+fn preview_is_current(generation: u64) -> bool {
+    PREVIEW.lock().unwrap_or_else(|e| e.into_inner()).generation == generation
+}
+
+#[cfg(unix)]
+struct PreviewProcessGroup(u32);
+#[cfg(unix)]
+impl Drop for PreviewProcessGroup {
+    fn drop(&mut self) {
+        unsafe {
+            libc::kill(-(self.0 as i32), libc::SIGKILL);
+        }
+    }
+}
+
+async fn run_preview_command(
+    mut command: Command,
+    deadline: Duration,
+    is_current: impl Fn() -> bool,
+) -> Result<std::process::ExitStatus, String> {
+    command
+        .no_console_window()
+        .kill_on_drop(true)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    let mut child = {
+        let mut wrapped = process_wrap::tokio::CommandWrap::from(command);
+        let mut flags = process_wrap::tokio::CreationFlags(Default::default());
+        flags.0 .0 = crate::proc::CREATE_NO_WINDOW;
+        wrapped
+            .wrap(flags)
+            .wrap(process_wrap::tokio::JobObject)
+            .wrap(process_wrap::tokio::KillOnDrop);
+        wrapped.spawn().map_err(|e| e.to_string())?
+    };
+    #[cfg(not(windows))]
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    let group = child.id().map(PreviewProcessGroup);
+    let wait = async {
+        loop {
+            if !is_current() {
+                return Err("Preview superseded".to_string());
+            }
+            tokio::select! {
+                status = child.wait() => return status.map_err(|e| e.to_string()),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+        }
+    };
+    let result = tokio::time::timeout(deadline, wait)
+        .await
+        .unwrap_or_else(|_| Err("Preview conversion timed out".to_string()));
+    // Also terminate descendants; waiting for the direct child alone leaves converters behind.
+    #[cfg(unix)]
+    drop(group);
+    if result.is_err() {
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+    result
+}
+
+async fn refresh_html_preview(
+    app: &AppHandle,
+    doc_path: &str,
+    generation: u64,
+) -> Result<(), String> {
+    let _refresh = REFRESH_LOCK.lock().await;
+    if !preview_is_current(generation) {
+        return Ok(());
+    }
     let binary = resolve_binary(OFFICECLI_PLUGIN_ID)
         .ok_or_else(|| "officecli binary not found".to_string())?;
-    let out = preview_html_path().ok_or_else(|| "app data unavailable".to_string())?;
+    let published = preview_html_path().ok_or_else(|| "app data unavailable".to_string())?;
+    // Each conversion owns a temporary file. Old processes never write the published preview.
+    let parent = published.parent().ok_or("preview parent unavailable")?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| e.to_string())?;
+    let staging = tempfile::tempdir_in(parent).map_err(|e| e.to_string())?;
+    let out = staging.path().join(PREVIEW_HTML_NAME);
     if let Some(parent) = out.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -208,39 +294,32 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
     wait_for_file(doc_path, 8, 80).await;
 
     // 尽量把 MCP resident 刷到磁盘（与 MCP 共享 named-pipe 时 save 会生效）
-    let _ = Command::new(&binary)
-        .args(["save", doc_path])
-        .no_console_window()
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
-
-    let output = Command::new(&binary)
-        .args([
-            "view",
-            doc_path,
-            "html",
-            "-o",
-            out.to_str()
-                .ok_or_else(|| "preview path not utf-8".to_string())?,
-        ])
-        .no_console_window()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("officecli view html: {e}"))?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        let out_s = String::from_utf8_lossy(&output.stdout);
-        return Err(format!(
-            "view html failed ({}): {} {}",
-            output.status,
-            err.trim(),
-            out_s.trim()
-        ));
+    let mut save = Command::new(&binary);
+    save.args(["save", doc_path]);
+    let _ = run_preview_command(save, Duration::from_secs(10), || {
+        preview_is_current(generation)
+    })
+    .await;
+    if !preview_is_current(generation) {
+        return Ok(());
+    }
+    let mut view = Command::new(&binary);
+    view.args([
+        "view",
+        doc_path,
+        "html",
+        "-o",
+        out.to_str().ok_or("preview path not utf-8")?,
+    ]);
+    let status = run_preview_command(view, Duration::from_secs(30), || {
+        preview_is_current(generation)
+    })
+    .await?;
+    if !status.success() {
+        return Err(format!("view html failed ({status})"));
+    }
+    if !preview_is_current(generation) {
+        return Ok(());
     }
 
     // 注入客户端脚本：推送模式注入 SSE 监听（有变化才刷），回落模式注入
@@ -248,7 +327,7 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
     let mut html = tokio::fs::read_to_string(&out)
         .await
         .map_err(|e| format!("read preview html: {e}"))?;
-    let port = ensure_preview_server().await;
+    let port = ensure_preview_server(Some(generation)).await;
     if let Some(port) = port {
         html = inject_sse_client(&html, port);
     } else {
@@ -270,22 +349,18 @@ async fn refresh_html_preview(app: &AppHandle, doc_path: &str) -> Result<(), Str
         .await
         .map_err(|e| format!("write preview html: {e}"))?;
 
-    // 推送 reload：已连接的 SSE 浏览器立刻重载（推送模式的核心）
+    let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.generation != generation {
+        return Ok(());
+    }
+    // Atomic publication on the same filesystem; the expensive conversion/read/write happened above.
+    std::fs::rename(&out, &published).map_err(|e| format!("publish preview: {e}"))?;
     notify_reload();
-
-    let open_browser = {
-        let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
-        let open = !guard.browser_opened;
-        if open {
-            guard.browser_opened = true;
-        }
-        open
-    };
-
-    if open_browser {
+    if !guard.browser_opened {
+        guard.browser_opened = true;
         let url = match port {
             Some(port) => format!("http://127.0.0.1:{port}/"),
-            None => path_to_file_url(&out),
+            None => path_to_file_url(&published),
         };
         #[allow(deprecated)]
         let _ = app.shell().open(url.as_str(), None);
@@ -301,9 +376,12 @@ fn preview_html_path() -> Option<PathBuf> {
 // ===== SSE 预览服务器（仿上游 watch 的推送模式，但由 Kivio 在 MCP 导出后推） =====
 
 /// 确保 SSE 服务器已启动，返回监听端口；bind 失败返回 None（回落 file:// 轮询）。
-async fn ensure_preview_server() -> Option<u16> {
+async fn ensure_preview_server(generation: Option<u64>) -> Option<u16> {
     if let Some(port) = {
         let guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        if generation.is_some_and(|gen| guard.generation != gen) {
+            return None;
+        }
         guard.server_port
     } {
         return Some(port);
@@ -322,6 +400,13 @@ async fn ensure_preview_server() -> Option<u16> {
     };
     let port = listener.local_addr().ok()?.port();
 
+    let mut preview = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+    if generation.is_some_and(|gen| preview.generation != gen) {
+        return None;
+    }
+    if let Some(port) = preview.server_port {
+        return Some(port);
+    }
     let (tx, _rx) = watch::channel(0u64);
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     {
@@ -332,10 +417,7 @@ async fn ensure_preview_server() -> Option<u16> {
         let mut guard = SERVER_SHUTDOWN_TX.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(shutdown_tx);
     }
-    {
-        let mut guard = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
-        guard.server_port = Some(port);
-    }
+    preview.server_port = Some(port);
 
     let server_task = tauri::async_runtime::spawn(async move {
         loop {
@@ -593,18 +675,42 @@ fn strip_meta_refresh(html: &str) -> String {
 }
 
 /// 静默收口：把当前 live-preview.html 重写为无 meta refresh 版本。
-async fn finalize_html_preview() -> Result<(), String> {
-    let out = preview_html_path().ok_or_else(|| "app data unavailable".to_string())?;
-    let html = tokio::fs::read_to_string(&out)
+async fn finalize_html_preview(out: &Path, generation: u64) -> Result<(), String> {
+    // Serialize with conversion/publication, including the read below.
+    let _refresh = REFRESH_LOCK.lock().await;
+    if !preview_is_current(generation) {
+        return Ok(());
+    }
+    let html = tokio::fs::read_to_string(out)
         .await
         .map_err(|e| format!("read preview html: {e}"))?;
     let stripped = strip_meta_refresh(&html);
-    if stripped.len() != html.len() {
-        tokio::fs::write(&out, stripped)
-            .await
-            .map_err(|e| format!("write preview html: {e}"))?;
-    }
-    Ok(())
+    let out = out.to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Stage the write before taking the generation lock; a new schedule/stop can
+        // invalidate us during I/O, but cannot race the final atomic publication.
+        let staged = if stripped.len() != html.len() {
+            let parent = out.parent().ok_or("preview parent unavailable")?;
+            let temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+            std::fs::write(temp.path(), stripped)
+                .map_err(|e| format!("write preview html: {e}"))?;
+            Some(temp)
+        } else {
+            None
+        };
+        let mut preview = PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+        if preview.generation != generation {
+            return Ok(());
+        }
+        if let Some(temp) = staged {
+            temp.persist(&out)
+                .map_err(|e| format!("publish preview: {e}"))?;
+        }
+        preview.browser_opened = false;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("finalize preview: {e}"))?
 }
 
 fn html_escape_attr(s: &str) -> String {
@@ -891,10 +997,66 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn stale_finalizer_cannot_rewrite_new_preview() {
+        let _serial = PREVIEW_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("live-preview.html");
+        let html = inject_meta_refresh("<html><head></head><body>new document</body></html>", 2);
+        std::fs::write(&out, &html).unwrap();
+        let generation = PREVIEW.lock().unwrap().generation;
+        finalize_html_preview(&out, generation.wrapping_sub(1))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), html);
+        finalize_html_preview(&out, generation).await.unwrap();
+        let finalized = std::fs::read_to_string(&out).unwrap();
+        assert!(finalized.contains("new document"));
+        assert!(!finalized.contains("http-equiv=\"refresh\""));
+
+        // A finalizer queued behind a conversion must revalidate after acquiring the lock.
+        std::fs::write(&out, &html).unwrap();
+        let refresh = REFRESH_LOCK.lock().await;
+        let pending = finalize_html_preview(&out, generation);
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        PREVIEW.lock().unwrap().generation = generation.wrapping_add(1);
+        drop(refresh);
+        pending.await.unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), html);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preview_timeout_and_cancellation_stop_descendants() {
+        for cancelled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("leaked");
+            let mut command = Command::new("/bin/sh");
+            command
+                .args([
+                    "-c",
+                    "(sleep 0.3; echo leaked > \"$1\") & wait",
+                    "preview-test",
+                ])
+                .arg(&marker);
+            let error = run_preview_command(command, Duration::from_millis(75), || !cancelled)
+                .await
+                .unwrap_err();
+            assert!(error.contains(if cancelled { "superseded" } else { "timed out" }));
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            assert!(!marker.exists(), "a stopped preview left a writer running");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn stop_releases_listener_and_closes_sse_connection() {
         let _serial = PREVIEW_TEST_LOCK.lock().unwrap();
         stop_all_previews();
-        let port = ensure_preview_server().await.expect("preview server");
+        let port = ensure_preview_server(None).await.expect("preview server");
         let mut stream = TcpStream::connect(("127.0.0.1", port))
             .await
             .expect("connect preview server");
@@ -928,7 +1090,7 @@ mod tests {
             .expect("preview port should be released");
         drop(listener);
 
-        let restarted_port = ensure_preview_server()
+        let restarted_port = ensure_preview_server(None)
             .await
             .expect("preview server should restart after stop");
         assert_eq!(

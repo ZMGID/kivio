@@ -14,7 +14,7 @@ use std::{
     sync::Mutex,
     time::Duration,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -307,66 +307,75 @@ fn validate(request: &MediaRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn media_station_list(
-    app: AppHandle,
-    station: State<'_, MediaStation>,
-) -> Result<Vec<MediaJob>, String> {
-    let mut store = station.0.lock().map_err(|e| e.to_string())?;
-    store.load(&root(&app)?)?;
-    let mut jobs: Vec<_> = store.jobs.values().cloned().collect();
-    jobs.sort_by(|a, b| {
-        b.created_at
-            .cmp(&a.created_at)
-            .then_with(|| b.id.cmp(&a.id))
-    });
-    Ok(jobs)
+pub async fn media_station_list(app: AppHandle) -> Result<Vec<MediaJob>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let mut store = station.0.lock().map_err(|e| e.to_string())?;
+        store.load(&root(&app)?)?;
+        let mut jobs: Vec<_> = store.jobs.values().cloned().collect();
+        jobs.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        Ok(jobs)
+    })
+    .await
+    .map_err(|error| format!("media_station_list failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn media_station_start(
+pub async fn media_station_start(
     app: AppHandle,
-    state: State<'_, AppState>,
-    station: State<'_, MediaStation>,
     request: MediaRequest,
 ) -> Result<MediaJob, String> {
-    validate(&request)?;
-    let provider = media_provider(&state, &request)?;
-    let job = MediaJob {
-        id: uuid::Uuid::new_v4().to_string(),
-        created_at: chrono::Utc::now().timestamp_millis(),
-        request,
-        status: MediaStatus::Running,
-        error: None,
-        outputs: vec![],
-        provider_task_id: None,
-    };
-    run_job(app, &station, job, provider, false)
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let state = app.state::<AppState>();
+
+        validate(&request)?;
+        let provider = media_provider(&state, &request)?;
+        let job = MediaJob {
+            id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+            request,
+            status: MediaStatus::Running,
+            error: None,
+            outputs: vec![],
+            provider_task_id: None,
+        };
+        run_job(app.clone(), &station, job, provider, false)
+    })
+    .await
+    .map_err(|error| format!("media_station_start failed: {error}"))?
 }
 
 /// Re-attach to a video the provider already accepted (after an app restart, a stopped wait
 /// or a lost poll). Only polls and downloads, so it never submits another paid request.
 #[tauri::command]
-pub fn media_station_resume(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    station: State<'_, MediaStation>,
-    id: String,
-) -> Result<MediaJob, String> {
-    let mut job = {
-        let mut store = station.0.lock().map_err(|e| e.to_string())?;
-        store.load(&root(&app)?)?;
-        store.jobs.get(&id).cloned().ok_or("Task not found")?
-    };
-    if job.status == MediaStatus::Running || job.status == MediaStatus::Completed {
-        return Ok(job);
-    }
-    if job.provider_task_id.is_none() {
-        return Err("该任务没有供应商任务编号，无法继续获取。".into());
-    }
-    let provider = media_provider(&state, &job.request)?;
-    job.status = MediaStatus::Running;
-    job.error = None;
-    run_job(app, &station, job, provider, true)
+pub async fn media_station_resume(app: AppHandle, id: String) -> Result<MediaJob, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let state = app.state::<AppState>();
+
+        let mut job = {
+            let mut store = station.0.lock().map_err(|e| e.to_string())?;
+            store.load(&root(&app)?)?;
+            store.jobs.get(&id).cloned().ok_or("Task not found")?
+        };
+        if job.status == MediaStatus::Running || job.status == MediaStatus::Completed {
+            return Ok(job);
+        }
+        if job.provider_task_id.is_none() {
+            return Err("该任务没有供应商任务编号，无法继续获取。".into());
+        }
+        let provider = media_provider(&state, &job.request)?;
+        job.status = MediaStatus::Running;
+        job.error = None;
+        run_job(app.clone(), &station, job, provider, true)
+    })
+    .await
+    .map_err(|error| format!("media_station_resume failed: {error}"))?
 }
 
 /// Gate shared by start and resume; the page mirrors it when listing providers.
@@ -442,37 +451,44 @@ fn run_job(
 }
 
 #[tauri::command]
-pub fn media_station_cancel(
-    app: AppHandle,
-    station: State<'_, MediaStation>,
-    id: String,
-) -> Result<(), String> {
-    let mut store = station.0.lock().map_err(|e| e.to_string())?;
-    let job = store.jobs.get(&id).ok_or("Task not found")?;
-    if job.status != MediaStatus::Running {
-        return Ok(());
-    }
-    let mut cancelled = job.clone();
-    cancelled.status = MediaStatus::Cancelled;
-    cancelled.error = Some("已停止本地等待；供应商任务可能继续并计费。".into());
-    persist(&root(&app)?, &cancelled)?;
-    store.jobs.insert(id.clone(), cancelled);
-    if let Some(task) = store.stops.remove(&id) {
-        let _ = task.stop.send(());
-    }
-    Ok(())
+pub async fn media_station_cancel(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+
+        let mut store = station.0.lock().map_err(|e| e.to_string())?;
+        let job = store.jobs.get(&id).ok_or("Task not found")?;
+        if job.status != MediaStatus::Running {
+            return Ok(());
+        }
+        let mut cancelled = job.clone();
+        cancelled.status = MediaStatus::Cancelled;
+        cancelled.error = Some("已停止本地等待；供应商任务可能继续并计费。".into());
+        persist(&root(&app)?, &cancelled)?;
+        store.jobs.insert(id.clone(), cancelled);
+        if let Some(task) = store.stops.remove(&id) {
+            let _ = task.stop.send(());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("media_station_cancel failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn media_station_delete(
+pub async fn media_station_delete(
     app: AppHandle,
-    station: State<'_, MediaStation>,
     ids: Vec<String>,
 ) -> Result<MediaDeleteResult, String> {
-    let dir = root(&app)?;
-    let mut store = station.0.lock().map_err(|e| e.to_string())?;
-    store.load(&dir)?;
-    Ok(store.delete(ids, |id| super::artifacts::delete_media_job(&app, &dir, id)))
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+
+        let dir = root(&app)?;
+        let mut store = station.0.lock().map_err(|e| e.to_string())?;
+        store.load(&dir)?;
+        Ok(store.delete(ids, |id| super::artifacts::delete_media_job(&app, &dir, id)))
+    })
+    .await
+    .map_err(|error| format!("media_station_delete failed: {error}"))?
 }
 
 fn output_path(
@@ -499,41 +515,53 @@ fn output_path(
 }
 
 #[tauri::command]
-pub fn media_station_read(
+pub async fn media_station_read(
     app: AppHandle,
-    station: State<'_, MediaStation>,
     id: String,
     index: usize,
 ) -> Result<tauri::ipc::Response, String> {
-    let path = output_path(&app, &station, &id, index)?;
-    Ok(tauri::ipc::Response::new(
-        fs::read(path).map_err(|e| e.to_string())?,
-    ))
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let path = output_path(&app, &station, &id, index)?;
+        Ok(tauri::ipc::Response::new(
+            fs::read(path).map_err(|e| e.to_string())?,
+        ))
+    })
+    .await
+    .map_err(|error| format!("media_station_read failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn media_station_export(
+pub async fn media_station_export(
     app: AppHandle,
-    station: State<'_, MediaStation>,
     id: String,
     index: usize,
     destination: String,
 ) -> Result<(), String> {
-    let path = output_path(&app, &station, &id, index)?;
-    fs::copy(path, destination).map_err(|e| e.to_string())?;
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let path = output_path(&app, &station, &id, index)?;
+        fs::copy(path, destination).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("media_station_export failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn media_station_reference(
+pub async fn media_station_reference(
     app: AppHandle,
-    station: State<'_, MediaStation>,
     id: String,
     index: usize,
 ) -> Result<String, String> {
-    let path = output_path(&app, &station, &id, index)?;
-    super::image_generation::load_input_images_from_paths(std::slice::from_ref(&path))?;
-    Ok(path.to_string_lossy().into_owned())
+    tauri::async_runtime::spawn_blocking(move || {
+        let station = app.state::<MediaStation>();
+        let path = output_path(&app, &station, &id, index)?;
+        super::image_generation::load_input_images_from_paths(std::slice::from_ref(&path))?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| format!("media_station_reference failed: {error}"))?
 }
 
 /// Consecutive transient poll failures tolerated before giving up on a video wait.

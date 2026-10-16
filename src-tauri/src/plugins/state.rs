@@ -369,22 +369,57 @@ Do not re-install them or write MCP config for third-party IDEs.",
 }
 
 pub fn probe_version(binary: &Path) -> Option<String> {
-    let output = Command::new(binary)
+    use std::io::{Read, Seek, SeekFrom};
+    use std::process::Stdio;
+    use std::time::Duration;
+    use wait_timeout::ChildExt;
+
+    // Files avoid both pipe-buffer deadlock and waiting forever for a descendant
+    // that inherited stdout/stderr. Only a bounded prefix is read for display.
+    let mut stdout = tempfile::tempfile().ok()?;
+    let mut stderr = tempfile::tempfile().ok()?;
+    let mut command = Command::new(binary);
+    command
         .arg("--version")
-        .no_console_window()
-        .output()
-        .ok()?;
-    if !output.status.success() {
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone().ok()?)
+        .stderr(stderr.try_clone().ok()?)
+        .no_console_window();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().ok()?;
+    let status = match child.wait_timeout(Duration::from_secs(3)) {
+        Ok(Some(status)) => status,
+        _ => {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+    if !status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    stdout.seek(SeekFrom::Start(0)).ok()?;
+    stderr.seek(SeekFrom::Start(0)).ok()?;
+    stdout.take(8192).read_to_end(&mut out).ok()?;
+    stderr.take(8192).read_to_end(&mut err).ok()?;
+    let text = String::from_utf8_lossy(&out);
     text.lines()
         .next()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| {
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&err)
                 .lines()
                 .next()
                 .map(str::trim)
@@ -395,4 +430,23 @@ pub fn probe_version(binary: &Path) -> Option<String> {
 
 pub fn default_binary_filename(id: &str) -> Option<String> {
     catalog_plugin(id).map(binary_filename)
+}
+
+#[cfg(all(test, unix))]
+mod version_probe_tests {
+    use super::probe_version;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn version_probe_bounds_hung_cli_and_preserves_stderr_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("version-cli");
+        std::fs::write(&binary, "#!/bin/sh\nprintf 'v1.2.3\\n' >&2\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(probe_version(&binary).as_deref(), Some("v1.2.3"));
+        std::fs::write(&binary, "#!/bin/sh\nexec sleep 6\n").unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(probe_version(&binary), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 }

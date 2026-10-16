@@ -9,7 +9,7 @@ use std::{
 use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::{
@@ -67,7 +67,7 @@ pub struct UsageRecord {
     pub error_kind: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageStatsQuery {
     #[serde(default = "default_range")]
@@ -479,8 +479,98 @@ impl CostIndex {
 /// Owns append, clear and the process-local aggregate under one lock. The JSONL
 /// ledger stays authoritative; a restart rebuilds only on the first cost query.
 #[derive(Default)]
-pub(crate) struct UsageLedger(Mutex<Option<CostIndex>>);
+pub(crate) struct UsageLedger(Mutex<Option<CostIndex>>, Mutex<Vec<StatsCache>>);
+
+struct StatsCache {
+    key: String,
+    files: Vec<(PathBuf, u64, Option<std::time::SystemTime>)>,
+    start: Option<i64>,
+    response: UsageStatsResponse,
+    records: Vec<UsageRecord>,
+}
 impl UsageLedger {
+    fn stats(&self, dir: &Path, mut query: UsageStatsQuery) -> Result<UsageStatsResponse, String> {
+        let start = range_start(&query.range);
+        let offset = query.offset.take().unwrap_or(0);
+        let limit = query
+            .limit
+            .take()
+            .unwrap_or(DEFAULT_LOG_LIMIT)
+            .min(MAX_LOG_LIMIT);
+        let key = format!(
+            "{}:{}:{}",
+            dir.display(),
+            Local::now().format("%Y-%m-%d-%H"),
+            serde_json::to_string(&query).map_err(|e| e.to_string())?
+        );
+        let mut files = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().and_then(|v| v.to_str()) != Some("jsonl")
+                    || usage_file_is_before_start(&path, start)
+                {
+                    return None;
+                }
+                let metadata = entry.metadata().ok()?;
+                Some((path, metadata.len(), metadata.modified().ok()))
+            })
+            .collect::<Vec<_>>();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        // Separate from the append/cost lock: a slow report must not block recording model calls.
+        let mut cached = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = cached.iter().find(|entry| {
+            entry.key == key
+                && entry.files == files
+                && start >= entry.start
+                && !entry
+                    .records
+                    .last()
+                    .is_some_and(|record| start.is_some_and(|start| record.created_at < start))
+        }) {
+            let mut response = entry.response.clone();
+            response.logs = entry
+                .records
+                .iter()
+                .skip(offset)
+                .take(limit)
+                .cloned()
+                .collect();
+            return Ok(response);
+        }
+        let (records, skipped_records) = read_records(dir, start);
+        let filtered = filter_records(records, &query);
+        let total_logs = filtered.len();
+        let summary = summarize(&filtered);
+        let trend = build_trend(&filtered, &query.range);
+        let provider_stats = group_provider_stats(&filtered);
+        let model_stats = group_model_stats(&filtered);
+        let logs = filtered.iter().skip(offset).take(limit).cloned().collect();
+        let response = UsageStatsResponse {
+            summary,
+            trend,
+            logs: Vec::new(),
+            provider_stats,
+            model_stats,
+            total_logs,
+            skipped_records,
+        };
+        cached.retain(|entry| entry.key != key);
+        if cached.len() >= 2 {
+            cached.remove(0);
+        }
+        cached.push(StatsCache {
+            key,
+            files,
+            start,
+            response: response.clone(),
+            records: filtered,
+        });
+        Ok(UsageStatsResponse { logs, ..response })
+    }
+
     fn append(&self, dir: &Path, record: &UsageRecord) -> Result<(), String> {
         let mut index = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(error) = append_record(dir, record) {
@@ -546,36 +636,28 @@ impl UsageLedger {
 }
 
 #[tauri::command]
-pub fn usage_get_stats(
-    state: State<'_, AppState>,
+pub async fn usage_get_stats(
+    app: AppHandle,
     query: Option<UsageStatsQuery>,
 ) -> Result<UsageStatsResponse, String> {
-    let query = query.unwrap_or_default();
-    let start = range_start(&query.range);
-    let (records, skipped_records) = read_records(&state.usage_dir, start);
-    let filtered = filter_records(records, &query);
-    let total_logs = filtered.len();
-    let summary = summarize(&filtered);
-    let trend = build_trend(&filtered, &query.range);
-    let provider_stats = group_provider_stats(&filtered);
-    let model_stats = group_model_stats(&filtered);
-    let offset = query.offset.unwrap_or(0);
-    let limit = query.limit.unwrap_or(DEFAULT_LOG_LIMIT).min(MAX_LOG_LIMIT);
-    let logs = filtered.into_iter().skip(offset).take(limit).collect();
-    Ok(UsageStatsResponse {
-        summary,
-        trend,
-        logs,
-        provider_stats,
-        model_stats,
-        total_logs,
-        skipped_records,
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state
+            .usage_ledger
+            .stats(&state.usage_dir, query.unwrap_or_default())
     })
+    .await
+    .map_err(|error| format!("usage_get_stats failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn usage_clear(state: State<'_, AppState>) -> Result<(), String> {
-    state.usage_ledger.clear(&state.usage_dir)
+pub async fn usage_clear(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.usage_ledger.clear(&state.usage_dir)
+    })
+    .await
+    .map_err(|error| format!("usage_clear failed: {error}"))?
 }
 
 fn filter_records(mut records: Vec<UsageRecord>, query: &UsageStatsQuery) -> Vec<UsageRecord> {
@@ -1155,6 +1237,37 @@ mod tests {
             message_id: None,
             error_kind: None,
         }
+    }
+
+    #[test]
+    fn stats_pagination_and_cache_follow_append_and_clear() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
+        let query = |offset| UsageStatsQuery {
+            range: "all".into(),
+            limit: Some(1),
+            offset: Some(offset),
+            ..Default::default()
+        };
+        for i in 0..3 {
+            let mut record = base_record("openai_responses");
+            record.id = format!("record-{i}");
+            record.created_at += i;
+            ledger.append(dir.path(), &record).unwrap();
+        }
+        let first = ledger.stats(dir.path(), query(0)).unwrap();
+        let second = ledger.stats(dir.path(), query(1)).unwrap();
+        assert_eq!(first.total_logs, 3);
+        assert_eq!(first.summary.total_requests, second.summary.total_requests);
+        assert_ne!(first.logs[0].id, second.logs[0].id);
+        ledger
+            .append(dir.path(), &base_record("openai_responses"))
+            .unwrap();
+        assert_eq!(ledger.stats(dir.path(), query(0)).unwrap().total_logs, 4);
+        ledger.clear(dir.path()).unwrap();
+        let empty = ledger.stats(dir.path(), query(0)).unwrap();
+        assert_eq!(empty.total_logs, 0);
+        assert!(empty.logs.is_empty());
     }
 
     #[test]

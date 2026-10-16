@@ -2346,9 +2346,8 @@ pub fn emit_conversation_event(
 }
 
 #[tauri::command]
-pub fn chat_sync_state(
+pub async fn chat_sync_state(
     app: AppHandle,
-    state: tauri::State<'_, AppState>,
     request: ChatSyncRequest,
 ) -> Result<ChatSyncResult, String> {
     if request.protocol_version != CHAT_PROTOCOL_VERSION {
@@ -2357,11 +2356,17 @@ pub fn chat_sync_state(
             CHAT_PROTOCOL_VERSION, request.protocol_version
         ));
     }
-    let mut result = state.chat_protocol().hub().sync(&request);
-    result.conversation_revision =
-        crate::chat::storage::load_conversation(&app, &request.conversation_id)
+    let mut result = app.state::<AppState>().chat_protocol().hub().sync(&request);
+    let repository = crate::chat::repository::repository(&app);
+    result.conversation_revision = match repository.revision(&app, &request.conversation_id).await {
+        Ok(Some(revision)) => revision,
+        // Legacy indexes may not contain revisions yet. Keep the old compatibility behavior.
+        _ => repository
+            .get(&app, &request.conversation_id)
+            .await
             .map(|conversation| conversation.revision)
-            .unwrap_or(0);
+            .unwrap_or(0),
+    };
     Ok(result)
 }
 

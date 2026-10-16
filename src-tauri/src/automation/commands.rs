@@ -10,13 +10,17 @@ use super::types::{
 };
 
 #[tauri::command]
-pub fn automation_list(app: AppHandle) -> Result<Vec<AutomationMeta>, String> {
-    storage::list(&app)
+pub async fn automation_list(app: AppHandle) -> Result<Vec<AutomationMeta>, String> {
+    tauri::async_runtime::spawn_blocking(move || storage::list(&app))
+        .await
+        .map_err(|error| format!("automation_list failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn automation_get(app: AppHandle, id: String) -> Result<Automation, String> {
-    storage::get(&app, &id)
+pub async fn automation_get(app: AppHandle, id: String) -> Result<Automation, String> {
+    tauri::async_runtime::spawn_blocking(move || storage::get(&app, &id))
+        .await
+        .map_err(|error| format!("automation_get failed: {error}"))?
 }
 
 #[tauri::command]
@@ -68,14 +72,21 @@ pub fn automation_cancel(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn automation_active_run(app: AppHandle, id: String) -> Result<Option<AutomationRun>, String> {
-    let run_id = app
-        .state::<crate::state::AppState>()
-        .automation_runs
-        .active_run(&id);
-    run_id
-        .map(|run_id| history::get(&app, &id, &run_id))
-        .transpose()
+pub async fn automation_active_run(
+    app: AppHandle,
+    id: String,
+) -> Result<Option<AutomationRun>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let run_id = app
+            .state::<crate::state::AppState>()
+            .automation_runs
+            .active_run(&id);
+        run_id
+            .map(|run_id| history::get(&app, &id, &run_id))
+            .transpose()
+    })
+    .await
+    .map_err(|error| format!("automation_active_run failed: {error}"))?
 }
 
 #[tauri::command]
@@ -90,18 +101,22 @@ pub fn automation_import(app: AppHandle, path: String) -> Result<Automation, Str
 }
 
 #[tauri::command]
-pub fn automation_runs_list(
+pub async fn automation_runs_list(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<AutomationRunSummary>, String> {
-    history::list(&app, &id)
+    tauri::async_runtime::spawn_blocking(move || history::list(&app, &id))
+        .await
+        .map_err(|error| format!("automation_runs_list failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn automation_run_get(
+pub async fn automation_run_get(
     app: AppHandle,
     id: String,
     run_id: String,
 ) -> Result<AutomationRun, String> {
-    history::get(&app, &id, &run_id)
+    tauri::async_runtime::spawn_blocking(move || history::get(&app, &id, &run_id))
+        .await
+        .map_err(|error| format!("automation_run_get failed: {error}"))?
 }

@@ -3,6 +3,7 @@
 //! model changes) re-runs the same pipeline from the stored source snapshots.
 
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
@@ -18,6 +19,27 @@ use super::{
 
 /// Default embedding-request batch size when a library doesn't override it.
 pub const DEFAULT_EMBED_BATCH: usize = 64;
+static UPLOAD_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static INDEX_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+fn read_source(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    if size > parse::MAX_DOC_BYTES {
+        return Err(format!(
+            "file too large: {size} bytes (max {})",
+            parse::MAX_DOC_BYTES
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(parse::MAX_DOC_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > parse::MAX_DOC_BYTES {
+        return Err("file grew beyond the document size limit".into());
+    }
+    Ok(bytes)
+}
 
 /// Lowercase hex SHA256 of `bytes` — content hash used for upload/import dedup.
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -92,6 +114,7 @@ fn find_source(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<PathBuf, St
 
 /// The actual pipeline for one document. Returns the chunk count on success.
 async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, String> {
+    let _slot = INDEX_SLOTS.acquire().await.map_err(|e| e.to_string())?;
     let lib = super::get_library(app, kb_id)?;
     let doc_name = super::load_docs(app, kb_id)?
         .into_iter()
@@ -127,13 +150,17 @@ async fn index_one(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<usize, 
 
     // Built-in parse (txt/md/html/pdf-text/docx/xlsx), or image → OCR per the config.
     let parsed = super::process::process_document(state, &doc_cfg, &path).await?;
-    let pieces = chunking::chunk_with(
-        &parsed.text,
-        parsed.markdown,
-        chunk_target,
-        chunking::OVERLAP_TOKENS,
-        chunking::MIN_TOKENS,
-    );
+    let pieces = tauri::async_runtime::spawn_blocking(move || {
+        chunking::chunk_with(
+            &parsed.text,
+            parsed.markdown,
+            chunk_target,
+            chunking::OVERLAP_TOKENS,
+            chunking::MIN_TOKENS,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let total = pieces.len();
     emit_index(app, kb_id, doc_id, "indexing", 0, total, None);
@@ -269,67 +296,66 @@ pub(crate) async fn kb_upload_document(
     kb_id: String,
     file_path: String,
 ) -> Result<KnowledgeDocument, String> {
-    // Validate the library exists up front.
-    let _lib = super::get_library(&app, &kb_id)?;
+    let _slot = UPLOAD_SLOTS.acquire().await.map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _slot = _slot;
+        // Validate the library exists up front.
+        let _lib = super::get_library(&app, &kb_id)?;
 
-    let src = PathBuf::from(&file_path);
-    if !parse::is_supported_ext(&src) {
-        return Err(format!(
-            "Unsupported file type: {}",
-            src.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        ));
-    }
-    let bytes = fs::read(&src).map_err(|e| format!("read {}: {e}", src.display()))?;
-    if bytes.len() as u64 > parse::MAX_DOC_BYTES {
-        return Err(format!(
-            "file too large: {} bytes (max {})",
-            bytes.len(),
-            parse::MAX_DOC_BYTES
-        ));
-    }
-    let hash = sha256_hex(&bytes);
+        let src = PathBuf::from(&file_path);
+        if !parse::is_supported_ext(&src) {
+            return Err(format!(
+                "Unsupported file type: {}",
+                src.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ));
+        }
+        let bytes = read_source(&src)?;
+        let hash = sha256_hex(&bytes);
 
-    let file_name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "untitled".to_string());
+        let file_name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".to_string());
 
-    // Dedup by content hash: re-uploading the same file is a no-op.
-    if let Some(existing) = super::doc_by_hash(&app, &kb_id, &hash)? {
-        return Ok(existing);
-    }
+        // Dedup by content hash: re-uploading the same file is a no-op.
+        if let Some(existing) = super::doc_by_hash(&app, &kb_id, &hash)? {
+            return Ok(existing);
+        }
 
-    let doc_id = super::gen_id("doc");
-    let dest =
-        sources_dir(&app, &kb_id)?.join(format!("{doc_id}__{}", sanitize_filename(&file_name)));
-    fs::write(&dest, &bytes).map_err(|e| format!("write source snapshot: {e}"))?;
+        let doc_id = super::gen_id("doc");
+        let dest =
+            sources_dir(&app, &kb_id)?.join(format!("{doc_id}__{}", sanitize_filename(&file_name)));
+        fs::write(&dest, &bytes).map_err(|e| format!("write source snapshot: {e}"))?;
 
-    let doc = KnowledgeDocument {
-        id: doc_id.clone(),
-        name: file_name,
-        size_bytes: bytes.len() as u64,
-        hash,
-        chunk_count: 0,
-        status: DocStatus::Indexing,
-        error: None,
-        created_at: chrono::Local::now().timestamp(),
-    };
-    // Roll back the just-written source snapshot if registration fails, so a
-    // failed upload doesn't leave an unreachable orphan file under sources/.
-    if let Err(e) = super::insert_doc(&app, &kb_id, &doc) {
-        let _ = fs::remove_file(&dest);
-        return Err(e);
-    }
-    let _ = refresh_library_counts(&app, &kb_id);
+        let doc = KnowledgeDocument {
+            id: doc_id.clone(),
+            name: file_name,
+            size_bytes: bytes.len() as u64,
+            hash,
+            chunk_count: 0,
+            status: DocStatus::Indexing,
+            error: None,
+            created_at: chrono::Local::now().timestamp(),
+        };
+        // Roll back the just-written source snapshot if registration fails, so a
+        // failed upload doesn't leave an unreachable orphan file under sources/.
+        if let Err(e) = super::insert_doc(&app, &kb_id, &doc) {
+            let _ = fs::remove_file(&dest);
+            return Err(e);
+        }
+        let _ = refresh_library_counts(&app, &kb_id);
 
-    let app2 = app.clone();
-    tauri::async_runtime::spawn(async move {
-        run_index(app2, kb_id, doc_id).await;
-    });
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            run_index(app2, kb_id, doc_id).await;
+        });
 
-    Ok(doc)
+        Ok(doc)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Import a web page into a library. Fetches the URL, extracts readable text
@@ -490,16 +516,21 @@ pub(crate) async fn kb_update_embedding(
     if provider_id.trim().is_empty() || model.trim().is_empty() {
         return Err("Embedding provider and model are required".to_string());
     }
-    let mut libs = super::load_libraries(&app)?;
-    let lib = libs
-        .iter_mut()
-        .find(|l| l.id == kb_id)
-        .ok_or_else(|| format!("Knowledge base not found: {kb_id}"))?;
-    lib.embedding_provider_id = provider_id;
-    lib.embedding_model = model;
-    lib.embedding_dim = 0;
-    lib.updated_at = chrono::Local::now().timestamp();
-    super::save_libraries(&app, &libs)?;
+    {
+        let _write = super::LIBRARY_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut libs = super::load_libraries(&app)?;
+        let lib = libs
+            .iter_mut()
+            .find(|l| l.id == kb_id)
+            .ok_or_else(|| format!("Knowledge base not found: {kb_id}"))?;
+        lib.embedding_provider_id = provider_id;
+        lib.embedding_model = model;
+        lib.embedding_dim = 0;
+        lib.updated_at = chrono::Local::now().timestamp();
+        super::save_libraries(&app, &libs)?;
+    }
 
     kb_reindex_library(app, kb_id).await
 }
@@ -512,15 +543,20 @@ pub(crate) async fn kb_set_embed_batch_size(
     kb_id: String,
     size: usize,
 ) -> Result<(), String> {
-    let mut libs = super::load_libraries(&app)?;
-    let lib = libs
-        .iter_mut()
-        .find(|l| l.id == kb_id)
-        .ok_or_else(|| format!("Knowledge base not found: {kb_id}"))?;
-    // 0 = default; otherwise clamp to the same 1..=128 the ingest path enforces.
-    lib.embed_batch_size = if size == 0 { 0 } else { size.clamp(1, 128) };
-    lib.updated_at = chrono::Local::now().timestamp();
-    super::save_libraries(&app, &libs)?;
+    {
+        let _write = super::LIBRARY_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut libs = super::load_libraries(&app)?;
+        let lib = libs
+            .iter_mut()
+            .find(|l| l.id == kb_id)
+            .ok_or_else(|| format!("Knowledge base not found: {kb_id}"))?;
+        // 0 = default; otherwise clamp to the same 1..=128 the ingest path enforces.
+        lib.embed_batch_size = if size == 0 { 0 } else { size.clamp(1, 128) };
+        lib.updated_at = chrono::Local::now().timestamp();
+        super::save_libraries(&app, &libs)?;
+    }
     Ok(())
 }
 

@@ -548,7 +548,7 @@ pub fn owner_enabled(id: &str) -> bool {
         .and_then(|dir| read_json(&dir.join("record.json")).ok())
         .is_some_and(|v| v["enabled"] == true)
 }
-fn list() -> Result<Vec<Package>, String> {
+pub(crate) fn list() -> Result<Vec<Package>, String> {
     let root = packages_root()?;
     if !root.exists() {
         return Ok(vec![]);
@@ -804,8 +804,10 @@ pub(super) async fn clone_repository(
     git_command(Some(target), &["rev-parse", "HEAD"]).await
 }
 #[tauri::command]
-pub fn plugin_packages_list() -> Result<Vec<Package>, String> {
-    list()
+pub async fn plugin_packages_list() -> Result<Vec<Package>, String> {
+    tauri::async_runtime::spawn_blocking(move || list())
+        .await
+        .map_err(|error| format!("plugin_packages_list failed: {error}"))?
 }
 
 #[tauri::command]

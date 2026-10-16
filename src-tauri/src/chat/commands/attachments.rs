@@ -10,17 +10,21 @@ use crate::chat::attachments::{
 
 /// 读取附件为 data URL，供前端 `<img>` 预览。`conversation_id` 为空时按本机绝对路径读取（发送前预览）。
 #[tauri::command]
-pub(crate) fn chat_read_attachment(
+pub(crate) async fn chat_read_attachment(
     app: AppHandle,
     conversation_id: Option<String>,
     path: String,
 ) -> Result<serde_json::Value, String> {
-    let full = resolve_attachment_file_path(&app, conversation_id.as_deref(), &path)?;
-    let data_url = read_attachment_as_data_url(&full)?;
-    Ok(serde_json::json!({
-        "success": true,
-        "data": data_url,
-    }))
+    tauri::async_runtime::spawn_blocking(move || {
+        let full = resolve_attachment_file_path(&app, conversation_id.as_deref(), &path)?;
+        let data_url = read_attachment_as_data_url(&full)?;
+        Ok(serde_json::json!({
+            "success": true,
+            "data": data_url,
+        }))
+    })
+    .await
+    .map_err(|error| format!("chat_read_attachment failed: {error}"))?
 }
 
 /// 用系统默认应用打开附件。
@@ -64,45 +68,53 @@ pub(crate) fn chat_reveal_attachment(
 }
 
 #[tauri::command]
-pub(crate) fn chat_save_pasted_image(
+pub(crate) async fn chat_save_pasted_image(
     name: String,
     mime_type: String,
     data_base64: String,
 ) -> Result<serde_json::Value, String> {
-    match save_pasted_image(&name, &mime_type, &data_base64)? {
-        PastedImageSave::Saved {
-            path,
-            name,
-            mime_type,
-        } => Ok(serde_json::json!({
-            "success": true,
-            "path": path.to_string_lossy(),
-            "name": name,
-            "mimeType": mime_type,
-        })),
-        PastedImageSave::Failed { error } => Ok(serde_json::json!({
-            "success": false,
-            "error": error,
-        })),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match save_pasted_image(&name, &mime_type, &data_base64)? {
+            PastedImageSave::Saved {
+                path,
+                name,
+                mime_type,
+            } => Ok(serde_json::json!({
+                "success": true,
+                "path": path.to_string_lossy(),
+                "name": name,
+                "mimeType": mime_type,
+            })),
+            PastedImageSave::Failed { error } => Ok(serde_json::json!({
+                "success": false,
+                "error": error,
+            })),
+        }
+    })
+    .await
+    .map_err(|error| format!("chat_save_pasted_image failed: {error}"))?
 }
 
 #[tauri::command]
-pub(crate) fn chat_save_pasted_attachment(
+pub(crate) async fn chat_save_pasted_attachment(
     name: String,
     data_base64: String,
 ) -> Result<serde_json::Value, String> {
-    match save_pasted_attachment(&name, &data_base64)? {
-        PastedAttachmentSave::Saved { path, name } => Ok(serde_json::json!({
-            "success": true,
-            "path": path.to_string_lossy(),
-            "name": name,
-        })),
-        PastedAttachmentSave::Failed { error } => Ok(serde_json::json!({
-            "success": false,
-            "error": error,
-        })),
-    }
+    tauri::async_runtime::spawn_blocking(move || {
+        match save_pasted_attachment(&name, &data_base64)? {
+            PastedAttachmentSave::Saved { path, name } => Ok(serde_json::json!({
+                "success": true,
+                "path": path.to_string_lossy(),
+                "name": name,
+            })),
+            PastedAttachmentSave::Failed { error } => Ok(serde_json::json!({
+                "success": false,
+                "error": error,
+            })),
+        }
+    })
+    .await
+    .map_err(|error| format!("chat_save_pasted_attachment failed: {error}"))?
 }
 
 /// 读取系统剪贴板中的文件路径（Finder / 资源管理器复制文件）。

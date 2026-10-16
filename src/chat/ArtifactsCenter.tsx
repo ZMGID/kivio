@@ -105,7 +105,7 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
         cachedPage = { ...result, warnings: cachedPage?.warnings ?? result.warnings }
         setPage(cachedPage)
       }
-      return api.chatArtifactsList(true)
+      if (active) return api.chatArtifactsList(true)
     }).then((result) => { if (active && result) { cachedPage = result; setPage(result) } })
       .catch((e) => { if (active) setWorks((state) => ({ ...state, error: String(e) })) })
       .finally(() => { if (active) setLoading(false) })
@@ -131,9 +131,14 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
   }, [groups])
   const visibleKinds = kinds.filter((value) => value === 'all' || (kindCounts.get(value) ?? 0) > 0)
   const activeKind = visibleKinds.includes(kind) ? kind : 'all'
-  const filtered = groups.filter(([item]) => (activeKind === 'all' || kindOf(item) === activeKind)
+  const filtered = useMemo(() => groups.filter(([item]) => (activeKind === 'all' || kindOf(item) === activeKind)
     && `${item.title} ${item.artifact.name}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
-    .sort((a, b) => sort === 'name' ? displayTitle(a[0]).localeCompare(displayTitle(b[0]), zh ? 'zh-CN' : 'en') : sort === 'oldest' ? a[0].createdAt - b[0].createdAt : b[0].createdAt - a[0].createdAt)
+    .sort((a, b) => sort === 'name' ? displayTitle(a[0]).localeCompare(displayTitle(b[0]), zh ? 'zh-CN' : 'en') : sort === 'oldest' ? a[0].createdAt - b[0].createdAt : b[0].createdAt - a[0].createdAt), [groups, activeKind, query, sort, zh])
+  const pageKey = `${activeKind}/${sort}/${query}`
+  const [pagination, setPagination] = useState({ key: '', index: 0 })
+  const pageCount = Math.max(1, Math.ceil(filtered.length / 60))
+  const pageIndex = pagination.key === pageKey ? Math.min(pagination.index, pageCount - 1) : 0
+  const pageItems = filtered.slice(pageIndex * 60, (pageIndex + 1) * 60)
   const managing = picking || chosen.size > 0
   const chosenWorks = filtered.filter(([item]) => chosen.has(item.workId))
 
@@ -273,12 +278,17 @@ export function ArtifactsCenter({ onOpenConversation }: { onOpenConversation: (i
     {error && <div role="alert" className="kv-works-notice">{error}<Button size="sm" onClick={reload}>{zh ? '重试' : 'Retry'}</Button></div>}
     {loading && !page.items.length ? <div className="kv-works-empty" role="status">{zh ? '正在整理作品…' : 'Loading works…'}</div>
         : !filtered.length ? <div className="kv-works-empty"><span className="kv-works-mark-well"><WorksIcon size={34} strokeWidth={1.6} /></span><h2>{query || activeKind !== 'all' ? (zh ? '没有找到匹配的作品' : 'No matching works') : (zh ? '你的创作，从这里开始' : 'Your creations belong here')}</h2><p>{zh ? '聊天交付的文件和媒体站已完成的图片、视频会显示在这里，原文件位置不变。删除对话只移除对应的聊天作品。' : 'Files delivered in chats and completed images and videos from Media studio appear here. Original files stay in place. Deleting a chat removes only its chat works.'}</p></div>
-        : <div className={`kv-works-grid ${list ? 'is-list' : ''}`} aria-busy={loading}>
-          {filtered.map((items) => <WorkCard key={items[0].id} item={items[0]} versions={items.length} zh={zh} checked={chosen.has(items[0].workId)} managing={managing}
+        : <><div className={`kv-works-grid ${list ? 'is-list' : ''}`} aria-busy={loading}>
+          {pageItems.map((items) => <WorkCard key={items[0].id} item={items[0]} versions={items.length} zh={zh} checked={chosen.has(items[0].workId)} managing={managing}
             onOpen={() => managing ? toggleChosen(items[0].workId) : openWork(items[0])}
             onToggle={() => toggleChosen(items[0].workId)}
             onMenu={(anchor) => setMenu({ workId: items[0].workId, anchor })} />)}
-        </div>}
+        </div>
+        {pageCount > 1 && <nav className="kv-works-pagination" aria-label={zh ? '作品分页' : 'Works pages'}>
+          <Button size="sm" disabled={pageIndex === 0} onClick={() => setPagination({ key: pageKey, index: pageIndex - 1 })}>{zh ? '上一页' : 'Previous page'}</Button>
+          <span>{pageIndex + 1} / {pageCount}</span>
+          <Button size="sm" disabled={pageIndex + 1 >= pageCount} onClick={() => setPagination({ key: pageKey, index: pageIndex + 1 })}>{zh ? '下一页' : 'Next page'}</Button>
+        </nav>}</>}
     {page.warnings > 0 && <details className="kv-works-import-note"><summary>{zh ? `${page.warnings} 项历史内容未导入` : `${page.warnings} historical items not imported`}</summary><p>{zh ? '部分聊天附件或媒体创作暂时无法读取。原记录保留，你可以回到聊天或媒体站查看，恢复文件后刷新重试。' : 'Some chat attachments or media creations could not be read. Their source records are unchanged. Restore the files and refresh to retry.'}</p></details>}
     {menu && menuWork && <DockContextMenu anchor={menu.anchor} onClose={() => setMenu(null)} items={[
       { key: 'open', label: zh ? '打开文件' : 'Open file', icon: <ExternalLink size={16} />, disabled: !menuWork[0].available, onSelect: () => openWork(menuWork[0]) },

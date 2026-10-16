@@ -19,6 +19,7 @@ type ControlDetectionSnapshot = {
 }
 
 const CONTROL_CACHE_KEY = 'kivio.computer-control.detection.v1'
+let detectionGeneration = 0
 let detectionInFlight: { key: string; promise: Promise<ControlDetectionSnapshot> } | null = null
 
 const CONTROL_TOOLS = [
@@ -79,10 +80,11 @@ function detectControls(skillScanPaths: string[]): Promise<ControlDetectionSnaps
   const key = scanPathKey(skillScanPaths)
   if (detectionInFlight?.key === key) return detectionInFlight.promise
 
+  const generation = ++detectionGeneration
   const promise = Promise.all([
     Promise.all(CONTROL_TOOLS.filter(tool => tool.kind === 'native').map(async tool => {
       try {
-        const status = await api.computerControlStatus(tool.id)
+        const status = await api.computerControlStatus(tool.id, false)
         return [tool.id, status] as const
       } catch {
         return [tool.id, null] as const
@@ -100,6 +102,20 @@ function detectControls(skillScanPaths: string[]): Promise<ControlDetectionSnaps
       skillScanPaths: [...skillScanPaths],
     }
     writeDetectionCache(snapshot)
+    // Update checks never hold local controls or installation completion hostage.
+    void Promise.all(cliResults.map(async ([id, local]) => {
+      if (!local) return
+      try {
+        const status = await api.computerControlStatus(id)
+        if (generation !== detectionGeneration) return
+        const cached = readDetectionCache(skillScanPaths)
+        if (!cached || cached.versions[id] !== formatControlVersion(status.currentVersion)) return
+        writeDetectionCache({ ...cached, updates: { ...cached.updates, [id]: status } })
+        publishOperation({ ...controlOperation, detectionRevision: controlOperation.detectionRevision + 1 })
+      } catch {
+        // Keep the local result when the update service is unavailable.
+      }
+    }))
     return snapshot
   }).finally(() => {
     if (detectionInFlight?.promise === promise) detectionInFlight = null
@@ -137,6 +153,7 @@ async function runControlOperation(
   work: () => Promise<void>,
 ): Promise<void> {
   if (controlOperation.pending) return
+  if (kind !== 'toggle') detectionGeneration += 1
   publishOperation({ ...controlOperation, pending: { tool, kind }, error: null })
   try {
     await work()
@@ -179,7 +196,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
   onChange: (updates: Partial<ChatToolsConfig> | ((current: ChatToolsConfig) => Partial<ChatToolsConfig>)) => void
 }) {
   const zh = lang === 'zh'
-  const initialCache = useRef(readDetectionCache(tools.skillScanPaths)).current
+  const [initialCache] = useState(() => readDetectionCache(tools.skillScanPaths))
   const [versions, setVersions] = useState<Partial<Record<NativeTool, string>>>(initialCache?.versions ?? {})
   const [updates, setUpdates] = useState<Partial<Record<NativeTool, ControlToolStatus>>>(initialCache?.updates ?? {})
   const [skills, setSkills] = useState<SkillMeta[]>(initialCache?.skills ?? [])

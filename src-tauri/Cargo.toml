@@ -85,6 +85,8 @@ ignore = "0.4"
 # Dock：workspace 文件监听（notify）+ git 命令超时杀进程树（wait-timeout）。
 notify = "7"
 wait-timeout = "0.2"
+# Bounded CLI probes spool output without waiting on inherited pipes.
+tempfile = "3"
 # Dock 终端面板：跨平台 PTY（macOS/Linux forkpty，Windows ConPTY）。
 portable-pty = "0.8"
 
@@ -181,7 +183,6 @@ windows = { version = "0.61.3", features = [
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
-tempfile = "3"
 # Named DST zones keep schedule regressions independent of the process timezone.
 chrono-tz = "0.10"
 # 测试用：test-util 提供 tokio 暂停时钟（start_paused），让重试退避 sleep 在单测中瞬时跳过。

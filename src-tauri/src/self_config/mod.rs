@@ -149,7 +149,7 @@ pub fn inspect(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 })).collect::<Vec<_>>(),"warnings":registry.warnings,
                 "note":"Registry and global gates only; the conversation assistant allow-list and model tools can still restrict activation."})
             }
-            "plugins" => json!({"packages":crate::plugins::packages::plugin_packages_list()?,
+            "plugins" => json!({"packages":crate::plugins::packages::list()?,
                 "catalog":crate::plugins::PLUGIN_CATALOG.iter().map(|p| json!({"id":p.id,"name":p.name,"enabled":crate::plugins::is_enabled(p.id)})).collect::<Vec<_>>(),
                 "note":"Catalog installation detection is not run by this read-only tool; catalog plugins use the Plugins page."}),
             "mcp" => {

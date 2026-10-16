@@ -22,6 +22,7 @@ use crate::settings::{Settings, SettingsError, SettingsSnapshot, SettingsVersion
 /// 组合根只保存领域句柄。
 pub struct AppState {
     settings: RwLock<Settings>,
+    settings_transaction: std::sync::Mutex<()>,
     /// Per-process namespace for settings revisions. A renderer carrying a snapshot from a
     /// previous backend process must never match a new process that happens to reuse revision 0.
     settings_epoch: String,
@@ -182,6 +183,7 @@ impl AppState {
         let provider_runtime = crate::chat::provider_runtime::ProviderRuntimeState::new(&settings);
         AppState {
             settings: RwLock::new(settings),
+            settings_transaction: std::sync::Mutex::new(()),
             settings_epoch: uuid::Uuid::new_v4().to_string(),
             settings_revision: AtomicU64::new(0),
             settings_persistence: crate::settings::SettingsPersistenceGate::default(),
@@ -273,7 +275,11 @@ impl AppState {
         build_canonical: impl FnOnce(&Settings) -> Result<Settings, String>,
         persist: impl FnOnce(&Settings) -> Result<(), String>,
     ) -> Result<SettingsSnapshot, SettingsError> {
-        let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
+        let _transaction = self
+            .settings_transaction
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let current = self.settings_read().clone();
         let actual_revision = self.settings_revision();
         let actual_version = self.settings_version_at(actual_revision);
         if let Some(expected_version) = expected_version {
@@ -287,6 +293,7 @@ impl AppState {
 
         let canonical = build_canonical(&current).map_err(SettingsError::from)?;
         persist(&canonical).map_err(SettingsError::from)?;
+        let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
         *current = canonical.clone();
         let revision = self.advance_settings_revision();
         Ok(SettingsSnapshot {

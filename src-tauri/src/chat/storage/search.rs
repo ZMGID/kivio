@@ -206,11 +206,12 @@ pub fn search_conversations(
     app: &AppHandle,
     query: &str,
     limit: usize,
+    cancelled: impl Fn() -> bool,
 ) -> Result<Vec<ConversationSearchHit>, String> {
     // Keep empty/disabled searches side-effect free: the legacy entry point returned before
     // touching the repository, so a missing/corrupt index must not turn an empty query into an
     // error.
-    if query.trim().is_empty() || limit == 0 {
+    if query.trim().is_empty() || limit == 0 || cancelled() {
         return Ok(vec![]);
     }
     let index = load_index_or_scan(app)?;
@@ -219,6 +220,7 @@ pub fn search_conversations(
         query,
         limit,
         |item, needle| match_conversation_for_search(app, item, needle),
+        cancelled,
     ))
 }
 
@@ -227,6 +229,7 @@ fn search_ranked_items<F>(
     query: &str,
     limit: usize,
     mut matcher: F,
+    cancelled: impl Fn() -> bool,
 ) -> Vec<ConversationSearchHit>
 where
     F: FnMut(ConversationListItem, &str) -> Option<ConversationSearchHit>,
@@ -238,6 +241,9 @@ where
 
     let mut hits = Vec::new();
     for item in rank_conversations_for_search(items) {
+        if cancelled() {
+            return Vec::new();
+        }
         if let Some(hit) = matcher(item, &needle) {
             hits.push(hit);
             if hits.len() >= limit {
@@ -474,6 +480,27 @@ mod tests {
     }
 
     #[test]
+    fn superseded_search_stops_before_reading_remaining_conversations() {
+        let reads = std::cell::Cell::new(0);
+        let hits = search_ranked_items(
+            vec![
+                search_item("a", 3, false),
+                search_item("b", 2, false),
+                search_item("c", 1, false),
+            ],
+            "needle",
+            10,
+            |_, _| {
+                reads.set(reads.get() + 1);
+                None
+            },
+            || reads.get() >= 1,
+        );
+        assert!(hits.is_empty());
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
     fn search_orders_newest_first_and_applies_limit() {
         let dir = std::env::temp_dir().join(format!("kivio-search-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
@@ -498,6 +525,7 @@ mod tests {
                     load_conversation_file_for_search(&dir.join(format!("{id}.json")), needle)
                 })
             },
+            || false,
         );
 
         assert_eq!(
@@ -532,6 +560,7 @@ mod tests {
                     load_conversation_file_for_search(&dir.join(format!("{id}.json")), needle)
                 })
             },
+            || false,
         );
 
         assert_eq!(

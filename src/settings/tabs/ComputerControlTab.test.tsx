@@ -71,6 +71,24 @@ describe('ComputerControlTab', () => {
     vi.mocked(api.pluginsList).mockResolvedValue([])
   })
 
+  it('shows local controls while an update check is pending across navigation', async () => {
+    let finishUpdate!: (value: { currentVersion: string; latestVersion: string; updateAvailable: boolean }) => void
+    const slowUpdate = new Promise<{ currentVersion: string; latestVersion: string; updateAvailable: boolean }>(resolve => { finishUpdate = resolve })
+    vi.mocked(api.computerControlStatus).mockImplementation((_tool, checkUpdates) => {
+      if (checkUpdates !== false) return slowUpdate
+      return Promise.resolve({ currentVersion: '0.28.1', latestVersion: null, updateAvailable: false })
+    })
+    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
+    const controls = renderControls(makeChatToolsFixture())
+    expect(await screen.findByRole('switch', { name: 'Cua Driver 控制' })).toBeEnabled()
+    controls.leave()
+    controls.enter()
+    expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).toBeEnabled()
+    expect(screen.queryByText('正在检测…')).toBeNull()
+    await act(async () => { finishUpdate({ currentVersion: '0.28.1', latestVersion: '0.29.0', updateAvailable: true }) })
+    expect(await screen.findByRole('button', { name: '更新' })).toBeEnabled()
+  })
+
   it('shows only a compact ready state or install action', async () => {
     vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
     const onChange = vi.fn()

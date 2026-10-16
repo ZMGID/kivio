@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Database, RefreshCw, Trash2 } from 'lucide-react'
 import {
   api,
@@ -1013,7 +1013,9 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   const [clearing, setClearing] = useState(false)
   const [error, setError] = useState('')
 
+  const statsGeneration = useRef(0)
   const loadStats = useCallback(async () => {
+    const generation = ++statsGeneration.current
     setLoading(true)
     setError('')
     try {
@@ -1026,11 +1028,11 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
         limit: LOG_PAGE_SIZE,
         offset: logPageIndex * LOG_PAGE_SIZE,
       })
-      setStats(data)
+      if (generation === statsGeneration.current) setStats(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (generation === statsGeneration.current) setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoading(false)
+      if (generation === statsGeneration.current) setLoading(false)
     }
   }, [debouncedModelSearch, debouncedProviderSearch, logPageIndex, range, source, status])
 
@@ -1045,6 +1047,7 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
 
   useEffect(() => {
     void loadStats()
+    return () => { statsGeneration.current += 1 }
   }, [loadStats])
 
   useEffect(() => {

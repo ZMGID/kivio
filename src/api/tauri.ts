@@ -2331,8 +2331,8 @@ export const api = {
     invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; discoveryPending?: boolean }>('chat_mcp_list_tools', { cachedOnly }),
   computerControlCheck: (tool: 'cua' | 'playwright') =>
     invoke<string>('computer_control_check', { tool }),
-  computerControlStatus: (tool: 'cua' | 'playwright') =>
-    invoke<ControlToolStatus>('computer_control_status', { tool }),
+  computerControlStatus: (tool: 'cua' | 'playwright', checkUpdates = true) =>
+    invoke<ControlToolStatus>('computer_control_status', { tool, checkUpdates }),
   computerControlInstall: (tool: 'cua' | 'playwright') =>
     invoke<SkillMeta>('computer_control_install', { tool }),
   computerControlUpdate: (tool: 'cua' | 'playwright') =>

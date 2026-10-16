@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use tauri::{AppHandle, Manager, State};
@@ -199,6 +200,8 @@ pub struct ConversationRepository {
     barrier: RwLock<()>,
     conversation_locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
     index_lock: Mutex<()>,
+    search_slots: Arc<tokio::sync::Semaphore>,
+    search_generations: StdMutex<HashMap<String, Arc<AtomicU64>>>,
     /// Goal mutations made by this process while startup recovery is pending.
     /// Ordinary message/context writes do not enter this set. Drop it when
     /// recovery finishes so it never becomes a lifetime-long conversation cache.
@@ -211,6 +214,8 @@ impl Default for ConversationRepository {
             barrier: RwLock::new(()),
             conversation_locks: StdMutex::new(HashMap::new()),
             index_lock: Mutex::new(()),
+            search_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            search_generations: StdMutex::new(HashMap::new()),
             restart_goal_changes: StdMutex::new(Some(HashSet::new())),
         }
     }
@@ -411,14 +416,40 @@ impl ConversationRepository {
     pub async fn search(
         &self,
         app: &AppHandle,
+        owner: &str,
         query: &str,
         limit: usize,
     ) -> RepositoryResult<Vec<super::ConversationSearchHit>> {
+        let generation = self
+            .search_generations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(owner.to_owned())
+            .or_default()
+            .clone();
+        let current = generation.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        if query.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let slot = self
+            .search_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
+        if generation.load(Ordering::Relaxed) != current {
+            return Ok(Vec::new());
+        }
         let _barrier = self.barrier.read().await;
         let app_for_read = app.clone();
         let query = query.to_string();
         let hits = Self::spawn_storage(
-            move || super::storage::search_conversations(&app_for_read, &query, limit),
+            move || {
+                let _slot = slot;
+                super::storage::search_conversations(&app_for_read, &query, limit, || {
+                    generation.load(Ordering::Relaxed) != current
+                })
+            },
             "search conversations",
         )
         .await?;
@@ -432,10 +463,19 @@ impl ConversationRepository {
         app: &AppHandle,
         query: super::storage::ConversationLibraryQuery,
     ) -> RepositoryResult<super::storage::ConversationLibraryPage> {
+        let slot = self
+            .search_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| e.to_string())?;
         let _barrier = self.barrier.read().await;
         let app_for_read = app.clone();
         let page = Self::spawn_storage(
-            move || super::storage::query_conversations(&app_for_read, query),
+            move || {
+                let _slot = slot;
+                super::storage::query_conversations(&app_for_read, query)
+            },
             "query conversation library",
         )
         .await?;

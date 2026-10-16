@@ -284,7 +284,7 @@ fn skills_root() -> Result<PathBuf, String> {
 fn built_in_ready(item: &BuiltIn, state: &BuiltInState) -> bool {
     if item.bundled.is_some() {
         return state.revision.as_deref() == Some(item.revision.as_str())
-            && crate::plugins::packages::plugin_packages_list()
+            && crate::plugins::packages::list()
                 .ok()
                 .and_then(|packages| bundled_installed(item, state, &packages).ok().flatten())
                 .is_some_and(|package| bundled_complete(item, &package));
@@ -475,7 +475,7 @@ fn built_in_local(
 }
 
 fn snapshot_of(catalog: &Catalog, disabled_skill_ids: &[String]) -> Value {
-    let packages = crate::plugins::packages::plugin_packages_list().unwrap_or_default();
+    let packages = crate::plugins::packages::list().unwrap_or_default();
     json!({
         "categories": catalog.categories.iter()
             .map(|(id, name)| json!({ "id": id, "name": name }))
@@ -663,7 +663,7 @@ fn market_companion_package(
     item: &BuiltIn,
     id: &str,
 ) -> Result<Option<crate::plugins::packages::Package>, String> {
-    let package = crate::plugins::packages::plugin_packages_list()?
+    let package = crate::plugins::packages::list()?
         .into_iter()
         .find(|package| package.id == id);
     if let Some(package) = &package {
@@ -717,11 +717,7 @@ async fn install_bundled(app: &AppHandle, item: &BuiltIn) -> Result<(), String> 
         plugin_packages_import, plugin_packages_remove, plugin_packages_set_enabled,
     };
     let previous = built_in_state(item);
-    let old = bundled_installed(
-        item,
-        &previous,
-        &crate::plugins::packages::plugin_packages_list()?,
-    )?;
+    let old = bundled_installed(item, &previous, &crate::plugins::packages::list()?)?;
     if old.as_ref().is_some_and(|p| bundled_complete(item, p))
         && previous.revision.as_deref() == Some(&item.revision)
     {
@@ -795,12 +791,8 @@ async fn set_built_in_enabled(
 ) -> Result<(), String> {
     let saved = built_in_state(item);
     if item.bundled.is_some() {
-        let package = bundled_installed(
-            item,
-            &saved,
-            &crate::plugins::packages::plugin_packages_list()?,
-        )?
-        .ok_or("插件尚未安装")?;
+        let package = bundled_installed(item, &saved, &crate::plugins::packages::list()?)?
+            .ok_or("插件尚未安装")?;
         crate::plugins::packages::plugin_packages_set_enabled(
             app.clone(),
             app.state::<AppState>(),
@@ -1012,11 +1004,8 @@ async fn install_plugin(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
 async fn uninstall_plugin(app: &AppHandle, item: &BuiltIn) -> Result<(), String> {
     let state = built_in_state(item);
     if item.bundled.is_some() {
-        if let Some(package) = bundled_installed(
-            item,
-            &state,
-            &crate::plugins::packages::plugin_packages_list()?,
-        )? {
+        if let Some(package) = bundled_installed(item, &state, &crate::plugins::packages::list()?)?
+        {
             crate::plugins::packages::plugin_packages_remove(
                 app.clone(),
                 app.state::<AppState>(),
@@ -1090,14 +1079,18 @@ fn find<'a>(catalog: &'a Catalog, id: &str) -> Result<&'a BuiltIn, String> {
 
 /// 读取清单与本地安装状态。
 #[tauri::command]
-pub fn market_snapshot(app: AppHandle) -> Result<Value, String> {
-    Ok(snapshot_of(
-        &load_market_catalog(&app)?,
-        &app.state::<AppState>()
+pub async fn market_snapshot(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let disabled = app
+            .state::<AppState>()
             .settings_read()
             .chat_tools
-            .disabled_skill_ids,
-    ))
+            .disabled_skill_ids
+            .clone();
+        Ok(snapshot_of(&load_market_catalog(&app)?, &disabled))
+    })
+    .await
+    .map_err(|error| format!("market_snapshot failed: {error}"))?
 }
 
 /// 安装或修复插件；已就绪时直接返回。完成后返回最新快照。

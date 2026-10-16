@@ -481,7 +481,7 @@ async fn install(store: &Path, id: &str, plugin: &str) -> Result<Package, String
         name: text(&market.manifest, "name").into(),
         plugin: plugin.into(),
     };
-    if let Some(existing) = packages::plugin_packages_list()?
+    if let Some(existing) = packages::list()?
         .into_iter()
         .find(|p| p.marketplace.as_ref() == Some(&origin))
     {
@@ -517,7 +517,7 @@ async fn describe(
         .iter()
         .find(|p| text(p, "name") == plugin)
         .ok_or("市场中找不到这个插件")?;
-    if let Some(existing) = packages::plugin_packages_list()?.into_iter().find(|p| {
+    if let Some(existing) = packages::list()?.into_iter().find(|p| {
         p.marketplace
             .as_ref()
             .is_some_and(|origin| origin.source == market.source && origin.plugin == plugin)
@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(load(&store).unwrap()[0].manifest["name"], "team");
         assert!(remove(&store, id).unwrap().is_empty());
         assert!(root.exists());
-        assert_eq!(packages::plugin_packages_list().unwrap()[0].id, package.id);
+        assert_eq!(packages::list().unwrap()[0].id, package.id);
     }
 
     #[tokio::test]
@@ -727,7 +727,7 @@ mod tests {
                 Err(error) => failed.push(format!("{name}: {error}")),
             }
         }
-        assert!(packages::plugin_packages_list().unwrap().is_empty());
+        assert!(packages::list().unwrap().is_empty());
         assert!(failed.is_empty(), "Preview failures: {failed:?}");
         println!("{} representative previews passed", names.len());
     }
@@ -788,7 +788,7 @@ mod tests {
                 .name,
             "SessionStart"
         );
-        assert!(packages::plugin_packages_list().unwrap().is_empty());
+        assert!(packages::list().unwrap().is_empty());
         assert_eq!(fs::read_dir(&installed).unwrap().count(), 0);
         let package = install(&store, &markets[0].id, "demo").await.unwrap();
         remove(&store, &markets[0].id).unwrap();
@@ -832,12 +832,12 @@ mod tests {
             if has_claude {
                 assert_eq!(details.author.as_deref(), Some("Claude developer"));
             }
-            assert!(packages::plugin_packages_list().unwrap().is_empty());
+            assert!(packages::list().unwrap().is_empty());
             let installed = install(&store, &markets[0].id, "demo").await.unwrap();
             assert_eq!(installed.format, "claude");
             assert_eq!(installed.components["skills"], 1);
             assert!(!installed.enabled);
-            let reloaded = packages::plugin_packages_list().unwrap();
+            let reloaded = packages::list().unwrap();
             assert_eq!(reloaded[0].format, "claude");
             assert!(reloaded[0].diagnostics.is_empty());
             let local = packages::details::plugin_packages_describe(installed.id)
@@ -870,7 +870,7 @@ mod tests {
             .items
             .len();
         assert!(count > 0);
-        assert!(packages::plugin_packages_list().unwrap().is_empty());
+        assert!(packages::list().unwrap().is_empty());
         let installed = install(&store, &markets[0].id, name).await.unwrap();
         assert_eq!(installed.format, "claude");
         assert!(!installed.enabled);
@@ -902,7 +902,7 @@ mod tests {
             .groups
             .iter()
             .any(|g| g.kind == "mcp" && !g.items.is_empty()));
-        assert!(packages::plugin_packages_list().unwrap().is_empty());
+        assert!(packages::list().unwrap().is_empty());
     }
 
     // Explicit opt-in network smoke test, using temporary storage and disabled packages only.

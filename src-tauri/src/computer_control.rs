@@ -154,8 +154,18 @@ pub async fn computer_control_check(tool: ControlTool) -> Result<String, String>
 }
 
 #[tauri::command]
-pub async fn computer_control_status(tool: ControlTool) -> Result<ControlToolStatus, String> {
+pub async fn computer_control_status(
+    tool: ControlTool,
+    check_updates: Option<bool>,
+) -> Result<ControlToolStatus, String> {
     let current_version = extract_version(&computer_control_check(tool).await?);
+    if check_updates == Some(false) {
+        return Ok(ControlToolStatus {
+            current_version,
+            latest_version: None,
+            update_available: false,
+        });
+    }
     let mut latest_version = None;
     let mut update_available = false;
 
@@ -189,7 +199,7 @@ pub async fn computer_control_status(tool: ControlTool) -> Result<ControlToolSta
 }
 
 fn import_control_skill(app: AppHandle, source: &Path) -> Result<SkillMeta, String> {
-    let result = crate::skills::chat_skills_import(app, source.to_string_lossy().into_owned());
+    let result = crate::skills::import_skill(app, source.to_string_lossy().into_owned());
     result.skill.filter(|_| result.success).ok_or_else(|| {
         result
             .error

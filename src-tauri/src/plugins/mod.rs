@@ -30,13 +30,17 @@ pub use state::{
     is_installed, plugins_root, resolve_binary, resolve_binary_for_status,
 };
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::state::AppState;
 
 #[tauri::command]
-pub fn plugins_list(state: State<'_, AppState>) -> Result<Vec<PluginStatus>, String> {
-    list_plugin_statuses_with_state(&state)
+pub async fn plugins_list(app: AppHandle) -> Result<Vec<PluginStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        list_plugin_statuses_with_state(&app.state::<AppState>())
+    })
+    .await
+    .map_err(|err| format!("Plugin detection failed: {err}"))?
 }
 
 /// 无 spawn 的缓存态列表：前端首屏立即渲染，再拉 `plugins_list` 覆盖为精确探测。

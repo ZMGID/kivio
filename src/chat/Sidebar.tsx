@@ -1445,7 +1445,9 @@ export const Sidebar = memo(function Sidebar({
       return
     }
     let cancelled = false
+    let started = false
     const handle = setTimeout(() => {
+      started = true
       void chatApi
         .searchConversations(searchQuery, 30)
         .then((items) => {
@@ -1458,6 +1460,7 @@ export const Sidebar = memo(function Sidebar({
     return () => {
       cancelled = true
       clearTimeout(handle)
+      if (started) void chatApi.searchConversations('', 0).catch(() => {})
     }
   }, [searchOpen, normalizedSearchQuery, searchQuery])
 

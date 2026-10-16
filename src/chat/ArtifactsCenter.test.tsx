@@ -59,6 +59,17 @@ describe('Works library', () => {
     expect(await screen.findByRole('button', { name: 'legacy.png' })).toBeTruthy()
   })
 
+  it('bounds mounted cards while keeping later works reachable and searchable', async () => {
+    vi.mocked(api.chatArtifactsList).mockResolvedValue(page(...Array.from({ length: 125 }, (_, i) => work(`item-${i}`, { title: `作品 ${i}`, createdAt: 125 - i }))))
+    render(<ArtifactsCenter onOpenConversation={vi.fn()} />)
+    await screen.findByRole('button', { name: 'item-0.png' })
+    expect(screen.queryByRole('button', { name: 'item-124.png' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.queryByRole('button', { name: 'item-0.png' })).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索作品' }), { target: { value: 'item-124' } })
+    expect(await screen.findByRole('button', { name: 'item-124.png' })).toBeTruthy()
+  })
+
   it('opens the original in the default application without reading an in-app preview', async () => {
     vi.mocked(api.chatArtifactsList).mockResolvedValue(page(work('latest', { workId: 'older', parentId: 'older' }), work('older', { createdAt: 1 })))
     render(<ArtifactsCenter onOpenConversation={vi.fn()} />)

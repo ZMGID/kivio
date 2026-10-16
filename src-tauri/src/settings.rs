@@ -4063,6 +4063,30 @@ mod tests {
     }
 
     #[test]
+    fn settings_reads_remain_available_until_durable_commit() {
+        let state = test_app_state();
+        let before = settings_snapshot(&state);
+        let committed = update_settings_with(
+            &state,
+            |settings| {
+                settings.theme = "light".into();
+                Ok(())
+            },
+            |_| {
+                let current = state
+                    .try_settings_read()
+                    .expect("slow persistence must not block snapshot readers");
+                assert_eq!(current.theme, before.settings.theme);
+                assert_eq!(state.settings_revision(), before.version.revision);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(settings_snapshot(&state).settings.theme, "light");
+        assert_eq!(committed.version.revision, before.version.revision + 1);
+    }
+
+    #[test]
     fn failed_settings_persist_does_not_publish_or_advance_the_version() {
         let state = test_app_state();
         let before = settings_snapshot(&state);
