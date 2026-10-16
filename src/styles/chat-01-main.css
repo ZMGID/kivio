@@ -915,6 +915,13 @@ button.chat-composer-status-item:hover {
   background: color-mix(in srgb, var(--theme-surface-soft) 48%, transparent);
 }
 
+/* Menu 材质比 Mica 更容易透出窗口后的亮色；macOS 用更厚的主题底色稳定对比度。 */
+.dark .chat-window-host--mac-titlebar.chat-window-host--native-effect .chat-sidebar-shell,
+.dark .chat-window-host--mac-titlebar.chat-window-host--native-effect .chat-titlebar-strip-nav--reserve,
+.dark .chat-window-host--mac-titlebar.chat-window-host--native-effect .chat-dock-shell {
+  background: color-mix(in srgb, var(--theme-surface-soft) 76%, transparent);
+}
+
 /* 原生控件的暗色方案只挂在不透明阅读面上，绝不挂 html：
    WebView2 会给 color-scheme:dark 的根节点铺一层不透明深色 canvas，挡住 Mica。 */
 .chat-main-pane,

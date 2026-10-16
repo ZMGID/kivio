@@ -2030,6 +2030,9 @@ export const api = {
    *  路走后端而不是 window.setEffects()，因为 tauri 把 apply_mica 的失败静默吞掉了。 */
   chatWindowApplyMica: (dark: boolean): Promise<boolean> =>
     invoke('chat_window_apply_mica', { dark }),
+  /** 只同步 macOS 毛玻璃视图，不改变应用或 WebView 的系统主题来源。 */
+  chatWindowSetMaterialAppearance: (dark: boolean): Promise<boolean> =>
+    invoke('chat_window_set_material_appearance', { dark }),
   /** macOS：材质没上时把 NSWindow 设回 opaque，换回合成器的不透明快路径（台前调度不掉帧）。
    *  材质上了必须传 false，否则 Menu 材质被实色背景挡死。非 macOS 是 no-op。 */
   chatWindowSetOpaque: (opaque: boolean): Promise<void> =>

@@ -51,7 +51,7 @@ export async function syncChatWindowEffect(
 
   // Windows：materials 由后端上，因为只有它能报告 Mica 是否真的生效（见 ApplyMica）。
   // 变体跟应用主题走（→ DWMWA_USE_IMMERSIVE_DARK_MODE）：裸 Mica 跟**系统**主题，
-  // 亮色系统下暗色应用会从卡片缝隙里透出一片白。macOS 的 Menu 材质自己跟 NSAppearance。
+  // 亮色系统下暗色应用会从卡片缝隙里透出一片白。
   if (platform === 'windows') {
     const applied = await applyMica(dark).catch(() => false)
     if (!applied) await window.clearEffects().catch(() => {})
@@ -63,7 +63,10 @@ export async function syncChatWindowEffect(
     // 别按 onFocusChanged 手动 clear/set —— 那是在切窗动画中途增删 NSVisualEffectView，
     // 台前调度下整窗重绘 + 实时模糊重算，肉眼可见掉帧。
     await window.setEffects({ effects: [Effect.Menu], state: EffectState.FollowsWindowActiveState })
-    return true
+    // 只改材质视图的外观；setTheme 会修改整个 NSApplication，干扰跟随系统主题。
+    if (await api.chatWindowSetMaterialAppearance(dark)) return true
+    await window.clearEffects().catch(() => {})
+    return false
   } catch {
     await window.clearEffects().catch(() => {})
     return false

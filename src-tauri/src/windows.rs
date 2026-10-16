@@ -196,6 +196,65 @@ pub fn chat_window_apply_mica(window: WebviewWindow, dark: bool) -> bool {
     }
 }
 
+/// 只给原生材质视图设置外观，避免 NSApplication / WebView 跟随系统的主题被锁定。
+#[tauri::command]
+pub async fn chat_window_set_material_appearance(window: WebviewWindow, dark: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let window_for_main = window.clone();
+        if window
+            .run_on_main_thread(move || {
+                use cocoa::base::{id, nil};
+                use cocoa::foundation::NSString;
+                use objc::{class, msg_send, sel, sel_impl};
+                let applied = window_for_main
+                    .ns_window()
+                    .ok()
+                    .filter(|ptr| !ptr.is_null())
+                    .map(|ptr| unsafe {
+                        let content: id = msg_send![ptr as id, contentView];
+                        let views: id = msg_send![content, subviews];
+                        let count: usize = msg_send![views, count];
+                        let name = NSString::alloc(nil).init_str(if dark {
+                            "NSAppearanceNameDarkAqua"
+                        } else {
+                            "NSAppearanceNameAqua"
+                        });
+                        let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: name];
+                        let _: () = msg_send![name, release];
+                        if appearance == nil {
+                            return false;
+                        }
+                        let mut found = false;
+                        // Tauri 将 NSVisualEffectView 作为 contentView 的直接子视图插入。
+                        for index in 0..count {
+                            let view: id = msg_send![views, objectAtIndex: index];
+                            let material: bool =
+                                msg_send![view, isKindOfClass: class!(NSVisualEffectView)];
+                            if material {
+                                let _: () = msg_send![view, setAppearance: appearance];
+                                found = true;
+                            }
+                        }
+                        found
+                    })
+                    .unwrap_or(false);
+                let _ = tx.send(applied);
+            })
+            .is_err()
+        {
+            return false;
+        }
+        rx.await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, dark);
+        false
+    }
+}
+
 /// macOS chat 窗口：材质没上时把 NSWindow 设回 opaque。
 ///
 /// 建窗时写死 `transparent(true)`（Menu 材质要透过 WebView 才看得见），但材质关掉后内容

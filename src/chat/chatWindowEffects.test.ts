@@ -1,5 +1,10 @@
 import { Effect, EffectState } from '@tauri-apps/api/window'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../api/tauri'
+
+vi.mock('../api/tauri', () => ({ api: { chatWindowSetMaterialAppearance: vi.fn() } }))
+beforeEach(() => vi.mocked(api.chatWindowSetMaterialAppearance).mockReset().mockResolvedValue(true))
+
 import { chatWindowEffectEligible, syncChatWindowEffect } from './chatWindowEffects'
 
 function effectWindow() {
@@ -19,9 +24,11 @@ describe('chat window native effects', () => {
     expect(chatWindowEffectEligible('windows', true, { width: 3839, height: 2160 })).toBe(true)
   })
 
-  it('keeps the macOS Menu material applied across focus changes', async () => {
+  it.each([true, false])('matches macOS material to app dark=%s while inactive', async dark => {
     const window = effectWindow()
-    expect(await syncChatWindowEffect(window, 'macos', true, false, { width: 1280, height: 800 }, true)).toBe(true)
+    expect(await syncChatWindowEffect(window, 'macos', true, false, { width: 1280, height: 800 }, dark)).toBe(true)
+    expect(api.chatWindowSetMaterialAppearance).toHaveBeenCalledWith(dark)
+    expect(window.setEffects.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.chatWindowSetMaterialAppearance).mock.invocationCallOrder[0])
     expect(window.setEffects).toHaveBeenCalledWith({
       effects: [Effect.Menu],
       state: EffectState.FollowsWindowActiveState,
@@ -29,6 +36,13 @@ describe('chat window native effects', () => {
     // 焦点交给 FollowsWindowActiveState：失焦不得 clear，否则切窗动画中途拆装
     // NSVisualEffectView，台前调度下肉眼掉帧。
     expect(window.clearEffects).not.toHaveBeenCalled()
+  })
+
+  it('keeps the opaque fallback when macOS appearance cannot be synchronized', async () => {
+    const window = effectWindow()
+    vi.mocked(api.chatWindowSetMaterialAppearance).mockResolvedValue(false)
+    expect(await syncChatWindowEffect(window, 'macos', true, true, { width: 1280, height: 800 }, true)).toBe(false)
+    expect(window.clearEffects).toHaveBeenCalledTimes(1)
   })
 
   it('clears the macOS effect when applying it throws', async () => {

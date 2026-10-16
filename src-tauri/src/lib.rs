@@ -539,6 +539,7 @@ pub fn run() {
             chat::media_station::media_station_reference,
             commands::get_settings,
             windows::chat_window_apply_mica,
+            windows::chat_window_set_material_appearance,
             windows::chat_window_set_opaque,
             windows::chat_traffic_light_center_y,
             chat::notification_viewing::chat_report_notification_view,
