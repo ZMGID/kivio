@@ -1,3 +1,4 @@
+import { AppNoticeHost } from './components/AppNotice'
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react'
 import { Select, TextArea } from './settings/public/controls'
 import { listen } from '@tauri-apps/api/event'
@@ -562,6 +563,7 @@ function App() {
   if (mode === 'chat-popout') {
     return (
       <ChatWindowHost translucentSidebar={translucentSidebar}>
+        <AppNoticeHost lang={lang} />
         <Suspense fallback={chatSuspenseFallback}>
           <ChatErrorBoundary>
             <ChatPopout onContentReady={revealChatWindowNow} />
@@ -573,6 +575,7 @@ function App() {
   if (mode === 'chat') {
     return (
       <ChatWindowHost translucentSidebar={translucentSidebar}>
+        <AppNoticeHost lang={lang} />
         <Suspense fallback={chatSuspenseFallback}>
           <ChatErrorBoundary>
             <Chat onSettingsChange={applyTheme} onContentReady={revealChatWindowNow} />

@@ -1,3 +1,4 @@
+import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import {
   BookOpen,
@@ -10,9 +11,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   FileText,
-  MessageSquare,
-  MessageSquarePlus,
-  Check,
+  History,
   Minus,
   NotebookPen,
   Highlighter,
@@ -21,6 +20,7 @@ import {
   Loader2,
 } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
+import { ComposeIcon } from '../../settings/public/icons'
 import { Input, TextArea } from '../../settings/public/controls'
 import { ChatMarkdown } from '../ChatMarkdown'
 import { MessageList, type MessageListProps } from '../MessageList'
@@ -154,6 +154,7 @@ function PdfPage({
 }
 
 export interface ReadingCenterProps {
+  headerControls?: React.ReactNode
   inputBarProps: InputBarProps
   messageListProps: MessageListProps
   modelControls: React.ReactNode
@@ -189,24 +190,16 @@ export default function ReadingCenter(props: ReadingCenterProps) {
   )
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {(error || library.error) && (
-        <div role="alert" className="px-4 py-2 text-sm">
-          {error || library.error}
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              void retryReadingSaves()
-                .then(() => loadReadingLibrary())
-                .catch((error) => setError(String(error)))
-            }}
-          >
-            重试保存 / 加载
-          </Button>
-        </div>
-      )}
+      <ErrorNotice
+        message={error || library.error}
+        actionLabel="重试保存 / 加载"
+        onAction={() => {
+          setError('')
+          void retryReadingSaves().then(() => loadReadingLibrary()).catch((error) => setError(String(error)))
+        }}
+      />
       <div className={doc ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-        <LiteratureLibrary onRead={select} />
+        <LiteratureLibrary onRead={select} headerControls={props.headerControls} />
       </div>
       {doc ? (
         <ReadingWorkspace
@@ -227,6 +220,7 @@ function ReadingWorkspace({
   inputBarProps,
   messageListProps,
   modelControls,
+  headerControls,
   onCreateConversation,
   onActivateConversation,
   onSend,
@@ -242,7 +236,7 @@ function ReadingWorkspace({
   const [page, setPage] = useState(doc.page),
     [width, setWidth] = useState(720),
     [zoom, setZoom] = useState(1)
-  const [side, setSide] = useState<'chat' | 'notes'>('chat'),
+  const [side, setSide] = useState<'chat' | 'notes' | 'history'>('chat'),
     [sideOpen, setSideOpen] = useState(true),
     [mobile, setMobile] = useState('reader')
   const [nav, setNav] = useState<'outline' | 'search' | null>(null),
@@ -263,6 +257,23 @@ function ReadingWorkspace({
   const [preparing, setPreparing] = useState(false),
     [chatLoading, setChatLoading] = useState(true),
     [chatError, setChatError] = useState('')
+  const [history, setHistory] = useState<{ id: string; conversation: Conversation | null }[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyRevision, setHistoryRevision] = useState(0)
+  useEffect(() => {
+    if (side !== 'history') return
+    let live = true
+    setHistoryLoading(true)
+    void Promise.all(doc.conversationIds.map(async (id) => {
+      try { return { id, conversation: await chatApi.getConversation(id) } }
+      catch { return { id, conversation: null } }
+    })).then((items) => {
+      if (!live) return
+      setHistory(items.reverse())
+      setHistoryLoading(false)
+    })
+    return () => { live = false }
+  }, [side, doc.conversationIds, historyRevision])
   const host = useRef<HTMLDivElement>(null),
     reader = useRef<HTMLElement>(null),
     alive = useRef(true)
@@ -562,7 +573,7 @@ function ReadingWorkspace({
       setNotice(kind === 'highlight' ? '已保存高亮' : '已保存到阅读笔记')
       return true
     } catch {
-      setNotice('保存失败，请使用上方重试保存')
+      setChatError('保存失败，请通过操作提示重试保存')
       return false
     }
   }
@@ -595,6 +606,7 @@ function ReadingWorkspace({
     setPreparing(true)
     try {
       await createConversation()
+      if (alive.current) setSide('chat')
     } catch (error) {
       setChatError(String(error))
     } finally {
@@ -675,11 +687,12 @@ function ReadingWorkspace({
   const state = { notes: doc.notes }
   return (
     <div className="reading-app">
-      <header className="workspace-bar">
+      <header className={`workspace-bar ${headerControls ? 'has-window-controls' : ''}`} data-tauri-drag-region>
+        {headerControls}
         <div className="document-identity">
           <Button size="sm" variant="ghost" onClick={() => void openPdf()}>
             <ArrowLeft size={15} />
-            文献库
+            Kivio Study
           </Button>
           <BookOpen size={19} />
           <span className="document-name">{doc.name}</span>
@@ -1007,57 +1020,37 @@ function ReadingWorkspace({
               className={`conversation-pane ${mobile === 'chat' ? 'is-mobile-active' : ''}`}
               aria-label="对话与笔记"
             >
-              <div className="conversation-tools">
-                <div role="tablist" aria-label="文档侧栏">
-                  <button
-                    role="tab"
-                    aria-selected={side === 'chat'}
-                    onClick={() => setSide('chat')}
+              <div className="reading-chat-toolbar">
+                <div className="reading-chat-model">{modelControls}</div>
+                <div className="reading-chat-actions">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-pressed={side === 'notes'}
+                    onClick={() => setSide(side === 'notes' ? 'chat' : 'notes')}
                   >
-                    <MessageSquare size={14} />
-                    对话
-                  </button>
-                  <button
-                    role="tab"
-                    aria-selected={side === 'notes'}
-                    onClick={() => setSide('notes')}
+                    {side === 'notes' ? <ArrowLeft size={14} /> : <NotebookPen size={14} />}
+                    {side === 'notes' ? '返回对话' : `笔记${state.notes.length ? ` ${state.notes.length}` : ''}`}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-pressed={side === 'history'}
+                    onClick={() => setSide(side === 'history' ? 'chat' : 'history')}
                   >
-                    <NotebookPen size={14} />
-                    笔记
-                    {state.notes.length > 0 && (
-                      <span>{state.notes.length}</span>
-                    )}
-                  </button>
-                </div>
-                {side === 'chat' && (
+                    <History size={14} />
+                    {side === 'history' ? '返回对话' : '历史'}
+                  </Button>
                   <IconButton
-                    label="开始新对话"
+                    label="新建对话"
                     variant="ghost"
                     disabled={preparing || !!busy}
                     onClick={() => void newConversation()}
                   >
-                    <MessageSquarePlus size={16} />
+                    <ComposeIcon size={16} strokeWidth={1.75} />
                   </IconButton>
-                )}
-              </div>
-              <div className="reading-chat-model">{modelControls}</div>
-              {doc.conversationIds.length > 1 && (
-                <div className="reading-conversation-history">
-                  <span>对话</span>
-                  {doc.conversationIds.map((id, index) => (
-                    <Button
-                      key={id}
-                      size="sm"
-                      variant={
-                        id === doc.activeConversationId ? 'default' : 'ghost'
-                      }
-                      onClick={() => persist({ activeConversationId: id })}
-                    >
-                      {index + 1}
-                    </Button>
-                  ))}
                 </div>
-              )}
+              </div>
               <div
                 className="chat-surface"
                 style={{ display: side === 'chat' ? 'flex' : 'none' }}
@@ -1073,35 +1066,35 @@ function ReadingWorkspace({
                 }}
               >
                 {!messages.length && (
-                  <div className="reading-empty">
-                    <BookOpen size={25} />
-                    <h2>从读到的地方开始</h2>
-                    <p>
-                      选一段原文深入聊聊，
-                      <br />
-                      也可以直接向整份文档提问。
-                    </p>
-                    <Button
-                      variant="ghost"
-                      onClick={() =>
-                        insertTextIntoComposer('请概括这份文档的核心观点。')
-                      }
-                    >
-                      概括核心观点
-                      <ArrowUpRight size={13} />
-                    </Button>
+                  <div className="reading-empty custom-scrollbar">
+                    <div className="reading-empty-content">
+                      <h2>一起读懂这篇文献</h2>
+                      <p>选中原文深入提问，或从一个问题开始。</p>
+                      <div className="reading-starters">
+                        {[
+                          ['概括核心观点', '请概括这篇文献的研究问题、核心观点和主要结论，并引用原文页码。'],
+                          ['梳理研究方法', '请梳理这篇文献的研究方法，解释关键步骤、假设与适用条件，并引用原文页码。'],
+                          ['分析贡献与局限', '请分析这篇文献的主要贡献与局限，区分作者的陈述和你的判断，并引用原文页码。'],
+                        ].map(([label, prompt]) => (
+                          <Button
+                            key={label}
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => insertTextIntoComposer(prompt)}
+                          >
+                            {label}
+                            <ArrowUpRight size={13} />
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
-                {chatReady && (
+                {chatReady && messages.length > 0 && (
                   <MessageList
                     {...messageListProps}
                     onSaveMessageToNote={saveAnswer}
                   />
-                )}
-                {chatError && (
-                  <div role="alert" className="px-4 py-2 text-sm">
-                    {chatError}
-                  </div>
                 )}
                 <InputBar
                   {...inputBarProps}
@@ -1135,6 +1128,43 @@ function ReadingWorkspace({
                   }
                 />
               </div>
+              {side === 'history' && (
+                <div className="reading-history custom-scrollbar">
+                  <div className="reading-history-heading">
+                    <h2>这篇文献的对话</h2>
+                  </div>
+                  {historyLoading ? <p role="status">正在加载对话…</p> : (
+                    <>
+                      {!history.length && <p>还没有对话。新建一个，开始讨论这篇文献。</p>}
+                      {history.some((item) => !item.conversation) && (
+                        <Button size="sm" variant="ghost" onClick={() => setHistoryRevision((value) => value + 1)}>
+                          重试加载失败的对话
+                        </Button>
+                      )}
+                      {history.map(({ id, conversation }) => {
+                        const question = conversation?.messages.find((message) => message.role === 'user')?.content.trim()
+                        const lastQuestion = conversation?.messages.filter((message) => message.role === 'user').at(-1)?.content.trim()
+                        return (
+                          <button
+                            className="reading-history-item"
+                            key={id}
+                            disabled={!conversation || preparing}
+                            aria-current={id === doc.activeConversationId ? 'true' : undefined}
+                            onClick={() => { persist({ activeConversationId: id }); setSide('chat') }}
+                          >
+                            <span className="reading-history-title">{question || (conversation ? '尚未提问' : '对话加载失败')}</span>
+                            {lastQuestion && lastQuestion !== question && <span className="reading-history-preview">最近：{lastQuestion}</span>}
+                            <span className="reading-history-meta">
+                              {conversation && new Date(conversation.updated_at * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              {id === doc.activeConversationId && <span>当前对话</span>}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </>
+                  )}
+                </div>
+              )}
               {side === 'notes' && (
                 <div className="notes-surface custom-scrollbar">
                   <div className="notes-intro">
@@ -1196,12 +1226,8 @@ function ReadingWorkspace({
           </>
         )}
       </main>
-      {notice && (
-        <div role="status" className="reading-toast">
-          <Check size={14} />
-          {notice}
-        </div>
-      )}
+      <ErrorNotice message={chatError} />
+      <OperationNotice message={notice} tone="success" />
     </div>
   )
 }

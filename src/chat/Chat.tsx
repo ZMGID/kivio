@@ -76,7 +76,6 @@ import { ContextIndicator } from './ContextIndicator'
 import {
   agentRuntimesEqual,
   BUILTIN_AGENT_RUNTIME,
-  CHAT_AGENT_RUNTIME,
   chatApi,
   normalizeAgentRuntime,
 } from './api'
@@ -1920,7 +1919,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         projectId: options.reading ? null : selectedProject?.id ?? null,
         setId: options.reading ? null : selectedSet?.id ?? null,
         draft: {
-          agentRuntime: options.reading ? CHAT_AGENT_RUNTIME : draftAgentRuntime,
+          agentRuntime: options.reading ? BUILTIN_AGENT_RUNTIME : draftAgentRuntime,
           knowledgeBaseIds: options.reading ? [] : draftKnowledgeBaseIds,
           forceKnowledgeSearch: options.reading ? false : draftForceKnowledgeSearch,
           additionalDirectories: options.reading ? [] : draftAdditionalDirectories,
@@ -1953,7 +1952,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const createReadingConversation = useCallback(async (name: string) => {
     const { activeProviderId, activeModel } = newConversationDefaultsRef.current
     const conversation = await chatApi.createConversation(activeProviderId || undefined, activeModel || undefined)
-    await chatApi.setAgentRuntime(conversation.id, CHAT_AGENT_RUNTIME)
+    await chatApi.setAgentRuntime(conversation.id, BUILTIN_AGENT_RUNTIME)
     const updated = await chatApi.updateConversation(conversation.id, { title: `阅读 · ${name}` })
     refreshSidebar()
     return updated
@@ -3013,9 +3012,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
           </div>
         ) : chatView === 'reading' ? (
-          <div key="center" className={worksPageClass}>
-            {centerPageTopStrip}
+          <div key="center" className="chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col">
             <Suspense fallback={null}><ReadingCenter
+              headerControls={usesNativeTitlebar && sidebarCollapsed ? (
+                <div className={`chat-titlebar-row ${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`} data-tauri-drag-region>
+                  <ChatTitlebarActions
+                    sidebarExpanded={false}
+                    onToggleSidebar={() => setSidebarCollapsedPersisted(false)}
+                    onNewConversation={() => void handleNewConversation()}
+                  />
+                </div>
+              ) : undefined}
               inputBarProps={inputBarProps}
               messageListProps={messageListProps}
               onCreateConversation={createReadingConversation}

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   BookOpen,
@@ -6,7 +7,6 @@ import {
   Folder,
   FolderPlus,
   Import,
-  Library,
   Plus,
   Search,
   Star,
@@ -21,6 +21,7 @@ import {
   Files,
 } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
+import { StudyIcon } from '../../settings/public/icons'
 import { Button, IconButton } from '../../components/Button'
 import { Input, Select, TextArea } from '../../settings/public/controls'
 import {
@@ -98,7 +99,9 @@ function LibraryDialog({
 
 export default function LiteratureLibrary({
   onRead,
+  headerControls,
 }: {
+  headerControls?: ReactNode
   onRead: (doc: ReadingDocument) => void
 }) {
   const { documents, collections, loading, saving } = useReadingLibrary()
@@ -168,7 +171,7 @@ export default function LiteratureLibrary({
   const heading =
     names[filter] ??
     activeCollections.find((c) => c.id === currentCollection)?.name ??
-    '文献库'
+    'Kivio Study'
   const run = async (label: string, action: () => Promise<void>) => {
     if (busyRef.current) return
     busyRef.current = true
@@ -275,7 +278,7 @@ export default function LiteratureLibrary({
       const item = await createReadingItem(result.name, result.bibliography)
       await addToCurrent([item])
       setDialog(null)
-      setNotice('文献已加入文献库。可以继续编辑资料或关联 PDF。')
+      setNotice('文献已加入 Kivio Study。可以继续编辑资料或关联 PDF。')
     })
   const attachPdf = (item: ReadingDocument) =>
     run('正在关联 PDF…', async () => {
@@ -452,10 +455,11 @@ export default function LiteratureLibrary({
   }
   return (
     <div className="literature-library">
-      <header className="literature-header">
+      <header className={`literature-header ${headerControls ? 'has-window-controls' : ''}`} data-tauri-drag-region>
+        {headerControls}
         <h1>
-          <Library size={17} />
-          文献库
+          <StudyIcon size={17} />
+          Kivio Study
         </h1>
         <div className="literature-search">
           <Search size={15} />
@@ -499,24 +503,8 @@ export default function LiteratureLibrary({
           </Button>
         </div>
       </header>
-      {(error || notice || busy) && (
-        <div className="literature-feedback" role={error ? 'alert' : 'status'}>
-          <span>{error || busy || notice}</span>
-          {!busy && (
-            <IconButton
-              label="关闭提示"
-              variant="ghost"
-              size="xs"
-              onClick={() => {
-                setError('')
-                setNotice('')
-              }}
-            >
-              <X size={13} />
-            </IconButton>
-          )}
-        </div>
-      )}
+      <ErrorNotice message={error} />
+      <OperationNotice message={busy || notice} tone={busy ? 'info' : 'success'} duration={busy ? 0 : 3500} />
       <div className="literature-body">
         <aside
           className="literature-navigation custom-scrollbar"
@@ -677,7 +665,7 @@ export default function LiteratureLibrary({
                             (id) => id !== currentCollection,
                           ),
                         }),
-                        '已移出分类，文献仍在文献库中',
+                        '已移出分类，文献仍在 Kivio Study 中',
                       )
                     }
                   >
@@ -803,10 +791,10 @@ export default function LiteratureLibrary({
             </table>
             {!filtered.length && (
               <div className="literature-empty">
-                <Library size={30} />
+                <StudyIcon size={30} />
                 <h3>
                   {loading
-                    ? '正在加载文献库…'
+                    ? '正在加载 Kivio Study…'
                     : query || tags.length
                       ? '没有匹配的文献'
                       : filter === 'trash'
@@ -872,7 +860,7 @@ export default function LiteratureLibrary({
                     }
                   >
                     <RotateCcw size={15} />
-                    恢复到文献库
+                    恢复到 Kivio Study
                   </Button>
                 ) : doc.hasPdf !== false ? (
                   <Button variant="primary" onClick={() => onRead(doc)}>
@@ -1145,7 +1133,7 @@ export default function LiteratureLibrary({
               variant="primary"
               disabled={!doi.trim() || !!busy}
             >
-              获取并加入文献库
+              获取并加入 Kivio Study
             </Button>
           </form>
           <div className="literature-dialog-divider">也可以手动录入</div>
@@ -1204,7 +1192,7 @@ export default function LiteratureLibrary({
                 value={parent}
                 onChange={setParent}
                 options={[
-                  { value: '', label: '文献库（顶层）' },
+                  { value: '', label: 'Kivio Study（顶层）' },
                   ...activeCollections
                     .filter(
                       (c) =>

@@ -277,3 +277,39 @@ html.dark[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal)
   gap: 8px;
   margin-top: 4px;
 }
+
+/* Shared operation feedback, clear of native titlebar controls. */
+.kv-notices {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  width: min(340px, calc(100vw - 32px));
+  z-index: 10000;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+  max-height: calc(100vh - 68px);
+  overflow-y: auto;
+}
+.kv-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: var(--radius-menu, 10px);
+  background: var(--theme-surface);
+  color: var(--text);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+.kv-notice-icon { flex-shrink: 0; margin-top: 2px; color: var(--danger); }
+.kv-notice.warning .kv-notice-icon,
+.kv-notice.info .kv-notice-icon,
+.kv-notice.success .kv-notice-icon { color: var(--text-muted); }
+.kv-notice-copy { flex: 1; min-width: 0; font-size: 12px; line-height: 1.5; }
+.kv-notice-summary { margin: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.kv-notice details { margin-top: 5px; }
+.kv-notice summary { cursor: pointer; color: var(--text-muted); }
+.kv-notice-detail { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }

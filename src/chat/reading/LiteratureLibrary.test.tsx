@@ -41,7 +41,7 @@ it('keeps the creation dialog open on Escape during lookup and permits retry aft
   fireEvent.change(screen.getByLabelText('新文献 DOI'), {
     target: { value: '10.1000/notfound' },
   })
-  fireEvent.click(screen.getByRole('button', { name: '获取并加入文献库' }))
+  fireEvent.click(screen.getByRole('button', { name: '获取并加入 Kivio Study' }))
   const dialog = screen.getByRole('dialog')
   const cancellation = new Event('cancel', { cancelable: true })
   fireEvent(dialog, cancellation)
@@ -49,7 +49,7 @@ it('keeps the creation dialog open on Escape during lookup and permits retry aft
   fail(new Error('not found'))
   await waitFor(() =>
     expect(
-      screen.getByRole('button', { name: '获取并加入文献库' }),
+      screen.getByRole('button', { name: '获取并加入 Kivio Study' }),
     ).toBeEnabled(),
   )
   expect(dialog).toBeVisible()

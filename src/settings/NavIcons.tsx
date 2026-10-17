@@ -56,6 +56,17 @@ export function KnowledgeIcon(props: IconProps) {
   )
 }
 
+// Kivio Study：学士帽，以学习语义区别于知识库的书本。
+export function StudyIcon(props: IconProps) {
+  return (
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M2.5 8.5 12 4l9.5 4.5L12 13 2.5 8.5Z" />
+      <path d="M6 10.25v5.5c3.5 3 8.5 3 12 0v-5.5" />
+      <path d="M21.5 8.5v7" />
+    </svg>
+  )
+}
+
 // 输入翻译：前卡 A，后卡露出一角的「文」
 export function TranslateIcon(props: IconProps) {
   return (

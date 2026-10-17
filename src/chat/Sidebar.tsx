@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
 import {
-  BookOpen,
   ChevronRight,
   CircleArrowUp,
   Folder,
@@ -16,7 +15,7 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
+import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, StudyIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
@@ -80,8 +79,8 @@ const extensionSubItems: Array<{
   { id: 'assistants', label: (t) => t.chatNavAssistants, icon: AgentIcon },
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
   { id: 'media', label: (t) => t.chatNavMedia, icon: MediaIcon },
-  { id: 'reading', label: (t) => t.chatNavReading, icon: (props) => <BookOpen {...props} /> },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: NotesIcon },
+  { id: 'reading', label: (t) => t.chatNavReading, icon: StudyIcon },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -431,7 +430,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
+                className={`${item.id === 'reading' ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900'
                     : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'
