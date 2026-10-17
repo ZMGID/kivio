@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptyBibliography, type ReadingDocument } from '../../api/reading'
-import { filterLiterature, mergeBibliography } from './literature'
+import { filterLiterature, mergeBibliography, literatureLayout } from './literature'
 const base: ReadingDocument = {
   id: 'one',
   name: 'Attention research',
@@ -32,14 +32,15 @@ describe('literature browsing', () => {
         'missing',
       ]),
     ).toEqual([])
-    expect(filterLiterature([base], collections, 'unfiled', '', [])).toEqual([])
+    expect(filterLiterature([base], collections, 'all', '', [], true)).toEqual([])
     expect(
       filterLiterature(
         [base],
         collections.map((c) => ({ ...c, deleted: true })),
-        'unfiled',
+        'all',
         '',
         [],
+        true,
       ).map((d) => d.id),
     ).toEqual(['one'])
   })
@@ -54,7 +55,7 @@ describe('literature browsing', () => {
       filterLiterature(
         [{ ...trashed, trashedAt: null }],
         [],
-        'reading',
+        'all',
         '',
         [],
       )[0].page,
@@ -78,4 +79,17 @@ it('retains manually completed fields when a DOI response omits them', () => {
   expect(result.year).toBe('2024')
   expect(result.authors).toEqual(['Author'])
   expect(result.doi).toBe('10.1000/paper')
+})
+
+it('reserves readable list width even when both side panels request their maximum', () => {
+  for (const width of [600, 700, 899, 900, 960, 1100, 1440]) {
+    const layout = literatureLayout(width, 1000, 1000)
+    const occupied = (layout.showNavigation ? layout.navigationWidth + 6 : 0)
+      + (layout.showInspector ? layout.inspectorWidth + 6 : 0)
+    expect(width - occupied).toBeGreaterThanOrEqual(360)
+    expect(layout.navigationWidth).toBeGreaterThanOrEqual(200)
+    expect(layout.inspectorWidth).toBeGreaterThanOrEqual(280)
+  }
+  expect(literatureLayout(500).showNavigation).toBe(false)
+  expect(literatureLayout(899).showInspector).toBe(false)
 })

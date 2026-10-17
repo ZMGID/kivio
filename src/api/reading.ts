@@ -56,6 +56,7 @@ export type ReadingDocument = {
   favorite?: boolean
   trashedAt?: string | null
   addedAt?: string
+  lastOpenedAt?: string
   updatedAt?: string
   hasPdf?: boolean
   fingerprint?: string

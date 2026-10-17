@@ -176,11 +176,10 @@ export default function ReadingCenter(props: ReadingCenterProps) {
   }, [])
   const select = (document: ReadingDocument) => {
     setActiveId(document.id)
-    if ((document.status ?? 'unread') === 'unread')
-      void updateReadingDocument(document.id, (d) => ({
-        ...d,
-        status: 'reading',
-      })).catch((e) => setError(String(e)))
+    void updateReadingDocument(document.id, (d) => ({
+      ...d,
+      lastOpenedAt: new Date().toISOString(),
+    })).catch((e) => setError(String(e)))
   }
   const doc = library.documents.find(
     (document) =>

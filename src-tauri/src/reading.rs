@@ -58,6 +58,8 @@ pub struct ReadingDocument {
     pub added_at: String,
     #[serde(default)]
     pub updated_at: String,
+    #[serde(default)]
+    pub last_opened_at: String,
     #[serde(default = "yes")]
     pub has_pdf: bool,
     #[serde(default)]
@@ -110,6 +112,7 @@ fn blank(name: String) -> ReadingDocument {
         trashed_at: None,
         added_at: now(),
         updated_at: now(),
+        last_opened_at: String::new(),
         has_pdf: false,
         fingerprint: String::new(),
     }
@@ -431,6 +434,7 @@ mod tests {
         let mut doc = import(&root, &source).unwrap();
         std::fs::remove_file(source).unwrap();
         doc.page = 3;
+        doc.last_opened_at = "2026-10-18T03:00:00Z".into();
         doc.active_conversation_id = Some("chat-1".into());
         doc.conversation_ids.push("chat-1".into());
         doc.note_draft = "unsaved thought".into();
@@ -449,6 +453,7 @@ mod tests {
         let loaded: ReadingDocument =
             serde_json::from_slice(&std::fs::read(folder.join("document.json")).unwrap()).unwrap();
         assert_eq!(loaded.page, 3);
+        assert_eq!(loaded.last_opened_at, "2026-10-18T03:00:00Z");
         assert_eq!(loaded.active_conversation_id.as_deref(), Some("chat-1"));
         assert_eq!(loaded.notes[0].anchor.as_ref().unwrap().page, 3);
         assert_eq!(loaded.note_draft, "unsaved thought");
@@ -543,6 +548,7 @@ mod tests {
             "trashedAt",
             "addedAt",
             "updatedAt",
+            "lastOpenedAt",
             "hasPdf",
             "fingerprint",
         ] {
@@ -559,6 +565,7 @@ mod tests {
         assert_eq!(same.note_draft, "legacy note");
         assert!(same.has_pdf);
         assert_eq!(same.status, "unread");
+        assert!(same.last_opened_at.is_empty());
         assert_eq!(list(&root).unwrap().len(), 1);
     }
     #[test]

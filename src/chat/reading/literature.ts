@@ -5,19 +5,10 @@ import type {
 } from '../../api/reading'
 export type LibraryFilter =
   | 'all'
-  | 'unfiled'
-  | 'unread'
-  | 'reading'
-  | 'read'
   | 'favorites'
   | 'trash'
   | 'duplicates'
   | `collection:${string}`
-export const readingStatuses = [
-  { value: 'unread', label: '未读' },
-  { value: 'reading', label: '在读' },
-  { value: 'read', label: '已读' },
-]
 export const itemTypes = [
   { value: 'article', label: '期刊文章' },
   { value: 'preprint', label: '预印本' },
@@ -51,6 +42,7 @@ export function filterLiterature(
   filter: LibraryFilter,
   query: string,
   tags: string[],
+  unfiledOnly = false,
 ) {
   const active = new Set(collections.filter((c) => !c.deleted).map((c) => c.id))
   const duplicates =
@@ -63,12 +55,7 @@ export function filterLiterature(
       !doc.collectionIds?.includes(filter.slice(11))
     )
       return false
-    if (filter === 'unfiled' && doc.collectionIds?.some((id) => active.has(id)))
-      return false
-    if (
-      ['unread', 'reading', 'read'].includes(filter) &&
-      (doc.status ?? 'unread') !== filter
-    )
+    if (unfiledOnly && doc.collectionIds?.some((id) => active.has(id)))
       return false
     if (filter === 'favorites' && !doc.favorite) return false
     if (filter === 'duplicates' && !duplicates.has(doc.id)) return false
@@ -121,4 +108,15 @@ export function mergeBibliography(
   const authors = incoming.authors.filter((author) => author.trim())
   if (authors.length) next.authors = authors
   return next
+}
+
+// Keep the list readable before allocating optional side panels.
+export function literatureLayout(width: number, navigation = 240, inspector = 320) {
+  const showNavigation = width >= 600
+  const showInspector = width >= 900
+  const navigationMax = Math.max(200, Math.min(320, width - 360 - (showInspector ? 292 : 6)))
+  const navigationWidth = Math.max(200, Math.min(navigationMax, navigation))
+  const inspectorMax = Math.max(280, Math.min(420, width - navigationWidth - 372))
+  const inspectorWidth = Math.max(280, Math.min(inspectorMax, inspector))
+  return { showNavigation, showInspector, navigationWidth, inspectorWidth, navigationMax: showInspector ? Math.min(navigationMax, width - inspectorWidth - 372) : navigationMax, inspectorMax }
 }

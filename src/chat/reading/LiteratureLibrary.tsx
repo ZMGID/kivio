@@ -1,5 +1,5 @@
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   BookOpen,
@@ -13,12 +13,12 @@ import {
   Trash2,
   X,
   ArrowUpDown,
-  Download,
   RotateCcw,
   Tag,
   ChevronRight,
   Pencil,
-  Files,
+  MoreHorizontal,
+  SlidersHorizontal,
 } from 'lucide-react'
 import * as pdfjs from 'pdfjs-dist'
 import { StudyIcon } from '../../settings/public/icons'
@@ -42,10 +42,10 @@ import {
 } from './readingLibrary'
 import {
   collectionDescendants,
+  literatureLayout,
   filterLiterature,
   itemTypes,
   mergeBibliography,
-  readingStatuses,
   type LibraryFilter,
 } from './literature'
 import { PdfThumbnail } from './PdfThumbnail'
@@ -105,10 +105,60 @@ export default function LiteratureLibrary({
   onRead: (doc: ReadingDocument) => void
 }) {
   const { documents, collections, loading, saving } = useReadingLibrary()
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [bodyWidth, setBodyWidth] = useState(0)
+  const [navigationWidth, setNavigationWidth] = useState(240)
+  const [inspectorWidth, setInspectorWidth] = useState(320)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const layout = literatureLayout(bodyWidth, navigationWidth, inspectorWidth)
+  useEffect(() => {
+    const body = bodyRef.current
+    if (!body) return
+    const observer = new ResizeObserver(() => setBodyWidth(body.clientWidth))
+    setBodyWidth(body.clientWidth)
+    observer.observe(body)
+    return () => observer.disconnect()
+  }, [])
+  const resizePanel = (side: 'navigation' | 'inspector', event: PointerEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId) || !bodyRef.current) return
+    const rect = bodyRef.current.getBoundingClientRect()
+    // Account for the app's UI scale as well as the actual available container width.
+    const scale = bodyRef.current.clientWidth / rect.width
+    if (side === 'navigation') setNavigationWidth(Math.max(200, Math.min(layout.navigationMax, (event.clientX - rect.left) * scale)))
+    else setInspectorWidth(Math.max(280, Math.min(layout.inspectorMax, (rect.right - event.clientX) * scale)))
+  }
+  const divider = (side: 'navigation' | 'inspector') => {
+    const navigation = side === 'navigation'
+    const value = navigation ? layout.navigationWidth : layout.inspectorWidth
+    const min = navigation ? 200 : 280
+    const max = navigation ? layout.navigationMax : layout.inspectorMax
+    const setWidth = navigation ? setNavigationWidth : setInspectorWidth
+    return <div
+      className="literature-divider"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={navigation ? '调整文献集栏宽度' : '调整资料栏宽度'}
+      aria-valuemin={min} aria-valuemax={max} aria-valuenow={Math.round(value)}
+      tabIndex={0}
+      onDoubleClick={() => setWidth(navigation ? 240 : 320)}
+      onKeyDown={(e) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+        e.preventDefault()
+        const delta = (e.key === 'ArrowRight' ? 16 : -16) * (navigation ? 1 : -1)
+        setWidth(e.key === 'Home' ? min : e.key === 'End' ? max : Math.max(min, Math.min(max, value + delta)))
+      }}
+      onPointerDown={(e) => { if (e.button === 0) { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId) } }}
+      onPointerMove={(e) => resizePanel(side, e)}
+      onPointerUp={(e) => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId) }}
+    />
+  }
+
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [query, setQuery] = useState('')
   const [tags, setTags] = useState<string[]>([])
-  const [sort, setSort] = useState('added')
+  const [sort, setSort] = useState('opened')
+  const [showFilters, setShowFilters] = useState(false)
+  const [unfiledOnly, setUnfiledOnly] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [busy, setBusy] = useState('')
   const busyRef = useRef(false)
@@ -127,8 +177,13 @@ export default function LiteratureLibrary({
     : ''
   const filtered = useMemo(
     () =>
-      filterLiterature(documents, collections, filter, query, tags).sort(
+      filterLiterature(documents, collections, filter, query, tags, unfiledOnly)
+        .sort(
         (a, b) => {
+          if (sort === 'opened') {
+            const recent = (b.lastOpenedAt ?? '').localeCompare(a.lastOpenedAt ?? '')
+            if (recent) return recent
+          }
           if (sort === 'title') return a.name.localeCompare(b.name)
           if (sort === 'year')
             return (
@@ -146,7 +201,7 @@ export default function LiteratureLibrary({
           )
         },
       ),
-    [documents, collections, filter, query, tags, sort],
+    [documents, collections, filter, query, tags, sort, unfiledOnly],
   )
   const selectedDocs = filtered.filter((d) => selected.includes(d.id))
   const doc = selectedDocs.length === 1 ? selectedDocs[0] : null
@@ -160,10 +215,6 @@ export default function LiteratureLibrary({
   ].sort((a, b) => a.localeCompare(b))
   const names: Record<string, string> = {
     all: '全部文献',
-    unfiled: '未分类',
-    unread: '未读',
-    reading: '在读',
-    read: '已读',
     favorites: '收藏',
     trash: '回收站',
     duplicates: '可能重复',
@@ -195,8 +246,10 @@ export default function LiteratureLibrary({
   }
   const chooseFilter = (next: LibraryFilter) => {
     setFilter(next)
+    setInspectorOpen(false)
     setSelected([])
     setTags([])
+    setUnfiledOnly(false)
   }
   const addToCurrent = async (items: ReadingDocument[]) => {
     for (const item of items) {
@@ -211,6 +264,7 @@ export default function LiteratureLibrary({
     setSelected(items.map((d) => d.id))
     setQuery('')
     setTags([])
+    setUnfiledOnly(false)
     if (!currentCollection) setFilter('all')
   }
   const importPdfs = () =>
@@ -367,8 +421,8 @@ export default function LiteratureLibrary({
     setDialog('collection')
   }
   const saveCollection = () =>
-    run('正在保存分类…', async () => {
-      if (!title.trim()) throw new Error('请输入分类名称')
+    run('正在保存文献集…', async () => {
+      if (!title.trim()) throw new Error('请输入文献集名称')
       const item = {
         id: editingCollection?.id ?? crypto.randomUUID(),
         name: title.trim(),
@@ -383,7 +437,7 @@ export default function LiteratureLibrary({
       chooseFilter(`collection:${item.id}`)
     })
   const deleteCollection = () =>
-    run('正在移除分类…', async () => {
+    run('正在移除文献集…', async () => {
       if (!editingCollection) return
       const ids = collectionDescendants(collections, editingCollection.id)
       await updateReadingCollections((items) =>
@@ -391,7 +445,7 @@ export default function LiteratureLibrary({
       )
       chooseFilter('all')
       setDialog(null)
-      setNotice('分类及子分类已移除，文献、PDF、笔记和对话均保留。')
+      setNotice('文献集及子文献集已移除，文献、PDF、笔记和对话均保留。')
     })
   const collectionRows = (
     parentId: string | null,
@@ -427,7 +481,7 @@ export default function LiteratureLibrary({
               </small>
             </button>
             <IconButton
-              label={`编辑分类 ${c.name}`}
+              label={`编辑文献集 ${c.name}`}
               size="xs"
               variant="ghost"
               onClick={() => openCollectionDialog(c)}
@@ -505,100 +559,67 @@ export default function LiteratureLibrary({
       </header>
       <ErrorNotice message={error} />
       <OperationNotice message={busy || notice} tone={busy ? 'info' : 'success'} duration={busy ? 0 : 3500} />
-      <div className="literature-body">
-        <aside
+      <div ref={bodyRef} className="literature-body" style={{
+        gridTemplateColumns: [layout.showNavigation ? `${layout.navigationWidth}px 6px` : '', 'minmax(0, 1fr)', layout.showInspector ? `6px ${layout.inspectorWidth}px` : ''].filter(Boolean).join(' '),
+      } as CSSProperties}>
+        {layout.showNavigation && <aside
           className="literature-navigation custom-scrollbar"
-          aria-label="文献分类"
+          aria-label="文献导航"
         >
-          {(
-            [
-              'all',
-              'favorites',
-              'unread',
-              'reading',
-              'read',
-              'unfiled',
-              'duplicates',
-              'trash',
-            ] as LibraryFilter[]
-          ).map((key) => (
+          {(['all', 'favorites'] as const).map((key) => (
             <button
               key={key}
               className="literature-nav-row"
               aria-current={filter === key ? 'page' : undefined}
               onClick={() => chooseFilter(key)}
             >
-              {key === 'trash' ? (
-                <Trash2 size={15} />
-              ) : key === 'favorites' ? (
-                <Star size={15} />
-              ) : key === 'duplicates' ? (
-                <Files size={15} />
-              ) : (
-                <BookOpen size={15} />
-              )}
+              {key === 'favorites' ? <Star size={15} /> : <BookOpen size={15} />}
               <span>{names[key]}</span>
-              <small>
-                {filterLiterature(documents, collections, key, '', []).length}
-              </small>
+              <small>{filterLiterature(documents, collections, key, '', []).length}</small>
             </button>
           ))}
-          <div className="literature-section-heading">
-            <h2>分类</h2>
-            <IconButton
-              label="新建分类"
-              variant="ghost"
-              size="xs"
-              onClick={() => openCollectionDialog()}
-            >
-              <FolderPlus size={15} />
-            </IconButton>
-          </div>
-          {collectionRows(null)}
-          {!activeCollections.length && (
-            <p className="literature-muted">按研究项目或主题整理文献。</p>
-          )}
-          <div className="literature-section-heading">
-            <h2>标签</h2>
-            {tags.length > 0 && (
+          <div className="literature-collections">
+            <div className="literature-section-heading">
+              <h2>文献集</h2>
               <IconButton
-                label="清除标签筛选"
+                label="新建文献集"
                 variant="ghost"
                 size="xs"
-                onClick={() => setTags([])}
+                onClick={() => openCollectionDialog()}
               >
-                <X size={13} />
+                <FolderPlus size={15} />
               </IconButton>
+            </div>
+            {collectionRows(null)}
+            {!activeCollections.length && (
+              <p className="literature-muted">按主题、课程或研究任务收集文献。</p>
             )}
           </div>
-          <div className="literature-tag-list">
-            {availableTags.map((tag) => (
-              <button
-                key={tag}
-                className="literature-tag"
-                aria-pressed={tags.includes(tag)}
-                onClick={() =>
-                  setTags((old) =>
-                    old.includes(tag)
-                      ? old.filter((t) => t !== tag)
-                      : [...old, tag],
-                  )
-                }
-              >
-                <Tag size={11} />
-                {tag}
-              </button>
-            ))}
-          </div>
-          {!availableTags.length && (
-            <p className="literature-muted">在资料栏添加标签。</p>
-          )}
-        </aside>
+          <button
+            className="literature-nav-row literature-trash"
+            aria-current={filter === 'trash' ? 'page' : undefined}
+            onClick={() => chooseFilter('trash')}
+          >
+            <Trash2 size={15} />
+            <span>回收站</span>
+          </button>
+        </aside>}
+        {layout.showNavigation && divider('navigation')}
         <main className="literature-main">
           <div className="literature-list-toolbar">
             <div className="literature-list-heading">
+              {!layout.showNavigation && <Select
+                ariaLabel="切换文献集" size="sm" value={filter} onChange={(value) => { if (value === 'new-collection') openCollectionDialog(); else chooseFilter(value as LibraryFilter) }}
+                triggerIcon={<Folder size={15} />}
+                options={[
+                  { value: 'all', label: '全部文献' }, { value: 'favorites', label: '收藏' },
+                  ...activeCollections.map((c) => ({ value: `collection:${c.id}`, label: c.name })),
+                  { value: 'trash', label: '回收站' },
+                  { value: 'new-collection', label: '新建文献集…' },
+                ]}
+              />}
               <h2>
-                {heading}
+                <span title={heading}>{heading}</span>
                 <small>{filtered.length}</small>
               </h2>
               <Select
@@ -608,28 +629,48 @@ export default function LiteratureLibrary({
                 onChange={setSort}
                 triggerIcon={<ArrowUpDown size={14} />}
                 options={[
-                  { value: 'added', label: '加入时间' },
+                  { value: 'opened', label: '最近打开' },
+                  { value: 'added', label: '最近加入' },
                   { value: 'title', label: '标题' },
                   { value: 'author', label: '作者' },
                   { value: 'year', label: '年份' },
                 ]}
               />
-              <IconButton
-                label={
-                  selectedDocs.length ? '导出选中文献 RIS' : '导出当前列表 RIS'
-                }
+              {!layout.showInspector && selectedDocs.length > 0 && <Button size="sm" variant="ghost" onClick={() => setInspectorOpen(true)}>
+                <FileText size={15} />资料
+              </Button>}
+              <Button
+                size="sm"
                 variant="ghost"
-                disabled={!filtered.length || !!busy}
-                onClick={() => void exportRis()}
+                aria-expanded={showFilters}
+                aria-controls="literature-filters"
+                onClick={() => setShowFilters((value) => !value)}
               >
-                <Download size={16} />
-              </IconButton>
+                <SlidersHorizontal size={15} />
+                筛选{tags.length + Number(unfiledOnly) > 0 ? ` ${tags.length + Number(unfiledOnly)}` : ''}
+              </Button>
+              <Select
+                ariaLabel="文献管理"
+                size="sm"
+                value=""
+                triggerIcon={<MoreHorizontal size={16} />}
+                title="文献管理"
+                disabled={!!busy}
+                onChange={(value) => {
+                  if (value === 'duplicates') chooseFilter('duplicates')
+                  if (value === 'export') void exportRis()
+                }}
+                options={[
+                  { value: 'duplicates', label: '查找可能重复的文献' },
+                  ...(filtered.length ? [{ value: 'export', label: selectedDocs.length ? '导出选中文献 RIS' : '导出当前列表 RIS' }] : []),
+                ]}
+              />
             </div>
             {selectedDocs.length > 0 && (
               <div className="literature-bulk">
                 <span>已选 {selectedDocs.length} 篇</span>
                 <Select
-                  ariaLabel="批量加入分类"
+                  ariaLabel="批量加入文献集"
                   size="sm"
                   value=""
                   disabled={!!busy || !activeCollections.length}
@@ -641,11 +682,11 @@ export default function LiteratureLibrary({
                           ...new Set([...(d.collectionIds ?? []), id]),
                         ],
                       }),
-                      '已加入分类',
+                      '已加入文献集',
                     )
                   }
                   options={[
-                    { value: '', label: '加入分类…' },
+                    { value: '', label: '加入文献集…' },
                     ...activeCollections.map((c) => ({
                       value: c.id,
                       label: c.name,
@@ -665,11 +706,11 @@ export default function LiteratureLibrary({
                             (id) => id !== currentCollection,
                           ),
                         }),
-                        '已移出分类，文献仍在 Kivio Study 中',
+                        '已移出文献集，文献仍在 Kivio Study 中',
                       )
                     }
                   >
-                    移出分类
+                    移出文献集
                   </Button>
                 )}
                 <IconButton
@@ -698,6 +739,29 @@ export default function LiteratureLibrary({
               </div>
             )}
           </div>
+          {showFilters && (
+            <div className="literature-filters" id="literature-filters" aria-label="文献筛选">
+              <div className="literature-filter-heading">
+                <label className="literature-membership">
+                  <input type="checkbox" checked={unfiledOnly} onChange={(e) => setUnfiledOnly(e.target.checked)} />
+                  尚未加入文献集
+                </label>
+                {(tags.length > 0 || unfiledOnly) && (
+                  <Button size="sm" variant="ghost" onClick={() => { setTags([]); setUnfiledOnly(false) }}>清除筛选</Button>
+                )}
+              </div>
+              {availableTags.length > 0 && (
+                <div className="literature-tag-list" aria-label="按标签筛选">
+                  {availableTags.map((tag) => (
+                    <Button key={tag} size="sm" variant={tags.includes(tag) ? 'default' : 'ghost'} aria-pressed={tags.includes(tag)}
+                      onClick={() => setTags((old) => old.includes(tag) ? old.filter((t) => t !== tag) : [...old, tag])}>
+                      <Tag size={12} />{tag}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="literature-table-wrap custom-scrollbar">
             <table className="literature-table">
               <thead>
@@ -719,7 +783,6 @@ export default function LiteratureLibrary({
                   </th>
                   <th>标题 / 作者</th>
                   <th>年份</th>
-                  <th>状态</th>
                 </tr>
               </thead>
               <tbody>
@@ -778,13 +841,6 @@ export default function LiteratureLibrary({
                       </div>
                     </td>
                     <td>{item.bibliography?.year || '—'}</td>
-                    <td>
-                      {
-                        readingStatuses.find(
-                          (s) => s.value === (item.status ?? 'unread'),
-                        )?.label
-                      }
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -795,25 +851,26 @@ export default function LiteratureLibrary({
                 <h3>
                   {loading
                     ? '正在加载 Kivio Study…'
-                    : query || tags.length
+                    : query || tags.length || unfiledOnly
                       ? '没有匹配的文献'
                       : filter === 'trash'
                         ? '回收站为空'
                         : '这里还没有文献'}
                 </h3>
                 <p>
-                  {query || tags.length
+                  {query || tags.length || unfiledOnly
                     ? '试试其他关键词，或清除筛选。'
                     : filter === 'trash'
                       ? '移入回收站的文献可在这里恢复。'
                       : '导入 PDF、RIS，或用 DOI 新建文献，再按主题整理。'}
                 </p>
-                {(query || tags.length > 0) && (
+                {(query || tags.length || unfiledOnly) && (
                   <Button
                     size="sm"
                     onClick={() => {
                       setQuery('')
                       setTags([])
+                      setUnfiledOnly(false)
                     }}
                   >
                     清除筛选
@@ -828,10 +885,13 @@ export default function LiteratureLibrary({
               : `${documents.filter((d) => !d.trashedAt).length} 篇文献 · ${saving ? '正在保存…' : '保存在本机'} · 双击打开全文`}
           </footer>
         </main>
-        <aside
-          className="literature-inspector custom-scrollbar"
+        {layout.showInspector && divider('inspector')}
+        {(layout.showInspector || inspectorOpen) && <aside
+          className={`literature-inspector custom-scrollbar ${!layout.showInspector ? 'is-overlay' : ''}`}
           aria-label="文献资料"
+          onKeyDown={(event) => { if (event.key === 'Escape') setInspectorOpen(false) }}
         >
+          {!layout.showInspector && <div className="literature-overlay-close"><IconButton autoFocus label="关闭资料栏" variant="ghost" onClick={() => setInspectorOpen(false)}><X size={16} /></IconButton></div>}
           <fieldset disabled={!!busy} className="literature-inspector-fields">
             {doc ? (
               <>
@@ -905,30 +965,10 @@ export default function LiteratureLibrary({
                     rows={2}
                   />
                 </label>
-                <div className="literature-field-pair">
-                  <label className="literature-field">
-                    年份
-                    <Input
-                      aria-label="发表年份"
-                      value={b.year}
-                      onChange={(value) => patchBibliography('year', value)}
-                    />
-                  </label>
-                  <label className="literature-field">
-                    阅读状态
-                    <Select
-                      ariaLabel="阅读状态"
-                      value={doc.status ?? 'unread'}
-                      onChange={(value) =>
-                        change(doc.id, (d) => ({
-                          ...d,
-                          status: value as ReadingDocument['status'],
-                        }))
-                      }
-                      options={readingStatuses}
-                    />
-                  </label>
-                </div>
+                <label className="literature-field">
+                  年份
+                  <Input aria-label="发表年份" value={b.year} onChange={(value) => patchBibliography('year', value)} />
+                </label>
                 <label className="literature-field">
                   期刊 / 出版物
                   <Input
@@ -990,7 +1030,7 @@ export default function LiteratureLibrary({
                   />
                 </label>
                 <div className="literature-section-heading">
-                  <h2>所属分类</h2>
+                  <h2>所属文献集</h2>
                 </div>
                 {activeCollections.map((c) => (
                   <label key={c.id} className="literature-membership">
@@ -1015,7 +1055,7 @@ export default function LiteratureLibrary({
                     variant="ghost"
                     onClick={() => openCollectionDialog()}
                   >
-                    创建第一个分类
+                    创建第一个文献集
                   </Button>
                 )}
                 <div className="literature-detail-summary">
@@ -1032,26 +1072,6 @@ export default function LiteratureLibrary({
               <>
                 <h2>批量整理</h2>
                 <p>已选择 {selectedDocs.length} 篇文献</p>
-                <label className="literature-field">
-                  阅读状态
-                  <Select
-                    ariaLabel="批量阅读状态"
-                    value=""
-                    onChange={(value) =>
-                      void bulk(
-                        (d) => ({
-                          ...d,
-                          status: value as ReadingDocument['status'],
-                        }),
-                        '已更新阅读状态',
-                      )
-                    }
-                    options={[
-                      { value: '', label: '选择状态…' },
-                      ...readingStatuses,
-                    ]}
-                  />
-                </label>
                 <label className="literature-field">
                   添加标签
                   <Input
@@ -1091,18 +1111,18 @@ export default function LiteratureLibrary({
                   收藏所选文献
                 </Button>
                 <p className="literature-muted">
-                  分类和回收站操作位于列表上方。批量操作不会覆盖原文、笔记和对话。
+                  文献集和回收站操作位于列表上方。批量操作不会覆盖原文、笔记和对话。
                 </p>
               </>
             ) : (
               <div className="literature-empty">
                 <FileText size={28} />
                 <h3>选择一篇文献</h3>
-                <p>在这里整理书目信息、标签与分类，或打开全文继续阅读。</p>
+                <p>在这里整理书目信息、标签与文献集，或打开全文继续阅读。</p>
               </div>
             )}
           </fieldset>
-        </aside>
+        </aside>}
       </div>
       {dialog === 'item' && (
         <LibraryDialog
@@ -1165,7 +1185,7 @@ export default function LiteratureLibrary({
       {dialog === 'collection' && (
         <LibraryDialog
           busy={!!busy}
-          title={editingCollection ? '编辑分类' : '新建分类'}
+          title={editingCollection ? '编辑文献集' : '新建文献集'}
           onClose={() => {
             if (!busy) setDialog(null)
           }}
@@ -1177,18 +1197,18 @@ export default function LiteratureLibrary({
             }}
           >
             <label className="literature-field">
-              分类名称
+              文献集名称
               <Input
                 autoFocus
-                aria-label="分类名称"
+                aria-label="文献集名称"
                 value={title}
                 onChange={setTitle}
               />
             </label>
             <label className="literature-field">
-              上级分类
+              上级文献集
               <Select
-                ariaLabel="上级分类"
+                ariaLabel="上级文献集"
                 value={parent}
                 onChange={setParent}
                 options={[
@@ -1212,7 +1232,7 @@ export default function LiteratureLibrary({
                 type="submit"
                 disabled={!!busy || !title.trim()}
               >
-                保存分类
+                保存文献集
               </Button>
               {editingCollection && (
                 <Button
@@ -1220,14 +1240,14 @@ export default function LiteratureLibrary({
                   disabled={!!busy}
                   onClick={() => void deleteCollection()}
                 >
-                  移除分类
+                  移除文献集
                 </Button>
               )}
             </div>
           </form>
           {editingCollection && (
             <p className="literature-muted">
-              移除分类及其子分类，不会删除其中的文献。
+              移除文献集及其子文献集，不会删除其中的文献。
             </p>
           )}
           {error && <p role="alert">{error}</p>}
