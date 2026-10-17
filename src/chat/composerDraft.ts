@@ -78,8 +78,13 @@ export function updateComposerDraft(key: string, update: (draft: ComposerDraft) 
  */
 export function migrateNewChatDraft(fromKey: string, toKey: string): boolean {
   if (fromKey !== NEW_CHAT_KEY || toKey === NEW_CHAT_KEY) return false
-  if (drafts.has(toKey)) return false
-  const draft = drafts.get(NEW_CHAT_KEY)
+  return migrateComposerDraft(fromKey, toKey)
+}
+
+/** Move a scoped reading draft and its pending attachment operations to its real conversation. */
+export function migrateComposerDraft(fromKey: string, toKey: string): boolean {
+  if (fromKey === toKey || drafts.has(toKey)) return false
+  const draft = drafts.get(fromKey)
   let migrated = Boolean(draft)
   for (const scope of operations) {
     if (scope.key === fromKey) {
@@ -88,6 +93,6 @@ export function migrateNewChatDraft(fromKey: string, toKey: string): boolean {
     }
   }
   if (draft) setComposerDraft(toKey, draft)
-  drafts.delete(NEW_CHAT_KEY)
+  drafts.delete(fromKey)
   return migrated
 }

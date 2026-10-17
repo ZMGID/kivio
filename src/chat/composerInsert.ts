@@ -1,41 +1,39 @@
-// 消息区「添加到聊天」→ 输入框 的单监听信道。
-// 同一时刻只有一个活跃 composer（InputBar），故单监听足够。
-// ponytail: single listener; 若将来同屏多 composer 再改成 Set。
 import { getComposerDraft, setComposerDraft } from './composerDraft'
 
 type Listener = (text: string) => void
 
-let listener: Listener | null = null
+// Cached chat and center pages can coexist; the latest mounted composer owns insertion.
+const listeners: Listener[] = []
 
 export function onComposerInsert(cb: Listener): () => void {
-  listener = cb
+  listeners.push(cb)
   return () => {
-    if (listener === cb) listener = null
+    const index = listeners.indexOf(cb)
+    if (index >= 0) listeners.splice(index, 1)
   }
 }
 
 export function insertIntoComposer(text: string): void {
-  listener?.(text)
+  listeners[listeners.length - 1]?.(text)
 }
 
 // 文本直插信道（Right Dock「插入 @ 引用」等）：与上面的引用卡片信道并列，
-// 区别是文本直接进输入框正文而不是挂成引用卡片。同样单监听。
-let textListener: Listener | null = null
-let textDraftKey: string | null = null
+// 区别是文本直接进输入框正文而不是挂成引用卡片。卸载后恢复之前挂载的输入框。
+const textListeners: { listener: Listener; draftKey?: string }[] = []
 
 export function onComposerTextInsert(cb: Listener, draftKey?: string): () => void {
-  textListener = cb
-  textDraftKey = draftKey ?? null
+  const registration = { listener: cb, draftKey }
+  textListeners.push(registration)
   return () => {
-    if (textListener === cb) {
-      textListener = null
-      textDraftKey = null
-    }
+    const index = textListeners.indexOf(registration)
+    if (index >= 0) textListeners.splice(index, 1)
   }
 }
 
 export function insertTextIntoComposer(text: string): void {
   if (!text) return
+  const active = textListeners[textListeners.length - 1]
+  const textDraftKey = active?.draftKey
   // 文本信号和会话切换可能发生在同一次 React 更新里（首条「回到这里」会从底栏
   // InputBar 切到欢迎页 InputBar）。只 setState 会把文字留在即将卸载的旧组件里；先同步写入
   // 当前草稿，使新挂载的 InputBar 也能读到。随后 listener 仍负责即时更新未卸载的输入框。
@@ -49,5 +47,5 @@ export function insertTextIntoComposer(text: string): void {
       input: `${current.input}${needsSpace ? ' ' : ''}${text}`,
     })
   }
-  textListener?.(text)
+  active?.listener(text)
 }

@@ -11,6 +11,7 @@
     "mcp",
     "knowledge",
     "notes",
+    "reading",
     "artifacts",
     "media",
     "onboarding",
@@ -26,10 +27,12 @@
     "mcp",
     "knowledge",
     "notes",
+    "reading",
     "artifacts",
     "media"
   ],
   "cases": [
+    { "name": "reading preview", "raw": "#chat/reading", "path": "chat/reading", "kind": "reading", "decodedConversationId": null, "rememberable": true, "restorable": true },
     { "name": "media station", "raw": "#chat/media", "path": "chat/media", "kind": "media", "decodedConversationId": null, "rememberable": true, "restorable": true },
     { "name": "scheduled tasks", "raw": "#chat/schedules", "path": "chat/schedules", "kind": "schedules", "decodedConversationId": null, "rememberable": true, "restorable": true },
     {

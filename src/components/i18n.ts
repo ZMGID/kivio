@@ -1199,6 +1199,7 @@ export const i18n = {
     // ── 聊天常驻外壳（侧栏 / 标题栏 / 输入栏 / 顶栏选择器）
     chatNavAssistants: '助手',
     chatNavKnowledge: '知识库',
+    chatNavReading: '文献库',
     chatNavNotes: '笔记',
     chatNavMedia: '媒体站',
     chatNavArtifacts: '作品',
@@ -3392,6 +3393,7 @@ export const i18n = {
     // ── Chat shell (sidebar / titlebar / composer / top-bar pickers)
     chatNavAssistants: 'Assistants',
     chatNavKnowledge: 'Knowledge',
+    chatNavReading: 'Library',
     chatNavNotes: 'Notes',
     chatNavMedia: 'Media studio',
     chatNavArtifacts: 'Works',

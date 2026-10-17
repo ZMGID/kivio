@@ -9,6 +9,7 @@ import {
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
+  isChatReadingPath,
   isChatArtifactsPath,
   isChatMediaPath,
   isChatOnboardingRoute,
@@ -117,6 +118,11 @@ export function useChatRouting({
       if (isChatKnowledgeCenterPath(path)) {
         onLeaveConversation()
         onViewChange('knowledge')
+        return
+      }
+      if (isChatReadingPath(path)) {
+        onLeaveConversation()
+        onViewChange('reading')
         return
       }
       if (isChatNotesPath(path)) {
@@ -273,6 +279,11 @@ export function useChatRouting({
     setExtensionsNavItem(item)
     if (item === 'tasks') {
       openTasksCenter()
+      return
+    }
+    if (item === 'reading') {
+      onViewChange('reading')
+      syncNonConversationRoute('#chat/reading')
       return
     }
     if (item === 'media') {

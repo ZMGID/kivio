@@ -38,6 +38,7 @@ import {
   isChatKnowledgeCenterPath,
   isChatMcpCenterPath,
   isChatNotesPath,
+  isChatReadingPath,
   isChatArtifactsPath,
   isChatMediaPath,
   isChatOnboardingRoute,
@@ -59,6 +60,7 @@ import { useConversationContext } from './hooks/useConversationContext'
 import { useConversationMetaMutations } from './hooks/useConversationMetaMutations'
 import { useMessageActions } from './hooks/useMessageActions'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
+import { ModelSelector } from './ModelSelector'
 import { ConversationTitlebarControls } from './ConversationTitlebarControls'
 import {
   captureConversationNavigation,
@@ -74,6 +76,7 @@ import { ContextIndicator } from './ContextIndicator'
 import {
   agentRuntimesEqual,
   BUILTIN_AGENT_RUNTIME,
+  CHAT_AGENT_RUNTIME,
   chatApi,
   normalizeAgentRuntime,
 } from './api'
@@ -197,6 +200,7 @@ const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => 
   default: module.KnowledgeCenter,
 })))
 
+const ReadingCenter = lazy(() => import('./reading/ReadingCenter'))
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
@@ -313,6 +317,7 @@ function setStreamError(error: string): void {
 }
 
 type SendMessageOptions = {
+  reading?: boolean
   planMessageId?: string
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
@@ -338,6 +343,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSkillCenterPath(path)) return 'skill'
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
+    if (isChatReadingPath(path)) return 'reading'
     if (isChatNotesPath(path)) return 'notes'
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
@@ -1895,7 +1901,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const attachmentSkillId = resolveSendSkillId(
+    const attachmentSkillId = options.reading ? null : resolveSendSkillId(
       attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
@@ -1910,23 +1916,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         forceNew: Boolean(options.forceNewConversation),
         providerId: activeProviderId,
         model: activeModel,
-        projectName: selectedProject?.name ?? null,
-        projectId: selectedProject?.id ?? null,
-        setId: selectedSet?.id ?? null,
+        projectName: options.reading ? null : selectedProject?.name ?? null,
+        projectId: options.reading ? null : selectedProject?.id ?? null,
+        setId: options.reading ? null : selectedSet?.id ?? null,
         draft: {
-          agentRuntime: draftAgentRuntime,
-          knowledgeBaseIds: draftKnowledgeBaseIds,
-          forceKnowledgeSearch: draftForceKnowledgeSearch,
-          additionalDirectories: draftAdditionalDirectories,
+          agentRuntime: options.reading ? CHAT_AGENT_RUNTIME : draftAgentRuntime,
+          knowledgeBaseIds: options.reading ? [] : draftKnowledgeBaseIds,
+          forceKnowledgeSearch: options.reading ? false : draftForceKnowledgeSearch,
+          additionalDirectories: options.reading ? [] : draftAdditionalDirectories,
           thinkingLevel: draftThinkingLevel,
           webSearchMode: draftWebSearchMode,
           rememberedWebSearchMode: loadLastWebSearchMode(),
-          replyModels: draftReplyModels,
+          replyModels: options.reading ? [] : draftReplyModels,
         },
         providerOAuthTypes,
       },
       attachmentSkillId,
-      disabledReason: sendDisabledReason,
+      disabledReason: options.reading ? '' : sendDisabledReason,
       planMessageId: options.planMessageId,
       onPartialConversation: options.onPartialConversation,
       onAccepted: options.onAccepted,
@@ -1939,6 +1945,21 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
+  const activateReadingConversation = useCallback(async (id: string | null) => {
+    if (!id) { navigation.resetRouteConversation(); return }
+    // The navigation owner loads and restores the same stream; keep the reading route.
+    await navigation.loadEmbeddedConversation(id)
+  }, [navigation])
+  const createReadingConversation = useCallback(async (name: string) => {
+    const { activeProviderId, activeModel } = newConversationDefaultsRef.current
+    const conversation = await chatApi.createConversation(activeProviderId || undefined, activeModel || undefined)
+    await chatApi.setAgentRuntime(conversation.id, CHAT_AGENT_RUNTIME)
+    const updated = await chatApi.updateConversation(conversation.id, { title: `阅读 · ${name}` })
+    refreshSidebar()
+    return updated
+  }, [refreshSidebar])
+  const sendReadingMessage = useCallback((conversation: Conversation, content: string, attachments: PendingAttachment[], onAccepted?: () => void) =>
+    handleSendMessage(content, attachments, { conversationOverride: conversation, reading: true, onAccepted }), [handleSendMessage])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
   // 插件市场“使用”：新建对话并发出开场消息；原有单入口插件仍兼容 Skill 绑定。
   // Skill 由会话的 activeSkillId 决定（后端在对话初始化时发现技能），不依赖本地 skills 列表是否已刷新。
@@ -2990,6 +3011,18 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
             <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
+          </div>
+        ) : chatView === 'reading' ? (
+          <div key="center" className={worksPageClass}>
+            {centerPageTopStrip}
+            <Suspense fallback={null}><ReadingCenter
+              inputBarProps={inputBarProps}
+              messageListProps={messageListProps}
+              onCreateConversation={createReadingConversation}
+              onActivateConversation={activateReadingConversation}
+              onSend={sendReadingMessage}
+              modelControls={<ModelSelector currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />}
+            /></Suspense>
           </div>
         ) : chatView === 'notes' ? (
           <div key="center" className={centerPageClass}>

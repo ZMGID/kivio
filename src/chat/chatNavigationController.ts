@@ -53,6 +53,7 @@ interface NavigationPorts {
 }
 
 interface ReloadOptions {
+  embedded?: boolean
   force?: boolean
   transitionRequestId?: number
   loadPoppedOut?: boolean
@@ -251,6 +252,10 @@ export function createChatNavigationController(ports: NavigationPorts) {
     } catch (value) {
       const transition = getConversationTransitionSnapshot()
       if (!canCommitResult() || (transition.loading && transition.targetConversationId !== conversationId)) return
+      if (options?.embedded) {
+        if (transitionRequestId !== undefined) cancelConversationTransition(transitionRequestId)
+        throw asError(value)
+      }
       ports.discardConversation(conversationId, asError(value), false)
       forgetRememberedChatRoute()
       syncConversationRoute(null)
@@ -264,6 +269,11 @@ export function createChatNavigationController(ports: NavigationPorts) {
   const loadRouteConversation = (conversationId: string) => {
     const requestId = beginConversationTransition(conversationId)
     return reloadConversation(conversationId, { force: true, transitionRequestId: requestId, initialWindow: true })
+  }
+
+  const loadEmbeddedConversation = (conversationId: string) => {
+    const requestId = beginConversationTransition(conversationId)
+    return reloadConversation(conversationId, { force: true, transitionRequestId: requestId, initialWindow: true, embedded: true })
   }
 
   const openConversation = (conversationId: string, options?: { reload?: boolean | null }) => {
@@ -351,6 +361,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     clearCurrentChat,
     resetRouteConversation,
     loadRouteConversation,
+    loadEmbeddedConversation,
     openConversation,
     reloadConversation,
     selectConversation,

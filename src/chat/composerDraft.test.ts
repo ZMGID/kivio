@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
+import { draftKey, getComposerDraft, migrateComposerDraft, beginComposerDraftOperation, migrateNewChatDraft, setComposerDraft } from './composerDraft'
 
 const NEW = draftKey(undefined)
 
@@ -46,4 +46,14 @@ describe('composerDraft', () => {
       expect(migrateNewChatDraft(NEW, 'c6')).toBe(false)
     })
   })
+})
+
+it('moves a reading quote and pending attachment scope to the real conversation', () => {
+  const pending = beginComposerDraftOperation('reading-paper')
+  setComposerDraft('reading-paper', { input: 'Explain this', quotes: ['[第 2 页](#reading-page-2) evidence'], attachments: [] })
+  expect(migrateComposerDraft('reading-paper', 'real-reading-chat')).toBe(true)
+  expect(pending.key).toBe('real-reading-chat')
+  expect(getComposerDraft('reading-paper')).toBeUndefined()
+  expect(getComposerDraft('real-reading-chat')?.quotes).toEqual(['[第 2 页](#reading-page-2) evidence'])
+  pending.release()
 })

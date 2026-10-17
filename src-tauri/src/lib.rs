@@ -25,6 +25,7 @@ pub mod market;
 pub mod mcp;
 pub mod native_tools;
 pub mod notes;
+pub mod reading;
 pub mod offline_models;
 mod opencode_free;
 pub mod path_env;
@@ -790,6 +791,17 @@ pub fn run() {
             plugins::plugins_run_official_install,
             plugins::plugins_set_enabled,
             plugins::plugins_uninstall,
+            reading::reading_list,
+            reading::reading_import,
+            reading::reading_save,
+            reading::reading_pdf,
+            reading::reading_create,
+            reading::reading_attach,
+            reading::reading_collections,
+            reading::reading_save_collections,
+            reading::reading_lookup,
+            reading::reading_import_ris,
+            reading::reading_export_ris,
             notes::notes_list,
             notes::notes_read,
             notes::notes_create,

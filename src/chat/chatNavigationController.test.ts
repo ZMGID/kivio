@@ -582,3 +582,33 @@ describe('chat navigation controller', () => {
     warning.mockRestore()
   })
 })
+
+describe('embedded reading conversations', () => {
+  it('loads real history while retaining the reading route and rejects a late old document', async () => {
+    window.location.hash = '#chat/reading'
+    const state = setup()
+    state.ownership.resolve(new Set())
+    const first = state.controller.loadEmbeddedConversation('paper-a')
+    await state.readStarted.promise
+    const second = state.controller.loadEmbeddedConversation('paper-b')
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    state.reads.get('paper-a')!.resolve(conversation('paper-a'))
+    await first
+    state.reads.get('paper-b')!.resolve(conversation('paper-b'))
+    await second
+    expect(state.shown).toEqual(['paper-b'])
+    expect(window.location.hash).toBe('#chat/reading')
+  })
+  it('surfaces missing reading history without navigating away or discarding it silently', async () => {
+    window.location.hash = '#chat/reading'
+    const state = setup()
+    state.ownership.resolve(new Set())
+    const load = state.controller.loadEmbeddedConversation('missing')
+    const rejection = expect(load).rejects.toThrow('missing history')
+    await state.readStarted.promise
+    state.reads.get('missing')!.reject(new Error('missing history'))
+    await rejection
+    expect(window.location.hash).toBe('#chat/reading')
+    expect(state.errors).toEqual([])
+  })
+})
