@@ -4,15 +4,14 @@ import {
   CY,
   EYE_POINTS,
   bodyPoints,
-  centroid,
   faceBlinks,
   facePoints,
-  lerpPoly,
   polyPath,
   type BodyShape,
   type FaceName,
   type Pt,
 } from './kivioBlobShapes'
+import { createBlobProjector } from './kivioBlobVolume'
 
 export { CX, CY, BODY_R, EYE_POINTS, polyPath }
 export type { BodyShape, FaceName }
@@ -35,7 +34,6 @@ function mixHex(a: string, b: string, t: number): string {
  */
 export type BlobMood = 'idle' | 'think' | 'search' | 'work' | 'speak' | 'error' | 'done' | 'wait'
 
-const DT = 1 / 120
 // 显式标注:两表三元取用后是同一类型,元组才能直接 spread 进 stepSpring(TS2556)。
 type SpringTable = Record<
   'spin' | 'x' | 'y' | 'squash' | 'blink' | 'gaze' | 'morph' | 'body' | 'boost',
@@ -47,23 +45,23 @@ const SPR: SpringTable = {
   y: [4, 1],
   squash: [10, 0.8],
   blink: [26, 1],
-  gaze: [13, 1],
+  gaze: [13, 0.82],
   morph: [7, 1],
   body: [6, 0.92],
   boost: [9, 0.85],
 }
 
-/** 闲置回稳放慢，避免从生成态切回来时几帧跳完。落定后不再靠它续上呼吸。 */
+/** Idle turns remain responsive, then settle completely instead of looping. */
 const SPR_IDLE: SpringTable = {
-  spin: [2.0, 1],
-  x: [1.6, 1],
-  y: [1.8, 1],
-  squash: [3.0, 1],
-  blink: [9, 1],
-  gaze: [2.6, 1],
-  morph: [2.2, 1],
-  body: [1.9, 1],
-  boost: [3.2, 0.9],
+  spin: [9, 0.86],
+  x: [7, 1],
+  y: [8, 0.9],
+  squash: [15, 0.72],
+  blink: [24, 0.9],
+  gaze: [11, 0.82],
+  morph: [12, 0.9],
+  body: [13, 0.88],
+  boost: [10, 0.9],
 }
 
 /** 每个心情轮播的脸。第 0 张是进入该心情时先摆的那张。 */
@@ -133,30 +131,35 @@ const BLINK: Record<BlobMood, [number, number] | null> = {
   wait: [2200, 4800],
 }
 const WINK = new Set<BlobMood>(['speak', 'done'])
-const HOP_SEGS = [
-  { h: 48, d: 0.5 },
-  { h: 28, d: 0.382 },
-  { h: 14, d: 0.27 },
-  { h: 6, d: 0.177 },
-]
-const HOP_DUR = HOP_SEGS.reduce((s, x) => s + x.d, 0)
 
 type Spring = { x: number; v: number; t: number }
 
 const clamp = (n: number, a: number, b: number) => Math.min(b, Math.max(a, n))
-const k2 = (n: number) => (n < 0.5 ? 4 * n * n * n : 1 - (-2 * n + 2) ** 3 / 2)
 
 function spring(x: number): Spring {
   return { x, v: 0, t: x }
 }
 
+/** Closed-form damped oscillator. Retargeting keeps position AND velocity.
+ * Frequencies are radians/second; this remains stable across frame rates.
+ * See docs/design/momo-volume-motion.md for the derivation/reference.
+ */
 function stepSpring(s: Spring, freq: number, damp: number, dt: number) {
-  s.v += (-2 * damp * freq * s.v - freq * freq * (s.x - s.t)) * dt
-  s.x += s.v * dt
-  if (!Number.isFinite(s.x) || !Number.isFinite(s.v)) {
-    s.x = s.t
-    s.v = 0
+  if (dt <= 0) return
+  const x = s.x - s.t, v = s.v
+  const decay = Math.exp(-damp * freq * dt)
+  if (damp < 1) {
+    const w = freq * Math.sqrt(1 - damp * damp)
+    const c = Math.cos(w * dt), sn = Math.sin(w * dt)
+    const b = (v + damp * freq * x) / w
+    s.x = s.t + decay * (x * c + b * sn)
+    s.v = decay * (v * c - (damp * freq * b + w * x) * sn)
+  } else {
+    const b = v + freq * x
+    s.x = s.t + decay * (x + b * dt)
+    s.v = decay * (v - freq * b * dt)
   }
+  if (!Number.isFinite(s.x) || !Number.isFinite(s.v)) snapSpring(s)
 }
 
 const SPRING_AT = 0.05
@@ -173,55 +176,52 @@ function snapSpring(s: Spring) {
   s.v = 0
 }
 
-/**
- * 多边形组的变形器：from → to 走一根 0→1 的弹簧。中途改目标时把**当前插值结果**烘成新的
- * from，不会像直接换 to 那样跳一帧（身体换形态很大块，跳一下很明显）。
+/** Each material vertex carries its own momentum across expression/shape
+ * changes. Switching targets never restarts a normalized morph timeline.
  */
 class PolyMorph {
-  from: Pt[][]
-  to: Pt[][]
   key: string
-  s = spring(1)
-
-  constructor(key: string, pts: Pt[][]) {
+  private points: Pt[][]
+  private targets: Pt[][]
+  private velocities: Pt[][]
+  private resting = true
+  constructor(key: string, points: Pt[][]) {
     this.key = key
-    this.from = pts
-    this.to = pts
+    this.points = points.map(poly => poly.map(p => [...p]))
+    this.targets = points
+    this.velocities = points.map(poly => poly.map(() => [0, 0]))
   }
-
-  retarget(key: string, pts: Pt[][]) {
+  retarget(key: string, points: Pt[][]) {
     if (key === this.key) return
-    const k = k2(clamp(this.s.x, 0, 1))
-    this.from = this.to.map((poly, i) => lerpPoly(this.from[i], poly, k))
-    this.to = pts
     this.key = key
-    this.s.x = 0
-    this.s.v = 0
-    this.s.t = 1
+    this.targets = points
+    this.resting = false
   }
-
-  snap(key: string, pts: Pt[][]) {
+  snap(key: string, points: Pt[][]) {
+    this.resting = true
     this.key = key
-    this.from = pts
-    this.to = pts
-    this.s.x = 1
-    this.s.v = 0
-    this.s.t = 1
+    this.targets = points
+    this.points = points.map(poly => poly.map(p => [...p]))
+    this.velocities = points.map(poly => poly.map(() => [0, 0]))
   }
-
-  progress(): number {
-    return k2(clamp(this.s.x, 0, 1))
+  step(freq: number, damp: number, dt: number) {
+    if (this.resting) return
+    const s = spring(0)
+    this.points.forEach((poly, i) => poly.forEach((p, j) => {
+      for (let axis = 0; axis < 2; axis++) {
+        s.x = p[axis]; s.v = this.velocities[i][j][axis]; s.t = this.targets[i][j][axis]
+        stepSpring(s, freq, damp, dt)
+        p[axis] = s.x; this.velocities[i][j][axis] = s.v
+      }
+    }))
+    if (this.settled()) this.finish()
   }
-
-  current(): Pt[][] {
-    const k = this.progress()
-    if (k >= 1) return this.to
-    return this.to.map((poly, i) => lerpPoly(this.from[i], poly, k))
-  }
-
+  current(): Pt[][] { return this.points }
   settled(): boolean {
-    return this.s.x > 0.97
+    return this.points.every((poly, i) => poly.every((p, j) => p.every((v, axis) =>
+      Math.abs(v - this.targets[i][j][axis]) < SPRING_AT && Math.abs(this.velocities[i][j][axis]) < SPRING_V)))
   }
+  finish() { this.snap(this.key, this.targets) }
 }
 
 type BlinkKey = { at: number; v: number }
@@ -241,21 +241,6 @@ export function consumeBlink(q: BlinkKey[], now: number): number | null {
   let key: number | null = null
   while (q.length && now >= q[0].at) key = q.shift()!.v
   return key
-}
-
-export function hopY(hopAt: number, now: number, scale = 1, timeScale = 1): number | null {
-  if (hopAt < 0) return 0
-  const et = (now - hopAt) / 1000 / Math.max(timeScale, 0.01)
-  if (et >= HOP_DUR) return null
-  let en = 0
-  for (const seg of HOP_SEGS) {
-    if (et < en + seg.d) {
-      const bn = (et - en) / seg.d
-      return -4 * seg.h * bn * (1 - bn) * 0.5 * scale
-    }
-    en += seg.d
-  }
-  return 0
 }
 
 /** 偏长间隔，避免每次切换都像节拍器。 */
@@ -335,14 +320,10 @@ function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: 
     }
   } else if (mood === 'think') {
     // 云是横着飘的，别歪太多；左右慢慢晃 + 轻微上浮。
-    spin = -6 + Math.sin(mt * 0.35) * 5
-    tx = Math.sin(mt * 0.3) * 8
-    ty = -2 + Math.sin(mt * 0.6) * 4
+    spin = -3
+    ty = -1.5
   } else if (mood === 'search') {
-    const et = Math.sin(mt * 1.3)
-    spin = et * 16
-    tx = et * 10
-    ty = Math.sin(mt * 1.7) * 4
+    spin = 0
   } else if (mood === 'work') {
     const et = Math.sin(mt * Math.PI * 2 * 1.6)
     spin = 5 + et * 3.5
@@ -350,7 +331,7 @@ function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: 
     ty = 2 + Math.max(0, et) * 4
     squash = 1 - Math.max(0, et) * 0.03
   } else if (mood === 'speak') {
-    spin = 10 + Math.sin(mt * 0.5) * 2
+    spin = 3
     tx = 3
     ty = -2.5 + Math.sin(mt * 0.8) * 1.1
     squash = 1.018
@@ -374,7 +355,7 @@ function applyPose(mood: BlobMood, mt: number, now: number, ctx: PoseCtx, rand: 
     boost = 1.06
   } else if (mood === 'wait') {
     // 歪头看着你，偶尔慢慢摆一下。
-    spin = 13 + Math.sin(mt * 0.45) * 3
+    spin = -4
     tx = 3
     ty = -1 + Math.sin(mt * 0.7) * 0.8
     squash = 1.01
@@ -457,6 +438,7 @@ export class KivioBlobSim {
   private ty = spring(0)
   private squash = spring(1)
   private blink = spring(1)
+  private winks = [spring(1), spring(1)]
   private gazeX = spring(0)
   private gazeY = spring(0)
   private boost = spring(1)
@@ -476,7 +458,9 @@ export class KivioBlobSim {
   private winkEye = 0
   private winkUntil = 0
   private winkDur = 320
-  private hopAt = -1
+  private bounce = spring(0)
+  private project = createBlobProjector()
+  private pointer: { x: number; y: number } | null = null
   private pokeHeat = 0
   private pokeCount = 0
   private lastPokeAt = -1e9
@@ -502,6 +486,7 @@ export class KivioBlobSim {
   }
 
   setMood(mood: BlobMood, now = 0) {
+    if (mood !== this.mood) this.releaseLook()
     const changed = mood !== this.mood || !this.inited
     this.mood = mood
     const faces = FACE_PLAY[mood]
@@ -537,13 +522,15 @@ export class KivioBlobSim {
     this.blinkQ = []
     if (mood === 'done' && changed) {
       // 收工先蹦一下。
-      this.hopAt = now
+      this.kick(-95)
     } else if (!idle && faceBlinks(faces[0])) {
       queueBlink(this.blinkQ, now, this.random)
     }
   }
 
-  poke(now: number, lookX?: number): number {
+  poke(now: number, lookX?: number, lookY?: number): number {
+    this.releaseLook()
+    this.wake(now)
     if (now - this.lastPokeAt > 4200) this.pokeCount = 0
     this.pokeCount += 1
     this.lastPokeAt = now
@@ -553,9 +540,9 @@ export class KivioBlobSim {
     const dir = lookX != null ? (lookX < 0 ? -1 : 1) : this.sign()
     const glance = lookX != null ? Math.min(1, Math.max(0.35, Math.abs(lookX))) : this.rand(0.45, 1)
     this.gazeX.t = dir * this.rand(8, 16) * glance
-    this.gazeY.t = this.rand(-6, 4)
+    this.gazeY.t = lookY != null ? clamp(lookY, -1, 1) * 18 : this.rand(-6, 4)
     this.gazeUntil = now + this.rand(this.mood === 'idle' ? 1400 : 700, this.mood === 'idle' ? 2800 : 1400)
-    this.hopAt = now
+    this.kick(-95)
     this.winkAt = now
     this.winkEye = this.random() < 0.5 ? 0 : 1
     this.winkDur = this.mood === 'idle' ? 700 : 320
@@ -578,7 +565,7 @@ export class KivioBlobSim {
     if (this.pokeCount >= 5) this.ctx.shakeUntil = now + 420
     if (this.mood === 'idle') {
       this.ctx.bias = {
-        spin: dir * this.rand(8, 16),
+        spin: dir * this.rand(3, 7) * (this.pokeCount >= 4 ? 1.6 : 1),
         tx: dir * this.rand(4, 9),
         ty: -3,
         squash: 1.02,
@@ -588,7 +575,48 @@ export class KivioBlobSim {
     return this.pokeCount
   }
 
+  lookAt(x: number, y: number, now: number) {
+    if (this.reduced || this.mood !== 'idle') return
+    this.wake(now)
+    this.pointer = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) }
+    this.gazeX.t = this.pointer.x * 22
+    this.gazeY.t = this.pointer.y * 18
+    this.gazeUntil = Infinity
+  }
+
+  releaseLook(): boolean {
+    if (!this.pointer) return false
+    this.pointer = null
+    this.gazeX.t = 0
+    this.gazeY.t = 0
+    this.gazeUntil = Infinity
+    return true
+  }
+
+  setReducedMotion(reduced: boolean) {
+    this.reduced = reduced
+    if (reduced) {
+      this.releaseLook()
+      this.blinkQ = []
+      this.winkAt = -1e9
+      this.pokeShape = null
+      this.ctx.shakeUntil = 0
+    }
+  }
+
+  private wake(now: number) {
+    // A stopped clock must not integrate a new impulse over old idle time.
+    if (now - this.last > 80) this.last = now
+  }
+
+  private kick(velocity: number) {
+    if (this.reduced) return
+    this.bounce.v = clamp(this.bounce.v + velocity, -160, 80)
+    this.squash.v -= 0.7
+  }
+
   nudge(now: number) {
+    this.wake(now)
     queueBlink(this.blinkQ, now, this.random, this.mood === 'idle' ? 2.6 : 1)
     this.gazeX.t = this.sign() * this.rand(6, 12)
     this.gazeY.t = this.rand(-4, 3)
@@ -610,15 +638,15 @@ export class KivioBlobSim {
   /** 眨眼、跳跃、形变还没结束时跟帧。闲置只在回稳或热度消退时跟帧。 */
   wantsHighFps(now: number): boolean {
     if (this.reduced) return false
-    if (this.blinkQ.length > 0) return true
+    if (this.blinkQ.length > 0 || this.winks.some(wink => !springAtTarget(wink, SPRING_UNIT_AT, SPRING_UNIT_V))) return true
     if (now < this.winkAt + this.winkDur) return true
-    if (this.hopAt >= 0) return true
+    if (!springAtTarget(this.bounce)) return true
     if (now < this.ctx.shakeUntil) return true
     if (this.pokeShape && now < this.pokeShapeUntil + 600) return true
     if (this.mood === 'idle') return (this.pokeHeat > 0 && now >= this.heatHoldUntil) || !this.springsAtTarget()
     if (!this.face.settled() || !this.body.settled()) return true
     if (now < this.ctx.nodEnd) return true
-    if (this.mood === 'error') return now < this.ctx.shakeUntil
+    if (this.mood === 'error') return now < this.ctx.shakeUntil || !this.springsAtTarget()
     return true
   }
 
@@ -647,17 +675,11 @@ export class KivioBlobSim {
     this.last = now
     const mt = (now - this.t0) / 1000
     const pose = applyPose(this.mood, mt, now, this.ctx, (a, b) => this.rand(a, b))
-    this.spin.t = pose.spin
+    this.spin.t = pose.spin - this.gazeX.v * 0.10
     this.tx.t = pose.tx
     this.ty.t = pose.ty
-    this.squash.t = pose.squash
+    this.squash.t = pose.squash - Math.min(0.07, Math.abs(this.gazeX.v) * 0.0012) + clamp(-this.bounce.v * 0.0007, -0.05, 0.07)
     this.boost.t = pose.boost
-    if (this.mood === 'idle') {
-      this.spin.t += this.gazeX.t * 0.48
-      this.tx.t += this.gazeX.t * 0.3
-      this.ty.t += this.gazeY.t * 0.16
-    }
-
     if (this.mood !== 'idle' && now >= this.faceUntil) {
       const list = FACE_PLAY[this.mood]
       this.faceIdx = (this.faceIdx + 1) % list.length
@@ -697,36 +719,44 @@ export class KivioBlobSim {
       this.winkUntil = now + this.rand(4500, 10000)
     }
     const hopEvery = hopCadence(this.mood)
-    if (hopEvery && now >= this.ctx.hopUntil && this.hopAt < 0) {
-      this.hopAt = now
+    if (hopEvery && now >= this.ctx.hopUntil && springAtTarget(this.bounce)) {
+      this.kick(-95)
       this.ctx.hopUntil = now + this.rand(...hopEvery)
     }
 
-    const n = Math.max(1, Math.ceil(dt / DT))
-    const step = dt / n
+    this.winks.forEach((wink, i) => {
+      wink.t = 1
+      if (blinkable && i === this.winkEye && now < this.winkAt + this.winkDur) {
+        const phase = (now - this.winkAt) / this.winkDur
+        wink.t = Math.max(0.04, phase < 0.42 ? 1 - phase / 0.42 : (phase - 0.42) / 0.58)
+      }
+    })
+    const step = Math.max(0, dt)
     const spr = this.mood === 'idle' ? SPR_IDLE : SPR
-    for (let i = 0; i < n; i++) {
+    {
       stepSpring(this.spin, ...spr.spin, step)
       stepSpring(this.tx, ...spr.x, step)
       stepSpring(this.ty, ...spr.y, step)
       stepSpring(this.squash, ...spr.squash, step)
       stepSpring(this.blink, ...spr.blink, step)
+      this.winks.forEach(wink => stepSpring(wink, 25, 0.9, step))
       stepSpring(this.gazeX, ...spr.gaze, step)
       stepSpring(this.gazeY, ...spr.gaze, step)
-      stepSpring(this.face.s, ...spr.morph, step)
-      stepSpring(this.body.s, ...(this.pokeShape ? SPR.body : spr.body), step)
+      this.face.step(...spr.morph, step)
+      this.body.step(...(this.pokeShape ? SPR.body : spr.body), step)
+      stepSpring(this.bounce, 11, 0.6, step)
       stepSpring(this.boost, ...spr.boost, step)
     }
     if (this.reduced) {
-      this.spin.x = 0
-      this.tx.x = 0
-      this.ty.x = 0
-      this.squash.x = 1
-      this.blink.x = 1
-      this.gazeX.x = 0
-      this.gazeY.x = 0
-      this.boost.x = 1
-      this.hopAt = -1
+      for (const s of [this.spin, this.tx, this.ty, this.gazeX, this.gazeY]) {
+        s.t = 0
+        snapSpring(s)
+      }
+      for (const s of [this.squash, this.blink, this.boost, ...this.winks]) {
+        s.t = 1
+        snapSpring(s)
+      }
+      snapSpring(this.bounce)
       const faces = FACE_PLAY[this.mood]
       this.face.snap(faces[0], facePoints(faces[0]))
       this.body.snap('circle', [bodyPoints('circle')])
@@ -740,54 +770,30 @@ export class KivioBlobSim {
       }
     }
 
-    let hop = hopY(
-      this.hopAt,
-      now,
-      this.mood === 'idle' ? 0.36 + this.pokeHeat * 0.5 : this.mood === 'done' ? 0.7 : 1,
-      this.mood === 'idle' ? 2.1 : 1,
-    )
-    if (hop == null) {
-      this.hopAt = -1
-      hop = 0
-    }
     this.finishIdlePose(now)
     const polys = this.face.current()
-    const k = this.face.progress()
-    const gx = this.gazeX.x
-    const gy = this.gazeY.x
-    const pulse = 1 + (this.mood === 'idle' ? 0.03 : 0.07) * Math.sin(k * Math.PI)
-    const boost = this.boost.x
-    const eyes = [0, 1].map((i) => {
-      let lid = this.blink.x
-      if (blinkable && i === this.winkEye && now < this.winkAt + this.winkDur) {
-        const xr = (now - this.winkAt) / this.winkDur
-        const fr = xr < 0.42 ? 1 - xr / 0.42 : (xr - 0.42) / 0.58
-        lid = Math.min(lid, Math.max(fr, 0.04))
-      }
-      const [cx, cy] = centroid(polys[i])
-      const amp = this.mood === 'idle' ? 0 : 1
-      const wobX = (Math.sin(now * 42e-5 + i) * 3.6 + Math.sin(now * 0.001 + i * 2) * 1.3) * amp
-      const wobY = Math.sin(now * 58e-5 + i) * 2.2 * amp
-      const lookX = gx + wobX
-      const lookY = gy + wobY
-      const sx = (1 - Math.abs(gx) * 0.012) * boost * pulse
-      const sy = clamp(lid, 0.04, 1.2) * boost * pulse
-      return {
-        d: polyPath(polys[i]),
-        transform: `translate(${(lookX * 0.55).toFixed(2)} ${(lookY * 0.45).toFixed(2)}) translate(${cx.toFixed(2)} ${cy.toFixed(2)}) scale(${sx.toFixed(3)} ${sy.toFixed(3)}) translate(${(-cx).toFixed(2)} ${(-cy).toFixed(2)})`,
-      }
-    }) as BlobPaint['eyes']
-
+    const eyes = polys.map((poly, i) => {
+      const lid = Math.min(this.blink.x, this.winks[i].x)
+      // Blink and expression live on the material, before surface projection.
+      const centerY = poly.reduce((sum, p) => sum + p[1], 0) / poly.length
+      return poly.map(([x, y]): Pt => [x, centerY + (y - centerY) * clamp(lid, 0.04, 1.2)])
+    })
+    const volume = this.project(this.body.current()[0], eyes, {
+      yaw: clamp(this.gazeX.x * 0.045, -1.15, 1.15),
+      pitch: clamp(-this.gazeY.x * 0.04, -0.85, 0.85),
+      squash: this.squash.x,
+    })
     return {
-      rig: `translate(${this.tx.x.toFixed(2)} ${(this.ty.x + hop).toFixed(2)}) rotate(${this.spin.x.toFixed(2)} ${CX} ${CY})`,
-      body: `translate(${CX} ${CY}) scale(1 ${this.squash.x.toFixed(3)}) translate(${-CX} ${-CY})`,
-      bodyD: polyPath(this.body.current()[0]),
+      rig: `translate(${this.tx.x.toFixed(2)} ${(this.ty.x + this.bounce.x).toFixed(2)}) rotate(${this.spin.x.toFixed(2)} ${CX} ${CY}) translate(${CX} ${CY}) scale(${this.boost.x.toFixed(3)}) translate(${-CX} ${-CY})`,
+      // Volume already includes deformation; the face and body never separate.
+      body: '',
+      bodyD: volume.bodyD,
       fill: this.mood === 'error'
         ? BLOB_ERROR
         : this.pokeHeat <= 0
           ? BLOB_BLUE
           : mixHex(BLOB_BLUE, BLOB_POKE_RED, this.pokeHeat),
-      eyes,
+      eyes: volume.eyes.map(d => ({ d, transform: '' })) as BlobPaint['eyes'],
     }
   }
 
@@ -809,8 +815,8 @@ export class KivioBlobSim {
       springAtTarget(this.squash, SPRING_UNIT_AT, SPRING_UNIT_V) &&
       springAtTarget(this.blink, SPRING_UNIT_AT, SPRING_UNIT_V) &&
       springAtTarget(this.boost, SPRING_UNIT_AT, SPRING_UNIT_V) &&
-      springAtTarget(this.face.s, SPRING_UNIT_AT, SPRING_UNIT_V) &&
-      springAtTarget(this.body.s, SPRING_UNIT_AT, SPRING_UNIT_V)
+      this.winks.every(wink => springAtTarget(wink, SPRING_UNIT_AT, SPRING_UNIT_V)) &&
+      springAtTarget(this.bounce) && this.face.settled() && this.body.settled()
     )
   }
 
@@ -837,7 +843,7 @@ export class KivioBlobSim {
     if (this.mood !== 'idle' || this.reduced) return
     if (this.blinkQ.length > 0) return
     if (now < this.winkAt + this.winkDur) return
-    if (this.hopAt >= 0) return
+    if (!springAtTarget(this.bounce)) return
     if (now < this.ctx.shakeUntil) return
     if (this.pokeShape && now < this.pokeShapeUntil + 600) return
     if (!this.springsAtTarget()) return
@@ -846,11 +852,13 @@ export class KivioBlobSim {
     snapSpring(this.ty)
     snapSpring(this.squash)
     snapSpring(this.blink)
+    this.winks.forEach(snapSpring)
     snapSpring(this.gazeX)
     snapSpring(this.gazeY)
     snapSpring(this.boost)
-    snapSpring(this.face.s)
-    snapSpring(this.body.s)
+    snapSpring(this.bounce)
+    this.face.finish()
+    this.body.finish()
   }
 
   private rand(a: number, b: number) {

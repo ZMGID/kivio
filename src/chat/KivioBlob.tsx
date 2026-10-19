@@ -1,4 +1,4 @@
-import { memo, useEffect, useImperativeHandle, useRef, forwardRef, type CSSProperties } from 'react'
+import { memo, useEffect, useLayoutEffect, useId, useImperativeHandle, useRef, forwardRef, type CSSProperties } from 'react'
 import {
   BLOB_BLUE,
   BLOB_EYE,
@@ -35,6 +35,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   { size = 28, mood = 'idle', paused = false, pulse, onPoke }: KivioBlobProps,
   ref,
 ) {
+  const shapeId = useId().replace(/:/g, '')
   const hostRef = useRef<HTMLSpanElement>(null)
   const rigRef = useRef<SVGGElement>(null)
   const bodyRef = useRef<SVGPathElement>(null)
@@ -51,16 +52,18 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     simRef.current = new KivioBlobSim({ reducedMotion: prefersReducedMotion() })
   }
 
-  const pokeAt = (clientX?: number) => {
+  const pokeAt = (clientX?: number, clientY?: number) => {
     const sim = simRef.current
     const host = hostRef.current
     if (!sim) return
     let lookX: number | undefined
+    let lookY: number | undefined
     if (clientX != null && host) {
       const rect = host.getBoundingClientRect()
       if (rect.width > 0) lookX = ((clientX - rect.left) / rect.width) * 2 - 1
+      if (clientY != null && rect.height > 0) lookY = ((clientY - rect.top) / rect.height) * 2 - 1
     }
-    const streak = sim.poke(performance.now(), lookX)
+    const streak = sim.poke(performance.now(), lookX, lookY)
     onPokeRef.current?.(streak)
     armRef.current()
   }
@@ -68,7 +71,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   pokeAtRef.current = pokeAt
   useImperativeHandle(ref, () => ({ pokeAt: (clientX) => pokeAtRef.current(clientX) }), [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     simRef.current?.setMood(mood, performance.now())
     armRef.current()
   }, [mood])
@@ -83,10 +86,11 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
   }, [pulse])
 
   useEffect(() => {
+    if (paused) simRef.current?.releaseLook()
     armRef.current()
   }, [paused])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const sim = simRef.current
     const host = hostRef.current
     const rig = rigRef.current
@@ -109,8 +113,11 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     }
 
     apply(performance.now())
-    if (prefersReducedMotion()) return
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
 
+    // Absolute 60 Hz deadlines cap high-refresh screens without timer drift.
+    const frameMs = 1000 / 60
+    let nextFrame = performance.now() + frameMs
     let raf = 0
     let timeout = 0
     let onScreen = true
@@ -127,6 +134,10 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     const arm = (now = performance.now()) => {
       clearTimers()
       if (stopped) return
+      if (media.matches) {
+        apply(now)
+        return
+      }
       const delay = blobScheduleMs({
         reducedMotion: false,
         hidden: document.hidden,
@@ -136,34 +147,73 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
         highFps: sim.wantsHighFps(now),
         idleWakeMs: sim.nextIdleWakeMs(now),
       })
-      if (delay == null) return
+      if (delay == null) {
+        nextFrame = 0
+        return
+      }
+      // Wake promptly after a stopped/hidden clock; never replay missed frames.
+      if (!nextFrame || now - nextFrame >= frameMs) nextFrame = now
+      const deadline = delay === 0 ? nextFrame : Math.max(nextFrame, now + delay)
       const paint = (t: number) => {
         raf = 0
+        if (t + 0.1 < deadline) {
+          raf = requestAnimationFrame(paint)
+          return
+        }
         apply(t)
+        nextFrame = deadline + Math.max(1, Math.floor((t - deadline) / frameMs) + 1) * frameMs
         arm(t)
       }
-      if (delay === 0) {
+      // Active motion follows vsync; gate expensive sampling to 60 Hz.
+      // A timer at a full 60 Hz interval can miss alternate display refreshes.
+      const wait = Math.max(0, deadline - now)
+      if (delay === 0 || wait < 1) raf = requestAnimationFrame(paint)
+      else timeout = window.setTimeout(() => {
+        timeout = 0
         raf = requestAnimationFrame(paint)
-      } else {
-        timeout = window.setTimeout(() => {
-          timeout = 0
-          raf = requestAnimationFrame(paint)
-        }, delay)
-      }
+      }, wait)
+
     }
 
     const onVis = () => {
-      if (document.hidden) clearTimers()
+      if (document.hidden) { sim.releaseLook(); clearTimers() }
       else arm()
     }
     const onBlur = () => {
       unfocused = true
+      sim.releaseLook()
       clearTimers()
     }
     const onFocus = () => {
       unfocused = false
       arm()
     }
+    const onMotionPreference = () => {
+      sim.setReducedMotion(media.matches)
+      apply(performance.now())
+      arm()
+    }
+    // Listen only inside the local hero/stage, never on window/document.
+    // No overlay: nearby input fields and text keep their normal hit targets.
+    const region = size >= 48 ? host.closest('[data-momo-region]') ?? host.parentElement : null
+    const leave = () => {
+      if (sim.releaseLook() && !raf && !timeout) arm()
+    }
+    const follow = (event: Event) => {
+      const pointer = event as PointerEvent
+      if (pointer.pointerType === 'touch' || document.hidden || unfocused || !onScreen || pausedRef.current || media.matches || sim.mood !== 'idle') return
+      const rect = host.getBoundingClientRect()
+      const dx = pointer.clientX - rect.left - rect.width / 2
+      const dy = pointer.clientY - rect.top - rect.height / 2
+      const radius = Math.max(96, size * 0.75)
+      if (Math.hypot(dx, dy) > radius) { leave(); return }
+      sim.lookAt(dx / radius, dy / radius, performance.now())
+      // Pointer events must not cancel a frame already waiting to paint.
+      if (!raf && !timeout) arm()
+    }
+    region?.addEventListener('pointermove', follow, { passive: true })
+    region?.addEventListener('pointerleave', leave)
+    media.addEventListener('change', onMotionPreference)
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('blur', onBlur)
     window.addEventListener('focus', onFocus)
@@ -171,7 +221,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     const io = new IntersectionObserver((entries) => {
       onScreen = entries.some((entry) => entry.isIntersecting)
       if (onScreen) arm()
-      else clearTimers()
+      else { sim.releaseLook(); clearTimers() }
     })
     armRef.current = arm
     io.observe(host)
@@ -185,20 +235,24 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
       io.disconnect()
+      media.removeEventListener('change', onMotionPreference)
+      region?.removeEventListener('pointermove', follow)
+      region?.removeEventListener('pointerleave', leave)
     }
-  }, [])
+  }, [size])
 
   return (
     <span
       ref={hostRef}
       role="button"
+      aria-label="墨墨 · Momo"
       tabIndex={0}
       className="inline-flex shrink-0 cursor-pointer select-none"
       style={{ '--kv-stream-logo-size': `${size}px`, width: size, height: size } as CSSProperties}
       onPointerDown={(event) => {
         if (event.button !== 0) return
         event.preventDefault()
-        pokeAt(event.clientX)
+        pokeAt(event.clientX, event.clientY)
       }}
       onKeyDown={(event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return
@@ -212,11 +266,17 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
         width={size}
         height={size}
         overflow="visible"
+        aria-hidden="true"
       >
+        <defs>
+          <clipPath id={`${shapeId}-clip`}><use href={`#${shapeId}-body`} /></clipPath>
+        </defs>
         <g ref={rigRef} transform={BLOB_REST.rig}>
-          <path ref={bodyRef} d={BLOB_REST.bodyD} fill={BLOB_BLUE} transform={BLOB_REST.body} />
+          <path id={`${shapeId}-body`} ref={bodyRef} d={BLOB_REST.bodyD} fill={BLOB_BLUE} transform={BLOB_REST.body} />
+          <g clipPath={`url(#${shapeId}-clip)`}>
           <path ref={eye0Ref} fill={BLOB_EYE} d={BLOB_REST.eyes[0].d} transform={BLOB_REST.eyes[0].transform} />
           <path ref={eye1Ref} fill={BLOB_EYE} d={BLOB_REST.eyes[1].d} transform={BLOB_REST.eyes[1].transform} />
+          </g>
         </g>
       </svg>
     </span>
