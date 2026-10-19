@@ -530,7 +530,8 @@ fn unpack_built_in_skills(item: &BuiltIn, bytes: Vec<u8>, stage: &Path) -> Resul
     let mut count = 0usize;
     for index in 0..zip.len() {
         let mut file = zip.by_index(index).map_err(|e| e.to_string())?;
-        let Some((_, archive_path)) = file.name().split_once('/') else {
+        let name = file.name().map_err(|e| e.to_string())?;
+        let Some((_, archive_path)) = name.split_once('/') else {
             continue;
         };
         let selected = if item.unpack == "root" {

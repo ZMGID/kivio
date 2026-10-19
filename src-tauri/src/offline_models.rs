@@ -1195,7 +1195,11 @@ fn extract_archive_entry(
     let mut archive = zip::ZipArchive::new(archive_file).map_err(|e| e.to_string())?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        if entry.name().ends_with(entry_suffix) {
+        if entry
+            .name()
+            .map_err(|e| e.to_string())?
+            .ends_with(entry_suffix)
+        {
             let mut file = std::fs::File::create(output).map_err(|e| e.to_string())?;
             std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
             return Ok(());

@@ -445,7 +445,7 @@ fn stage_restore(
         let mut total = 0u64;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(error)?;
-            let name = entry.name().to_string();
+            let name = entry.name().map_err(error)?.into_owned();
             portable_path(&name)?;
             if !seen.insert(name.clone()) {
                 return Err("备份包含重复文件".into());
@@ -909,7 +909,7 @@ mod tests {
                 let mut entry = input.by_index(i).unwrap();
                 let mut bytes = Vec::new();
                 entry.read_to_end(&mut bytes).unwrap();
-                let mut name = entry.name().to_string();
+                let mut name = entry.name().unwrap().into_owned();
                 if name == "app/conversations/conv_one.json" {
                     if mode == "corrupt" {
                         bytes[0] = b'!';
