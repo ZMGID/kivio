@@ -794,6 +794,11 @@ pub fn run() {
             reading::setup::reading_setup_status,
             reading::setup::reading_setup_save,
             reading::setup::reading_setup_start,
+            reading::operations::reading_translation_status,
+            reading::operations::reading_view_select,
+            reading::operations::reading_translation_start,
+            reading::operations::reading_translation_cancel,
+            reading::operations::reading_export,
             reading::reading_list,
             reading::reading_import,
             reading::reading_save,
@@ -913,6 +918,7 @@ pub fn run() {
                         }
                     }
                     tauri::async_runtime::block_on(reading::setup::shutdown());
+                    tauri::async_runtime::block_on(reading::operations::shutdown());
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或
                     // 命令节点（Child 靠 kill_on_drop 收尸）。先标记取消、限时等收尾，
                     // 此时运行时还活着，select! 的取消分支才来得及 drop 掉 Child。

@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { ChevronDown, Star } from 'lucide-react'
 import { type ModelProvider } from '../api/tauri'
 import { getSettingsCached, setFavoriteModelsCached, subscribeSettings } from '../api/settingsCache'
@@ -14,6 +15,8 @@ interface ModelSelectorProps {
   currentProviderId: string
   currentModel: string
   onModelChange: (providerId: string, model: string) => void
+  /** Escape clipping when hosted inside a scrollable tool panel. */
+  portal?: boolean
 }
 
 /** 收藏键：providerId 无冒号，model 可能含冒号 → 只按首个冒号切分。 */
@@ -28,14 +31,39 @@ function ModelSelectorBase({
   currentProviderId,
   currentModel,
   onModelChange,
+  portal = false,
 }: ModelSelectorProps) {
   const t = useT()
   const [open, setOpen] = useState(false)
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const [favorites, setFavorites] = useState<string[]>([])
   const menuRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [position, setPosition] = useState<CSSProperties>({ left: 8, top: 8, width: 320, maxHeight: 400 })
   usePopoverMenu(open, () => setOpen(false), menuRef)
-  const maxH = usePopoverMaxHeight(open, menuRef, 'down', 400)
+  const maxH = usePopoverMaxHeight(open && !portal, menuRef, 'down', 400)
+  useLayoutEffect(() => {
+    if (!open || !portal) return
+    const measure = () => {
+      const anchor = triggerRef.current?.getBoundingClientRect()
+      if (!anchor) return
+      const width = Math.min(320, window.innerWidth - 16)
+      const below = window.innerHeight - anchor.bottom - 16
+      const above = anchor.top - 16
+      const upwards = below < 160 && above > below
+      setPosition({
+        left: Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8)),
+        ...(upwards ? { bottom: window.innerHeight - anchor.top + 8 } : { top: anchor.bottom + 8 }),
+        width,
+        maxHeight: Math.min(400, Math.max(80, upwards ? above : below)),
+      })
+    }
+    const onScroll = (event: Event) => { if (!menuRef.current?.contains(event.target as Node)) measure() }
+    measure()
+    window.addEventListener('resize', measure)
+    window.addEventListener('scroll', onScroll, true)
+    return () => { window.removeEventListener('resize', measure); window.removeEventListener('scroll', onScroll, true) }
+  }, [open, portal])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -163,9 +191,36 @@ function ModelSelectorBase({
     )
   }
 
+  const menu = open ? (
+    <>
+      <div className={portal ? 'fixed inset-0 z-[1000]' : 'fixed inset-0 z-10'} onClick={() => setOpen(false)} aria-hidden />
+      <div ref={menuRef} style={portal ? position : { maxHeight: maxH }} className={`chat-model-selector-menu chat-motion-popover overflow-y-auto custom-scrollbar kv-menu ${portal ? 'fixed z-[1001]' : 'absolute left-0 top-full z-20 mt-2 min-w-[240px]'}`}>
+        {favoriteEntries.length > 0 && (
+          <div className="px-1 py-1">
+            <div className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-500">
+              <Star size={11} fill="currentColor" />
+              {t.chatFavorites}
+            </div>
+            {favoriteEntries.map(entry => renderModelRow(entry.providerId, entry.model, 'fav'))}
+          </div>
+        )}
+        {visibleProviders.map(({ provider, models }) => (
+          <div key={provider.id} className="px-1 py-1">
+            <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">{provider.name}</div>
+            {models.map(model => renderModelRow(provider.id, model, 'grp'))}
+          </div>
+        ))}
+        {visibleProviders.length === 0 && (
+          <div className="px-4 py-6 text-center text-sm text-neutral-500">{t.chatNoModels}</div>
+        )}
+      </div>
+    </>
+  ) : null
+
   return (
     <div className="relative max-w-full min-w-0" data-tauri-drag-region="false">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(!open)}
         aria-haspopup="menu"
@@ -174,44 +229,10 @@ function ModelSelectorBase({
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
       >
         {currentModel && <ModelIcon model={currentModel} size={16} />}
-        <span className="chat-model-selector-label max-w-[200px] truncate font-medium text-neutral-800">
-          {displayName}
-        </span>
-        <ChevronDown
-          size={15}
-          className={`chat-model-selector-caret shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`}
-        />
+        <span className="chat-model-selector-label max-w-[200px] truncate font-medium text-neutral-800">{displayName}</span>
+        <ChevronDown size={15} className={`chat-model-selector-caret shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`} />
       </button>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-          <div ref={menuRef} style={{ maxHeight: maxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[240px] overflow-y-auto kv-menu">
-            {favoriteEntries.length > 0 && (
-              <div className="px-1 py-1">
-                <div className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-500">
-                  <Star size={11} fill="currentColor" />
-                  {t.chatFavorites}
-                </div>
-                {favoriteEntries.map((entry) =>
-                  renderModelRow(entry.providerId, entry.model, 'fav'),
-                )}
-              </div>
-            )}
-            {visibleProviders.map(({ provider, models }) => (
-              <div key={provider.id} className="px-1 py-1">
-                <div className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
-                  {provider.name}
-                </div>
-                {models.map((model) => renderModelRow(provider.id, model, 'grp'))}
-              </div>
-            ))}
-            {visibleProviders.length === 0 && (
-              <div className="px-4 py-6 text-center text-sm text-neutral-500">{t.chatNoModels}</div>
-            )}
-          </div>
-        </>
-      )}
+      {portal ? createPortal(menu, document.body) : menu}
     </div>
   )
 }

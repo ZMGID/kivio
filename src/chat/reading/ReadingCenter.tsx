@@ -1,4 +1,5 @@
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
+import { notifyError } from '../../components/appNoticeStore'
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import {
   BookOpen,
@@ -21,12 +22,13 @@ import {
 } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { ComposeIcon } from '../../settings/public/icons'
-import { Input, TextArea } from '../../settings/public/controls'
+import { Input, Select, TextArea } from '../../settings/public/controls'
+import { api } from '../../api/tauri'
 import { ChatMarkdown } from '../ChatMarkdown'
 import { MessageList, type MessageListProps } from '../MessageList'
 import { InputBar, type InputBarProps } from '../InputBar'
 import { insertTextIntoComposer } from '../composerInsert'
-import { updateComposerDraft, migrateComposerDraft } from '../composerDraft'
+import { beginComposerAttachmentOperation, updateComposerDraft, migrateComposerDraft } from '../composerDraft'
 import * as pdfjs from 'pdfjs-dist'
 import { loadReadingPdf } from './pdfDocument'
 import './pdfTextLayer.css'
@@ -34,6 +36,10 @@ import './reading.css'
 
 import LiteratureLibrary from './LiteratureLibrary'
 import StudyEnvironment from './StudyEnvironment'
+import ReadingDocumentTools from './ReadingDocumentTools'
+import { useReadingSession } from './useReadingSession'
+import type { ReadingPdfKind } from '../../api/readingOperations'
+import { readingLanguageName } from './readingLanguages'
 import {
   readingApi,
   type ReadingDocument,
@@ -55,19 +61,21 @@ function PdfPage({
   number,
   width,
   zoom,
+  initialRatio,
   onReady,
 }: {
   pdf: pdfjs.PDFDocumentProxy
   number: number
   width: number
   zoom: number
+  initialRatio: number
   onReady: () => void
 }) {
   const onReadyRef = useRef(onReady)
   onReadyRef.current = onReady
   const el = useRef<HTMLDivElement>(null)
   const [near, setNear] = useState(false),
-    [ratio, setRatio] = useState(792 / 612),
+    [ratio, setRatio] = useState(initialRatio),
     [error, setError] = useState(false)
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -158,6 +166,7 @@ export interface ReadingCenterProps {
   inputBarProps: InputBarProps
   messageListProps: MessageListProps
   modelControls: React.ReactNode
+  selectedModel?: { providerId: string; model: string }
   onCreateConversation: (name: string) => Promise<Conversation>
   onActivateConversation: (id: string | null) => Promise<void>
   onSend: (
@@ -208,6 +217,7 @@ export default function ReadingCenter(props: ReadingCenterProps) {
             doc={doc}
             openPdf={async () => setActiveId(null)}
             saveStatus={library.saveStatus}
+            onConfigure={openSetup}
           />
         ) : null}
       </div>
@@ -221,6 +231,8 @@ function ReadingWorkspace({
   inputBarProps,
   messageListProps,
   modelControls,
+  selectedModel,
+  onConfigure,
   headerControls,
   onCreateConversation,
   onActivateConversation,
@@ -229,7 +241,20 @@ function ReadingWorkspace({
   doc: ReadingDocument
   openPdf: () => Promise<void>
   saveStatus: string
+  onConfigure: () => void
 }) {
+  const reading = useReadingSession(doc.id)
+  const viewKind = reading.session?.view.kind ?? 'source'
+  const viewRunId = reading.session?.view.output?.runId
+  const viewKey = `${viewKind}:${viewRunId || ''}`
+  const edition = viewKind === 'source' ? '原文' : viewKind === 'mono' ? '译文' : '双语对照'
+  const shownOutput = reading.session?.view.output ?? reading.session?.view.latest
+  const [pageRatio, setPageRatio] = useState(792 / 612)
+  const locationView: Anchor['view'] = viewKind === 'source' || !viewRunId ? undefined : { kind: viewKind, runId: viewRunId }
+  const anchorMatches = (anchor?: Anchor | null) => (anchor?.view?.kind ?? 'source') === viewKind && (viewKind === 'source' || anchor?.view?.runId === viewRunId)
+  const pendingRestore = useRef<{ page: number; offset: number } | null>(null)
+  const loadedView = useRef<string | null>(null)
+  const sessionLoaded = !!reading.session, sessionFailed = !!reading.error
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null),
     [error, setError] = useState('')
   const [pages, setPages] = useState<string[]>([]),
@@ -237,6 +262,11 @@ function ReadingWorkspace({
   const [page, setPage] = useState(doc.page),
     [width, setWidth] = useState(720),
     [zoom, setZoom] = useState(1)
+  const [fit, setFit] = useState('width'), [pageInput, setPageInput] = useState(String(doc.page))
+  const pageEditing = useRef(false)
+  const [capturing, setCapturing] = useState(false)
+  const [readerHeight, setReaderHeight] = useState(0)
+  const captureLock = useRef(false)
   const [side, setSide] = useState<'chat' | 'notes' | 'history'>('chat'),
     [sideOpen, setSideOpen] = useState(true),
     [mobile, setMobile] = useState('reader')
@@ -251,7 +281,7 @@ function ReadingWorkspace({
     >(null),
     [highlight, setHighlight] = useState<Anchor | null>(null)
   const [noteDraft, setNoteDraft] = useState(doc.noteDraft),
-    [returnTo, setReturnTo] = useState<{ page: number; offset: number } | null>(
+    [returnTo, setReturnTo] = useState<{ page: number; offset: number; view?: Anchor['view'] } | null>(
       null,
     ),
     [split, setSplit] = useState(60)
@@ -336,15 +366,22 @@ function ReadingWorkspace({
     }
   }, [doc.activeConversationId, onActivateConversation])
   useEffect(() => {
+    if (!sessionLoaded && !sessionFailed) return
     let live = true
     let task: pdfjs.PDFDocumentLoadingTask | undefined
+    pendingRestore.current = { ...position.current, offset: loadedView.current && loadedView.current !== viewKey ? 0 : position.current.offset }
+    loadedView.current = viewKey
+    setPdf(null); setPages([]); setToc([]); setIndexing(true); setError(''); setSelection(null)
     void (async () => {
       try {
-        const data = await readingApi.pdf(doc.id)
+        const data = await readingApi.pdf(doc.id, { kind: viewKind, runId: viewRunId })
         if (!live) return
         task = loadReadingPdf(data)
         const pdf = await task.promise
+        const first = await pdf.getPage(1)
+        const viewport = first.getViewport({ scale: 1 })
         if (!live) return
+        setPageRatio(viewport.height / viewport.width)
         setPdf(pdf)
         const outline = await pdf.getOutline()
         const items: { title: string; page: number; depth: number }[] = []
@@ -401,11 +438,12 @@ function ReadingWorkspace({
       live = false
       void task?.destroy()
     }
-  }, [doc.id])
+  }, [doc.id, viewKind, viewRunId, viewKey, sessionLoaded, sessionFailed])
   useEffect(() => {
     const el = host.current
     if (!el) return
     const observer = new ResizeObserver(() => {
+      setReaderHeight(el.clientHeight)
       if (el.clientWidth > 0)
         setWidth(Math.max(280, Math.min(1080, el.clientWidth - 48)))
     })
@@ -421,6 +459,9 @@ function ReadingWorkspace({
     (number: number, offset = 0) => {
       const target = frame(number)
       if (target && host.current) {
+        // Navigation commits before the browser's deferred scroll event, so a
+        // version switch in the same turn restores the requested page.
+        position.current = { page: number, offset }
         host.current.scrollTo({
           top: target.parentElement!.offsetTop + offset,
           behavior: 'instant',
@@ -430,14 +471,29 @@ function ReadingWorkspace({
     },
     [frame],
   )
+  useEffect(() => { if (!pageEditing.current) setPageInput(String(page)) }, [page])
   useEffect(() => {
-    if (pdf)
-      requestAnimationFrame(() =>
-        jump(position.current.page, position.current.offset),
-      )
+    if (fit === 'width') { setZoom(1); return }
+    if (fit !== 'page' || !pdf) return
+    let live = true
+    void pdf.getPage(page).then(p => {
+      const view = p.getViewport({ scale: 1 })
+      if (live && host.current) setZoom(Math.max(0.2, Math.min(1, (host.current.clientHeight - 48) / (width * view.height / view.width))))
+    }).catch(error => { if (live) notifyError(String(error)) })
+    return () => { live = false }
+  }, [fit, pdf, page, width, readerHeight])
+  useEffect(() => {
+    if (!pdf) return
+    const target = pendingRestore.current ?? position.current
+    const frame = requestAnimationFrame(() => {
+      jump(Math.min(target.page, pdf.numPages), target.offset)
+      pendingRestore.current = null
+    })
+    return () => cancelAnimationFrame(frame)
   }, [pdf, jump])
   const locate = useCallback(() => {
     if (!highlight || !host.current) return
+    if ((highlight.view?.kind ?? 'source') !== viewKind || (viewKind !== 'source' && highlight.view?.runId !== viewRunId)) return
     const target = frame(highlight.page)
     if (!target) return
     let rect = highlight.rect
@@ -467,7 +523,7 @@ function ReadingWorkspace({
           target.parentElement!.offsetTop + rect.y * target.clientHeight - 100,
         behavior: 'smooth',
       })
-  }, [highlight, frame])
+  }, [highlight, frame, viewKind, viewRunId])
   useEffect(locate, [locate])
   useEffect(() => {
     if (!highlight) return
@@ -475,14 +531,19 @@ function ReadingWorkspace({
     return () => clearTimeout(timer)
   }, [highlight])
   const cite = (anchor: Anchor) => {
-    setReturnTo({ ...position.current })
-    setHighlight(anchor)
+    setReturnTo({ ...position.current, view: locationView })
     setMobile('reader')
-    jump(anchor.page)
     setSelection(null)
+    if (anchorMatches(anchor)) { setHighlight(anchor); jump(anchor.page); return }
+    position.current = { page: anchor.page, offset: 0 }
+    void reading.selectView(anchor.view?.kind ?? 'source', anchor.view?.runId).then(value => {
+      if (!value || !alive.current) return
+      position.current = { page: anchor.page, offset: 0 }
+      setHighlight(anchor)
+    }).catch(error => notifyError(String(error)))
   }
   const onScroll = () => {
-    if (!host.current) return
+    if (!host.current || pendingRestore.current) return
     setSelection(null)
     const top = host.current.scrollTop + 100
     const frames = Array.from(
@@ -521,6 +582,7 @@ function ReadingWorkspace({
     setSelection({
       page: Number(frame.dataset.page),
       text: text.slice(0, 6000),
+      view: locationView,
       rect: {
         x: (r.x - s.x) / s.width,
         y: (r.y - s.y) / s.height,
@@ -532,6 +594,31 @@ function ReadingWorkspace({
     })
   }
   const composerId = doc.activeConversationId ?? `reading-${doc.id}`
+  const openSide = (value: typeof side) => {
+    setSide(value); setSideOpen(true); setMobile('chat')
+  }
+  const capturePage = async () => {
+    if (!pdf || captureLock.current) return
+    captureLock.current = true; setCapturing(true)
+    // Attach to the document/conversation that requested it, even if navigation changes.
+    const scope = beginComposerAttachmentOperation(composerId), capturedPage = page
+    try {
+      const source = await pdf.getPage(capturedPage)
+      const base = source.getViewport({ scale: 1 })
+      const view = source.getViewport({ scale: Math.min(2, 1800 / Math.max(base.width, base.height)) })
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.ceil(view.width); canvas.height = Math.ceil(view.height)
+      await source.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: view, background: 'white' }).promise
+      const name = `${doc.name} · ${edition}第 ${capturedPage} 页.png`
+      const saved = await api.chatSavePastedImage(name, 'image/png', canvas.toDataURL('image/png').split(',')[1])
+      if (!saved.success || !saved.path) throw new Error(saved.error || '无法保存页面图片')
+      updateComposerDraft(scope.key, draft => ({ ...draft, attachments: [...draft.attachments, {
+        id: crypto.randomUUID(), type: 'image', name, path: saved.path!,
+      }], input: [draft.input, `请看这张${edition}第 ${capturedPage} 页的图片，帮我解释其中的内容。`].filter(Boolean).join('\n') }))
+      if (alive.current) { openSide('chat'); setNotice('当前页图片已加入输入框，可以补充问题后发送') }
+    } catch (error) { if (alive.current) notifyError(String(error)) }
+    finally { scope.release(); captureLock.current = false; if (alive.current) setCapturing(false) }
+  }
   const attach = (action: string) => {
     if (!selection) return
     setSide('chat')
@@ -630,7 +717,9 @@ function ReadingWorkspace({
     setPreparing(true)
     setChatError('')
     try {
-      const context = readingContext(doc.name, pages, content, page)
+      const context = pages.some(text => text.trim()) ? readingContext(doc.name, pages, content, page, edition) : null
+      if (!context && !attachments.some(item => item.type === 'image'))
+        throw new Error('这份 PDF 没有可提取的文字。请用右侧的图片提问，将当前页交给模型阅读。')
       const conversation = doc.activeConversationId
         ? await chatApi.getConversation(doc.activeConversationId)
         : await createConversation()
@@ -640,7 +729,7 @@ function ReadingWorkspace({
       return await onSend(
         conversation,
         content,
-        [context, ...attachments],
+        [...(context ? [context] : []), ...attachments],
         () => {
           sendLock.current = false
           if (alive.current) setPreparing(false)
@@ -729,7 +818,7 @@ function ReadingWorkspace({
           aria-pressed={mobile === 'reader'}
           onClick={() => setMobile('reader')}
         >
-          原文
+          {edition}
         </button>
         <button
           aria-pressed={mobile === 'chat'}
@@ -749,6 +838,12 @@ function ReadingWorkspace({
           ref={reader}
           className={`reader-pane ${mobile === 'reader' ? 'is-mobile-active' : ''}`}
           aria-label="文档阅读器"
+          onKeyDown={event => {
+            if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"], [role="combobox"]')) return
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); setNav('search'); return }
+            const next = event.key === 'PageDown' ? page + 1 : event.key === 'PageUp' ? page - 1 : event.key === 'Home' ? 1 : event.key === 'End' ? pdf?.numPages : null
+            if (next && pdf && next >= 1 && next <= pdf.numPages) { event.preventDefault(); jump(next) }
+          }}
         >
           <div className="reader-tools">
             <div className="tool-group">
@@ -775,9 +870,17 @@ function ReadingWorkspace({
               >
                 <ChevronLeft size={15} />
               </IconButton>
-              <span className="page-count">
-                {page} <span>/ {pdf?.numPages || '—'}</span>
-              </span>
+              <form className="reader-page-jump" onSubmit={event => {
+                event.preventDefault()
+                const number = Number(pageInput)
+                if (!pdf || !Number.isInteger(number) || number < 1 || number > pdf.numPages) { setPageInput(String(page)); return }
+                jump(number)
+                pageEditing.current = false
+                ;(document.activeElement as HTMLElement)?.blur()
+              }}>
+                <div className="reader-page-input"><Input aria-label="跳转页码" inputMode="numeric" value={pageInput} disabled={!pdf} onChange={setPageInput} onFocus={event => { pageEditing.current = true; event.target.select() }} onBlur={() => { pageEditing.current = false; setPageInput(String(page)) }} /></div>
+                <span className="page-count">/ {pdf?.numPages || '—'}</span>
+              </form>
               <IconButton
                 label="下一页"
                 variant="ghost"
@@ -787,32 +890,39 @@ function ReadingWorkspace({
                 <ChevronRight size={15} />
               </IconButton>
             </div>
+            {reading.session?.view.latest && <Select size="sm" ariaLabel="阅读版本" value={viewKind}
+              disabled={!reading.session} onChange={kind => {
+                setHighlight(null)
+                void reading.selectView(kind as ReadingPdfKind).catch(error => notifyError(String(error)))
+              }} options={[{ value: 'source', label: '原文' }, { value: 'mono', label: `译文 · ${readingLanguageName(shownOutput?.targetLang)}${shownOutput?.page ? ` · 第 ${shownOutput.page} 页` : ''}` }, { value: 'dual', label: '双语对照' }]} />}
             <div className="tool-group">
               <IconButton
                 label="缩小"
                 variant="ghost"
-                disabled={zoom <= 0.8}
-                onClick={() => setZoom((z) => Math.max(0.8, z - 0.1))}
+                disabled={!pdf || zoom <= 0.4}
+                onClick={() => { setFit('custom'); setZoom((z) => Math.max(0.4, Math.round((z - 0.1) * 100) / 100)) }}
               >
                 <Minus size={15} />
               </IconButton>
-              <Button variant="ghost" size="sm" onClick={() => setZoom(1)}>
-                {zoom === 1 ? '适合宽度' : `${Math.round(zoom * 100)}%`}
-              </Button>
+              <Select size="sm" ariaLabel="页面缩放" value={fit === 'custom' ? String(Math.round(zoom * 100)) : fit} disabled={!pdf} onChange={value => {
+                if (value === 'width' || value === 'page') setFit(value)
+                else { setFit('custom'); setZoom(Number(value) / 100) }
+              }} options={[{value:'width',label:'适合宽度'},{value:'page',label:'适合整页'}, ...Array.from(new Set([50,75,100,125,150,200, ...(fit === 'custom' ? [Math.round(zoom * 100)] : [])])).sort((a,b) => a-b).map(value => ({value:String(value),label:`${value}%`}))]} />
               <IconButton
                 label="放大"
                 variant="ghost"
-                disabled={zoom >= 1.8}
-                onClick={() => setZoom((z) => Math.min(1.8, z + 0.1))}
+                disabled={!pdf || zoom >= 2.5}
+                onClick={() => { setFit('custom'); setZoom((z) => Math.min(2.5, Math.round((z + 0.1) * 100) / 100)) }}
               >
                 <Plus size={15} />
               </IconButton>
             </div>
           </div>
+          <div className="reader-body">
           {nav && (
             <aside className="navigation-panel custom-scrollbar">
               <div className="navigation-heading">
-                <strong>{nav === 'outline' ? '文档导航' : '搜索原文'}</strong>
+                <strong>{nav === 'outline' ? '文档导航' : `搜索${edition}`}</strong>
                 <IconButton
                   label="关闭导航"
                   variant="ghost"
@@ -842,7 +952,7 @@ function ReadingWorkspace({
                       className="search-result"
                       key={r.page}
                       onClick={() => {
-                        cite({ page: r.page, text: query })
+                        cite({ page: r.page, text: query, view: locationView })
                         setNav(null)
                       }}
                     >
@@ -889,6 +999,8 @@ function ReadingWorkspace({
           )}
           <div
             className="document-scroll custom-scrollbar"
+            tabIndex={0}
+            aria-label="PDF 页面，可使用 PageUp 和 PageDown 翻页"
             ref={host}
             onScroll={onScroll}
             onMouseUp={selectText}
@@ -896,7 +1008,7 @@ function ReadingWorkspace({
             {!pdf && !error && (
               <div className="document-loading">
                 <Loader2 size={20} />
-                正在打开原文…
+                正在打开{edition}…
               </div>
             )}
             {error && (
@@ -906,18 +1018,20 @@ function ReadingWorkspace({
             )}
             {pdf &&
               Array.from({ length: pdf.numPages }, (_, i) => (
-                <div className="page-container" key={`${doc.id}-${i}`}>
+                <div className="page-container" key={`${doc.id}-${viewKey}-${i}`}>
                   <PdfPage
                     pdf={pdf}
                     number={i + 1}
                     width={width}
                     zoom={zoom}
+                    initialRatio={pageRatio}
                     onReady={locate}
                   />
                   {state.notes
                     .filter(
                       (n) =>
                         n.kind === 'highlight' &&
+                        anchorMatches(n.anchor) &&
                         n.anchor?.page === i + 1 &&
                         n.anchor.rect,
                     )
@@ -928,7 +1042,7 @@ function ReadingWorkspace({
                         style={rectStyle(n.anchor!.rect!, width * zoom)}
                       />
                     ))}
-                  {highlight?.page === i + 1 && highlight.rect && (
+                  {highlight?.page === i + 1 && anchorMatches(highlight) && highlight.rect && (
                     <div
                       className="source-mark"
                       style={rectStyle(highlight.rect, width * zoom)}
@@ -936,6 +1050,12 @@ function ReadingWorkspace({
                   )}
                 </div>
               ))}
+          </div>
+          <ReadingDocumentTools doc={doc} page={page} ready={!!pdf} noteDraft={noteDraft} model={selectedModel} modelControls={modelControls}
+            session={reading.session} onTranslate={reading.translate} onCancel={reading.cancel}
+            onRead={kind => { void reading.selectView(kind).catch(error => notifyError(String(error))) }}
+            onConfigure={onConfigure} onNotes={() => openSide('notes')} onHistory={() => openSide('history')}
+            side={sideOpen ? side : null} capturing={capturing} onPageImage={() => void capturePage()} />
           </div>
           {selection && (
             <div
@@ -980,7 +1100,12 @@ function ReadingWorkspace({
               <Button
                 size="sm"
                 onClick={() => {
-                  jump(returnTo.page, returnTo.offset)
+                  const target = returnTo
+                  if (anchorMatches({ page: target.page, text: '', view: target.view })) jump(target.page, target.offset)
+                  else {
+                    position.current = { page: target.page, offset: target.offset }
+                    void reading.selectView(target.view?.kind ?? 'source', target.view?.runId).catch(error => notifyError(String(error)))
+                  }
                   setReturnTo(null)
                   setHighlight(null)
                 }}
@@ -1075,7 +1200,7 @@ function ReadingWorkspace({
                   <div className="reading-empty custom-scrollbar">
                     <div className="reading-empty-content">
                       <h2>一起读懂这篇文献</h2>
-                      <p>选中原文深入提问，或从一个问题开始。</p>
+                      <p>选中文档内容深入提问，或从一个问题开始。</p>
                       <div className="reading-starters">
                         {[
                           ['概括核心观点', '请概括这篇文献的研究问题、核心观点和主要结论，并引用原文页码。'],
@@ -1129,7 +1254,7 @@ function ReadingWorkspace({
                   contextSlot={
                     <span className="context-label">
                       <FileText size={12} />
-                      {indexing ? '正在提取原文…' : `原文 ${pages.length} 页`}
+                      {indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}
                     </span>
                   }
                 />
@@ -1196,7 +1321,7 @@ function ReadingWorkspace({
                   </div>
                   {!state.notes.length && (
                     <p className="note-empty">
-                      在原文中选中文字并保存高亮，
+                      在文档中选中文字并保存高亮，
                       <br />
                       或将一条有用的回答存为笔记。
                     </p>
@@ -1206,7 +1331,7 @@ function ReadingWorkspace({
                       <div className="note-meta">
                         <span>
                           {n.kind === 'highlight'
-                            ? '原文摘录'
+                            ? n.anchor?.view ? '译文摘录' : '原文摘录'
                             : n.kind === 'answer'
                               ? '来自对话'
                               : '我的笔记'}
@@ -1233,6 +1358,7 @@ function ReadingWorkspace({
         )}
       </main>
       <ErrorNotice message={chatError} />
+      <ErrorNotice message={reading.error} />
       <OperationNotice message={notice} tone="success" />
     </div>
   )

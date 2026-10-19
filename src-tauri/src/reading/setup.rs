@@ -13,7 +13,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-mod pandoc;
+pub(super) mod pandoc;
 
 const PDF2ZH: &str = "2.9.0";
 const UV: &str = "0.13.1";
@@ -83,7 +83,7 @@ pub struct Status {
     pandoc_download_bytes: Option<u64>,
     progress: Option<Progress>,
 }
-fn root(app: &AppHandle) -> Result<PathBuf, String> {
+pub(super) fn root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map(|p| p.join("study"))
@@ -109,14 +109,14 @@ fn save(dir: &Path, prefs: &Preferences) -> Result<(), String> {
         "Study setup",
     )
 }
-fn python(dir: &Path) -> PathBuf {
+pub(super) fn python(dir: &Path) -> PathBuf {
     dir.join("environment").join(if cfg!(windows) {
         "Scripts/python.exe"
     } else {
         "bin/python"
     })
 }
-fn installed(dir: &Path) -> bool {
+pub(super) fn installed(dir: &Path) -> bool {
     python(dir).is_file()
         && std::fs::read_to_string(dir.join("ready")).is_ok_and(|s| s == INSTALL_REVISION)
 }

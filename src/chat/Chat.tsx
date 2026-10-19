@@ -3028,7 +3028,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               onCreateConversation={createReadingConversation}
               onActivateConversation={activateReadingConversation}
               onSend={sendReadingMessage}
-              modelControls={<ModelSelector currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />}
+              selectedModel={{ providerId: activeProviderId, model: activeModel }}
+              modelControls={<ModelSelector portal currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />}
             /></Suspense>
           </div>
         ) : chatView === 'notes' ? (

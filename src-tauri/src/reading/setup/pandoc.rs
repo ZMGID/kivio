@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-pub(super) const VERSION: &str = "3.12.1";
+pub(in crate::reading) const VERSION: &str = "3.12.1";
 const LICENSE: &str = include_str!("../../../../docs/licenses/Pandoc-GPL-2.0.txt");
 
 // Version, sizes and SHA-256 digests pinned from jgm/pandoc's official release.
@@ -33,14 +33,14 @@ fn artifact() -> Result<(&'static str, &'static str, u64), String> {
 pub(super) fn download_size() -> Option<u64> {
     artifact().ok().map(|(_, _, size)| size)
 }
-fn executable(dir: &Path) -> PathBuf {
+pub(in crate::reading) fn executable(dir: &Path) -> PathBuf {
     dir.join("pandoc").join(if cfg!(windows) {
         "pandoc.exe"
     } else {
         "pandoc"
     })
 }
-pub(super) fn installed(dir: &Path) -> bool {
+pub(in crate::reading) fn installed(dir: &Path) -> bool {
     executable(dir).is_file()
         && std::fs::read_to_string(dir.join("pandoc/ready")).is_ok_and(|s| s == VERSION)
 }

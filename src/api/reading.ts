@@ -5,6 +5,7 @@ export type ReadingAnchor = {
   page: number
   text: string
   rect?: ReadingRect | null
+  view?: { kind: 'mono' | 'dual'; runId: string } | null
 }
 export type ReadingNote = {
   id: string
@@ -80,6 +81,6 @@ export const readingApi = {
   import: (path: string) => invoke<ReadingDocument>('reading_import', { path }),
   save: (document: ReadingDocument) =>
     invoke<void>('reading_save', { document }),
-  pdf: async (id: string) =>
-    new Uint8Array(await invoke<ArrayBuffer>('reading_pdf', { id })),
+  pdf: async (id: string, view?: { kind: 'source' | 'mono' | 'dual'; runId?: string }) =>
+    new Uint8Array(await invoke<ArrayBuffer>('reading_pdf', { id, ...view })),
 }

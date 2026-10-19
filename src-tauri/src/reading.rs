@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 mod bibliography;
 pub mod setup;
+pub mod operations;
 
 static WRITES: Mutex<()> = Mutex::new(());
 
@@ -24,7 +25,12 @@ pub struct Anchor {
     pub page: usize,
     pub text: String,
     pub rect: Option<Rect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<PdfLocation>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfLocation { pub kind: operations::PdfKind, pub run_id: String }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadingNote {
     pub id: String,
@@ -240,9 +246,9 @@ pub async fn reading_save(app: AppHandle, document: ReadingDocument) -> Result<(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn reading_pdf(app: AppHandle, id: String) -> Result<tauri::ipc::Response, String> {
+pub async fn reading_pdf(app: AppHandle, id: String, kind: Option<operations::PdfKind>, run_id: Option<String>) -> Result<tauri::ipc::Response, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read(document_dir(&directory(&app)?, &id)?.join("source.pdf"))
+        std::fs::read(operations::pdf_path(&document_dir(&directory(&app)?, &id)?, kind.unwrap_or_default(), run_id.as_deref())?)
             .map_err(|e| e.to_string())
     })
     .await
@@ -446,6 +452,7 @@ mod tests {
                 page: 3,
                 text: "evidence".into(),
                 rect: None,
+                view: None,
             }),
             kind: "highlight".into(),
         });
