@@ -9,14 +9,14 @@ describe('empty hero greetings', () => {
     expect(emptyHeroPinnedLine({ lang: 'zh', assistantName: '翻译官' })).toBe('翻译官')
   })
 
-  it('吐槽按连点档位走，避开刚说过的', () => {
-    expect(emptyHeroJabPool('zh', 1)[0]).toBe('？')
-    expect(emptyHeroJabPool('zh', 3)[0]).toBe('挺闲的')
-    expect(emptyHeroJabPool('zh', 6)[0]).toBe('急了')
-    expect(emptyHeroJabPool('zh', 9)[0]).toBe('绷不住了')
+  it('点击回应按连点档位走，避开刚说过的', () => {
+    expect(emptyHeroJabPool('zh', 1)[0]).toBe('嗯？我在')
+    expect(emptyHeroJabPool('zh', 3)[0]).toBe('有点痒')
+    expect(emptyHeroJabPool('zh', 6)[0]).toBe('脸有点热了')
+    expect(emptyHeroJabPool('zh', 9)[0]).toBe('晕乎乎的')
     expect(emptyHeroJabPool('en', 6).length).toBe(emptyHeroJabPool('zh', 6).length)
-    expect(emptyHeroJab('zh', 1, null, () => 0)).toBe('？')
-    expect(emptyHeroJab('zh', 1, '？', () => 0)).toBe('哦')
-    expect(emptyHeroJab('en', 6, null, () => 0)).toBe('Mad?')
+    expect(emptyHeroJab('zh', 1, null, () => 0)).toBe('嗯？我在')
+    expect(emptyHeroJab('zh', 1, '嗯？我在', () => 0)).toBe('收到一枚轻戳')
+    expect(emptyHeroJab('en', 6, null, () => 0)).toBe('Getting a little warm.')
   })
 })

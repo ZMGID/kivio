@@ -62,25 +62,25 @@ describe('useEmptyHeroJab', () => {
     vi.useRealTimers()
   })
 
-  it('点一下切吐槽，过一会收回', () => {
+  it('点一下显示回应，过一会收回', () => {
     const { result } = renderHook(() => useEmptyHeroJab('zh'))
     expect(result.current.jab).toBeNull()
     act(() => {
       result.current.onPoke(1)
     })
-    expect(result.current.jab).toBe('？')
+    expect(result.current.jab).toBe('嗯？我在')
     act(() => {
       vi.advanceTimersByTime(EMPTY_HERO_JAB_MS)
     })
     expect(result.current.jab).toBeNull()
   })
 
-  it('连点升到更冲的档', () => {
+  it('连点切换到脸热回应', () => {
     const { result } = renderHook(() => useEmptyHeroJab('zh'))
     act(() => {
       result.current.onPoke(6)
     })
-    expect(result.current.jab).toBe('急了')
+    expect(result.current.jab).toBe('脸有点热了')
   })
 })
 

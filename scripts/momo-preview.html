@@ -8,6 +8,7 @@
 import React, {useState,useRef} from 'react'
 import {createRoot} from 'react-dom/client'
 import {KivioBlob} from '/src/chat/KivioBlob.tsx'
+import {useEmptyHeroJab,useEmptyHeroLine} from '/src/chat/emptyHero.ts'
 import {bodyPoints,facePoints} from '/src/chat/kivioBlobShapes.ts'
 import {projectBlobVolume} from '/src/chat/kivioBlobVolume.ts'
 const h=React.createElement
@@ -17,14 +18,14 @@ function Pose({yaw,pitch,label,shape,index}){
  return h('div',{className:'view'},h('svg',{viewBox:'0 0 240 240','aria-label':label},h('defs',null,h('clipPath',{id},h('path',{d:p.bodyD}))),h('path',{d:p.bodyD,fill:'#1d6bf0'}),h('g',{clipPath:`url(#${id})`},...p.eyes.map((d,i)=>h('path',{key:i,d,fill:'#f3efe6'})))),label)
 }
 function App(){
- const [mood,setMood]=useState('idle'),[shape,setShape]=useState('circle'),[dark,setDark]=useState(false);const ref=useRef(null)
+ const [mood,setMood]=useState('idle'),[shape,setShape]=useState('circle'),[dark,setDark]=useState(false);const ref=useRef(null);const {jab,onPoke}=useEmptyHeroJab('zh');const greeting=useEmptyHeroLine({lang:'zh',active:!jab})
  return h(React.Fragment,null,
-  h('header',null,h('div',null,h('h1',null,'墨墨的表情与动作。'),h('p',null,'三维体积 · 曲面五官 · 60fps · 静止停帧')),h('button',{onClick:()=>{document.documentElement.classList.toggle('dark',!dark);setDark(!dark)}},dark?'浅色背景':'深色背景')),
-  h('section',{className:'stage'},h('div',null,h('div',{className:'actor','data-momo-region':true},h(KivioBlob,{size:220,mood,ref})),h('div',{className:'controls'},...states.map(([value,label])=>h('button',{key:value,'aria-pressed':mood===value,onClick:()=>setMood(value)},label)))),
-   h('div',{className:'details'},h('h2',null,'切换状态，再轻轻戳一下'),h('p',null,'空闲时鼠标靠近墨墨才会跟随，离开附近就回正。左右眼沿着曲面变化，身体随转动轻微滞后。连续点击或中途换状态，动作会接着当前速度继续。'),h('div',{className:'sizes'},h('div',{className:'size'},h(KivioBlob,{size:28,mood}),'状态行 28'),h('div',{className:'size'},h(KivioBlob,{size:56,mood}),'聊天页 56')),h('button',{onClick:()=>ref.current?.pokeAt()},'戳一下'),h('p',{className:'note'},'上方使用聊天页的真实组件。下方固定姿态用于检查曲面与遮挡。系统“减少动态效果”会保留静态表情。'))),
-  h('div',{className:'shapes'},h('label',{htmlFor:'shape'},'观察体积'),h('select',{id:'shape',value:shape,onChange:e=>setShape(e.target.value)},... [['circle','软球'],['squircle','圆角方体'],['puddle','压扁'],['cloud','云团'],['bubble','气泡']].map(([v,l])=>h('option',{value:v,key:v},l)))),
+  h('header',null,h('div',null,h('h1',null,'和墨墨待一会儿'),h('p',null,'会发呆，也会认真听你说。')),h('button',{onClick:()=>{document.documentElement.classList.toggle('dark',!dark);setDark(!dark)}},dark?'浅色背景':'深色背景')),
+  h('section',{className:'stage'},h('div',null,h('div',{className:'actor','data-momo-region':true},h(KivioBlob,{size:220,mood,ref,onPoke})),h('div',{className:'controls'},...states.map(([value,label])=>h('button',{key:value,'aria-pressed':mood===value,onClick:()=>setMood(value)},label)))),
+   h('div',{className:'details'},h('h2',null,jab??greeting),h('p',null,'不用急着开口。墨墨会看看四周，偶尔眨眨眼。把鼠标移近一点，或轻轻戳它一下，看看它怎么回应。'),h('div',{className:'sizes'},h('div',{className:'size'},h(KivioBlob,{size:28,mood}),'状态行 28'),h('div',{className:'size'},h(KivioBlob,{size:56,mood}),'聊天页 56')),h('button',{onClick:()=>ref.current?.pokeAt()},'戳一下'),h('p',{className:'note'},'试试切换不同状态，看看忙起来的墨墨。连续轻戳，也会收到不同的回应。'))),
+  h('div',{className:'shapes'},h('label',{htmlFor:'shape'},'换个样子'),h('select',{id:'shape',value:shape,onChange:e=>setShape(e.target.value)},... [['circle','软球'],['squircle','圆角方体'],['puddle','压扁'],['cloud','云团'],['bubble','气泡']].map(([v,l])=>h('option',{value:v,key:v},l)))),
   h('section',{className:'views'},...[[0,0,'正面'],[-.8,0,'左转'],[.8,0,'右转'],[.7,.55,'右上转'],[1.55,.1,'转到侧面']].map(([yaw,pitch,label],index)=>h(Pose,{yaw,pitch,label,shape,index,key:index}))),
-  h('p',{className:'note'},'开发演示 · 复用 KivioBlob 与同一套投影计算 · 不调用模型'))
+  h('p',{className:'note'},'互动预览 · 最高 60fps，休息时停帧 · 不会发送聊天消息'))
 }
 createRoot(document.getElementById('root')).render(h(App))
 </script></body></html>

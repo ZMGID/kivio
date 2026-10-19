@@ -11,22 +11,22 @@ export type QuipMood = Exclude<BlobMood, 'idle'>
 
 export const STATUS_QUIPS: Record<Lang, Record<QuipMood, readonly string[]>> = {
   zh: {
-    think: ['琢磨中', '让我想想', '脑子在转', '嗯……', '别急', '在憋大招', '有点意思'],
-    search: ['翻翻看', '找找找', '哪呢哪呢', '让我搜搜', '眼睛都瞪大了'],
-    work: ['干活中', '手没停', '别催', '搬砖ing', '专心呢', '在动手了'],
-    speak: ['在说了在说了', '边想边写', '听我说完', '有话直说'],
-    error: ['翻车了', '啊这', '这波不行', '出事了', '别看我'],
-    done: ['搞定', '完事', '交作业', '收工', '还行吧', '就这'],
-    wait: ['等你呢', '看你了', '你说', '卡在你这了', '选一个'],
+    think: ['让我想一想', '理一理思路', '换个角度想想', '把线索串起来'],
+    search: ['找找相关线索', '翻一翻资料', '看看还有什么', '顺着线索找找'],
+    work: ['正在动手', '一步一步来', '专心处理这一步', '继续往下做'],
+    speak: ['慢慢说清楚', '把思路写下来', '整理成容易读的样子', '接着往下说'],
+    error: ['这里出了点问题', '这一步没成功', '暂时没能完成'],
+    done: ['这一轮完成了', '结果在这里', '做好了，看看吧'],
+    wait: ['等你一句话', '接下来听你的', '你来决定'],
   },
   en: {
-    think: ['Thinking…', 'Hmm.', 'Gimme a sec.', 'Cooking.', 'Hold on.', 'Interesting.'],
-    search: ['Looking…', 'Where is it.', 'Digging.', 'Searching.', 'Eyes peeled.'],
-    work: ['On it.', 'Busy hands.', "Don't rush me.", 'Grinding.', 'Focused.'],
-    speak: ['Talking here.', 'Writing as I think.', 'Let me finish.', 'Straight up.'],
-    error: ['Welp.', 'Oops.', 'That broke.', 'Not my day.', "Don't look at me."],
-    done: ['Done.', 'Shipped.', 'There.', 'Wrapped.', 'Not bad.', "That's it."],
-    wait: ['Your turn.', 'Waiting on you.', 'Go on.', 'Stuck on you.', 'Pick one.'],
+    think: ['Thinking it through.', 'Sorting out the ideas.', 'Trying another angle.', 'Connecting the dots.'],
+    search: ['Looking for clues.', 'Checking the sources.', 'Seeing what else is there.', 'Following a lead.'],
+    work: ['Working on it.', 'One step at a time.', 'Focusing on this step.', 'Moving things along.'],
+    speak: ['Putting it into words.', 'Writing out the thinking.', 'Making it easier to follow.', 'Continuing the explanation.'],
+    error: ['Something went wrong here.', 'That step didn’t work.', 'Couldn’t finish this time.'],
+    done: ['This round is complete.', 'Here’s the result.', 'Ready for a look.'],
+    wait: ['Ready when you are.', 'Over to you.', 'Your call.'],
   },
 }
 
