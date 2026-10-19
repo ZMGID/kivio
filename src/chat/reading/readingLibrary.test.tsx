@@ -6,6 +6,7 @@ const storage = vi.hoisted(() => ({
   save: vi.fn(),
   import: vi.fn(),
   create: vi.fn(),
+  attach: vi.fn(),
   collections: vi.fn().mockResolvedValue([]),
   saveCollections: vi.fn(),
 }))
@@ -157,4 +158,51 @@ it('does not write an empty replacement after initialization fails, and allows r
   await library.updateReadingCollections(items => [...items, { id: 'retry', name: 'Retry', parentId: null }])
   const view = renderHook(library.useReadingLibrary)
   expect(view.result.current.collections.map(item => item.id)).toEqual(['retry'])
+})
+
+
+it('refuses attachment while a failed edit is unsaved, then preserves attachment through later edits', async () => {
+  vi.resetModules()
+  let disk: ReadingDocument = { id: 'paper', name: 'Paper', hasPdf: false, fingerprint: '', conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: '' }
+  storage.list.mockResolvedValue([disk])
+  storage.save.mockReset().mockRejectedValueOnce(new Error('disk full')).mockImplementation(async doc => { disk = structuredClone(doc) })
+  storage.attach.mockReset().mockImplementation(async () => {
+    disk = { ...disk, hasPdf: true, fingerprint: 'pdf-hash' }
+    return structuredClone(disk)
+  })
+  const library = await import('./readingLibrary')
+  await library.loadReadingLibrary()
+  await library.updateReadingDocument('paper', d => ({ ...d, name: 'Edited' })).catch(() => {})
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await expect(library.attachReadingPdf('paper', '/paper.pdf')).rejects.toThrow(/保存/)
+  expect(storage.attach).not.toHaveBeenCalled()
+  await library.retryReadingSaves()
+  await library.attachReadingPdf('paper', '/paper.pdf')
+  await library.updateReadingDocument('paper', d => ({ ...d, favorite: true }))
+  expect(disk).toMatchObject({ name: 'Edited', hasPdf: true, fingerprint: 'pdf-hash', favorite: true })
+})
+
+it.each([false, true])('serializes edits arriving during attachment (attachment fails: %s)', async fails => {
+  vi.resetModules()
+  let disk: ReadingDocument = { id: 'paper', name: 'Paper', hasPdf: false, fingerprint: '', conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: '' }
+  storage.list.mockResolvedValue([disk])
+  storage.save.mockReset().mockImplementation(async doc => { disk = structuredClone(doc) })
+  let finish!: () => void
+  storage.attach.mockReset().mockImplementation(async () => {
+    await new Promise<void>(resolve => { finish = resolve })
+    if (fails) throw new Error('invalid PDF')
+    disk = { ...disk, hasPdf: true, fingerprint: 'pdf-hash' }
+    return structuredClone(disk)
+  })
+  const library = await import('./readingLibrary')
+  await library.loadReadingLibrary()
+  const attaching = library.attachReadingPdf('paper', '/paper.pdf').catch(() => {})
+  await waitFor(() => expect(finish).toBeTypeOf('function'))
+  const editing = library.updateReadingDocument('paper', d => ({ ...d, name: 'During attachment' }))
+  finish()
+  await Promise.all([attaching, editing])
+  expect(disk).toMatchObject({ name: 'During attachment', hasPdf: !fails, fingerprint: fails ? '' : 'pdf-hash' })
+  const view = renderHook(library.useReadingLibrary)
+  expect(view.result.current.documents[0]).toEqual(disk)
+  view.unmount()
 })

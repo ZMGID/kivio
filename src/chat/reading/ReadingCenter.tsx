@@ -558,11 +558,13 @@ function ReadingWorkspace({
     content: string,
     kind: Note['kind'],
     anchor?: Anchor,
+    consumeDraft = false,
   ) => {
     if (!content.trim()) return
     try {
       await updateReadingDocument(doc.id, (document) => ({
         ...document,
+        noteDraft: consumeDraft ? '' : document.noteDraft,
         notes: [
           { id: crypto.randomUUID(), content, kind, anchor },
           ...document.notes,
@@ -576,13 +578,16 @@ function ReadingWorkspace({
     }
   }
   const saveDraft = async () => {
-    if (noteSaveLock.current) return
+    if (noteSaveLock.current || !noteDraft.trim()) return
     const submitted = noteDraft
     noteSaveLock.current = true
     setNoteSaving(true)
     try {
-      if (await addNote(submitted, 'note'))
-        setNoteDraft((current) => (current === submitted ? '' : current))
+      // The optimistic note owns this text even if its disk write needs retry.
+      // Clear the ref too, so leaving before React renders cannot restore the old draft.
+      draftRef.current = ''
+      setNoteDraft('')
+      await addNote(submitted, 'note', undefined, true)
     } finally {
       noteSaveLock.current = false
       if (alive.current) setNoteSaving(false)

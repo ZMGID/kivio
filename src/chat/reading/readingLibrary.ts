@@ -18,6 +18,8 @@ let snapshot = {
 const subscribers = new Set<() => void>()
 const pending = new Map<string, Promise<void>>()
 const dirty = new Map<string, ReadingDocument>()
+// Attachment commands replace backend metadata; defer edits until their receipt is merged.
+const attaching = new Map<string, Promise<ReadingDocument>>()
 let collectionWrite = Promise.resolve()
 let dirtyCollections: ReadingCollection[] | undefined
 let initialization: Promise<void> | undefined
@@ -68,6 +70,8 @@ export function updateReadingDocument(
   update: (document: ReadingDocument) => ReadingDocument,
 ): Promise<void> {
   if (!initialized) return loadReadingLibrary().then(() => updateReadingDocument(id, update))
+  const attachment = attaching.get(id)
+  if (attachment) return attachment.catch(() => {}).then(() => updateReadingDocument(id, update))
   const current = snapshot.documents.find((document) => document.id === id)
   if (!current) return Promise.reject(new Error('文档不存在'))
   const next = { ...update(current), updatedAt: new Date().toISOString() }
@@ -123,12 +127,29 @@ export async function createReadingItem(
   acceptDocuments([doc])
   return doc
 }
-export async function attachReadingPdf(id: string, path: string) {
-  await loadReadingLibrary()
-  await pending.get(id)
-  const doc = await readingApi.attach(id, path)
-  acceptDocuments([doc])
-  return doc
+export async function attachReadingPdf(id: string, path: string): Promise<ReadingDocument> {
+  if (!initialized) {
+    await loadReadingLibrary()
+    return attachReadingPdf(id, path)
+  }
+  const previous = attaching.get(id)
+  if (previous) {
+    await previous.catch(() => {})
+    return attachReadingPdf(id, path)
+  }
+  const write = (async () => {
+    await pending.get(id)
+    if (dirty.has(id)) throw new Error('请先重试保存未写入的文献资料，再关联 PDF')
+    const doc = await readingApi.attach(id, path)
+    acceptDocuments([doc])
+    return doc
+  })()
+  attaching.set(id, write)
+  try {
+    return await write
+  } finally {
+    if (attaching.get(id) === write) attaching.delete(id)
+  }
 }
 export async function importReadingRis(path: string) {
   await loadReadingLibrary()
