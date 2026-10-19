@@ -1,5 +1,7 @@
 import type { PendingAttachment } from '../types'
 
+const words = new Intl.Segmenter('zh', { granularity: 'word' })
+
 /** Page-bounded context: complete short documents; query-ranked excerpts for long ones. */
 export function readingContext(
   name: string,
@@ -10,7 +12,9 @@ export function readingContext(
   const budget = 60000
   const terms = [
     ...new Set(
-      question.toLowerCase().match(/[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}/g) ?? [],
+      Array.from(words.segment(question.toLowerCase()))
+        .filter((part) => part.isWordLike && part.segment.length >= 2)
+        .map((part) => part.segment),
     ),
   ]
   const ranked = pages.map((text, index) => ({

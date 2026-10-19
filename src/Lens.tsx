@@ -290,7 +290,7 @@ export default function Lens() {
   const historyOpenRef = useRef(false)
   const drawModeRef = useRef(false)
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const floatingRebaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const floatingRebaseTimerRef = useRef<number | null>(null)
   const focusReqIdRef = useRef(0)
   const motionSeqRef = useRef(0)
   // 只在真正"打开/重入 Lens 会话"（enterSelect）时自增，与动画用的 motionSeqRef 区分开。

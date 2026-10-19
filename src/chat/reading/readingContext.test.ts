@@ -38,3 +38,14 @@ describe('document grounding', () => {
     )
   })
 })
+
+
+it('retrieves Chinese evidence from a late page for a natural-language question', () => {
+  const pages = Array.from({ length: 100 }, (_, index) => index === 98
+    ? '梯度消失通过残差连接得到缓解。'.repeat(700)
+    : '这是一段与问题无关的背景资料。'.repeat(700))
+  const result = readingContext('论文', pages, '论文如何处理梯度消失问题？', 1).content!
+  expect(result).toContain('--- 第 99 页 ---')
+  expect(result).toContain('残差连接')
+  expect(result.length).toBeLessThan(62000)
+})

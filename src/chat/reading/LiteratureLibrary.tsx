@@ -20,7 +20,7 @@ import {
   MoreHorizontal,
   SlidersHorizontal,
 } from 'lucide-react'
-import * as pdfjs from 'pdfjs-dist'
+import { loadReadingPdf } from './pdfDocument'
 import { StudyIcon } from '../../settings/public/icons'
 import { Button, IconButton } from '../../components/Button'
 import { Input, Select, TextArea } from '../../settings/public/controls'
@@ -104,7 +104,7 @@ export default function LiteratureLibrary({
   headerControls?: ReactNode
   onRead: (doc: ReadingDocument) => void
 }) {
-  const { documents, collections, loading, saving } = useReadingLibrary()
+  const { documents, collections, loading, saveStatus } = useReadingLibrary()
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   const [navigationWidth, setNavigationWidth] = useState(240)
@@ -348,10 +348,7 @@ export default function LiteratureLibrary({
       let pdfTitle = '',
         pdfAuthor = ''
       if (!identifier && item.hasPdf !== false) {
-        const pdf = await pdfjs.getDocument({
-          data: await readingApi.pdf(item.id),
-          isEvalSupported: false,
-        }).promise
+        const pdf = await loadReadingPdf(await readingApi.pdf(item.id)).promise
         try {
           const metadata = await pdf.getMetadata()
           const info = metadata.info as Record<string, unknown>
@@ -882,7 +879,7 @@ export default function LiteratureLibrary({
           <footer className="literature-list-footer">
             {filter === 'duplicates'
               ? '按 DOI、文件指纹或标题与年份查找；请核对后整理。'
-              : `${documents.filter((d) => !d.trashedAt).length} 篇文献 · ${saving ? '正在保存…' : '保存在本机'} · 双击打开全文`}
+              : `${documents.filter((d) => !d.trashedAt).length} 篇文献 · ${saveStatus} · 双击打开全文`}
           </footer>
         </main>
         {layout.showInspector && divider('inspector')}

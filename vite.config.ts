@@ -6,6 +6,9 @@ import standaloneCode from 'ajv/dist/standalone'
 import { _ } from 'ajv/dist/compile/codegen'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readFileSync, readdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
 
 /** Compile generated schemas in Node; the WebView CSP forbids runtime code generation. */
 function chatProtocolValidators(): Plugin {
@@ -36,10 +39,37 @@ function chatProtocolValidators(): Plugin {
   }
 }
 
+/** Serve and bundle PDF.js resources locally; filenames must retain their CMap names. */
+function pdfResources(): Plugin {
+  const root = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
+  const assets = new Map<string, Buffer>()
+  for (const directory of ['cmaps', 'standard_fonts', 'wasm']) {
+    for (const name of readdirSync(join(root, directory))) {
+      assets.set(`${directory}/${name}`, readFileSync(join(root, directory, name)))
+    }
+  }
+  return {
+    name: 'pdfjs-local-resources',
+    configureServer(server) {
+      server.middlewares.use('/pdfjs', (request, response, next) => {
+        const key = new URL(request.url ?? '/', 'http://localhost').pathname.slice(1)
+        const data = assets.get(key)
+        if (!data) { next(); return }
+        response.setHeader('Content-Type', key.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream')
+        response.end(data)
+      })
+    },
+    generateBundle() {
+      for (const [name, source] of assets)
+        this.emitFile({ type: 'asset', fileName: `pdfjs/${name}`, source })
+    },
+  }
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
   base: './',
-  plugins: [chatProtocolValidators(), react()],
+  plugins: [chatProtocolValidators(), pdfResources(), react()],
   build: {
     target: 'esnext',
   },

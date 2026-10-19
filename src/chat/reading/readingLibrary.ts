@@ -13,6 +13,7 @@ let snapshot = {
   loading: true,
   error: '',
   saving: 0,
+  saveStatus: '正在加载…',
 }
 const subscribers = new Set<() => void>()
 const pending = new Map<string, Promise<void>>()
@@ -20,8 +21,14 @@ const dirty = new Map<string, ReadingDocument>()
 let collectionWrite = Promise.resolve()
 let dirtyCollections: ReadingCollection[] | undefined
 let initialization: Promise<void> | undefined
+let initialized = false
 function publish(patch: Partial<typeof snapshot>) {
   snapshot = { ...snapshot, ...patch }
+  snapshot.saveStatus = snapshot.loading ? '正在加载…'
+    : !initialized ? '加载失败'
+    : snapshot.saving > 0 ? '正在保存…'
+    : dirty.size || dirtyCollections ? '保存失败，尚未保存'
+    : '已保存到本机'
   subscribers.forEach((listener) => listener())
 }
 const subscribe = (listener: () => void) => {
@@ -35,18 +42,23 @@ export function useReadingLibrary() {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 export function loadReadingLibrary() {
-  if (!initialization)
+  if (!initialization) {
+    publish({ loading: true })
     initialization = Promise.all([readingApi.list(), readingApi.collections()])
       .then(([documents, collections]) => {
+        initialized = true
         publish({ documents, collections, loading: false, error: '' })
       })
       .catch((error) => {
         initialization = undefined
         publish({ loading: false, error: String(error) })
+        throw error
       })
+  }
   return initialization
 }
 export async function importReadingDocument(path: string) {
+  await loadReadingLibrary()
   const document = await readingApi.import(path)
   acceptDocuments([document])
   return document
@@ -54,7 +66,8 @@ export async function importReadingDocument(path: string) {
 export function updateReadingDocument(
   id: string,
   update: (document: ReadingDocument) => ReadingDocument,
-) {
+): Promise<void> {
+  if (!initialized) return loadReadingLibrary().then(() => updateReadingDocument(id, update))
   const current = snapshot.documents.find((document) => document.id === id)
   if (!current) return Promise.reject(new Error('文档不存在'))
   const next = { ...update(current), updatedAt: new Date().toISOString() }
@@ -105,17 +118,20 @@ export async function createReadingItem(
   name: string,
   bibliography: Bibliography,
 ) {
+  await loadReadingLibrary()
   const doc = await readingApi.create(name, bibliography)
   acceptDocuments([doc])
   return doc
 }
 export async function attachReadingPdf(id: string, path: string) {
+  await loadReadingLibrary()
   await pending.get(id)
   const doc = await readingApi.attach(id, path)
   acceptDocuments([doc])
   return doc
 }
 export async function importReadingRis(path: string) {
+  await loadReadingLibrary()
   try {
     const docs = await readingApi.importRis(path)
     acceptDocuments(docs)
@@ -128,7 +144,8 @@ export async function importReadingRis(path: string) {
 }
 export function updateReadingCollections(
   update: (collections: ReadingCollection[]) => ReadingCollection[],
-) {
+): Promise<void> {
+  if (!initialized) return loadReadingLibrary().then(() => updateReadingCollections(update))
   const next = update(snapshot.collections)
   dirtyCollections = next
   publish({ collections: next, saving: snapshot.saving + 1 })
@@ -154,6 +171,7 @@ export function updateReadingCollections(
 }
 
 export async function exportReadingRis(ids: string[], path: string) {
+  await loadReadingLibrary()
   await Promise.all(ids.map((id) => pending.get(id)))
   if (ids.some((id) => dirty.has(id)))
     throw new Error('请先重试保存未写入的文献资料，再导出')

@@ -28,10 +28,9 @@ import { InputBar, type InputBarProps } from '../InputBar'
 import { insertTextIntoComposer } from '../composerInsert'
 import { updateComposerDraft, migrateComposerDraft } from '../composerDraft'
 import * as pdfjs from 'pdfjs-dist'
-import worker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { loadReadingPdf } from './pdfDocument'
 import './pdfTextLayer.css'
 import './reading.css'
-pdfjs.GlobalWorkerOptions.workerSrc = worker
 
 import LiteratureLibrary from './LiteratureLibrary'
 import {
@@ -172,7 +171,7 @@ export default function ReadingCenter(props: ReadingCenterProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [error, setError] = useState('')
   useEffect(() => {
-    void loadReadingLibrary()
+    void loadReadingLibrary().catch(() => { /* Library exposes the load error. */ })
   }, [])
   const select = (document: ReadingDocument) => {
     setActiveId(document.id)
@@ -206,7 +205,7 @@ export default function ReadingCenter(props: ReadingCenterProps) {
           {...props}
           doc={doc}
           openPdf={async () => setActiveId(null)}
-          saving={library.saving > 0}
+          saveStatus={library.saveStatus}
         />
       ) : null}
     </div>
@@ -215,7 +214,7 @@ export default function ReadingCenter(props: ReadingCenterProps) {
 function ReadingWorkspace({
   doc,
   openPdf,
-  saving,
+  saveStatus,
   inputBarProps,
   messageListProps,
   modelControls,
@@ -226,7 +225,7 @@ function ReadingWorkspace({
 }: ReadingCenterProps & {
   doc: ReadingDocument
   openPdf: () => Promise<void>
-  saving: boolean
+  saveStatus: string
 }) {
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null),
     [error, setError] = useState('')
@@ -340,7 +339,7 @@ function ReadingWorkspace({
       try {
         const data = await readingApi.pdf(doc.id)
         if (!live) return
-        task = pdfjs.getDocument({ data })
+        task = loadReadingPdf(data)
         const pdf = await task.promise
         if (!live) return
         setPdf(pdf)
@@ -698,7 +697,7 @@ function ReadingWorkspace({
         </div>
         <div className="workspace-actions">
           <span className="preview-label">
-            {saving ? '正在保存…' : '已保存到本机'}
+            {saveStatus}
           </span>
 
           <IconButton
@@ -1178,7 +1177,7 @@ function ReadingWorkspace({
                     aria-label="笔记内容"
                   />
                   <div className="note-compose-actions">
-                    <span>{saving ? '正在保存…' : '自动保存在本机'}</span>
+                    <span>{saveStatus}</span>
                     <Button
                       size="sm"
                       disabled={!noteDraft.trim() || noteSaving}

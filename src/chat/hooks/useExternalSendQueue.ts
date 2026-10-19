@@ -54,8 +54,8 @@ export function useExternalSendQueue({
   const processingRef = useRef(false)
   const requestedRef = useRef(false)
   const partialByRequestRef = useRef(new Map<string, Conversation>())
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const retryTimerRef = useRef<number | null>(null)
+  const heartbeatRef = useRef<number | null>(null)
   const retryDelayRef = useRef(100)
   const disposedRef = useRef(false)
 

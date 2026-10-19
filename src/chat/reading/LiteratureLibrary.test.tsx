@@ -7,7 +7,7 @@ const library = vi.hoisted(() => ({ documents: [] as ReadingDocument[] }))
 beforeEach(() => { vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200) })
 afterEach(() => { cleanup(); library.documents = []; vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const api = vi.hoisted(() => ({ lookup: vi.fn() }))
-vi.mock('pdfjs-dist', () => ({ getDocument: vi.fn() }))
+vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
 vi.mock('../../api/reading', async (original) => ({
   ...(await original<typeof import('../../api/reading')>()),
   readingApi: api,
@@ -18,6 +18,7 @@ vi.mock('./readingLibrary', () => ({
     collections: [],
     loading: false,
     saving: 0,
+    saveStatus: '已保存到本机',
   }),
   createReadingItem: vi.fn(),
   attachReadingPdf: vi.fn(),

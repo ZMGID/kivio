@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
-import * as pdfjs from 'pdfjs-dist'
+import { loadReadingPdf } from './pdfDocument'
 import { readingApi } from '../../api/reading'
 
 // Small previews are shared across list remounts. Only one PDF is decoded at a time.
@@ -16,7 +16,7 @@ function thumbnail(id: string, key: string): Promise<string> {
   const work = queue
     .catch(() => undefined)
     .then(async () => {
-      const task = pdfjs.getDocument({ data: await readingApi.pdf(id) })
+      const task = loadReadingPdf(await readingApi.pdf(id))
       try {
         const pdf = await task.promise
         const page = await pdf.getPage(1)
