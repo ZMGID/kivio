@@ -37,7 +37,7 @@ it('updates static state with reduced motion, responds to live preference change
 })
 
 
-it('ignores pointer movement while idle but still responds to a deliberate click', () => {
+it('ignores global pointer movement while idle but still responds to a deliberate click', () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => window.setTimeout(() => fn(performance.now()), 16))
@@ -48,7 +48,7 @@ it('ignores pointer movement while idle but still responds to a deliberate click
   fireEvent.pointerMove(window, { clientX: 140, clientY: 70, pointerType: 'mouse' })
   act(() => vi.advanceTimersByTime(300))
   expect(picture()).toBe(still)
-  expect(vi.getTimerCount()).toBe(0)
+  expect(vi.getTimerCount()).toBe(1)
   fireEvent.keyDown(screen.getByRole('button', { name: '墨墨 · Momo' }), { key: 'Enter' })
   act(() => vi.advanceTimersByTime(300))
   expect(picture()).not.toBe(still)
@@ -116,17 +116,17 @@ it('follows only nearby local movement, returns on leave, and leaves small icons
   fireEvent.pointerMove(region, { clientX: 500, clientY: 90 })
   act(() => vi.advanceTimersByTime(1000))
   expect(picture(0)).toBe(front)
-  expect(vi.getTimerCount()).toBe(0)
+  expect(vi.getTimerCount()).toBe(1)
   fireEvent.pointerMove(region, { clientX: 180, clientY: 90 })
   act(() => vi.advanceTimersByTime(1000))
   expect(picture(0)).not.toBe(front)
   expect(picture(1)).toBe(small)
   fireEvent.pointerLeave(region)
-  act(() => vi.advanceTimersByTime(10000))
+  act(() => vi.advanceTimersByTime(4000))
   const coords = (markup: string) => [...markup.matchAll(/-?\d+\.\d+/g)].map(m => Number(m[0]))
   const restored = coords(picture(0)), original = coords(front)
   expect(restored).toHaveLength(original.length)
   expect(Math.max(...restored.map((v, i) => Math.abs(v - original[i])))).toBeLessThan(0.03)
-  expect(vi.getTimerCount()).toBe(0)
+  expect(vi.getTimerCount()).toBe(1)
   view.unmount()
 })

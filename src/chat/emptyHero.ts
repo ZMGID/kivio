@@ -22,32 +22,14 @@ export function nextEmptyHeroRotateMs(random = Math.random): number {
 
 const GREETINGS: Record<Lang, readonly string[]> = {
   zh: [
-    '想做什么',
-    '有活吗',
-    '从哪开始',
-    '整点啥',
-    '说吧',
-    '你说我写',
-    '有事尽管说',
-    '别空转了',
-    '先干为敬',
-    '来了来了',
-    '今天搞点什么',
-    '闲着也是闲着',
+    '从一个想法开始', '今天想聊点什么', '有个问题也行', '一起理理思路',
+    '慢慢说，我在', '想从哪里开始', '把想法放这儿', '小事也可以聊',
+    '来，一起想想', '有灵感了吗', '准备好了就开始', '我们一步步来',
   ],
   en: [
-    "What's next?",
-    'Got work?',
-    'Where to?',
-    "Let's cook.",
-    'Say it.',
-    'You talk. I type.',
-    'Go ahead.',
-    'Quit idling.',
-    'Work first.',
-    'Here I am.',
-    "What're we doing?",
-    'Might as well.',
+    'Start with an idea', 'What’s on your mind?', 'A question works too', 'Let’s think it through',
+    'Take your time. I’m here.', 'Where shall we start?', 'Bring your ideas here', 'Small things count too',
+    'Let’s figure it out', 'Any sparks of inspiration?', 'Ready when you are', 'One step at a time',
   ],
 }
 
@@ -124,16 +106,16 @@ const JABS: Record<Lang, {
   melt: readonly string[]
 }> = {
   zh: {
-    mild: ['？', '哦', '行', '嗯嗯', '看见了', '你继续'],
-    mid: ['挺闲的', '没事吧', '懂了懂了', '很有素质', '您先请', '手速可以', '谢谢啊'],
-    hot: ['急了', '典', '收收味', '差不多得了', '您赢了', '哈人', '纯路人问一句'],
-    melt: ['绷不住了', '乐', '孝', '没事的', '建议歇会'],
+    mild: ['嗯？我在', '收到一枚轻戳', '回头看你一眼', '有什么悄悄话', '你好呀', '听着呢'],
+    mid: ['有点痒', '再戳就变方了', '我可要眨眼了', '你找到我的开关了', '戳戳收到啦', '好啦，看到你了'],
+    hot: ['脸有点热了', '方一下，缓缓', '今天的戳戳有点多', '让我站稳一点', '快戳成果冻了', '轻一点嘛'],
+    melt: ['晕乎乎的', '让我缓一缓', '先把自己揉圆', '歇一会儿再玩', '好啦，陪你聊点什么'],
   },
   en: {
-    mild: ['?', 'Oh.', 'Sure.', 'Mm.', 'Seen.', 'Go on.'],
-    mid: ['Must be bored.', 'You good?', 'Got it.', 'Very classy.', 'After you.', 'Fast hands.', 'Thanks.'],
-    hot: ['Mad?', 'Classic.', 'Touch grass.', "That's enough.", 'You win.', 'Weird.', 'Just asking.'],
-    melt: ["I'm dead.", 'Lmao.', 'Sure buddy.', "It's fine.", 'Take a walk.'],
+    mild: ['Hm? I’m here.', 'A little poke, received.', 'Looking your way.', 'Got a secret?', 'Oh, hello.', 'I’m listening.'],
+    mid: ['That tickles.', 'You’ll turn me square.', 'Time for a blink.', 'You found my button.', 'Poke received!', 'Okay, I see you.'],
+    hot: ['Getting a little warm.', 'Feeling rather square.', 'That’s a lot of pokes.', 'Let me find my balance.', 'Turning into jelly.', 'Gently, please.'],
+    melt: ['A little dizzy.', 'Give me a moment.', 'Rounding myself out.', 'Let’s take a tiny break.', 'So, what shall we chat about?'],
   },
 }
 

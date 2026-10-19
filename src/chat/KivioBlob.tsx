@@ -112,6 +112,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
       last.t1 = writeAttr(eye1, 'transform', p.eyes[1].transform, last.t1)
     }
 
+    sim.setAmbientMotion(size >= 48, performance.now())
     apply(performance.now())
     const media = window.matchMedia('(prefers-reduced-motion: reduce)')
 
@@ -197,7 +198,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
     // No overlay: nearby input fields and text keep their normal hit targets.
     const region = size >= 48 ? host.closest('[data-momo-region]') ?? host.parentElement : null
     const leave = () => {
-      if (sim.releaseLook() && !raf && !timeout) arm()
+      if (sim.releaseLook() && !raf) arm()
     }
     const follow = (event: Event) => {
       const pointer = event as PointerEvent
@@ -209,7 +210,7 @@ export const KivioBlob = memo(forwardRef<KivioBlobHandle, KivioBlobProps>(functi
       if (Math.hypot(dx, dy) > radius) { leave(); return }
       sim.lookAt(dx / radius, dy / radius, performance.now())
       // Pointer events must not cancel a frame already waiting to paint.
-      if (!raf && !timeout) arm()
+      if (!raf) arm()
     }
     region?.addEventListener('pointermove', follow, { passive: true })
     region?.addEventListener('pointerleave', leave)

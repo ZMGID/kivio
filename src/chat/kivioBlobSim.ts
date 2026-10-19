@@ -461,6 +461,10 @@ export class KivioBlobSim {
   private bounce = spring(0)
   private project = createBlobProjector()
   private pointer: { x: number; y: number } | null = null
+  private ambient = false
+  private ambientAt = Infinity
+  private ambientKind = -1
+  private ambientActive = false
   private pokeHeat = 0
   private pokeCount = 0
   private lastPokeAt = -1e9
@@ -497,6 +501,8 @@ export class KivioBlobSim {
       this.face.retarget(faces[0], facePoints(faces[0]))
       this.body.retarget(this.bodyList[0], [bodyPoints(this.bodyList[0])])
     }
+    this.ambientActive = false
+    this.ambientAt = now + this.rand(2200, 4200)
     const idle = mood === 'idle'
     this.faceUntil = idle ? Infinity : now + this.rand(...FACE_HOLD[mood])
     this.bodyUntil = idle ? Infinity : now + this.rand(...BODY_HOLD[mood])
@@ -530,6 +536,8 @@ export class KivioBlobSim {
 
   poke(now: number, lookX?: number, lookY?: number): number {
     this.releaseLook()
+    this.ambientActive = false
+    this.ambientAt = now + this.rand(12000, 18000)
     this.wake(now)
     if (now - this.lastPokeAt > 4200) this.pokeCount = 0
     this.pokeCount += 1
@@ -578,6 +586,14 @@ export class KivioBlobSim {
   lookAt(x: number, y: number, now: number) {
     if (this.reduced || this.mood !== 'idle') return
     this.wake(now)
+    if (this.ambientActive) {
+      this.ctx.bias = { spin: 0, tx: 0, ty: 0, squash: 1 }
+      this.ctx.biasUntil = Infinity
+      this.face.retarget('neutral', facePoints('neutral'))
+      this.faceUntil = Infinity
+      this.ambientActive = false
+    }
+    this.ambientAt = Infinity
     this.pointer = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) }
     this.gazeX.t = this.pointer.x * 22
     this.gazeY.t = this.pointer.y * 18
@@ -587,10 +603,46 @@ export class KivioBlobSim {
   releaseLook(): boolean {
     if (!this.pointer) return false
     this.pointer = null
+    this.ambientAt = this.last + this.rand(6000, 12000)
     this.gazeX.t = 0
     this.gazeY.t = 0
     this.gazeUntil = Infinity
     return true
+  }
+
+  /** Only the large chat character has autonomous idle gestures. */
+  setAmbientMotion(enabled: boolean, now: number) {
+    this.ambient = enabled
+    this.ambientAt = enabled ? now + this.rand(2200, 4200) : Infinity
+  }
+
+  private idleGesture(now: number) {
+    if (!this.ambient || this.reduced || this.mood !== 'idle' || this.pointer) return
+    if (!Number.isFinite(this.ambientAt)) this.ambientAt = now + this.rand(6000, 12000)
+    if (now < this.ambientAt) return
+    // One authored gesture at a time. Never catch up a queue after hiding.
+    this.ambientAt = now + this.rand(6000, 12000)
+    if (now - this.last > 20000 || this.wantsHighFps(now) || this.pokeHeat > 0) return
+    let kind = Math.floor(this.random() * 5)
+    if (kind === this.ambientKind) kind = (kind + 1) % 5
+    this.ambientKind = kind
+    this.ambientActive = true
+    const dir = this.sign(), hold = this.rand(1300, 2300)
+    if (kind === 0) {
+      // Quiet blink: no whole-body bob on every gesture.
+      queueBlink(this.blinkQ, now, this.random, 1.25)
+    } else {
+      this.gazeX.t = dir * (kind === 1 ? 15 : kind === 2 ? 6 : 9)
+      this.gazeY.t = kind === 2 ? -12 : kind === 3 ? 7 : -3
+      this.gazeUntil = now + hold
+      this.ctx.bias = { spin: dir * (kind === 4 ? 5 : 2), tx: dir * 1.2,
+        ty: kind === 2 ? -1.5 : 0, squash: kind === 4 ? 1.012 : 1 }
+      this.ctx.biasUntil = now + hold
+      const face: FaceName = kind === 2 ? 'hmm' : kind === 4 ? 'content' : 'neutral'
+      this.face.retarget(face, facePoints(face))
+      this.faceUntil = now + hold
+      if (kind === 4) queueBlink(this.blinkQ, now, this.random, 1.4)
+    }
   }
 
   setReducedMotion(reduced: boolean) {
@@ -616,6 +668,8 @@ export class KivioBlobSim {
   }
 
   nudge(now: number) {
+    this.ambientActive = false
+    this.ambientAt = now + this.rand(10000, 15000)
     this.wake(now)
     queueBlink(this.blinkQ, now, this.random, this.mood === 'idle' ? 2.6 : 1)
     this.gazeX.t = this.sign() * this.rand(6, 12)
@@ -654,7 +708,8 @@ export class KivioBlobSim {
   nextIdleWakeMs(now: number): number {
     if (this.mood === 'idle') {
       // Expired holds still need one frame after a hidden/paused interval.
-      return Math.min(this.ctx.biasUntil, this.gazeUntil, this.faceUntil,
+      return Math.min(this.ambient && !this.reduced && !this.pointer ? this.ambientAt : Infinity,
+        this.ctx.biasUntil, this.gazeUntil, this.faceUntil,
         this.pokeHeat > 0 ? this.heatHoldUntil : Infinity) - now
     }
     const wakes = [this.blinkUntil, this.faceUntil, this.bodyUntil]
@@ -671,6 +726,7 @@ export class KivioBlobSim {
       this.inited = true
     }
     this.releaseIdleHolds(now)
+    this.idleGesture(now)
     const dt = Math.min((now - this.last) / 1000, 0.08)
     this.last = now
     const mt = (now - this.t0) / 1000
