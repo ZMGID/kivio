@@ -100,8 +100,10 @@ function LibraryDialog({
 export default function LiteratureLibrary({
   onRead,
   headerControls,
+  onConfigure,
 }: {
   headerControls?: ReactNode
+  onConfigure?: () => void
   onRead: (doc: ReadingDocument) => void
 }) {
   const { documents, collections, loading, saveStatus } = useReadingLibrary()
@@ -522,6 +524,7 @@ export default function LiteratureLibrary({
           />
         </div>
         <div className="literature-actions">
+          {onConfigure && <Button size="sm" variant="ghost" onClick={onConfigure}>配置选项</Button>}
           <Button
             size="sm"
             variant="ghost"

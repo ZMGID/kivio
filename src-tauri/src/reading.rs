@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 mod bibliography;
+pub mod setup;
 
 static WRITES: Mutex<()> = Mutex::new(());
 

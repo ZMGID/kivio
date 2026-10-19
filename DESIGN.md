@@ -243,3 +243,7 @@ Toggle 是紧凑胶囊开关（30×18px），滑块（14px）；开关状态使�
 - Don’t 将未使用的 settings-card 样式或不存在的自定义 tooltip 当成已经交付的标准组件。
 
 提取证据：src/index.css、src/theme/theme.ts、src/styles/shared-surfaces.css、src/styles/settings-01-embedded.css、src/styles/settings-02-pages.css、src/styles/chat-01-main.css、src/chat/persistence.ts。浏览器聊天首屏确认了系统字体、默认表面、侧栏宽度与空态标题；未验证 Tauri 原生行为或全功能界面。
+
+## Study 首次配置
+
+沿用客户端主题与密度：主内容区居中呈现既有墨墨（`KivioBlob`）和 Kivio Study，下面依次为简短说明、真实进度、配置选项与主要动作。安装阶段不可确定总量时使用不定进度条并显示当前步骤，不模拟整体百分比。配置选项复用 `kv-modal`、`Toggle` 和共享按钮，PDF2zh 与 Pandoc 独立选择并显示各自就绪状态，Pandoc 展示对应平台的官方包下载大小；组件依赖以从属列表说明；取消组件不影响基础阅读，文献库保留再次配置入口。不新增栅格素材。

@@ -13,6 +13,7 @@ vi.mock('../../api/reading', () => ({ readingApi: {
   save: (doc: ReadingDocument) => storage.save(doc),
   pdf: () => new Promise(() => {}),
 } }))
+vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open: () => void) => React.ReactNode }) => children(() => {}) }))
 vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: ReadingDocument) => void }) => <button onClick={() => onRead(storage.document)}>Open paper</button> }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))

@@ -33,6 +33,7 @@ import './pdfTextLayer.css'
 import './reading.css'
 
 import LiteratureLibrary from './LiteratureLibrary'
+import StudyEnvironment from './StudyEnvironment'
 import {
   readingApi,
   type ReadingDocument,
@@ -187,28 +188,30 @@ export default function ReadingCenter(props: ReadingCenterProps) {
       document.hasPdf !== false,
   )
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <ErrorNotice
-        message={error || library.error}
-        actionLabel="重试保存 / 加载"
-        onAction={() => {
-          setError('')
-          void retryReadingSaves().then(() => loadReadingLibrary()).catch((error) => setError(String(error)))
-        }}
-      />
-      <div className={doc ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-        <LiteratureLibrary onRead={select} headerControls={props.headerControls} />
-      </div>
-      {doc ? (
-        <ReadingWorkspace
-          key={doc.id}
-          {...props}
-          doc={doc}
-          openPdf={async () => setActiveId(null)}
-          saveStatus={library.saveStatus}
+    <StudyEnvironment headerControls={props.headerControls}>{openSetup => (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ErrorNotice
+          message={error || library.error}
+          actionLabel="重试保存 / 加载"
+          onAction={() => {
+            setError('')
+            void retryReadingSaves().then(() => loadReadingLibrary()).catch((error) => setError(String(error)))
+          }}
         />
-      ) : null}
-    </div>
+        <div className={doc ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
+          <LiteratureLibrary onRead={select} headerControls={props.headerControls} onConfigure={openSetup} />
+        </div>
+        {doc ? (
+          <ReadingWorkspace
+            key={doc.id}
+            {...props}
+            doc={doc}
+            openPdf={async () => setActiveId(null)}
+            saveStatus={library.saveStatus}
+          />
+        ) : null}
+      </div>
+    )}</StudyEnvironment>
   )
 }
 function ReadingWorkspace({
