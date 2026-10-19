@@ -275,7 +275,10 @@ async fn mineru_download_md(state: &AppState, zip_url: &str) -> Result<String, S
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("MinerU zip open: {e}"))?;
     let names: Vec<String> = (0..zip.len())
-        .filter_map(|i| zip.by_index(i).ok().map(|f| f.name().to_string()))
+        .filter_map(|i| {
+            let file = zip.by_index(i).ok()?;
+            file.name().ok().map(|name| name.into_owned())
+        })
         .collect();
     let target = names
         .iter()

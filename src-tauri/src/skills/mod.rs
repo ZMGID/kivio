@@ -370,10 +370,11 @@ pub fn install_skill_zip_bytes(bytes: Vec<u8>, skills_dir: &Path) -> Result<Skil
     let mut skill_path = String::new();
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|err| err.to_string())?;
-        if file.name().ends_with("SKILL.md") {
+        let name = file.name().map_err(|err| err.to_string())?.into_owned();
+        if name.ends_with("SKILL.md") {
             file.read_to_string(&mut skill_raw)
                 .map_err(|err| format!("Read SKILL.md in zip failed: {err}"))?;
-            skill_path = file.name().to_string();
+            skill_path = name;
             break;
         }
     }
@@ -409,15 +410,15 @@ fn extract_zip_into<R: Read + std::io::Seek>(
         if file.is_dir() {
             continue;
         }
-        let name = file.name();
+        let name = file.name().map_err(|err| err.to_string())?;
         let relative = if skill_path.contains('/') {
             let prefix = skill_path
                 .rsplit_once('/')
                 .map(|(prefix, _)| format!("{prefix}/"))
                 .unwrap_or_default();
-            name.strip_prefix(&prefix).unwrap_or(name)
+            name.strip_prefix(&prefix).unwrap_or(&name)
         } else {
-            name
+            &name
         };
         if relative.contains("..") {
             continue;

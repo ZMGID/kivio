@@ -198,7 +198,7 @@ fn extract_zip(source: &Path, stage: &Path) -> Result<(), String> {
     let mut roots = Vec::new();
     for i in 0..archive.len() {
         let file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let path = zip_path(file.name())?;
+        let path = zip_path(&file.name().map_err(|e| e.to_string())?)?;
         if path.file_name().is_some_and(|name| name == "plugin.json")
             && path.parent().and_then(Path::file_name).is_some_and(|name| {
                 [".kivio-plugin", ".codex-plugin", ".claude-plugin"]
@@ -227,7 +227,7 @@ fn extract_zip(source: &Path, stage: &Path) -> Result<(), String> {
     let mut remaining = MAX_BYTES;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-        let path = zip_path(file.name())?;
+        let path = zip_path(&file.name().map_err(|e| e.to_string())?)?;
         let Ok(relative) = path.strip_prefix(&roots[0]) else {
             continue;
         };
