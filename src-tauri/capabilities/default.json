@@ -27,6 +27,8 @@
     "core:window:allow-is-visible",
     "dialog:allow-open",
     "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-confirm",
     "shell:allow-open"
   ]
 }
