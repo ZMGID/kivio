@@ -5,6 +5,7 @@ const FETCH_PROVIDERS: ReadonlySet<WebSearchProviderId> = new Set([
   'exa',
   'exa_mcp',
   'ollama',
+  'deepseek',
   'serper',
   'tinyfish',
   'tinyfish_mcp',

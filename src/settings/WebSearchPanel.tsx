@@ -30,10 +30,7 @@ const DEFAULT_WEB_SEARCH: WebSearchConfig = {
   grokSystemPrompt:
     "You are a helpful search assistant. Search the web to find accurate and up-to-date information for the user's query. Provide a comprehensive answer with citations.",
   deepseekApiKey: '',
-  deepseekModel: 'deepseek-v4-flash',
   deepseekBaseUrl: 'https://api.deepseek.com',
-  deepseekSystemPrompt:
-    "You are a helpful search assistant. Search the web to find accurate and up-to-date information for the user's query. Provide a comprehensive answer with citations.",
   braveApiKey: '',
   braveBaseUrl: 'https://api.search.brave.com',
   serperApiKey: '',
@@ -93,29 +90,51 @@ type ProviderDef = {
   endpointField?: 'exaMcpUrl' | 'tinyfishMcpUrl'
   endpointPlaceholder?: string
   /** 地址栏下方说明：keyless MCP / 自建实例。 */
-  urlHint?: 'exaMcp' | 'tinyfishMcp' | 'searxng' | 'kimi'
+  urlHint?: 'exaMcp' | 'tinyfishMcp' | 'searxng' | 'kimi' | 'deepseek'
   supportsDepth?: boolean
-  /** 模型驱动搜索（Grok / DeepSeek）：额外显示 型号 / 自定义网址 / 系统提示。 */
+  /** 模型驱动搜索（Grok）：额外显示 型号 / 自定义网址 / 系统提示。 */
   modelBased?: boolean
-  modelField?: 'grokModel' | 'deepseekModel'
+  modelField?: 'grokModel'
   modelPlaceholder?: string
-  systemPromptField?: 'grokSystemPrompt' | 'deepseekSystemPrompt'
+  systemPromptField?: 'grokSystemPrompt'
   /** 本地品牌图标路径（public/），无则回退到文字标。 */
   icon?: string
 }
 
 const PROVIDERS: ProviderDef[] = [
   {
-    id: 'tavily',
-    name: 'Tavily',
-    site: 'https://tavily.com',
-    apiKeyUrl: 'https://app.tavily.com/home',
-    keyField: 'tavilyApiKey',
-    keyPlaceholder: 'tvly-...',
-    baseUrlField: 'tavilyBaseUrl',
-    baseUrlPlaceholder: 'https://api.tavily.com',
-    supportsDepth: true,
-    icon: '/search-icons/tavily.png',
+    id: 'bocha',
+    name: 'Bocha',
+    site: 'https://open.bochaai.com',
+    apiKeyUrl: 'https://open.bochaai.com',
+    keyField: 'bochaApiKey',
+    keyPlaceholder: 'bocha key',
+    baseUrlField: 'bochaBaseUrl',
+    baseUrlPlaceholder: 'https://api.bochaai.com',
+    icon: '/search-icons/bocha.png',
+  },
+  {
+    id: 'brave',
+    name: 'Brave',
+    site: 'https://brave.com/search/api/',
+    apiKeyUrl: 'https://api-dashboard.search.brave.com/app/keys',
+    keyField: 'braveApiKey',
+    keyPlaceholder: 'BSA...',
+    baseUrlField: 'braveBaseUrl',
+    baseUrlPlaceholder: 'https://api.search.brave.com',
+    icon: '/search-icons/brave.svg',
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    site: 'https://api-docs.deepseek.com/guides/search/',
+    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+    keyField: 'deepseekApiKey',
+    keyPlaceholder: 'sk-...',
+    baseUrlField: 'deepseekBaseUrl',
+    baseUrlPlaceholder: 'https://api.deepseek.com',
+    urlHint: 'deepseek',
+    icon: '/search-icons/deepseek.svg',
   },
   {
     id: 'exa',
@@ -139,15 +158,51 @@ const PROVIDERS: ProviderDef[] = [
     icon: '/search-icons/exa.png',
   },
   {
-    id: 'brave',
-    name: 'Brave',
-    site: 'https://brave.com/search/api/',
-    apiKeyUrl: 'https://api-dashboard.search.brave.com/app/keys',
-    keyField: 'braveApiKey',
-    keyPlaceholder: 'BSA...',
-    baseUrlField: 'braveBaseUrl',
-    baseUrlPlaceholder: 'https://api.search.brave.com',
-    icon: '/search-icons/brave.svg',
+    id: 'grok',
+    name: 'Grok',
+    site: 'https://x.ai',
+    apiKeyUrl: 'https://console.x.ai',
+    keyField: 'grokApiKey',
+    keyPlaceholder: 'xai-...',
+    modelBased: true,
+    modelField: 'grokModel',
+    modelPlaceholder: 'grok-4-1-fast-non-reasoning',
+    baseUrlField: 'grokBaseUrl',
+    baseUrlPlaceholder: 'https://api.x.ai/v1',
+    systemPromptField: 'grokSystemPrompt',
+    icon: '/search-icons/grok.png',
+  },
+  {
+    id: 'kimi',
+    name: 'Kimi',
+    site: 'https://www.kimi.com/code',
+    apiKeyUrl: 'https://www.kimi.com/code/console',
+    keyField: 'kimiApiKey',
+    keyPlaceholder: 'sk-...',
+    baseUrlField: 'kimiBaseUrl',
+    baseUrlPlaceholder: 'https://api.kimi.com/coding/v1/search',
+    urlHint: 'kimi',
+    icon: '/search-icons/kimi.svg',
+  },
+  {
+    id: 'ollama',
+    name: 'Ollama',
+    site: 'https://ollama.com',
+    apiKeyUrl: 'https://ollama.com/settings/keys',
+    keyField: 'ollamaApiKey',
+    keyPlaceholder: 'ollama key',
+    baseUrlField: 'ollamaBaseUrl',
+    baseUrlPlaceholder: 'https://ollama.com',
+    icon: '/search-icons/ollama.png',
+  },
+  {
+    id: 'searxng',
+    name: 'SearXNG',
+    site: 'https://docs.searxng.org/dev/search_api.html',
+    baseUrlField: 'searxngBaseUrl',
+    baseUrlPlaceholder: 'https://searx.example',
+    urlHint: 'searxng',
+    icon: '/search-icons/searxng.svg',
   },
   {
     id: 'serper',
@@ -159,6 +214,18 @@ const PROVIDERS: ProviderDef[] = [
     baseUrlField: 'serperBaseUrl',
     baseUrlPlaceholder: 'https://google.serper.dev',
     icon: '/search-icons/serper.png',
+  },
+  {
+    id: 'tavily',
+    name: 'Tavily',
+    site: 'https://tavily.com',
+    apiKeyUrl: 'https://app.tavily.com/home',
+    keyField: 'tavilyApiKey',
+    keyPlaceholder: 'tvly-...',
+    baseUrlField: 'tavilyBaseUrl',
+    baseUrlPlaceholder: 'https://api.tavily.com',
+    supportsDepth: true,
+    icon: '/search-icons/tavily.png',
   },
   {
     id: 'tinyfish',
@@ -181,17 +248,6 @@ const PROVIDERS: ProviderDef[] = [
     icon: '/search-icons/tinyfish.png',
   },
   {
-    id: 'bocha',
-    name: 'Bocha',
-    site: 'https://open.bochaai.com',
-    apiKeyUrl: 'https://open.bochaai.com',
-    keyField: 'bochaApiKey',
-    keyPlaceholder: 'bocha key',
-    baseUrlField: 'bochaBaseUrl',
-    baseUrlPlaceholder: 'https://api.bochaai.com',
-    icon: '/search-icons/bocha.png',
-  },
-  {
     id: 'zhipu',
     name: 'Zhipu',
     site: 'https://open.bigmodel.cn',
@@ -201,68 +257,6 @@ const PROVIDERS: ProviderDef[] = [
     baseUrlField: 'zhipuBaseUrl',
     baseUrlPlaceholder: 'https://open.bigmodel.cn/api/paas/v4',
     icon: '/search-icons/zhipu.png',
-  },
-  {
-    id: 'kimi',
-    name: 'Kimi',
-    site: 'https://www.kimi.com/code',
-    apiKeyUrl: 'https://www.kimi.com/code/console',
-    keyField: 'kimiApiKey',
-    keyPlaceholder: 'sk-...',
-    baseUrlField: 'kimiBaseUrl',
-    baseUrlPlaceholder: 'https://api.kimi.com/coding/v1/search',
-    urlHint: 'kimi',
-    icon: '/search-icons/kimi.svg',
-  },
-  {
-    id: 'searxng',
-    name: 'SearXNG',
-    site: 'https://docs.searxng.org/dev/search_api.html',
-    baseUrlField: 'searxngBaseUrl',
-    baseUrlPlaceholder: 'https://searx.example',
-    urlHint: 'searxng',
-    icon: '/search-icons/searxng.svg',
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama',
-    site: 'https://ollama.com',
-    apiKeyUrl: 'https://ollama.com/settings/keys',
-    keyField: 'ollamaApiKey',
-    keyPlaceholder: 'ollama key',
-    baseUrlField: 'ollamaBaseUrl',
-    baseUrlPlaceholder: 'https://ollama.com',
-    icon: '/search-icons/ollama.png',
-  },
-  {
-    id: 'grok',
-    name: 'Grok',
-    site: 'https://x.ai',
-    apiKeyUrl: 'https://console.x.ai',
-    keyField: 'grokApiKey',
-    keyPlaceholder: 'xai-...',
-    modelBased: true,
-    modelField: 'grokModel',
-    modelPlaceholder: 'grok-4-1-fast-non-reasoning',
-    baseUrlField: 'grokBaseUrl',
-    baseUrlPlaceholder: 'https://api.x.ai/v1',
-    systemPromptField: 'grokSystemPrompt',
-    icon: '/search-icons/grok.png',
-  },
-  {
-    id: 'deepseek',
-    name: 'DeepSeek',
-    site: 'https://api-docs.deepseek.com/guides/responses_api/',
-    apiKeyUrl: 'https://platform.deepseek.com/api_keys',
-    keyField: 'deepseekApiKey',
-    keyPlaceholder: 'sk-...',
-    modelBased: true,
-    modelField: 'deepseekModel',
-    modelPlaceholder: 'deepseek-v4-flash',
-    baseUrlField: 'deepseekBaseUrl',
-    baseUrlPlaceholder: 'https://api.deepseek.com',
-    systemPromptField: 'deepseekSystemPrompt',
-    icon: '/search-icons/deepseek.svg',
   },
 ]
 
@@ -756,6 +750,14 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
             </div>
 
         <div className="space-y-6">
+          <SettingsGroup title={t.webSearchCapabilities}>
+            <p className="text-sm text-zinc-700">
+              {providerSupportsFetch(selected.id)
+                ? t.webSearchCapabilitySearchFetch
+                : t.webSearchCapabilitySearch}
+            </p>
+          </SettingsGroup>
+
           <SettingsGroup title={t.webSearchProviderSection}>
             {selected.keyField && (
               <SettingRow label={t.lensWebSearchApiKey} stack>
@@ -791,7 +793,9 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                         ? t.webSearchTinyfishMcpHint
                         : selected.urlHint === 'kimi'
                           ? t.webSearchKimiHint
-                          : undefined
+                          : selected.urlHint === 'deepseek'
+                            ? t.webSearchDeepseekHint
+                            : undefined
                 }
                 stack
               >

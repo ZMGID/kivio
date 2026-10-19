@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    exa_mcp_server, kimi_search_url, map_tinyfish_mcp_error, normalized_base_url, provider_label,
-    read_search_json, tinyfish_mcp_server,
+    deepseek_tool_url, exa_mcp_server, kimi_search_url, map_tinyfish_mcp_error,
+    normalized_base_url, provider_label, read_search_json, tinyfish_mcp_server,
 };
 
 /// Extract/contents/fetch can be slower than a SERP call (JS render, livecrawl).
@@ -43,6 +43,7 @@ pub fn provider_supports_fetch(provider: WebSearchProvider) -> bool {
             | WebSearchProvider::Exa
             | WebSearchProvider::ExaMcp
             | WebSearchProvider::Ollama
+            | WebSearchProvider::Deepseek
             | WebSearchProvider::Serper
             | WebSearchProvider::Tinyfish
             | WebSearchProvider::TinyfishMcp
@@ -79,6 +80,7 @@ pub async fn fetch_web(
         WebSearchProvider::Tavily => fetch_tavily(state, config, url, retry_attempts).await,
         WebSearchProvider::Exa => fetch_exa(state, config, url, retry_attempts).await,
         WebSearchProvider::ExaMcp => fetch_exa_mcp(state, config, url).await,
+        WebSearchProvider::Deepseek => fetch_deepseek(state, config, url, retry_attempts).await,
         WebSearchProvider::Ollama => fetch_ollama(state, config, url, retry_attempts).await,
         WebSearchProvider::Serper => fetch_serper(state, config, url, retry_attempts).await,
         WebSearchProvider::Tinyfish => fetch_tinyfish(state, config, url, retry_attempts).await,
@@ -174,6 +176,32 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     let mut truncated = text.chars().take(max_chars).collect::<String>();
     truncated.push_str("\n\n[Truncated]");
     truncated
+}
+
+#[derive(Debug, Deserialize)]
+struct DeepseekFetchResponse {
+    title: String,
+    content: String,
+}
+
+async fn fetch_deepseek(
+    state: &AppState,
+    config: &LensWebSearchConfig,
+    url: &str,
+    retry_attempts: usize,
+) -> Result<WebFetchPage, String> {
+    let api_key = config.deepseek_api_key.trim();
+    if api_key.is_empty() {
+        return Err("DeepSeek API key is not configured".to_string());
+    }
+    let endpoint = deepseek_tool_url(&config.deepseek_base_url, "fetch");
+    let body = serde_json::json!({ "url": url });
+    let response = send_with_retry("DeepSeek fetch", retry_attempts, || {
+        with_fetch_timeout(state.http.post(&endpoint).bearer_auth(api_key).json(&body)).send()
+    })
+    .await?;
+    let parsed: DeepseekFetchResponse = read_search_json("DeepSeek fetch", response).await?;
+    page(url, None, Some(parsed.title), parsed.content, "DeepSeek")
 }
 
 #[derive(Debug, Deserialize)]
@@ -726,6 +754,7 @@ mod tests {
     fn provider_supports_fetch_covers_extract_apis_only() {
         for provider in [
             WebSearchProvider::Tavily,
+            WebSearchProvider::Deepseek,
             WebSearchProvider::Exa,
             WebSearchProvider::ExaMcp,
             WebSearchProvider::Ollama,
@@ -745,7 +774,6 @@ mod tests {
             WebSearchProvider::Zhipu,
             WebSearchProvider::Searxng,
             WebSearchProvider::Grok,
-            WebSearchProvider::Deepseek,
             WebSearchProvider::Unknown,
         ] {
             assert!(

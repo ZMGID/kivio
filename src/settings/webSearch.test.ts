@@ -69,6 +69,7 @@ describe('resolvedFetchProvider', () => {
   it('follows the search provider when it has an extract API', () => {
     expect(resolvedFetchProvider(config({ provider: 'exa' }))).toBe('exa')
     expect(providerSupportsFetch('exa')).toBe(true)
+    expect(resolvedFetchProvider(config({ provider: 'deepseek' }))).toBe('deepseek')
   })
 
   it('returns null when search has no extract API and fetch is not overridden', () => {
@@ -83,8 +84,8 @@ describe('resolvedFetchProvider', () => {
     }))).toBe('tavily')
     expect(resolvedFetchProvider(config({
       provider: 'brave',
-      fetchProvider: 'tavily',
-    }))).toBe('tavily')
+      fetchProvider: 'deepseek',
+    }))).toBe('deepseek')
   })
 })
 

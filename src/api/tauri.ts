@@ -1161,9 +1161,7 @@ export type WebSearchConfig = {
   grokBaseUrl?: string
   grokSystemPrompt?: string
   deepseekApiKey?: string
-  deepseekModel?: string
   deepseekBaseUrl?: string
-  deepseekSystemPrompt?: string
   braveApiKey?: string
   braveBaseUrl?: string
   serperApiKey?: string
