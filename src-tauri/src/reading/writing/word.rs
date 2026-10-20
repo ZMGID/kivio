@@ -23,6 +23,7 @@ struct Running {
     task: tokio::task::JoinHandle<()>,
     token: String,
 }
+static INSTALLING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RUNNING: OnceLock<Mutex<Option<Running>>> = OnceLock::new();
 fn running() -> &'static Mutex<Option<Running>> {
     RUNNING.get_or_init(|| Mutex::new(None))
@@ -231,14 +232,22 @@ pub async fn reading_word_stop(app: AppHandle) -> Result<Status, String> {
     reading_word_status(app).await
 }
 pub fn resume(app: AppHandle) {
-    if root(&app).is_ok_and(|p| p.join("enabled").exists()) {
-        tauri::async_runtime::spawn(async move {
+    tauri::async_runtime::spawn(async move {
+        // DMG/MSI installations have no shared per-user post-install hook.
+        // Complete setup on first launch and refresh registration after upgrades.
+        // Development builds must not change the developer's certificate trust.
+        #[cfg(not(debug_assertions))]
+        if let Err(e) = install(&app, false).await {
+            eprintln!("Study Word setup: {e}");
+        }
+        if root(&app).is_ok_and(|p| p.join("enabled").exists()) {
             if let Err(e) = start(&app).await {
                 eprintln!("Study Word: {e}");
             }
-        });
-    }
+        }
+    });
 }
+
 fn manifest() -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -254,8 +263,19 @@ fn manifest() -> String {
 }
 #[tauri::command]
 pub async fn reading_word_install(app: AppHandle) -> Result<Status, String> {
-    start(&app).await?;
-    let dir = root(&app)?;
+    install(&app, true).await?;
+    reading_word_start(app).await
+}
+async fn install(app: &AppHandle, repair: bool) -> Result<(), String> {
+    let _guard = INSTALLING.lock().await;
+    let dir = root(app)?;
+    let first_install = !dir.join("installed").exists();
+    let trust_required = repair
+        || first_install
+        || !dir.join("localhost.crt").is_file()
+        || !dir.join("localhost.key").is_file();
+    assets(app)?;
+    prepare(&dir)?;
     let manifest_path = dir.join("kivio-study.xml");
     std::fs::write(&manifest_path, manifest()).map_err(|e| e.to_string())?;
     let certificate = dir.join("localhost.crt");
@@ -263,15 +283,17 @@ pub async fn reading_word_install(app: AppHandle) -> Result<Status, String> {
     {
         let home = app.path().home_dir().map_err(|e| e.to_string())?;
         let keychain = home.join("Library/Keychains/login.keychain-db");
-        let result = tokio::process::Command::new("/usr/bin/security")
-            .args(["add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k"])
-            .arg(keychain)
-            .arg(&certificate)
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !result.status.success() {
-            return Err("本机证书尚未获得信任，请允许系统确认后重新安装。".into());
+        if trust_required {
+            let result = tokio::process::Command::new("/usr/bin/security")
+                .args(["add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k"])
+                .arg(keychain)
+                .arg(&certificate)
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !result.status.success() {
+                return Err("本机证书尚未获得信任，请允许系统确认后重新安装。".into());
+            }
         }
         let folder = home.join("Library/Containers/com.microsoft.Word/Data/Documents/wef");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
@@ -279,14 +301,16 @@ pub async fn reading_word_install(app: AppHandle) -> Result<Status, String> {
     }
     #[cfg(target_os = "windows")]
     {
-        let trust = tokio::process::Command::new("certutil")
-            .args(["-user", "-addstore", "Root"])
-            .arg(&certificate)
-            .output()
-            .await
-            .map_err(|e| e.to_string())?;
-        if !trust.status.success() {
-            return Err("本机证书安装失败，请允许系统确认后重试。".into());
+        if trust_required {
+            let trust = tokio::process::Command::new("certutil")
+                .args(["-user", "-addstore", "Root"])
+                .arg(&certificate)
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !trust.status.success() {
+                return Err("本机证书安装失败，请允许系统确认后重试。".into());
+            }
         }
         let result = tokio::process::Command::new("reg")
             .args([
@@ -309,11 +333,15 @@ pub async fn reading_word_install(app: AppHandle) -> Result<Status, String> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let _ = certificate;
+        let _ = (certificate, trust_required);
         return Err("Word 插件安装支持 macOS 和 Windows。".into());
     }
+    // Preserve an explicit disconnect across future launches and upgrades.
+    if first_install {
+        std::fs::write(dir.join("enabled"), "1").map_err(|e| e.to_string())?;
+    }
     std::fs::write(dir.join("installed"), "1").map_err(|e| e.to_string())?;
-    reading_word_start(app).await
+    Ok(())
 }
 
 #[cfg(test)]

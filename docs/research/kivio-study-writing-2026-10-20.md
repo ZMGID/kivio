@@ -12,7 +12,7 @@
 
 ## 已实现的路径
 
-Study → 写作引用 → 安装 Word 加载项 / 开启本机连接 → 复制连接码 → Word「开始 → 加载项」中的 Kivio Study → 连接 → 搜索并选择文献 → 插入引用 / 替换当前引用 → 插入参考文献 / 刷新全文引用。
+安装正式版 Kivio → 首次启动自动注册 Word 加载项并开启本机连接 → Study → 写作引用 → 复制连接码 → Word「开始 → 加载项」中的 Kivio Study → 连接 → 搜索并选择文献 → 插入引用 / 替换当前引用 → 插入参考文献 / 刷新全文引用。
 
 - Rust `reading/writing/word.rs` 唯一管理本机连接生命周期、证书和安装；只监听 `127.0.0.1:23127`，使用 `https://localhost:23127`。文献接口验证 Host、Origin 与 Bearer 连接码，不启用跨站 CORS；返回书目资料，不返回 PDF、笔记、聊天或密钥。
 - 连接码仅复制到用户剪贴板，Word 侧只存于会话存储，绝不写入 Word 文档。关闭连接撤销当前连接码，下次开启需重新配对。
@@ -24,7 +24,7 @@ Study → 写作引用 → 安装 Word 加载项 / 开启本机连接 → 复制
 
 [macOS 官方侧载方法](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-an-office-add-in-on-mac)使用用户 Word `wef` 目录。Windows 使用 [WEF Developer 注册项](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/uninstall-add-in)。这是本机侧载，不是 AppSource 已发布插件。
 
-首次点击安装会将本机自签 HTTPS 证书加入当前用户信任，并注册加载项。系统可能要求用户确认；安装失败不会显示注册成功。无需额外 Node.js、Python、Zotero 或云服务。Word 的 Office.js 运行时仍使用微软官方 CDN，因此首次加载需要能访问该地址。
+正式版首次启动会将本机自签 HTTPS 证书加入当前用户信任，并注册加载项。macOS DMG 为拖拽安装，初始化在首次启动时完成；Windows 同样采用当前用户首次启动初始化，尚未接入 NSIS/MSI 安装器钩子。后续启动刷新注册和清单，正常升级不重复安装证书；用户关闭连接后不会被升级重新开启。开发构建不自动修改证书信任。Study 中保留安装入口用于失败重试或修复。系统可能要求用户确认；安装失败不会显示注册成功。无需额外 Node.js、Python、Zotero 或云服务。Word 的 Office.js 运行时仍使用微软官方 CDN，因此首次加载需要能访问该地址。
 
 支持目标是 macOS / Windows 的桌面 Word，WordApi 1.3。组织策略可能禁止侧载。WPS、Word 网页版、移动 Word 本次不承诺支持。仅注册成功不代表已通过 Word 文档操作验收。
 
@@ -46,3 +46,5 @@ Study → 写作引用 → 安装 Word 加载项 / 开启本机连接 → 复制
 - 插件面板已在 360×800 浏览器视口检查。没有在 Microsoft Word 中运行，不把浏览器渲染、API 测试或清单验证表述为 Word 验收。
 
 - 连接初次检查失败后的重试已通过真实组件浏览器故障注入验证：失败提示与重试按钮可见，点击后恢复安装及连接操作。只替换外部状态 API，不向生产代码加入测试入口；审查唯一发现已关闭。
+
+自动初始化的代码已接入；正式版首次启动、系统证书授权和 Windows 安装环境仍需实机验收，不以开发版验证替代。
