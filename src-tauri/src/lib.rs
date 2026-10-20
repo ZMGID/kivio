@@ -805,6 +805,7 @@ pub fn run() {
             reading::reading_import,
             reading::reading_save,
             reading::reading_pdf,
+            reading::chat::reading_prepare_chat,
             reading::reading_create,
             reading::reading_attach,
             reading::reading_collections,

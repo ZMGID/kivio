@@ -74,6 +74,8 @@ export type ReadingDocument = {
   noteDraft: string
 }
 export const readingApi = {
+  prepareChat: (id: string, conversationId: string, pages: string[], view: { kind: 'source' | 'mono' | 'dual'; runId?: string }) =>
+    invoke<{ name: string; content: string } | null>('reading_prepare_chat', { id, conversationId, pages, ...view }),
   collections: () => invoke<ReadingCollection[]>('reading_collections'),
   saveCollections: (items: ReadingCollection[]) =>
     invoke<void>('reading_save_collections', { items }),

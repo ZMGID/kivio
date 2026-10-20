@@ -53,7 +53,7 @@ import {
   updateReadingDocument,
   retryReadingSaves,
 } from './readingLibrary'
-import { readingContext, readingCitation } from './readingContext'
+import { readingCitation } from './readingContext'
 import { chatApi } from '../api'
 import type { Conversation, PendingAttachment } from '../types'
 function PdfPage({
@@ -723,19 +723,23 @@ function ReadingWorkspace({
     setPreparing(true)
     setChatError('')
     try {
-      const context = pages.some(text => text.trim()) ? readingContext(doc.name, pages, content, page, edition) : null
-      if (!context && !attachments.some(item => item.type === 'image'))
+      const hasText = pages.some(text => text.trim())
+      if (!hasText && !attachments.some(item => item.type === 'image'))
         throw new Error('这份 PDF 没有可提取的文字。请用右侧的图片提问，将当前页交给模型阅读。')
       const conversation = doc.activeConversationId
         ? await chatApi.getConversation(doc.activeConversationId)
         : await createConversation()
+      if (!alive.current) return false
+      const context = hasText
+        ? await readingApi.prepareChat(doc.id, conversation.id, pages, { kind: viewKind, runId: viewRunId })
+        : null
       if (!alive.current) return false
       await onActivateConversation(conversation.id)
       if (!alive.current) return false
       return await onSend(
         conversation,
         content,
-        [...(context ? [context] : []), ...attachments],
+        [...(context ? [{ ...context, id: crypto.randomUUID(), type: 'file' as const, path: '' }] : []), ...attachments],
         () => {
           sendLock.current = false
           if (alive.current) setPreparing(false)

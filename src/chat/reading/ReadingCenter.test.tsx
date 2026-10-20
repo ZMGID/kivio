@@ -16,6 +16,7 @@ vi.mock('../../api/reading', () => ({ readingApi: {
   list: async () => [structuredClone(storage.document)], collections: async () => [],
   save: (doc: ReadingDocument) => storage.save(doc),
   pdf: vi.fn(() => new Promise(() => {})),
+  prepareChat: vi.fn(),
 } }))
 vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open: () => void) => React.ReactNode }) => children(() => {}) }))
 vi.mock('../../api/readingOperations', () => ({ readingOperationsApi: { status: vi.fn(async () => ({ translation: null, view: { kind: 'source', output: null, latest: null } })), selectView: vi.fn() } }))
@@ -23,7 +24,7 @@ vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: Re
 vi.mock('../api', () => ({ chatApi: { getConversation: vi.fn() } }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
-vi.mock('../InputBar', () => ({ InputBar: () => null }))
+vi.mock('../InputBar', () => ({ InputBar: ({ onSend }: { onSend: (text: string, attachments: never[]) => Promise<boolean> }) => <button onClick={() => void onSend('Explain this', [])}>Ask study</button> }))
 vi.mock('../MessageList', () => ({ MessageList: () => null }))
 vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -130,5 +131,39 @@ it('shows a linked conversation once when older document links contain duplicate
   } finally {
     cleanup()
     storage.document = previous
+  }
+})
+
+it('continues an associated document conversation without attaching the PDF again', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
+  const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo')
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() })
+  const previous = storage.document
+  storage.document = { ...previous, conversationIds: ['study-chat'], activeConversationId: 'study-chat' }
+  vi.mocked(readingOperationsApi.status).mockResolvedValue({ translation: null, view: { kind: 'source', output: null, latest: null } })
+  vi.mocked(readingApi.pdf).mockResolvedValue(new Uint8Array([1]))
+  vi.mocked(loadReadingPdf).mockImplementation(() => ({ promise: Promise.resolve({ numPages: 1, getOutline: async () => [], getPage: async () => ({ getViewport: () => ({ width: 612, height: 792 }), getTextContent: async () => ({ items: [{ str: 'Full paper text' }] }) }) }), destroy: vi.fn() }) as unknown as ReturnType<typeof loadReadingPdf>)
+  vi.mocked(chatApi.getConversation).mockResolvedValue({ id: 'study-chat', messages: [{ id: 'first', role: 'user', content: 'First question' }] } as never)
+  // The persisted source is already present; the backend requests no new attachment.
+  vi.mocked(readingApi.prepareChat).mockResolvedValue(null)
+  storage.save.mockResolvedValue(undefined)
+  const send = vi.fn().mockResolvedValue(true)
+  try {
+    await loadReadingLibrary()
+    await updateReadingDocument(previous.id, doc => ({ ...doc, conversationIds: ['study-chat'], activeConversationId: 'study-chat' }))
+    render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: {}, onActivateConversation: vi.fn().mockResolvedValue(undefined), onSend: send } as unknown as ReadingCenterProps)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+    await screen.findByLabelText('PDF 第 1 页')
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask study' }))
+    await waitFor(() => expect(send).toHaveBeenCalled())
+    expect(send.mock.calls[0][1]).toBe('Explain this')
+    expect(send.mock.calls[0][2]).toEqual([])
+  } finally {
+    cleanup()
+    storage.document = previous
+    if (originalScroll) Object.defineProperty(HTMLElement.prototype, 'scrollTo', originalScroll)
+    else delete (HTMLElement.prototype as unknown as { scrollTo?: unknown }).scrollTo
   }
 })

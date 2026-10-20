@@ -649,6 +649,11 @@ pub(super) async fn complete_assistant_reply_inner(
     .map(|path| path.display().to_string());
     // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
     let set_system_prompt = live_set_system_prompt(app, conversation);
+    let study_source_prompt = crate::reading::chat::source_prompt(app, &conversation.id)?;
+    let set_system_prompt = match (set_system_prompt, study_source_prompt) {
+        (Some(set), Some(source)) => Some(format!("{set}\n\n{source}")),
+        (set, source) => set.or(source),
+    };
     let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
         app,
         &conversation.knowledge_base_ids,

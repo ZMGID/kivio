@@ -815,6 +815,7 @@ pub(crate) async fn chat_fork_conversation(
     // 深拷被复制消息引用的附件 / 图片 artifact 文件到新对话目录（裸文件名同名拷贝，路径保持有效）。
     // Missing attachment files are warnings rather than fork blockers. Workbench outputs are not copied when forking.
     copy_forked_conversation_files(&app, &conversation_id, &new_id, &messages);
+    crate::reading::chat::fork_sources(&app, &conversation_id, &new_id, &messages)?;
 
     // 清理 group_selections：仅保留其选中 message_id 仍存在于新 messages、且该消息仍带 group_id 的条目。
     let existing_groups: std::collections::HashMap<&str, &str> = messages
