@@ -20,6 +20,7 @@ import {
   Pencil,
   MoreHorizontal,
   SlidersHorizontal,
+  Settings2,
 } from 'lucide-react'
 import { loadReadingPdf } from './pdfDocument'
 import { StudyIcon } from '../../settings/public/icons'
@@ -75,7 +76,7 @@ function LibraryDialog({
   return (
     <dialog
       ref={ref}
-      className="kv-modal literature-dialog"
+      className="kv-modal literature-dialog custom-scrollbar"
       aria-label={title}
       onCancel={(event) => {
         event.preventDefault()
@@ -117,9 +118,10 @@ export default function LiteratureLibrary({
   const { documents, collections, loading, saveStatus } = useReadingLibrary()
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
-  const [navigationWidth, setNavigationWidth] = useState(240)
+  const [navigationWidth, setNavigationWidth] = useState(200)
   const [inspectorWidth, setInspectorWidth] = useState(320)
   const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
   const layout = literatureLayout(bodyWidth, navigationWidth, inspectorWidth)
   useEffect(() => {
     const body = bodyRef.current
@@ -150,7 +152,7 @@ export default function LiteratureLibrary({
       aria-label={navigation ? '调整文献集栏宽度' : '调整资料栏宽度'}
       aria-valuemin={min} aria-valuemax={max} aria-valuenow={Math.round(value)}
       tabIndex={0}
-      onDoubleClick={() => setWidth(navigation ? 240 : 320)}
+      onDoubleClick={() => setWidth(navigation ? 200 : 320)}
       onKeyDown={(e) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
         e.preventDefault()
@@ -165,7 +167,7 @@ export default function LiteratureLibrary({
 
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [query, setQuery] = useState('')
-  const [searchDraft, setSearchDraft] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [tags, setTags] = useState<string[]>([])
   const [sort, setSort] = useState('opened')
   const [showFilters, setShowFilters] = useState(false)
@@ -176,14 +178,14 @@ export default function LiteratureLibrary({
   const [multiselect, setMultiselect] = useState(false)
   const inspectorRef = useRef<HTMLElement>(null)
   const [menu, setMenu] = useState<{ anchor: DockMenuAnchor; ids: string[]; child?: LiteratureChild } | null>(null)
-  const toggleMultiselect = () => { setMultiselect(value => !value); setSelected([]); setChild(null) }
-  const selectItem = (id: string) => { setChild(null); setSelected(old => multiselect ? old.includes(id) ? old.filter(value => value !== id) : [...old, id] : [id]) }
+  const toggleMultiselect = () => { setMultiselect(value => !value); setSelected([]); setChild(null); setInspectorOpen(false) }
+  const selectItem = (id: string) => { setEditingId(null); if (!multiselect) setInspectorOpen(true); setChild(null); setSelected(old => multiselect ? old.includes(id) ? old.filter(value => value !== id) : [...old, id] : [id]) }
   const [writingOpen, setWritingOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [dialog, setDialog] = useState<'item' | 'collection' | 'search' | null>(null)
+  const [dialog, setDialog] = useState<'item' | 'collection' | null>(null)
   const [title, setTitle] = useState('')
   const [doi, setDoi] = useState('')
   const [editingCollection, setEditingCollection] =
@@ -222,7 +224,12 @@ export default function LiteratureLibrary({
       ),
     [documents, collections, filter, query, tags, sort, unfiledOnly],
   )
+  const recentDocument = useMemo(() => documents
+    .filter(item => !item.trashedAt && item.hasPdf !== false && item.lastOpenedAt)
+    .sort((a, b) => (b.lastOpenedAt ?? '').localeCompare(a.lastOpenedAt ?? ''))[0], [documents])
   const selectedDocs = filtered.filter((d) => selected.includes(d.id))
+  const inspectorVisible = !writingOpen && inspectorOpen && selectedDocs.length > 0
+  const inlineInspector = inspectorVisible && layout.showInspector
   const doc = selectedDocs.length === 1 ? selectedDocs[0] : null
   const selectedChild = child?.documentId === doc?.id ? child : null
   const childNote = selectedChild?.target.noteId ? doc?.notes.find(note => note.id === selectedChild.target.noteId) : null
@@ -266,6 +273,7 @@ export default function LiteratureLibrary({
     void updateReadingDocument(id, update).catch((e) => setError(String(e)))
   }
   const chooseFilter = (next: LibraryFilter) => {
+    setWritingOpen(false)
     setFilter(next)
     setChild(null)
     setInspectorOpen(false)
@@ -530,6 +538,7 @@ export default function LiteratureLibrary({
   }
   const focusInspector = (note = false) => setTimeout(() => inspectorRef.current?.querySelector<HTMLElement>(note ? 'textarea[aria-label="子项笔记内容"]' : 'input[aria-label="文献标题"]')?.focus(), 0)
   const editPaper = (item: ReadingDocument) => {
+    setEditingId(item.id)
     setMultiselect(false); setSelected([item.id]); setChild(null); setInspectorOpen(true); focusInspector()
   }
   const selectChild = (item: ReadingDocument, value: LiteratureChild, edit = false) => {
@@ -568,40 +577,14 @@ export default function LiteratureLibrary({
     { key: 'export', label: count === 1 ? '导出文献 RIS' : `导出所选 ${count} 篇 RIS`, icon: <Import size={14} />, onSelect: () => void exportRis(menuDocs) },
     { key: 'trash', label: filter === 'trash' ? '恢复选中文献' : count === 1 ? '移入回收站' : `将所选 ${count} 篇移入回收站`, icon: filter === 'trash' ? <RotateCcw size={14} /> : <Trash2 size={14} />, danger: filter !== 'trash', onSelect: () => void bulk(value => ({ ...value, trashedAt: filter === 'trash' ? null : new Date().toISOString() }), filter === 'trash' ? '已恢复文献' : '已移入回收站，可随时恢复', menuDocs) },
   ] : []
-  return (
-    <div className="literature-library">
-      <header className={`literature-header ${headerControls ? 'has-window-controls' : ''}`} data-tauri-drag-region>
-        {headerControls}
-        <h1>
-          <StudyIcon size={17} />
-          Kivio Study
-        </h1>
-        <div className="literature-actions">
-          <IconButton
-            label={query ? `搜索文献：${query}` : '搜索文献'}
-            variant="ghost"
-            aria-haspopup="dialog"
-            onClick={() => { setSearchDraft(query); setDialog('search') }}
-          >
-            <Search size={15} />
-          </IconButton>
-          {onConfigure && <Button size="sm" variant="ghost" onClick={onConfigure}>配置选项</Button>}
+  const newDocument = () => { setTitle(''); setDoi(''); setDialog('item') }
+  const creationActions = layout.showNavigation ? <>
+    <button type="button" className="literature-nav-row" onClick={() => void importPdfs()} disabled={!!busy || loading}><Import size={15} /><span>导入 PDF</span></button>
+    <button type="button" className="literature-nav-row" onClick={newDocument} disabled={!!busy}><Plus size={15} /><span>新建文献</span></button>
+  </> : <>
           <Button
             size="sm"
-            variant="ghost"
-            onClick={() => void importRis()}
-            disabled={!!busy}
-          >
-            <Import size={15} />
-            导入 RIS
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => {
-              setTitle('')
-              setDoi('')
-              setDialog('item')
-            }}
+            onClick={newDocument}
             disabled={!!busy}
           >
             <Plus size={15} />
@@ -616,17 +599,30 @@ export default function LiteratureLibrary({
             <Import size={15} />
             导入 PDF
           </Button>
-        </div>
+  </>
+  return (
+    <div className="literature-library">
+      <header className={`literature-header ${headerControls ? 'has-window-controls' : ''}`} data-tauri-drag-region>
+        {headerControls}
+        <h1>
+          <StudyIcon size={17} />
+          Kivio Study
+        </h1>
+        {!layout.showNavigation && <div className="literature-actions">
+          {onConfigure && <IconButton label="配置选项" variant="ghost" onClick={onConfigure}><Settings2 size={16} /></IconButton>}
+          {creationActions}
+        </div>}
       </header>
       <ErrorNotice message={error} />
       <OperationNotice message={busy || notice} tone={busy ? 'info' : 'success'} duration={busy ? 0 : 3500} />
       <div ref={bodyRef} className="literature-body" style={{
-        gridTemplateColumns: [layout.showNavigation ? `${layout.navigationWidth}px 6px` : '', 'minmax(0, 1fr)', layout.showInspector ? `6px ${layout.inspectorWidth}px` : ''].filter(Boolean).join(' '),
+        gridTemplateColumns: [layout.showNavigation ? `${layout.navigationWidth}px 6px` : '', 'minmax(0, 1fr)', inlineInspector ? `6px ${layout.inspectorWidth}px` : ''].filter(Boolean).join(' '),
       } as CSSProperties}>
         {layout.showNavigation && <aside
           className="literature-navigation custom-scrollbar"
           aria-label="文献导航"
         >
+          <div className="literature-navigation-actions">{creationActions}</div>
           {(['all', 'favorites'] as const).map((key) => (
             <button
               key={key}
@@ -664,10 +660,29 @@ export default function LiteratureLibrary({
             <Trash2 size={15} />
             <span>回收站</span>
           </button>
+          {onConfigure && <button type="button" className="literature-nav-row" onClick={onConfigure}><Settings2 size={15} /><span>配置选项</span></button>}
         </aside>}
         {layout.showNavigation && divider('navigation')}
         <main className="literature-main">
-          {writingOpen && <StudyWriting documents={selectedDocs.length ? selectedDocs : filtered} onClose={() => setWritingOpen(false)} />}
+          {writingOpen ? <StudyWriting documents={selectedDocs.length ? selectedDocs : filtered} onClose={() => setWritingOpen(false)} /> : <>
+          <div className="literature-page-heading">
+            <div>
+              <h2>{heading}<span>{filtered.length} 篇</span></h2>
+              {(filter === 'trash' || query) && <p>{query ? `搜索“${query}”的结果` : '移开的材料可以恢复，笔记与对话一并保留。'}</p>}
+            </div>
+          </div>
+          {filter === 'all' && !query && !tags.length && !unfiledOnly && recentDocument && !writingOpen && (
+            <section className="literature-resume" aria-label="继续阅读">
+              <PdfThumbnail id={recentDocument.id} fingerprint={recentDocument.fingerprint} name={recentDocument.name} />
+              <div className="literature-resume-copy">
+                <h3>{recentDocument.name}</h3>
+                <div className="literature-resume-bottom">
+                  <p>第 {recentDocument.page} 页{recentDocument.notes.length ? ` · ${recentDocument.notes.length} 条笔记` : ''}</p>
+                  <Button size="sm" variant="ghost" onClick={() => onRead(recentDocument)}>继续阅读<ChevronRight size={14} /></Button>
+                </div>
+              </div>
+            </section>
+          )}
           <div className="literature-list-toolbar">
             <div className="literature-list-heading">
               {!layout.showNavigation && <Select
@@ -680,13 +695,13 @@ export default function LiteratureLibrary({
                   { value: 'new-collection', label: '新建文献集…' },
                 ]}
               />}
-              <h2>
-                <span title={heading}>{heading}</span>
-                <small>{filtered.length}</small>
-              </h2>
-              {query && <Button size="sm" variant="ghost" title={`当前搜索：${query}`} onClick={() => setQuery('')}>
-                <X size={14} />清除搜索
-              </Button>}
+              <span className="literature-list-caption">{({ opened: '最近打开', added: '最近加入', title: '按标题排列', author: '按作者排列', year: '按年份排列' })[sort]}</span>
+              {searchOpen ? <div className="literature-inline-search" onKeyDown={event => {
+                if (event.key === 'Escape') { event.stopPropagation(); setQuery(''); setSearchOpen(false) }
+              }}>
+                <Input autoFocus aria-label="搜索文献" placeholder="搜索标题、作者、标签或笔记" value={query} onChange={setQuery} />
+                <IconButton label={query ? '清除搜索' : '收起搜索'} variant="ghost" onClick={() => { setQuery(''); setSearchOpen(false) }}><X size={15} /></IconButton>
+              </div> : <IconButton label="搜索文献" variant="ghost" aria-expanded={false} onClick={() => setSearchOpen(true)}><Search size={15} /></IconButton>}
               <Select
                 ariaLabel="文献排序"
                 size="sm"
@@ -701,7 +716,7 @@ export default function LiteratureLibrary({
                   { value: 'year', label: '年份' },
                 ]}
               />
-              {!layout.showInspector && selectedDocs.length > 0 && <Button size="sm" variant="ghost" onClick={() => setInspectorOpen(true)}>
+              {!inspectorVisible && selectedDocs.length > 0 && <Button size="sm" variant="ghost" onClick={() => setInspectorOpen(true)}>
                 <FileText size={15} />资料
               </Button>}
               <Button
@@ -714,7 +729,6 @@ export default function LiteratureLibrary({
                 <SlidersHorizontal size={15} />
                 筛选{tags.length + Number(unfiledOnly) > 0 ? ` ${tags.length + Number(unfiledOnly)}` : ''}
               </Button>
-              <Button size="sm" variant="ghost" aria-expanded={writingOpen} onClick={() => setWritingOpen(v => !v)}>写作引用</Button>
               <Button size="sm" variant={multiselect ? 'default' : 'ghost'} aria-pressed={multiselect} disabled={!!busy} onClick={toggleMultiselect}>{multiselect ? '完成多选' : '多选'}</Button>
               <Select
                 ariaLabel="文献管理"
@@ -724,10 +738,14 @@ export default function LiteratureLibrary({
                 title="文献管理"
                 disabled={!!busy}
                 onChange={(value) => {
+                  if (value === 'writing') setWritingOpen(v => !v)
+                  if (value === 'import') void importRis()
                   if (value === 'duplicates') chooseFilter('duplicates')
                   if (value === 'export') void exportRis()
                 }}
                 options={[
+                  { value: 'writing', label: writingOpen ? '关闭写作引用' : '写作引用' },
+                  { value: 'import', label: '导入 RIS' },
                   { value: 'duplicates', label: '查找可能重复的文献' },
                   ...(filtered.length ? [{ value: 'export', label: selectedDocs.length ? '导出选中文献 RIS' : '导出当前列表 RIS' }] : []),
                 ]}
@@ -830,8 +848,9 @@ export default function LiteratureLibrary({
             </div>
           )}
           <div className="literature-table-wrap custom-scrollbar">
-            <table className="literature-table">
-              <thead>
+            <table className="literature-table" aria-label="文献列表">
+              <colgroup>{multiselect && <col style={{ width: 34 }} />}<col /><col style={{ width: 62 }} /></colgroup>
+              {multiselect && <thead>
                 <tr>
                   {multiselect && <th className="literature-check-column">
                     <input
@@ -848,14 +867,14 @@ export default function LiteratureLibrary({
                       }
                     />
                   </th>}
-                  <th>标题 / 作者</th>
-                  <th>年份</th>
+                  <th>文献 / 作者</th>
+                  <th><span className="literature-sr-only">操作</span></th>
                 </tr>
-              </thead>
+              </thead>}
               <tbody>
                 {filtered.map((item) => (
                   <Fragment key={item.id}>
-                  <tr
+                  <tr className="literature-paper-row"
                     aria-selected={selected.includes(item.id) && !selectedChild}
                     onContextMenu={event => openMenu(item, event)}
                     onClick={() => selectItem(item.id)}
@@ -884,27 +903,20 @@ export default function LiteratureLibrary({
                           setExpandedItems(old => old.includes(item.id) ? old.filter(id => id !== item.id) : [...old, item.id])
                         }}>{expandedItems.includes(item.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</IconButton> : <span className="literature-tree-spacer" />}
 
-                        {item.hasPdf !== false && (
-                          <PdfThumbnail
-                            id={item.id}
-                            fingerprint={item.fingerprint}
-                            name={item.name}
-                          />
-                        )}
+                        {item.hasPdf !== false ? <PdfThumbnail id={item.id} fingerprint={item.fingerprint} name={item.name} /> : <span className="literature-document-mark" aria-hidden="true"><BookOpen size={21} /></span>}
                         <div className="literature-item-copy">
                           <button
                             className="literature-title"
                           >
-                            {item.hasPdf === false && <BookOpen size={15} />}
                             <span>{item.name}</span>
                             {item.favorite && <Star size={12} />}
                           </button>
-                          <p>
-                            {item.bibliography?.authors.join('; ') ||
-                              '作者待补全'}
-                            {item.bibliography?.publication
-                              ? ` · ${item.bibliography.publication}`
-                              : ''}
+                          <p title={item.bibliography?.authors.join('; ')}>
+                            {[
+                              item.bibliography?.authors.length ? `${item.bibliography.authors.slice(0, 2).join('；')}${item.bibliography.authors.length > 2 ? ` 等 ${item.bibliography.authors.length} 位作者` : ''}` : '',
+                              item.bibliography?.publication,
+                              item.bibliography?.year,
+                            ].filter(Boolean).join(' · ') || (item.hasPdf === false ? '文献资料' : 'PDF 文档')}
                           </p>
                           {!!item.tags?.length && (
                             <small>{item.tags.join(' · ')}</small>
@@ -913,7 +925,6 @@ export default function LiteratureLibrary({
                       </div>
                     </td>
                     <td><div className="literature-row-actions" onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
-                      <span>{item.bibliography?.year || '—'}</span>
                       <IconButton size="xs" variant="ghost" label={`编辑 ${item.name}`} disabled={!!busy} onClick={() => editPaper(item)}><Pencil size={13} /></IconButton>
                       <IconButton size="xs" variant="ghost" label={`${item.name} 的操作`} disabled={!!busy} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); openMenu(item, event, { left: rect.left, top: rect.bottom }) }}><MoreHorizontal size={14} /></IconButton>
                     </div></td>
@@ -928,7 +939,7 @@ export default function LiteratureLibrary({
             </table>
             {!filtered.length && (
               <div className="literature-empty">
-                <StudyIcon size={30} />
+                {filter === 'trash' ? <Trash2 size={28} /> : filter === 'favorites' ? <Star size={28} /> : query || tags.length || unfiledOnly ? <Search size={28} /> : <BookOpen size={28} />}
                 <h3>
                   {loading
                     ? '正在加载 Kivio Study…'
@@ -936,15 +947,22 @@ export default function LiteratureLibrary({
                       ? '没有匹配的文献'
                       : filter === 'trash'
                         ? '回收站为空'
-                        : '这里还没有文献'}
+                        : filter === 'duplicates' ? '没有发现重复文献'
+                        : filter === 'favorites' ? '还没有收藏文献'
+                        : filter.startsWith('collection:') ? '这个文献集还是空的'
+                        : '从第一篇文献开始'}
                 </h3>
                 <p>
-                  {query || tags.length || unfiledOnly
+                  {loading ? '正在读取本机文献与笔记。' : query || tags.length || unfiledOnly
                     ? '试试其他关键词，或清除筛选。'
                     : filter === 'trash'
                       ? '移入回收站的文献可在这里恢复。'
-                      : '导入 PDF、RIS，或用 DOI 新建文献，再按主题整理。'}
+                      : filter === 'duplicates' ? '当前文献没有匹配到重复的 DOI、文件或标题与年份。'
+                      : filter === 'favorites' ? '收藏常用文献，下次可以从这里快速找到。'
+                      : filter.startsWith('collection:') ? '在全部文献中选择材料，再加入这个文献集。'
+                      : '导入 PDF 开始阅读，或新建文献保存书目信息。'}
                 </p>
+                {!loading && !query && !tags.length && !unfiledOnly && (filter === 'all' ? <Button size="sm" variant="primary" onClick={() => void importPdfs()}>导入 PDF</Button> : <Button size="sm" variant="ghost" onClick={() => chooseFilter('all')}>返回全部文献</Button>)}
                 {(query || tags.length || unfiledOnly) && (
                   <Button
                     size="sm"
@@ -963,17 +981,18 @@ export default function LiteratureLibrary({
           <footer className="literature-list-footer">
             {filter === 'duplicates'
               ? '按 DOI、文件指纹或标题与年份查找；请核对后整理。'
-              : `${documents.filter((d) => !d.trashedAt).length} 篇文献 · ${saveStatus} · 双击打开全文`}
+              : filter === 'trash' || !filtered.length ? saveStatus : `${saveStatus} · 双击文献打开全文`}
           </footer>
+          </>}
         </main>
-        {layout.showInspector && divider('inspector')}
-        {(layout.showInspector || inspectorOpen) && <aside
+        {inlineInspector && divider('inspector')}
+        {inspectorVisible && <aside
           className={`literature-inspector custom-scrollbar ${!layout.showInspector ? 'is-overlay' : ''}`}
           aria-label="文献资料"
           ref={inspectorRef}
           onKeyDown={(event) => { if (event.key === 'Escape') setInspectorOpen(false) }}
         >
-          {!layout.showInspector && <div className="literature-overlay-close"><IconButton autoFocus label="关闭资料栏" variant="ghost" onClick={() => setInspectorOpen(false)}><X size={16} /></IconButton></div>}
+          <div className="literature-overlay-close"><IconButton autoFocus={!layout.showInspector} label="关闭资料栏" variant="ghost" onClick={() => setInspectorOpen(false)}><X size={16} /></IconButton></div>
           <fieldset disabled={!!busy} className="literature-inspector-fields">
             {doc && selectedChild ? <>
               <div className="literature-detail-heading"><h2>{childNote ? childNote.kind === 'highlight' ? '标注' : '阅读笔记' : 'PDF 版本'}</h2></div>
@@ -1001,6 +1020,11 @@ export default function LiteratureLibrary({
                     />
                   </IconButton>
                 </div>
+                <div className="literature-overview">
+                  <h3>{doc.name}</h3>
+                  <p>{b.authors.join('；') || '作者待补全'}</p>
+                  <p>{[b.publication, b.year].filter(Boolean).join(' · ')}</p>
+                </div>
                 {doc.trashedAt ? (
                   <Button
                     onClick={() =>
@@ -1025,6 +1049,15 @@ export default function LiteratureLibrary({
                     关联 PDF 全文
                   </Button>
                 )}
+                <Button size="sm" variant="ghost" onClick={() => setEditingId(editingId === doc.id ? null : doc.id)}><Pencil size={14} />{editingId === doc.id ? '完成编辑' : '编辑资料'}</Button>
+                {editingId !== doc.id && <div className="literature-overview-details">
+                  {b.abstractText && <section><h3>摘要</h3><p>{b.abstractText}</p></section>}
+                  {!!doc.tags?.length && <section><h3>标签</h3><p>{doc.tags.join(' · ')}</p></section>}
+                  {!!doc.collectionIds?.length && <section><h3>文献集</h3><p>{activeCollections.filter(c => doc.collectionIds?.includes(c.id)).map(c => c.name).join(' · ')}</p></section>}
+                </div>}
+                <div hidden={editingId !== doc.id}>
+                <section className="literature-metadata-section" aria-label="基本资料">
+                <h3>基本资料</h3>
                 <label className="literature-field">
                   标题
                   <Input
@@ -1070,7 +1103,11 @@ export default function LiteratureLibrary({
                     }
                   />
                 </label>
-                {([['volume', '卷'], ['issue', '期'], ['pages', '页码'], ['publisher', '出版社'], ['isbn', 'ISBN']] as const).map(([key, label]) => <label className="literature-field" key={key}>{label}<Input aria-label={label} value={b[key] ?? ''} onChange={value => patchBibliography(key, value)} /></label>)}
+                </section>
+                <details className="literature-metadata-section" key={doc.id}>
+                <summary>出版信息与来源</summary>
+                <div className="literature-metadata-grid">{([['volume', '卷'], ['issue', '期'], ['pages', '页码']] as const).map(([key, label]) => <label className="literature-field" key={key}>{label}<Input aria-label={label} value={b[key] ?? ''} onChange={value => patchBibliography(key, value)} /></label>)}</div>
+                {([['publisher', '出版社'], ['isbn', 'ISBN']] as const).map(([key, label]) => <label className="literature-field" key={key}>{label}<Input aria-label={label} value={b[key] ?? ''} onChange={value => patchBibliography(key, value)} /></label>)}
                 <label className="literature-field">
                   DOI
                   <Input
@@ -1098,6 +1135,9 @@ export default function LiteratureLibrary({
                     onChange={(value) => patchBibliography('url', value)}
                   />
                 </label>
+                </details>
+                <section className="literature-metadata-section" aria-label="摘要与整理">
+                <h3>摘要与整理</h3>
                 <label className="literature-field">
                   摘要
                   <TextArea
@@ -1150,6 +1190,8 @@ export default function LiteratureLibrary({
                     创建第一个文献集
                   </Button>
                 )}
+                </section>
+                </div>
                 <div className="literature-detail-summary">
                   <span>{doc.notes.length} 条笔记</span>
                   <span>{doc.conversationIds.length} 个对话</span>
@@ -1217,20 +1259,6 @@ export default function LiteratureLibrary({
         </aside>}
       </div>
       {menu && items.length > 0 && <DockContextMenu anchor={menu.anchor} items={items} onClose={() => setMenu(null)} />}
-      {dialog === 'search' && (
-        <LibraryDialog busy={false} title="搜索文献" onClose={() => setDialog(null)}>
-          <form onSubmit={(event) => { event.preventDefault(); setQuery(searchDraft.trim()); setDialog(null) }}>
-            <label className="literature-field">
-              文献、作者、标签或笔记
-              <Input autoFocus data-dialog-autofocus aria-label="搜索文献" placeholder="输入关键词" value={searchDraft} onChange={setSearchDraft} />
-            </label>
-            <div className="literature-actions">
-              <Button variant="primary" type="submit"><Search size={15} />搜索</Button>
-              <Button type="button" onClick={() => setDialog(null)}>取消</Button>
-            </div>
-          </form>
-        </LibraryDialog>
-      )}
       {dialog === 'item' && (
         <LibraryDialog
           busy={!!busy}
@@ -1249,21 +1277,22 @@ export default function LiteratureLibrary({
               通过 DOI 获取资料
               <Input
                 autoFocus
+                data-dialog-autofocus
                 aria-label="新文献 DOI"
                 value={doi}
                 onChange={setDoi}
                 placeholder="粘贴 DOI 或 https://doi.org/…"
               />
             </label>
-            <Button
+            <div className="literature-dialog-actions"><Button
               type="submit"
               variant="primary"
               disabled={!doi.trim() || !!busy}
             >
               获取并加入 Kivio Study
-            </Button>
+            </Button></div>
           </form>
-          <div className="literature-dialog-divider">也可以手动录入</div>
+          <div className="literature-dialog-divider">手动录入</div>
           <form
             onSubmit={(e) => {
               e.preventDefault()
@@ -1279,9 +1308,9 @@ export default function LiteratureLibrary({
                 placeholder="文章、书籍或其他资料的标题"
               />
             </label>
-            <Button type="submit" disabled={!title.trim() || !!busy}>
+            <div className="literature-dialog-actions"><Button type="submit" disabled={!title.trim() || !!busy}>
               创建条目
-            </Button>
+            </Button></div>
           </form>
           {(error || busy) && <p role="alert">{error || busy}</p>}
           <p className="literature-muted">
@@ -1307,6 +1336,7 @@ export default function LiteratureLibrary({
               文献集名称
               <Input
                 autoFocus
+                data-dialog-autofocus
                 aria-label="文献集名称"
                 value={title}
                 onChange={setTitle}
@@ -1333,7 +1363,19 @@ export default function LiteratureLibrary({
                 ]}
               />
             </label>
-            <div className="literature-actions">
+            <div className="literature-dialog-actions">
+              {editingCollection && (
+                <div className="literature-dialog-destructive">
+                  <Button
+                    variant="danger"
+                    disabled={!!busy}
+                    onClick={() => void deleteCollection()}
+                  >
+                    移除文献集
+                  </Button>
+                </div>
+              )}
+              <Button variant="ghost" disabled={!!busy} onClick={() => setDialog(null)}>取消</Button>
               <Button
                 variant="primary"
                 type="submit"
@@ -1341,15 +1383,6 @@ export default function LiteratureLibrary({
               >
                 保存文献集
               </Button>
-              {editingCollection && (
-                <Button
-                  variant="danger"
-                  disabled={!!busy}
-                  onClick={() => void deleteCollection()}
-                >
-                  移除文献集
-                </Button>
-              )}
             </div>
           </form>
           {editingCollection && (

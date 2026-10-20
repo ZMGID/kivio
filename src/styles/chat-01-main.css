@@ -2283,3 +2283,12 @@ button.chat-composer-status-item:hover {
 }
 
 /* 按钮焦点环见 shared-surfaces.css（与模态框共用，并只在键盘操作时出现）。 */
+
+/* Embedded reading workspaces keep the shared message renderer with a denser reading rhythm. */
+[data-chat-density='compact'] .chat-markdown { font-size: 14px; line-height: 1.7; }
+[data-chat-density='compact'] .chat-markdown :is(h1, h2, h3) { font-size: 1.12em; line-height: 1.5; margin-block: 1.2em .6em; }
+[data-chat-density='compact'] .chat-markdown :is(p, ul, ol) { margin-block: .65em; }
+[data-chat-density='compact'] .chat-message-list-inner { padding-inline: 20px; }
+[data-chat-density='compact'] .chat-markdown table { min-width: 0; }
+[data-chat-density='compact'] .chat-markdown :is(th, td) { padding-inline: 8px; }
+[data-chat-density='compact'] .chat-markdown a[href^='#reading-page-'] { white-space: nowrap; }

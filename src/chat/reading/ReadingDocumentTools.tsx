@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { save } from '@tauri-apps/plugin-dialog'
-import { Check, Download, FileDown, History, Image, Languages, Loader2, NotebookPen, Settings2, X } from 'lucide-react'
+import { Check, Download, FileDown, Image, Languages, Loader2, Settings2, X } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { ErrorNotice } from '../../components/AppNotice'
 import { Select } from '../../settings/public/controls'
@@ -22,7 +22,7 @@ const stages: Record<string, string> = {
 
 /** A document's tool surface; the backend keeps its job alive when this unmounts. */
 export default function ReadingDocumentTools({ doc, page, ready, noteDraft, model, modelControls,
-  onConfigure, onNotes, onHistory, onPageImage, capturing, side, session, onTranslate, onCancel, onRead }: {
+  onConfigure, onPageImage, capturing, session, onTranslate, onCancel, onRead }: {
   doc: ReadingDocument
   page: number
   ready: boolean
@@ -30,11 +30,8 @@ export default function ReadingDocumentTools({ doc, page, ready, noteDraft, mode
   model?: { providerId: string; model: string }
   modelControls: React.ReactNode
   onConfigure: () => void
-  onNotes: () => void
-  onHistory: () => void
   onPageImage: () => void
   capturing: boolean
-  side: string | null
   session: ReadingSession | null
   onTranslate: (providerId: string, model: string, source: string, target: string, page: number | null) => Promise<unknown>
   onCancel: () => Promise<void>
@@ -83,20 +80,17 @@ export default function ReadingDocumentTools({ doc, page, ready, noteDraft, mode
   const hasNotes = doc.notes.length > 0 || !!noteDraft.trim()
   return <>
     <ErrorNotice message={error} />
-    <nav className="reader-rail" aria-label="文档快捷工具">
-      <div className="reader-rail-group">
-        <IconButton label="论文翻译" variant={panel === 'translate' ? 'default' : 'ghost'} size="md" aria-pressed={panel === 'translate'} onClick={() => toggle('translate')}>
+    <nav className="reader-document-tools" aria-label="文档快捷工具">
+      <div className="tool-group">
+        <IconButton label="论文翻译" variant={panel === 'translate' ? 'default' : 'ghost'} size="sm" aria-pressed={panel === 'translate'} onClick={() => toggle('translate')}>
           {running ? <Loader2 size={18} className="reading-spin" /> : <Languages size={18} />}
         </IconButton>
-        <IconButton label="将当前页作为图片提问" variant="ghost" size="md" disabled={!ready || capturing} onClick={onPageImage}>
+        <IconButton label="将当前页作为图片提问" variant="ghost" size="sm" disabled={!ready || capturing} onClick={onPageImage}>
           {capturing ? <Loader2 size={18} className="reading-spin" /> : <Image size={18} />}
         </IconButton>
-        <span className="reader-rail-rule" />
-        <IconButton label="阅读笔记" variant={side === 'notes' ? 'default' : 'ghost'} size="md" aria-pressed={side === 'notes'} onClick={onNotes}><NotebookPen size={18} /></IconButton>
-        <IconButton label="文档对话历史" variant={side === 'history' ? 'default' : 'ghost'} size="md" aria-pressed={side === 'history'} onClick={onHistory}><History size={18} /></IconButton>
-        <IconButton label="导出文档与笔记" variant={panel === 'export' ? 'default' : 'ghost'} size="md" aria-pressed={panel === 'export'} onClick={() => toggle('export')}><Download size={18} /></IconButton>
+        <IconButton label="导出文档与笔记" variant={panel === 'export' ? 'default' : 'ghost'} size="sm" aria-pressed={panel === 'export'} onClick={() => toggle('export')}><Download size={18} /></IconButton>
       </div>
-      <IconButton label="Study 组件配置" variant="ghost" size="md" onClick={onConfigure}><Settings2 size={17} /></IconButton>
+      <IconButton label="Study 组件配置" variant="ghost" size="sm" onClick={onConfigure}><Settings2 size={17} /></IconButton>
     </nav>
     {panel && <aside className="reader-tool-panel custom-scrollbar" aria-label={panel === 'translate' ? '论文翻译设置' : '导出设置'}>
       <div className="reader-tool-heading"><h2>{panel === 'translate' ? '论文翻译' : '导出'}</h2><IconButton label="关闭文档工具" variant="ghost" onClick={() => setPanel(null)}><X size={16} /></IconButton></div>
@@ -139,14 +133,14 @@ export default function ReadingDocumentTools({ doc, page, ready, noteDraft, mode
         {translated && !running && !configuring && translation?.error && <p className="reader-tool-description" role="status">上次翻译未完成，已有版本仍可阅读。<Button size="sm" variant="ghost" onClick={() => setError(translation.error || '')}>查看详情</Button></p>}
       </> : <>
         <p className="reader-tool-description">带走原文，或将阅读中的理解整理成文档。</p>
-        <div className="reader-export-section"><h3>文档</h3><Button disabled={busy} onClick={() => exportDocument('source')}><FileDown size={16} />原始 PDF</Button>
-          {translated && <><Button disabled={busy} onClick={() => exportDocument('dual')}>双语 PDF</Button><Button disabled={busy} onClick={() => exportDocument('mono')}>译文 PDF</Button></>}
+        <div className="reader-export-section"><h3>文档</h3><Button variant="ghost" disabled={busy} onClick={() => exportDocument('source')}><FileDown size={16} />原始 PDF</Button>
+          {translated && <><Button variant="ghost" disabled={busy} onClick={() => exportDocument('dual')}>双语 PDF</Button><Button variant="ghost" disabled={busy} onClick={() => exportDocument('mono')}>译文 PDF</Button></>}
         </div>
         <div className="reader-export-section"><h3>学习笔记 <span>{doc.notes.length} 条{noteDraft.trim() ? ' · 含草稿' : ''}</span></h3>
           {!hasNotes && <p className="reader-tool-description">先保存一段高亮、回答，或写下笔记。</p>}
-          <Button disabled={busy || !hasNotes} onClick={() => exportDocument('md')}>Markdown <span>.md</span></Button>
-          <Button disabled={busy || !hasNotes || !setup?.pandocInstalled} onClick={() => exportDocument('docx')}>Word <span>.docx</span></Button>
-          <Button disabled={busy || !hasNotes || !setup?.pandocInstalled} onClick={() => exportDocument('epub')}>电子书 <span>.epub</span></Button>
+          <Button variant="ghost" disabled={busy || !hasNotes} onClick={() => exportDocument('md')}>Markdown <span>.md</span></Button>
+          <Button variant="ghost" disabled={busy || !hasNotes || !setup?.pandocInstalled} onClick={() => exportDocument('docx')}>Word <span>.docx</span></Button>
+          <Button variant="ghost" disabled={busy || !hasNotes || !setup?.pandocInstalled} onClick={() => exportDocument('epub')}>电子书 <span>.epub</span></Button>
           {setup && !setup.pandocInstalled && <Button size="sm" variant="ghost" onClick={onConfigure}>配置 Pandoc，解锁 Word 与 EPUB</Button>}
         </div>
       </>}

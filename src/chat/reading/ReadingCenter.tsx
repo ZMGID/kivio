@@ -1,3 +1,4 @@
+import { AttachmentPresentationContext } from '../attachmentPresentation'
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
 import { notifyError } from '../../components/appNoticeStore'
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
@@ -12,9 +13,7 @@ import {
   ArrowLeft,
   ArrowUpRight,
   FileText,
-  History,
   Minus,
-  NotebookPen,
   Highlighter,
   PanelRightClose,
   PanelRightOpen,
@@ -302,7 +301,7 @@ function ReadingWorkspace({
     if (side !== 'history') return
     let live = true
     setHistoryLoading(true)
-    void Promise.all(doc.conversationIds.map(async (id) => {
+    void Promise.all([...new Set(doc.conversationIds)].map(async (id) => {
       try { return { id, conversation: await chatApi.getConversation(id) } }
       catch { return { id, conversation: null } }
     })).then((items) => {
@@ -897,12 +896,12 @@ function ReadingWorkspace({
                 <ChevronRight size={15} />
               </IconButton>
             </div>
-            {reading.session?.view.latest && <Select size="sm" ariaLabel="阅读版本" value={viewKind}
+            {reading.session?.view.latest && <Select size="sm" triggerLabel={edition} ariaLabel="阅读版本" value={viewKind}
               disabled={!reading.session} onChange={kind => {
                 setHighlight(null)
                 void reading.selectView(kind as ReadingPdfKind).catch(error => notifyError(String(error)))
               }} options={[{ value: 'source', label: '原文' }, { value: 'mono', label: `译文 · ${readingLanguageName(shownOutput?.targetLang)}${shownOutput?.page ? ` · 第 ${shownOutput.page} 页` : ''}` }, { value: 'dual', label: '双语对照' }]} />}
-            <div className="tool-group">
+            <div className="tool-group reader-zoom-controls">
               <IconButton
                 label="缩小"
                 variant="ghost"
@@ -911,7 +910,7 @@ function ReadingWorkspace({
               >
                 <Minus size={15} />
               </IconButton>
-              <Select size="sm" ariaLabel="页面缩放" value={fit === 'custom' ? String(Math.round(zoom * 100)) : fit} disabled={!pdf} onChange={value => {
+              <Select size="sm" triggerLabel={fit === 'width' ? '适合宽度' : fit === 'page' ? '适合整页' : `${Math.round(zoom * 100)}%`} ariaLabel="页面缩放" value={fit === 'custom' ? String(Math.round(zoom * 100)) : fit} disabled={!pdf} onChange={value => {
                 if (value === 'width' || value === 'page') setFit(value)
                 else { setFit('custom'); setZoom(Number(value) / 100) }
               }} options={[{value:'width',label:'适合宽度'},{value:'page',label:'适合整页'}, ...Array.from(new Set([50,75,100,125,150,200, ...(fit === 'custom' ? [Math.round(zoom * 100)] : [])])).sort((a,b) => a-b).map(value => ({value:String(value),label:`${value}%`}))]} />
@@ -924,6 +923,11 @@ function ReadingWorkspace({
                 <Plus size={15} />
               </IconButton>
             </div>
+          <ReadingDocumentTools doc={doc} page={page} ready={!!pdf} noteDraft={noteDraft} model={selectedModel} modelControls={modelControls}
+            session={reading.session} onTranslate={reading.translate} onCancel={reading.cancel}
+            onRead={kind => { void reading.selectView(kind).catch(error => notifyError(String(error))) }}
+            onConfigure={onConfigure}
+            capturing={capturing} onPageImage={() => void capturePage()} />
           </div>
           <div className="reader-body">
           {nav && (
@@ -1058,11 +1062,7 @@ function ReadingWorkspace({
                 </div>
               ))}
           </div>
-          <ReadingDocumentTools doc={doc} page={page} ready={!!pdf} noteDraft={noteDraft} model={selectedModel} modelControls={modelControls}
-            session={reading.session} onTranslate={reading.translate} onCancel={reading.cancel}
-            onRead={kind => { void reading.selectView(kind).catch(error => notifyError(String(error))) }}
-            onConfigure={onConfigure} onNotes={() => openSide('notes')} onHistory={() => openSide('history')}
-            side={sideOpen ? side : null} capturing={capturing} onPageImage={() => void capturePage()} />
+
           </div>
           {selection && (
             <div
@@ -1159,35 +1159,14 @@ function ReadingWorkspace({
               aria-label="对话与笔记"
             >
               <div className="reading-chat-toolbar">
-                <div className="reading-chat-model">{modelControls}</div>
-                <div className="reading-chat-actions">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-pressed={side === 'notes'}
-                    onClick={() => setSide(side === 'notes' ? 'chat' : 'notes')}
-                  >
-                    {side === 'notes' ? <ArrowLeft size={14} /> : <NotebookPen size={14} />}
-                    {side === 'notes' ? '返回对话' : `笔记${state.notes.length ? ` ${state.notes.length}` : ''}`}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-pressed={side === 'history'}
-                    onClick={() => setSide(side === 'history' ? 'chat' : 'history')}
-                  >
-                    <History size={14} />
-                    {side === 'history' ? '返回对话' : '历史'}
-                  </Button>
-                  <IconButton
-                    label="新建对话"
-                    variant="ghost"
-                    disabled={preparing || !!busy}
-                    onClick={() => void newConversation()}
-                  >
-                    <ComposeIcon size={16} strokeWidth={1.75} />
-                  </IconButton>
-                </div>
+                <IconButton label="新建对话" variant="ghost" disabled={preparing || !!busy} onClick={() => void newConversation()}><ComposeIcon size={16} strokeWidth={1.75} /></IconButton>
+                {side === 'chat' && <div className="reading-chat-model">{modelControls}</div>}
+                <nav className="reading-chat-actions" aria-label="学习工作区">
+                  <Button size="sm" variant={side === 'chat' ? 'default' : 'ghost'} aria-pressed={side === 'chat'} onClick={() => setSide('chat')}>对话</Button>
+                  <Button size="sm" variant={side === 'notes' ? 'default' : 'ghost'} aria-pressed={side === 'notes'} onClick={() => setSide('notes')}>笔记{state.notes.length ? ` ${state.notes.length}` : ''}</Button>
+                  <Button size="sm" variant={side === 'history' ? 'default' : 'ghost'} aria-pressed={side === 'history'} onClick={() => setSide('history')}>历史</Button>
+                </nav>
+
               </div>
               <div
                 className="chat-surface"
@@ -1229,13 +1208,16 @@ function ReadingWorkspace({
                   </div>
                 )}
                 {chatReady && messages.length > 0 && (
-                  <MessageList
+                  <AttachmentPresentationContext.Provider value="compact"><MessageList
+                    density="compact"
                     {...messageListProps}
                     onSaveMessageToNote={saveAnswer}
-                  />
+                  /></AttachmentPresentationContext.Provider>
                 )}
                 <InputBar
                   {...inputBarProps}
+                  appearance="embedded"
+                  usageSlot={undefined}
                   conversationId={composerId}
                   onSend={send}
                   onSendWhileRunning={undefined}
@@ -1259,27 +1241,28 @@ function ReadingWorkspace({
                   usesExternalRuntime={false}
                   showProjectEntry={false}
                   contextSlot={
-                    <span className="context-label">
-                      <FileText size={12} />
-                      {indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}
-                    </span>
+                    <div className="reading-context-status">
+                      <span className="context-label"><FileText size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>
+                      {inputBarProps.usageSlot && <details className="reading-usage"><summary>用量</summary><div>{inputBarProps.usageSlot}</div></details>}
+                    </div>
                   }
                 />
               </div>
               {side === 'history' && (
                 <div className="reading-history custom-scrollbar">
                   <div className="reading-history-heading">
-                    <h2>这篇文献的对话</h2>
+                    <h2>对话历史</h2>
                   </div>
                   {historyLoading ? <p role="status">正在加载对话…</p> : (
                     <>
                       {!history.length && <p>还没有对话。新建一个，开始讨论这篇文献。</p>}
                       {history.some((item) => !item.conversation) && (
-                        <Button size="sm" variant="ghost" onClick={() => setHistoryRevision((value) => value + 1)}>
-                          重试加载失败的对话
-                        </Button>
+                        <div className="reading-history-unavailable" role="status">
+                          <span>{history.filter(item => !item.conversation).length} 条对话暂时无法读取</span>
+                          <Button size="sm" variant="ghost" onClick={() => setHistoryRevision((value) => value + 1)}>重试</Button>
+                        </div>
                       )}
-                      {history.map(({ id, conversation }) => {
+                      {history.filter(item => item.conversation).map(({ id, conversation }) => {
                         const question = conversation?.messages.find((message) => message.role === 'user')?.content.trim()
                         const lastQuestion = conversation?.messages.filter((message) => message.role === 'user').at(-1)?.content.trim()
                         return (
@@ -1304,9 +1287,9 @@ function ReadingWorkspace({
                 </div>
               )}
               {side === 'notes' && (
-                <div className="notes-surface custom-scrollbar">
+                <div className="notes-surface custom-scrollbar" data-chat-density="compact">
                   <div className="notes-intro">
-                    <h2>留下读懂的部分</h2>
+                    <h2>阅读笔记</h2>
                     <p>高亮、想法和保存的回答，集中在这里。</p>
                   </div>
                   <TextArea

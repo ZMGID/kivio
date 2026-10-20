@@ -90,8 +90,8 @@ it('sorts by actual opening time and intersects optional filters without trappin
   expect(screen.queryByRole('textbox', { name: '搜索文献' })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '搜索文献' }))
   fireEvent.change(screen.getByRole('textbox', { name: '搜索文献' }), { target: { value: 'Recently' } })
-  fireEvent.click(screen.getByRole('button', { name: '搜索' }))
-  expect(screen.queryByRole('textbox', { name: '搜索文献' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(screen.getByRole('textbox', { name: '搜索文献' })).toBeVisible()
   expect(titles()).toEqual(['Recently opened paper'])
   fireEvent.click(screen.getByRole('button', { name: '清除搜索' }))
   fireEvent.click(screen.getByRole('button', { name: '收藏 2' }))
@@ -105,6 +105,7 @@ it('clamps keyboard resizing and hides secondary panels as the container narrows
     constructor(callback: () => void) { resize = callback }
     observe() {} disconnect() {}
   })
+  library.documents = [{ id: 'paper', name: 'Paper', hasPdf: false, notes: [], noteDraft: '', tags: [], conversationIds: [], activeConversationId: null, page: 1, offset: 0 }]
   const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200)
   render(<LiteratureLibrary onRead={() => {}} />)
   const left = screen.getByRole('separator', { name: '调整文献集栏宽度' })
@@ -112,13 +113,14 @@ it('clamps keyboard resizing and hides secondary panels as the container narrows
   expect(left).toHaveAttribute('aria-valuenow', '320')
   fireEvent.keyDown(left, { key: 'ArrowRight' })
   expect(left).toHaveAttribute('aria-valuenow', '320')
+  fireEvent.click(screen.getByRole('button', { name: 'Paper' }))
   const right = screen.getByRole('separator', { name: '调整资料栏宽度' })
   fireEvent.keyDown(right, { key: 'Home' })
   expect(right).toHaveAttribute('aria-valuenow', '280')
   width.mockReturnValue(700)
   act(() => resize())
   expect(screen.queryByRole('separator', { name: '调整资料栏宽度' })).not.toBeInTheDocument()
-  expect(screen.queryByLabelText('文献资料')).not.toBeInTheDocument()
+  expect(screen.getByRole('complementary', { name: '文献资料' })).toBeVisible()
   expect(screen.getByRole('separator', { name: '调整文献集栏宽度' })).toBeVisible()
   width.mockReturnValue(500)
   act(() => resize())
@@ -197,4 +199,18 @@ it('targets the right-clicked paper for editing and preserves an existing bulk s
   expect(screen.getByRole('checkbox', { name: '选择 Beta' })).not.toBeChecked()
   expect(screen.getByRole('checkbox', { name: '选择 Gamma' })).toBeChecked()
   expect(screen.getByRole('menuitem', { name: '编辑资料' })).toBeVisible()
+})
+
+it('reveals the inspector on paper selection and releases it on close or collection change', () => {
+  library.documents = [{ id: 'paper', name: 'Paper', hasPdf: false, notes: [], noteDraft: '', tags: [], conversationIds: [], activeConversationId: null, page: 1, offset: 0 }]
+  render(<LiteratureLibrary onRead={() => {}} />)
+  expect(screen.queryByRole('complementary', { name: '文献资料' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Paper' }))
+  expect(screen.getByLabelText('文献标题')).toHaveValue('Paper')
+  fireEvent.click(screen.getByRole('button', { name: '关闭资料栏' }))
+  expect(screen.queryByRole('complementary', { name: '文献资料' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Paper' }))
+  expect(screen.getByLabelText('文献标题')).toHaveValue('Paper')
+  fireEvent.click(screen.getByRole('button', { name: '收藏 0' }))
+  expect(screen.queryByRole('complementary', { name: '文献资料' })).not.toBeInTheDocument()
 })

@@ -90,6 +90,7 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
+  density?: 'default' | 'compact'
   conversationId?: string | null
   messages: ChatMessage[]
   pendingInjections?: QueuedMessage[]
@@ -224,6 +225,7 @@ function streamErrorDegraded(error: string): DegradedAnswer {
 type GroupModelLabel = { providerId: string | null; model: string | null }
 
 function MessageListBase({
+  density = 'default',
   conversationId,
   messages: storedMessages,
   pendingInjections,
@@ -2433,7 +2435,7 @@ function MessageListBase({
   )
 
   return (
-    <div className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
+    <div data-chat-density={density} className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
       {activeOutlineOwnerId && activeOutlineItems.length >= 2 && (
         <ChatHeadingOutline
           conversationId={conversationId}

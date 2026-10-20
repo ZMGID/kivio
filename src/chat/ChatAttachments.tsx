@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { ImageOff, X } from 'lucide-react'
 import { ChatImageContextMenu, type ChatImageMenuAnchor } from './ChatImageContextMenu'
 import { loadAttachmentDataUrl, openAttachment, type DisplayAttachment } from './attachmentPreview'
@@ -7,6 +7,8 @@ import { fileLocationAction } from './fileLocation'
 import { openChatImageViewer } from './imageViewer'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { useT } from '../components/i18n'
+
+import { AttachmentPresentationContext } from './attachmentPresentation'
 
 type ChatAttachmentsProps = {
   attachments: DisplayAttachment[]
@@ -121,8 +123,10 @@ function FileAttachmentCard({
   /** 已发送消息中的虚拟文本附件（memory://）：打开只读查看弹窗。 */
   onViewText?: (name: string, content: string) => void
 }) {
+  const presentation = useContext(AttachmentPresentationContext)
   return (
     <FileChip
+      variant={presentation}
       name={attachment.name}
       kind={attachment.type === 'folder' ? 'folder' : undefined}
       onRevealLocation={fileLocationAction(attachment.path, conversationId)}
@@ -210,7 +214,7 @@ export function ChatAttachments({
         return (
           <div
             key={attachment.id}
-            className={`${motion} group relative shrink-0`}
+            className={`${motion} group relative min-w-0 max-w-full shrink-0`}
             onAnimationEnd={
               removing
                 ? (event) => {

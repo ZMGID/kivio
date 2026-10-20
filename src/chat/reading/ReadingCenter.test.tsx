@@ -2,10 +2,11 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import { afterEach, expect, it, vi } from 'vitest'
 import { render } from '../../test/renderWithNotices'
 import ReadingCenter, { type ReadingCenterProps } from './ReadingCenter'
-import { loadReadingLibrary, retryReadingSaves } from './readingLibrary'
+import { loadReadingLibrary, retryReadingSaves, updateReadingDocument } from './readingLibrary'
 import type { ReadingDocument } from '../../api/reading'
 import { readingApi } from '../../api/reading'
 import { readingOperationsApi } from '../../api/readingOperations'
+import { chatApi } from '../api'
 import { loadReadingPdf } from './pdfDocument'
 const storage = vi.hoisted(() => ({
   document: { id: 'paper', name: 'Paper', hasPdf: true, conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: 'Original thought' } as ReadingDocument,
@@ -19,6 +20,7 @@ vi.mock('../../api/reading', () => ({ readingApi: {
 vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open: () => void) => React.ReactNode }) => children(() => {}) }))
 vi.mock('../../api/readingOperations', () => ({ readingOperationsApi: { status: vi.fn(async () => ({ translation: null, view: { kind: 'source', output: null, latest: null } })), selectView: vi.fn() } }))
 vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: ReadingDocument) => void }) => <button onClick={() => onRead(storage.document)}>Open paper</button> }))
+vi.mock('../api', () => ({ chatApi: { getConversation: vi.fn() } }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
 vi.mock('../InputBar', () => ({ InputBar: () => null }))
@@ -104,4 +106,29 @@ it('reads and searches the selected PDF version while ignoring an older PDF load
   expect(screen.getByLabelText('跳转页码')).toHaveValue('2')
   if (originalScroll) Object.defineProperty(HTMLElement.prototype, 'scrollTo', originalScroll)
   else delete (HTMLElement.prototype as unknown as { scrollTo?: unknown }).scrollTo
+})
+
+
+it('shows a linked conversation once when older document links contain duplicates', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
+  const previous = storage.document
+  storage.document = { ...previous, conversationIds: ['same', 'same'], activeConversationId: 'same' }
+  vi.mocked(readingApi.pdf).mockImplementation(() => new Promise(() => {}))
+  vi.mocked(chatApi.getConversation).mockResolvedValue({ id: 'same', updated_at: 1, messages: [{ id: 'q', role: 'user', content: 'Explain attention' }] } as never)
+  storage.save.mockResolvedValue(undefined)
+  try {
+    await loadReadingLibrary()
+    await updateReadingDocument(previous.id, doc => ({ ...doc, conversationIds: ['same', 'same'], activeConversationId: 'same' }))
+    const activate = vi.fn().mockResolvedValue(undefined)
+    render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: {}, onActivateConversation: activate } as unknown as ReadingCenterProps)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+    fireEvent.click(screen.getByRole('button', { name: '历史' }))
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Explain attention/ })).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: /Explain attention/ }))
+    expect(screen.getByRole('button', { name: '对话' })).toHaveAttribute('aria-pressed', 'true')
+  } finally {
+    cleanup()
+    storage.document = previous
+  }
 })

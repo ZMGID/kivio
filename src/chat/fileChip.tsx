@@ -94,7 +94,7 @@ export function FileChip({
   kind?: 'folder'
   onClick: () => void
   ariaLabel?: string
-  variant?: 'card' | 'inline'
+  variant?: 'card' | 'inline' | 'compact'
   onRevealLocation?: () => Promise<void>
 }) {
   const [menuAnchor, setMenuAnchor] = useState<DockMenuAnchor | null>(null)
@@ -139,20 +139,20 @@ export function FileChip({
       type="button"
       onClick={onClick}
       onContextMenu={contextMenu}
-      className="flex h-16 w-[9.5rem] shrink-0 items-center gap-2 rounded-lg border border-neutral-200/90 bg-neutral-50 px-1.5 text-left hover:bg-neutral-100"
+      className={`flex shrink-0 items-center gap-2 rounded-lg border border-neutral-200/90 bg-neutral-50 text-left hover:bg-neutral-100 ${variant === 'compact' ? 'h-8 w-[18rem] max-w-full px-2' : 'h-16 w-[9.5rem] px-1.5'}`}
       title={name}
       aria-label={ariaLabel ?? name}
     >
-      <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md ${visual.wellClass}`}>
-        <Icon size={18} strokeWidth={1.8} className={visual.iconClass} />
+      <span className={`flex shrink-0 items-center justify-center rounded-md ${variant === 'compact' ? 'h-5 w-5' : `h-11 w-11 ${visual.wellClass}`}`}>
+        <Icon size={variant === 'compact' ? 14 : 18} strokeWidth={1.8} className={visual.iconClass} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-medium leading-tight text-neutral-800">
           {name}
         </span>
-        <span className="mt-0.5 block truncate text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
+        {variant !== 'compact' && <span className="mt-0.5 block truncate text-[10px] font-medium uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
           {visual.label}
-        </span>
+        </span>}
       </span>
     </button>
     {menu}

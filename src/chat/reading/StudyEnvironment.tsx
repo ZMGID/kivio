@@ -44,10 +44,10 @@ function ComponentOptions({ status, busy, onClose, onSave }: {
         <Toggle checked={selected} disabled={busy} onChange={setSelected} ariaLabel="安装 PDF2zh 论文翻译" />
       </div>
       <p>翻译整篇论文，保留公式与排版，生成译文或双语 PDF。</p>
-      <div className="study-dependencies" aria-label="必要依赖">
-        <span>{selected ? '随组件自动配置' : '未选择，不下载依赖'}</span>
+      <details className="study-dependencies" aria-label="必要依赖">
+        <summary>{selected ? '随组件自动配置' : '未选择，不下载依赖'}</summary>
         <ul><li>独立 Python 运行环境</li><li>PDF2zh 与 BabelDOC</li><li>版面分析模型、字体和字符映射</li></ul>
-      </div>
+      </details>
     </div>
     <div className="study-component">
       <div className="study-component-heading">

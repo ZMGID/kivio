@@ -19,12 +19,13 @@
 .study-options-heading h2 { font-size: 16px; font-weight: 600; margin: 0; }
 .study-options-intro, .study-component p, .study-options-note { font-size: 12px; color: var(--text-muted); line-height: 1.7; }
 .study-options-intro { margin: 8px 0 24px; }
-.study-component { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 20px 0; }
-.study-component + .study-component { border-top: 0; }
+.study-component { background: var(--theme-surface-muted); border-radius: 10px; padding: 16px; margin-top: 12px; }
+
 .study-component-heading h3 { margin: 0 0 5px; font-size: 14px; font-weight: 550; }
 .study-component-heading span { color: var(--text-muted); font-size: 12px; }
 .study-component p { margin: 12px 0; }
 .study-dependencies { color: var(--text-muted); font-size: 12px; line-height: 1.8; }
+.study-dependencies summary { cursor: pointer; }
 .study-dependencies ul { margin: 5px 0 0; padding-left: 20px; }
 .study-options-note { margin: 16px 0 24px; }
 .study-options-error { font-size: 12px; color: var(--danger); white-space: pre-wrap; overflow-wrap: anywhere; }

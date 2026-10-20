@@ -368,6 +368,8 @@ export interface InputBarProps {
   autoFocus?: boolean
   /** footer：贴底（有消息时）；inline：嵌入居中区域（空对话欢迎页） */
   layout?: 'footer' | 'inline'
+  /** Embedded workspaces use a quieter composer surface. */
+  appearance?: 'default' | 'embedded'
   /** 外部 CLI 模式：斜杠命令直通 Agent，不展示 Kivio 弹层 */
   usesExternalRuntime?: boolean
   /** Kivio Chat：不提供 /plan /orchestrate / 技能斜杠（那些是 Agent 能力） */
@@ -456,6 +458,7 @@ export const InputBar = memo(function InputBar({
   onSelectAssistant,
   autoFocus,
   layout = 'footer',
+  appearance = 'default',
   usesExternalRuntime = false,
   usesChatRuntime = false,
   externalAgentName = null,
@@ -2092,7 +2095,9 @@ export const InputBar = memo(function InputBar({
                 ? 'border-emerald-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-emerald-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(16,185,129,0.22)] dark:border-emerald-400 dark:shadow-none dark:focus-within:border-emerald-400'
                 : agentOrchestrateActive
                   ? 'border-violet-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-violet-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(139,92,246,0.22)] dark:border-violet-400 dark:shadow-none dark:focus-within:border-violet-400'
-                  : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:shadow-none dark:focus-within:border-neutral-600'
+                  : appearance === 'embedded'
+                    ? 'border-[var(--theme-surface-border)] shadow-none focus-within:border-[var(--accent)]'
+                    : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:shadow-none dark:focus-within:border-neutral-600'
           }`}
         >
           {dragActive && (
