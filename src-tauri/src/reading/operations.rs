@@ -236,6 +236,51 @@ fn snapshot(dir: &Path, id: &str) -> Result<Option<Translation>, String> {
         Err(e) => Err(e.to_string()),
     }
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingVersion {
+    #[serde(flatten)]
+    output: TranslationOutput,
+    created_at: u64,
+}
+// Successful outputs are immutable children of a paper. Partial runs and
+// unrelated folders never become attachments in the library.
+fn versions(dir: &Path, id: &str) -> Result<Vec<ReadingVersion>, String> {
+    let state = reader_state(dir, id)?; // Also adopts legacy successful runs.
+    let _lock = VIEWS.lock().map_err(|e| e.to_string())?;
+    let entries = match std::fs::read_dir(dir.join("translations")) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut result = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        let run = entry.file_name().to_string_lossy().into_owned();
+        let Ok(output) = output_metadata(dir, &run) else { continue; };
+        if pdf_path(dir, PdfKind::Mono, Some(&run)).is_err()
+            || pdf_path(dir, PdfKind::Dual, Some(&run)).is_err() { continue; }
+        let created_at = entry.path().join("result.json").metadata()
+            .and_then(|m| m.modified()).ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64).unwrap_or(0);
+        result.push(ReadingVersion { output, created_at });
+    }
+    let latest = state.view.latest.map(|output| output.run_id);
+    result.sort_by(|a, b| {
+        (Some(&b.output.run_id) == latest.as_ref()).cmp(&(Some(&a.output.run_id) == latest.as_ref()))
+            .then_with(|| b.created_at.cmp(&a.created_at))
+            .then_with(|| a.output.run_id.cmp(&b.output.run_id))
+    });
+    Ok(result)
+}
+#[tauri::command]
+pub async fn reading_versions(app: AppHandle, id: String) -> Result<Vec<ReadingVersion>, String> {
+    tauri::async_runtime::spawn_blocking(move || versions(&document_dir(&directory(&app)?, &id)?, &id))
+        .await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn reading_translation_status(app: AppHandle, id: String) -> Result<ReaderState, String> {
     reader_state(&document_dir(&directory(&app)?, &id)?, &id)
@@ -734,6 +779,13 @@ mod tests {
         assert_eq!(reopened.view.kind, PdfKind::Mono);
         assert_eq!(reopened.view.latest.unwrap().page, Some(2));
         assert_eq!(reopened.view.output.unwrap().target_lang, "ja");
+        let partial = dir.path().join("translations").join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&partial).unwrap();
+        std::fs::write(partial.join("mono.pdf"), b"%PDF-incomplete").unwrap();
+        let children = versions(dir.path(), "paper").unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].output.run_id, second.run_id);
+        assert_eq!(children[1].output.run_id, first.run_id);
         // A saved annotation can still select its earlier immutable translation.
         let older = choose_view(
             dir.path(),

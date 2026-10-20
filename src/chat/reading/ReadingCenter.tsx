@@ -43,6 +43,7 @@ import { readingLanguageName } from './readingLanguages'
 import {
   readingApi,
   type ReadingDocument,
+  type ReadingOpenTarget,
   type ReadingAnchor as Anchor,
   type ReadingRect as Rect,
   type ReadingNote as Note,
@@ -180,10 +181,12 @@ export default function ReadingCenter(props: ReadingCenterProps) {
   const library = useReadingLibrary()
   const [activeId, setActiveId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [openTarget, setOpenTarget] = useState<ReadingOpenTarget | undefined>()
   useEffect(() => {
     void loadReadingLibrary().catch(() => { /* Library exposes the load error. */ })
   }, [])
-  const select = (document: ReadingDocument) => {
+  const select = (document: ReadingDocument, target?: ReadingOpenTarget) => {
+    setOpenTarget(target)
     setActiveId(document.id)
     void updateReadingDocument(document.id, (d) => ({
       ...d,
@@ -208,13 +211,14 @@ export default function ReadingCenter(props: ReadingCenterProps) {
           }}
         />
         <div className={doc ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-          <LiteratureLibrary onRead={select} headerControls={props.headerControls} onConfigure={openSetup} />
+          <LiteratureLibrary active={!doc} onRead={select} headerControls={props.headerControls} onConfigure={openSetup} />
         </div>
         {doc ? (
           <ReadingWorkspace
             key={doc.id}
             {...props}
             doc={doc}
+            initialTarget={openTarget}
             openPdf={async () => setActiveId(null)}
             saveStatus={library.saveStatus}
             onConfigure={openSetup}
@@ -226,6 +230,7 @@ export default function ReadingCenter(props: ReadingCenterProps) {
 }
 function ReadingWorkspace({
   doc,
+  initialTarget,
   openPdf,
   saveStatus,
   inputBarProps,
@@ -239,11 +244,12 @@ function ReadingWorkspace({
   onSend,
 }: ReadingCenterProps & {
   doc: ReadingDocument
+  initialTarget?: ReadingOpenTarget
   openPdf: () => Promise<void>
   saveStatus: string
   onConfigure: () => void
 }) {
-  const reading = useReadingSession(doc.id)
+  const reading = useReadingSession(doc.id, initialTarget?.view)
   const viewKind = reading.session?.view.kind ?? 'source'
   const viewRunId = reading.session?.view.output?.runId
   const viewKey = `${viewKind}:${viewRunId || ''}`
@@ -259,17 +265,17 @@ function ReadingWorkspace({
     [error, setError] = useState('')
   const [pages, setPages] = useState<string[]>([]),
     [indexing, setIndexing] = useState(true)
-  const [page, setPage] = useState(doc.page),
+  const [page, setPage] = useState(initialTarget?.page ?? doc.page),
     [width, setWidth] = useState(720),
     [zoom, setZoom] = useState(1)
-  const [fit, setFit] = useState('width'), [pageInput, setPageInput] = useState(String(doc.page))
+  const [fit, setFit] = useState('width'), [pageInput, setPageInput] = useState(String(initialTarget?.page ?? doc.page))
   const pageEditing = useRef(false)
   const [capturing, setCapturing] = useState(false)
   const [readerHeight, setReaderHeight] = useState(0)
   const captureLock = useRef(false)
-  const [side, setSide] = useState<'chat' | 'notes' | 'history'>('chat'),
+  const [side, setSide] = useState<'chat' | 'notes' | 'history'>(initialTarget?.noteId ? 'notes' : 'chat'),
     [sideOpen, setSideOpen] = useState(true),
-    [mobile, setMobile] = useState('reader')
+    [mobile, setMobile] = useState(initialTarget?.noteId && !initialTarget.page ? 'chat' : 'reader')
   const [nav, setNav] = useState<'outline' | 'search' | null>(null),
     [toc, setToc] = useState<{ title: string; page: number; depth: number }[]>(
       [],
@@ -279,7 +285,8 @@ function ReadingWorkspace({
   const [selection, setSelection] = useState<
       (Anchor & { left: number; top: number }) | null
     >(null),
-    [highlight, setHighlight] = useState<Anchor | null>(null)
+    [highlight, setHighlight] = useState<Anchor | null>(doc.notes.find(note => note.id === initialTarget?.noteId)?.anchor ?? null)
+  const initialNoteRef = useCallback((element: HTMLElement | null) => element?.scrollIntoView?.({ block: 'nearest' }), [])
   const [noteDraft, setNoteDraft] = useState(doc.noteDraft),
     [returnTo, setReturnTo] = useState<{ page: number; offset: number; view?: Anchor['view'] } | null>(
       null,
@@ -308,7 +315,7 @@ function ReadingWorkspace({
   const host = useRef<HTMLDivElement>(null),
     reader = useRef<HTMLElement>(null),
     alive = useRef(true)
-  const position = useRef({ page: doc.page, offset: doc.offset }),
+  const position = useRef({ page: initialTarget?.page ?? doc.page, offset: initialTarget?.page ? 0 : doc.offset }),
     draftRef = useRef(noteDraft)
   const pendingPosition = useRef<ReturnType<typeof setTimeout>>()
   const sendLock = useRef(false)
@@ -1327,7 +1334,7 @@ function ReadingWorkspace({
                     </p>
                   )}
                   {state.notes.map((n) => (
-                    <article className="reading-note" key={n.id}>
+                    <article className="reading-note" key={n.id} aria-current={n.id === initialTarget?.noteId ? 'true' : undefined} ref={n.id === initialTarget?.noteId ? initialNoteRef : undefined}>
                       <div className="note-meta">
                         <span>
                           {n.kind === 'highlight'

@@ -1,5 +1,5 @@
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
-import { useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   BookOpen,
@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Tag,
   ChevronRight,
+  ChevronDown,
   Pencil,
   MoreHorizontal,
   SlidersHorizontal,
@@ -29,6 +30,7 @@ import {
   readingApi,
   type ReadingCollection,
   type ReadingDocument,
+  type ReadingOpenTarget,
 } from '../../api/reading'
 import {
   attachReadingPdf,
@@ -49,6 +51,7 @@ import {
   type LibraryFilter,
 } from './literature'
 import { PdfThumbnail } from './PdfThumbnail'
+import LiteratureChildren, { type LiteratureChild } from './LiteratureChildren'
 import './literature.css'
 
 function LibraryDialog({
@@ -101,10 +104,12 @@ export default function LiteratureLibrary({
   onRead,
   headerControls,
   onConfigure,
+  active = true,
 }: {
   headerControls?: ReactNode
   onConfigure?: () => void
-  onRead: (doc: ReadingDocument) => void
+  active?: boolean
+  onRead: (doc: ReadingDocument, target?: ReadingOpenTarget) => void
 }) {
   const { documents, collections, loading, saveStatus } = useReadingLibrary()
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -162,6 +167,11 @@ export default function LiteratureLibrary({
   const [showFilters, setShowFilters] = useState(false)
   const [unfiledOnly, setUnfiledOnly] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
+  const [expandedItems, setExpandedItems] = useState<string[]>([])
+  const [child, setChild] = useState<(LiteratureChild & { documentId: string }) | null>(null)
+  const [multiselect, setMultiselect] = useState(false)
+  const toggleMultiselect = () => { setMultiselect(value => !value); setSelected([]); setChild(null) }
+  const selectItem = (id: string) => { setChild(null); setSelected(old => multiselect ? old.includes(id) ? old.filter(value => value !== id) : [...old, id] : [id]) }
   const [busy, setBusy] = useState('')
   const busyRef = useRef(false)
   const [error, setError] = useState('')
@@ -207,6 +217,8 @@ export default function LiteratureLibrary({
   )
   const selectedDocs = filtered.filter((d) => selected.includes(d.id))
   const doc = selectedDocs.length === 1 ? selectedDocs[0] : null
+  const selectedChild = child?.documentId === doc?.id ? child : null
+  const childNote = selectedChild?.target.noteId ? doc?.notes.find(note => note.id === selectedChild.target.noteId) : null
   const availableTags = [
     ...new Set(
       documents
@@ -248,8 +260,10 @@ export default function LiteratureLibrary({
   }
   const chooseFilter = (next: LibraryFilter) => {
     setFilter(next)
+    setChild(null)
     setInspectorOpen(false)
     setSelected([])
+    setMultiselect(false)
     setTags([])
     setUnfiledOnly(false)
   }
@@ -263,7 +277,8 @@ export default function LiteratureLibrary({
           : d.collectionIds,
       }))
     }
-    setSelected(items.map((d) => d.id))
+    setMultiselect(false)
+    setSelected(items.slice(0, 1).map((d) => d.id))
     setQuery('')
     setTags([])
     setUnfiledOnly(false)
@@ -649,6 +664,7 @@ export default function LiteratureLibrary({
                 <SlidersHorizontal size={15} />
                 筛选{tags.length + Number(unfiledOnly) > 0 ? ` ${tags.length + Number(unfiledOnly)}` : ''}
               </Button>
+              <Button size="sm" variant={multiselect ? 'default' : 'ghost'} aria-pressed={multiselect} disabled={!!busy} onClick={toggleMultiselect}>{multiselect ? '完成多选' : '多选'}</Button>
               <Select
                 ariaLabel="文献管理"
                 size="sm"
@@ -666,7 +682,7 @@ export default function LiteratureLibrary({
                 ]}
               />
             </div>
-            {selectedDocs.length > 0 && (
+            {multiselect && selectedDocs.length > 0 && (
               <div className="literature-bulk">
                 <span>已选 {selectedDocs.length} 篇</span>
                 <Select
@@ -766,7 +782,7 @@ export default function LiteratureLibrary({
             <table className="literature-table">
               <thead>
                 <tr>
-                  <th>
+                  {multiselect && <th className="literature-check-column">
                     <input
                       type="checkbox"
                       aria-label="全选当前列表"
@@ -780,22 +796,22 @@ export default function LiteratureLibrary({
                         )
                       }
                     />
-                  </th>
+                  </th>}
                   <th>标题 / 作者</th>
                   <th>年份</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map((item) => (
+                  <Fragment key={item.id}>
                   <tr
-                    key={item.id}
-                    aria-selected={selected.includes(item.id)}
-                    onClick={() => setSelected([item.id])}
+                    aria-selected={selected.includes(item.id) && !selectedChild}
+                    onClick={() => selectItem(item.id)}
                     onDoubleClick={() => {
-                      if (!item.trashedAt && item.hasPdf !== false) onRead(item)
+                      if (!multiselect && !item.trashedAt && item.hasPdf !== false) onRead(item)
                     }}
                   >
-                    <td onClick={(e) => e.stopPropagation()}>
+                    {multiselect && <td onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         aria-label={`选择 ${item.name}`}
@@ -808,9 +824,14 @@ export default function LiteratureLibrary({
                           )
                         }
                       />
-                    </td>
+                    </td>}
                     <td>
                       <div className="literature-item">
+                        {(item.hasPdf !== false || item.notes.length > 0) && !multiselect ? <IconButton size="xs" variant="ghost" label={`${expandedItems.includes(item.id) ? '收起' : '展开'} ${item.name} 的子项`} aria-expanded={expandedItems.includes(item.id)} onDoubleClick={event => event.stopPropagation()} onClick={event => {
+                          event.stopPropagation()
+                          setExpandedItems(old => old.includes(item.id) ? old.filter(id => id !== item.id) : [...old, item.id])
+                        }}>{expandedItems.includes(item.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</IconButton> : <span className="literature-tree-spacer" />}
+
                         {item.hasPdf !== false && (
                           <PdfThumbnail
                             id={item.id}
@@ -821,7 +842,6 @@ export default function LiteratureLibrary({
                         <div className="literature-item-copy">
                           <button
                             className="literature-title"
-                            onClick={() => setSelected([item.id])}
                           >
                             {item.hasPdf === false && <BookOpen size={15} />}
                             <span>{item.name}</span>
@@ -842,6 +862,10 @@ export default function LiteratureLibrary({
                     </td>
                     <td>{item.bibliography?.year || '—'}</td>
                   </tr>
+                  {expandedItems.includes(item.id) && !multiselect && <LiteratureChildren doc={item} active={active} selected={child?.documentId === item.id ? child.id : undefined}
+                    onSelect={value => { setSelected([item.id]); setChild({ ...value, documentId: item.id }); setInspectorOpen(true) }}
+                    onOpen={target => { if (!item.trashedAt && item.hasPdf !== false) onRead(item, target) }} />}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -893,7 +917,16 @@ export default function LiteratureLibrary({
         >
           {!layout.showInspector && <div className="literature-overlay-close"><IconButton autoFocus label="关闭资料栏" variant="ghost" onClick={() => setInspectorOpen(false)}><X size={16} /></IconButton></div>}
           <fieldset disabled={!!busy} className="literature-inspector-fields">
-            {doc ? (
+            {doc && selectedChild ? <>
+              <div className="literature-detail-heading"><h2>{childNote ? childNote.kind === 'highlight' ? '标注' : '阅读笔记' : 'PDF 版本'}</h2></div>
+              <h3 className="literature-child-inspector-title">{selectedChild.title}</h3>
+              <p className="literature-muted">{doc.name}</p>
+              <p className="literature-muted">{selectedChild.description}</p>
+              {childNote && <label className="literature-field">{childNote.kind === 'highlight' ? '标注内容' : '笔记内容'}<TextArea aria-label="子项笔记内容" value={childNote.content} onChange={content => change(doc.id, value => ({ ...value, notes: value.notes.map(note => note.id === childNote.id ? { ...note, content } : note) }))} /></label>}
+              {childNote?.anchor && <p className="literature-muted">第 {childNote.anchor.page} 页 · {childNote.anchor.view ? '译文版本' : '原文'}</p>}
+              {doc.hasPdf !== false && !doc.trashedAt && <Button onClick={() => onRead(doc, selectedChild.target)}><BookOpen size={15} />{childNote ? childNote.anchor ? '定位到文档' : '在阅读器中查看' : '打开此版本'}</Button>}
+              <Button size="sm" variant="ghost" onClick={() => setChild(null)}>查看论文资料</Button>
+            </> : doc ? (
               <>
                 <div className="literature-detail-heading">
                   <h2>文献资料</h2>

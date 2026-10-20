@@ -203,11 +203,11 @@
   padding: 9px 8px;
   border-block: 1px solid var(--theme-surface-border);
 }
-.literature-table th:first-child {
+.literature-table th.literature-check-column {
   width: 34px;
   padding-left: 14px;
 }
-.literature-table th:nth-child(3) {
+.literature-table th:last-child {
   width: 50px;
 }
 .literature-table td {
@@ -377,7 +377,7 @@
   .literature-list-heading { flex-wrap: wrap; }
   .literature-list-heading h2 { flex: 1 1 100%; }
   .literature-thumbnail { display: none; }
-  .literature-table th:first-child { width: 30px; }
+  .literature-table th.literature-check-column { width: 30px; }
 }
 
 .literature-divider {
@@ -471,3 +471,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.literature-tree-spacer { display: inline-block; width: 22px; flex: 0 0 22px; }
+.literature-child-row td { padding-block: 3px; }
+.literature-child-line { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.literature-child-line.depth-1 { padding-left: 26px; }
+.literature-child-line.depth-2 { padding-left: 52px; }
+.literature-child-content { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; padding: 7px 4px; text-align: left; border-radius: var(--radius-control, 6px); }
+.literature-child-content:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.literature-child-icon { color: var(--text-muted); display: flex; flex-shrink: 0; }
+.literature-child-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.literature-child-description { color: var(--text-muted); font-size: 11px; margin-left: auto; white-space: nowrap; }
+.literature-child-count { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.literature-child-status { margin: 6px 0 6px 56px; font-size: 11px; color: var(--text-muted); }
+.literature-child-inspector-title { margin: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+@container literature (max-width: 600px) { .literature-child-description { display: none; } }

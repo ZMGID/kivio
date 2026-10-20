@@ -1,5 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
+export type ReadingOpenTarget = {
+  view?: { kind: 'source' | 'mono' | 'dual'; runId?: string }
+  noteId?: string
+  page?: number
+}
 export type ReadingRect = { x: number; y: number; w: number; h: number }
 export type ReadingAnchor = {
   page: number

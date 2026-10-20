@@ -7,6 +7,8 @@ const library = vi.hoisted(() => ({ documents: [] as ReadingDocument[] }))
 beforeEach(() => { vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1200) })
 afterEach(() => { cleanup(); library.documents = []; vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const api = vi.hoisted(() => ({ lookup: vi.fn() }))
+const operations = vi.hoisted(() => ({ versions: vi.fn() }))
+vi.mock('../../api/readingOperations', () => ({ readingOperationsApi: operations }))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
 vi.mock('../../api/reading', async (original) => ({
   ...(await original<typeof import('../../api/reading')>()),
@@ -121,4 +123,50 @@ it('clamps keyboard resizing and hides secondary panels as the container narrows
   width.mockReturnValue(1200)
   act(() => resize())
   expect(screen.getByRole('separator', { name: '调整文献集栏宽度' })).toHaveAttribute('aria-valuenow', '320')
+})
+
+
+it('shows checkboxes only in explicit multiselect mode and clears them on exit', () => {
+  library.documents = [{ id: 'paper', name: 'Paper', hasPdf: false, notes: [], noteDraft: '', tags: [], conversationIds: [], activeConversationId: null, page: 1, offset: 0 }]
+  render(<LiteratureLibrary onRead={() => {}} />)
+  expect(screen.queryByRole('checkbox', { name: '选择 Paper' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Paper' }))
+  expect(screen.queryByText('已选 1 篇')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '多选' }))
+  expect(screen.getByRole('checkbox', { name: '选择 Paper' })).not.toBeChecked()
+  fireEvent.click(screen.getByRole('button', { name: 'Paper' }))
+  expect(screen.getByRole('checkbox', { name: '选择 Paper' })).toBeChecked()
+  expect(screen.getByText('已选 1 篇')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '完成多选' }))
+  expect(screen.queryByRole('checkbox', { name: '选择 Paper' })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '多选' }))
+  expect(screen.getByRole('checkbox', { name: '选择 Paper' })).not.toBeChecked()
+})
+
+
+it('opens paper children and keeps annotations with their exact PDF version', async () => {
+  const paper: ReadingDocument = { id: 'paper', name: 'Paper', hasPdf: true, notes: [
+    { id: 'original', kind: 'highlight', content: 'Original annotation', anchor: { page: 2, text: 'Original' } },
+    { id: 'translated', kind: 'highlight', content: 'Translated annotation', anchor: { page: 3, text: 'Translated', view: { kind: 'mono', runId: 'run' } } },
+    { id: 'thought', kind: 'note', content: 'My reading note' },
+  ], noteDraft: '', conversationIds: [], activeConversationId: null, page: 1, offset: 0 }
+  library.documents = [paper]
+  operations.versions.mockResolvedValue([{ runId: 'run', targetLang: 'zh', page: null, createdAt: 0 }, { runId: 'older', targetLang: 'zh', page: 4, createdAt: 0 }])
+  const read = vi.fn()
+  render(<LiteratureLibrary onRead={read} />)
+  expect(operations.versions).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: '展开 Paper 的子项' }))
+  const translated = await screen.findByRole('button', { name: /^简体中文译文\s+全文/ })
+  expect(screen.getByText('My reading note')).toBeVisible()
+  expect(screen.queryByText('Original annotation')).not.toBeInTheDocument()
+  expect(screen.queryByText('Translated annotation')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '展开原文 PDF的标注' }))
+  expect(screen.getByText('Original annotation')).toBeVisible()
+  expect(screen.queryByText('Translated annotation')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '展开简体中文译文的标注' }))
+  fireEvent.doubleClick(screen.getByRole('button', { name: /^Translated annotation/ }))
+  expect(read).toHaveBeenLastCalledWith(paper, { noteId: 'translated', page: 3, view: { kind: 'mono', runId: 'run' } })
+  fireEvent.doubleClick(translated)
+  expect(read).toHaveBeenLastCalledWith(paper, { view: { kind: 'mono', runId: 'run' } })
+  expect(screen.getByRole('button', { name: /^简体中文译文\s+第 4 页/ })).toBeVisible()
 })

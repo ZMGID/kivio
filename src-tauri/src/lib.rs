@@ -795,6 +795,7 @@ pub fn run() {
             reading::setup::reading_setup_save,
             reading::setup::reading_setup_start,
             reading::operations::reading_translation_status,
+            reading::operations::reading_versions,
             reading::operations::reading_view_select,
             reading::operations::reading_translation_start,
             reading::operations::reading_translation_cancel,

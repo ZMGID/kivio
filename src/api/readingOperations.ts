@@ -13,10 +13,12 @@ export type ReadingTranslation = {
 }
 export type ReadingPdfKind = 'source' | 'mono' | 'dual'
 export type ReadingOutput = { runId: string; targetLang: string; page: number | null }
+export type ReadingVersion = ReadingOutput & { createdAt: number }
 export type ReadingView = { kind: ReadingPdfKind; output: ReadingOutput | null; latest: ReadingOutput | null }
 export type ReadingSession = { translation: ReadingTranslation | null; view: ReadingView }
 export type ReadingExportFormat = 'source' | 'mono' | 'dual' | 'md' | 'docx' | 'epub'
 export const readingOperationsApi = {
+  versions: (id: string) => invoke<ReadingVersion[]>('reading_versions', { id }),
   status: (id: string) => invoke<ReadingSession>('reading_translation_status', { id }),
   translate: (id: string, providerId: string, model: string, sourceLang: string, targetLang: string, page: number | null) =>
     invoke<ReadingSession>('reading_translation_start', { id, providerId, model, sourceLang, targetLang, page }),
