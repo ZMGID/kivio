@@ -15,6 +15,15 @@ import {
   FileText,
   Minus,
   Highlighter,
+  MousePointer2,
+  Underline,
+  Strikethrough,
+  Scan,
+  Camera,
+  MessageSquare,
+  StickyNote,
+  Trash2,
+  Circle,
   PanelRightClose,
   PanelRightOpen,
   Loader2,
@@ -53,7 +62,7 @@ import {
   updateReadingDocument,
   retryReadingSaves,
 } from './readingLibrary'
-import { readingCitation } from './readingContext'
+import { readingCitation, readingReference, readingReferenceAnchor } from './readingContext'
 import { chatApi } from '../api'
 import type { Conversation, PendingAttachment } from '../types'
 function PdfPage({
@@ -285,6 +294,11 @@ function ReadingWorkspace({
       (Anchor & { left: number; top: number }) | null
     >(null),
     [highlight, setHighlight] = useState<Anchor | null>(doc.notes.find(note => note.id === initialTarget?.noteId)?.anchor ?? null)
+  const [markTool, setMarkTool] = useState<NonNullable<Anchor['mark']> | 'select' | 'capture'>('select')
+  const [markColor, setMarkColor] = useState('#d3a51d')
+  const [areaDraft, setAreaDraft] = useState<Anchor | null>(null)
+  const areaDrag = useRef<{ element: HTMLElement; x: number; y: number; page: number; pointer: number } | null>(null)
+  useEffect(() => { setSelection(null); setAreaDraft(null); areaDrag.current = null }, [viewKey])
   const initialNoteRef = useCallback((element: HTMLElement | null) => element?.scrollIntoView?.({ block: 'nearest' }), [])
   const [noteDraft, setNoteDraft] = useState(doc.noteDraft),
     [returnTo, setReturnTo] = useState<{ page: number; offset: number; view?: Anchor['view'] } | null>(
@@ -570,13 +584,13 @@ function ReadingWorkspace({
     }
   }
   const selectText = () => {
+    setSelection(null)
     const selected = window.getSelection()
-    if (!selected || selected.isCollapsed || !host.current || !reader.current)
-      return
+    if (!selected || selected.isCollapsed || !host.current || !reader.current) return
     const frame =
       selected.anchorNode?.parentElement?.closest<HTMLElement>('[data-page]')
     if (
-      !frame ||
+      !frame || !host.current.contains(frame) ||
       frame !== selected.focusNode?.parentElement?.closest('[data-page]')
     )
       return
@@ -585,10 +599,17 @@ function ReadingWorkspace({
     const r = selected.getRangeAt(0).getBoundingClientRect(),
       s = frame.getBoundingClientRect(),
       bounds = reader.current.getBoundingClientRect()
-    setSelection({
+    const anchor: Anchor & { left: number; top: number } = {
       page: Number(frame.dataset.page),
       text: text.slice(0, 6000),
       view: locationView,
+      // A Range may report the same rectangle for a span and its text node.
+      // Persist each painted fragment once so highlights do not darken twice.
+      rects: Array.from(selected.getRangeAt(0).getClientRects())
+        .filter((box, index, boxes) => box.width > 0 && box.height > 0 && !boxes.slice(0, index).some(previous =>
+          Math.abs(previous.x - box.x) < 0.5 && Math.abs(previous.y - box.y) < 0.5 &&
+          Math.abs(previous.width - box.width) < 0.5 && Math.abs(previous.height - box.height) < 0.5))
+        .map(box => ({ x: (box.x - s.x) / s.width, y: (box.y - s.y) / s.height, w: box.width / s.width, h: box.height / s.height })),
       rect: {
         x: (r.x - s.x) / s.width,
         y: (r.y - s.y) / s.height,
@@ -597,55 +618,65 @@ function ReadingWorkspace({
       },
       left: Math.max(12, Math.min(r.x - bounds.x, bounds.width - 300)),
       top: Math.max(48, Math.min(r.bottom - bounds.y + 8, bounds.height - 56)),
-    })
+    }
+    if (markTool !== 'select' && markTool !== 'area' && markTool !== 'capture') saveMark(anchor, markTool)
+    else setSelection(anchor)
   }
   const composerId = doc.activeConversationId ?? `reading-${doc.id}`
+  const composerRef = useRef(composerId)
+  composerRef.current = composerId
   const openSide = (value: typeof side) => {
     setSide(value); setSideOpen(true); setMobile('chat')
   }
-  const capturePage = async () => {
+  const quote = (anchor: Anchor) => {
+    const label = anchor.view?.kind === 'dual' ? '双语对照' : anchor.view ? '译文' : '原文'
+    return `[${label} · 第 ${anchor.page} 页](${readingReference(anchor)})\n${anchor.text}`
+  }
+  const capturePage = async (anchor: Anchor = { page, text: '', view: locationView }) => {
     if (!pdf || captureLock.current) return
     captureLock.current = true; setCapturing(true)
-    // Attach to the document/conversation that requested it, even if navigation changes.
-    const scope = beginComposerAttachmentOperation(composerId), capturedPage = page
+    const scope = beginComposerAttachmentOperation(composerId)
+    let loading: ReturnType<typeof loadReadingPdf> | undefined
     try {
-      const source = await pdf.getPage(capturedPage)
+      // A saved annotation may belong to another translation run. Never crop the visible edition instead.
+      const document = anchorMatches(anchor) ? pdf : await (async () => {
+        loading = loadReadingPdf(await readingApi.pdf(doc.id, { kind: anchor.view?.kind ?? 'source', runId: anchor.view?.runId }))
+        return loading.promise
+      })()
+      const source = await document.getPage(anchor.page)
       const base = source.getViewport({ scale: 1 })
-      const view = source.getViewport({ scale: Math.min(2, 1800 / Math.max(base.width, base.height)) })
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.ceil(view.width); canvas.height = Math.ceil(view.height)
-      await source.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: view, background: 'white' }).promise
-      const name = `${doc.name} · ${edition}第 ${capturedPage} 页.png`
+      const rect = anchor.rect ?? { x: 0, y: 0, w: 1, h: 1 }
+      if (![rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) || rect.w <= 0 || rect.h <= 0) throw new Error('选区位置无效，请重新框选')
+      const x = Math.max(0, rect.x), y = Math.max(0, rect.y)
+      const w = Math.min(1, rect.x + rect.w) - x, h = Math.min(1, rect.y + rect.h) - y
+      if (w <= 0 || h <= 0) throw new Error('选区在页面之外，请重新框选')
+      const view = source.getViewport({ scale: Math.min(3, 1800 / Math.max(base.width * w, base.height * h)) })
+      const canvas = window.document.createElement('canvas')
+      canvas.width = Math.max(1, Math.ceil(view.width * w - 1e-8)); canvas.height = Math.max(1, Math.ceil(view.height * h - 1e-8))
+      await source.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport: view,
+        transform: [1, 0, 0, 1, -x * view.width, -y * view.height], background: 'white' }).promise
+      const label = anchor.view?.kind === 'dual' ? '双语对照' : anchor.view ? '译文' : '原文'
+      const name = `${doc.name} · ${label}第 ${anchor.page} 页${anchor.rect ? '选区' : ''}.png`
       const saved = await api.chatSavePastedImage(name, 'image/png', canvas.toDataURL('image/png').split(',')[1])
       if (!saved.success || !saved.path) throw new Error(saved.error || '无法保存页面图片')
       updateComposerDraft(scope.key, draft => ({ ...draft, attachments: [...draft.attachments, {
         id: crypto.randomUUID(), type: 'image', name, path: saved.path!,
-      }], input: [draft.input, `请看这张${edition}第 ${capturedPage} 页的图片，帮我解释其中的内容。`].filter(Boolean).join('\n') }))
-      if (alive.current) { openSide('chat'); setNotice('当前页图片已加入输入框，可以补充问题后发送') }
+      }], quotes: [...draft.quotes, quote(anchor)], input: [draft.input, '请解释这张文献截图中的内容；如有图表或公式，请结合上下文说明。'].filter(Boolean).join('\n') }))
+      if (alive.current && composerRef.current === scope.key) { openSide('chat'); setNotice('截图已加入右侧对话，可补充问题后发送') }
     } catch (error) { if (alive.current) notifyError(String(error)) }
-    finally { scope.release(); captureLock.current = false; if (alive.current) setCapturing(false) }
+    finally { void loading?.destroy(); scope.release(); captureLock.current = false; if (alive.current) setCapturing(false) }
   }
-  const attach = (action: string) => {
-    if (!selection) return
-    setSide('chat')
-    setSideOpen(true)
-    setMobile('chat')
-    updateComposerDraft(composerId, (draft) => ({
-      ...draft,
-      input: [
-        draft.input,
-        action === '解释'
-          ? '请用通俗的话解释这段内容。'
-          : action === '翻译'
-            ? '请把这段内容翻译成中文。'
-            : '',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      quotes: [
-        ...draft.quotes,
-        `[第 ${selection.page} 页](#reading-page-${selection.page})\n${selection.text}`,
-      ],
+  const attach = (action: string, anchor: Anchor | null = selection) => {
+    if (!anchor) return
+    const prompts: Record<string, string> = {
+      '解释': '请用通俗的话解释这段内容。', '翻译': '请把这段内容翻译成中文。',
+      '总结': '请提炼这段内容的要点，说明它与全文的关系。',
+      '公式': '请逐项解释这里的符号、公式含义和推导过程，并说明适用条件。',
+    }
+    openSide('chat')
+    updateComposerDraft(composerId, draft => ({ ...draft,
+      input: [draft.input, prompts[action]].filter(Boolean).join('\n'),
+      quotes: [...draft.quotes, quote(anchor)],
     }))
     setSelection(null)
     window.getSelection()?.removeAllRanges()
@@ -666,12 +697,28 @@ function ReadingWorkspace({
           ...document.notes,
         ],
       }))
-      setNotice(kind === 'highlight' ? '已保存高亮' : '已保存到阅读笔记')
+      setNotice(kind === 'highlight' ? '已保存标注' : '已保存到阅读笔记')
       return true
     } catch {
       setChatError('保存失败，请通过操作提示重试保存')
       return false
     }
+  }
+  const saveMark = (anchor: Anchor, mark: NonNullable<Anchor['mark']>) => {
+    const { page, text, rect, rects, view } = anchor
+    void addNote(text || `第 ${page} 页区域标注`, 'highlight', { page, text, rect, rects, view, mark, color: markColor })
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+  }
+  const areaPoint = (event: React.PointerEvent, element: HTMLElement) => {
+    const bounds = element.getBoundingClientRect()
+    return { x: Math.max(0, Math.min(1, (event.clientX - bounds.x) / bounds.width)), y: Math.max(0, Math.min(1, (event.clientY - bounds.y) / bounds.height)) }
+  }
+  const areaAnchor = (event: React.PointerEvent): Anchor | null => {
+    const drag = areaDrag.current
+    if (!drag) return null
+    const point = areaPoint(event, drag.element)
+    return { page: drag.page, text: '', view: locationView, rect: { x: Math.min(point.x, drag.x), y: Math.min(point.y, drag.y), w: Math.abs(point.x - drag.x), h: Math.abs(point.y - drag.y) } }
   }
   const saveDraft = async () => {
     if (noteSaveLock.current || !noteDraft.trim()) return
@@ -849,6 +896,7 @@ function ReadingWorkspace({
           className={`reader-pane ${mobile === 'reader' ? 'is-mobile-active' : ''}`}
           aria-label="文档阅读器"
           onKeyDown={event => {
+            if (event.key === 'Escape') { setMarkTool('select'); setSelection(null); setAreaDraft(null); areaDrag.current = null; return }
             if ((event.target as HTMLElement).closest('input, textarea, [contenteditable="true"], [role="combobox"]')) return
             if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); setNav('search'); return }
             const next = event.key === 'PageDown' ? page + 1 : event.key === 'PageUp' ? page - 1 : event.key === 'Home' ? 1 : event.key === 'End' ? pdf?.numPages : null
@@ -1013,12 +1061,36 @@ function ReadingWorkspace({
             </aside>
           )}
           <div
-            className="document-scroll custom-scrollbar"
+            className={`document-scroll custom-scrollbar ${markTool === 'area' || markTool === 'capture' ? 'area-mode' : ''}`}
             tabIndex={0}
             aria-label="PDF 页面，可使用 PageUp 和 PageDown 翻页"
             ref={host}
             onScroll={onScroll}
-            onMouseUp={selectText}
+            onMouseUp={() => { if (markTool !== 'area' && markTool !== 'capture') selectText() }}
+            onKeyUp={event => { if (event.key === 'Shift') selectText() }}
+            onPointerDown={event => {
+              if ((markTool !== 'area' && markTool !== 'capture') || event.button !== 0) return
+              const element = (event.target as HTMLElement).closest<HTMLElement>('[data-page]')
+              if (!element) return
+              event.preventDefault()
+              const point = areaPoint(event, element)
+              areaDrag.current = { element, ...point, page: Number(element.dataset.page), pointer: event.pointerId }
+              event.currentTarget.setPointerCapture(event.pointerId)
+              setSelection(null)
+            }}
+            onPointerMove={event => { if (areaDrag.current?.pointer === event.pointerId) setAreaDraft(areaAnchor(event)) }}
+            onPointerUp={event => {
+              if (areaDrag.current?.pointer !== event.pointerId) return
+              const anchor = areaAnchor(event)
+              areaDrag.current = null
+              setAreaDraft(null)
+              event.currentTarget.releasePointerCapture(event.pointerId)
+              if (anchor?.rect && anchor.rect.w * width * zoom > 4 && anchor.rect.h * width * zoom > 4) {
+                if (markTool === 'capture') { setMarkTool('select'); void capturePage(anchor) }
+                else saveMark(anchor, 'area')
+              }
+            }}
+            onLostPointerCapture={() => { areaDrag.current = null; setAreaDraft(null) }}
           >
             {!pdf && !error && (
               <div className="document-loading">
@@ -1050,13 +1122,14 @@ function ReadingWorkspace({
                         n.anchor?.page === i + 1 &&
                         n.anchor.rect,
                     )
-                    .map((n) => (
+                    .flatMap((n) => (n.anchor!.rects?.length ? n.anchor!.rects : [n.anchor!.rect!]).map((rect, index) => (
                       <div
-                        key={n.id}
-                        className="source-mark saved"
-                        style={rectStyle(n.anchor!.rect!, width * zoom)}
+                        key={`${n.id}-${index}`}
+                        className={`source-mark saved mark-${n.anchor!.mark ?? 'highlight'}`}
+                        style={{ ...rectStyle(rect, width * zoom), '--mark-color': n.anchor!.color || '#d3a51d' } as React.CSSProperties}
                       />
-                    ))}
+                    )))}
+                  {areaDraft?.page === i + 1 && areaDraft.rect && <div className="source-mark saved mark-area" style={{ ...rectStyle(areaDraft.rect, width * zoom), '--mark-color': markColor } as React.CSSProperties} />}
                   {highlight?.page === i + 1 && anchorMatches(highlight) && highlight.rect && (
                     <div
                       className="source-mark"
@@ -1066,8 +1139,21 @@ function ReadingWorkspace({
                 </div>
               ))}
           </div>
-
+          <aside className="annotation-rail custom-scrollbar" aria-label="文献标注工具">
+            <div role="group" aria-label="标注方式">
+              {([
+                ['select', '选择文字', MousePointer2], ['highlight', '高亮', Highlighter],
+                ['underline', '下划线', Underline], ['strike', '删除线', Strikethrough], ['area', '框选标注', Scan],
+              ] as const).map(([tool, label, Icon]) => <IconButton key={tool} label={label} size="md" variant={markTool === tool ? 'default' : 'ghost'} aria-pressed={markTool === tool} disabled={!pdf} onClick={() => { setMarkTool(tool); if (selection && tool !== 'select' && tool !== 'area') saveMark(selection, tool); else setSelection(null) }}><Icon size={18} /></IconButton>)}
+            </div>
+            <IconButton label={capturing ? '正在准备截图' : '框选截图到 AI'} size="md" variant={markTool === 'capture' ? 'default' : 'ghost'} aria-pressed={markTool === 'capture'} disabled={!pdf || capturing} onClick={() => { setMarkTool('capture'); setSelection(null) }}><Camera size={18} /></IconButton>
+            <div role="group" aria-label="标注颜色" className="annotation-colors">
+              {([['#d3a51d', '黄色'], ['#db627e', '粉色'], ['#4b95c9', '蓝色'], ['#55a477', '绿色']] as const).map(([color, label]) => <IconButton key={color} label={`${label}标注`} variant={markColor === color ? 'default' : 'ghost'} aria-pressed={markColor === color} onClick={() => setMarkColor(color)}><Circle size={14} fill={color} stroke={color} /></IconButton>)}
+            </div>
+            <IconButton label="查看标注与笔记" size="md" variant="ghost" onClick={() => openSide('notes')}><StickyNote size={18} /></IconButton>
+          </aside>
           </div>
+          {markTool === 'capture' && <div className="capture-hint" role="status">拖动框选图表或公式，松开后加入右侧对话 · Esc 取消</div>}
           {selection && (
             <div
               className="selection-actions"
@@ -1086,13 +1172,14 @@ function ReadingWorkspace({
               <Button size="sm" variant="ghost" onClick={() => attach('翻译')}>
                 翻译
               </Button>
+              <Button size="sm" variant="ghost" onClick={() => attach('总结')}>总结</Button>
+              <Button size="sm" variant="ghost" onClick={() => attach('公式')}>讲公式</Button>
+              <IconButton label="选区截图到 AI" variant="ghost" disabled={capturing} onClick={() => { void capturePage(selection); setSelection(null); window.getSelection()?.removeAllRanges() }}><Camera size={16} /></IconButton>
               <IconButton
                 label="保存高亮"
                 variant="ghost"
                 onClick={() => {
-                  addNote(selection.text, 'highlight', selection)
-                  setSelection(null)
-                  window.getSelection()?.removeAllRanges()
+                  saveMark(selection, 'highlight')
                 }}
               >
                 <Highlighter size={16} />
@@ -1179,11 +1266,12 @@ function ReadingWorkspace({
                   const href = (e.target as HTMLElement)
                     .closest('a')
                     ?.getAttribute('href')
+                  const reference = readingReferenceAnchor(href ?? '')
                   const page = readingCitation(href ?? '', pdf?.numPages ?? 0)
-                  if (!page) return
+                  if (!reference && !page) return
                   e.preventDefault()
                   e.stopPropagation()
-                  cite({ page, text: '' })
+                  cite(reference ?? { page: page!, text: '', view: locationView })
                 }}
               >
                 {!messages.length && (
@@ -1294,7 +1382,7 @@ function ReadingWorkspace({
                 <div className="notes-surface custom-scrollbar" data-chat-density="compact">
                   <div className="notes-intro">
                     <h2>阅读笔记</h2>
-                    <p>高亮、想法和保存的回答，集中在这里。</p>
+                    <p>标注、想法和保存的回答，集中在这里。</p>
                   </div>
                   <TextArea
                     value={noteDraft}
@@ -1325,7 +1413,7 @@ function ReadingWorkspace({
                       <div className="note-meta">
                         <span>
                           {n.kind === 'highlight'
-                            ? n.anchor?.view ? '译文摘录' : '原文摘录'
+                            ? `${n.anchor?.view?.kind === 'dual' ? '双语对照' : n.anchor?.view ? '译文' : '原文'} · ${{ highlight: '高亮', underline: '下划线', strike: '删除线', area: '框选' }[n.anchor?.mark ?? 'highlight']}`
                             : n.kind === 'answer'
                               ? '来自对话'
                               : '我的笔记'}
@@ -1339,6 +1427,15 @@ function ReadingWorkspace({
                             第 {n.anchor.page} 页<ArrowUpRight size={12} />
                           </Button>
                         )}
+                        <IconButton label="删除这条笔记或标注" variant="ghost" onClick={() => void updateReadingDocument(doc.id, document => ({ ...document, notes: document.notes.filter(note => note.id !== n.id) })).catch(() => notifyError('删除失败，请重试保存'))}><Trash2 size={14} /></IconButton>
+                      </div>
+                      <div className="note-actions">
+                        <Button size="sm" variant="ghost" disabled={capturing} onClick={() => {
+                          if (n.anchor?.mark === 'area') void capturePage(n.anchor)
+                          else if (n.anchor) attach('解释', { ...n.anchor, text: n.content })
+                          else { openSide('chat'); updateComposerDraft(composerId, draft => ({ ...draft, quotes: [...draft.quotes, n.content] })) }
+                        }}><MessageSquare size={14} />交给 AI</Button>
+                        {n.anchor?.rect && n.anchor.mark !== 'area' && <Button size="sm" variant="ghost" disabled={capturing} onClick={() => void capturePage(n.anchor!)}><Camera size={14} />截图提问</Button>}
                       </div>
                       <div className="note-content">
                         <ChatMarkdown content={n.content} />

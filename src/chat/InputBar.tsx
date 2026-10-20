@@ -2132,7 +2132,7 @@ export const InputBar = memo(function InputBar({
               {quotes.map((q, i) => (
                 <div key={i} className="kv-quote-chip">
                   <TextQuote size={14} className="kv-quote-chip-icon" />
-                  <span className="kv-quote-chip-text">{q}</span>
+                  <span className="kv-quote-chip-text">{q.replace(/\[([^\]]+)\]\((#[^)]+)\)/g, '$1')}</span>
                   <button
                     type="button"
                     className="kv-quote-chip-remove"

@@ -9,6 +9,9 @@ export type ReadingRect = { x: number; y: number; w: number; h: number }
 export type ReadingAnchor = {
   page: number
   text: string
+  rects?: ReadingRect[]
+  mark?: 'highlight' | 'underline' | 'strike' | 'area'
+  color?: string
   rect?: ReadingRect | null
   view?: { kind: 'mono' | 'dual'; runId: string } | null
 }

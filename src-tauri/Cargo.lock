@@ -3449,6 +3449,7 @@ dependencies = [
  "json5",
  "keyring",
  "libc",
+ "lopdf",
  "notify",
  "oar-ocr",
  "objc",

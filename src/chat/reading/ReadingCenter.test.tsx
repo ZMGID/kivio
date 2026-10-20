@@ -7,6 +7,8 @@ import type { ReadingDocument } from '../../api/reading'
 import { readingApi } from '../../api/reading'
 import { readingOperationsApi } from '../../api/readingOperations'
 import { chatApi } from '../api'
+import { api } from '../../api/tauri'
+import { getComposerDraft, setComposerDraft, migrateComposerDraft } from '../composerDraft'
 import { loadReadingPdf } from './pdfDocument'
 const storage = vi.hoisted(() => ({
   document: { id: 'paper', name: 'Paper', hasPdf: true, conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: 'Original thought' } as ReadingDocument,
@@ -22,6 +24,7 @@ vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open
 vi.mock('../../api/readingOperations', () => ({ readingOperationsApi: { status: vi.fn(async () => ({ translation: null, view: { kind: 'source', output: null, latest: null } })), selectView: vi.fn() } }))
 vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: ReadingDocument) => void }) => <button onClick={() => onRead(storage.document)}>Open paper</button> }))
 vi.mock('../api', () => ({ chatApi: { getConversation: vi.fn() } }))
+vi.mock('../../api/tauri', () => ({ api: { chatSavePastedImage: vi.fn() } }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
 vi.mock('../InputBar', () => ({ InputBar: ({ onSend }: { onSend: (text: string, attachments: never[]) => Promise<boolean> }) => <button onClick={() => void onSend('Explain this', [])}>Ask study</button> }))
@@ -134,6 +137,49 @@ it('shows a linked conversation once when older document links contain duplicate
   }
 })
 
+it('saves multiline underlines with their color and removes them through the notes panel', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('requestAnimationFrame', () => 0)
+  vi.stubGlobal('cancelAnimationFrame', () => {})
+  vi.mocked(readingOperationsApi.status).mockResolvedValue({ translation: null, view: { kind: 'source', output: null, latest: null } })
+  vi.mocked(readingApi.pdf).mockResolvedValue(new Uint8Array([1]))
+  vi.mocked(loadReadingPdf).mockReturnValue({ promise: Promise.resolve({ numPages: 1, getOutline: async () => [], getPage: async () => ({ getViewport: () => ({ width: 600, height: 800 }), getTextContent: async () => ({ items: [] }) }) }), destroy: vi.fn() } as unknown as ReturnType<typeof loadReadingPdf>)
+  let disk = structuredClone(storage.document)
+  storage.save.mockImplementation(async doc => { disk = structuredClone(doc) })
+  await loadReadingLibrary()
+  render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: {}, onActivateConversation: vi.fn().mockResolvedValue(undefined) } as unknown as ReadingCenterProps)} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+  const page = (await screen.findByLabelText('PDF 第 1 页')).closest<HTMLElement>('[data-page]')!
+  const text = document.createElement('span')
+  text.textContent = 'First line second line'
+  page.append(text)
+  const bounds = (x: number, y: number, width: number, height: number) => ({ x, y, width, height, left: x, top: y, right: x + width, bottom: y + height, toJSON() {} })
+  vi.spyOn(page, 'getBoundingClientRect').mockReturnValue(bounds(0, 0, 600, 800))
+  const selection = window.getSelection()!
+  const range = document.createRange()
+  range.selectNodeContents(text)
+  range.getBoundingClientRect = () => bounds(60, 80, 180, 40)
+  range.getClientRects = () => [bounds(60, 80, 180, 16), bounds(60, 80, 180, 16), bounds(60, 104, 120, 16)] as unknown as DOMRectList
+  fireEvent.click(screen.getByRole('button', { name: '下划线' }))
+  fireEvent.click(screen.getByRole('button', { name: '蓝色标注' }))
+  selection.removeAllRanges()
+  selection.addRange(range)
+  expect(selection.toString()).toBe('First line second line')
+  fireEvent.mouseUp(page)
+  await waitFor(() => expect(disk.notes[0]?.anchor?.mark).toBe('underline'))
+  expect(disk.notes[0].anchor).toMatchObject({ color: '#4b95c9', page: 1, rects: [{ x: 0.1, y: 0.1, w: 0.3, h: 0.02 }, { x: 0.1, y: 0.13, w: 0.2, h: 0.02 }] })
+  expect(selection.isCollapsed).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: '查看标注与笔记' }))
+  expect(screen.getByText('原文 · 下划线')).toBeInTheDocument()
+  const savedId = disk.notes[0].id
+  const retainedIds = disk.notes.slice(1).map(note => note.id)
+  fireEvent.click(screen.getAllByRole('button', { name: '删除这条笔记或标注' })[0])
+  await waitFor(() => expect(disk.notes.map(note => note.id)).toEqual(retainedIds))
+  expect(disk.notes.some(note => note.id === savedId)).toBe(false)
+})
+
+
 it('continues an associated document conversation without attaching the PDF again', async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
@@ -165,5 +211,52 @@ it('continues an associated document conversation without attaching the PDF agai
     storage.document = previous
     if (originalScroll) Object.defineProperty(HTMLElement.prototype, 'scrollTo', originalScroll)
     else delete (HTMLElement.prototype as unknown as { scrollTo?: unknown }).scrollTo
+  }
+})
+
+it('crops a saved region from its own edition and merges the result into the migrated draft without losing typing', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('requestAnimationFrame', () => 0)
+  vi.stubGlobal('cancelAnimationFrame', () => {})
+  const previous = storage.document
+  storage.document = { ...previous, activeConversationId: null, conversationIds: [], notes: [{ id: 'region', kind: 'highlight', content: 'A chart', anchor: { page: 1, text: '', mark: 'area', rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.25 }, view: { kind: 'mono', runId: 'old-run' } } }] }
+  vi.mocked(readingOperationsApi.status).mockResolvedValue({ translation: null, view: { kind: 'source', output: null, latest: null } })
+  vi.mocked(readingApi.pdf).mockResolvedValue(new Uint8Array([1]))
+  const renderPage = vi.fn(() => ({ promise: Promise.resolve() }))
+  const pdf = { numPages: 1, getOutline: async () => [], getPage: async () => ({ getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }), getTextContent: async () => ({ items: [] }), render: renderPage }) }
+  vi.mocked(loadReadingPdf).mockImplementation(() => ({ promise: Promise.resolve(pdf), destroy: vi.fn() }) as unknown as ReturnType<typeof loadReadingPdf>)
+  const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as never)
+  const image = vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,crop')
+  let finish!: (value: { success: boolean; path: string }) => void
+  vi.mocked(api.chatSavePastedImage).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+  storage.save.mockResolvedValue(undefined)
+  setComposerDraft('reading-paper', { input: 'My question', quotes: ['Existing quote'], attachments: [] })
+  setComposerDraft('created-chat', { input: '', quotes: [], attachments: [] })
+  try {
+    await loadReadingLibrary()
+    await updateReadingDocument(previous.id, () => structuredClone(storage.document))
+    render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: {}, onActivateConversation: vi.fn().mockResolvedValue(undefined) } as unknown as ReadingCenterProps)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+    await screen.findByLabelText('PDF 第 1 页')
+    fireEvent.click(screen.getByRole('button', { name: '查看标注与笔记' }))
+    fireEvent.click(screen.getByRole('button', { name: '交给 AI' }))
+    await waitFor(() => expect(finish).toBeTypeOf('function'))
+    expect(readingApi.pdf).toHaveBeenLastCalledWith('paper', { kind: 'mono', runId: 'old-run' })
+    const rendered = renderPage.mock.calls[0] as unknown as [{ canvas: HTMLCanvasElement; transform: number[] }]
+    expect([rendered[0].canvas.width, rendered[0].canvas.height]).toEqual([540, 600])
+    expect(rendered[0].transform).toEqual([1, 0, 0, 1, -180, -480])
+    migrateComposerDraft('reading-paper', 'created-chat')
+    setComposerDraft('created-chat', { ...getComposerDraft('created-chat')!, input: 'Typed while capturing' })
+    await act(async () => finish({ success: true, path: '/crop.png' }))
+    expect(getComposerDraft('reading-paper')).toBeUndefined()
+    const result = getComposerDraft('created-chat')!
+    expect(result.input).toContain('Typed while capturing')
+    expect(result.quotes[0]).toBe('Existing quote')
+    expect(result.quotes[1]).toContain('kind=mono&run=old-run')
+    expect(result.attachments).toMatchObject([{ type: 'image', path: '/crop.png', name: 'Paper · 译文第 1 页选区.png' }])
+  } finally {
+    cleanup(); storage.document = previous; context.mockRestore(); image.mockRestore()
+    setComposerDraft('created-chat', { input: '', quotes: [], attachments: [] })
   }
 })

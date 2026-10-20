@@ -656,28 +656,20 @@ pub async fn reading_export(
     // Stage on the destination volume, then atomically replace after full success.
     let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     if ["source", "mono", "dual"].contains(&format.as_str()) {
-        let source = if format == "source" {
-            dir.join("source.pdf")
+        let kind = match format.as_str() { "mono" => PdfKind::Mono, "dual" => PdfKind::Dual, _ => PdfKind::Source };
+        let (source, export_run) = if format == "source" {
+            (dir.join("source.pdf"), None)
         } else {
             let latest = reader_state(&dir, &id)?.view.latest.ok_or("请先完成翻译")?;
             let run = run_id.as_deref().unwrap_or(&latest.run_id);
             output_metadata(&dir, run)?;
-            pdf_path(
-                &dir,
-                if format == "mono" {
-                    PdfKind::Mono
-                } else {
-                    PdfKind::Dual
-                },
-                Some(run),
-            )?
+            (pdf_path(&dir, kind, Some(run))?, Some(run.to_string()))
         };
         certify_output(&dir, &source)?;
-        std::io::copy(
-            &mut std::fs::File::open(source).map_err(|e| e.to_string())?,
-            &mut staged,
-        )
-        .map_err(|e| e.to_string())?;
+        staged = tauri::async_runtime::spawn_blocking(move || {
+            super::annotations::write_pdf(&source, &mut staged, &notes, kind, export_run.as_deref())?;
+            Ok::<_, String>(staged)
+        }).await.map_err(|e| e.to_string())??;
     } else {
         if notes.is_empty() && draft.trim().is_empty() {
             return Err("还没有可导出的笔记。".into());

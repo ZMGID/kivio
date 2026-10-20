@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 mod bibliography;
+mod annotations;
 pub mod chat;
 pub mod writing;
 pub mod setup;
@@ -27,6 +28,12 @@ pub struct Anchor {
     pub page: usize,
     pub text: String,
     pub rect: Option<Rect>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rects: Vec<Rect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<PdfLocation>,
 }
@@ -459,6 +466,9 @@ mod tests {
                 page: 3,
                 text: "evidence".into(),
                 rect: None,
+                rects: vec![Rect { x: 0.1, y: 0.2, w: 0.3, h: 0.02 }, Rect { x: 0.1, y: 0.23, w: 0.2, h: 0.02 }],
+                mark: Some("underline".into()),
+                color: Some("#4b95c9".into()),
                 view: None,
             }),
             kind: "highlight".into(),
@@ -471,6 +481,14 @@ mod tests {
         assert_eq!(loaded.last_opened_at, "2026-10-18T03:00:00Z");
         assert_eq!(loaded.active_conversation_id.as_deref(), Some("chat-1"));
         assert_eq!(loaded.notes[0].anchor.as_ref().unwrap().page, 3);
+        let anchor = loaded.notes[0].anchor.as_ref().unwrap();
+        assert_eq!(anchor.mark.as_deref(), Some("underline"));
+        assert_eq!(anchor.color.as_deref(), Some("#4b95c9"));
+        assert_eq!(anchor.rects.len(), 2);
+        assert_eq!(anchor.rects[1].y, 0.23);
+        let legacy: Anchor = serde_json::from_str(r#"{"page":1,"text":"legacy","rect":null}"#).unwrap();
+        assert!(legacy.rects.is_empty());
+        assert!(legacy.mark.is_none());
         assert_eq!(loaded.note_draft, "unsaved thought");
         assert_eq!(
             std::fs::read(folder.join("source.pdf")).unwrap(),

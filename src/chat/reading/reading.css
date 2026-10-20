@@ -649,3 +649,17 @@
     }
   }
 }
+
+.reading-app .annotation-rail { flex: 0 0 46px; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 12px 0; border-left: 1px solid var(--theme-surface-border); background: var(--theme-surface); overflow-y: auto; }
+.reading-app .annotation-rail > div { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.reading-app .annotation-colors { border-top: 1px solid var(--theme-surface-border); padding-top: 14px; }
+.reading-app .area-mode .page-frame { cursor: crosshair; touch-action: none; user-select: none; }
+.reading-app .area-mode .textLayer { pointer-events: none; }
+.reading-app .source-mark.saved { background: color-mix(in srgb, var(--mark-color, #d3a51d) 24%, transparent); }
+.reading-app .source-mark.mark-underline { background: transparent; border-bottom: 2px solid var(--mark-color); box-sizing: border-box; }
+.reading-app .source-mark.mark-strike { background: linear-gradient(to bottom, transparent calc(50% - 1px), var(--mark-color) calc(50% - 1px), var(--mark-color) calc(50% + 1px), transparent calc(50% + 1px)); }
+.reading-app .source-mark.mark-area { background: color-mix(in srgb, var(--mark-color) 10%, transparent); outline: 2px solid var(--mark-color); outline-offset: -1px; }
+
+.reading-app .selection-actions { flex-wrap: wrap; max-width: min(420px, calc(100% - 24px)); }
+.reading-app .capture-hint { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 15; max-width: calc(100% - 100px); padding: 8px 12px; border-radius: 8px; background: var(--theme-surface); color: var(--text); box-shadow: 0 6px 20px #00000018; font-size: 12px; pointer-events: none; }
+.reading-app .note-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }

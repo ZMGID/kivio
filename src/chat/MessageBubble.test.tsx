@@ -1477,3 +1477,12 @@ describe('MessageBubble explicit artifact presentation', () => {
     expect(container.textContent).not.toContain('%PDF')
   })
 })
+
+it('renders internal source references as links while keeping ordinary user text literal', () => {
+  const href = '#reading-ref?page=3&kind=source&rect=0.1%2C0.2%2C0.3%2C0.4'
+  render(<MessageBubble message={{ id: 'source-question', role: 'user', timestamp: 1,
+    content: `> [原文 · 第 3 页](${href})\nExplain this. [External](https://example.com)` }} />)
+  expect(screen.getByRole('link', { name: '原文 · 第 3 页' })).toHaveAttribute('href', href)
+  expect(screen.queryByRole('link', { name: 'External' })).not.toBeInTheDocument()
+  expect(screen.getByText(/Explain this\. \[External\]/)).toBeVisible()
+})

@@ -133,9 +133,10 @@ export default function ReadingDocumentTools({ doc, page, ready, noteDraft, mode
         {translated && !running && !configuring && translation?.error && <p className="reader-tool-description" role="status">上次翻译未完成，已有版本仍可阅读。<Button size="sm" variant="ghost" onClick={() => setError(translation.error || '')}>查看详情</Button></p>}
       </> : <>
         <p className="reader-tool-description">带走原文，或将阅读中的理解整理成文档。</p>
-        <div className="reader-export-section"><h3>文档</h3><Button variant="ghost" disabled={busy} onClick={() => exportDocument('source')}><FileDown size={16} />原始 PDF</Button>
+        <div className="reader-export-section"><h3>文档</h3><Button variant="ghost" disabled={busy} onClick={() => exportDocument('source')}><FileDown size={16} />原文 PDF</Button>
           {translated && <><Button variant="ghost" disabled={busy} onClick={() => exportDocument('dual')}>双语 PDF</Button><Button variant="ghost" disabled={busy} onClick={() => exportDocument('mono')}>译文 PDF</Button></>}
         </div>
+        <p className="reader-tool-footnote">PDF 包含对应版本的标注，原文件保持不变。</p>
         <div className="reader-export-section"><h3>学习笔记 <span>{doc.notes.length} 条{noteDraft.trim() ? ' · 含草稿' : ''}</span></h3>
           {!hasNotes && <p className="reader-tool-description">先保存一段高亮、回答，或写下笔记。</p>}
           <Button variant="ghost" disabled={busy || !hasNotes} onClick={() => exportDocument('md')}>Markdown <span>.md</span></Button>

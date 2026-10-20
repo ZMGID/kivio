@@ -1388,7 +1388,10 @@ function MessageBubbleComponent({
           {hasText && (
             <div className="chat-user-bubble rounded-[20px] px-4 py-2.5 text-neutral-900">
               <div className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[15px] leading-relaxed">
-                {asyncReplyDisplayText(message.content) ?? message.content}
+                {(asyncReplyDisplayText(message.content) ?? message.content).split(/(\[[^\]\n]+\]\(#[^\s)]+\))/g).map((part, index) => {
+                  const link = /^\[([^\]]+)\]\((#[^\s)]+)\)$/.exec(part)
+                  return link ? <a key={index} href={link[2]} className="underline underline-offset-2">{link[1]}</a> : part
+                })}
               </div>
             </div>
           )}
