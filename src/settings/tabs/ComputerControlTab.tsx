@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../../components/AppNotice'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { FileSpreadsheet, Globe2, Monitor, RefreshCw } from 'lucide-react'
 import { api } from '../../api/tauri'
@@ -402,7 +403,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
           </div>
         </section>
       ))}
-      {error && <p role="alert" className="computer-control-error">{error}</p>}
+      {error && <ErrorNotice message={error} />}
     </>
   )
 }

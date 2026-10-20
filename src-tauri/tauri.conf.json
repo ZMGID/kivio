@@ -30,7 +30,8 @@
     "resources": {
       "resources/skills": "skills",
       "resources/plugins": "plugins",
-      "../docs/licenses": "licenses"
+      "../docs/licenses": "licenses",
+      "resources/word": "word"
     },
     "windows": {
       "nsis": {

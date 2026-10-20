@@ -37,7 +37,7 @@ const CodeLine = memo(function CodeLine({
       >
         {lineNo}
       </span>
-      <span className="whitespace-pre pr-4 text-neutral-800">
+      <span className="select-text whitespace-pre pr-4 text-neutral-800">
         {line ? highlightCode(line, language) : ' '}
       </span>
     </div>

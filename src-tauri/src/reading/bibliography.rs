@@ -82,6 +82,11 @@ pub async fn lookup(input: &str) -> Result<Lookup, String> {
             authors,
             year,
             publication: m["container-title"][0].as_str().unwrap_or("").into(),
+            volume: m["volume"].as_str().unwrap_or("").into(),
+            issue: m["issue"].as_str().unwrap_or("").into(),
+            pages: m["page"].as_str().unwrap_or("").into(),
+            publisher: m["publisher"].as_str().unwrap_or("").into(),
+            isbn: m["ISBN"][0].as_str().unwrap_or("").into(),
             doi: m["DOI"].as_str().unwrap_or(doi).into(),
             url: m["URL"].as_str().unwrap_or("").into(),
             abstract_text: plain_text(m["abstract"].as_str().unwrap_or("")),
@@ -93,6 +98,7 @@ pub async fn lookup(input: &str) -> Result<Lookup, String> {
                 _ => "document",
             }
             .into(),
+            ..Default::default()
         },
         tags: vec![],
     })
@@ -159,6 +165,7 @@ async fn datacite(doi: &str) -> Result<Lookup, String> {
                 "document"
             }
             .into(),
+            ..Default::default()
         },
         tags: vec![],
     })
@@ -225,6 +232,12 @@ pub fn parse_ris(text: &str) -> Result<Vec<Lookup>, String> {
                     "DO" => {
                         item.bibliography.doi = value.trim_start_matches("https://doi.org/").into()
                     }
+                    "VL" => item.bibliography.volume = value.into(),
+                    "IS" => item.bibliography.issue = value.into(),
+                    "SP" => item.bibliography.pages = value.into(),
+                    "EP" => { if !value.is_empty() { item.bibliography.pages.push_str(&format!("--{value}")); } },
+                    "PB" => item.bibliography.publisher = value.into(),
+                    "SN" => item.bibliography.isbn = value.into(),
                     "UR" => item.bibliography.url = value.into(),
                     "AB" | "N2" => item.bibliography.abstract_text = value.into(),
                     "KW" => item.tags.push(value.into()),
@@ -276,6 +289,11 @@ pub fn export_ris(docs: &[ReadingDocument]) -> String {
         }
         field("PY", &b.year);
         field("T2", &b.publication);
+        field("VL", &b.volume);
+        field("IS", &b.issue);
+        field("SP", &b.pages);
+        field("PB", &b.publisher);
+        field("SN", &b.isbn);
         field("DO", &b.doi);
         field("UR", &b.url);
         field("AB", &b.abstract_text);

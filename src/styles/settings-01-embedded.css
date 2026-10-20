@@ -22,21 +22,21 @@
   --divider: var(--theme-surface-titlebar);
   --radius-card: 12px;
   color: var(--text);
-  background: var(--bg);
+  background: transparent;
   overflow: hidden;
   font-size: 13px;
 }
 
 
 .settings-embedded-nav {
-  width: 200px;
+  width: var(--chat-sidebar-width, 240px);
   /* 侧栏左右内边距抽成变量：底部「返回对话」要用负边距抵掉它，才能让分隔线通栏。 */
   --nav-pad-x: 8px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: var(--bg-sidebar);
+  background: var(--theme-surface-soft);
   padding: 16px var(--nav-pad-x) 0;
   overflow: hidden;
 }
@@ -57,42 +57,11 @@
   user-select: none;
 }
 
-/* 嵌入式设置左栏底部「返回对话」：落在「关于」上方，行规格对齐 nav-item */
-.settings-embedded-back {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  margin: 0;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-faint, var(--text-muted));
-  cursor: default;
-  transition: background 0.12s ease, color 0.12s ease, transform var(--kv-dur-instant) var(--kv-ease-out);
-}
-.settings-embedded-back:hover {
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-  color: var(--text);
-}
-.settings-embedded-back:active {
-  transform: scale(0.97);
-}
-
-
-.settings-embedded-back .settings-embedded-nav-icon {
-  color: inherit;
-}
-
 .settings-embedded-nav-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0 4px;
+  padding: 0;
 }
 
 /* 窗口变矮时分类列表自己滚，否则它撑满高度 + 外层 overflow:hidden 会把底部「返回对话」裁掉。 */
@@ -107,53 +76,8 @@
   height: 48px;
   justify-content: center;
   margin: 0 calc(-1 * var(--nav-pad-x));
-  padding: 0 calc(var(--nav-pad-x) + 4px);
+  padding: 6px var(--nav-pad-x);
   border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
-}
-
-
-.settings-embedded-nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-  cursor: default;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-
-.settings-embedded-nav-item:hover {
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-}
-
-
-.settings-embedded-nav-item.active {
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-  color: var(--text);
-}
-
-
-.settings-embedded-nav-icon {
-  display: flex;
-  height: 20px;
-  width: 20px;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-
-
-.settings-embedded-nav-item.active .settings-embedded-nav-icon {
-  color: var(--text-muted);
 }
 
 
@@ -446,26 +370,26 @@
     display: none;
   }
 
-  .settings-embedded-nav-item {
+  .settings-embedded-nav .kv-sidebar-nav-item {
     justify-content: center;
     gap: 0;
     padding-left: 8px;
     padding-right: 8px;
   }
 
-  .settings-embedded-nav-item > span:not(.settings-embedded-nav-icon) {
+  .settings-embedded-nav .kv-sidebar-nav-item > span:not(.kv-sidebar-nav-icon) {
     display: none;
   }
 
   /* 窄栏（52px 图标轨）里「返回对话」也收成纯图标居中，否则文字被挤成竖排。tooltip 保留标签。 */
-  .settings-embedded-back {
+  .settings-embedded-nav-list--footer .kv-sidebar-nav-item {
     justify-content: center;
     gap: 0;
     padding-left: 8px;
     padding-right: 8px;
   }
 
-  .settings-embedded-back > span:not(.settings-embedded-nav-icon) {
+  .settings-embedded-nav-list--footer .kv-sidebar-nav-item > span:not(.kv-sidebar-nav-icon) {
     display: none;
   }
 }

@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { render } from '../test/renderWithNotices'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { getComposerDraft } from './composerDraft'

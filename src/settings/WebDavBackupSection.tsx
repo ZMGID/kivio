@@ -45,7 +45,7 @@ export function WebDavBackupSection({ controller, lang }: {
   useEffect(() => { void run({ type: 'load' }) }, [run])
   const closeEditor = () => { setEditing(false); setChoosing(false) }
   const openEditor = () => { setChoosing(!config?.url); setEditing(true); if (!config) void run({ type: 'load' }) }
-  const status = controller.statusSource === 'webdav' && (controller.busy || controller.status) ? <p role="status" aria-live="polite" className="backup-status" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>{controller.busy ? controller.webdavPhase || (zh ? '正在处理…' : 'Processing…') : controller.status?.msg}</p> : null
+  const status = controller.statusSource === 'webdav' && (controller.busy || controller.status) ? <p role="status" aria-live="polite" className="backup-status whitespace-pre-wrap [overflow-wrap:anywhere]" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>{controller.busy ? controller.webdavPhase || (zh ? '正在处理…' : 'Processing…') : controller.status?.msg}</p> : null
   return <section className="backup-section">
     <h3 className="backup-section-title"><Cloud size={16} />{zh ? '云端备份' : 'Cloud backup'}<span className="backup-tag">WebDAV</span></h3>
     <div className="backup-surface">

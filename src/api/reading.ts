@@ -25,6 +25,11 @@ export type Bibliography = {
   doi: string
   url: string
   abstractText: string
+  volume?: string
+  issue?: string
+  pages?: string
+  publisher?: string
+  isbn?: string
   itemType: string
 }
 export const emptyBibliography: Bibliography = {

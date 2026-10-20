@@ -157,22 +157,6 @@
   font-weight: 400;
   color: var(--text-muted);
 }
-.literature-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 160px;
-  max-width: 480px;
-  margin-left: auto;
-}
-.literature-search > svg {
-  flex-shrink: 0;
-  color: var(--text-muted);
-}
-.literature-search > input {
-  min-width: 0;
-}
 .literature-bulk {
   display: flex;
   align-items: center;
@@ -208,7 +192,7 @@
   padding-left: 14px;
 }
 .literature-table th:last-child {
-  width: 50px;
+  width: 98px;
 }
 .literature-table td {
   vertical-align: top;
@@ -361,12 +345,6 @@
   margin-top: 16px;
 }
 @container literature (max-width: 800px) {
-  .literature-search {
-    order: 3;
-    flex-basis: 100%;
-    max-width: none;
-    margin-left: 0;
-  }
   .literature-header > .literature-actions {
     margin-left: auto;
   }
@@ -486,3 +464,11 @@
 .literature-child-status { margin: 6px 0 6px 56px; font-size: 11px; color: var(--text-muted); }
 .literature-child-inspector-title { margin: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
 @container literature (max-width: 600px) { .literature-child-description { display: none; } }
+
+.literature-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.literature-row-actions > span { margin-right: auto; font-variant-numeric: tabular-nums; }
+
+.study-writing { padding: 16px 20px; border-bottom: 1px solid var(--theme-surface-border); max-height: 60vh; overflow: auto; }
+.study-writing h3 { margin: 18px 0 8px; font-size: 14px; font-weight: 600; }
+.study-writing p { margin: 8px 0; max-width: 72ch; }
+.study-writing-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }

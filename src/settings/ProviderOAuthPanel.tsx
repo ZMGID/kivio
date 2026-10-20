@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useEffect, useRef, useState } from 'react'
 import { api, type ModelProvider, type ProviderOAuthLogin } from '../api/tauri'
 import { Button } from '../components/Button'
@@ -139,7 +140,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider, authorize
         <p className="text-xs opacity-70">{zh ? '有效期至 ' : 'Expires at '}{new Date(login.expiresAt * 1000).toLocaleTimeString()}</p>
       </div>}
       {notice && <p className="mt-2 text-sm" role="status">{notice}</p>}
-      {error && <p className="mt-2 text-sm text-red-500" role="alert">{error}</p>}
+      {error && <ErrorNotice message={error} />}
     </FieldBlock>}
   </>
 }

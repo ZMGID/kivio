@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Database, RefreshCw, Trash2 } from 'lucide-react'
 import {
@@ -1215,9 +1216,7 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
     return (
       <div className="space-y-3">
         {error && (
-          <div className="kv-panel warn">
-            <div className="kv-panel-body">{error}</div>
-          </div>
+          <ErrorNotice message={error} />
         )}
         {details}
       </div>
@@ -1227,9 +1226,7 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   return (
     <div className="space-y-3">
       {error && (
-        <div className="kv-panel warn">
-          <div className="kv-panel-body">{error}</div>
-        </div>
+        <ErrorNotice message={error} />
       )}
 
       <div className="grid grid-cols-2 rounded-xl border border-[var(--border)] bg-[var(--theme-surface)] sm:grid-cols-4">

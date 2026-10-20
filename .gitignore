@@ -74,3 +74,6 @@ MEMORY.md
 
 # Local models:sync provenance (CI retains its copy as an artifact)
 src/data/modelDatabase.json.source.json
+
+# Built Word task pane (npm run build:word)
+/src-tauri/resources/word/

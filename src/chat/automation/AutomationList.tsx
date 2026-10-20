@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../../components/AppNotice'
 import { Button, IconButton } from '../../components/Button'
 import { Toggle } from '../../settings/public/controls'
 import { MessageSquarePlus, Plus, Trash2 } from 'lucide-react'
@@ -32,7 +33,7 @@ export function AutomationList({
   const t = useT()
   return (
     <div className="custom-scrollbar mx-auto flex min-h-0 w-full max-w-[880px] flex-1 flex-col overflow-y-auto px-6 pb-6">
-        {error && <p role="alert" className="text-[13px] text-red-600 dark:text-red-400">{error}</p>}
+        {error && <ErrorNotice message={error} />}
         {loading && items.length === 0 ? (
           <p className="text-[13px] text-neutral-400">{t.chatLoading}</p>
         ) : items.length === 0 ? (

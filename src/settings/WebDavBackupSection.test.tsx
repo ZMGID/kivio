@@ -20,7 +20,7 @@ describe('WebDAV configuration form', () => {
       pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {},
       importFull: async () => {}, confirmFullRestore: async () => false, pendingRestore: async () => false, restart: async () => {},
       webdav: {
-        load: async () => config, save, test: async () => {}, list: async () => [], upload: async () => '',
+        load: async () => config, save, test: async () => {}, list: async () => [], upload: async () => [],
         download: async () => ({ id: '', path: '' }), release: async () => {}, delete: async () => {},
         confirmRestore: async () => false, confirmDelete: async () => false,
       },

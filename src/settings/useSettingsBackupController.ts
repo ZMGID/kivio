@@ -8,7 +8,7 @@ export interface WebDavBackupPort {
   save(input: WebDavConfigInput): Promise<WebDavConfig>
   test(input: WebDavConfigInput): Promise<void>
   list(): Promise<WebDavBackup[]>
-  upload(kind: BackupKind): Promise<string>
+  upload(kind: BackupKind): Promise<string[]>
   download(name: string): Promise<WebDavDownload>
   release(id: string): Promise<void>
   delete(name: string): Promise<void>
@@ -23,12 +23,17 @@ export interface SettingsBackupPort {
   pickImport(): Promise<string | null>
   pickExport(kind: BackupKind): Promise<string | null>
   import(path: string, trusted?: boolean): Promise<unknown>
-  export(path: string, kind: BackupKind): Promise<unknown>
+  export(path: string, kind: BackupKind): Promise<string[] | void>
   importFull(path: string, trusted: boolean): Promise<void>
   confirmFullRestore(): Promise<boolean>
   restart(): Promise<void>
   pendingRestore(): Promise<boolean>
 }
+function skippedLinksMessage(paths: string[] | void, zh: boolean): string {
+  if (!paths?.length) return ''
+  return `\n${zh ? `已跳过 ${paths.length} 个问题链接（未包含在备份中）：` : `Skipped ${paths.length} problematic links (not included in the backup):`}\n${paths.join('\n')}`
+}
+
 type Status = { kind: 'ok' | 'err'; msg: string } | null
 
 /** Owns one file-selection/backup operation at a time, including restore confirmation. */
@@ -57,6 +62,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     setStatus(null)
     const zh = langRef.current === 'zh'
     let cleanupWarning = ''
+    let skippedWarning = ''
     const phase = (text: string) => { if (live.current) setWebdavPhase(text) }
     try {
       if (await portRef.current.pendingRestore()) {
@@ -96,7 +102,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       } else {
         if (action.type === 'upload') {
           phase(zh ? '正在生成并上传备份，请稍候…' : 'Creating and uploading backup…')
-          await remote.upload(action.kind)
+          skippedWarning = skippedLinksMessage(await remote.upload(action.kind), zh)
         } else if (action.type === 'delete') {
           if (!await remote.confirmDelete(action.name)) return false
           await remote.delete(action.name)
@@ -121,10 +127,10 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         : action.type === 'save' ? (zh ? 'WebDAV 配置已保存。' : 'WebDAV configuration saved.')
         : action.type === 'upload' ? (zh ? '备份已上传。' : 'Backup uploaded.')
         : action.type === 'delete' ? (zh ? '远程备份已删除。' : 'Remote backup deleted.')
-        : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning })
+        : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning + skippedWarning })
       return true
     } catch (error) {
-      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}${cleanupWarning}` })
+      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}${cleanupWarning}${skippedWarning}` })
       return false
     } finally {
       inFlight.current = false
@@ -152,6 +158,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       const path = importing ? await portRef.current.pickImport() : await portRef.current.pickExport(action)
       if (!path) return
       let fullRestore = false
+      let skippedWarning = ''
       if (importing) {
         fullRestore = /\.(kivio|zip)$/i.test(path)
         if (fullRestore) {
@@ -159,10 +166,10 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
           await portRef.current.importFull(path, action === 'restore')
         } else if (action === 'restore') await portRef.current.import(path, true)
         else await portRef.current.import(path)
-      } else await portRef.current.export(path, action)
+      } else skippedWarning = skippedLinksMessage(await portRef.current.export(path, action), zh)
       if (!live.current) return
       if (fullRestore) setRestartRequired(true)
-      setStatus({ kind: 'ok', msg: fullRestore
+      setStatus({ kind: 'ok', msg: (fullRestore
         ? (zh ? '备份已校验。重启后完成恢复；恢复前的数据会保留一份副本。' : 'Backup validated. Restart to restore. A copy of your previous data will be kept.')
         : importing
           ? action === 'restore'
@@ -170,7 +177,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
             : (zh ? '配置已导入。MCP 和 hooks 已禁用，外部 CLI 保留本机配置。' : 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.')
           : action === 'full'
             ? (zh ? '完全备份已导出。' : 'Full backup exported.')
-            : (zh ? '配置已导出。' : 'Configuration exported.'),
+            : (zh ? '配置已导出。' : 'Configuration exported.')) + skippedWarning,
       })
     } catch (error) {
       if (!live.current) return

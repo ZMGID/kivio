@@ -191,10 +191,14 @@ export function updateReadingCollections(
   return write
 }
 
-export async function exportReadingRis(ids: string[], path: string) {
+export async function flushReadingItems(ids: string[]) {
   await loadReadingLibrary()
   await Promise.all(ids.map((id) => pending.get(id)))
   if (ids.some((id) => dirty.has(id)))
     throw new Error('请先重试保存未写入的文献资料，再导出')
+}
+
+export async function exportReadingRis(ids: string[], path: string) {
+  await flushReadingItems(ids)
   await readingApi.exportRis(ids, path)
 }

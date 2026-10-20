@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode, type MouseEvent } from 'react'
 import { ChevronDown, ChevronRight, FileText, Highlighter, Languages, NotebookPen } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { ErrorNotice } from '../../components/AppNotice'
@@ -10,12 +10,13 @@ export type LiteratureChild = { id: string; title: string; description: string; 
 
 /** Expanded contents are derived from the paper's existing notes and immutable
  * PDF outputs. No second attachment registry or copied note state. */
-export default function LiteratureChildren({ doc, active, selected, onSelect, onOpen }: {
+export default function LiteratureChildren({ doc, active, selected, onSelect, onOpen, onContextMenu }: {
   doc: ReadingDocument
   active: boolean
   selected?: string
   onSelect: (child: LiteratureChild) => void
   onOpen: (target: ReadingOpenTarget) => void
+  onContextMenu: (child: LiteratureChild, event: MouseEvent) => void
 }) {
   const [versions, setVersions] = useState<ReadingVersion[]>([])
   const [loading, setLoading] = useState(doc.hasPdf !== false)
@@ -40,7 +41,7 @@ export default function LiteratureChildren({ doc, active, selected, onSelect, on
     target: { noteId: note.id, page: note.anchor?.page, view: note.anchor ? note.anchor.view ?? { kind: 'source' } : undefined },
   })
   const row = (child: LiteratureChild, icon: ReactNode, depth: number, annotations: ReadingNote[] = []): ReactNode => <Fragment key={child.id}>
-    <tr className="literature-child-row" aria-selected={selected === child.id}>
+    <tr className="literature-child-row" aria-selected={selected === child.id} onContextMenu={event => onContextMenu(child, event)}>
       <td colSpan={2}>
         <div className={`literature-child-line depth-${depth}`}>
           {annotations.length ? <IconButton label={`${expanded.includes(child.id) ? '收起' : '展开'}${child.title}的标注`} size="xs" variant="ghost" aria-expanded={expanded.includes(child.id)} onClick={() => toggle(child.id)}>

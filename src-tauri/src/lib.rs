@@ -255,6 +255,7 @@ pub fn run() {
         .setup(|app| {
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
+            reading::writing::word::resume(app.handle().clone());
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
 
             // Windows：退出后台执行速度节流（EcoQoS）。无可见窗口时进程会被 Win11 当后台空闲
@@ -811,6 +812,11 @@ pub fn run() {
             reading::reading_lookup,
             reading::reading_import_ris,
             reading::reading_export_ris,
+            reading::writing::reading_export_bib,
+            reading::writing::word::reading_word_status,
+            reading::writing::word::reading_word_start,
+            reading::writing::word::reading_word_stop,
+            reading::writing::word::reading_word_install,
             notes::notes_list,
             notes::notes_read,
             notes::notes_create,

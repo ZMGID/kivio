@@ -95,9 +95,7 @@ function ThinkingLevelSelectorBase({
   // Toggle-only models remain editable; stale Off choices must remain visible.
   if (offMode === 'not_applicable' || (levels.length === 0 && offMode !== 'supported' && value !== 'off')) return null
 
-  const notice = offMode === 'unsupported'
-    ? (lang === 'zh' ? '此模型不支持关闭思考；请选择支持的强度。' : 'This model cannot turn thinking off. Select a supported effort.')
-    : offMode === 'upfront_only'
+  const notice = offMode === 'upfront_only'
       ? (lang === 'zh' ? 'Off 仅关闭回答前的思考，工具调用之间仍可能思考。' : 'Off disables up-front thinking; thinking between tool calls may continue.')
       : offMode === 'unknown'
         ? (lang === 'zh' ? '尚未确认此模型是否支持关闭思考。' : 'Thinking-off support has not been verified for this model.')

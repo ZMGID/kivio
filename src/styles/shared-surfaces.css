@@ -1,3 +1,26 @@
+/* Desktop chrome is not document text. Keep this in the base layer so explicit
+   select-text/select-none utilities and domain-specific drag rules still win.
+   WKWebView needs the prefixed property as well as the standard one. */
+@layer base {
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  :where(input, textarea, [contenteditable=""], [contenteditable="true"],
+    [contenteditable="plaintext-only"], .ProseMirror, pre, code, .prose,
+    .chat-reading-content, .chat-markdown, .chat-user-bubble, .translator-result,
+    .reading-app .textLayer, .kv-notice-copy) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* Controls embedded in readable content must not join its selection. */
+  :where(button, [role="button"], [role="menuitem"], summary) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
 
 /* 透明窗口外壳：填满 Tauri window，但内边留 16px 给卡片阴影"散开"用。
    不留这层 padding 的话，box-shadow 会被 window 矩形边缘裁掉 → 四个角无光晕。 */
@@ -313,3 +336,38 @@ html.dark[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal)
 .kv-notice details { margin-top: 5px; }
 .kv-notice summary { cursor: pointer; color: var(--text-muted); }
 .kv-notice-detail { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; }
+
+/* Shared navigation rows for the chat and settings sidebars. */
+.kv-sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-neutral-800);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: default;
+  transition: background var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-sidebar-nav-item:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.kv-sidebar-nav-item[aria-current="page"] {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+}
+.kv-sidebar-nav-item:disabled { opacity: 0.4; }
+.kv-sidebar-nav-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.kv-sidebar-nav-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

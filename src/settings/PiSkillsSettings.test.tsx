@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { render } from '../test/renderWithNotices'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { open } from '@tauri-apps/plugin-dialog'
 import { externalCliSettingsApi, type PiSkillInventory } from '../api/externalCliSettings'

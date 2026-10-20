@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useEffect, useMemo } from 'react'
 import {
   ArrowLeft,
@@ -189,7 +190,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
         </div>
       </div>
 
-      {error && <div className="kv-pi-extension-message error" role="alert">{error}</div>}
+      {error && <ErrorNotice message={error} />}
       {result && <div className="kv-pi-extension-message success" role="status">{result}</div>}
 
       {loading && !inventory ? (

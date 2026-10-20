@@ -1,3 +1,5 @@
+import { SidebarNavItem as NavRow } from '../components/SidebarNavItem'
+import { notifyError } from '../components/appNoticeStore'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
@@ -45,7 +47,7 @@ import { conversationMarkdownFilename } from './conversationExport'
 import { displayConversationTitle, isPlaceholderTitle, isProvisionalTitle } from './conversationTitle'
 import { SwapTitle } from './SwapTitle'
 import { ProjectIcon } from './ProjectIcon'
-import { alertDialog, confirmDialog } from '../components/dialogQueue'
+import { confirmDialog } from '../components/dialogQueue'
 
 function resolveChatUserProfile(
   chat?: { userDisplayName?: string; userAvatar?: string } | null,
@@ -350,35 +352,6 @@ function SidebarUserFooter({
   )
 }
 
-interface NavRowProps {
-  icon: React.ReactNode
-  label: string
-  onClick?: () => void
-  disabled?: boolean
-  active?: boolean
-}
-
-function NavRow({ icon, label, onClick, disabled, active }: NavRowProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`kv-nav-motion group flex w-full items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default disabled:opacity-40 ${
-        active
-          ? 'bg-neutral-900/[0.06] font-medium text-neutral-900'
-          : 'text-neutral-800 hover:bg-neutral-900/[0.04]'
-      }`}
-    >
-      <span
-        className={`flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400`}
-      >
-        {icon}
-      </span>
-      <span className="min-w-0 flex-1 truncate font-medium">{label}</span>
-    </button>
-  )
-}
 
 function ExtensionsNav({
   activeItem,
@@ -945,7 +918,7 @@ export const Sidebar = memo(function Sidebar({
       await loadSidebarData({ silent: true })
     } catch (err) {
       console.error('Failed to regenerate conversation title:', err)
-      void alertDialog(
+      void notifyError(
         t.chatRegenerateTitleFailed + (err instanceof Error ? err.message : String(err)),
       )
     } finally {
@@ -1029,12 +1002,12 @@ export const Sidebar = memo(function Sidebar({
       // 对话本身已删掉，只是副产物没清干净（典型：工作区里还有进程占着目录）。
       // 以前这类情况整个删除会中止、对话又冒回来，现在只提示一句。
       if (warnings.length > 0) {
-        void alertDialog(t.chatDeleteConversationPartial + warnings.join('\n'))
+        void notifyError(t.chatDeleteConversationPartial + warnings.join('\n'))
       }
     } catch (err) {
       console.error('Failed to delete conversation:', err)
       const message = err instanceof Error ? err.message : String(err)
-      void alertDialog(t.chatDeleteConversationFailed + message)
+      void notifyError(t.chatDeleteConversationFailed + message)
     } finally {
       // 无论后端删除成功或抛错，都本地剔除该 id 并刷新侧栏，确保 ghost 立即消失。
       setConversations((items) => items.filter((item) => item.id !== id))
@@ -1057,7 +1030,7 @@ export const Sidebar = memo(function Sidebar({
     } catch (err) {
       const prefix = t.chatExportFailed
       const message = err instanceof Error ? err.message : String(err)
-      void alertDialog(`${prefix}${message}`)
+      void notifyError(`${prefix}${message}`)
     }
   }
 
@@ -1188,7 +1161,7 @@ export const Sidebar = memo(function Sidebar({
     try {
       await chatApi.openProjectFolder(project.id)
     } catch (err) {
-      void alertDialog(typeof err === 'string' ? err : (err as Error).message || t.chatOpenProjectFolderFailed)
+      void notifyError(typeof err === 'string' ? err : (err as Error).message || t.chatOpenProjectFolderFailed)
     }
   }
 

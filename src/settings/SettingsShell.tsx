@@ -1,3 +1,5 @@
+import { SidebarNavItem } from '../components/SidebarNavItem'
+import { ErrorNotice } from '../components/AppNotice'
 import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
@@ -243,7 +245,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     import: (path, trusted) => editorController.import(path, trusted),
     export: async (path, kind) => {
       if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
-      if (kind === 'full') await api.exportFullBackup(path, captureBackupInterface())
+      if (kind === 'full') return api.exportFullBackup(path, captureBackupInterface())
       else await api.exportSettings(path)
     },
     importFull: (path, trusted) => api.importFullBackup(path, trusted),
@@ -971,35 +973,23 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           {navItems.map((item) => {
             const Icon = item.icon
             return (
-              <button
+              <SidebarNavItem
                 key={item.id}
-                type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`settings-embedded-nav-item ${activeTab === item.id ? 'active' : ''}`}
-                data-tauri-drag-region="false"
-              >
-                <span className="settings-embedded-nav-icon">
-                  <Icon size={17} strokeWidth={1.75} />
-                </span>
-                <span>{item.label}</span>
-              </button>
+                active={activeTab === item.id}
+                icon={<Icon size={18} strokeWidth={1.75} />}
+                label={item.label}
+              />
             )
           })}
         </nav>
         <div className="min-h-0 flex-1" />
         <nav className="settings-embedded-nav-list settings-embedded-nav-list--footer">
-          <button
-            type="button"
+          <SidebarNavItem
             onClick={() => handleCloseRequest({ waitForSave: false })}
-            className="settings-embedded-back"
-            title={lang === 'zh' ? '返回对话' : 'Back to chat'}
-            data-tauri-drag-region="false"
-          >
-            <span className="settings-embedded-nav-icon">
-              <ArrowLeft size={17} strokeWidth={1.75} />
-            </span>
-            <span>{lang === 'zh' ? '返回对话' : 'Back to chat'}</span>
-          </button>
+            icon={<ArrowLeft size={18} strokeWidth={1.75} />}
+            label={lang === 'zh' ? '返回对话' : 'Back to chat'}
+          />
         </nav>
       </>
     ) : (
@@ -1352,16 +1342,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             )}
           </div>
 
-          {(visibleSaveError || saveWarning) && (
-            <div
-              className={`settings-autosave-toast ${visibleSaveError ? 'error' : 'warn'}`}
-              role="status"
-              title={visibleSaveError || saveWarning}
-              data-tauri-drag-region="false"
-            >
-              {visibleSaveError || saveWarning}
-            </div>
-          )}
+          <ErrorNotice message={visibleSaveError} />
+          <ErrorNotice message={visibleSaveError ? null : saveWarning} tone="warning" />
+
         </main>
   )
 

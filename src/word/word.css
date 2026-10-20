@@ -1,0 +1,16 @@
+html, body, #root { height: 100%; }
+body { background: var(--theme-surface); color: var(--text); }
+.word-pane { height: 100%; overflow: auto; padding: 20px 16px; font-size: 13px; }
+.word-pane header h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.word-pane p, .word-pane footer { color: var(--text-muted); line-height: 1.6; margin: 8px 0; }
+.word-pane section { padding: 16px 0; border-bottom: 1px solid var(--theme-surface-border); }
+.word-pane label { display: grid; gap: 7px; }
+.word-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.word-references { max-height: 38vh; overflow: auto; margin: 10px 0 16px; }
+.word-pane .word-reference { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--theme-surface-border); cursor: pointer; }
+.word-reference input { margin-top: 4px; accent-color: var(--accent); }
+.word-reference span { min-width: 0; overflow-wrap: anywhere; }
+.word-reference strong { display: block; font-weight: 500; line-height: 1.5; }
+.word-reference small { display: block; color: var(--text-muted); line-height: 1.5; margin-top: 4px; }
+.word-pane footer { font-size: 11px; padding-top: 16px; }
+.word-pane a { color: var(--accent); text-underline-offset: 3px; }

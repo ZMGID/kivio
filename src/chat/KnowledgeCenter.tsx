@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useModelDatabase } from '../data/useModelDatabase'
 // 知识库中心页（扩展 → 知识库）：与 Skill/MCP 中心页同级同语汇的独立页面，
 // 取代原「设置 → 知识库」标签页。库列表卡片网格 + 库详情（导入/进度/重建）+ RAG 设置 tab。
@@ -621,15 +622,7 @@ export function KnowledgeCenter() {
             ))}
           </div>
 
-          {error && (
-            <div className="mt-4 flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              <AlertCircle size={14} className="shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{error}</span>
-              <button type="button" onClick={() => setError(null)} className="shrink-0 text-xs underline" data-tauri-drag-region="false">
-                {t.dockViewerClose}
-              </button>
-            </div>
-          )}
+          <ErrorNotice message={error} />
 
           {view === 'rag' ? (
             /* RAG 设置：复用 settings 的合并面板。其子组件（kv-seg 等）依赖 .kv 作用域变量，

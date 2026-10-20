@@ -551,7 +551,7 @@ pub(crate) async fn webdav_upload(
     state: State<'_, AppState>,
     kind: WebDavBackupKind,
     interface: BTreeMap<String, String>,
-) -> Result<String, String> {
+) -> Result<Vec<String>, String> {
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
@@ -568,16 +568,17 @@ pub(crate) async fn webdav_upload(
         kind.extension()
     );
     let path = temporary.path().join(&name);
-    match kind {
+    let skipped = match kind {
         WebDavBackupKind::Full => {
             super::export_full_backup(app, state, path.to_string_lossy().into(), interface).await?
         }
         WebDavBackupKind::Configuration => {
-            crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?
+            crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?;
+            Vec::new()
         }
-    }
+    };
     dav.upload(&path, &name).await?;
-    Ok(name)
+    Ok(skipped)
 }
 #[tauri::command]
 pub(crate) async fn webdav_download(

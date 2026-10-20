@@ -1,3 +1,4 @@
+import { notifyError } from '../components/appNoticeStore'
 import { useEffect, useState } from 'react'
 import { save } from '@tauri-apps/plugin-dialog'
 import { ArrowLeft, Check, Clipboard, Download, ImageIcon, Minus, Plus, RotateCcw } from 'lucide-react'
@@ -6,7 +7,7 @@ import { loadArtifactOriginalDataUrl } from './attachmentPreview'
 import { base64FromDataUrl, imageExtension } from './imageData'
 import { api } from '../api/tauri'
 import { IconButton } from '../components/Button'
-import { alertDialog } from '../components/dialogQueue'
+
 import { useT } from '../components/i18n'
 
 type ChatImageViewerProps = {
@@ -33,7 +34,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
     if (!base64) return
     const result = await api.lensCopyImageToClipboard(base64)
     if (!result.success) {
-      void alertDialog(t.chatImageCopyFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
+      void notifyError(t.chatImageCopyFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
       return
     }
     setCopied(true)
@@ -49,7 +50,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
     })
     if (!path) return
     const result = await api.lensSaveAnnotatedPng(base64, path)
-    if (!result.success) void alertDialog(t.chatImageSaveFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
+    if (!result.success) void notifyError(t.chatImageSaveFailed.replace('{error}', () => result.error ?? t.chatUnknownError))
   }
 
   useEffect(() => {

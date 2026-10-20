@@ -85,10 +85,22 @@ fn digest(path: &Path) -> Result<Entry, String> {
         sha256: format!("{:x}", hash.finalize()),
     })
 }
-fn collect(root: &Path, path: &Path, out: &mut Vec<PathBuf>, app_data: bool) -> Result<(), String> {
+fn collect(
+    root: &Path,
+    path: &Path,
+    out: &mut Vec<PathBuf>,
+    app_data: bool,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(error)?;
     if metadata.file_type().is_symlink() {
-        let target = path.canonicalize().map_err(error)?;
+        let target = match path.canonicalize() {
+            Ok(target) => target,
+            Err(_) => {
+                skipped.push(path.to_string_lossy().into_owned());
+                return Ok(());
+            }
+        };
         let boundary = root.canonicalize().map_err(error)?;
         if !target.starts_with(&boundary)
             || path
@@ -97,10 +109,8 @@ fn collect(root: &Path, path: &Path, out: &mut Vec<PathBuf>, app_data: bool) -> 
                 .take_while(|ancestor| ancestor.starts_with(root))
                 .any(|ancestor| ancestor.canonicalize().ok().as_ref() == Some(&target))
         {
-            return Err(format!(
-                "符号链接指向备份目录之外或形成循环：{}",
-                path.display()
-            ));
+            skipped.push(path.to_string_lossy().into_owned());
+            return Ok(());
         }
     }
     // Materialize internal links so restoring also works on Windows without
@@ -114,7 +124,7 @@ fn collect(root: &Path, path: &Path, out: &mut Vec<PathBuf>, app_data: bool) -> 
             if app_data && ((path == root && excluded(&name)) || name.ends_with("-shm")) {
                 continue;
             }
-            collect(root, &entry.path(), out, app_data)?;
+            collect(root, &entry.path(), out, app_data, skipped)?;
         }
     } else if metadata.is_file() {
         out.push(path.strip_prefix(root).map_err(error)?.to_path_buf());
@@ -126,10 +136,10 @@ fn collect(root: &Path, path: &Path, out: &mut Vec<PathBuf>, app_data: bool) -> 
     }
     Ok(())
 }
-fn files(root: &Path, app_data: bool) -> Result<Vec<PathBuf>, String> {
+fn files(root: &Path, app_data: bool, skipped: &mut Vec<String>) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
     if root.exists() {
-        collect(root, root, &mut paths, app_data)?;
+        collect(root, root, &mut paths, app_data, skipped)?;
     }
     paths.sort();
     Ok(paths)
@@ -166,7 +176,7 @@ fn export_to(
     workspace: &Path,
     destination: &Path,
     ui: &BTreeMap<String, String>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let parent = destination
         .parent()
         .ok_or("请选择备份保存目录")?
@@ -241,10 +251,11 @@ fn export_to(
             roots,
             files: BTreeMap::new(),
         };
+        let mut skipped = Vec::new();
         let mut total = 0u64;
         for r in &manifest.roots {
             let source = Path::new(&r.source);
-            for path in files(source, r.archive == "app")? {
+            for path in files(source, r.archive == "app", &mut skipped)? {
                 let name = archive_name(&r.archive, &path)?;
                 let full = source.join(&path);
                 let before = digest(&full)?;
@@ -288,7 +299,7 @@ fn export_to(
         // Detect additions, deletions and updates across the entire snapshot.
         let mut verified = BTreeMap::new();
         for r in &manifest.roots {
-            for path in files(Path::new(&r.source), r.archive == "app")? {
+            for path in files(Path::new(&r.source), r.archive == "app", &mut skipped)? {
                 verified.insert(
                     archive_name(&r.archive, &path)?,
                     digest(&Path::new(&r.source).join(path))?,
@@ -308,7 +319,9 @@ fn export_to(
         zip.finish().map_err(error)?.sync_all().map_err(error)?;
         // Existing backups survive a failed export, including Windows replacement.
         fs::rename(&temp, &destination).map_err(error)?;
-        Ok(())
+        skipped.sort();
+        skipped.dedup();
+        Ok(skipped)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);
@@ -519,7 +532,7 @@ fn stage_restore(
             })
             .collect();
         mappings.sort_by_key(|(source, _)| std::cmp::Reverse(source.len()));
-        for relative in files(&app, true)? {
+        for relative in files(&app, true, &mut Vec::new())? {
             let Some(execution_settings) = restore_metadata_policy(&relative) else {
                 continue;
             };
@@ -629,7 +642,7 @@ pub(crate) async fn export_full_backup(
     state: State<'_, AppState>,
     path: String,
     interface: BTreeMap<String, String>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let root = app.path().app_data_dir().map_err(error)?;
     crate::provider_oauth::export_credentials(&state.settings_read())?;
     let workspace = PathBuf::from(
@@ -717,6 +730,49 @@ mod tests {
             "CREATE TABLE docs(text TEXT); INSERT INTO docs VALUES ('knowledge document');",
         )
         .unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn export_skips_problem_links_and_materializes_internal_links() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("source");
+        let workspace = temp.path().join("workspace");
+        fixture(&root, &workspace);
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret"), b"excluded").unwrap();
+        symlink(&outside, workspace.join("external")).unwrap();
+        symlink(&workspace, workspace.join("cycle")).unwrap();
+        symlink("missing", workspace.join("broken")).unwrap();
+        symlink("file.txt", workspace.join("internal")).unwrap();
+        fs::create_dir(workspace.join("skills")).unwrap();
+        fs::write(workspace.join("skills/SKILL.md"), b"skill content").unwrap();
+        symlink("skills", workspace.join("internal-dir")).unwrap();
+        symlink("self-loop", workspace.join("self-loop")).unwrap();
+        let archive = temp.path().join("backup.kivio");
+        let skipped = export_to(&root, &workspace, &archive, &BTreeMap::new()).unwrap();
+        let expected: Vec<String> = ["broken", "cycle", "external", "self-loop"]
+            .iter()
+            .map(|name| workspace.join(name).to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(skipped, expected);
+        let mut zip = zip::ZipArchive::new(File::open(&archive).unwrap()).unwrap();
+        let mut content = String::new();
+        zip.by_name("work/0/internal")
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "attachment bytes");
+        content.clear();
+        zip.by_name("work/0/internal-dir/SKILL.md")
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "skill content");
+        for name in ["external/secret", "cycle/file.txt", "broken", "self-loop"] {
+            assert!(zip.by_name(&format!("work/0/{name}")).is_err());
+        }
     }
     #[test]
     fn restore_preserves_user_json_and_only_updates_owned_metadata() {

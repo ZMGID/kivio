@@ -129,7 +129,7 @@ describe('ThinkingLevelSelector', () => {
     expect(screen.getByRole('button')).toHaveTextContent(/Off.*(不可用|unavailable)/)
     fireEvent.click(screen.getByRole('button'))
     expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeDisabled()
-    expect(screen.getByRole('note')).toHaveTextContent(/不支持关闭|cannot turn thinking off/)
+    expect(screen.queryByRole('note')).not.toBeInTheDocument()
     expect(onChange).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Low' }))
     expect(onChange).toHaveBeenCalledWith('low')

@@ -1,5 +1,5 @@
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties, type MouseEvent } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   BookOpen,
@@ -51,8 +51,10 @@ import {
   type LibraryFilter,
 } from './literature'
 import { PdfThumbnail } from './PdfThumbnail'
+import { DockContextMenu, type DockMenuAnchor, type DockMenuItem } from '../dock/DockContextMenu'
 import LiteratureChildren, { type LiteratureChild } from './LiteratureChildren'
 import './literature.css'
+import { StudyWriting } from './StudyWriting'
 
 function LibraryDialog({
   busy,
@@ -68,6 +70,7 @@ function LibraryDialog({
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     ref.current?.showModal()
+    ref.current?.querySelector<HTMLInputElement>('[data-dialog-autofocus]')?.focus()
   }, [])
   return (
     <dialog
@@ -162,6 +165,7 @@ export default function LiteratureLibrary({
 
   const [filter, setFilter] = useState<LibraryFilter>('all')
   const [query, setQuery] = useState('')
+  const [searchDraft, setSearchDraft] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [sort, setSort] = useState('opened')
   const [showFilters, setShowFilters] = useState(false)
@@ -170,13 +174,16 @@ export default function LiteratureLibrary({
   const [expandedItems, setExpandedItems] = useState<string[]>([])
   const [child, setChild] = useState<(LiteratureChild & { documentId: string }) | null>(null)
   const [multiselect, setMultiselect] = useState(false)
+  const inspectorRef = useRef<HTMLElement>(null)
+  const [menu, setMenu] = useState<{ anchor: DockMenuAnchor; ids: string[]; child?: LiteratureChild } | null>(null)
   const toggleMultiselect = () => { setMultiselect(value => !value); setSelected([]); setChild(null) }
   const selectItem = (id: string) => { setChild(null); setSelected(old => multiselect ? old.includes(id) ? old.filter(value => value !== id) : [...old, id] : [id]) }
+  const [writingOpen, setWritingOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [dialog, setDialog] = useState<'item' | 'collection' | null>(null)
+  const [dialog, setDialog] = useState<'item' | 'collection' | 'search' | null>(null)
   const [title, setTitle] = useState('')
   const [doi, setDoi] = useState('')
   const [editingCollection, setEditingCollection] =
@@ -324,9 +331,8 @@ export default function LiteratureLibrary({
         `已导入 ${items.length} 条文献资料。RIS 不携带 PDF，请在资料栏关联全文。`,
       )
     })
-  const exportRis = () =>
+  const exportRis = (items = selectedDocs.length ? selectedDocs : filtered) =>
     run('正在导出…', async () => {
-      const items = selectedDocs.length ? selectedDocs : filtered
       const path = await save({
         defaultPath: 'Kivio文献.ris',
         filters: [{ name: 'RIS 文献资料', extensions: ['ris'] }],
@@ -421,10 +427,11 @@ export default function LiteratureLibrary({
   const bulk = (
     update: (d: ReadingDocument) => ReadingDocument,
     message: string,
+    items = selectedDocs,
   ) =>
     run('正在保存…', async () => {
       await Promise.all(
-        selectedDocs.map((d) => updateReadingDocument(d.id, update)),
+        items.map((d) => updateReadingDocument(d.id, update)),
       )
       setNotice(message)
     })
@@ -521,6 +528,46 @@ export default function LiteratureLibrary({
         },
       }))
   }
+  const focusInspector = (note = false) => setTimeout(() => inspectorRef.current?.querySelector<HTMLElement>(note ? 'textarea[aria-label="子项笔记内容"]' : 'input[aria-label="文献标题"]')?.focus(), 0)
+  const editPaper = (item: ReadingDocument) => {
+    setMultiselect(false); setSelected([item.id]); setChild(null); setInspectorOpen(true); focusInspector()
+  }
+  const selectChild = (item: ReadingDocument, value: LiteratureChild, edit = false) => {
+    setSelected([item.id]); setChild({ ...value, documentId: item.id }); setInspectorOpen(true)
+    if (edit) focusInspector(true)
+  }
+  const openMenu = (item: ReadingDocument, event: MouseEvent, anchor?: DockMenuAnchor, value?: LiteratureChild) => {
+    event.preventDefault(); event.stopPropagation()
+    if (busyRef.current) return
+    const ids = !value && selectedDocs.some(doc => doc.id === item.id) ? selectedDocs.map(doc => doc.id) : [item.id]
+    setSelected(ids)
+    if (value) setChild({ ...value, documentId: item.id }); else setChild(null)
+    setMenu({ ids, child: value, anchor: anchor ?? { left: event.clientX, top: event.clientY } })
+  }
+  const newNote = (item: ReadingDocument) => void run('正在创建笔记…', async () => {
+    const id = crypto.randomUUID()
+    await updateReadingDocument(item.id, value => ({ ...value, notes: [...value.notes, { id, content: '', kind: 'note' }] }))
+    setExpandedItems(old => old.includes(item.id) ? old : [...old, item.id])
+    selectChild(item, { id: `note:${id}`, title: '未命名笔记', description: '阅读笔记', target: { noteId: id } }, true)
+  })
+  const menuDocs = menu ? documents.filter(doc => menu.ids.includes(doc.id)) : []
+  const menuDoc = menuDocs[0]
+  const count = menuDocs.length
+  const items: DockMenuItem[] = menuDoc ? menu?.child ? [
+    { key: 'inspect', label: menu.child.target.noteId ? '编辑笔记' : '查看版本信息', icon: <Pencil size={14} />, onSelect: () => selectChild(menuDoc, menu.child!, !!menu.child!.target.noteId) },
+    { key: 'open', label: menu.child.target.noteId ? menu.child.target.page ? '定位到文档' : '在阅读器中查看' : '打开此版本', icon: <BookOpen size={14} />, disabled: menuDoc.trashedAt != null || menuDoc.hasPdf === false, onSelect: () => onRead(menuDoc, menu.child!.target) },
+  ] : [
+    ...(count === 1 ? [
+      { key: 'edit', label: '编辑资料', icon: <Pencil size={14} />, onSelect: () => editPaper(menuDoc) },
+      { key: 'open', label: '打开全文', icon: <BookOpen size={14} />, disabled: !!menuDoc.trashedAt || menuDoc.hasPdf === false, onSelect: () => onRead(menuDoc) },
+      { key: 'note', label: '新建子笔记', icon: <Plus size={14} />, disabled: !!menuDoc.trashedAt, onSelect: () => newNote(menuDoc) },
+      { key: 'select', label: '选择多篇文献', onSelect: () => { setMultiselect(true); setSelected([menuDoc.id]); setChild(null) } },
+    ] : [{ key: 'edit', label: `批量整理 ${count} 篇`, icon: <Pencil size={14} />, onSelect: () => { setInspectorOpen(true); setChild(null) } }]),
+    { key: 'favorite', label: count === 1 ? menuDoc.favorite ? '取消收藏' : '收藏文献' : `收藏所选 ${count} 篇`, icon: <Star size={14} />, onSelect: () => void bulk(value => ({ ...value, favorite: count === 1 ? !menuDoc.favorite : true }), '已更新收藏', menuDocs) },
+    ...(currentCollection ? [{ key: 'unfile', label: '移出当前文献集', icon: <Folder size={14} />, onSelect: () => void bulk(value => ({ ...value, collectionIds: value.collectionIds?.filter(id => id !== currentCollection) }), '已移出文献集，文献仍在 Kivio Study 中', menuDocs) }] : []),
+    { key: 'export', label: count === 1 ? '导出文献 RIS' : `导出所选 ${count} 篇 RIS`, icon: <Import size={14} />, onSelect: () => void exportRis(menuDocs) },
+    { key: 'trash', label: filter === 'trash' ? '恢复选中文献' : count === 1 ? '移入回收站' : `将所选 ${count} 篇移入回收站`, icon: filter === 'trash' ? <RotateCcw size={14} /> : <Trash2 size={14} />, danger: filter !== 'trash', onSelect: () => void bulk(value => ({ ...value, trashedAt: filter === 'trash' ? null : new Date().toISOString() }), filter === 'trash' ? '已恢复文献' : '已移入回收站，可随时恢复', menuDocs) },
+  ] : []
   return (
     <div className="literature-library">
       <header className={`literature-header ${headerControls ? 'has-window-controls' : ''}`} data-tauri-drag-region>
@@ -529,16 +576,15 @@ export default function LiteratureLibrary({
           <StudyIcon size={17} />
           Kivio Study
         </h1>
-        <div className="literature-search">
-          <Search size={15} />
-          <Input
-            aria-label="搜索文献"
-            placeholder="搜索文献、作者、标签或笔记"
-            value={query}
-            onChange={setQuery}
-          />
-        </div>
         <div className="literature-actions">
+          <IconButton
+            label={query ? `搜索文献：${query}` : '搜索文献'}
+            variant="ghost"
+            aria-haspopup="dialog"
+            onClick={() => { setSearchDraft(query); setDialog('search') }}
+          >
+            <Search size={15} />
+          </IconButton>
           {onConfigure && <Button size="sm" variant="ghost" onClick={onConfigure}>配置选项</Button>}
           <Button
             size="sm"
@@ -621,6 +667,7 @@ export default function LiteratureLibrary({
         </aside>}
         {layout.showNavigation && divider('navigation')}
         <main className="literature-main">
+          {writingOpen && <StudyWriting documents={selectedDocs.length ? selectedDocs : filtered} onClose={() => setWritingOpen(false)} />}
           <div className="literature-list-toolbar">
             <div className="literature-list-heading">
               {!layout.showNavigation && <Select
@@ -637,6 +684,9 @@ export default function LiteratureLibrary({
                 <span title={heading}>{heading}</span>
                 <small>{filtered.length}</small>
               </h2>
+              {query && <Button size="sm" variant="ghost" title={`当前搜索：${query}`} onClick={() => setQuery('')}>
+                <X size={14} />清除搜索
+              </Button>}
               <Select
                 ariaLabel="文献排序"
                 size="sm"
@@ -664,6 +714,7 @@ export default function LiteratureLibrary({
                 <SlidersHorizontal size={15} />
                 筛选{tags.length + Number(unfiledOnly) > 0 ? ` ${tags.length + Number(unfiledOnly)}` : ''}
               </Button>
+              <Button size="sm" variant="ghost" aria-expanded={writingOpen} onClick={() => setWritingOpen(v => !v)}>写作引用</Button>
               <Button size="sm" variant={multiselect ? 'default' : 'ghost'} aria-pressed={multiselect} disabled={!!busy} onClick={toggleMultiselect}>{multiselect ? '完成多选' : '多选'}</Button>
               <Select
                 ariaLabel="文献管理"
@@ -806,6 +857,7 @@ export default function LiteratureLibrary({
                   <Fragment key={item.id}>
                   <tr
                     aria-selected={selected.includes(item.id) && !selectedChild}
+                    onContextMenu={event => openMenu(item, event)}
                     onClick={() => selectItem(item.id)}
                     onDoubleClick={() => {
                       if (!multiselect && !item.trashedAt && item.hasPdf !== false) onRead(item)
@@ -860,10 +912,15 @@ export default function LiteratureLibrary({
                         </div>
                       </div>
                     </td>
-                    <td>{item.bibliography?.year || '—'}</td>
+                    <td><div className="literature-row-actions" onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>
+                      <span>{item.bibliography?.year || '—'}</span>
+                      <IconButton size="xs" variant="ghost" label={`编辑 ${item.name}`} disabled={!!busy} onClick={() => editPaper(item)}><Pencil size={13} /></IconButton>
+                      <IconButton size="xs" variant="ghost" label={`${item.name} 的操作`} disabled={!!busy} onClick={event => { const rect = event.currentTarget.getBoundingClientRect(); openMenu(item, event, { left: rect.left, top: rect.bottom }) }}><MoreHorizontal size={14} /></IconButton>
+                    </div></td>
                   </tr>
                   {expandedItems.includes(item.id) && !multiselect && <LiteratureChildren doc={item} active={active} selected={child?.documentId === item.id ? child.id : undefined}
-                    onSelect={value => { setSelected([item.id]); setChild({ ...value, documentId: item.id }); setInspectorOpen(true) }}
+                    onSelect={value => selectChild(item, value)}
+                    onContextMenu={(value, event) => openMenu(item, event, undefined, value)}
                     onOpen={target => { if (!item.trashedAt && item.hasPdf !== false) onRead(item, target) }} />}
                   </Fragment>
                 ))}
@@ -913,6 +970,7 @@ export default function LiteratureLibrary({
         {(layout.showInspector || inspectorOpen) && <aside
           className={`literature-inspector custom-scrollbar ${!layout.showInspector ? 'is-overlay' : ''}`}
           aria-label="文献资料"
+          ref={inspectorRef}
           onKeyDown={(event) => { if (event.key === 'Escape') setInspectorOpen(false) }}
         >
           {!layout.showInspector && <div className="literature-overlay-close"><IconButton autoFocus label="关闭资料栏" variant="ghost" onClick={() => setInspectorOpen(false)}><X size={16} /></IconButton></div>}
@@ -1012,6 +1070,7 @@ export default function LiteratureLibrary({
                     }
                   />
                 </label>
+                {([['volume', '卷'], ['issue', '期'], ['pages', '页码'], ['publisher', '出版社'], ['isbn', 'ISBN']] as const).map(([key, label]) => <label className="literature-field" key={key}>{label}<Input aria-label={label} value={b[key] ?? ''} onChange={value => patchBibliography(key, value)} /></label>)}
                 <label className="literature-field">
                   DOI
                   <Input
@@ -1157,6 +1216,21 @@ export default function LiteratureLibrary({
           </fieldset>
         </aside>}
       </div>
+      {menu && items.length > 0 && <DockContextMenu anchor={menu.anchor} items={items} onClose={() => setMenu(null)} />}
+      {dialog === 'search' && (
+        <LibraryDialog busy={false} title="搜索文献" onClose={() => setDialog(null)}>
+          <form onSubmit={(event) => { event.preventDefault(); setQuery(searchDraft.trim()); setDialog(null) }}>
+            <label className="literature-field">
+              文献、作者、标签或笔记
+              <Input autoFocus data-dialog-autofocus aria-label="搜索文献" placeholder="输入关键词" value={searchDraft} onChange={setSearchDraft} />
+            </label>
+            <div className="literature-actions">
+              <Button variant="primary" type="submit"><Search size={15} />搜索</Button>
+              <Button type="button" onClick={() => setDialog(null)}>取消</Button>
+            </div>
+          </form>
+        </LibraryDialog>
+      )}
       {dialog === 'item' && (
         <LibraryDialog
           busy={!!busy}

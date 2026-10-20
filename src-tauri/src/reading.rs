@@ -8,6 +8,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 mod bibliography;
+pub mod writing;
 pub mod setup;
 pub mod operations;
 
@@ -91,6 +92,11 @@ pub struct Bibliography {
     pub url: String,
     pub abstract_text: String,
     pub item_type: String,
+    pub volume: String,
+    pub issue: String,
+    pub pages: String,
+    pub publisher: String,
+    pub isbn: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

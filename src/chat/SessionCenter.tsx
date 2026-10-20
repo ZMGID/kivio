@@ -1,3 +1,5 @@
+import { ErrorNotice } from '../components/AppNotice'
+import { notifyError } from '../components/appNoticeStore'
 import {
   useCallback,
   useEffect,
@@ -50,7 +52,7 @@ import {
 } from './sessionLibrary/format'
 import { HighlightText } from './searchHighlight'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
-import { alertDialog, confirmDialog } from '../components/dialogQueue'
+import { confirmDialog } from '../components/dialogQueue'
 import { useWindowStore } from '../utils/windowStore'
 import {
   markSessionBatchNotified,
@@ -401,11 +403,11 @@ export function SessionCenter({
       liveBatchRef.current.onConversationsChanged?.()
       const text = batchTextRef.current
       if (claimed.phase === 'error' && claimed.error) {
-        void alertDialog(batchNotice(claimed, text.chatDeleteConversationFailed))
+        void notifyError(batchNotice(claimed, text.chatDeleteConversationFailed))
       }
       if (claimed.phase === 'success' && action && (action.kind === 'delete' || action.kind === 'delete-one') && claimed.warnings.length > 0) {
         const lines = action.kind === 'delete' ? claimed.warnings.slice(0, 8) : claimed.warnings
-        void alertDialog(text.chatDeleteConversationPartial + lines.join('\n'))
+        void notifyError(text.chatDeleteConversationPartial + lines.join('\n'))
       }
     }
     const pending = sessionBatchStore.getSnapshot()
@@ -557,7 +559,7 @@ export function SessionCenter({
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        void alertDialog(err instanceof Error ? err.message : String(err))
+        void notifyError(err instanceof Error ? err.message : String(err))
       } finally {
         setBusy(false)
         setMenu(null)
@@ -577,7 +579,7 @@ export function SessionCenter({
         notify()
         await loadPage({ append: false })
       } catch (err) {
-        void alertDialog(
+        void notifyError(
           t.chatRegenerateTitleFailed + (err instanceof Error ? err.message : String(err)),
         )
       } finally {
@@ -947,9 +949,6 @@ export function SessionCenter({
               <span className="text-[12.5px] font-medium text-neutral-700">
                 {t.chatLibSelected.replace('{n}', String(selected.size))}
               </span>
-              {batch.phase === 'error' && batch.error && (
-                <span role="alert" className="text-[12px] text-red-600">{batchNotice(batch, t.chatDeleteConversationFailed)}</span>
-              )}
               <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibStar} onClick={() => bulkPin(true)}>
                 <Star size={12} />
                 {!compactPad && <span>{t.chatLibStar}</span>}
@@ -1019,9 +1018,7 @@ export function SessionCenter({
           )}
 
           {state.error && (
-            <div className="shrink-0 border-b border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-              {state.error}
-            </div>
+            <ErrorNotice message={state.error} />
           )}
 
           <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500 dark:text-neutral-400">

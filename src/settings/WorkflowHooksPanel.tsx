@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useEffect, useState } from 'react'
 import { packageApi } from '../api/pluginPackages'
 import { Button } from '../components/Button'
@@ -21,7 +22,7 @@ export function WorkflowHooksPanel({ lang }: { lang: Lang }) {
       <p>{zh ? '脚本通过 stdin 接收 JSON。工具 matcher 使用 Kivio 工具名（如 bash、read、write、agent）；退出码 2 可拒绝提示或工具。用 args 数组可避免 Shell 转义问题。输出支持 hookSpecificOutput.additionalContext 与 PreToolUse.updatedInput；权限检查不会被跳过。' : 'Scripts receive JSON on stdin. Tool matchers use Kivio names (bash, read, write, agent). Exit code 2 blocks prompts or tools. An args array bypasses shell parsing. Output supports hookSpecificOutput.additionalContext and PreToolUse.updatedInput; host permissions still apply.'}</p>
     </details>
     <textarea className="kv-input w-full font-mono text-xs" rows={10} aria-label={zh ? '工作流 Hook JSON' : 'Workflow hook JSON'} value={text} onChange={e => { setText(e.target.value); setSaved(false) }} disabled={busy} spellCheck={false} />
-    {error && <p role="alert" className="text-xs text-red-500">{error}</p>}
+    {error && <ErrorNotice message={error} />}
     {saved && <p role="status" className="text-xs text-green-600">{zh ? '已保存' : 'Saved'}</p>}
     <Button disabled={busy || !text.trim()} onClick={() => { setBusy(true); setError(''); setSaved(false); void (async () => {
       try { await packageApi.saveHooks(JSON.parse(text)); setSaved(true) } catch (e) { setError(String(e)) } finally { setBusy(false) }

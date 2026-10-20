@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWindowStore } from '../utils/windowStore'
 import {
@@ -591,9 +592,7 @@ export function NotesCenter() {
           )}
 
           {error && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-              {error}
-            </div>
+            <ErrorNotice message={error} />
           )}
 
           {loading && notes.length === 0 ? (

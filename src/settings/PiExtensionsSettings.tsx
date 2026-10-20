@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useEffect, useMemo, useRef } from 'react'
 import {
   ArrowLeft,
@@ -180,9 +181,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
       </div>
 
       {error && (
-        <div className="kv-pi-extension-message error" role="alert">
-          {error}
-        </div>
+        <ErrorNotice message={error} />
       )}
       {result && <pre className="kv-pi-extension-message">{result}</pre>}
 

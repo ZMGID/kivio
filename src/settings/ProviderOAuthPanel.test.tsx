@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { render } from '../test/renderWithNotices'
+import { act, fireEvent, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, providerAuthenticationReady, type ProviderOAuthLogin, type ProviderOAuthPoll } from '../api/tauri'
 import { ProviderOAuthPanel } from './ProviderOAuthPanel'

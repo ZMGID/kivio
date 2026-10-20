@@ -1,5 +1,6 @@
+import { render } from '../test/renderWithNotices'
 import { save } from '@tauri-apps/plugin-dialog'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chatApi } from './api'
 import { SessionCenter } from './SessionCenter'
@@ -88,7 +89,6 @@ function toolbarButton(name: string) {
 beforeEach(() => {
   resetSessionBatchStoreForTests()
   library = [conversation]
-  vi.spyOn(window, 'alert').mockImplementation(() => {})
   vi.spyOn(window, 'confirm').mockReturnValue(true)
   vi.spyOn(chatApi, 'queryConversations').mockImplementation(async () => ({
     items: library,
@@ -175,8 +175,8 @@ describe('SessionCenter batch lifetime', () => {
     })
 
     renderCenter()
-    expect(await screen.findByRole('alert')).toHaveTextContent('disk full')
-    expect(window.alert).toHaveBeenCalledWith('disk full')
+    expect(await within(screen.getByLabelText('操作提示')).findByRole('alert')).toHaveTextContent('disk full')
+    expect(within(screen.getByLabelText('操作提示')).getByRole('alert')).toHaveTextContent('disk full')
     expect(screen.getByRole('button', { name: '删除' })).toBeEnabled()
 
     remove.mockResolvedValue({ deleted: 1, warnings: ['orphan blob'] })
@@ -184,7 +184,7 @@ describe('SessionCenter batch lifetime', () => {
     fireEvent.click(screen.getByRole('button', { name: '删除' }))
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(2))
     expect(remove.mock.calls[1][0]).toEqual([conversation.id])
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('orphan blob')))
+    await waitFor(() => expect(within(screen.getByLabelText('操作提示')).getByText(/orphan blob/)).toBeVisible())
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
   })
 
@@ -206,7 +206,7 @@ describe('SessionCenter batch lifetime', () => {
     })
 
     renderCenter({ onConversationDeleted })
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('orphan blob')))
+    await waitFor(() => expect(within(screen.getByLabelText('操作提示')).getByText(/orphan blob/)).toBeVisible())
     expect(onConversationDeleted).toHaveBeenCalledWith(conversation.id)
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
   })
@@ -275,8 +275,8 @@ describe('SessionCenter remaining batch lifetime', () => {
     gate.reject(new Error('pin failed'))
     await act(async () => { await gate.promise.catch(() => {}) })
     renderCenter({ onConversationDeleted })
-    expect(await screen.findByRole('alert')).toHaveTextContent('pin failed')
-    expect(window.alert).toHaveBeenCalledWith('pin failed')
+    expect(await within(screen.getByLabelText('操作提示')).findByRole('alert')).toHaveTextContent('pin failed')
+    expect(within(screen.getByLabelText('操作提示')).getByRole('alert')).toHaveTextContent('pin failed')
     expect(onConversationDeleted).not.toHaveBeenCalled()
     expect(toolbarButton('收藏')).toBeEnabled()
 
@@ -350,7 +350,7 @@ describe('SessionCenter remaining batch lifetime', () => {
     gate.reject(new Error('set busy'))
     await act(async () => { await gate.promise.catch(() => {}) })
     renderCenter()
-    expect(await screen.findByRole('alert')).toHaveTextContent('set busy')
+    expect(await within(screen.getByLabelText('操作提示')).findByRole('alert')).toHaveTextContent('set busy')
     expect(await screen.findByRole('button', { name: chatSet.name })).toBeInTheDocument()
     update.mockResolvedValue(1)
     fireEvent.click(screen.getByRole('button', { name: '移入集' }))
@@ -406,8 +406,8 @@ describe('SessionCenter remaining batch lifetime', () => {
     gate.reject(new Error('disk full'))
     await act(async () => { await gate.promise.catch(() => {}) })
     renderCenter()
-    expect(await screen.findByRole('alert')).toHaveTextContent('删除对话失败：disk full')
-    expect(window.alert).toHaveBeenCalledWith('删除对话失败：disk full')
+    expect(await within(screen.getByLabelText('操作提示')).findByRole('alert')).toHaveTextContent('删除对话失败：disk full')
+    expect(within(screen.getByLabelText('操作提示')).getByRole('alert')).toHaveTextContent('删除对话失败：disk full')
     expect(screen.getByRole('button', { name: '删除' })).toBeEnabled()
     remove.mockResolvedValue(['orphan blob'])
     library = []
@@ -415,7 +415,7 @@ describe('SessionCenter remaining batch lifetime', () => {
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(2))
     expect(remove.mock.calls[1]).toEqual([conversation.id])
     expect(bulk).not.toHaveBeenCalled()
-    await waitFor(() => expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('orphan blob')))
+    await waitFor(() => expect(within(screen.getByLabelText('操作提示')).getByText(/orphan blob/)).toBeVisible())
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
   })
 
@@ -443,7 +443,7 @@ describe('SessionCenter remaining batch lifetime', () => {
     gate.reject(new Error('export failed'))
     await act(async () => { await gate.promise.catch(() => {}) })
     renderCenter()
-    const alert = await screen.findByRole('alert')
+    const alert = await within(screen.getByLabelText('操作提示')).findByRole('alert')
     expect(alert).toHaveTextContent('export failed')
     expect(alert).toHaveTextContent('/tmp/one.md')
     expect(screen.getByRole('button', { name: '导出' })).toBeEnabled()

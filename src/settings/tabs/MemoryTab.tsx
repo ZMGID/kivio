@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../../components/AppNotice'
 import { RefreshCw, FolderOpen } from 'lucide-react'
 import { SettingRow, SettingsGroup, Toggle } from '../components'
 import { Button } from '../../components/Button'
@@ -168,7 +169,7 @@ export function MemoryTab({
             {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}
           </div>
         </SettingRow>
-        {memoryError && <div className="kv-inline-error">{memoryError}</div>}
+        {memoryError && <ErrorNotice message={memoryError} />}
         {memorySuccess && (
           <div className="kv-panel info">
             <div className="kv-panel-body">{memorySuccess}</div>

@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { cloneElement, isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
@@ -2113,17 +2114,13 @@ export const InputBar = memo(function InputBar({
             <div role="status" className="text-xs text-muted">{commandStatus}</div>
           )}
           {attachmentError && (
-            <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">
-              {attachmentError}
-            </div>
+            <ErrorNotice message={attachmentError} />
           )}
           {optimizeError && !attachmentError && (
-            <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">
-              {optimizeError}
-            </div>
+            <ErrorNotice message={optimizeError} />
           )}
           {commandError && (
-            <div role="alert" className="mb-2 px-1 text-[12px] text-red-500 dark:text-red-400">{commandError}</div>
+            <ErrorNotice message={commandError} />
           )}
           {quotes.length > 0 && (
             <div className="chat-motion-fade-up mb-2 flex flex-col gap-1.5">

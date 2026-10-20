@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../../components/AppNotice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
@@ -522,7 +523,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
             </div>
           </>
         )}
-        {actionError && <p className="kv-market-error" role="alert">{actionError}</p>}
+        {actionError && <ErrorNotice message={actionError} />}
       </div>
       {addMenu && <DockContextMenu anchor={addMenu} onClose={() => setAddMenu(null)} items={[
         { key: 'marketplace', label: text('添加插件市场', 'Add marketplace'), icon: <Plus size={16} />, onSelect: () => setMarketDialog('add') },

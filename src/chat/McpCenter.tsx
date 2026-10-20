@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 // MCP 整页（Chat 窗口「插件 → MCP」）。已安装按来源分组（个人 / 连接器 / 网络搜索 / 插件），
 // 与 Skill 页同一套「凡是已加载的都列出来」；插件与网络搜索 MCP 只读（开关在各自设置页）。
 
@@ -627,9 +628,7 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
           </div>
 
           {error && (
-            <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              {error}
-            </div>
+            <ErrorNotice message={error} />
           )}
 
           {view === 'store' ? (

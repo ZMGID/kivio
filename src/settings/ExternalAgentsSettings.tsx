@@ -1,3 +1,4 @@
+import { notifyError } from '../components/appNoticeStore'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Blocks,
@@ -46,7 +47,7 @@ import type {
   ExternalCliProvider,
   Settings as SettingsData,
 } from '../api/tauri'
-import { alertDialog, confirmDialog } from '../components/dialogQueue'
+import { confirmDialog } from '../components/dialogQueue'
 
 const EMPTY_CONFIG: ExternalCliAgentConfig = {}
 const DSH_OFFICIAL_PROVIDER_ID = 'deepseek-official'
@@ -1003,7 +1004,7 @@ function ProviderSection({
       const detail = await externalAgentSettingsApi.dshNativeProviderGet(native.id)
       setEditing(dshNativeDetailToProvider(detail))
     } catch (err) {
-      void alertDialog(err instanceof Error ? err.message : String(err))
+      void notifyError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -1016,7 +1017,7 @@ function ProviderSection({
     try {
       await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
     } catch (err) {
-      void alertDialog(err instanceof Error ? err.message : String(err))
+      void notifyError(err instanceof Error ? err.message : String(err))
       return
     }
     const adopted = providers.find((provider) => provider.nativeProviderId === native.id)

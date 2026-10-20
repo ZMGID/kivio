@@ -2700,43 +2700,6 @@ input[type="password"]::-ms-clear {
   }
 }
 
-/* 设置自动保存失败 / 热键警告：贴主内容区底部的轻量 toast（替代原 savebar） */
-.settings-autosave-toast {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 12px;
-  z-index: 20;
-  max-width: 100%;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 12px;
-  line-height: 1.4;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.settings-autosave-toast.error {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-}
-.settings-autosave-toast.warn {
-  color: var(--warning, #b45309);
-  background: color-mix(in srgb, var(--warning, #b45309) 12%, var(--bg));
-  border: 1px solid color-mix(in srgb, var(--warning, #b45309) 35%, transparent);
-}
-.dark .settings-autosave-toast.error,
-.dark .chat-window-shell .settings-autosave-toast.error {
-  background: color-mix(in srgb, var(--danger) 18%, var(--theme-surface-soft));
-}
-.dark .settings-autosave-toast.warn,
-.dark .chat-window-shell .settings-autosave-toast.warn {
-  background: color-mix(in srgb, var(--warning, #b45309) 18%, var(--theme-surface-soft));
-}
-
 .kv-tag {
   display: inline-flex;
   align-items: center;

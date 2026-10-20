@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useModelDatabase } from '../data/useModelDatabase'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
@@ -519,7 +520,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
         <Button size="sm" variant="ghost" onClick={onOpenSettings}><Settings2 size={15} />{text('模型设置', 'Model settings')}</Button>
       </div>
     </header>
-    {error && !(view === 'history' && selected) && <div className="kv-panel kv-media-notice" role="alert">{error}<IconButton label={text('关闭提示', 'Dismiss')} onClick={() => setMedia((state) => ({ ...state, error: '' }))}><X size={14} /></IconButton></div>}
+    {error && !(view === 'history' && selected) && <ErrorNotice message={error} />}
     {view === 'create' ? <div className="kv-scroll custom-scrollbar kv-media-workspace">
       {latest ? <article className="kv-media-latest" aria-label={text('本次生成', 'Latest result')}>
         <header className="kv-media-result-header">

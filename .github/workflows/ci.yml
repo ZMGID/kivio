@@ -117,6 +117,9 @@ jobs:
           cache-workspace-crates: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Build bundled Word add-in
+        run: npm run build:word
+
       - name: Prepare Windows sidecar
         run: npm run build:swift
 

@@ -105,7 +105,7 @@ describe('manual WebDAV backup lifecycle', () => {
       webdav: {
         load: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
         save: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
-        test: async () => {}, list: async () => [], upload: vi.fn(async () => 'backup.json'),
+        test: async () => {}, list: async () => [], upload: vi.fn(async () => [] as string[]),
         download: vi.fn(async () => ({ id: 'download', path: '/private/backup.kivio' })),
         release: vi.fn(async () => {}), delete: vi.fn(async () => {}),
         confirmRestore: async () => true, confirmDelete: async () => true,
@@ -146,8 +146,25 @@ describe('manual WebDAV backup lifecycle', () => {
     expect(result.current.status?.msg).toContain('Temporary backup cleanup failed')
   })
 
+  it.each(['local', 'remote', 'refresh-failure'] as const)('shows skipped paths after %s backup completion', async (mode) => {
+    const paths = ['E:\\Work\\.claude\\skills\\find-skills', '/workspace/broken']
+    const port = remotePort()
+    port.pickExport = async () => 'backup.kivio'
+    port.export = async () => paths
+    port.webdav!.upload = async () => paths
+    if (mode === 'refresh-failure') port.webdav!.list = async () => { throw new Error('Offline') }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'zh'))
+    await act(async () => {
+      if (mode === 'local') await result.current.exportFullBackup()
+      else await result.current.runWebDav({ type: 'upload', kind: 'full' })
+    })
+    expect(result.current.status?.msg).toContain('已跳过 2 个问题链接')
+    for (const path of paths) expect(result.current.status?.msg).toContain(path)
+    expect(result.current.status?.kind).toBe(mode === 'refresh-failure' ? 'err' : 'ok')
+  })
+
   it('blocks overlapping local export and duplicate upload until remote upload completes', async () => {
-    const pending = deferred<string>()
+    const pending = deferred<string[]>()
     const port = remotePort()
     port.webdav!.upload = vi.fn(() => pending.promise)
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
@@ -160,7 +177,7 @@ describe('manual WebDAV backup lifecycle', () => {
     expect(port.export).not.toHaveBeenCalled()
     expect(port.webdav!.upload).toHaveBeenCalledOnce()
     expect(result.current.busy).toBe(true)
-    pending.resolve('backup.kivio')
+    pending.resolve([])
     await act(async () => { await upload })
     expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup uploaded.' })
     expect(result.current.busy).toBe(false)

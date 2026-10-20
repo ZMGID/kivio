@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { useState } from 'react'
 import './backup.css'
 import { WebDavBackupSection } from './WebDavBackupSection'
@@ -45,7 +46,8 @@ export function BackupSection({ controller, lang }: {
       <div className="backup-scope-row"><span className="backup-tag">{zh ? '完全' : 'Full'}</span><p className="kv-row-desc">{zh ? '全部配置，以及对话、附件和项目文件' : 'All configuration, conversations, attachments and project files'}</p></div>
     </div></section>
     <div className="backup-note"><ShieldCheck size={16} /><span>{zh ? '备份含密钥，请妥善保管。完全导出前请停止任务。' : 'Backups contain secrets. Keep them safe and stop tasks before full export.'}</span></div>
-    {controller.statusSource === 'local' && (controller.busy || controller.status) && <p role="status" aria-live="polite" className="text-sm" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>
+    <ErrorNotice message={controller.statusSource === 'local' && !controller.busy && controller.status?.kind === 'err' ? controller.status.msg : null} />
+    {controller.statusSource === 'local' && (controller.busy || (controller.status && controller.status.kind !== 'err')) && <p role="status" aria-live="polite" className="text-sm whitespace-pre-wrap [overflow-wrap:anywhere]" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>
       {controller.busy ? (zh ? '正在处理备份，请稍候…' : 'Processing backup…') : controller.status?.msg}
     </p>}
   </div>

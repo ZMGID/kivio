@@ -15,6 +15,7 @@
 
 - 新增或重做页面前，先查找已有全局组件、样式和主题 token。有全局实现就使用全局实现：动作按钮用 `src/components/Button.tsx` 的 `Button` / `IconButton`，输入与选择控件通过 `src/settings/public/controls.ts` 复用，滚动容器使用 `custom-scrollbar`，弹窗复用 `kv-modal`，颜色、字体和动效使用全局语义 token。
 - 引用了共享组件后，不得再用页面 CSS 覆盖其尺寸、颜色、边框、圆角、悬停、聚焦或禁用状态；使用组件现有的属性和变体。页面样式只负责业务内容与布局，不复制一套基础控件或明暗主题。共享能力有缺口时，在原负责人中补齐并验证原调用方。
+- 普通操作失败统一使用 `src/components/AppNotice.tsx` 的 `ErrorNotice`（已有页面错误状态）或 `src/components/appNoticeStore.ts` 的 `notifyError`（事件处理），由窗口的 `AppNoticeHost` 在右上角展示短摘要与可展开详情，不再新增页面错误条或用确认弹窗报告普通失败。字段校验、聊天失败记录、模态框内需要就地恢复的错误保留上下文；后台诊断不自动弹出。
 - 验收时逐项检查滚动容器、按钮、输入框、下拉菜单、弹窗以及主题切换；仅引用了组件但仍局部覆盖基础样式，不算完成复用。不要在页面写 `scrollbar-width` / `scrollbar-color`，它们会覆盖全局胶囊滚动条。
 
 ## 2. 默认调用路径

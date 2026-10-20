@@ -102,8 +102,9 @@ export function mergeBibliography(
     'url',
     'abstractText',
     'itemType',
+    'volume', 'issue', 'pages', 'publisher', 'isbn',
   ] as const) {
-    if (incoming[key].trim()) next[key] = incoming[key]
+    if (incoming[key]?.trim()) next[key] = incoming[key]
   }
   const authors = incoming.authors.filter((author) => author.trim())
   if (authors.length) next.authors = authors

@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react'
+import { render } from '../../test/renderWithNotices'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryTab } from './MemoryTab'

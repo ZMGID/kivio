@@ -1,3 +1,4 @@
+import { ErrorNotice } from '../components/AppNotice'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { ChevronDown, RotateCw } from 'lucide-react'
@@ -2450,7 +2451,7 @@ function MessageListBase({
 
         />
       )}
-      {historyLoadError && <div role="alert" className="absolute left-1/2 top-14 z-10 -translate-x-1/2 rounded-md bg-destructive px-3 py-2 text-sm text-destructive-foreground">{historyLoadError}</div>}
+      {historyLoadError && <ErrorNotice message={historyLoadError} />}
       <div
         ref={setScrollEl}
         onContextMenu={handleContextMenu}

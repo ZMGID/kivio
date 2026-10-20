@@ -1,3 +1,5 @@
+import { ErrorNotice } from '../../components/AppNotice'
+import { notifyError } from '../../components/appNoticeStore'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
@@ -76,7 +78,7 @@ import type {
   AutomationNodeType,
   FlowNode as FlowNodeModel,
 } from '../../api/automationContracts'
-import { alertDialog } from '../../components/dialogQueue'
+
 
 const nodeTypes = {
   'trigger.manual': FlowNode,
@@ -597,7 +599,7 @@ function EditorInner({
       await automationApi.exportToFile(automation.id, path)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      void alertDialog(`${t.chatAutomationExportFailed}${message}`)
+      void notifyError(`${t.chatAutomationExportFailed}${message}`)
     }
   }, [automation.id, automation.name, onFlushSave, t])
 
@@ -757,7 +759,7 @@ function EditorInner({
               <p>{t.chatAutomationEmptyCanvas}</p>
             </div>
           ) : null}
-          {runError && <p role="alert" className="absolute left-4 top-4 z-10 max-w-[70%] rounded-lg bg-[var(--theme-surface)] p-3 text-[13px]">{runError}</p>}
+          {runError && <ErrorNotice message={runError} />}
           <RunStatusCapsule
             running={running}
             runs={runs}

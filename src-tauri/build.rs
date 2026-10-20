@@ -31,6 +31,7 @@ fn main() {
     let target_dir = out_dir.ancestors().nth(3).expect("Cargo output directory");
     for (source, target) in [
         ("resources/skills", "skills"),
+        ("resources/word", "word"),
         ("../docs/licenses", "licenses"),
     ] {
         println!("cargo:rerun-if-changed={source}");
