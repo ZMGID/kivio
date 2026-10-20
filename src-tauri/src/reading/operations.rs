@@ -256,20 +256,33 @@ fn versions(dir: &Path, id: &str) -> Result<Vec<ReadingVersion>, String> {
     let mut result = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            continue;
+        }
         let run = entry.file_name().to_string_lossy().into_owned();
-        let Ok(output) = output_metadata(dir, &run) else { continue; };
+        let Ok(output) = output_metadata(dir, &run) else {
+            continue;
+        };
         if pdf_path(dir, PdfKind::Mono, Some(&run)).is_err()
-            || pdf_path(dir, PdfKind::Dual, Some(&run)).is_err() { continue; }
-        let created_at = entry.path().join("result.json").metadata()
-            .and_then(|m| m.modified()).ok()
+            || pdf_path(dir, PdfKind::Dual, Some(&run)).is_err()
+        {
+            continue;
+        }
+        let created_at = entry
+            .path()
+            .join("result.json")
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64).unwrap_or(0);
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         result.push(ReadingVersion { output, created_at });
     }
     let latest = state.view.latest.map(|output| output.run_id);
     result.sort_by(|a, b| {
-        (Some(&b.output.run_id) == latest.as_ref()).cmp(&(Some(&a.output.run_id) == latest.as_ref()))
+        (Some(&b.output.run_id) == latest.as_ref())
+            .cmp(&(Some(&a.output.run_id) == latest.as_ref()))
             .then_with(|| b.created_at.cmp(&a.created_at))
             .then_with(|| a.output.run_id.cmp(&b.output.run_id))
     });
@@ -277,8 +290,11 @@ fn versions(dir: &Path, id: &str) -> Result<Vec<ReadingVersion>, String> {
 }
 #[tauri::command]
 pub async fn reading_versions(app: AppHandle, id: String) -> Result<Vec<ReadingVersion>, String> {
-    tauri::async_runtime::spawn_blocking(move || versions(&document_dir(&directory(&app)?, &id)?, &id))
-        .await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        versions(&document_dir(&directory(&app)?, &id)?, &id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -656,7 +672,11 @@ pub async fn reading_export(
     // Stage on the destination volume, then atomically replace after full success.
     let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     if ["source", "mono", "dual"].contains(&format.as_str()) {
-        let kind = match format.as_str() { "mono" => PdfKind::Mono, "dual" => PdfKind::Dual, _ => PdfKind::Source };
+        let kind = match format.as_str() {
+            "mono" => PdfKind::Mono,
+            "dual" => PdfKind::Dual,
+            _ => PdfKind::Source,
+        };
         let (source, export_run) = if format == "source" {
             (dir.join("source.pdf"), None)
         } else {
@@ -667,9 +687,17 @@ pub async fn reading_export(
         };
         certify_output(&dir, &source)?;
         staged = tauri::async_runtime::spawn_blocking(move || {
-            super::annotations::write_pdf(&source, &mut staged, &notes, kind, export_run.as_deref())?;
+            super::annotations::write_pdf(
+                &source,
+                &mut staged,
+                &notes,
+                kind,
+                export_run.as_deref(),
+            )?;
             Ok::<_, String>(staged)
-        }).await.map_err(|e| e.to_string())??;
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     } else {
         if notes.is_empty() && draft.trim().is_empty() {
             return Err("还没有可导出的笔记。".into());
@@ -771,7 +799,10 @@ mod tests {
         assert_eq!(reopened.view.kind, PdfKind::Mono);
         assert_eq!(reopened.view.latest.unwrap().page, Some(2));
         assert_eq!(reopened.view.output.unwrap().target_lang, "ja");
-        let partial = dir.path().join("translations").join(uuid::Uuid::new_v4().to_string());
+        let partial = dir
+            .path()
+            .join("translations")
+            .join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir_all(&partial).unwrap();
         std::fs::write(partial.join("mono.pdf"), b"%PDF-incomplete").unwrap();
         let children = versions(dir.path(), "paper").unwrap();

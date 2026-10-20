@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render as renderReact, screen, waitFor, within } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/tauri'
 import type { ChatToolsConfig, PluginStatus, SkillMeta } from '../../api/tauri'
 import type * as TauriModule from '../../api/tauri'
@@ -16,6 +17,13 @@ vi.mock('../../api/tauri', async importOriginal => ({
   api: mockedApi,
 }))
 let ComputerControlTab: typeof ControlTabModule.ComputerControlTab
+let AppNoticeHost: typeof import('../../components/AppNotice').AppNoticeHost
+let notices: typeof import('../../components/appNoticeStore')
+
+function render(ui: ReactNode) {
+  return renderReact(ui, { wrapper: ({ children }) => <><AppNoticeHost />{children}</> })
+}
+afterEach(() => notices?.getNotices().forEach(notice => notices.dismissNotice(notice.id)))
 
 function renderControls(initial: ChatToolsConfig, lang: Lang = 'zh') {
   let current = initial
@@ -61,6 +69,9 @@ describe('ComputerControlTab', () => {
     // Each test models a fresh window; a static import would retain its operation owner.
     vi.resetModules()
     ;({ ComputerControlTab } = await import('./ComputerControlTab'))
+    // The host must share the fresh window's notice store after resetModules.
+    ;({ AppNoticeHost } = await import('../../components/AppNotice'))
+    notices = await import('../../components/appNoticeStore')
     vi.clearAllMocks()
     window.sessionStorage.clear()
     vi.mocked(api.computerControlStatus).mockImplementation(async tool => {

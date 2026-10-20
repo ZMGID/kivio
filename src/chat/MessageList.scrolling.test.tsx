@@ -1,4 +1,5 @@
-import { act, fireEvent, render } from '@testing-library/react'
+import { render } from '../test/renderWithNotices'
+import { act, fireEvent } from '@testing-library/react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'

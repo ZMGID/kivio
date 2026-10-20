@@ -25,7 +25,6 @@ pub mod market;
 pub mod mcp;
 pub mod native_tools;
 pub mod notes;
-pub mod reading;
 pub mod offline_models;
 mod opencode_free;
 pub mod path_env;
@@ -35,6 +34,7 @@ pub mod prompts;
 pub mod provider_oauth;
 pub mod provider_request;
 pub mod rapidocr;
+pub mod reading;
 pub mod replace_translation;
 pub mod scheduled_tasks;
 #[cfg(target_os = "macos")]

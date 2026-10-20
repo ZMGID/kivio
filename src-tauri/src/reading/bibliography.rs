@@ -235,7 +235,11 @@ pub fn parse_ris(text: &str) -> Result<Vec<Lookup>, String> {
                     "VL" => item.bibliography.volume = value.into(),
                     "IS" => item.bibliography.issue = value.into(),
                     "SP" => item.bibliography.pages = value.into(),
-                    "EP" => { if !value.is_empty() { item.bibliography.pages.push_str(&format!("--{value}")); } },
+                    "EP" => {
+                        if !value.is_empty() {
+                            item.bibliography.pages.push_str(&format!("--{value}"));
+                        }
+                    }
                     "PB" => item.bibliography.publisher = value.into(),
                     "SN" => item.bibliography.isbn = value.into(),
                     "UR" => item.bibliography.url = value.into(),

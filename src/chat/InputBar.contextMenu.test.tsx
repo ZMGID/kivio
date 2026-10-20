@@ -1,5 +1,6 @@
+import { render } from '../test/renderWithNotices'
 vi.mock('./ComposerEditor', () => import('./ComposerEditor.testSupport'))
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
