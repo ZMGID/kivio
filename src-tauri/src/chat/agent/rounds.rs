@@ -14,7 +14,7 @@ use super::finalize::cancelled_tool_round_run_result;
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::planning::PlannedToolRound;
-use super::stop::{assistant_api_message_for_tool_calls, step_limit_system_message};
+use super::stop::assistant_api_message_for_tool_calls;
 use super::types::AgentRunResult;
 
 /// 单回合内并行工具调用的批宽上限。与 `SubAgentManager` 的默认并发(12)对齐,
@@ -25,9 +25,6 @@ pub(crate) const MAX_PARALLEL_TOOL_CALLS_PER_ROUND: usize = 12;
 pub(crate) enum ToolRoundOutcome {
     /// The round completed; the skeleton continues to the next planning round.
     Continue,
-    /// The round limit was reached; the limit system message was injected and
-    /// the last step's stop reason rewritten. The skeleton breaks out.
-    RoundLimit,
     /// The round was cancelled mid-flight; done("cancelled") was emitted and a
     /// final result built. The skeleton returns it.
     Cancelled(AgentRunResult),
@@ -94,10 +91,6 @@ pub(crate) async fn run_tool_round(
             std::mem::take(&mut state.generated_api_messages),
         ));
     }
-    if tool_round_limit_reached(config.effective_chat_tools.max_tool_rounds, round) {
-        state.runtime_messages.push(step_limit_system_message());
-        return ToolRoundOutcome::RoundLimit;
-    }
     ToolRoundOutcome::Continue
 }
 
@@ -149,10 +142,6 @@ pub(crate) fn visible_tool_segment_calls(
         })
         .cloned()
         .collect()
-}
-
-pub(crate) fn tool_round_limit_reached(max_tool_rounds: Option<u32>, round: u32) -> bool {
-    max_tool_rounds.is_some_and(|limit| round >= limit)
 }
 
 pub(crate) async fn execute_tool_round(

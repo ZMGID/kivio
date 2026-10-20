@@ -28,7 +28,6 @@ function settings(partial: Record<string, unknown>): Settings {
       servers: [],
       skillScanPaths: [],
       disabledSkillIds: [],
-      maxToolRounds: null,
       toolTimeoutMs: 60_000,
       approvalPolicy: 'auto',
       nativeTools: { skillRuntime: false, runCommand: false, webSearch: false },

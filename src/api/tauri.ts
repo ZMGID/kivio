@@ -692,7 +692,6 @@ export type ChatToolsConfig = {
   skillFallbackMode?: 'progressive' | 'skill_md_only' | 'legacy_full_body' | string
   /** Skill ids turned off in Settings; omitted ids are enabled. */
   disabledSkillIds?: string[]
-  maxToolRounds: number | null
   toolTimeoutMs: number
   /** MCP 持久连接空闲超时（ms）：会话空闲超过此值后被回收，下次调用透明重连。 */
   mcpIdleTimeoutMs?: number

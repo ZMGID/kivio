@@ -754,10 +754,7 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         tools: vec![native_read_file_tool()],
         blocked_tool_calls: Vec::new(),
         settings: Settings::default(),
-        effective_chat_tools: ChatToolsConfig {
-            max_tool_rounds: Some(1),
-            ..ChatToolsConfig::default()
-        },
+        effective_chat_tools: ChatToolsConfig::default(),
         language: "zh-CN".to_string(),
         thinking_enabled: false,
         thinking_level: None,
@@ -987,14 +984,6 @@ fn tool_call_ids(messages: &[Value]) -> Vec<&str> {
         .iter()
         .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
         .collect()
-}
-
-#[test]
-fn tool_round_limit_reached_only_for_finite_limits_at_boundary() {
-    assert!(!tool_round_limit_reached(None, 10));
-    assert!(!tool_round_limit_reached(Some(3), 2));
-    assert!(tool_round_limit_reached(Some(3), 3));
-    assert!(tool_round_limit_reached(Some(3), 4));
 }
 
 #[tokio::test]
@@ -2245,6 +2234,8 @@ async fn run_loop_stream_synthesis_cancelled_returns_cancelled_without_placehold
 async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         MockResponse::SseThenHang(vec![
             r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string()
         ]),
@@ -2285,10 +2276,8 @@ async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
         MockResponse::Sse(planning_tool_call_sse_events()),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    // Allow a second round so cancellation lands at the loop top rather than
-    // the round limit.
-    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let config = test_run_config(&state, &server.base_url);
+    // Cancellation is observed at the next loop boundary.
     let host = TestHost::cancelling_on_persist();
     let executor = RecordingExecutor::default();
 
@@ -2574,11 +2563,9 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
     assert_eq!(last["content"], "总结完成，工具输出已分析。");
 }
 
-/// The tool-round limit notice is a system message that only governs the run that
-/// hit it. The saved compaction snapshot must not carry it: every later request
-/// hoists replayed system messages into the system prompt, forbidding tools forever.
+/// Compacted replay must retain tool results without persisting runtime system prompts.
 #[tokio::test]
-async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
+async fn run_loop_compaction_snapshot_excludes_system_prompt() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(vec![
             long_summary_sse("SUMMARY_MARKER: 早前轮次摘要。"),
@@ -2586,7 +2573,7 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
         ]),
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Sse(vec![
-            r#"{"choices":[{"delta":{"content":"达到上限后的回答。"}}]}"#.to_string(),
+            r#"{"choices":[{"delta":{"content":"读取文件后的回答。"}}]}"#.to_string(),
             "[DONE]".to_string(),
         ]),
     ]);
@@ -2600,7 +2587,6 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
             ..Default::default()
         },
     );
-    // max_tool_rounds stays at 1: the first tool round hits the limit.
     config.runtime_messages = vec![
         serde_json::json!({ "role": "system", "content": "system prompt" }),
         serde_json::json!({ "role": "user", "content": "D".repeat(80_000), "_ui_message_id": "old_user" }),
@@ -2613,17 +2599,8 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
     let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
         .await
         .expect("compacted run completes");
-    assert_eq!(result.content, "达到上限后的回答。");
+    assert_eq!(result.content, "读取文件后的回答。");
 
-    let limit_notice = crate::chat::agent::stop::step_limit_system_message();
-    assert!(
-        result
-            .compacted_history
-            .as_ref()
-            .unwrap()
-            .contains(&limit_notice),
-        "the run itself must still see the limit notice"
-    );
     let replay = result
         .compaction_summary
         .as_ref()
@@ -2636,7 +2613,7 @@ async fn run_loop_compaction_snapshot_excludes_round_limit_notice() {
         .any(|m| m["role"] == "tool" && m["content"] == "result:read"));
     assert_eq!(
         replay.messages.last().unwrap()["content"],
-        "达到上限后的回答。"
+        "读取文件后的回答。"
     );
 }
 
@@ -2751,7 +2728,6 @@ async fn run_loop_without_usage_does_not_publish_local_estimates() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(2);
     config.initial_anchor_total_tokens = Some(10);
     config.initial_anchor_trailing_estimate = 0;
     let host = TestHost::default();
@@ -2823,7 +2799,7 @@ async fn run_loop_reports_last_request_occupancy_and_weighted_cache_without_accu
 #[tokio::test]
 async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
     let server = MockModelServer::start(vec![
-        // Round 1 planning: one read tool call. With max_tool_rounds=2
+        // Round 1 planning: one read tool call.
         // this round returns Continue, so the checkpoint fires.
         MockResponse::Sse(planning_tool_call_sse_events()),
         // Round 2 planning: a natural final answer (no tools) ends the loop.
@@ -2833,8 +2809,7 @@ async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
@@ -2881,8 +2856,7 @@ async fn run_loop_steering_injects_user_message_and_emits_card() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(3);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::with_steering("steer-1", "别用 grep，改用 rg");
     let executor = RecordingExecutor::default();
 
@@ -2967,8 +2941,7 @@ async fn run_loop_steering_delivers_one_message_per_round() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(3);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::with_steering_batches(vec![vec![
         SteeringMessage::new("steer-a".into(), "第一条：先跑测试").expect("non-blank"),
         SteeringMessage::new("steer-b".into(), "第二条：再改文档").expect("non-blank"),
@@ -3024,8 +2997,7 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(3);
+    let config = test_run_config(&state, &server.base_url);
     // 时序：轮首取信箱时是空的（批 1），插话在终答流式期间到达（批 2 在
     // FinalAnswer 边界的 steering_pending 检查被取到）。
     let host = TestHost::with_steering_batches(vec![
@@ -3090,8 +3062,7 @@ async fn run_loop_final_answer_with_pending_follow_up_continues() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(3);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::with_follow_up_batches(vec![vec![SteeringMessage::new(
         "follow-late".into(),
         "顺便把 README 也更新",
@@ -3140,8 +3111,7 @@ async fn run_loop_follow_up_waits_until_final_answer() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(4);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::with_follow_up_batches(vec![vec![SteeringMessage::new(
         "follow-after-tools".into(),
         "再改 README",
@@ -3199,8 +3169,7 @@ async fn run_loop_length_truncated_tool_calls_fail_whole_batch() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(3);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
@@ -3541,8 +3510,7 @@ async fn run_loop_failed_auto_compaction_still_answers() {
     ]);
     let state = test_app_state();
     let host = TestHost::default();
-    let mut config = over_budget_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let config = over_budget_config(&state, &server.base_url);
     let result = run_agent_loop(config, &host, &RecordingExecutor::default())
         .await
         .expect("a failed compaction must not fail the run");
@@ -3675,7 +3643,6 @@ async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.depth = 1;
-    config.effective_chat_tools.max_tool_rounds = Some(6);
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
     let result = crate::chat::sub_agent::run_worker_loop(config, &host, &executor)
@@ -3814,6 +3781,8 @@ async fn managed_worker_stop_keeps_tool_owned_until_it_returns() {
 async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         MockResponse::Sse(vec!["[DONE]".to_string()]),
     ]);
     let state = test_app_state();
@@ -3916,6 +3885,8 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
     .to_string();
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         // Synthesis call #1 fails with an overflow-shaped 400.
         MockResponse::Status(
             400,
@@ -3955,8 +3926,8 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
         result.tool_records[0].status,
         ToolCallStatus::Success
     ));
-    // Four calls: planning, failed synthesis, compaction summary, retry.
-    assert_eq!(server.captured_bodies().len(), 4);
+    // Planning, capability rejection, failed synthesis, compaction summary, retry.
+    assert_eq!(server.captured_bodies().len(), 5);
 }
 
 /// 静默超窗（pi `isContextOverflow` case 2/3）：synthesis 调用 **HTTP 200 成功**，
@@ -3983,6 +3954,8 @@ async fn run_loop_empty_response_at_context_window_recovers_as_silent_overflow()
     .to_string();
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         MockResponse::Sse(sse_from_completion_json(&empty_at_window)),
         // 改判成 overflow 后先压缩：摘要调用恒为流式，与 run 的 stream 设置无关。
         MockResponse::Sse(vec![
@@ -4031,10 +4004,14 @@ async fn run_loop_empty_response_at_context_window_recovers_as_silent_overflow()
         result.degraded
     );
     let bodies = server.captured_bodies();
-    assert_eq!(bodies.len(), 4, "规划 / 空响应合成 / 摘要 / 重发");
+    assert_eq!(
+        bodies.len(),
+        5,
+        "规划 / 工具不支持 / 空响应合成 / 摘要 / 重发"
+    );
     assert!(
-        bodies[2].contains("context summarization assistant"),
-        "第 3 次调用必须是压缩摘要"
+        bodies[3].contains("context summarization assistant"),
+        "第 4 次调用必须是压缩摘要"
     );
 }
 
@@ -4098,6 +4075,8 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
     .to_string();
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         MockResponse::Sse(sse_from_completion_json(&empty_synthesis)),
     ]);
     let state = test_app_state();
@@ -4477,11 +4456,7 @@ async fn hook_events_pair_up_when_cancelled() {
         MockResponse::Sse(planning_tool_call_sse_events()),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    // 必须放行第二轮：默认 max_tool_rounds=Some(1) 会让第一轮后直接撞 RoundLimit
-    // break，`cancelling_on_persist` 翻的旗子根本没有循环顶部再去读它 —— 这条测试
-    // 就会挂着「when_cancelled」的名字实际走正常路径。
-    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let config = test_run_config(&state, &server.base_url);
     let host = HookedHost::new(TestHost::cancelling_on_persist());
     let executor = RecordingExecutor::default();
 
@@ -4509,6 +4484,8 @@ async fn hook_events_pair_up_when_cancelled() {
 async fn cancelling_during_synthesis_still_cancels_hooks() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
+        // Exercise the surviving no-tools fallback after provider capability rejection.
+        MockResponse::Status(400, r#"{"error":"tools not supported"}"#.into()),
         MockResponse::SseThenHang(vec![
             r#"{"choices":[{"delta":{"content":"部分回答"}}]}"#.to_string()
         ]),
@@ -4582,7 +4559,6 @@ async fn video_analysis_runs_only_when_the_main_model_calls_the_tool() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.tools = vec![crate::chat::video_analysis::tool_definition()];
-        config.effective_chat_tools.max_tool_rounds = Some(2);
         config.runtime_messages = vec![serde_json::json!({
             "role": "user", "content": "Tell me about the attached video."
         })];
@@ -4637,8 +4613,7 @@ async fn run_loop_smoke_tool_then_final_answer_round_trips() {
         ]),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(2);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
@@ -4741,8 +4716,7 @@ async fn parent_waits_for_both_children(first_fails: bool) {
         response("I have incorporated both A and B."),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = None;
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost {
         children: Some(runtime.clone()),
         ..Default::default()
@@ -4891,8 +4865,7 @@ async fn parent_child_wait_accepts_user_follow_up_before_child_finishes() {
         response("Combined final answer."),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = None;
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost {
         children: Some(runtime.clone()),
         ..Default::default()
@@ -4975,8 +4948,7 @@ async fn child_output_does_not_hide_parent_provider_error() {
         MockResponse::Status(400, r#"{"error":{"message":"The `reasoning_text` in the thinking mode must be passed back to the API."}}"#.into()),
     ]);
     let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(6);
+    let config = test_run_config(&state, &server.base_url);
     let host = TestHost {
         children: Some(runtime),
         ..Default::default()
@@ -5057,8 +5029,9 @@ async fn live_deepseek_subagent_scenarios() {
         config.run_id = format!("run-{suffix}");
         config.message_id = format!("message-{suffix}");
         config.provider.api_keys = vec![key.clone()];
-        config.provider.api_format = "openai_responses".into();
-        config.provider.name = "DeepSeek live smoke".into();
+        config.provider.api_format =
+            std::env::var("KIVIO_LIVE_DS_FORMAT").unwrap_or_else(|_| "openai_responses".into());
+        config.provider.name = "Live provider smoke".into();
         config.provider.base_url = base_url.clone();
         config.model = model.clone();
         config.max_output_tokens = 2048;
@@ -5085,7 +5058,6 @@ async fn live_deepseek_subagent_scenarios() {
     // Planning -> tool contract -> executor -> final synthesis.
     let mut config = live_config("tool");
     config.tools = vec![native_read_file_tool()];
-    config.effective_chat_tools.max_tool_rounds = Some(1);
     config.runtime_messages = vec![
         serde_json::json!({"role":"system","content":"You are a read-only sub-agent. You must use the provided read tool once before answering."}),
         serde_json::json!({"role":"user","content":"Call read for README.md. Then briefly summarize the returned tool result in Chinese."}),
@@ -5684,7 +5656,6 @@ async fn open_todos_at_the_final_answer_get_one_closing_reminder() {
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
-    config.effective_chat_tools.max_tool_rounds = Some(5);
     config.tools.push(crate::chat::todo::todo_write_tool());
     config.todo_state = crate::chat::types::AgentTodoState {
         items: vec![crate::chat::types::AgentTodoItem {
@@ -6375,41 +6346,6 @@ async fn run_loop_issue_62_explicit_overflow_with_underestimated_window_recovers
     assert_oversized_history_recovers("maximum context length exceeded", false, true).await;
 }
 
-/// The round-limit transition removes schemas from the real synthesis request.
-#[tokio::test]
-async fn issue_62_second_review_synthesis_budgets_only_sent_tools() {
-    let server = MockModelServer::start(vec![
-        MockResponse::Sse(planning_tool_call_sse_events()),
-        final_answer_sse("valid no-tools synthesis"),
-    ]);
-    let state = test_app_state();
-    let mut config = test_run_config(&state, &server.base_url);
-    config.provider.model_overrides.insert(
-        "test-model".into(),
-        crate::settings::ModelInfo {
-            context_window: Some(8_000),
-            ..Default::default()
-        },
-    );
-    config.tools[0].description = "S".repeat(18_000);
-    let host = TestHost::default();
-    *host.auto_compact_failures.lock().unwrap() = 3;
-    let result = run_agent_loop(config, &host, &HugeResultExecutor { chars: 12_000 })
-        .await
-        .unwrap();
-    assert_eq!(result.content, "valid no-tools synthesis");
-    let bodies = server.captured_bodies();
-    assert_eq!(bodies.len(), 2);
-    let planning: Value = serde_json::from_str(&bodies[0]).unwrap();
-    let synthesis: Value = serde_json::from_str(&bodies[1]).unwrap();
-    assert!(planning.get("tools").is_some());
-    assert!(synthesis.get("tools").is_none());
-    assert!(
-        bodies[1].contains(&"A".repeat(12_000)),
-        "completed tool result survives synthesis"
-    );
-}
-
 async fn assert_fold_progress_with_legal_long_summaries(reject_index: Option<usize>) {
     let mut responses = Vec::new();
     responses.extend((0..32).map(|_| {
@@ -6521,4 +6457,40 @@ async fn issue_62_second_review_legal_summary_output_tracks_shrunk_budget() {
 #[tokio::test]
 async fn issue_62_second_review_smaller_gateway_budget_with_existing_carry_restarts_safely() {
     assert_fold_progress_with_legal_long_summaries(Some(1)).await;
+}
+
+/// Loading a legacy finite setting must not stop a working tool sequence.
+#[tokio::test]
+async fn legacy_round_limit_does_not_interrupt_tool_progress() {
+    let mut responses = Vec::new();
+    for step in 0..12 {
+        responses.push(MockResponse::Sse(
+            planning_tool_call_sse_events()
+                .into_iter()
+                .map(|event| event.replace("call_read", &format!("call_read_{step}")))
+                .collect(),
+        ));
+    }
+    responses.push(MockResponse::Sse(vec![
+        serde_json::json!({"choices":[{"delta":{"content":"All twelve steps complete."},"finish_reason":"stop"}]}).to_string(),
+        "[DONE]".into(),
+    ]));
+    let server = MockModelServer::start(responses);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.effective_chat_tools =
+        serde_json::from_value(serde_json::json!({"maxToolRounds":10})).unwrap();
+    let executor = RecordingExecutor::default();
+    let result = run_agent_loop(config, &TestHost::default(), &executor)
+        .await
+        .unwrap();
+    assert_eq!(result.content, "All twelve steps complete.");
+    assert_eq!(result.tool_records.len(), 12);
+    assert_eq!(executor.events().len(), 24);
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 13);
+    for body in bodies {
+        let request: Value = serde_json::from_str(&body).unwrap();
+        assert!(!request["tools"].as_array().unwrap().is_empty());
+    }
 }

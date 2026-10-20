@@ -11,7 +11,6 @@ export function makeChatToolsFixture(overrides: Partial<ChatToolsConfig> = {}): 
     skillAutoMatch: true,
     skillFallbackMode: 'progressive',
     disabledSkillIds: [],
-    maxToolRounds: null,
     toolTimeoutMs: 60_000,
     mcpIdleTimeoutMs: 600_000,
     approvalPolicy: 'readonly_auto_sensitive_confirm',

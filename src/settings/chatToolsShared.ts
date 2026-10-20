@@ -3,11 +3,6 @@
 
 import { type ChatMcpServer } from '../api/tauri'
 
-// 工具轮次默认**不限**（null）。此常量仅供 clamp 兜底与旧值展示，不再是默认值。
-export const CHAT_TOOL_LEGACY_DEFAULT_ROUNDS = 20
-export const CHAT_TOOL_MIN_ROUNDS = 1
-export const CHAT_TOOL_MAX_ROUNDS = 100
-export const CHAT_TOOL_ROUND_PRESETS = [5, 10, 20, 50, 100]
 export const CHAT_TOOL_TIMEOUT_PRESETS_MS = [30_000, 60_000, 120_000, 300_000, 600_000]
 export const CHAT_TOOL_MIN_TIMEOUT_MS = 1_000
 export const CHAT_TOOL_MAX_TIMEOUT_MS = 600_000
@@ -19,12 +14,6 @@ export const MCP_IDLE_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1_000
 export const SUB_AGENT_CONCURRENCY_PRESETS = [3, 6, 12, 24, 48]
 export const SUB_AGENT_CONCURRENCY_MIN = 1
 export const SUB_AGENT_CONCURRENCY_MAX = 64
-
-export function clampToolRounds(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? CHAT_TOOL_LEGACY_DEFAULT_ROUNDS)
-  if (!Number.isFinite(parsed)) return CHAT_TOOL_LEGACY_DEFAULT_ROUNDS
-  return Math.min(CHAT_TOOL_MAX_ROUNDS, Math.max(CHAT_TOOL_MIN_ROUNDS, Math.round(parsed)))
-}
 
 export function clampToolTimeoutMs(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 60_000)
@@ -42,10 +31,6 @@ export function clampSubAgentConcurrency(value: string | number | null | undefin
   const parsed = Number(value ?? 12)
   if (!Number.isFinite(parsed)) return 12
   return Math.min(SUB_AGENT_CONCURRENCY_MAX, Math.max(SUB_AGENT_CONCURRENCY_MIN, Math.round(parsed)))
-}
-
-export function formatToolRoundsLabel(rounds: number, lang: string): string {
-  return lang === 'zh' ? `${rounds} 轮` : `${rounds} rounds`
 }
 
 export function formatToolTimeoutLabel(ms: number, lang: string): string {

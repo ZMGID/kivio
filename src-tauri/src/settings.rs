@@ -1350,11 +1350,6 @@ pub const CHAT_TOOL_MIN_TIMEOUT_MS: u64 = 1_000;
 /// 显式 `bash` `timeout_ms` 与 `bash_output` wait 的上限。省略 timeout 的
 /// 前台 bash 等到进程退出，不受默认 60s 工具超时约束。
 pub const CHAT_TOOL_MAX_TIMEOUT_MS: u64 = 600_000;
-/// 旧版工具轮次默认值。现默认**不限**（`None`），此常量仅供一次性迁移
-/// （`sanitize_settings` 把存量 20 归一到不限）与前端展示预设使用。
-pub const CHAT_TOOL_LEGACY_DEFAULT_ROUNDS: u32 = 20;
-pub const CHAT_TOOL_MIN_ROUNDS: u32 = 1;
-pub const CHAT_TOOL_MAX_ROUNDS: u32 = 100;
 /// 单条工具结果字符上限的合法区间。低于下限会把编译错误/测试输出截到没意义；
 /// 高于上限则失去"防上下文撑爆"的作用。`None`（不截断）由 sanitize 归一到默认值。
 pub const CHAT_TOOL_MIN_OUTPUT_CHARS: usize = 2_000;
@@ -1376,12 +1371,6 @@ fn default_sub_agent_concurrency() -> usize {
 
 fn default_mcp_idle_timeout_ms() -> u64 {
     600_000
-}
-
-/// 工具调用轮次默认**不限**。到达上限的收尾机制（step_limit_system_message）
-/// 仍保留，供用户在 MCP 页显式选择 5/10/20/50/100 时使用。
-fn default_chat_max_tool_rounds() -> Option<u32> {
-    None
 }
 
 /// 单条工具结果进入上下文前的字符上限（头 1/2 + 尾 1/4 保留，实际约 3/4）。
@@ -1520,8 +1509,6 @@ pub struct ChatToolsConfig {
     /// Skill ids the user turned off in Settings. Omitted ids are enabled.
     #[serde(default)]
     pub disabled_skill_ids: Vec<String>,
-    #[serde(default = "default_chat_max_tool_rounds")]
-    pub max_tool_rounds: Option<u32>,
     #[serde(default = "default_chat_tool_timeout_ms")]
     pub tool_timeout_ms: u64,
     /// MCP 持久连接空闲超时（ms）：会话 last_used 超过此值后被 reaper 回收，下次调用透明重连。
@@ -1568,7 +1555,6 @@ impl Default for ChatToolsConfig {
             skill_auto_match: default_skill_auto_match(),
             skill_fallback_mode: default_skill_fallback_mode(),
             disabled_skill_ids: Vec::new(),
-            max_tool_rounds: default_chat_max_tool_rounds(),
             tool_timeout_ms: default_chat_tool_timeout_ms(),
             mcp_idle_timeout_ms: default_mcp_idle_timeout_ms(),
             max_tool_output_chars: default_max_tool_output_chars(),
@@ -1995,10 +1981,6 @@ pub struct Settings {
     /// 一次性：将 Lens 的流式/思考开关复制到独立的 Chat 配置（旧版共用 Lens 行为）。
     #[serde(default)]
     pub chat_behavior_migrated_from_lens: bool,
-    /// 一次性：工具轮次默认从 20 改为不限后，把存量配置里的旧默认 20 迁到不限。
-    /// 迁移后置 true；此后用户在 MCP 页显式选 20 不再被动。
-    #[serde(default)]
-    pub tool_rounds_unlimited_migrated: bool,
     #[serde(default = "default_settings_language")]
     pub settings_language: Option<String>,
     #[serde(default = "default_retry_enabled")]
@@ -2189,7 +2171,6 @@ impl Default for Settings {
             knowledge_base: KnowledgeBaseConfig::default(),
             provider_icons: std::collections::HashMap::new(),
             chat_behavior_migrated_from_lens: false,
-            tool_rounds_unlimited_migrated: false,
             settings_language: Some("zh".to_string()),
             retry_enabled: default_retry_enabled(),
             retry_attempts: default_retry_attempts(),
@@ -2873,19 +2854,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.chat.max_output_tokens = clamp_chat_max_output_tokens(settings.chat.max_output_tokens);
     settings.chat.system_prompt = settings.chat.system_prompt.trim().to_string();
 
-    // 一次性：工具轮次默认从 20 改为不限。存量配置里的 Some(20) 绝大多数是旧默认而非
-    // 显式选择，一并归一到不限；显式想要 20 的用户可在 MCP 页重新选（迁移标记置位后
-    // 不再改动）。其它显式值（5/10/50/100）原样保留。
-    if !settings.tool_rounds_unlimited_migrated {
-        if settings.chat_tools.max_tool_rounds == Some(CHAT_TOOL_LEGACY_DEFAULT_ROUNDS) {
-            settings.chat_tools.max_tool_rounds = None;
-        }
-        settings.tool_rounds_unlimited_migrated = true;
-    }
-    settings.chat_tools.max_tool_rounds = settings
-        .chat_tools
-        .max_tool_rounds
-        .map(|rounds| rounds.clamp(CHAT_TOOL_MIN_ROUNDS, CHAT_TOOL_MAX_ROUNDS));
     settings.chat_tools.tool_timeout_ms = settings
         .chat_tools
         .tool_timeout_ms
@@ -4659,72 +4627,28 @@ mod tests {
     }
 
     #[test]
-    fn chat_tools_default_limits_keep_tool_round_cap() {
-        // 工具轮次默认不限（None）；输出截断默认仍在。
-        assert_eq!(ChatToolsConfig::default().max_tool_rounds, None);
-        assert_eq!(
-            ChatToolsConfig::default().max_tool_output_chars,
-            Some(DEFAULT_MAX_TOOL_OUTPUT_CHARS)
-        );
-
-        let cfg: ChatToolsConfig =
-            serde_json::from_str("{}").expect("empty chat tools config should load");
-        assert_eq!(cfg.max_tool_rounds, None);
-        // 缺省字段经 serde default 补成默认截断值（而非 None/不截断）。
+    fn legacy_tool_round_limits_are_ignored_and_removed_on_save() {
+        for limit in [
+            serde_json::Value::Null,
+            serde_json::json!(1),
+            serde_json::json!(10),
+            serde_json::json!(100),
+        ] {
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "chatTools": {"maxToolRounds": limit, "maxToolOutputChars": 12000},
+                "toolRoundsUnlimitedMigrated": true
+            }))
+            .unwrap();
+            let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
+            assert!(saved["chatTools"].get("maxToolRounds").is_none());
+            assert!(saved.get("toolRoundsUnlimitedMigrated").is_none());
+            assert_eq!(saved["chatTools"]["maxToolOutputChars"], 12000);
+        }
+        let cfg: ChatToolsConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(
             cfg.max_tool_output_chars,
             Some(DEFAULT_MAX_TOOL_OUTPUT_CHARS)
         );
-    }
-
-    #[test]
-    fn sanitize_settings_clamps_chat_tool_round_limit_and_keeps_unlimited() {
-        let mut settings = Settings::default();
-        settings.chat_tools.max_tool_rounds = Some(CHAT_TOOL_MAX_ROUNDS + 30);
-        settings.chat_tools.max_tool_output_chars = Some(12_000);
-
-        let settings = sanitize_settings(settings);
-
-        assert_eq!(
-            settings.chat_tools.max_tool_rounds,
-            Some(CHAT_TOOL_MAX_ROUNDS)
-        );
-        // 合法区间内的值原样保留（不再被无条件清成 None）。
-        assert_eq!(settings.chat_tools.max_tool_output_chars, Some(12_000));
-
-        let mut settings = Settings::default();
-        settings.chat_tools.max_tool_rounds = None;
-
-        let settings = sanitize_settings(settings);
-
-        assert_eq!(settings.chat_tools.max_tool_rounds, None);
-    }
-
-    #[test]
-    fn sanitize_migrates_legacy_default_tool_rounds_to_unlimited_once() {
-        // 存量配置：旧默认 20、迁移标记未置位 → 归一到不限。
-        let mut settings = Settings::default();
-        settings.tool_rounds_unlimited_migrated = false;
-        settings.chat_tools.max_tool_rounds = Some(CHAT_TOOL_LEGACY_DEFAULT_ROUNDS);
-        let settings = sanitize_settings(settings);
-        assert_eq!(settings.chat_tools.max_tool_rounds, None);
-        assert!(settings.tool_rounds_unlimited_migrated);
-
-        // 迁移后用户显式选回 20 → 保留，不再被动。
-        let mut settings = settings;
-        settings.chat_tools.max_tool_rounds = Some(CHAT_TOOL_LEGACY_DEFAULT_ROUNDS);
-        let settings = sanitize_settings(settings);
-        assert_eq!(
-            settings.chat_tools.max_tool_rounds,
-            Some(CHAT_TOOL_LEGACY_DEFAULT_ROUNDS)
-        );
-
-        // 显式非默认值（如 50）即使标记未置位也原样保留。
-        let mut settings = Settings::default();
-        settings.tool_rounds_unlimited_migrated = false;
-        settings.chat_tools.max_tool_rounds = Some(50);
-        let settings = sanitize_settings(settings);
-        assert_eq!(settings.chat_tools.max_tool_rounds, Some(50));
     }
 
     #[test]

@@ -1493,7 +1493,7 @@ mod tests {
             summary_message("summary"),
             tail.clone(),
             result.clone(),
-            super::super::stop::step_limit_system_message(),
+            serde_json::json!({"role":"system","content":"已达到本轮工具调用轮次上限。"}),
         ];
         assert_eq!(replacement_body(&messages), vec![tail, result]);
     }

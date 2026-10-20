@@ -587,7 +587,6 @@ pub async fn run_agent_loop(
                 ToolRoundOutcome::Continue => {
                     state.tool_batches_since_compact += 1;
                 }
-                ToolRoundOutcome::RoundLimit => break,
                 ToolRoundOutcome::Cancelled(result) => {
                     if let Some(hooks) = hooks {
                         hooks.cancel();
@@ -631,7 +630,7 @@ pub async fn run_agent_loop(
     }
 
     // A managed tool may finish cleanup after cancellation. Recheck before
-    // synthesis, including the tool-round-limit path that skips the loop top.
+    // synthesis.
     if !host.is_generation_active(&config.conversation_id, config.generation) {
         let result = cancelled_run_result_from_state(&mut state);
         return Ok(attach_usage(result, &mut state));
@@ -713,8 +712,8 @@ pub(crate) use super::finalize::{
 };
 #[cfg(test)]
 pub(crate) use super::rounds::{
-    execute_tool_round, tool_call_parallel_eligible, tool_message, tool_round_limit_reached,
-    visible_tool_segment_calls, ToolRoundContext,
+    execute_tool_round, tool_call_parallel_eligible, tool_message, visible_tool_segment_calls,
+    ToolRoundContext,
 };
 #[cfg(test)]
 pub(crate) use super::stream::{AgentStreamSink, ToolCallDraftTracker};

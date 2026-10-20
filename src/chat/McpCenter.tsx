@@ -23,14 +23,11 @@ import { Button, IconButton } from '../components/Button'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
 import {
   argsToText,
-  CHAT_TOOL_ROUND_PRESETS,
   CHAT_TOOL_TIMEOUT_PRESETS_MS,
   clampMcpIdleTimeoutMs,
   clampSubAgentConcurrency,
-  clampToolRounds,
   clampToolTimeoutMs,
   envToText,
-  formatToolRoundsLabel,
   formatToolTimeoutLabel,
   MCP_IDLE_TIMEOUT_PRESETS_MS,
   SUB_AGENT_CONCURRENCY_PRESETS,
@@ -752,15 +749,6 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
                     { value: 'always_confirm', label: t.chatMcpApprovalAlways },
                     { value: 'auto', label: t.chatMcpApprovalAuto },
                   ])}
-                  {renderRuntimeSelect(
-                    t.chatMcpMaxToolRounds,
-                    chatTools?.maxToolRounds == null ? 'unlimited' : String(clampToolRounds(chatTools.maxToolRounds)),
-                    (value) => persistChatTools({ maxToolRounds: value === 'unlimited' ? null : clampToolRounds(value) }),
-                    [
-                      ...CHAT_TOOL_ROUND_PRESETS.map((rounds) => ({ value: String(rounds), label: formatToolRoundsLabel(rounds, lang) })),
-                      { value: 'unlimited', label: t.chatMcpUnlimited },
-                    ],
-                  )}
                   {renderRuntimeSelect(
                     t.chatMcpSubagentConcurrency,
                     String(clampSubAgentConcurrency(chatTools?.subAgentConcurrency)),

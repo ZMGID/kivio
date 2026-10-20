@@ -3,13 +3,6 @@ use serde_json::Value;
 use crate::api::extract_status_code;
 use crate::chat::model::{pending_tool_calls_from_openai_message, PendingToolCall};
 
-pub fn step_limit_system_message() -> Value {
-    serde_json::json!({
-        "role": "system",
-        "content": "已达到本轮工具调用轮次上限。你现在必须根据对话中已有的工具返回结果直接给用户一个普通文本回答。不要再调用任何工具，不要输出 tool_calls、function_call、DSML、XML 或 JSON 工具调用标记。"
-    })
-}
-
 pub fn extract_reasoning_content(message: &Value) -> Option<String> {
     message
         .get("reasoning_content")
@@ -197,20 +190,6 @@ pub fn patch_system_message(messages: &mut [Value], prompt: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn step_limit_system_message_matches_existing_contract() {
-        let message = step_limit_system_message();
-        assert_eq!(
-            message.get("role").and_then(|role| role.as_str()),
-            Some("system")
-        );
-        assert!(message
-            .get("content")
-            .and_then(|content| content.as_str())
-            .unwrap_or_default()
-            .contains("工具调用轮次上限"));
-    }
 
     #[test]
     fn merge_reasoning_keeps_planning_and_final_sections() {

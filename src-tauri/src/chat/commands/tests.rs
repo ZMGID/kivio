@@ -2094,7 +2094,7 @@ fn compaction_replay_starts_with_user_summary_and_drops_run_notices() {
             messages: vec![
                 serde_json::json!({"role":"assistant","content":null,"tool_calls":[{"id":"kept","type":"function","function":{"name":"read","arguments":"{}"}}]}),
                 serde_json::json!({"role":"tool","tool_call_id":"kept","content":"kept result"}),
-                crate::chat::agent::stop::step_limit_system_message(),
+                serde_json::json!({"role":"system","content":"已达到本轮工具调用轮次上限。"}),
                 serde_json::json!({"role":"assistant","content":"kept final answer"}),
             ],
         },
