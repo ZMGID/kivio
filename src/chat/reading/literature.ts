@@ -36,6 +36,7 @@ export function duplicateIds(documents: ReadingDocument[]) {
   }
   return new Set([...groups.values()].filter((ids) => ids.length > 1).flat())
 }
+const searchText = new WeakMap<ReadingDocument, string>()
 export function filterLiterature(
   documents: ReadingDocument[],
   collections: ReadingCollection[],
@@ -60,20 +61,25 @@ export function filterLiterature(
     if (filter === 'favorites' && !doc.favorite) return false
     if (filter === 'duplicates' && !duplicates.has(doc.id)) return false
     if (!tags.every((tag) => doc.tags?.includes(tag))) return false
+    if (!terms.length) return true
     const b = doc.bibliography
-    const text = [
-      doc.name,
-      ...(b?.authors ?? []),
-      b?.year,
-      b?.publication,
-      b?.doi,
-      b?.abstractText,
-      ...(doc.tags ?? []),
-      ...doc.notes.map((n) => n.content),
-    ]
-      .join(' ')
-      .toLowerCase()
-    return terms.every((term) => text.includes(term))
+    let text = searchText.get(doc)
+    if (text === undefined) {
+      text = [
+        doc.name,
+        ...(b?.authors ?? []),
+        b?.year,
+        b?.publication,
+        b?.doi,
+        b?.abstractText,
+        ...(doc.tags ?? []),
+        ...doc.notes.map((n) => n.content),
+      ]
+        .join(' ')
+        .toLowerCase()
+      searchText.set(doc, text)
+    }
+    return terms.every((term) => text!.includes(term))
   })
 }
 export function collectionDescendants(

@@ -15,10 +15,11 @@ const storage = vi.hoisted(() => ({
   save: vi.fn(),
 }))
 vi.mock('../../api/reading', () => ({ readingApi: {
-  list: async () => [structuredClone(storage.document)], collections: async () => [],
+  list: async () => ({ documents: [structuredClone(storage.document)], issues: [] }), collections: async () => [],
   save: (doc: ReadingDocument) => storage.save(doc),
   pdf: vi.fn(() => new Promise(() => {})),
   prepareChat: vi.fn(),
+  text: vi.fn().mockResolvedValue(null),
 } }))
 vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open: () => void) => React.ReactNode }) => children(() => {}) }))
 vi.mock('../../api/readingOperations', () => ({ readingOperationsApi: { status: vi.fn(async () => ({ translation: null, view: { kind: 'source', output: null, latest: null } })), selectView: vi.fn() } }))
@@ -27,8 +28,8 @@ vi.mock('../api', () => ({ chatApi: { getConversation: vi.fn() } }))
 vi.mock('../../api/tauri', () => ({ api: { chatSavePastedImage: vi.fn() } }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
-vi.mock('../InputBar', () => ({ InputBar: ({ onSend }: { onSend: (text: string, attachments: never[]) => Promise<boolean> }) => <button onClick={() => void onSend('Explain this', [])}>Ask study</button> }))
-vi.mock('../MessageList', () => ({ MessageList: () => null }))
+vi.mock('../InputBar', () => ({ InputBar: ({ onSend }: { onSend: (text: string, attachments: { id: string; type: string; name: string; path: string }[]) => Promise<boolean> }) => <><button onClick={() => void onSend('Explain this', [])}>Ask study</button><button onClick={() => void onSend('Explain image', [{ id: 'image', type: 'image', name: 'Page.png', path: '/page.png' }])}>Ask image</button></> }))
+vi.mock('../MessageList', () => ({ MessageList: ({ messages = [], onSaveMessageToNote }: { messages: { id: string; content: string }[]; onSaveMessageToNote: (id: string) => void }) => <>{messages.map(message => <button key={message.id} onClick={() => onSaveMessageToNote(message.id)}>Save {message.id}</button>)}</> }))
 vi.mock('../ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 it('consumes a saved note draft even after failure and leaving, while preserving subsequent typing', async () => {
@@ -192,7 +193,7 @@ it('continues an associated document conversation without attaching the PDF agai
   vi.mocked(loadReadingPdf).mockImplementation(() => ({ promise: Promise.resolve({ numPages: 1, getOutline: async () => [], getPage: async () => ({ getViewport: () => ({ width: 612, height: 792 }), getTextContent: async () => ({ items: [{ str: 'Full paper text' }] }) }) }), destroy: vi.fn() }) as unknown as ReturnType<typeof loadReadingPdf>)
   vi.mocked(chatApi.getConversation).mockResolvedValue({ id: 'study-chat', messages: [{ id: 'first', role: 'user', content: 'First question' }] } as never)
   // The persisted source is already present; the backend requests no new attachment.
-  vi.mocked(readingApi.prepareChat).mockResolvedValue(null)
+  vi.mocked(readingApi.prepareChat).mockResolvedValue({ needsText: false, context: null })
   storage.save.mockResolvedValue(undefined)
   const send = vi.fn().mockResolvedValue(true)
   try {
@@ -259,4 +260,40 @@ it('crops a saved region from its own edition and merges the result into the mig
     cleanup(); storage.document = previous; context.mockRestore(); image.mockRestore()
     setComposerDraft('created-chat', { input: '', quotes: [], attachments: [] })
   }
+})
+
+it('preserves the cited translation run when saving an answer while a different edition is open', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.mocked(readingApi.pdf).mockImplementation(() => new Promise(() => {}))
+  vi.mocked(readingOperationsApi.status).mockResolvedValue({ translation: null, view: { kind: 'source', output: null, latest: null } })
+  let disk = structuredClone(storage.document)
+  storage.save.mockImplementation(async doc => { disk = structuredClone(doc) })
+  await loadReadingLibrary()
+  await updateReadingDocument('paper', d => ({ ...d, activeConversationId: 'cited-chat', conversationIds: ['cited-chat'], notes: [] }))
+  const message = { id: 'cited-answer', role: 'assistant', content: '[第 2 页](#reading-ref?page=2&kind=mono&run=translation-1)' }
+  render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: { conversationId: 'cited-chat', messages: [message] }, onActivateConversation: vi.fn().mockResolvedValue(undefined) } as unknown as ReadingCenterProps)} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Save cited-answer' }))
+  await waitFor(() => expect(disk.notes[0]?.anchor).toMatchObject({ page: 2, view: { kind: 'mono', runId: 'translation-1' } }))
+})
+
+it('sends an image question without waiting for unrelated PDF text extraction', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} })
+  vi.stubGlobal('requestAnimationFrame', () => 0)
+  vi.stubGlobal('cancelAnimationFrame', () => {})
+  vi.mocked(readingOperationsApi.status).mockResolvedValue({ translation: null, view: { kind: 'source', output: null, latest: null } })
+  vi.mocked(readingApi.pdf).mockResolvedValue(new Uint8Array([1]))
+  vi.mocked(loadReadingPdf).mockReturnValue({ promise: Promise.resolve({ numPages: 500, getOutline: async () => [], getPage: async () => ({ getViewport: () => ({ width: 600, height: 800 }), getTextContent: () => new Promise(() => {}) }) }), destroy: vi.fn() } as unknown as ReturnType<typeof loadReadingPdf>)
+  storage.save.mockResolvedValue(undefined)
+  await loadReadingLibrary()
+  await updateReadingDocument('paper', d => ({ ...d, activeConversationId: 'image-chat', conversationIds: ['image-chat'] }))
+  vi.mocked(chatApi.getConversation).mockResolvedValue({ id: 'image-chat', messages: [] } as never)
+  const send = vi.fn().mockResolvedValue(true)
+  render(<ReadingCenter {...({ inputBarProps: {}, messageListProps: {}, onActivateConversation: vi.fn().mockResolvedValue(undefined), onSend: send } as unknown as ReadingCenterProps)} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+  await screen.findByLabelText('PDF 第 1 页')
+  fireEvent.click(screen.getByRole('button', { name: 'Ask image' }))
+  await waitFor(() => expect(send).toHaveBeenCalled())
+  expect(send.mock.calls[0][2]).toMatchObject([{ type: 'image', path: '/page.png' }])
 })

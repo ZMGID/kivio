@@ -10,7 +10,7 @@ const storage = vi.hoisted(() => ({
   collections: vi.fn().mockResolvedValue([]),
   saveCollections: vi.fn(),
 }))
-vi.mock('../../api/reading', () => ({ readingApi: storage }))
+vi.mock('../../api/reading', () => ({ readingApi: { ...storage, list: async () => ({ documents: await storage.list(), issues: [] }) } }))
 
 it('keeps unsaved reading work across unmount and retries the latest snapshot', async () => {
   vi.resetModules()
@@ -205,4 +205,61 @@ it.each([false, true])('serializes edits arriving during attachment (attachment 
   const view = renderHook(library.useReadingLibrary)
   expect(view.result.current.documents[0]).toEqual(disk)
   view.unmount()
+})
+
+it('bounds pending disk writes during rapid edits and flushes the final combined document', async () => {
+  vi.resetModules()
+  let disk: ReadingDocument = { id: 'paper', name: 'Paper', conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: '' }
+  storage.list.mockResolvedValue([disk])
+  let release!: () => void
+  let writes = 0
+  storage.save.mockReset().mockImplementation(async doc => {
+    if (++writes === 1) await new Promise<void>(resolve => { release = resolve })
+    disk = structuredClone(doc)
+  })
+  const library = await import('./readingLibrary')
+  await library.loadReadingLibrary()
+  const first = library.updateReadingDocument('paper', d => ({ ...d, favorite: true }))
+  await waitFor(() => expect(release).toBeTypeOf('function'))
+  const edits = Array.from({ length: 100 }, (_, page) => library.updateReadingDocument('paper', d => ({ ...d, page: page + 1, noteDraft: `Draft ${page}` })))
+  const flush = library.flushReadingItems(['paper'])
+  release()
+  await Promise.all([first, ...edits, flush])
+  expect(disk).toMatchObject({ favorite: true, page: 100, noteDraft: 'Draft 99' })
+  expect(writes).toBeLessThanOrEqual(2)
+})
+
+it('debounces typing but lets export flush the latest draft immediately', async () => {
+  vi.resetModules()
+  vi.useFakeTimers()
+  try {
+    const doc: ReadingDocument = { id: 'paper', name: 'Paper', conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: '' }
+    storage.list.mockResolvedValue([doc])
+    storage.save.mockReset().mockResolvedValue(undefined)
+    const library = await import('./readingLibrary')
+    await library.loadReadingLibrary()
+    const first = library.updateReadingDocument('paper', d => ({ ...d, name: 'P' }), true)
+    await vi.advanceTimersByTimeAsync(100)
+    const second = library.updateReadingDocument('paper', d => ({ ...d, name: 'Paper edited' }), true)
+    await vi.advanceTimersByTimeAsync(150)
+    expect(storage.save).not.toHaveBeenCalled()
+    await library.flushReadingItems(['paper'])
+    await Promise.all([first, second])
+    expect(storage.save).toHaveBeenCalledTimes(1)
+    expect(storage.save.mock.lastCall?.[0].name).toBe('Paper edited')
+  } finally { vi.useRealTimers() }
+})
+
+it('freezes inactive library subscriptions and catches up when returning', async () => {
+  vi.resetModules()
+  storage.list.mockResolvedValue([{ id: 'paper', name: 'Before', notes: [] }])
+  storage.save.mockReset().mockResolvedValue(undefined)
+  const library = await import('./readingLibrary')
+  await library.loadReadingLibrary()
+  const view = renderHook(({ active }) => library.useReadingLibrary(active), { initialProps: { active: true } })
+  view.rerender({ active: false })
+  await act(async () => { await library.updateReadingDocument('paper', d => ({ ...d, name: 'After' })) })
+  expect(view.result.current.documents[0].name).toBe('Before')
+  view.rerender({ active: true })
+  expect(view.result.current.documents[0].name).toBe('After')
 })

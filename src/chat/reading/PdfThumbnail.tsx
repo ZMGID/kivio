@@ -5,17 +5,23 @@ import { readingApi } from '../../api/reading'
 
 // Small previews are shared across list remounts. Only one PDF is decoded at a time.
 const previews = new Map<string, string>()
-const pending = new Map<string, Promise<string>>()
+type PreviewRequest = { promise: Promise<string | undefined>; users: number }
+const pending = new Map<string, PreviewRequest>()
 let queue: Promise<unknown> = Promise.resolve()
 
-function thumbnail(id: string, key: string): Promise<string> {
+function thumbnail(id: string, key: string): { promise: Promise<string | undefined>; release: () => void } {
   const cached = previews.get(key)
-  if (cached) return Promise.resolve(cached)
+  if (cached) return { promise: Promise.resolve(cached), release: () => {} }
   const existing = pending.get(key)
-  if (existing) return existing
+  if (existing && existing.users > 0) {
+    existing.users++
+    return { promise: existing.promise, release: () => { existing.users-- } }
+  }
+  const request: PreviewRequest = { promise: Promise.resolve(undefined), users: 1 }
   const work = queue
     .catch(() => undefined)
     .then(async () => {
+      if (!request.users) return undefined
       const task = loadReadingPdf(await readingApi.pdf(id))
       try {
         const pdf = await task.promise
@@ -37,9 +43,10 @@ function thumbnail(id: string, key: string): Promise<string> {
       }
     })
   queue = work.catch(() => undefined)
-  pending.set(key, work)
-  void work.finally(() => pending.delete(key)).catch(() => undefined)
-  return work
+  request.promise = work
+  pending.set(key, request)
+  void work.finally(() => { if (pending.get(key) === request) pending.delete(key) }).catch(() => undefined)
+  return { promise: work, release: () => { request.users-- } }
 }
 
 export function PdfThumbnail({
@@ -57,18 +64,21 @@ export function PdfThumbnail({
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     let active = true
+    let request: ReturnType<typeof thumbnail> | undefined
     setSource(previews.get(key))
     setFailed(false)
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (!entry.isIntersecting) return
-        observer.disconnect()
-        void thumbnail(id, key)
+        if (!entry.isIntersecting) { request?.release(); request = undefined; return }
+        if (request) return
+        const current = thumbnail(id, key)
+        request = current
+        void current.promise
           .then((url) => {
-            if (active) setSource(url)
+            if (active && request === current && url) setSource(url)
           })
           .catch(() => {
-            if (active) setFailed(true)
+            if (active && request === current) setFailed(true)
           })
       },
       { rootMargin: '160px' },
@@ -76,6 +86,7 @@ export function PdfThumbnail({
     if (host.current) observer.observe(host.current)
     return () => {
       active = false
+      request?.release()
       observer.disconnect()
     }
   }, [id, key])

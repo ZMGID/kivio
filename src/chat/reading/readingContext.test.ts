@@ -16,3 +16,14 @@ it('keeps explicit source links separate from translation runs and rejects inval
   expect(readingReferenceAnchor('#reading-ref?page=2&kind=source&rect=0,0,NaN,1')).toBeNull()
   expect(readingReferenceAnchor('#reading-ref?page=2&kind=source&rect=0,0,2,1')).toBeNull()
 })
+
+it('resolves legacy answers from their preceding source and refuses an unknown old translation', async () => {
+  const { readingMessageAnchor } = await import('./readingContext')
+  const source = { id: 'source', role: 'user', attachments: [{ name: 'Paper · 译文', content: '[Kivio Study source: hash]\n引用使用 [第 N 页](#reading-ref?page=N&kind=mono&run=first)' }] }
+  const messages = [source, { id: 'answer', role: 'assistant' }, { ...source, id: 'later', attachments: [{ ...source.attachments[0], content: source.attachments[0].content.replace('run=first', 'run=second') }] }]
+  expect(readingMessageAnchor('#reading-page-3', messages, 'answer')).toMatchObject({ page: 3, view: { kind: 'mono', runId: 'first' } })
+  source.attachments[0].content = '[Kivio Study source: hash]\nLegacy source without version'
+  expect(readingMessageAnchor('#reading-page-3', messages, 'answer')).toBeNull()
+  source.attachments[0].name = 'Paper · 原文'
+  expect(readingMessageAnchor('#reading-page-3', messages, 'answer')).toEqual({ page: 3, text: '' })
+})

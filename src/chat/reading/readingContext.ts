@@ -30,3 +30,29 @@ export function readingReferenceAnchor(href: string): import('../../api/reading'
   }
   return anchor
 }
+
+/** Legacy page-only links resolve against the source supplied before that message,
+ * never against the edition currently visible in the reader. Unknown old
+ * translation runs deliberately have no navigation target. */
+export function readingMessageAnchor(href: string, messages: readonly {
+  id: string; role: string; attachments?: { name: string; content?: string | null }[]
+}[], messageId?: string): import('../../api/reading').ReadingAnchor | null {
+  const explicit = readingReferenceAnchor(href)
+  if (explicit) return explicit
+  const page = readingCitation(href, Number.MAX_SAFE_INTEGER)
+  const index = messages.findIndex(message => message.id === messageId)
+  if (!page || index < 0) return null
+  for (let i = index; i >= 0; i--) {
+    if (messages[i].role !== 'user') continue
+    for (const attachment of [...(messages[i].attachments ?? [])].reverse()) {
+      if (!attachment.content?.startsWith('[Kivio Study source: ')) continue
+      const link = /#reading-ref\?[^\s)]+/.exec(attachment.content)?.[0]
+      if (link) {
+        const anchor = readingReferenceAnchor(link.replace(/page=N(?=&|$)/, `page=${page}`))
+        return anchor ? { ...anchor, page } : null
+      }
+      return attachment.name.endsWith(' · 原文') ? { page, text: '' } : null
+    }
+  }
+  return null
+}

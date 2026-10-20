@@ -7,12 +7,12 @@ use std::{
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-mod bibliography;
 mod annotations;
+mod bibliography;
 pub mod chat;
-pub mod writing;
-pub mod setup;
 pub mod operations;
+pub mod setup;
+pub mod writing;
 
 static WRITES: Mutex<()> = Mutex::new(());
 
@@ -39,7 +39,10 @@ pub struct Anchor {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PdfLocation { pub kind: operations::PdfKind, pub run_id: String }
+pub struct PdfLocation {
+    pub kind: operations::PdfKind,
+    pub run_id: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReadingNote {
     pub id: String,
@@ -138,27 +141,51 @@ fn blank(name: String) -> ReadingDocument {
         fingerprint: String::new(),
     }
 }
-fn list(root: &Path) -> Result<Vec<ReadingDocument>, String> {
+#[derive(Serialize)]
+pub struct LibraryListing {
+    documents: Vec<ReadingDocument>,
+    issues: Vec<String>,
+}
+fn scan(root: &Path) -> Result<LibraryListing, String> {
+    let mut result = LibraryListing {
+        documents: vec![],
+        issues: vec![],
+    };
     if !root.exists() {
-        return Ok(vec![]);
+        return Ok(result);
     }
-    let mut docs = vec![];
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
-        let path = entry
-            .map_err(|e| e.to_string())?
-            .path()
-            .join("document.json");
-        if !path.is_file() {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
             continue;
         }
-        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        docs.push(
-            serde_json::from_str::<ReadingDocument>(&text)
-                .map_err(|e| format!("读取文献记录失败：{e}"))?,
-        );
+        let path = entry.path().join("document.json");
+        if !path.exists() {
+            continue;
+        }
+        let record = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                serde_json::from_str::<ReadingDocument>(&text).map_err(|e| e.to_string())
+            })
+            .and_then(|doc| {
+                if entry.file_name().to_str() != Some(doc.id.as_str()) {
+                    return Err("文献 ID 与目录不匹配".into());
+                }
+                Ok(doc)
+            });
+        match record {
+            Ok(doc) => result.documents.push(doc),
+            Err(error) => result
+                .issues
+                .push(format!("{}：{error}（原文件已保留）", path.display())),
+        }
     }
-    docs.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(docs)
+    result.documents.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(result)
+}
+fn list(root: &Path) -> Result<Vec<ReadingDocument>, String> {
+    Ok(scan(root)?.documents)
 }
 fn directory(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -189,6 +216,13 @@ fn save(root: &Path, document: &ReadingDocument) -> Result<(), String> {
     crate::chat::storage::atomic_write(&dir.join("document.json"), &content, "reading document")
 }
 fn import(root: &Path, source: &Path) -> Result<ReadingDocument, String> {
+    import_with_index(root, source, &mut list(root)?)
+}
+fn import_with_index(
+    root: &Path,
+    source: &Path,
+    existing_docs: &mut Vec<ReadingDocument>,
+) -> Result<ReadingDocument, String> {
     use std::io::Read;
     let mut file = std::fs::File::open(source).map_err(|e| format!("无法打开 PDF：{e}"))?;
     let length = file.metadata().map_err(|e| e.to_string())?.len();
@@ -203,15 +237,16 @@ fn import(root: &Path, source: &Path) -> Result<ReadingDocument, String> {
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(source).map_err(|e| e.to_string())?;
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-    for mut existing in list(root)? {
+    for existing in existing_docs.iter_mut() {
         // Legacy records acquire a fingerprint lazily without changing their annotations.
         if existing.fingerprint.is_empty() && existing.has_pdf {
             let original = std::fs::read(document_dir(root, &existing.id)?.join("source.pdf"))
                 .map_err(|e| e.to_string())?;
             existing.fingerprint = format!("{:x}", Sha256::digest(original));
+            save(root, existing)?;
         }
         if existing.fingerprint == fingerprint {
-            return Ok(existing);
+            return Ok(existing.clone());
         }
     }
     let mut doc = blank(
@@ -233,11 +268,12 @@ fn import(root: &Path, source: &Path) -> Result<ReadingDocument, String> {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(error);
     }
+    existing_docs.push(doc.clone());
     Ok(doc)
 }
 #[tauri::command]
-pub async fn reading_list(app: AppHandle) -> Result<Vec<ReadingDocument>, String> {
-    tauri::async_runtime::spawn_blocking(move || list(&directory(&app)?))
+pub async fn reading_list(app: AppHandle) -> Result<LibraryListing, String> {
+    tauri::async_runtime::spawn_blocking(move || scan(&directory(&app)?))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -246,6 +282,35 @@ pub async fn reading_import(app: AppHandle, path: String) -> Result<ReadingDocum
     tauri::async_runtime::spawn_blocking(move || {
         let _lock = WRITES.lock().unwrap_or_else(|e| e.into_inner());
         import(&directory(&app)?, Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[derive(Serialize)]
+pub struct ImportBatch {
+    documents: Vec<ReadingDocument>,
+    failures: Vec<String>,
+}
+#[tauri::command]
+pub async fn reading_import_many(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<ImportBatch, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let root = directory(&app)?;
+        let mut index = list(&root)?;
+        let mut result = ImportBatch {
+            documents: vec![],
+            failures: vec![],
+        };
+        for path in paths {
+            match import_with_index(&root, Path::new(&path), &mut index) {
+                Ok(doc) => result.documents.push(doc),
+                Err(error) => result.failures.push(format!("{path}：{error}")),
+            }
+        }
+        Ok(result)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -260,10 +325,19 @@ pub async fn reading_save(app: AppHandle, document: ReadingDocument) -> Result<(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn reading_pdf(app: AppHandle, id: String, kind: Option<operations::PdfKind>, run_id: Option<String>) -> Result<tauri::ipc::Response, String> {
+pub async fn reading_pdf(
+    app: AppHandle,
+    id: String,
+    kind: Option<operations::PdfKind>,
+    run_id: Option<String>,
+) -> Result<tauri::ipc::Response, String> {
     let bytes = tauri::async_runtime::spawn_blocking(move || {
-        std::fs::read(operations::pdf_path(&document_dir(&directory(&app)?, &id)?, kind.unwrap_or_default(), run_id.as_deref())?)
-            .map_err(|e| e.to_string())
+        std::fs::read(operations::pdf_path(
+            &document_dir(&directory(&app)?, &id)?,
+            kind.unwrap_or_default(),
+            run_id.as_deref(),
+        )?)
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -466,7 +540,20 @@ mod tests {
                 page: 3,
                 text: "evidence".into(),
                 rect: None,
-                rects: vec![Rect { x: 0.1, y: 0.2, w: 0.3, h: 0.02 }, Rect { x: 0.1, y: 0.23, w: 0.2, h: 0.02 }],
+                rects: vec![
+                    Rect {
+                        x: 0.1,
+                        y: 0.2,
+                        w: 0.3,
+                        h: 0.02,
+                    },
+                    Rect {
+                        x: 0.1,
+                        y: 0.23,
+                        w: 0.2,
+                        h: 0.02,
+                    },
+                ],
                 mark: Some("underline".into()),
                 color: Some("#4b95c9".into()),
                 view: None,
@@ -486,13 +573,32 @@ mod tests {
         assert_eq!(anchor.color.as_deref(), Some("#4b95c9"));
         assert_eq!(anchor.rects.len(), 2);
         assert_eq!(anchor.rects[1].y, 0.23);
-        let legacy: Anchor = serde_json::from_str(r#"{"page":1,"text":"legacy","rect":null}"#).unwrap();
+        let legacy: Anchor =
+            serde_json::from_str(r#"{"page":1,"text":"legacy","rect":null}"#).unwrap();
         assert!(legacy.rects.is_empty());
         assert!(legacy.mark.is_none());
         assert_eq!(loaded.note_draft, "unsaved thought");
         assert_eq!(
             std::fs::read(folder.join("source.pdf")).unwrap(),
             b"%PDF-1.7\ntest bytes"
+        );
+    }
+    #[test]
+    fn damaged_record_does_not_hide_healthy_documents_or_get_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let healthy = create(temp.path(), "Healthy".into(), Bibliography::default()).unwrap();
+        let broken = temp.path().join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("document.json"), "{broken").unwrap();
+        let report = scan(temp.path()).unwrap();
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.issues[0].contains(broken.to_str().unwrap()));
+        let documents = report.documents;
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].id, healthy.id);
+        assert_eq!(
+            std::fs::read_to_string(broken.join("document.json")).unwrap(),
+            "{broken"
         );
     }
     #[test]
@@ -599,7 +705,10 @@ mod tests {
         assert!(same.has_pdf);
         assert_eq!(same.status, "unread");
         assert!(same.last_opened_at.is_empty());
-        assert_eq!(list(&root).unwrap().len(), 1);
+        let reopened = list(&root).unwrap();
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(reopened[0].fingerprint, same.fingerprint);
+        assert!(!reopened[0].fingerprint.is_empty());
     }
     #[test]
     fn collection_cycles_do_not_replace_valid_saved_tree() {

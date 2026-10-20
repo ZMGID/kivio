@@ -77,8 +77,10 @@ export type ReadingDocument = {
   noteDraft: string
 }
 export const readingApi = {
-  prepareChat: (id: string, conversationId: string, pages: string[], view: { kind: 'source' | 'mono' | 'dual'; runId?: string }) =>
-    invoke<{ name: string; content: string } | null>('reading_prepare_chat', { id, conversationId, pages, ...view }),
+  prepareChat: (id: string, conversationId: string, pages: string[] | null, view: { kind: 'source' | 'mono' | 'dual'; runId?: string }) =>
+    invoke<{ needsText: boolean; context: { name: string; content: string } | null }>('reading_prepare_chat', { id, conversationId, pages, ...view }),
+  text: (id: string, view: { kind: 'source' | 'mono' | 'dual'; runId?: string }, pages?: string[]) =>
+    invoke<string[] | null>('reading_text', { id, ...view, pages }),
   collections: () => invoke<ReadingCollection[]>('reading_collections'),
   saveCollections: (items: ReadingCollection[]) =>
     invoke<void>('reading_save_collections', { items }),
@@ -92,7 +94,8 @@ export const readingApi = {
     invoke<ReadingDocument[]>('reading_import_ris', { path }),
   exportRis: (ids: string[], path: string) =>
     invoke<void>('reading_export_ris', { ids, path }),
-  list: () => invoke<ReadingDocument[]>('reading_list'),
+  list: () => invoke<{ documents: ReadingDocument[]; issues: string[] }>('reading_list'),
+  importMany: (paths: string[]) => invoke<{ documents: ReadingDocument[]; failures: string[] }>('reading_import_many', { paths }),
   import: (path: string) => invoke<ReadingDocument>('reading_import', { path }),
   save: (document: ReadingDocument) =>
     invoke<void>('reading_save', { document }),

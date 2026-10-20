@@ -1,5 +1,5 @@
 import { ErrorNotice, OperationNotice } from '../../components/AppNotice'
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties, type MouseEvent } from 'react'
+import { memo, Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties, type MouseEvent } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import {
   BookOpen,
@@ -36,7 +36,7 @@ import {
 import {
   attachReadingPdf,
   createReadingItem,
-  importReadingDocument,
+  importReadingDocuments,
   importReadingRis,
   exportReadingRis,
   updateReadingCollections,
@@ -104,7 +104,7 @@ function LibraryDialog({
   )
 }
 
-export default function LiteratureLibrary({
+function LiteratureLibrary({
   onRead,
   headerControls,
   onConfigure,
@@ -115,7 +115,7 @@ export default function LiteratureLibrary({
   active?: boolean
   onRead: (doc: ReadingDocument, target?: ReadingOpenTarget) => void
 }) {
-  const { documents, collections, loading, saveStatus } = useReadingLibrary()
+  const { documents, collections, loading, saveStatus } = useReadingLibrary(active)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyWidth, setBodyWidth] = useState(0)
   const [navigationWidth, setNavigationWidth] = useState(200)
@@ -270,7 +270,7 @@ export default function LiteratureLibrary({
     id: string,
     update: (d: ReadingDocument) => ReadingDocument,
   ) => {
-    void updateReadingDocument(id, update).catch((e) => setError(String(e)))
+    void updateReadingDocument(id, update, true).catch((e) => setError(String(e)))
   }
   const chooseFilter = (next: LibraryFilter) => {
     setWritingOpen(false)
@@ -306,20 +306,10 @@ export default function LiteratureLibrary({
         filters: [{ name: 'PDF 文献', extensions: ['pdf'] }],
       })
       if (!paths) return
-      const results: ReadingDocument[] = [],
-        failures: string[] = []
+      const { documents: results, failures } = await importReadingDocuments(typeof paths === 'string' ? [paths] : paths)
       let duplicates = 0
-      const known = new Set(documents.map((d) => d.id))
-      for (const path of typeof paths === 'string' ? [paths] : paths) {
-        try {
-          const item = await importReadingDocument(path)
-          if (known.has(item.id)) duplicates++
-          known.add(item.id)
-          results.push(item)
-        } catch (e) {
-          failures.push(`${path.split(/[\\/]/).pop()}：${String(e)}`)
-        }
-      }
+      const known = new Set(documents.map(d => d.id))
+      for (const item of results) { if (known.has(item.id)) duplicates++; known.add(item.id) }
       await addToCurrent(results)
       setNotice(
         `已处理 ${results.length} 份 PDF${duplicates ? `，其中 ${duplicates} 份复用已有文献` : ''}。可在资料栏补全作者、年份或通过 DOI 获取资料。`,
@@ -1396,3 +1386,6 @@ export default function LiteratureLibrary({
     </div>
   )
 }
+
+// Preserve navigation state while the reader is open without rendering a hidden table.
+export default memo(LiteratureLibrary, (previous, next) => previous.active === false && next.active === false)

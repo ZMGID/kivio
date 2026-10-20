@@ -59,13 +59,14 @@ import {
 import {
   useReadingLibrary,
   loadReadingLibrary,
+  refreshReadingLibrary,
   updateReadingDocument,
   retryReadingSaves,
 } from './readingLibrary'
-import { readingCitation, readingReference, readingReferenceAnchor } from './readingContext'
+import { readingMessageAnchor, readingReference } from './readingContext'
 import { chatApi } from '../api'
 import type { Conversation, PendingAttachment } from '../types'
-function PdfPage({
+const PdfPage = React.memo(function PdfPage({
   pdf,
   number,
   width,
@@ -168,7 +169,35 @@ function PdfPage({
       <span className="paper-page-number">{number}</span>
     </div>
   )
-}
+})
+
+const PdfPages = React.memo(function PdfPages({ pdf, width, zoom, pageRatio, notes, viewKind, viewRunId, highlight, areaDraft, markColor, onReady }: {
+  pdf: pdfjs.PDFDocumentProxy; width: number; zoom: number; pageRatio: number; notes: Note[];
+  viewKind: ReadingPdfKind; viewRunId?: string; highlight: Anchor | null; areaDraft: Anchor | null;
+  markColor: string; onReady: () => void;
+}) {
+  const marks = useMemo(() => {
+    const grouped = new Map<number, Note[]>()
+    for (const note of notes) {
+      const anchor = note.anchor
+      if (note.kind !== 'highlight' || !anchor?.rect || (anchor.view?.kind ?? 'source') !== viewKind ||
+        (viewKind !== 'source' && anchor.view?.runId !== viewRunId)) continue
+      const items = grouped.get(anchor.page) ?? []
+      items.push(note); grouped.set(anchor.page, items)
+    }
+    return grouped
+  }, [notes, viewKind, viewRunId])
+  const matchingHighlight = highlight && (highlight.view?.kind ?? 'source') === viewKind &&
+    (viewKind === 'source' || highlight.view?.runId === viewRunId) ? highlight : null
+  return <>{Array.from({ length: pdf.numPages }, (_, i) => <div className="page-container" key={i}>
+    <PdfPage pdf={pdf} number={i + 1} width={width} zoom={zoom} initialRatio={pageRatio} onReady={onReady} />
+    {(marks.get(i + 1) ?? []).flatMap(n => (n.anchor!.rects?.length ? n.anchor!.rects : [n.anchor!.rect!]).map((rect, index) =>
+      <div key={`${n.id}-${index}`} className={`source-mark saved mark-${n.anchor!.mark ?? 'highlight'}`}
+        style={{ ...rectStyle(rect, width * zoom), '--mark-color': n.anchor!.color || '#d3a51d' } as React.CSSProperties} />))}
+    {areaDraft?.page === i + 1 && areaDraft.rect && <div className="source-mark saved mark-area" style={{ ...rectStyle(areaDraft.rect, width * zoom), '--mark-color': markColor } as React.CSSProperties} />}
+    {matchingHighlight?.page === i + 1 && matchingHighlight.rect && <div className="source-mark" style={rectStyle(matchingHighlight.rect, width * zoom)} />}
+  </div>)}</>
+})
 
 export interface ReadingCenterProps {
   headerControls?: React.ReactNode
@@ -211,11 +240,11 @@ export default function ReadingCenter(props: ReadingCenterProps) {
     <StudyEnvironment headerControls={props.headerControls}>{openSetup => (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ErrorNotice
-          message={error || library.error}
+          message={error || library.error || library.issues?.join('\n')}
           actionLabel="重试保存 / 加载"
           onAction={() => {
             setError('')
-            void retryReadingSaves().then(() => loadReadingLibrary()).catch((error) => setError(String(error)))
+            void retryReadingSaves().then(() => refreshReadingLibrary()).catch((error) => setError(String(error)))
           }}
         />
         <div className={doc ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
@@ -271,6 +300,7 @@ function ReadingWorkspace({
   const sessionLoaded = !!reading.session, sessionFailed = !!reading.error
   const [pdf, setPdf] = useState<pdfjs.PDFDocumentProxy | null>(null),
     [error, setError] = useState('')
+  const extraction = useRef<Promise<string[] | null>>(Promise.resolve(null))
   const [pages, setPages] = useState<string[]>([]),
     [indexing, setIndexing] = useState(true)
   const [page, setPage] = useState(initialTarget?.page ?? doc.page),
@@ -389,6 +419,9 @@ function ReadingWorkspace({
     if (!sessionLoaded && !sessionFailed) return
     let live = true
     let task: pdfjs.PDFDocumentLoadingTask | undefined
+    let completeText!: (pages: string[] | null) => void
+    extraction.current = new Promise(resolve => { completeText = resolve })
+    const cachedText = readingApi.text(doc.id, { kind: viewKind, runId: viewRunId }).catch(() => null)
     pendingRestore.current = { ...position.current, offset: loadedView.current && loadedView.current !== viewKey ? 0 : position.current.offset }
     loadedView.current = viewKey
     setPdf(null); setPages([]); setToc([]); setIndexing(true); setError(''); setSelection(null)
@@ -403,6 +436,7 @@ function ReadingWorkspace({
         if (!live) return
         setPageRatio(viewport.height / viewport.width)
         setPdf(pdf)
+        void (async () => {
         const outline = await pdf.getOutline()
         const items: { title: string; page: number; depth: number }[] = []
         const visit = async (list: typeof outline, depth = 0) => {
@@ -428,6 +462,12 @@ function ReadingWorkspace({
         await visit(outline)
         if (!live) return
         setToc(items)
+        })().catch(() => { /* A broken outline must not block extraction or image questions. */ })
+        const cached = await cachedText
+        if (!live) return
+        if (cached && cached.length === pdf.numPages) {
+          setPages(cached); setIndexing(false); completeText(cached); return
+        }
         const extracted: string[] = []
         for (let number = 1; number <= pdf.numPages; number++) {
           if (!live) return
@@ -446,9 +486,12 @@ function ReadingWorkspace({
         if (live) {
           setPages(extracted)
           setIndexing(false)
+          completeText(extracted)
+          void readingApi.text(doc.id, { kind: viewKind, runId: viewRunId }, extracted).catch(() => { /* Disposable cache; reading remains available. */ })
         }
       } catch (error) {
         if (live) {
+          completeText(null)
           setError(`无法读取 PDF：${String(error)}`)
           setIndexing(false)
         }
@@ -456,6 +499,7 @@ function ReadingWorkspace({
     })()
     return () => {
       live = false
+      completeText(null)
       void task?.destroy()
     }
   }, [doc.id, viewKind, viewRunId, viewKey, sessionLoaded, sessionFailed])
@@ -562,26 +606,34 @@ function ReadingWorkspace({
       setHighlight(anchor)
     }).catch(error => notifyError(String(error)))
   }
+  const pageFrames = useRef<HTMLElement[]>([])
+  const scrollFrame = useRef<number | null>(null)
+  useEffect(() => {
+    pageFrames.current = Array.from(host.current?.querySelectorAll<HTMLElement>('[data-page]') ?? [])
+    return () => { if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current); scrollFrame.current = null }
+  }, [pdf])
   const onScroll = () => {
-    if (!host.current || pendingRestore.current) return
-    setSelection(null)
-    const top = host.current.scrollTop + 100
-    const frames = Array.from(
-      host.current.querySelectorAll<HTMLElement>('[data-page]'),
-    )
-    const visible = frames
-      .reverse()
-      .find((frame) => frame.parentElement!.offsetTop <= top)
-    if (visible) {
+    if (scrollFrame.current !== null) return
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null
+      if (!host.current || pendingRestore.current) return
+      setSelection(null)
+      const top = host.current.scrollTop + 100
+      const frames = pageFrames.current
+      let low = 0, high = frames.length - 1, found = -1
+      while (low <= high) {
+        const middle = (low + high) >>> 1
+        if (frames[middle].parentElement!.offsetTop <= top) { found = middle; low = middle + 1 }
+        else high = middle - 1
+      }
+      const visible = frames[found]
+      if (!visible) return
       const page = Number(visible.dataset.page)
       setPage(page)
-      position.current = {
-        page,
-        offset: host.current.scrollTop - visible.parentElement!.offsetTop,
-      }
+      position.current = { page, offset: host.current.scrollTop - visible.parentElement!.offsetTop }
       clearTimeout(pendingPosition.current)
       pendingPosition.current = setTimeout(() => persist(position.current), 400)
-    }
+    })
   }
   const selectText = () => {
     setSelection(null)
@@ -764,25 +816,33 @@ function ReadingWorkspace({
     attachments: PendingAttachment[],
     options?: { onAccepted?: () => void },
   ) => {
-    if (sendLock.current || indexing || chatLoading) return false
+    if (sendLock.current || chatLoading || !pdf) return false
     sendLock.current = true
     const sequence = ++sendSequence.current
     setPreparing(true)
     setChatError('')
     try {
-      const hasText = pages.some(text => text.trim())
-      if (!hasText && !attachments.some(item => item.type === 'image'))
-        throw new Error('这份 PDF 没有可提取的文字。请用右侧的图片提问，将当前页交给模型阅读。')
+      const hasImage = attachments.some(item => item.type === 'image')
       const conversation = doc.activeConversationId
         ? await chatApi.getConversation(doc.activeConversationId)
         : await createConversation()
-      if (!alive.current) return false
-      const context = hasText
-        ? await readingApi.prepareChat(doc.id, conversation.id, pages, { kind: viewKind, runId: viewRunId })
-        : null
-      if (!alive.current) return false
+      if (!alive.current || loadedView.current !== viewKey) return false
+      // Images are independently useful. Text-only first questions wait for
+      // extraction; follow-ups use the backend's committed source receipt.
+      let context = null
+      if (!hasImage || pages.some(text => text.trim())) {
+        let prepared = await readingApi.prepareChat(doc.id, conversation.id, null, { kind: viewKind, runId: viewRunId })
+        if (prepared.needsText) {
+          const extracted = await extraction.current
+          if (!alive.current || loadedView.current !== viewKey) return false
+          if (!extracted?.some(text => text.trim())) throw new Error('这份 PDF 没有可提取的文字。请用图片提问，将当前页交给模型阅读。')
+          prepared = await readingApi.prepareChat(doc.id, conversation.id, extracted, { kind: viewKind, runId: viewRunId })
+        }
+        context = prepared.context
+      }
+      if (!alive.current || loadedView.current !== viewKey) return false
       await onActivateConversation(conversation.id)
-      if (!alive.current) return false
+      if (!alive.current || loadedView.current !== viewKey) return false
       return await onSend(
         conversation,
         content,
@@ -827,12 +887,13 @@ function ReadingWorkspace({
   const saveAnswer = async (id: string) => {
     const message = messages.find((message) => message.id === id)
     if (!message) return false
-    const citation = /\(#reading-page-(\d+)\)/.exec(message.content)
+    const citation = /\((#reading-(?:ref\?[^)]+|page-\d+))\)/.exec(message.content)
+    const anchor = citation ? readingMessageAnchor(citation[1], messages, id) : null
     return (
       (await addNote(
         message.content,
         'answer',
-        citation ? { page: Number(citation[1]), text: '' } : undefined,
+        anchor ?? undefined,
       )) ?? false
     )
   }
@@ -1103,41 +1164,9 @@ function ReadingWorkspace({
                 {error}
               </div>
             )}
-            {pdf &&
-              Array.from({ length: pdf.numPages }, (_, i) => (
-                <div className="page-container" key={`${doc.id}-${viewKey}-${i}`}>
-                  <PdfPage
-                    pdf={pdf}
-                    number={i + 1}
-                    width={width}
-                    zoom={zoom}
-                    initialRatio={pageRatio}
-                    onReady={locate}
-                  />
-                  {state.notes
-                    .filter(
-                      (n) =>
-                        n.kind === 'highlight' &&
-                        anchorMatches(n.anchor) &&
-                        n.anchor?.page === i + 1 &&
-                        n.anchor.rect,
-                    )
-                    .flatMap((n) => (n.anchor!.rects?.length ? n.anchor!.rects : [n.anchor!.rect!]).map((rect, index) => (
-                      <div
-                        key={`${n.id}-${index}`}
-                        className={`source-mark saved mark-${n.anchor!.mark ?? 'highlight'}`}
-                        style={{ ...rectStyle(rect, width * zoom), '--mark-color': n.anchor!.color || '#d3a51d' } as React.CSSProperties}
-                      />
-                    )))}
-                  {areaDraft?.page === i + 1 && areaDraft.rect && <div className="source-mark saved mark-area" style={{ ...rectStyle(areaDraft.rect, width * zoom), '--mark-color': markColor } as React.CSSProperties} />}
-                  {highlight?.page === i + 1 && anchorMatches(highlight) && highlight.rect && (
-                    <div
-                      className="source-mark"
-                      style={rectStyle(highlight.rect, width * zoom)}
-                    />
-                  )}
-                </div>
-              ))}
+            {pdf && <PdfPages key={viewKey} pdf={pdf} width={width} zoom={zoom} pageRatio={pageRatio}
+              notes={doc.notes} viewKind={viewKind} viewRunId={viewRunId}
+              highlight={highlight} areaDraft={areaDraft} markColor={markColor} onReady={locate} />}
           </div>
           <aside className="annotation-rail custom-scrollbar" aria-label="文献标注工具">
             <div role="group" aria-label="标注方式">
@@ -1266,12 +1295,13 @@ function ReadingWorkspace({
                   const href = (e.target as HTMLElement)
                     .closest('a')
                     ?.getAttribute('href')
-                  const reference = readingReferenceAnchor(href ?? '')
-                  const page = readingCitation(href ?? '', pdf?.numPages ?? 0)
-                  if (!reference && !page) return
+                  if (!href?.startsWith('#reading-ref?') && !href?.startsWith('#reading-page-')) return
                   e.preventDefault()
                   e.stopPropagation()
-                  cite(reference ?? { page: page!, text: '', view: locationView })
+                  const messageId = (e.target as HTMLElement).closest<HTMLElement>('[data-message-id]')?.dataset.messageId
+                  const anchor = readingMessageAnchor(href, messages, messageId)
+                  if (anchor) cite(anchor)
+                  else notifyError('这条旧引用未记录完整的文档版本，无法准确定位。请重新引用对应版本。')
                 }}
               >
                 {!messages.length && (
@@ -1313,7 +1343,7 @@ function ReadingWorkspace({
                   conversationId={composerId}
                   onSend={send}
                   onSendWhileRunning={undefined}
-                  disabled={!!busy || preparing || chatLoading || indexing}
+                  disabled={!!busy || preparing || chatLoading || !pdf}
                   cancelVisible={chatReady && inputBarProps.cancelVisible}
                   onNewChat={() => void newConversation()}
                   onClearChat={undefined}
