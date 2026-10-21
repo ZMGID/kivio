@@ -79,19 +79,6 @@ pub(super) fn image_extension_for_mime(mime: &str) -> &'static str {
     }
 }
 
-/// `image_content_part` 的姊妹函数：吃已经是 data: URL 的字符串（R1，MCP 工具
-/// 结果的 image artifact 本身就是 data_url，不需要落盘再读一次）。内容部分的
-/// JSON 形状与 `image_content_part` 保持一致，各 provider 适配器不用区分来源。
-pub(super) fn data_url_image_part(data_url: &str) -> Result<serde_json::Value, String> {
-    if !data_url.starts_with("data:") {
-        return Err("Artifact data_url is not a data: URL".to_string());
-    }
-    Ok(serde_json::json!({
-        "type": "image_url",
-        "image_url": { "url": data_url },
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose, Engine as _};
@@ -198,15 +185,6 @@ mod tests {
             note.contains("另有 2 张图片超出单结果 4 张上限"),
             "note was: {note}"
         );
-    }
-
-    #[test]
-    fn data_url_image_part_wraps_data_url_and_rejects_non_data_url() {
-        let part = data_url_image_part("data:image/png;base64,AAAA").expect("valid data url");
-        assert_eq!(part["type"], "image_url");
-        assert_eq!(part["image_url"]["url"], "data:image/png;base64,AAAA");
-
-        assert!(data_url_image_part("https://example.com/shot.png").is_err());
     }
 
     #[test]

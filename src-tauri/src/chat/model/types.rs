@@ -595,19 +595,32 @@ impl ModelError {
     pub fn provider_stream_error(message: impl Into<String>) -> Self {
         let message = message.into();
         let lower = message.to_ascii_lowercase();
-        let transient = is_missing_stream_terminal_error(&message)
-            || [
-                "overloaded_error",
-                "server_error",
-                "rate_limit_error",
-                "rate_limit_exceeded",
-                "service_unavailable",
-                "internal_server_error",
-                "unavailable",
-                "resource_exhausted",
-            ]
-            .iter()
-            .any(|code| lower.contains(code));
+        let transient = !crate::api::is_permanent_provider_error(&message)
+            && (is_missing_stream_terminal_error(&message)
+                || [
+                    "overloaded_error",
+                    "server_error",
+                    "rate_limit_error",
+                    "rate_limit_exceeded",
+                    "service_unavailable",
+                    "internal_server_error",
+                    "service temporarily unavailable",
+                    "service is temporarily unavailable",
+                    "service is unavailable",
+                    "server_busy",
+                    "servers are currently busy",
+                    "model is at capacity",
+                    "currently experiencing high demand",
+                    "unable to forward upstream",
+                    "upstream_request_failed",
+                    "upstream request failed",
+                    "upstream_stream_read_error",
+                    "stream was interrupted",
+                    "stream disconnected before completion",
+                    "resource_exhausted",
+                ]
+                .iter()
+                .any(|code| lower.contains(code)));
         Self::with_kind(
             message,
             if transient {

@@ -56,7 +56,96 @@ impl FailureKind {
             FailureKind::Empty => "empty_response",
             FailureKind::Exhausted => "rate_limited",
             FailureKind::Timeout => "timeout",
+            FailureKind::InvalidImage => "invalid_image",
+            FailureKind::InvalidRequest => "invalid_request",
             FailureKind::Other => "unknown",
+        }
+    }
+}
+
+pub(crate) fn is_recoverable_text_length(
+    output: &super::stream::ChatStreamOutput,
+    max_output_tokens: u32,
+) -> bool {
+    !output.cancelled
+        && output.finish_reason.as_deref() == Some("length")
+        && !output.content.trim().is_empty()
+        && output.tool_calls.is_empty()
+        && output.images.is_empty()
+        && max_output_tokens > 0
+        && output
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.output_tokens)
+            .is_some_and(|tokens| tokens < u64::from(max_output_tokens))
+}
+
+/// Pi's recoverable length case: output stopped below the intended output cap.
+/// The failed response never enters model history. Both planning and plain answers
+/// share one compact-and-retry owner; transport retries remain in the provider.
+pub(crate) async fn stream_with_truncation_recovery(
+    env: &super::loop_::LoopEnv<'_>,
+    state: &mut super::loop_::RunState,
+    mut request: super::provider_runtime::StreamRequest<'_>,
+) -> Result<super::stream::ChatStreamOutput, crate::chat::model::ModelError> {
+    use crate::chat::model::ModelError;
+    let mut attempted = false;
+    loop {
+        let result = env.config.provider_runtime.stream(request.clone()).await;
+        let output = match result {
+            Ok(output) => output,
+            Err(error) if attempted => {
+                return Err(ModelError::new(format!(
+                    "Truncated response recovery failed: {error}"
+                )))
+            }
+            Err(error) => return Err(error),
+        };
+        let recoverable = is_recoverable_text_length(&output, request.max_output_tokens);
+        if !recoverable {
+            return Ok(output);
+        }
+        // Account for the discarded attempt, but keep it out of persisted/replayed text.
+        state.merge_usage_with_billing(
+            output.usage.clone(),
+            output.billing_usage.clone(),
+            env,
+            true,
+        );
+        if attempted {
+            return Err(ModelError::new("Truncated response recovery failed after one compact-and-retry attempt. Please reduce context or switch models."));
+        }
+        attempted = true;
+        let compacted = super::compaction::compact_send_view(
+            env,
+            state,
+            true,
+            request.tools.unwrap_or_default(),
+        )
+        .await;
+        if !request
+            .host
+            .is_generation_active(request.conversation_id, request.generation)
+        {
+            return Ok(super::stream::ChatStreamOutput::new(
+                String::new(),
+                String::new(),
+                true,
+            ));
+        }
+        if state.compaction_blocked || compacted == request.messages {
+            return Err(ModelError::new("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models."));
+        }
+        request.messages = compacted;
+        if env.config.depth == 0 {
+            request.host.begin_context_request(
+                request.conversation_id,
+                request.message_id,
+                &request.provider.id,
+                request.model,
+                &request.messages,
+                request.tools.unwrap_or_default(),
+            );
         }
     }
 }
@@ -75,6 +164,10 @@ pub(crate) enum FailureKind {
     /// 传输层超时 / 连接中断 / 流断包——**没有** HTTP 状态码,供应商压根没答完。
     /// 典型:大上下文经第三方中转,SSE 跑到一半被截断,重试再超时。
     Timeout,
+    /// Invalid media cannot be repaired by sending the same request again.
+    InvalidImage,
+    /// Deterministic request, credentials or account errors require intervention.
+    InvalidRequest,
     /// 其它(无法归类)。
     Other,
 }
@@ -105,17 +198,19 @@ const OVERFLOW_PATTERNS: &[&str] = &[
     "too many tokens",
     "reduce the length",
     "reduce your prompt",
-    "string too long",
-    "max_tokens",
     "input is too long",
     "input too long",
     // Anthropic
     "prompt is too long",
+    "prompt too long",
+    "prompt exceeds max length",
+    "maximum prompt length",
+    "maximum allowed input length",
+    "range of input length should be",
+    "exceeds the available context size",
     "request too large",
     "request_too_large",
     // Gemini / 其它代理
-    "exceeds the maximum",
-    "exceeds the limit",
     "exceeds the context",
     "token limit",
     "tokens limit",
@@ -124,8 +219,6 @@ const OVERFLOW_PATTERNS: &[&str] = &[
     // 国内供应商 / 中文文案
     "上下文长度",
     "上下文过长",
-    "超出最大",
-    "超过最大",
     "输入过长",
     "tokens 超",
 ];
@@ -169,6 +262,8 @@ fn is_context_overflow(lower: &str) -> bool {
         return false;
     }
     OVERFLOW_PATTERNS.iter().any(|n| lower.contains(n))
+        || (lower.contains("input token count") && lower.contains("exceeds the maximum"))
+        || (lower.contains("prompt has") && lower.contains("but the configured context size is"))
 }
 
 /// Some OpenAI-compatible streams report overflow as a successful terminal frame.
@@ -219,10 +314,18 @@ pub(crate) fn classify(message: &str) -> FailureKind {
     if trimmed.is_empty() {
         return FailureKind::Empty;
     }
+    // A bounded length recovery already exhausted its semantic retry. Never re-enter
+    // overflow recovery merely because the final provider error mentions context.
+    if trimmed.starts_with("Truncated response recovery failed") {
+        return FailureKind::Other;
+    }
     let status = crate::api::extract_status_code(trimmed);
     let lower = trimmed.to_ascii_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
 
+    if crate::api::is_invalid_image_error(trimmed) {
+        return FailureKind::InvalidImage;
+    }
     // 内容审核:供应商措辞不一,关键词覆盖中英常见形态。
     if has(&[
         "content exists risk",
@@ -239,14 +342,16 @@ pub(crate) fn classify(message: &str) -> FailureKind {
         return FailureKind::ContentModeration;
     }
     // 上下文超长。先于 status 判定:overflow 多以 400 返回,若不在此截获会被下面
-    // 的 `_ => Other` 当成普通 BadRequest。命中 NON_OVERFLOW(限流/配额)则不算 overflow。
+    // 的确定性请求错误处理。命中 NON_OVERFLOW(限流/配额)则不算 overflow。
     if is_context_overflow(&lower) {
         return FailureKind::ContextOverflow;
     }
+    if crate::api::is_permanent_provider_error(trimmed) {
+        return FailureKind::InvalidRequest;
+    }
     match status {
-        // 审核常以 400 返回但措辞没命中上面的词:仍按 BadRequest→Other 处理,交给
-        // Remediate 兜一手(去敏精简后重试),不会更糟。
-        Some(429) | Some(401) | Some(402) | Some(403) => FailureKind::Exhausted,
+        Some(429) => FailureKind::Exhausted,
+        Some(400..=499) => FailureKind::InvalidRequest,
         Some(code) if (500..600).contains(&code) => FailureKind::Exhausted,
         // 无状态码 = 供应商压根没答完(超时 / 连接断 / SSE 断包)。别再叫"模型调用失败",
         // 也别去敏重做——同样的大请求只会再超一次时。
@@ -285,14 +390,17 @@ pub(crate) fn decide(
                 RecoveryAction::CompactAndRetry
             }
         }
-        // 请求因内容被拒,或措辞没命中的 400(归到 Other)→ 用去敏精简的输入重做
-        // 一次,通常能产出真正的总结;失败了下一轮 already_remediated 会兜底,不会更糟。
-        FailureKind::ContentModeration | FailureKind::Other => RecoveryAction::Remediate,
+        // Only explicit content moderation permits the existing one-shot summary recovery.
+        // Unknown errors and deterministic input failures must not trigger another call.
+        FailureKind::ContentModeration => RecoveryAction::Remediate,
         // 空响应 / 限流耗尽:重做无意义(同样的输入只会再失败),直接用已收集结果兜底。
         // 超时同理,而且更甚:去敏重做还要再排队等一次 3 分钟超时,纯粹浪费用户时间。
-        FailureKind::Empty | FailureKind::Exhausted | FailureKind::Timeout => {
-            RecoveryAction::DegradeToGathered
-        }
+        FailureKind::Empty
+        | FailureKind::Exhausted
+        | FailureKind::Timeout
+        | FailureKind::InvalidImage
+        | FailureKind::InvalidRequest
+        | FailureKind::Other => RecoveryAction::DegradeToGathered,
     }
 }
 
@@ -460,11 +568,25 @@ pub(crate) fn overflow_static_message(language: &str) -> String {
 /// 上下文超长就说上下文,绝不再把限流说成"可能上下文过长"。
 fn failure_reason_line(kind: FailureKind, zh: bool) -> &'static str {
     match kind {
+        FailureKind::InvalidImage => {
+            if zh {
+                "⚠️ 图片数据、格式或尺寸不被接受，已停止重试。请重新读取图片，或转换为 PNG/JPEG 后重新发送。"
+            } else {
+                "⚠️ Image data, format or dimensions were rejected. Retries stopped. Read the image again or convert it to PNG/JPEG before resending."
+            }
+        }
+        FailureKind::InvalidRequest => {
+            if zh {
+                "⚠️ 请求被拒绝，重复发送无法解决。请按下方错误检查输入、模型参数、访问权限或账户额度。已完成的工具结果保留。"
+            } else {
+                "⚠️ The request was rejected and will not be repeated. Check the input, model parameters, access or account quota using the error below. Completed tool results are preserved."
+            }
+        }
         FailureKind::Exhausted => {
             if zh {
-                "⚠️ 模型调用被限流或配额耗尽(HTTP 429/5xx),多次退避重试后仍失败 —— 这是请求频率/配额问题,与上下文长度无关。请稍后重试,或为该供应商添加备用 key、更换供应商。"
+                "⚠️ 模型服务限流或暂时故障，重试后仍未完成。请稍后重试或更换供应商。"
             } else {
-                "⚠️ The model was rate-limited or quota-exhausted (HTTP 429/5xx) and still failed after several backoff retries. This is a request-rate/quota issue, unrelated to context length. Retry later, add a backup key, or switch providers."
+                "⚠️ The model service was rate-limited or temporarily unavailable and retries did not complete. Retry later or switch providers."
             }
         }
         FailureKind::ContextOverflow => {
@@ -580,6 +702,10 @@ mod tests {
             "Error: 400 reduce the length of the messages",
             "错误:400 - 上下文长度超出最大限制",
             "错误:400 - 输入过长",
+            "Error: 400 - The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)",
+            "Error: 400 - Prompt has 300000 tokens, but the configured context size is 200000 tokens",
+            "Error: 400 - prompt exceeds max length",
+            "Error: 400 - Range of input length should be [1, 262144]",
         ] {
             assert_eq!(
                 classify(msg),
@@ -599,7 +725,7 @@ mod tests {
         ] {
             let kind = classify(msg);
             assert_ne!(kind, FailureKind::ContextOverflow, "must not be overflow: {msg}");
-            assert_eq!(kind, FailureKind::Exhausted, "should be exhausted: {msg}");
+            assert!(matches!(kind, FailureKind::Exhausted | FailureKind::InvalidRequest));
         }
     }
 
@@ -625,10 +751,10 @@ mod tests {
             decide(FailureKind::Exhausted, true, false, false),
             RecoveryAction::DegradeToGathered
         );
-        // 措辞没命中的 400(Other)+ 有结果 + 未补救 → 也先去敏重试(与 classify 注释一致)
+        // Unknown failures retain completed results without speculative retries.
         assert_eq!(
             decide(FailureKind::Other, true, false, false),
-            RecoveryAction::Remediate
+            RecoveryAction::DegradeToGathered
         );
         // 空响应重做无意义 → 直接兜底
         assert_eq!(

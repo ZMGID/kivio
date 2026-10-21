@@ -26,6 +26,7 @@ use super::{
 
 pub(crate) type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+#[derive(Clone)]
 pub(crate) struct StreamRequest<'a> {
     pub host: &'a dyn AgentHost,
     pub provider: &'a ModelProvider,

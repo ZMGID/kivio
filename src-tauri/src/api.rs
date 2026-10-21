@@ -336,6 +336,60 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
 
 /// 判断请求错误是否可重试
 /// 包括建立连接失败、超时，以及发送请求时连接被代理/上游切断。
+pub(crate) fn is_invalid_image_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    ["image", "图片", "base64", "mime", "media type"]
+        .iter()
+        .any(|word| lower.contains(word))
+        && [
+            "invalid",
+            "decode",
+            "corrupt",
+            "format",
+            "unsupported",
+            "too large",
+            "size",
+            "dimension",
+            "exceeds",
+            "损坏",
+            "格式",
+            "超过",
+            "超出",
+        ]
+        .iter()
+        .any(|word| lower.contains(word))
+}
+
+/// Provider errors that require changing input, credentials or account state.
+/// Shared by HTTP rate-limit handling and errors delivered inside a successful SSE response.
+pub(crate) fn is_permanent_provider_error(message: &str) -> bool {
+    if is_invalid_image_error(message) {
+        return true;
+    }
+    let lower = message.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "out of budget",
+        "quota exceeded",
+        "billing",
+        "available balance",
+        "monthly usage limit reached",
+        "gousagelimiterror",
+        "freeusagelimiterror",
+        "subscription_sharing_usage_limit_exceeded",
+        "subscription_sharing_workplace_individual_usage_limit_exceeded",
+        "invalid_request_error",
+        "invalid_argument",
+        "authentication_error",
+        "permission_denied",
+        "permission_error",
+        "invalid_api_key",
+        "unsupported_format",
+    ]
+    .iter()
+    .any(|code| lower.contains(code))
+}
+
 fn is_retryable_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
 }
@@ -693,11 +747,13 @@ where
                 if is_rate_limit {
                     rate_limit_attempts += 1;
                 }
-                let retryable = if is_rate_limit {
-                    policy.should_retry_rate_limit(rate_limit_attempts)
-                } else {
-                    status.is_server_error() || matches!(status.as_u16(), 408)
-                };
+                // Gate every status: relays may wrap deterministic upstream errors in 5xx.
+                let retryable = !is_permanent_provider_error(&text)
+                    && if is_rate_limit {
+                        policy.should_retry_rate_limit(rate_limit_attempts)
+                    } else {
+                        status.is_server_error() || matches!(status.as_u16(), 408)
+                    };
                 let reason = match status.as_u16() {
                     429 => "Rate limited",
                     529 => "Server overloaded",
@@ -1823,7 +1879,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn deterministic_client_error_does_not_retry() {
-        for status in [400u16, 404, 422] {
+        for (status, body) in [
+            (400u16, "invalid image data"),
+            (404, "model not found"),
+            (422, "invalid schema"),
+            (429, "insufficient_quota"),
+            (429, "monthly usage limit reached"),
+            (500, "invalid_request_error: invalid tool schema"),
+            (503, "insufficient_quota"),
+            (502, "authentication_error: invalid credentials"),
+        ] {
             let calls = Arc::new(AtomicUsize::new(0));
             let calls_inner = Arc::clone(&calls);
 
@@ -1834,7 +1899,9 @@ mod tests {
                     let calls = Arc::clone(&calls_inner);
                     async move {
                         calls.fetch_add(1, AtomicOrdering::SeqCst);
-                        Ok(make_response(status, None))
+                        Ok(reqwest::Response::from(
+                            http::Response::builder().status(status).body(body).unwrap(),
+                        ))
                     }
                 },
                 FailoverRetryPolicy {
@@ -1845,7 +1912,7 @@ mod tests {
             .await;
 
             assert!(result.is_err());
-            // 确定性 4xx 快速失败，只发一次。
+            // Deterministic errors stop even when a relay wraps them in 5xx.
             assert_eq!(
                 calls.load(AtomicOrdering::SeqCst),
                 1,

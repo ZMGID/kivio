@@ -156,9 +156,10 @@ pub(crate) async fn planning_step(
     // 内置搜索由实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     let mut overflow_attempted = false;
     let planning_result = loop {
-        match config
-            .provider_runtime
-            .stream(super::provider_runtime::StreamRequest {
+        match super::recovery::stream_with_truncation_recovery(
+            env,
+            state,
+            super::provider_runtime::StreamRequest {
                 host,
                 provider: &config.provider,
                 model: &config.model,
@@ -179,8 +180,9 @@ pub(crate) async fn planning_step(
                 reasoning_segment: Some(planning_reasoning_segment.clone()),
                 tool_draft_tracker: Some(planning_tool_drafts.clone()),
                 web_search_tracker: planning_web_search_tracker.clone(),
-            })
-            .await
+            },
+        )
+        .await
         {
             Ok(mut stream) => {
                 if stream.cancelled {
@@ -749,6 +751,11 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                 snapshot_content,
                 snapshot_reasoning,
             );
+            // Roll back exactly what this sink emitted, including Unicode and
+            // provider-specific text normalization, before semantic recovery.
+            if super::recovery::is_recoverable_text_length(&stream_output, max_output_tokens) {
+                sink.discard_attempt();
+            }
             validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
             return Ok(stream_output);
         }

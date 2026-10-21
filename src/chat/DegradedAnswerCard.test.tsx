@@ -49,6 +49,8 @@ describe('DegradedAnswerCard', () => {
       ['timeout', '超时 / 连接中断'],
       ['moderation', '内容审核拦截'],
       ['empty_response', '空响应'],
+      ['invalid_image', '图片无效'],
+      ['invalid_request', '请求被拒绝'],
     ]
     for (const [kind, label] of cases) {
       const { unmount } = render(<DegradedAnswerCard degraded={makeDegraded({ kind })} />)

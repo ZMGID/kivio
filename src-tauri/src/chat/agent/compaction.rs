@@ -602,12 +602,9 @@ pub(crate) async fn summarize_history(
         };
         let lower = error.to_lowercase();
         if transcript.is_some() {
-            // Only this path has independent evidence of excessive input.
-            // A generic 400 permits a bounded smaller request here, never an
-            // unchanged retry or a global reclassification of all HTTP 400s.
-            if super::recovery::classify(&error) == super::recovery::FailureKind::ContextOverflow
-                || crate::api::extract_status_code(&error) == Some(400)
-            {
+            // Only explicit overflow can justify shrinking a rejected request.
+            // Invalid images, schemas and credentials are not input-size evidence.
+            if super::recovery::classify(&error) == super::recovery::FailureKind::ContextOverflow {
                 overflow_attempts += 1;
                 if overflow_attempts >= MAX_SUMMARY_ATTEMPTS {
                     return CompactOutcome::Failed;
@@ -659,10 +656,7 @@ pub(crate) async fn summarize_history(
         failures += 1;
         if !automatic
             || failures >= MAX_SUMMARY_ATTEMPTS
-            || crate::api::extract_status_code(&error) == Some(400)
-            || lower.contains("401")
-            || lower.contains("403")
-            || lower.contains("api key")
+            || error != "Empty or incomplete compaction summary"
         {
             eprintln!("Context compaction failed: {error}");
             return CompactOutcome::Failed;

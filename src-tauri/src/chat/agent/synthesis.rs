@@ -108,9 +108,10 @@ pub(crate) async fn synthesis_step(
         None
     };
 
-    let stream = config
-        .provider_runtime
-        .stream(super::provider_runtime::StreamRequest {
+    let stream = recovery::stream_with_truncation_recovery(
+        env,
+        state,
+        super::provider_runtime::StreamRequest {
             host,
             provider: &config.provider,
             model: &config.model,
@@ -131,9 +132,10 @@ pub(crate) async fn synthesis_step(
             reasoning_segment: Some(response_reasoning_segment.clone()),
             tool_draft_tracker: None,
             web_search_tracker: synth_web_search_tracker.clone(),
-        })
-        .await
-        .map_err(|err| err.to_string());
+        },
+    )
+    .await
+    .map_err(|err| err.to_string());
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) if !state.tool_records.is_empty() => {

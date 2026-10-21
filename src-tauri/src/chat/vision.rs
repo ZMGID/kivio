@@ -16,8 +16,7 @@ use crate::settings::{ModelProvider, SessionModel, Settings};
 use crate::state::AppState;
 
 use super::mcp_image_feedback::{
-    append_tool_result_note, data_url_image_part, image_extension_for_mime,
-    select_image_artifacts_for_attach,
+    append_tool_result_note, image_extension_for_mime, select_image_artifacts_for_attach,
 };
 use super::storage::load_conversation;
 use super::{
@@ -395,7 +394,7 @@ pub(super) async fn read_images_as_tool_result(
     if model_supports_vision(provider, model) == Some(true) {
         let (parts, content) = if let Some(sheet) = &collage {
             (
-                vec![image_bytes_content_part(&sheet.jpeg, "image/jpeg")?],
+                vec![image_bytes_content_part(&sheet.jpeg)?],
                 sheet.tool_message(zh),
             )
         } else {
@@ -555,20 +554,17 @@ pub(super) async fn attach_image_artifacts_for_model(
     // 消息追加；rounds::push_tool_execution_result 负责排序，Anthropic 侧会与
     // tool_result 合并进同一 user turn，与 read 工具走的管子完全一致）。
     if model_supports_vision(provider, model) == Some(true) {
-        let parts: Vec<Value> = accepted
-            .iter()
-            .filter_map(|(artifact, bytes)| {
-                // 与 image_content_part 同一入口收口：超界的 MCP 图片先降采样再直喂。
-                match super::image_prep::prepare_image_bytes_for_model(bytes) {
-                    Some((processed, mime)) => data_url_image_part(&format!(
-                        "data:{mime};base64,{}",
-                        general_purpose::STANDARD.encode(processed)
-                    ))
-                    .ok(),
-                    None => data_url_image_part(&artifact.data_url).ok(),
-                }
-            })
-            .collect();
+        let mut parts = Vec::new();
+        let mut errors = Vec::new();
+        for (artifact, bytes) in &accepted {
+            match image_bytes_content_part(bytes) {
+                Ok(part) => parts.push(part),
+                Err(error) => errors.push(format!("图片 {} 未发送: {error}", artifact.name)),
+            }
+        }
+        for error in errors {
+            append_tool_result_note(result, &error);
+        }
         if !parts.is_empty() {
             result
                 .follow_up_user_messages
@@ -729,18 +725,20 @@ pub(super) fn user_content_with_auxiliary_vision_result(
 
 pub(super) fn image_content_part(path: &PathBuf) -> Result<serde_json::Value, String> {
     let bytes = fs::read(path).map_err(|e| format!("读取图片附件失败: {e}"))?;
-    image_bytes_content_part(&bytes, image_mime_for_path(path))
+    image_bytes_content_part(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-pub(super) fn image_bytes_content_part(
-    bytes: &[u8],
-    fallback_mime: &str,
-) -> Result<serde_json::Value, String> {
+pub(super) fn image_bytes_content_part(bytes: &[u8]) -> Result<serde_json::Value, String> {
     // 入口降采样（治本）：超尺寸/超体积的图在进上下文前收敛到有界大小，
     // 历史层的字节预算（compaction::prune_image_parts）只剩保险作用。
-    let (bytes, mime) = match super::image_prep::prepare_image_bytes_for_model(bytes) {
+    let (bytes, mime) = match super::image_prep::prepare_image_bytes_for_model(bytes)? {
         Some((processed, mime)) => (processed, mime),
-        None => (bytes.to_vec(), fallback_mime),
+        None => (
+            bytes.to_vec(),
+            image::guess_format(bytes)
+                .map_err(|e| format!("图片格式无效: {e}"))?
+                .to_mime_type(),
+        ),
     };
     let base64 = general_purpose::STANDARD.encode(bytes);
     Ok(serde_json::json!({
@@ -774,6 +772,22 @@ mod tests {
     use crate::settings::{ModelProvider, Settings};
 
     use super::auxiliary_vision_model_for_images;
+
+    #[test]
+    fn image_payload_rejects_corruption_and_uses_actual_format() {
+        assert!(super::image_bytes_content_part(b"broken image").is_err());
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let part = super::image_bytes_content_part(bytes.get_ref()).unwrap();
+        assert!(part["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        let bytes = bytes.into_inner();
+        assert!(super::image_bytes_content_part(&bytes[..bytes.len() / 2]).is_err());
+    }
 
     fn test_provider(id: &str, name: &str, enabled_models: Vec<&str>) -> ModelProvider {
         ModelProvider {

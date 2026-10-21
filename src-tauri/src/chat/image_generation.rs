@@ -1633,32 +1633,20 @@ fn load_input_image_from_path(path: &Path) -> Result<InputImage, String> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err("Input image is too large".to_string());
     }
-    let (bytes, mime_type) = match super::image_prep::prepare_image_bytes_for_model(&bytes) {
+    let (bytes, mime_type) = match super::image_prep::prepare_image_bytes_for_model(&bytes)? {
         Some((prepared, mime)) => (prepared, mime.to_string()),
-        None => (bytes, mime_for_image_path(path).to_string()),
+        None => {
+            let mime = image::guess_format(&bytes)
+                .map_err(|e| format!("Invalid image: {e}"))?
+                .to_mime_type()
+                .to_string();
+            (bytes, mime)
+        }
     };
     Ok(InputImage {
         mime_type,
         base64: general_purpose::STANDARD.encode(bytes),
     })
-}
-
-fn mime_for_image_path(path: &Path) -> &'static str {
-    let ext = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "tiff" | "tif" => "image/tiff",
-        "heic" => "image/heic",
-        "heif" => "image/heif",
-        _ => "image/png",
-    }
 }
 
 fn collect_mixer_input_images(
@@ -2707,12 +2695,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kivio-img-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("temp dir");
         let path = dir.join("photo.jpg");
-        fs::write(&path, b"fake-jpeg-bytes").expect("write");
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(&path, bytes.get_ref()).expect("write");
         let image = load_input_image_from_path(&path).expect("load");
-        assert_eq!(image.mime_type, "image/jpeg");
+        assert_eq!(image.mime_type, "image/png");
         assert_eq!(
             general_purpose::STANDARD.decode(image.base64).expect("b64"),
-            b"fake-jpeg-bytes"
+            bytes.into_inner()
         );
         let _ = fs::remove_dir_all(&dir);
     }

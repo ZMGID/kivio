@@ -18,6 +18,8 @@ const KIND_META: Record<
   timeout: { Icon: PlugZap, label: '超时 / 连接中断', tone: 'amber' },
   moderation: { Icon: Ban, label: '内容审核拦截', tone: 'red' },
   empty_response: { Icon: MessageSquareOff, label: '空响应', tone: 'amber' },
+  invalid_image: { Icon: AlertTriangle, label: '图片无效', tone: 'red' },
+  invalid_request: { Icon: AlertTriangle, label: '请求被拒绝', tone: 'red' },
   unknown: { Icon: AlertTriangle, label: '调用失败', tone: 'red' },
 }
 

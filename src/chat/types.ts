@@ -160,6 +160,8 @@ export interface DegradedAnswer {
     | 'timeout'
     | 'moderation'
     | 'empty_response'
+    | 'invalid_image'
+    | 'invalid_request'
     | 'unknown'
     | string
   /** 一行人读的失败原因。 */

@@ -1890,22 +1890,23 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
 #[tokio::test]
 async fn run_loop_reconnects_current_request_without_replaying_tools() {
     for (interrupt_planning, clean_eof, upstream_error) in [
-        (true, false, false),
-        (false, false, false),
-        (true, true, false),
-        (false, true, false),
-        (false, false, true),
+        (true, false, None),
+        (false, false, None),
+        (true, true, None),
+        (false, true, None),
+        (false, false, Some("server_error")),
+        (false, false, Some("The service is temporarily unavailable")),
+        (false, false, Some("unable to forward upstream")),
+        (true, false, Some("upstream_stream_read_error")),
+        (false, false, Some("model is at capacity")),
     ] {
         let mut broken = if interrupt_planning {
             planning_tool_call_sse_events()[..1].to_vec()
         } else {
             vec![serde_json::json!({"choices":[{"delta":{"content":"discarded partial 🌱", "reasoning_content":"partial thought"}}]}).to_string()]
         };
-        let failed = if upstream_error {
-            broken.push(
-                serde_json::json!({"error":{"type":"server_error","message":"try later"}})
-                    .to_string(),
-            );
+        let failed = if let Some(message) = upstream_error {
+            broken.push(serde_json::json!({"error":{"message":message}}).to_string());
             MockResponse::Sse(broken)
         } else if clean_eof {
             MockResponse::Sse(broken)
@@ -2090,7 +2091,7 @@ async fn tool_image_follow_up_recovery_keeps_question_and_language() {
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Status(
             400,
-            r#"{"error":"No tool output found for call next"}"#.into(),
+            r#"{"error":"content moderation rejected tool output"}"#.into(),
         ),
         MockResponse::Sse(vec![
             r#"{"choices":[{"delta":{"content":"恢复回答"},"finish_reason":"stop"}]}"#.into(),
@@ -2146,7 +2147,7 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
     let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
         &result.tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Other,
+        crate::chat::agent::recovery::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -2181,7 +2182,7 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
     let degraded = result
         .degraded
         .expect("degrade path must attach a card payload");
-    assert_eq!(degraded.kind, "unknown");
+    assert_eq!(degraded.kind, "invalid_request");
     assert_eq!(
         degraded.detail.as_deref(),
         Some("400 Bad Request - mock synthesis failure (attempt 1/1)"),
@@ -3639,7 +3640,6 @@ async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Sse(vec!["[DONE]".to_string()]),
-        MockResponse::Sse(vec!["[DONE]".to_string()]),
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
@@ -3658,7 +3658,7 @@ async fn subagent_empty_planning_recovery_does_not_repeat_tool_work() {
     let bodies = server.captured_bodies();
     assert_eq!(
         bodies.len(),
-        3,
+        2,
         "empty provider output recovers from existing tools, without a fresh worker run"
     );
     assert!(bodies
@@ -3844,7 +3844,7 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
     let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
         &result.tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Other,
+        crate::chat::agent::recovery::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -4956,7 +4956,7 @@ async fn child_output_does_not_hide_parent_provider_error() {
     };
     let executor = RecordingExecutor::default();
     let result = run_agent_loop(config, &host, &executor).await.unwrap();
-    assert_eq!(result.degraded.as_ref().unwrap().kind, "unknown");
+    assert_eq!(result.degraded.as_ref().unwrap().kind, "invalid_request");
     assert!(result
         .degraded
         .as_ref()
@@ -6192,8 +6192,41 @@ async fn assert_oversized_history_recovers(
 }
 
 #[tokio::test]
-async fn run_loop_issue_62_generic_400_recovers_oversized_history() {
-    assert_oversized_history_recovers("rejected by an internal MaaS component", false, false).await;
+async fn compaction_permanent_errors_do_not_shrink_or_repeat_requests() {
+    for (status, body) in [
+        (400, "invalid image data"),
+        (422, "invalid schema"),
+        (401, "invalid api key"),
+    ] {
+        let server = MockModelServer::start(vec![MockResponse::Status(status, body.into())]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        for round in 0..6 {
+            config.runtime_messages.push(serde_json::json!({"role":"assistant", "content":archived_work(&format!("old work {round}"))}));
+            config
+                .runtime_messages
+                .push(serde_json::json!({"role":"user", "content":format!("next {round}")}));
+        }
+        let result = crate::chat::agent::compaction::summarize_history(
+            &state,
+            &config.provider,
+            &config.model,
+            &config.runtime_messages,
+            true,
+            &[],
+            32000,
+            "test",
+            "reply",
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            crate::chat::agent::compaction::CompactOutcome::Failed
+        ));
+        assert_eq!(server.captured_bodies().len(), 1, "{status}: {body}");
+    }
 }
 
 #[tokio::test]
@@ -6203,7 +6236,7 @@ async fn run_loop_issue_62_explicit_overflow_recovers_oversized_history() {
 
 #[tokio::test]
 async fn run_loop_issue_62_large_unicode_tool_history_preserves_coverage_and_pairs() {
-    assert_oversized_history_recovers("rejected by an internal MaaS component", true, false).await;
+    assert_oversized_history_recovers("maximum context length exceeded", true, false).await;
 }
 
 /// An unrelated small-request 400 must surface once, without context recovery.
@@ -6554,4 +6587,141 @@ async fn runtime_context_is_persisted_without_rewriting_previous_wire_messages()
         .unwrap()
         .to_string()
         .contains("memory B"));
+}
+
+#[tokio::test]
+async fn permanent_request_errors_preserve_tools_without_another_model_call() {
+    for failure in [
+        MockResponse::Status(400, "invalid image data: unable to decode image".into()),
+        MockResponse::Status(422, "invalid tool schema".into()),
+        MockResponse::Sse(vec![r#"{"error":{"type":"rate_limit_error","message":"subscription_sharing_workplace_individual_usage_limit_exceeded"}}"#.into()]),
+        MockResponse::Sse(vec![r#"{"error":{"type":"invalid_request_error","message":"image decoder unavailable for this format"}}"#.into()]),
+        MockResponse::Sse(vec![r#"{"error":{"type":"rate_limit_error","message":"insufficient_quota"}}"#.into()]),
+        MockResponse::Status(400, "max_tokens must be greater than zero".into()),
+        MockResponse::Sse(vec![r#"{"error":{"type":"server_error","message":"invalid image data"}}"#.into()]),
+    ] {
+        let server = MockModelServer::start(vec![MockResponse::Sse(planning_tool_call_sse_events()), failure, final_answer_sse("unexpected retry")]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.retry_attempts = 3;
+        let executor = RecordingExecutor::default();
+        let result = run_agent_loop(config, &TestHost::default(), &executor).await.unwrap();
+        assert_eq!(server.captured_bodies().len(), 2, "permanent errors must stop model requests");
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+        assert!(result.content.contains("result:read"));
+        assert!(result.degraded.is_some());
+    }
+}
+
+fn truncated_text_response(output_tokens: Option<u64>) -> MockResponse {
+    let mut frame = serde_json::json!({"choices":[{"delta":{"content":"unfinished answer 🌱"},"finish_reason":"length"}]});
+    if let Some(tokens) = output_tokens {
+        frame["usage"] = serde_json::json!({"prompt_tokens":100,"completion_tokens":tokens,"total_tokens":100+tokens});
+    }
+    MockResponse::Sse(vec![frame.to_string(), "[DONE]".into()])
+}
+
+#[tokio::test]
+async fn truncated_text_recovers_once_without_replaying_completed_tools() {
+    for with_tools in [false, true] {
+        for outcome in ["success", "length", "error", "cancel", "summary-error"] {
+            let mut responses = Vec::new();
+            if with_tools {
+                responses.push(MockResponse::Sse(planning_tool_call_sse_events()));
+            }
+            responses.push(truncated_text_response(Some(12)));
+            responses.push(match outcome {
+                "cancel" => MockResponse::SseThenHang(Vec::new()),
+                "summary-error" => {
+                    MockResponse::Status(400, "invalid_request_error: bad summary request".into())
+                }
+                _ => MockResponse::Sse(vec![
+                    long_summary_sse("TRUNCATION_SUMMARY"),
+                    "[DONE]".into(),
+                ]),
+            });
+            responses.push(match outcome {
+                "length" => truncated_text_response(Some(12)),
+                "error" => {
+                    MockResponse::Status(400, "context length exceeded after recovery".into())
+                }
+                _ => final_answer_sse("complete recovered answer"),
+            });
+            let server = MockModelServer::start(responses);
+            let state = test_app_state();
+            let mut config = test_run_config(&state, &server.base_url);
+            if !with_tools {
+                config.tools.clear();
+            }
+            for n in 0..6 {
+                config.runtime_messages.push(serde_json::json!({"role":"assistant","content":format!("historical answer {n} {}", "archived context ".repeat(2000))}));
+                config.runtime_messages.push(
+                    serde_json::json!({"role":"user","content":format!("historical question {n}")}),
+                );
+            }
+            let host = TestHost::default();
+            if outcome == "cancel" {
+                let flag = host.cancel_flag.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(250)).await;
+                    flag.store(true, Ordering::SeqCst);
+                });
+            }
+            let executor = RecordingExecutor::default();
+            let result = run_agent_loop(config, &host, &executor).await;
+            if outcome == "success" {
+                let result = result.unwrap();
+                assert_eq!(result.content, "complete recovered answer");
+                assert!(result.compacted_history.is_some());
+                assert!(!serde_json::to_string(&result.api_messages)
+                    .unwrap()
+                    .contains("unfinished answer"));
+            } else if outcome == "cancel" {
+                assert!(
+                    result.as_ref().is_err_and(|e| e.contains("cancelled"))
+                        || result
+                            .as_ref()
+                            .is_ok_and(|r| r.stream_outcome == "cancelled")
+                );
+            } else if with_tools {
+                let result = result.unwrap();
+                assert!(result.degraded.is_some());
+                assert_eq!(result.tool_records.len(), 1);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{outcome} must not become a successful partial answer"
+                );
+            }
+            let bodies = server.captured_bodies();
+            let expected = if matches!(outcome, "cancel" | "summary-error") {
+                2
+            } else {
+                3
+            } + usize::from(with_tools);
+            assert_eq!(bodies.len(), expected, "{outcome} tools={with_tools}");
+            assert_eq!(executor.events().len(), if with_tools { 2 } else { 0 });
+            assert!(!host.discarded_attempts.lock().unwrap().is_empty());
+            assert!(bodies
+                .iter()
+                .skip(1 + usize::from(with_tools))
+                .all(|body| !body.contains("unfinished answer")));
+        }
+    }
+}
+
+#[tokio::test]
+async fn truncated_text_at_output_cap_or_without_usage_does_not_retry() {
+    for usage in [Some(1024), None] {
+        let server = MockModelServer::start(vec![truncated_text_response(usage)]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.tools.clear();
+        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "unfinished answer 🌱");
+        assert_eq!(server.captured_bodies().len(), 1);
+    }
 }

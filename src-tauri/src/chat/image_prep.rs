@@ -8,8 +8,7 @@
 //! prune_image_parts` 存在的原因——入口收口后每张图有界，历史层预算才从「每轮必砍、
 //! 把模型没看过的图挤出去」退化成极端情况的保险。
 //!
-//! 解不出来的字节（webp/gif 等未编译进 `image` crate 的格式、损坏文件）返回 None，
-//! 调用方原样直通——与引入本模块前的行为一致，绝不因降采样失败丢图。
+//! 图片必须完成解码校验；损坏或不支持的数据返回错误，不得原样发给模型。
 
 use std::io::Cursor;
 
@@ -43,27 +42,40 @@ pub(super) fn decode_oriented(bytes: &[u8]) -> Option<DynamicImage> {
     Some(img)
 }
 
-/// 入口降采样：返回 `Some((jpeg_bytes, "image/jpeg"))` 表示已处理，`None` 表示
-/// 原字节直接可用（尺寸/体积都在界内且无需 EXIF 旋转，或根本解不出来——直通是唯一安全的降级）。
-pub(super) fn prepare_image_bytes_for_model(bytes: &[u8]) -> Option<(Vec<u8>, &'static str)> {
-    // 只开 decoder 读尺寸 + Orientation，避免「本来就合规」的图付一次全量像素解码。
-    // 头部尺寸不含 EXIF 旋转；有 Orientation 就必须落地转正——JPEG 重编码会丢掉 EXIF，
-    // 多数模型也不自己转，小图直通会把手机竖拍侧着送进去。
+/// Validate all pixels before sending. None means validated, supported bytes can
+/// pass through; errors must never be interpreted as a successful no-op.
+pub(super) fn prepare_image_bytes_for_model(
+    bytes: &[u8],
+) -> Result<Option<(Vec<u8>, &'static str)>, String> {
+    let invalid = |error| {
+        format!("图片无法解码，可能已损坏或格式不受支持，请转换为 PNG/JPEG 后重试: {error}")
+    };
     let reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
-        .ok()?;
-    let mut decoder = reader.into_decoder().ok()?;
+        .map_err(|e| invalid(e.to_string()))?;
+    let format = reader.format();
+    let mut decoder = reader.into_decoder().map_err(|e| invalid(e.to_string()))?;
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let (width, height) = decoder.dimensions();
-    let header_within_dims = width <= MODEL_IMAGE_MAX_DIM && height <= MODEL_IMAGE_MAX_DIM;
-    let needs_orient = orientation != image::metadata::Orientation::NoTransforms;
-    if !needs_orient && header_within_dims && bytes.len() <= MODEL_IMAGE_TARGET_BYTES {
-        return None;
+    let mut decoded = DynamicImage::from_decoder(decoder).map_err(|e| invalid(e.to_string()))?;
+    let provider_supported = matches!(
+        format,
+        Some(
+            image::ImageFormat::Png
+                | image::ImageFormat::Jpeg
+                | image::ImageFormat::Gif
+                | image::ImageFormat::WebP
+        )
+    );
+    if provider_supported
+        && orientation == image::metadata::Orientation::NoTransforms
+        && decoded.width() <= MODEL_IMAGE_MAX_DIM
+        && decoded.height() <= MODEL_IMAGE_MAX_DIM
+        && bytes.len() <= MODEL_IMAGE_TARGET_BYTES
+    {
+        return Ok(None);
     }
-
-    let mut decoded = DynamicImage::from_decoder(decoder).ok()?;
     decoded.apply_orientation(orientation);
     let resized =
         if decoded.width() <= MODEL_IMAGE_MAX_DIM && decoded.height() <= MODEL_IMAGE_MAX_DIM {
@@ -83,16 +95,18 @@ pub(super) fn prepare_image_bytes_for_model(bytes: &[u8]) -> Option<(Vec<u8>, &'
         let mut buf = Vec::new();
         JpegEncoder::new_with_quality(&mut buf, quality)
             .encode_image(&rgb)
-            .ok()?;
+            .map_err(|e| format!("图片编码失败: {e}"))?;
         if buf.len() <= MODEL_IMAGE_TARGET_BYTES {
-            return Some((buf, "image/jpeg"));
+            return Ok(Some((buf, "image/jpeg")));
         }
         if smallest.as_ref().is_none_or(|s| buf.len() < s.len()) {
             smallest = Some(buf);
         }
     }
     // 阶梯走完仍超目标（理论上 2000px q20 不会发生）：发最小的那份，别把图整个丢掉。
-    smallest.map(|buf| (buf, "image/jpeg"))
+    smallest
+        .map(|buf| Some((buf, "image/jpeg")))
+        .ok_or_else(|| "图片编码失败".to_string())
 }
 
 /// JPEG 无 alpha 通道：带透明的图（电商白底/透明底产品图很常见）合成到白底，
@@ -130,7 +144,9 @@ mod tests {
     #[test]
     fn small_image_passes_through_untouched() {
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(400, 300, image::Rgb([10, 20, 30])));
-        assert!(prepare_image_bytes_for_model(&png_bytes(&img)).is_none());
+        assert!(prepare_image_bytes_for_model(&png_bytes(&img))
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -138,8 +154,9 @@ mod tests {
         let img = DynamicImage::ImageRgb8(RgbImage::from_fn(3000, 1200, |x, y| {
             image::Rgb([(x % 256) as u8, (y % 256) as u8, 99])
         }));
-        let (jpeg, mime) =
-            prepare_image_bytes_for_model(&png_bytes(&img)).expect("must be processed");
+        let (jpeg, mime) = prepare_image_bytes_for_model(&png_bytes(&img))
+            .unwrap()
+            .expect("must be processed");
         assert_eq!(mime, "image/jpeg");
         let (w, h) = decoded_dims(&jpeg);
         assert!(
@@ -165,7 +182,9 @@ mod tests {
             "fixture must exceed target"
         );
 
-        let (jpeg, _) = prepare_image_bytes_for_model(&png).expect("must be recompressed");
+        let (jpeg, _) = prepare_image_bytes_for_model(&png)
+            .unwrap()
+            .expect("must be recompressed");
         assert!(jpeg.len() < png.len());
         // 尺寸不该被动：只超字节不超边长。
         assert_eq!(decoded_dims(&jpeg), (1300, 1300));
@@ -175,6 +194,7 @@ mod tests {
     fn transparent_pixels_flatten_to_white_not_black() {
         let rgba = image::RgbaImage::from_pixel(2400, 100, image::Rgba([0, 0, 0, 0]));
         let (jpeg, _) = prepare_image_bytes_for_model(&png_bytes(&DynamicImage::ImageRgba8(rgba)))
+            .unwrap()
             .expect("oversized width forces processing");
         let img = image::load_from_memory(&jpeg).unwrap().to_rgb8();
         let px = img.get_pixel(img.width() / 2, img.height() / 2);
@@ -186,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn undecodable_bytes_pass_through() {
-        assert!(prepare_image_bytes_for_model(b"not an image at all").is_none());
+    fn undecodable_bytes_are_rejected() {
+        assert!(prepare_image_bytes_for_model(b"not an image at all").is_err());
     }
 
     fn jpeg_with_exif_orientation(img: &RgbImage, orientation: u8) -> Vec<u8> {
@@ -221,6 +241,7 @@ mod tests {
         let jpeg = jpeg_with_exif_orientation(&img, 6);
         assert!(jpeg.len() <= MODEL_IMAGE_TARGET_BYTES);
         let (out, mime) = prepare_image_bytes_for_model(&jpeg)
+            .unwrap()
             .expect("in-bound phone JPEG with Orientation=6 must be re-encoded upright");
         assert_eq!(mime, "image/jpeg");
         let decoded = image::load_from_memory(&out).unwrap().to_rgb8();
@@ -253,7 +274,9 @@ mod tests {
             }
         });
         let jpeg = jpeg_with_exif_orientation(&img, 6);
-        let (out, mime) = prepare_image_bytes_for_model(&jpeg).expect("oversized must process");
+        let (out, mime) = prepare_image_bytes_for_model(&jpeg)
+            .unwrap()
+            .expect("oversized must process");
         assert_eq!(mime, "image/jpeg");
         let decoded = image::load_from_memory(&out).unwrap().to_rgb8();
         assert!(
@@ -291,7 +314,7 @@ mod tests {
                 ])
             }));
             let png = png_bytes(&img);
-            let payload = match prepare_image_bytes_for_model(&png) {
+            let payload = match prepare_image_bytes_for_model(&png).unwrap() {
                 Some((processed, mime)) => {
                     assert_eq!(mime, "image/jpeg");
                     processed
