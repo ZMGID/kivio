@@ -16,7 +16,6 @@ export function WorkflowHooksPanel({ lang }: { lang: Lang }) {
     <p className="text-xs text-neutral-500">{zh
       ? '这些钩子在执行边界等待结果，可注入上下文、拒绝工具或改写参数。下方原有生命周期钩子继续作为通知使用。配置单独保存，新一轮对话生效，仅用于内置 Agent。'
       : 'These hooks await results to inject context, deny tools or update arguments. Existing lifecycle hooks below remain notifications. Saved separately; applies on the next built-in Agent run.'}</p>
-    <p className="text-xs text-neutral-500">SessionStart · UserPromptSubmit · SubagentStart · PreToolUse · PostToolUse</p>
     <textarea className="kv-input w-full font-mono text-xs" rows={10} aria-label={zh ? '工作流 Hook JSON' : 'Workflow hook JSON'} value={text} onChange={e => { setText(e.target.value); setSaved(false) }} disabled={busy} spellCheck={false} />
     {error && <ErrorNotice message={error} />}
     {saved && <p role="status" className="text-xs text-green-600">{zh ? '已保存' : 'Saved'}</p>}

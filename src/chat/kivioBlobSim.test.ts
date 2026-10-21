@@ -14,7 +14,6 @@ import {
   queueBlink,
   resolveBlobMood,
 } from './kivioBlobSim'
-import { BODY_POINTS } from './kivioBlobShapes'
 
 function visibleSchedule(sim: KivioBlobSim, now: number) {
   return blobScheduleMs({
@@ -61,8 +60,8 @@ describe('kivioBlobSim', () => {
     expect(q[5]).toEqual({ at: 480, v: 1 })
   })
 
-  it('眼环是左右各 48 点，分居圆心两侧', () => {
-    const sim = new KivioBlobSim({ random: () => 0.5, reducedMotion: true })
+  it.each([false, true])('默认眼睛朝右上方看（减少动态效果：%s）', (reducedMotion) => {
+    const sim = new KivioBlobSim({ random: () => 0.5, reducedMotion })
     const paint = sim.sample(0)
     const parse = (d: string) =>
       [...d.matchAll(/(-?\d+\.\d+)/g)].map((m) => Number(m[1]))
@@ -72,7 +71,11 @@ describe('kivioBlobSim', () => {
     expect(right.length).toBe(EYE_POINTS * 2)
     const leftXs = left.filter((_, i) => i % 2 === 0)
     const rightXs = right.filter((_, i) => i % 2 === 0)
-    expect(Math.max(...leftXs)).toBeLessThan(CX)
+    expect(leftXs.reduce((sum, x) => sum + x, 0) / leftXs.length).toBeGreaterThan(CX)
+    expect(Math.max(...leftXs)).toBeLessThan(Math.min(...rightXs))
+    for (const eye of [left, right]) {
+      expect(Math.max(...eye.filter((_, i) => i % 2 === 1))).toBeLessThan(CY)
+    }
     expect(Math.min(...rightXs)).toBeGreaterThan(CX)
     expect(polyPath([[1, 2], [3, 4]])).toBe('M1.00 2.00L3.00 4.00Z')
   })
@@ -257,11 +260,10 @@ describe('kivioBlobSim', () => {
     expect(resolveBlobMood({ active: true, done: true })).toBe('think')
   })
 
-  it('身体是一条 BODY_POINTS 点的闭合路径，闲置钉在圆上', () => {
+  it('默认转向后身体仍是闭合圆形轮廓', () => {
     const sim = new KivioBlobSim({ random: () => 0.5, reducedMotion: true })
     const paint = sim.sample(0)
     const nums = [...paint.bodyD.matchAll(/(-?\d+\.\d+)/g)]
-    expect(nums.length).toBe(BODY_POINTS * 2)
     expect(paint.bodyD.startsWith('M')).toBe(true)
     expect(paint.bodyD.endsWith('Z')).toBe(true)
     expect(sim.debug().body).toBe('circle')
@@ -381,18 +383,18 @@ describe('volume motion continuity', () => {
   it('turning accelerates, brakes, and preserves momentum when the target reverses', () => {
     const sim = new KivioBlobSim({ random: () => 0.5 })
     const initial = eyeCenter(sim.sample(0))
-    sim.poke(0, 1, -0.5)
+    sim.poke(0, -1, -0.5)
     expect(eyeCenter(sim.sample(0))).toBe(initial)
     const positions = [initial]
     for (let t = 10; t <= 200; t += 10) positions.push(eyeCenter(sim.sample(t)))
-    const speeds = positions.slice(1).map((x, i) => x - positions[i])
+    const speeds = positions.slice(1).map((x, i) => positions[i] - x)
     expect(Math.max(...speeds)).toBeGreaterThan(speeds[0] * 2)
     const before = positions[positions.length - 1]
-    sim.poke(200, -1, -0.5)
+    sim.poke(200, 1, -0.5)
     expect(eyeCenter(sim.sample(200))).toBeCloseTo(before, 2)
-    expect(eyeCenter(sim.sample(210))).toBeGreaterThan(before)
+    expect(eyeCenter(sim.sample(210))).toBeLessThan(before)
     for (let t = 220; t <= 1800; t += 10) sim.sample(t)
-    expect(eyeCenter(sim.sample(1800))).toBeLessThan(initial)
+    expect(eyeCenter(sim.sample(1800))).toBeGreaterThan(initial)
     const settledAt = driveUntilStill(sim, 1810, 14000)
     expect(settledAt).toBeLessThan(15810)
     expect(eyeCenter(sim.sample(settledAt))).toBeCloseTo(initial, 2)

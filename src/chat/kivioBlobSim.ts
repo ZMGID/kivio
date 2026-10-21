@@ -20,6 +20,8 @@ export const BLOB_BLUE = '#1d6bf0'
 export const BLOB_EYE = '#f3efe6'
 export const BLOB_POKE_RED = '#e23b2e'
 const BLOB_ERROR = '#c45c2a'
+// 默认朝屏幕右上方看；互动结束后回到同一静止姿态。
+const REST_GAZE = { x: 12, y: -10 } as const
 
 function mixHex(a: string, b: string, t: number): string {
   const u = clamp(t, 0, 1)
@@ -439,8 +441,8 @@ export class KivioBlobSim {
   private squash = spring(1)
   private blink = spring(1)
   private winks = [spring(1), spring(1)]
-  private gazeX = spring(0)
-  private gazeY = spring(0)
+  private gazeX = spring(REST_GAZE.x)
+  private gazeY = spring(REST_GAZE.y)
   private boost = spring(1)
   private face = new PolyMorph('neutral', facePoints('neutral'))
   private body = new PolyMorph('circle', [bodyPoints('circle')])
@@ -509,8 +511,8 @@ export class KivioBlobSim {
     this.blinkUntil = idle ? Infinity : now + this.rand(900, 2800)
     this.gazeUntil = idle ? Infinity : now + this.rand(280, 900)
     if (idle) {
-      this.gazeX.t = 0
-      this.gazeY.t = 0
+      this.gazeX.t = REST_GAZE.x
+      this.gazeY.t = REST_GAZE.y
       this.winkUntil = Infinity
     } else if (WINK.has(mood) && (!Number.isFinite(this.winkUntil) || this.winkUntil <= now)) {
       this.winkUntil = now + this.rand(4000, 8000)
@@ -604,8 +606,8 @@ export class KivioBlobSim {
     if (!this.pointer) return false
     this.pointer = null
     this.ambientAt = this.last + this.rand(6000, 12000)
-    this.gazeX.t = 0
-    this.gazeY.t = 0
+    this.gazeX.t = REST_GAZE.x
+    this.gazeY.t = REST_GAZE.y
     this.gazeUntil = Infinity
     return true
   }
@@ -804,7 +806,11 @@ export class KivioBlobSim {
       stepSpring(this.boost, ...spr.boost, step)
     }
     if (this.reduced) {
-      for (const s of [this.spin, this.tx, this.ty, this.gazeX, this.gazeY]) {
+      this.gazeX.t = REST_GAZE.x
+      this.gazeY.t = REST_GAZE.y
+      snapSpring(this.gazeX)
+      snapSpring(this.gazeY)
+      for (const s of [this.spin, this.tx, this.ty]) {
         s.t = 0
         snapSpring(s)
       }
@@ -884,8 +890,8 @@ export class KivioBlobSim {
       this.ctx.biasUntil = Infinity
     }
     if (now >= this.gazeUntil) {
-      this.gazeX.t = 0
-      this.gazeY.t = 0
+      this.gazeX.t = REST_GAZE.x
+      this.gazeY.t = REST_GAZE.y
       this.gazeUntil = Infinity
     }
     if (now >= this.faceUntil) {

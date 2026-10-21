@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>图片加载效果演示</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin {
+      animation: spin 1s linear infinite;
+    }
+    body {
+      background: #f8fafc;
+    }
+  </style>
+</head>
+<body class="p-8">
+  <div class="max-w-4xl mx-auto">
+    <h1 class="text-2xl font-semibold text-slate-800 mb-6">图片加载效果对比</h1>
+    
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+      <!-- 原来的效果 -->
+      <div class="bg-white rounded-lg p-6 shadow-sm border border-slate-200">
+        <h2 class="text-lg font-medium text-slate-700 mb-4">原来的效果（浅灰背景）</h2>
+        <button 
+          type="button"
+          class="inline-block overflow-hidden rounded-md p-0 cursor-zoom-in"
+          style="aspect-ratio: 1; width: 128px;"
+        >
+          <img
+            id="img-old"
+            alt="示例图片"
+            class="h-full w-full object-contain rounded-md border border-slate-200/90 bg-slate-50"
+          />
+        </button>
+        <p class="text-sm text-slate-500 mt-3">bg-neutral-50 - 太浅，不容易察觉</p>
+      </div>
+
+      <!-- 新的效果 -->
+      <div class="bg-white rounded-lg p-6 shadow-sm border border-slate-200">
+        <h2 class="text-lg font-medium text-slate-700 mb-4">新的效果（加深背景）</h2>
+        <button 
+          type="button"
+          class="inline-block overflow-hidden rounded-md p-0 cursor-zoom-in"
+          style="aspect-ratio: 1; width: 128px;"
+        >
+          <img
+            id="img-new"
+            alt="示例图片"
+            class="h-full w-full object-contain rounded-md border border-slate-200/90 bg-slate-200"
+          />
+        </button>
+        <p class="text-sm text-slate-500 mt-3">bg-neutral-200 - 更明显的加载状态</p>
+      </div>
+    </div>
+
+    <div class="bg-white rounded-lg p-6 shadow-sm border border-slate-200">
+      <h2 class="text-lg font-medium text-slate-700 mb-4">模拟加载测试</h2>
+      <div class="flex gap-3">
+        <button 
+          onclick="simulateLoad(500)"
+          class="px-4 py-2 bg-sky-500 text-white rounded-md hover:bg-sky-600 transition-colors text-sm font-medium"
+        >
+          快速加载 (0.5秒)
+        </button>
+        <button 
+          onclick="simulateLoad(1500)"
+          class="px-4 py-2 bg-sky-500 text-white rounded-md hover:bg-sky-600 transition-colors text-sm font-medium"
+        >
+          中速加载 (1.5秒)
+        </button>
+        <button 
+          onclick="simulateLoad(3000)"
+          class="px-4 py-2 bg-sky-500 text-white rounded-md hover:bg-sky-600 transition-colors text-sm font-medium"
+        >
+          慢速加载 (3秒)
+        </button>
+      </div>
+      <p class="text-sm text-slate-500 mt-3">点击按钮模拟不同速度的图片加载，观察背景色深浅的区别</p>
+    </div>
+  </div>
+
+  <script>
+    // 生成一个带延迟的测试图片 URL
+    function generateImageUrl(delay) {
+      // 使用 picsum.photos 作为测试图片源，添加随机参数避免缓存
+      const random = Math.random().toString(36).substring(7);
+      return `https://picsum.photos/400/400?random=${random}&delay=${delay}`;
+    }
+
+    function simulateLoad(delay) {
+      const imgOld = document.getElementById('img-old');
+      const imgNew = document.getElementById('img-new');
+      
+      // 重置状态
+      imgOld.src = '';
+      imgNew.src = '';
+      
+      // 设置新图片 URL
+      const url = generateImageUrl(delay);
+      
+      // 旧效果：直接设置 src
+      imgOld.src = url;
+      
+      // 新效果：直接设置 src（背景色已加深）
+      imgNew.src = url;
+    }
+    
+    // 页面加载时自动执行一次中速加载
+    window.addEventListener('load', () => {
+      simulateLoad(1500);
+    });
+  </script>
+</body>
+</html>
