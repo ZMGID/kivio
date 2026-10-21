@@ -74,7 +74,15 @@ fn main() {
             let key: bool = msg_send![window, isKeyWindow];
             assert!(!key);
             let zoom: id = msg_send![window, standardWindowButton: 2_u64];
-            for setter in 0..3 {
+            for setter in 0..5 {
+                // AppKit's theme widgets have a second origin setter which
+                // bypasses setFrameOrigin:. Keep this OS-specific regression
+                // conditional so the harness also runs on older systems.
+                let theme_setter = sel!(setFrameOrigin:ignoreRentry:);
+                let supports_theme_setter: bool = msg_send![zoom, respondsToSelector: theme_setter];
+                if setter >= 3 && !supports_theme_setter {
+                    continue;
+                }
                 let _: () = msg_send![zoom, setPostsFrameChangedNotifications: false];
                 let mut frame: NSRect = msg_send![zoom, frame];
                 frame.origin.y += 14.0;
@@ -85,9 +93,18 @@ fn main() {
                     1 => {
                         let _: () = msg_send![zoom, setFrameOrigin: frame.origin];
                     }
-                    _ => {
+                    2 => {
                         frame.size.height += 4.0;
                         let _: () = msg_send![zoom, setFrameSize: frame.size];
+                    }
+                    _ => {
+                        frame.origin.x -= 13.0;
+                        let ignore_reentry = if setter == 3 {
+                            cocoa::base::NO
+                        } else {
+                            cocoa::base::YES
+                        };
+                        let _: () = msg_send![zoom, setFrameOrigin: frame.origin ignoreRentry: ignore_reentry];
                     }
                 }
                 assert_aligned(window, 26.0, native_spacing);

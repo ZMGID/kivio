@@ -331,6 +331,18 @@ unsafe fn observe_macos_traffic_light_layout(
             restore_after_button_change(this);
         }
     }
+    extern "C" fn button_set_theme_origin(
+        this: &mut Object,
+        _: Sel,
+        origin: cocoa::foundation::NSPoint,
+        ignore_reentry: cocoa::base::BOOL,
+    ) {
+        unsafe {
+            let _: () = msg_send![super(this, button_superclass(this)),
+                setFrameOrigin: origin ignoreRentry: ignore_reentry];
+            restore_after_button_change(this);
+        }
+    }
     extern "C" fn button_set_size(this: &mut Object, _: Sel, size: cocoa::foundation::NSSize) {
         unsafe {
             let _: () = msg_send![super(this, button_superclass(this)), setFrameSize: size];
@@ -369,6 +381,24 @@ unsafe fn observe_macos_traffic_light_layout(
                 sel!(setFrameSize:),
                 button_set_size as extern "C" fn(&mut Object, Sel, cocoa::foundation::NSSize),
             );
+            // _NSThemeWidget can bypass all three public geometry setters while
+            // frame notifications are suppressed. In particular the zoom button
+            // can return to the system origin while the window is inactive.
+            // This private selector is optional: only override an implementation
+            // supplied by the actual base class, and preserve its flag/ABI.
+            let theme_origin = sel!(setFrameOrigin:ignoreRentry:);
+            if base.instance_method(theme_origin).is_some() {
+                decl.add_method(
+                    theme_origin,
+                    button_set_theme_origin
+                        as extern "C" fn(
+                            &mut Object,
+                            Sel,
+                            cocoa::foundation::NSPoint,
+                            cocoa::base::BOOL,
+                        ),
+                );
+            }
             decl.register()
         });
         object_setClass(view, subclass);
