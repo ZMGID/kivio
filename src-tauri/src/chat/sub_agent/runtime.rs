@@ -37,6 +37,8 @@ pub struct Profile {
     pub thinking_level: Option<String>,
     pub agent_type: String,
     pub system_prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_context: Option<String>,
     pub tool_names: Vec<String>,
     pub skill_cwd: Option<PathBuf>,
 }
@@ -286,6 +288,7 @@ impl Runtime {
         summary.tools.clear();
         summary.messages.clear();
         summary.profile.system_prompt.clear();
+        summary.profile.runtime_context = None;
         summary.profile.tool_names.clear();
         for run in &mut summary.runs {
             run.output_available = run.has_output();

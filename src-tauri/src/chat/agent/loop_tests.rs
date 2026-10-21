@@ -762,7 +762,8 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         max_output_tokens: 1024,
         retry_attempts: 1,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: String::new(),
+        runtime_context: None,
+        provider_tools_fallback_prompt: Default::default(),
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
@@ -5101,6 +5102,7 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
     let messages = vec![
         serde_json::json!({"role":"system","content":"project rules"}),
         serde_json::json!({"role":"user","content":"original request"}),
+        serde_json::json!({"role":"user","content":"<kivio_runtime_context>\ncurrent project permissions\n</kivio_runtime_context>"}),
         serde_json::json!({"role":"assistant","content":archived_work("first completed work")}),
         serde_json::json!({"role":"user","content":"follow-up request"}),
         serde_json::json!({"role":"assistant","content":archived_work("older completed work")}),
@@ -5131,6 +5133,10 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
         "overflow must not grow the retained tail"
     );
     assert!(text.contains("full tool result"));
+    assert_eq!(
+        super::super::prepare::latest_runtime_context(&history),
+        super::super::prepare::latest_runtime_context(&messages)
+    );
     assert_eq!(
         text.matches("kept_call").count(),
         2,
@@ -6493,4 +6499,59 @@ async fn legacy_round_limit_does_not_interrupt_tool_progress() {
         let request: Value = serde_json::from_str(&body).unwrap();
         assert!(!request["tools"].as_array().unwrap().is_empty());
     }
+}
+
+#[tokio::test]
+async fn runtime_context_is_persisted_without_rewriting_previous_wire_messages() {
+    let server = MockModelServer::start((0..3).map(|_| final_answer_sse("OK")).collect());
+    let state = test_app_state();
+    let mut history = test_run_config(&state, &server.base_url).runtime_messages;
+    for (round, context) in ["memory A", "memory A", "memory B"].into_iter().enumerate() {
+        let mut config = test_run_config(&state, &server.base_url);
+        config.runtime_messages = history.clone();
+        config.runtime_context = Some(context.into());
+        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+            .await
+            .unwrap();
+        assert_eq!(result.content, "OK");
+        let saved = serde_json::to_string(&result.api_messages).unwrap();
+        let replay: Vec<Value> = serde_json::from_str(&saved).unwrap();
+        history.extend(replay);
+        history.push(serde_json::json!({"role":"user", "content":format!("follow up {round}")}));
+    }
+    let bodies: Vec<Value> = server
+        .captured_bodies()
+        .iter()
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 3);
+    for body in &bodies {
+        assert_eq!(body["messages"][0]["content"], "system prompt");
+    }
+    for index in 1..3 {
+        let previous = bodies[index - 1]["messages"].as_array().unwrap();
+        let current = bodies[index]["messages"].as_array().unwrap();
+        assert_eq!(&current[..previous.len()], previous.as_slice());
+    }
+    assert_eq!(
+        bodies[1]
+            .to_string()
+            .matches("<kivio_runtime_context>")
+            .count(),
+        1
+    );
+    assert_eq!(
+        bodies[2]
+            .to_string()
+            .matches("<kivio_runtime_context>")
+            .count(),
+        2
+    );
+    assert!(bodies[2]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .to_string()
+        .contains("memory B"));
 }

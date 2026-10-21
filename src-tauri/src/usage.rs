@@ -280,16 +280,24 @@ fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
     let cached_price = pricing.cached_input.unwrap_or(input_price);
     let input_tokens = record.input_tokens.unwrap_or(0);
     let output_tokens = record.output_tokens.unwrap_or(0);
-    // 缓存计价口径对齐 context_estimate::anchor_total_tokens（commit 85a3056）：
-    // Anthropic 的 input_tokens 是**非缓存**部分，cache_read/cache_creation 与其
-    // 不相交——input 全额按原价计，cache_read 按缓存价另加（cache_creation 无独立
-    // 价格字段，按原价近似）。OpenAI 系 cached 是 prompt_tokens 的子集，先扣再算。
+    // Claude cache writes have a separate tariff: 5m = 1.25x, 1h = 2x.
+    // This remains a configured-rate estimate, not the gateway's actual invoice.
+    // Other Anthropic-compatible providers must not inherit Claude pricing.
+    let write_multiplier = if record.model.to_ascii_lowercase().contains("claude") {
+        if provider.cache_retention() == crate::settings::CacheRetention::Long {
+            2.0
+        } else {
+            1.25
+        }
+    } else {
+        1.0
+    };
     let cost = if record.api_format == "anthropic_messages" {
         let cache_read = record.cached_input_tokens.unwrap_or(0);
         let cache_creation = record.cache_creation_input_tokens.unwrap_or(0);
         (input_tokens as f64 * input_price
             + cache_read as f64 * cached_price
-            + cache_creation as f64 * input_price
+            + cache_creation as f64 * input_price * write_multiplier
             + output_tokens as f64 * output_price)
             / 1_000_000.0
     } else {
@@ -1151,6 +1159,32 @@ pub fn failure_status_from_message(message: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_cache_write_cost_uses_requested_retention_without_affecting_other_models() {
+        let mut provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id":"p", "name":"test", "baseUrl":"https://example.test", "apiFormat":"anthropic_messages",
+            "modelOverrides": {
+                "claude-test": {"pricing":{"input":2.0,"output":10.0,"cachedInput":0.2}},
+                "deepseek-test": {"pricing":{"input":2.0,"output":10.0,"cachedInput":0.2}}
+            }
+        })).unwrap();
+        for (model, retention, expected) in [
+            ("claude-test", "short", 0.003285),
+            ("claude-test", "long", 0.00336),
+            ("deepseek-test", "short", 0.00326),
+        ] {
+            provider.request.prompt_cache_retention = retention.into();
+            let mut record = base_record("anthropic_messages");
+            record.model = model.into();
+            apply_cost(&provider, &mut record);
+            assert!(
+                (record.cost_usd.unwrap() - expected).abs() < 1e-10,
+                "{model}/{retention}: {:?}",
+                record.cost_usd
+            );
+        }
+    }
 
     #[test]
     fn parses_openai_cached_and_reasoning_usage() {

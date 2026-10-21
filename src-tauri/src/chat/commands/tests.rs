@@ -304,7 +304,7 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
                 Some("another-skill"),
             );
             assert_eq!(id.as_deref(), Some("frontend-design"));
-            let prompt = agent_prepare::build_chat_system_prompt(
+            let prompt = agent_prepare::build_chat_prompt(
                 "zh-CN",
                 false,
                 false,
@@ -326,6 +326,7 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
                 None,
                 &[],
             );
+            let prompt = format!("{}\n{}", prompt.system, prompt.context);
             assert_eq!(prompt.matches("Create distinctive interfaces.").count(), 1);
             assert!(!prompt.contains("Activate it with the skill tool"));
             let conversation = test_conversation_with_messages(vec![test_chat_message(

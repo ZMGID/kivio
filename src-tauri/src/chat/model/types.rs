@@ -1035,7 +1035,7 @@ pub fn openai_messages_from_model_messages(messages: &[ModelMessage]) -> Vec<Val
         .collect()
 }
 
-fn openai_message_text_content(message: &Value) -> Option<String> {
+pub(crate) fn openai_message_text_content(message: &Value) -> Option<String> {
     match message.get("content")? {
         Value::String(value) => Some(value.clone()),
         Value::Array(parts) => {

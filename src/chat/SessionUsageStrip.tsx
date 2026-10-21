@@ -63,11 +63,12 @@ export function SessionUsageStrip({
       const rawInput = usage.input_tokens ?? usage.inputTokens
       const rawOutput = usage.output_tokens ?? usage.outputTokens
       const rawCached = usage.cached_input_tokens ?? usage.cachedInputTokens
+      const rawWrite = usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? 0
       if (rawInput != null) {
         // Anthropic / 外部 CLI（dsh 等）的 input 已排除缓存；OpenAI 系 input 含缓存，减掉后同口径。
         const included = cacheIncludedInInput
           ?? (apiFormat !== 'anthropic_messages')
-        input += included ? Math.max(0, rawInput - (rawCached ?? 0)) : rawInput
+        input += included ? Math.max(0, rawInput - (rawCached ?? 0)) : rawInput + rawWrite
         hasAny = true
       }
       if (rawOutput != null) {

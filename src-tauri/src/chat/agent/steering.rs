@@ -148,7 +148,11 @@ async fn apply_prompt_hooks(
         &out.context,
     )
     .await;
-    crate::chat::workflow_hooks::inject_context(&mut state.runtime_messages, &out.context);
+    if let Some(message) =
+        crate::chat::workflow_hooks::inject_context(&mut state.runtime_messages, &out.context)
+    {
+        state.generated_api_messages.push(message);
+    }
     Ok(())
 }
 

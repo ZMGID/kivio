@@ -602,21 +602,32 @@ pub async fn compact_context(
     Ok(outcome.context)
 }
 
-pub fn inject_context(messages: &mut Vec<Value>, context: &[String]) {
+pub fn inject_context(messages: &mut Vec<Value>, context: &[String]) -> Option<Value> {
     if context.is_empty() {
-        return;
+        return None;
     }
-    // Keep it in the system prefix so every provider and compaction sees the same context.
-    let end = messages
-        .iter()
-        .position(|m| m["role"] != "system")
-        .unwrap_or(messages.len());
-    messages.insert(end, json!({"role":"system", "content":format!("[Workflow hook context]\n{}", context.join("\n\n"))}));
+    let message = json!({"role":"user", "content":format!("[Workflow hook context]\n{}", context.join("\n\n"))});
+    messages.push(message.clone());
+    Some(message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hook_context_appends_without_changing_cached_prefix() {
+        let mut messages = vec![
+            json!({"role":"system","content":"policy"}),
+            json!({"role":"user","content":"task"}),
+        ];
+        let prefix = messages.clone();
+        let recorded = inject_context(&mut messages, &["hook result".into()]).unwrap();
+        assert_eq!(&messages[..prefix.len()], prefix.as_slice());
+        assert_eq!(recorded["role"], "user");
+        assert_eq!(messages.last(), Some(&recorded));
+        assert!(inject_context(&mut messages, &[]).is_none());
+    }
+
     #[test]
     fn compatibility_translation_preserves_native_schema_and_agent_namespace() {
         let original = json!({"tool_name":"write","tool_input":{"path":"old","content":"x"}});

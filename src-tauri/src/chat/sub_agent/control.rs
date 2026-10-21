@@ -219,6 +219,7 @@ pub fn launch(app: &AppHandle, mut request: SubAgentRequest, key: &str) -> Resul
         thinking_level: request.thinking_level.clone(),
         agent_type: request.agent_type.clone(),
         system_prompt: request.system_prompt.clone(),
+        runtime_context: request.runtime_context.clone(),
         tool_names: request.tools.iter().map(|t| t.id.clone()).collect(),
         skill_cwd: request.skill_project_cwd.clone(),
     };
@@ -322,6 +323,7 @@ async fn prepare_continuation(app: &AppHandle, record: &Record) -> Result<SubAge
         agent_type: record.profile.agent_type.clone(),
         prompt: record.current().prompt.clone(),
         system_prompt: record.profile.system_prompt.clone(),
+        runtime_context: record.profile.runtime_context.clone(),
         provider,
         model: record.profile.model.clone(),
         thinking_enabled: record

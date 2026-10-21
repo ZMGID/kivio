@@ -380,6 +380,13 @@ pub async fn run_agent_loop(
         degraded: None,
         tool_schema_tokens_cache: None,
     };
+    if let Some(context) = config.runtime_context.take() {
+        if let Some(message) =
+            super::prepare::append_runtime_context(&mut state.runtime_messages, &context)
+        {
+            state.generated_api_messages.push(message);
+        }
+    }
     // 把助手的技能白名单冻结进 skill_context,作为 skill 执行派发的硬 gate。
     // 无助手 = None = 不限(全局行为)。
     state.skill_context.set_allowed_skill_ids(
@@ -440,14 +447,10 @@ pub async fn run_agent_loop(
             hook_context.extend(outcome.context);
         }
     }
-    crate::chat::workflow_hooks::inject_context(&mut state.runtime_messages, &hook_context);
-    if !hook_context.is_empty() {
-        config
-            .provider_tools_fallback_system_prompt
-            .push_str(&format!(
-                "\n\n[Workflow hook context]\n{}",
-                hook_context.join("\n\n")
-            ));
+    if let Some(message) =
+        crate::chat::workflow_hooks::inject_context(&mut state.runtime_messages, &hook_context)
+    {
+        state.generated_api_messages.push(message);
     }
     let env = LoopEnv {
         config: &config,
@@ -653,8 +656,16 @@ pub async fn run_agent_loop(
     if state.provider_tools_unsupported {
         patch_system_message(
             &mut state.runtime_messages,
-            &config.provider_tools_fallback_system_prompt,
+            &config.provider_tools_fallback_prompt.system,
         );
+        if !config.provider_tools_fallback_prompt.context.is_empty() {
+            if let Some(message) = super::prepare::append_runtime_context(
+                &mut state.runtime_messages,
+                &config.provider_tools_fallback_prompt.context,
+            ) {
+                state.generated_api_messages.push(message);
+            }
+        }
     }
 
     if let Some(message) = state.planning_final_message.take() {

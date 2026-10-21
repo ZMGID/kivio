@@ -659,7 +659,7 @@ pub(super) async fn complete_assistant_reply_inner(
         &conversation.knowledge_base_ids,
         conversation.force_knowledge_search,
     );
-    let system_prompt = agent_prepare::build_chat_system_prompt(
+    let mut prepared_prompt = agent_prepare::build_chat_prompt(
         &language,
         !main_image_paths.is_empty(),
         thinking_enabled,
@@ -681,21 +681,22 @@ pub(super) async fn complete_assistant_reply_inner(
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );
-    // 从未成功连接的 MCP server：工具没法降级进列表，注一行说明让模型知道
-    // "配置了但连不上"，而不是回答"没有这个工具"。
-    let system_prompt =
-        match crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers) {
-            Some(note) => format!("{system_prompt}\n\n{note}"),
-            None => system_prompt,
-        };
-    let system_prompt = match crate::chat::goal::format_prompt(conversation.goal_state.as_ref()) {
-        Some(goal_prompt) if goal_tools_available => format!("{system_prompt}\n\n{goal_prompt}"),
-        _ => system_prompt,
-    };
+    let mut conversation_context = String::new();
+    if let Some(note) = crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers)
+    {
+        conversation_context.push_str(&format!("\n\n{note}"));
+    }
+    if let Some(goal_prompt) = crate::chat::goal::format_prompt(conversation.goal_state.as_ref())
+        .filter(|_| goal_tools_available)
+    {
+        conversation_context.push_str(&format!("\n\n{goal_prompt}"));
+    }
+
+    prepared_prompt.context.push_str(&conversation_context);
 
     let mut runtime_messages = match build_chat_api_messages_with_video(
         Some(app),
-        &system_prompt,
+        &prepared_prompt.system,
         conversation,
         last_user_idx,
         last_user_content_for_main,
@@ -726,7 +727,7 @@ pub(super) async fn complete_assistant_reply_inner(
     if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
         fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
     }
-    let provider_tools_fallback_system_prompt = agent_prepare::build_chat_system_prompt(
+    let mut provider_tools_fallback_prompt = agent_prepare::build_chat_prompt(
         &language,
         !main_image_paths.is_empty(),
         thinking_enabled,
@@ -748,6 +749,10 @@ pub(super) async fn complete_assistant_reply_inner(
         knowledge_base_prompt.as_deref(),
         &conversation.additional_directories,
     );
+
+    provider_tools_fallback_prompt
+        .context
+        .push_str(&conversation_context);
 
     let chat_host = ChatAgentHost {
         workflow_hooks: if chat_mode {
@@ -852,6 +857,7 @@ pub(super) async fn complete_assistant_reply_inner(
             provider,
             model: resolved_model.clone(),
             runtime_messages,
+            runtime_context: Some(prepared_prompt.context),
             tools,
             blocked_tool_calls,
             settings: settings.clone(),
@@ -863,7 +869,7 @@ pub(super) async fn complete_assistant_reply_inner(
             max_output_tokens,
             retry_attempts,
             assistant_snapshot: conversation.assistant_snapshot.clone(),
-            provider_tools_fallback_system_prompt,
+            provider_tools_fallback_prompt,
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,

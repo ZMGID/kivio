@@ -10,7 +10,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::agents::AgentDefinition;
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
+use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::types::AgentRunResult;
 use crate::chat::agent::{
     run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext, ToolExecutor,
@@ -542,6 +542,7 @@ pub struct SubAgentRequest {
     pub agent_type: String,
     pub prompt: String,
     pub system_prompt: String,
+    pub runtime_context: Option<String>,
     pub provider: ModelProvider,
     pub model: String,
     pub thinking_enabled: bool,
@@ -726,7 +727,11 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
         max_output_tokens,
         retry_attempts,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: req.system_prompt.clone(),
+        runtime_context: req.runtime_context.clone(),
+        provider_tools_fallback_prompt: crate::chat::agent::prepare::PreparedChatPrompt {
+            system: req.system_prompt.clone(),
+            context: String::new(),
+        },
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
@@ -1100,7 +1105,7 @@ pub fn handle_agent_spawn<'a>(
             &preload_registry,
             &def.skills,
         );
-        let system_prompt = build_chat_system_prompt(
+        let system_prompt = build_chat_prompt(
             &language,
             false,
             thinking_enabled,
@@ -1157,7 +1162,8 @@ pub fn handle_agent_spawn<'a>(
             name: name.clone(),
             agent_type: def.name.clone(),
             prompt,
-            system_prompt,
+            runtime_context: Some(system_prompt.context),
+            system_prompt: system_prompt.system,
             provider,
             model,
             thinking_enabled,

@@ -75,6 +75,14 @@ describe('SessionUsageStrip', () => {
     expect(await screen.findByText('0.50$')).toBeTruthy()
   })
 
+  it('includes Anthropic cache writes in fresh input and cache hit denominator', () => {
+    render(<SessionUsageStrip lang="zh" defaultApiFormat="anthropic_messages" messages={[
+      assistant({ input_tokens: 2, cached_input_tokens: 700, cache_creation_input_tokens: 300 }),
+    ]} />)
+    expect(screen.getByText('缓存 70%')).toBeTruthy()
+    expect(screen.getByText('↑302')).toBeTruthy()
+  })
+
   it('shows input/output with arrows and cache hit as a percentage (Anthropic style: input excludes cache)', () => {
     render(
       <SessionUsageStrip

@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_system_prompt};
+use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::{
     run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry,
     ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
@@ -489,7 +489,7 @@ async fn run_builtin_agent_node(
         .unwrap_or_else(|| "zh".to_string());
     let custom_system_prompt = settings.chat.system_prompt.clone();
     let additional_directories: [crate::chat::types::AdditionalDirectory; 0] = [];
-    let mut system_prompt = build_chat_system_prompt(
+    let mut system_prompt = build_chat_prompt(
         &language,
         false,
         true,
@@ -512,12 +512,12 @@ async fn run_builtin_agent_node(
         &additional_directories,
     );
     if let Some(extra) = extra_loaded_skill_bodies(&loaded, &spec.skill_ids) {
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(&extra);
+        system_prompt.context.push_str("\n\n");
+        system_prompt.context.push_str(&extra);
     }
 
     let runtime_messages = vec![
-        serde_json::json!({ "role": "system", "content": system_prompt }),
+        serde_json::json!({ "role": "system", "content": system_prompt.system }),
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
 
@@ -545,6 +545,7 @@ async fn run_builtin_agent_node(
         provider,
         model,
         runtime_messages,
+        runtime_context: Some(system_prompt.context.clone()),
         tools,
         blocked_tool_calls: Vec::new(),
         settings,
@@ -556,7 +557,7 @@ async fn run_builtin_agent_node(
         max_output_tokens,
         retry_attempts,
         assistant_snapshot: None,
-        provider_tools_fallback_system_prompt: system_prompt,
+        provider_tools_fallback_prompt: system_prompt,
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,

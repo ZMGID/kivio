@@ -43,6 +43,7 @@ pub struct AgentRunConfig<'a> {
     pub provider: ModelProvider,
     pub model: String,
     pub runtime_messages: Vec<Value>,
+    pub runtime_context: Option<String>,
     pub tools: Vec<ChatToolDefinition>,
     pub blocked_tool_calls: Vec<ChatToolDefinition>,
     pub settings: Settings,
@@ -58,7 +59,7 @@ pub struct AgentRunConfig<'a> {
     pub max_output_tokens: u32,
     pub retry_attempts: usize,
     pub assistant_snapshot: Option<ChatAssistantSnapshot>,
-    pub provider_tools_fallback_system_prompt: String,
+    pub provider_tools_fallback_prompt: super::prepare::PreparedChatPrompt,
     /// Completed selected-branch main requests: (normalized input, cache-read tokens).
     pub initial_cache_usage: Option<(u64, u64)>,
     /// 真实用量锚点（来自会话最后一条带 `anchor_usage` 的 assistant 消息，由 commands.rs 解析）：
