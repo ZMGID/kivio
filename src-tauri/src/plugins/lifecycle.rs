@@ -81,6 +81,11 @@ pub fn plugin_mcp_connector_id(plugin_id: &str) -> String {
 
 /// 某 skill_id 是否由某个插件「拥有」（不论当前是否启用）。
 pub fn skill_owned_by_plugin(skill_id: &str) -> Option<&'static str> {
+    // Keep ownership of retired shared skills so discovery cannot reclassify
+    // them as ordinary, always-available user skills.
+    if super::catalog::OFFICECLI_OFFICIAL_SKILL_IDS.contains(&skill_id) {
+        return Some("officecli");
+    }
     for plugin in PLUGIN_CATALOG {
         if plugin.skill_ids.iter().any(|id| *id == skill_id) {
             return Some(plugin.id);
@@ -251,6 +256,24 @@ pub fn ensure_officecli_mcp_flush_env(app: &AppHandle, state: &AppState) {
 mod tests {
     use super::{disable_mcp_for_plugins, plugin_mcp_server_id};
     use crate::settings::{ChatMcpServer, Settings};
+
+    #[test]
+    fn retired_officecli_skills_cannot_reenter_the_runtime() {
+        assert!(!super::is_enabled("officecli"));
+        for id in super::super::catalog::OFFICECLI_OFFICIAL_SKILL_IDS {
+            assert_eq!(super::skill_owned_by_plugin(id), Some("officecli"));
+            assert!(!super::plugin_skill_available(id));
+            let error = crate::settings::skill_global_unavailable_error(
+                &crate::settings::ChatToolsConfig::default(),
+                id,
+                id,
+            )
+            .unwrap();
+            assert!(error.contains("retired"));
+            assert!(!error.contains("enable it"));
+        }
+        assert!(super::plugin_skill_available("user-custom-skill"));
+    }
 
     #[test]
     fn disable_mcp_for_plugins_turns_off_named_plugin_servers_only() {

@@ -172,7 +172,7 @@ describe('ComputerControlTab', () => {
     expect(controls.tools().servers).toEqual([])
   })
 
-  it('groups ego lite with browsers and OfficeCLI with documents', async () => {
+  it('keeps browser controls without the retired document section', async () => {
     vi.mocked(api.pluginsList).mockResolvedValue([
       pluginStatus({ id: 'ego-lite', name: 'ego lite', version: '0.4.0' }),
       pluginStatus({
@@ -183,10 +183,10 @@ describe('ComputerControlTab', () => {
     ])
     render(<ComputerControlTab lang="zh" tools={makeChatToolsFixture()} onChange={vi.fn()} />)
     expect(await screen.findByText('v0.4.0 · 1 Skill')).toBeTruthy()
-    expect(screen.getByText('文档操作')).toBeTruthy()
-    expect(screen.getByText('v1.8.2 · 12 Skill · 1 MCP')).toBeTruthy()
+    expect(screen.queryByText('文档操作')).toBeNull()
+    expect(screen.queryByText('OfficeCLI')).toBeNull()
     expect(screen.getByRole('switch', { name: 'ego lite 控制' })).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'OfficeCLI 控制' })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: 'OfficeCLI 控制' })).toBeNull()
   })
 
   it('updates an installed migrated tool through its switch', async () => {

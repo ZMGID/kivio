@@ -2228,7 +2228,7 @@ pub fn is_skill_enabled(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
 }
 
 /// Global skill gate: Settings enable list + 插件门闸。
-/// 插件附属 skill（如 officecli）仅在对应插件「已安装且启用」时可用。
+/// 插件附属 skill 仅在对应插件「仍受支持、已安装且启用」时可用。
 pub fn skill_globally_available(chat_tools: &ChatToolsConfig, skill_id: &str) -> bool {
     if !crate::plugins::plugin_skill_available(skill_id) {
         return false;
@@ -2244,6 +2244,9 @@ pub fn skill_global_unavailable_error(
 ) -> Option<String> {
     if !crate::plugins::plugin_skill_available(skill_id) {
         if let Some(plugin_id) = crate::plugins::skill_owned_by_plugin(skill_id) {
+            if crate::plugins::catalog_plugin(plugin_id).is_none() {
+                return Some(format!("Operation tool «{plugin_id}» has been retired; its Skill is unavailable: {skill_name}"));
+            }
             return Some(format!(
                 "Skill belongs to operation tool «{plugin_id}» — enable it in 设置 → 电脑操控: {skill_name}"
             ));
@@ -2959,6 +2962,13 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     // entries; preserve the user's disabled state and unrelated MCP servers.
     let mut cua_enabled = None;
     settings.chat_tools.servers.retain(|server| {
+        // Retire the managed integration on load/import/save, including renamed
+        // entries. Independently configured user servers remain user-owned.
+        if server.id.trim() == "plugin-officecli"
+            || server.connector_id.as_deref().map(str::trim) == Some("plugin:officecli")
+        {
+            return false;
+        }
         let managed_cua = crate::computer_control::is_cua_mcp_server_id(server.id.trim())
             || matches!(
                 server.connector_id.as_deref().map(str::trim),
@@ -4294,6 +4304,39 @@ mod tests {
     }
 
     // ===== sanitize_settings =====
+
+    #[test]
+    fn sanitize_settings_retires_managed_officecli_on_load_and_round_trip() {
+        let mut settings = Settings::default();
+        settings.chat_tools.servers = vec![
+            ChatMcpServer {
+                id: "plugin-officecli".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            ChatMcpServer {
+                id: "renamed".into(),
+                connector_id: Some("plugin:officecli".into()),
+                enabled: true,
+                ..Default::default()
+            },
+            ChatMcpServer {
+                id: "user-office".into(),
+                command: "officecli".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.chat_tools.servers.len(), 1);
+        assert_eq!(settings.chat_tools.servers[0].id, "user-office");
+        assert!(settings.chat_tools.servers[0].enabled);
+        let restored = sanitize_settings(
+            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap(),
+        );
+        assert_eq!(restored.chat_tools.servers.len(), 1);
+        assert_eq!(restored.chat_tools.servers[0].id, "user-office");
+    }
 
     #[test]
     fn sanitize_settings_clamps_retry_attempts() {

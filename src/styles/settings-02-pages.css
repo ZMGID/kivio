@@ -475,9 +475,6 @@
 .computer-control-icon--ego-lite {
   color: #7c3aed;
 }
-.computer-control-icon--officecli {
-  color: #0f766e;
-}
 .dark .computer-control-icon--cua {
   color: #8eb7ff;
 }
@@ -486,9 +483,6 @@
 }
 .dark .computer-control-icon--ego-lite {
   color: #b8a0ff;
-}
-.dark .computer-control-icon--officecli {
-  color: #7dd3c7;
 }
 .computer-control-copy {
   min-width: 0;

@@ -926,7 +926,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     },
     computerControl: {
       title: lang === 'zh' ? '电脑操控' : 'Computer control',
-      subtitle: lang === 'zh' ? '管理桌面、浏览器和文档操作工具。' : 'Manage desktop, browser, and document control tools.',
+      subtitle: lang === 'zh' ? '管理桌面和浏览器操作工具。' : 'Manage desktop and browser control tools.',
     },
     externalAgents: {
       title: t.tabExternalAgents,

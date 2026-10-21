@@ -1,6 +1,6 @@
 import { ErrorNotice } from '../../components/AppNotice'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { FileSpreadsheet, Globe2, Monitor, RefreshCw } from 'lucide-react'
+import { Globe2, Monitor, RefreshCw } from 'lucide-react'
 import { api } from '../../api/tauri'
 import type { ChatToolsConfig, ControlToolStatus, PluginStatus, SkillMeta } from '../../api/tauri'
 import { refreshSettings } from '../../api/settingsCache'
@@ -9,7 +9,7 @@ import { FieldBlock, Input, Toggle } from '../public/controls'
 import type { Lang } from '../../components/i18n'
 
 type NativeTool = 'cua' | 'playwright'
-type Tool = NativeTool | 'ego-lite' | 'officecli'
+type Tool = NativeTool | 'ego-lite'
 
 type ControlDetectionSnapshot = {
   versions: Partial<Record<NativeTool, string>>
@@ -27,13 +27,11 @@ const CONTROL_TOOLS = [
   { id: 'cua' as const, kind: 'native' as const, group: 'desktop' as const, name: 'Cua Driver', skill: 'cua-driver', icon: Monitor },
   { id: 'playwright' as const, kind: 'native' as const, group: 'browser' as const, name: 'Playwright CLI', skill: 'playwright-cli', icon: Globe2 },
   { id: 'ego-lite' as const, kind: 'plugin' as const, group: 'browser' as const, name: 'ego lite', icon: Globe2 },
-  { id: 'officecli' as const, kind: 'plugin' as const, group: 'document' as const, name: 'OfficeCLI', icon: FileSpreadsheet },
 ]
 
 const CONTROL_GROUPS = [
   { id: 'desktop' as const, zh: '电脑操作', en: 'Computer control' },
   { id: 'browser' as const, zh: '浏览器操作', en: 'Browser control' },
-  { id: 'document' as const, zh: '文档操作', en: 'Document control' },
 ]
 
 function formatControlVersion(output: string): string {
@@ -257,7 +255,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
   const install = (tool: Tool) => {
     const paths = [...latest.current.tools.skillScanPaths]
     return runControlOperation(tool, 'install', paths, async () => {
-      if (tool === 'ego-lite' || tool === 'officecli') {
+      if (tool === 'ego-lite') {
         const result = await api.pluginsRunOfficialInstall(tool)
         updatePluginInDetectionCache(paths, result.status)
         await refreshSettings().catch(() => undefined)
@@ -276,7 +274,7 @@ export function ComputerControlTab({ lang, tools, onChange }: {
     })
   }
 
-  const setPluginEnabled = (id: 'ego-lite' | 'officecli', enabled: boolean) => {
+  const setPluginEnabled = (id: 'ego-lite', enabled: boolean) => {
     const paths = [...latest.current.tools.skillScanPaths]
     return runControlOperation(id, 'toggle', paths, async () => {
       const result = await api.pluginsSetEnabled(id, enabled)

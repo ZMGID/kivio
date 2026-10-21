@@ -217,7 +217,7 @@ pub fn is_installed(id: &str) -> bool {
 
 /// 插件 meta 中的启用开关（未安装也可能有 meta=false）。
 pub fn is_enabled(id: &str) -> bool {
-    read_meta(id).map(|m| m.enabled).unwrap_or(false)
+    catalog_plugin(id).is_some() && read_meta(id).map(|m| m.enabled).unwrap_or(false)
 }
 
 /// 仅 **已安装且启用** 时返回 bin 目录，供 PATH prepend。
