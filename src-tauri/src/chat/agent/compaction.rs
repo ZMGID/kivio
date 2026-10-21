@@ -852,7 +852,7 @@ fn estimate_message_tokens(message: &Value) -> usize {
 const IMAGE_PART_PLACEHOLDER: &str = "[image attachment omitted]";
 
 /// 重复图片被去重后留在原位的占位文本。
-const DUPLICATE_IMAGE_PLACEHOLDER: &str = "[与前文同一张图片，此处省略，请参照前文图片]";
+const DUPLICATE_IMAGE_PLACEHOLDER: &str = "[同一张图片已在上下文中提供，此处不重复上传]";
 
 /// 发送视图里所有图片 base64 的总字节预算。超出后从**最旧**的图片开始换占位符。
 ///
@@ -867,8 +867,8 @@ const DUPLICATE_IMAGE_PLACEHOLDER: &str = "[与前文同一张图片，此处省
 /// ponytail: 固定常量，不做设置项。真有人需要不同额度再提成 `chat_tools` 配置。
 const IMAGE_BYTES_BUDGET: usize = 16 * 1024 * 1024;
 
-/// 收敛发送视图里的图片体积：先正序去重，重复的图片只留最早那份，再倒序累计体积，
-/// 累计 base64 字节超过 [`IMAGE_BYTES_BUDGET`] 后把更早的图片换成占位文本。
+/// 收敛发送视图里的图片体积：预算足够时保留最早副本以稳定缓存；
+/// 超过 [`IMAGE_BYTES_BUDGET`] 时按最新出现顺序保留图片，同时去重。
 /// 返回省下的字节数。
 ///
 /// **为什么非做不可**：`read` 读到图片会把整张 base64 作为 follow-up user 消息永久留在
@@ -880,8 +880,8 @@ const IMAGE_BYTES_BUDGET: usize = 16 * 1024 * 1024;
 /// 千把 token，不是 8 万字符），所以压缩层根本看不见这份体积，不会触发。字节层面的
 /// 重复与堆积只能在这里单独处理。
 ///
-/// 两次遍历分别处理：重复图保留最早那份，避免新增图片改变已缓存历史，
-/// 超预算时淘汰最旧的（对当前一步价值最低）。对齐 Claude Code 用户在要的
+/// 先计算不同图片的总字节数，再按预算选择保留方向。去重只引用最终保留的图片，
+/// 超预算时优先保留最新读取的图。对齐 Claude Code 用户在要的
 /// 「按年龄丢图」与 Strands Agents 的「图片换带元信息占位符」。
 ///
 /// ponytail: 指纹直接用 part 的 JSON 串哈希——同一张图序列化必然逐字节相同，
@@ -890,54 +890,53 @@ fn prune_image_parts(messages: &mut [Value], budget: usize) -> usize {
     use std::collections::HashSet;
     use std::hash::{DefaultHasher, Hash, Hasher};
 
-    let mut seen: HashSet<u64> = HashSet::new();
-    let mut saved = 0usize;
-    for message in messages.iter_mut() {
-        let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for part in parts {
-            if !part
-                .get("type")
+    let mut seen = HashSet::new();
+    let mut unique_bytes = 0usize;
+    let mut images: Vec<_> = messages
+        .iter_mut()
+        .filter_map(|message| message.get_mut("content").and_then(Value::as_array_mut))
+        .flat_map(|parts| parts.iter_mut())
+        .filter(|part| {
+            part.get("type")
                 .and_then(Value::as_str)
                 .is_some_and(|kind| IMAGE_PART_TYPES.contains(&kind))
-            {
-                continue;
-            }
+        })
+        .map(|part| {
             let serialized = part.to_string();
             let mut hasher = DefaultHasher::new();
             serialized.hash(&mut hasher);
-            if !seen.insert(hasher.finish()) {
-                saved += serialized.len();
-                *part = json!({"type":"text", "text":DUPLICATE_IMAGE_PLACEHOLDER});
-            }
-        }
-    }
-    let mut kept_bytes = 0usize;
-    for message in messages.iter_mut().rev() {
-        let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for part in parts.iter_mut() {
-            let Some(kind) = part.get("type").and_then(Value::as_str) else {
-                continue;
-            };
-            if !IMAGE_PART_TYPES.contains(&kind) {
-                continue;
-            }
-            let serialized = part.to_string();
+            let hash = hasher.finish();
             let bytes = serialized.len();
-            if kept_bytes.saturating_add(bytes) > budget {
-                saved += bytes;
-                *part = json!({
-                    "type": "text",
-                    "text": format!(
-                        "[较早的图片已从上下文移除以控制请求体积（约 {}KB）。需要时请重新读取该文件。]",
-                        bytes / 1024
-                    ),
-                });
-                continue;
+            if seen.insert(hash) {
+                unique_bytes = unique_bytes.saturating_add(bytes);
             }
+            (part, hash, bytes)
+        })
+        .collect();
+
+    // Preserve the cached prefix when all distinct images fit. Under pressure,
+    // select newest copies first; deduplicate only against images actually kept.
+    if unique_bytes > budget {
+        images.reverse();
+    }
+    seen.clear();
+    let mut kept_bytes = 0usize;
+    let mut saved = 0usize;
+    for (part, hash, bytes) in images {
+        if seen.contains(&hash) {
+            saved += bytes;
+            *part = json!({"type":"text", "text":DUPLICATE_IMAGE_PLACEHOLDER});
+        } else if kept_bytes.saturating_add(bytes) > budget {
+            saved += bytes;
+            *part = json!({
+                "type": "text",
+                "text": format!(
+                    "[图片已从上下文移除以控制请求体积（约 {}KB）。需要时请重新读取该文件。]",
+                    bytes / 1024
+                ),
+            });
+        } else {
+            seen.insert(hash);
             kept_bytes += bytes;
         }
     }
@@ -1786,6 +1785,22 @@ mod tests {
         );
         assert_eq!(prune_image_parts(&mut messages, IMAGE_BYTES_BUDGET), 0);
         assert_eq!(messages[0]["content"][1], image(&dup));
+    }
+
+    #[test]
+    fn prune_image_parts_keeps_reread_image_when_budget_evicts_its_old_copy() {
+        let image = |tag: &str| json!({"type":"image_url", "image_url":{"url":tag.repeat(1000)}});
+        let a = image("A");
+        let mut messages: Vec<Value> = [a.clone(), image("B"), image("C"), a.clone()]
+            .into_iter()
+            .map(|part| json!({"role":"user", "content":[part]}))
+            .collect();
+        prune_image_parts(&mut messages, 2400);
+        assert_eq!(messages[3]["content"][0], a);
+        assert_eq!(messages[2]["content"][0], image("C"));
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[1]["content"][0]["type"], "text");
+        assert_eq!(prune_image_parts(&mut messages, 2400), 0);
     }
 
     #[test]
