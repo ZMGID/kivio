@@ -15,9 +15,36 @@ use std::{
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
-const PORT: u16 = 23127;
-const ORIGIN: &str = "https://localhost:23127";
-const ADDIN_ID: &str = "61c5c219-0386-4fea-8292-8e86cf23d27e";
+const PORT: u16 = if crate::app_data::is_dev() {
+    23128
+} else {
+    23127
+};
+const ORIGIN: &str = if crate::app_data::is_dev() {
+    "https://localhost:23128"
+} else {
+    "https://localhost:23127"
+};
+const HOST: &str = if crate::app_data::is_dev() {
+    "localhost:23128"
+} else {
+    "localhost:23127"
+};
+const MANIFEST_NAME: &str = if crate::app_data::is_dev() {
+    "kivio-study-dev.xml"
+} else {
+    "kivio-study.xml"
+};
+const DISPLAY_NAME: &str = if crate::app_data::is_dev() {
+    "Kivio Study Dev"
+} else {
+    "Kivio Study"
+};
+const ADDIN_ID: &str = if crate::app_data::is_dev() {
+    "c15d6e93-c16c-439d-9229-91851b37f206"
+} else {
+    "61c5c219-0386-4fea-8292-8e86cf23d27e"
+};
 struct Running {
     handle: axum_server::Handle,
     task: tokio::task::JoinHandle<()>,
@@ -67,7 +94,7 @@ fn assets(app: &AppHandle) -> Result<PathBuf, String> {
     Err("Word 插件资源缺失，请重新安装 Kivio。".into())
 }
 fn valid_origin(headers: &HeaderMap) -> bool {
-    headers.get("host").and_then(|s| s.to_str().ok()) == Some("localhost:23127")
+    headers.get("host").and_then(|s| s.to_str().ok()) == Some(HOST)
         && headers.get("origin").map(|s| s == ORIGIN).unwrap_or(true)
 }
 async fn library(State(server): State<Server>, headers: HeaderMap) -> Response {
@@ -260,7 +287,7 @@ fn manifest() -> String {
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="TaskPaneApp">
 <Id>{ADDIN_ID}</Id><Version>1.0.0.0</Version><ProviderName>Kivio</ProviderName><DefaultLocale>zh-CN</DefaultLocale>
-<DisplayName DefaultValue="Kivio Study"/><Description DefaultValue="从本机 Study 文献库插入引用并更新参考文献。"/>
+<DisplayName DefaultValue="{DISPLAY_NAME}"/><Description DefaultValue="从本机 Study 文献库插入引用并更新参考文献。"/>
 <IconUrl DefaultValue="{ORIGIN}/icon.png"/><SupportUrl DefaultValue="https://github.com/ZMGID/kivio"/>
 <AppDomains><AppDomain>{ORIGIN}</AppDomain></AppDomains><Hosts><Host Name="Document"/></Hosts>
 <Requirements><Sets DefaultMinVersion="1.3"><Set Name="WordApi"/></Sets></Requirements>
@@ -285,7 +312,7 @@ async fn install(app: &AppHandle, repair: bool) -> Result<(), String> {
         || !dir.join("localhost.key").is_file();
     assets(app)?;
     prepare(&dir)?;
-    let manifest_path = dir.join("kivio-study.xml");
+    let manifest_path = dir.join(MANIFEST_NAME);
     std::fs::write(&manifest_path, manifest()).map_err(|e| e.to_string())?;
     let certificate = dir.join("localhost.crt");
     #[cfg(target_os = "macos")]
@@ -306,7 +333,7 @@ async fn install(app: &AppHandle, repair: bool) -> Result<(), String> {
         }
         let folder = home.join("Library/Containers/com.microsoft.Word/Data/Documents/wef");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        std::fs::copy(&manifest_path, folder.join("kivio-study.xml")).map_err(|e| e.to_string())?;
+        std::fs::copy(&manifest_path, folder.join(MANIFEST_NAME)).map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "windows")]
     {
@@ -412,7 +439,7 @@ mod tests {
             .build()
             .unwrap();
         let url = format!("https://localhost:{}/library", address.port());
-        let request = || client.get(&url).header("host", "localhost:23127");
+        let request = || client.get(&url).header("host", HOST);
         assert_eq!(request().send().await.unwrap().status(), 401);
         assert_eq!(
             request()

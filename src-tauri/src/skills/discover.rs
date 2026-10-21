@@ -35,7 +35,11 @@ fn legacy_cua_skills_dir() -> Option<PathBuf> {
 
 /// Kivio 自己的个人技能目录：`~/.kivio/skills`（对齐 `~/.claude/skills` / `~/.codex/skills`）。
 pub fn kivio_skills_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".kivio").join("skills"))
+    directories::BaseDirs::new().map(|base| {
+        base.home_dir()
+            .join(crate::app_data::user_home_name())
+            .join("skills")
+    })
 }
 
 /// 旧版个人目录：`{app_data}/skills`。只扫已有内容，不再写入。
@@ -54,10 +58,16 @@ pub fn user_skills_dir(_app: &AppHandle) -> Result<PathBuf, String> {
 /// 每一层先 `.kivio/skills`（Kivio 自己的，对齐 `.claude/skills`），再 `.agents/skills`（共享）。
 /// 跳过全局 `~/.kivio/skills` 与 `~/.agents/skills`，避免把家目录当成项目。
 pub fn project_skill_dirs(cwd: &Path) -> Vec<PathBuf> {
-    let skip: Vec<PathBuf> = [kivio_skills_dir(), home_agents_skills_dir()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let production_home_skills =
+        directories::BaseDirs::new().map(|base| base.home_dir().join(".kivio/skills"));
+    let skip: Vec<PathBuf> = [
+        kivio_skills_dir(),
+        home_agents_skills_dir(),
+        production_home_skills,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     project_skill_dirs_inner(cwd, &skip)
 }
 
@@ -592,16 +602,6 @@ description: Test skill.
         let dirs = project_skill_dirs_inner(&base, &[global]);
         assert!(dirs.is_empty());
         fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn kivio_skills_dir_is_dot_kivio_skills() {
-        let dir = kivio_skills_dir().expect("home directory");
-        assert!(
-            dir.ends_with(Path::new(".kivio").join("skills")),
-            "expected ~/.kivio/skills, got {}",
-            dir.display()
-        );
     }
 
     #[test]

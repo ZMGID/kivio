@@ -526,9 +526,9 @@ impl Default for ScreenshotTranslationConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: "CommandOrControl+Shift+A".to_string(),
-            text_hotkey: "CommandOrControl+Shift+T".to_string(),
-            replace_hotkey: "CommandOrControl+Shift+R".to_string(),
+            hotkey: default_screenshot_translation_hotkey(),
+            text_hotkey: default_screenshot_translation_text_hotkey(),
+            replace_hotkey: default_screenshot_translation_replace_hotkey(),
             replace_enabled: true,
             provider_id: "default-ocr".to_string(),
             model: "gpt-4o".to_string(),
@@ -849,7 +849,7 @@ impl Default for LensConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: "CommandOrControl+Shift+G".to_string(),
+            hotkey: default_lens_hotkey(),
             provider_id: String::new(),
             model: String::new(),
             default_language: String::new(),
@@ -1686,6 +1686,9 @@ pub struct ScreenshotAnnotateConfig {
 }
 
 fn default_screenshot_annotate_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+S".to_string()
 }
 
@@ -2137,8 +2140,8 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            hotkey: "CommandOrControl+Alt+T".to_string(),
-            chat_hotkey: "CommandOrControl+Shift+K".to_string(),
+            hotkey: default_hotkey(),
+            chat_hotkey: default_chat_hotkey(),
             close_chat_hotkey: default_close_chat_hotkey(),
             theme: "system".to_string(),
             theme_color: default_theme_color(),
@@ -2179,7 +2182,7 @@ impl Default for Settings {
             builtin_assistants_seeded_v3: false,
             chat_tools_greenlit_v1: false,
             onboarding_status: default_onboarding_status(),
-            auto_check_update: true,
+            auto_check_update: !crate::app_data::is_dev(),
             image_archive_enabled: false,
             image_archive_path: String::new(),
             favorite_models: Vec::new(),
@@ -3436,6 +3439,10 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
  * 幂等：新目录已存在 settings.json → 跳过；旧目录不存在 → 跳过（全新安装）。
  */
 fn migrate_legacy_app_data(app: &AppHandle) {
+    // Development installations must never import existing production data.
+    if crate::app_data::is_dev() {
+        return;
+    }
     use tauri::Manager;
     let new_dir = match app.path().app_data_dir() {
         Ok(d) => d,
@@ -3665,26 +3672,44 @@ fn default_api_format() -> String {
 }
 
 fn default_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Alt+T".to_string()
 }
 
 fn default_chat_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+K".to_string()
 }
 
 fn default_close_chat_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+W".to_string()
 }
 
 fn default_screenshot_translation_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+A".to_string()
 }
 
 fn default_screenshot_translation_text_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+T".to_string()
 }
 
 fn default_screenshot_translation_replace_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+R".to_string()
 }
 
@@ -3694,6 +3719,9 @@ fn default_translate_card_width() -> u32 {
 }
 
 fn default_lens_hotkey() -> String {
+    if crate::app_data::is_dev() {
+        return String::new();
+    }
     "CommandOrControl+Shift+G".to_string()
 }
 

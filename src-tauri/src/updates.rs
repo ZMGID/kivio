@@ -19,6 +19,9 @@ use crate::state::AppState;
 pub(crate) async fn check_github_latest_release(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    if crate::app_data::is_dev() {
+        return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
+    }
     const REPO: &str = "ZMGID/kivio";
     let current = env!("CARGO_PKG_VERSION");
 
@@ -202,6 +205,9 @@ pub(crate) async fn download_update_asset(
     state: State<'_, AppState>,
     version: String,
 ) -> Result<String, String> {
+    if crate::app_data::is_dev() {
+        return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
+    }
     const REPO: &str = "ZMGID/kivio";
     let version = normalize_release_version(&version)
         .ok_or_else(|| format!("无效的 release 版本号: {version}"))?;
@@ -326,6 +332,9 @@ fn launch_nsis_silent_update(path: &str) -> Result<(), String> {
 /// - Windows（.exe）：ShellExecute 跑 NSIS 静默更新，立即 exit 让 installer 能覆盖正在运行的 exe
 #[tauri::command]
 pub(crate) fn install_update_and_quit(app: AppHandle, path: String) -> Result<(), String> {
+    if crate::app_data::is_dev() {
+        return Err("Kivio Dev 请通过源码构建更新，不安装正式版更新".to_string());
+    }
     let p = std::path::Path::new(&path);
     if !p.exists() {
         return Err(format!("安装包不存在: {path}"));

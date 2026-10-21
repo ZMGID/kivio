@@ -207,12 +207,25 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 
 ```bash
 npm install
-npm run dev          # Rust + UI（macOS 会编 Swift sidecar）
+npm run dev          # 独立 Kivio Dev：Rust + UI（macOS 会编 Swift sidecar）
+npm run build:dev    # 打包独立 Kivio Dev
+npm run build        # 正式版构建（保留原应用标识）
 npm run dev:ui       # 只开 Vite
 npm run lint
 npm run typecheck
 npm test
 ```
+
+`Kivio Dev` 使用橙色 DEV 图标和 `com.zmair.kivio.dev` 应用标识。macOS 数据目录为
+`~/Library/Application Support/com.zmair.kivio.dev`；Windows / Linux 同样按独立标识分目录。
+正式版的 `com.zmair.kivio` 数据保持原位，开发版不自动复制或迁移现有配置、对话、附件、任务及备份设置。
+Dev 的用户技能写入 `~/.kivio-dev/skills`，OAuth 钥匙串、Study Word 插件及本机端口也独立；首次启动全局快捷键为空，自动检查更新关闭，开发版不能安装正式版更新。
+需要测试的模型请在 Dev 单独配置。项目源文件、项目技能、共享 `~/.agents/skills` 和外部 CLI 的安装及其原生会话仍是本机共享资源；不要在两个版本同时续聊同一条外部 CLI 原生会话。
+
+直接调用 Tauri 时，开发版使用 `npx tauri dev --config src-tauri/tauri.dev.conf.json`，或
+`npx tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json`（macOS 原生验证包）。
+未传开发配置的 debug GUI 会在访问用户数据前拒绝启动；正式版 release 构建继续使用原身份。
+`npm run test:probe` 默认连接 Dev；其他目录可显式传 `--probe-dir`。
 
 Lint 配置位于 [`eslint.config.mjs`](eslint.config.mjs)。`@shadcn/lint` 已注册，尚未启用新规则；需要时在其中的 `rules` 对象添加所选的 `shadcn/*` 规则。参见[可用规则](https://github.com/shadcn-ui/lint#rules)和[配置示例](https://github.com/shadcn-ui/lint/blob/main/docs/design-systems.md)。
 

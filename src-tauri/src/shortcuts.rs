@@ -1132,13 +1132,17 @@ fn restore_macos_development_app_icon() {
     use cocoa::base::{id, nil};
     use objc::{class, msg_send, sel, sel_impl};
 
-    static ICON_BYTES: &[u8] = include_bytes!("../icons/icon.png");
+    let icon_bytes: &[u8] = if crate::app_data::is_dev() {
+        include_bytes!("../icons/dev/icon.png")
+    } else {
+        include_bytes!("../icons/icon.png")
+    };
 
     unsafe {
         let data: id = msg_send![
             class!(NSData),
-            dataWithBytes: ICON_BYTES.as_ptr()
-            length: ICON_BYTES.len()
+            dataWithBytes: icon_bytes.as_ptr()
+            length: icon_bytes.len()
         ];
         let image: id = msg_send![class!(NSImage), alloc];
         let image: id = msg_send![image, initWithData: data];
@@ -1421,6 +1425,11 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
     let icon_bytes = include_bytes!("../icons/windows-tray.png");
     #[cfg(not(target_os = "windows"))]
     let icon_bytes = include_bytes!("../icons/tray-icon.png");
+    let icon_bytes: &[u8] = if crate::app_data::is_dev() {
+        include_bytes!("../icons/dev/32x32.png")
+    } else {
+        icon_bytes
+    };
     let icon_image = image::load_from_memory(icon_bytes)
         .map_err(|e| e.to_string())?
         .to_rgba8();
@@ -1433,7 +1442,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
         ))
         // macOS uses a monochrome template; Windows uses the colored app icon
         // with its white plate so it remains visible on light and dark taskbars.
-        .icon_as_template(cfg!(target_os = "macos"))
+        .icon_as_template(cfg!(target_os = "macos") && !crate::app_data::is_dev())
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1505,7 +1514,7 @@ pub(crate) fn setup_tray(app: &AppHandle) -> Result<(), String> {
         .build(app)
         .map_err(|e| e.to_string())?;
 
-    tray.set_tooltip(Some("Kivio Desktop".to_string()))
+    tray.set_tooltip(Some(crate::app_data::product_name().to_string()))
         .map_err(|e| e.to_string())?;
     Ok(())
 }

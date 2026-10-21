@@ -11,7 +11,7 @@
     "models:sync": "node scripts/model-database.mjs",
     "protocol:generate": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol",
     "protocol:check": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol -- --check",
-    "dev": "npm run build:word && (npm run build:swift || true) && tauri dev",
+    "dev": "npm run build:word && (npm run build:swift || true) && tauri dev --config src-tauri/tauri.dev.conf.json",
     "dev:ui": "vite --port 5713",
     "build": "npm run package:check && npm run icons:check && npm run build:swift && npm run protocol:check && tauri build",
     "tauri": "tauri",
@@ -31,7 +31,8 @@
     "probe:e2e": "node scripts/probe-e2e.mjs",
     "probe:chat-performance": "node scripts/check-chat-performance-report.mjs",
     "preview": "vite preview",
-    "build:word": "node scripts/build-word.mjs"
+    "build:word": "node scripts/build-word.mjs",
+    "build:dev": "npm run package:check && npm run build:swift && npm run protocol:check && tauri build --config src-tauri/tauri.dev.conf.json"
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.0",

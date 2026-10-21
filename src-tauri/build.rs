@@ -2,6 +2,24 @@
 mod resources;
 
 fn main() {
+    // Match the effective Tauri identity for headless consumers as well as AppHandle paths.
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    let base: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string("tauri.conf.json").expect("Tauri config"))
+            .expect("valid Tauri config");
+    let overlay: serde_json::Value = std::env::var("TAURI_CONFIG")
+        .map(|value| serde_json::from_str(&value).expect("valid Tauri config overlay"))
+        .unwrap_or(serde_json::Value::Null);
+    let identifier = overlay["identifier"]
+        .as_str()
+        .unwrap_or_else(|| base["identifier"].as_str().unwrap());
+    assert!(
+        matches!(identifier, "com.zmair.kivio" | "com.zmair.kivio.dev"),
+        "unsupported Kivio identity"
+    );
+    println!("cargo:rustc-env=KIVIO_APP_IDENTIFIER={identifier}");
+
     // Share package discovery with Vite: every bundled manifest is included in the native catalog.
     println!("cargo:rerun-if-changed=../extensions");
     let mut ids = Vec::new();

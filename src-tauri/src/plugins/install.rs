@@ -774,7 +774,7 @@ fn remove_officecli_residuals() -> Vec<String> {
 
     let skill_roots = [
         home.join(".agents").join("skills"),
-        home.join(".kivio").join("skills"),
+        home.join(crate::app_data::user_home_name()).join("skills"),
         home.join(".claude").join("skills"),
         home.join(".cursor").join("skills"),
         home.join(".copilot").join("skills"),
@@ -881,7 +881,7 @@ fn home_agent_skill_parents() -> Vec<PathBuf> {
     };
     vec![
         home.join(".agents").join("skills"),
-        home.join(".kivio").join("skills"),
+        home.join(crate::app_data::user_home_name()).join("skills"),
         home.join(".claude").join("skills"),
         home.join(".cursor").join("skills"),
         home.join(".codex").join("skills"),

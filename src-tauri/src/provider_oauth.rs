@@ -133,7 +133,7 @@ fn device_id() -> &'static str {
                 return saved;
             }
         }
-        let saved = keyring::Entry::new("Kivio.ModelOAuth", "device-id")
+        let saved = keyring::Entry::new(crate::app_data::oauth_service(), "device-id")
             .ok()
             .and_then(|entry| entry.get_password().ok())
             .unwrap_or(id);
@@ -218,7 +218,7 @@ fn tokens_from(value: &Value, provider: &str, old_refresh: &str) -> Result<Token
 }
 fn entry(id: &str) -> Result<keyring::Entry, String> {
     uuid::Uuid::parse_str(id).map_err(|_| "Invalid OAuth credential reference".to_string())?;
-    keyring::Entry::new("Kivio.ModelOAuth", id)
+    keyring::Entry::new(crate::app_data::oauth_service(), id)
         .map_err(|_| "System credential store is unavailable".into())
 }
 #[derive(Serialize, Deserialize)]
@@ -228,8 +228,11 @@ struct CredentialManifest {
 }
 fn chunk_entry(id: &str, version: &str, index: usize) -> Result<keyring::Entry, String> {
     uuid::Uuid::parse_str(version).map_err(|_| "Invalid credential version".to_string())?;
-    keyring::Entry::new("Kivio.ModelOAuth", &format!("{id}/{version}/{index}"))
-        .map_err(|_| "System credential store is unavailable".into())
+    keyring::Entry::new(
+        crate::app_data::oauth_service(),
+        &format!("{id}/{version}/{index}"),
+    )
+    .map_err(|_| "System credential store is unavailable".into())
 }
 fn manifest(id: &str) -> Result<CredentialManifest, String> {
     let data = entry(id)?.get_secret().map_err(|error| match error {

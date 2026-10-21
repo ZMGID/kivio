@@ -127,6 +127,18 @@ fn disable_process_power_throttling() {
 /// 应用入口函数
 /// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
 pub fn run() {
+    let context = tauri::generate_context!();
+    assert_eq!(
+        context.config().identifier,
+        app_data::APP_IDENTIFIER,
+        "Tauri and headless storage identities must match"
+    );
+
+    assert!(
+        !cfg!(debug_assertions) || app_data::is_dev(),
+        "Debug GUI builds must use the Dev identity: run npm run dev or pass --config src-tauri/tauri.dev.conf.json"
+    );
+
     // GUI launches don't always inherit the *current* user PATH, so packaged
     // builds can't find user-installed CLIs. Enrich the process PATH once,
     // before any window creation or CLI probing. macOS: login-shell PATH is not
@@ -280,8 +292,12 @@ pub fn run() {
             }
 
             // 清理上次崩溃 / 强杀 / 旧版本遗留的截图 PNG（24h 之前的，避免误删并发实例的活文件）
-            cleanup_orphan_temp_files();
-            cleanup_stale_sandbox_exports();
+            // These legacy temp prefixes are shared with installed production builds.
+            // A Dev startup must not clean up another installation's files.
+            if !app_data::is_dev() {
+                cleanup_orphan_temp_files();
+                cleanup_stale_sandbox_exports();
+            }
             // 会话副产物：空/孤儿工作区目录、已删会话残留的附件目录。只碰 Kivio 自己造的
             // `conv_*` 目录，非空的孤儿工作区只报数不删（里面是用户产物）。
             chat::gc::sweep_conversation_side_artifacts(app.handle());
@@ -892,7 +908,7 @@ pub fn run() {
         ];
             handler(invoke)
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { api, code, .. } => {

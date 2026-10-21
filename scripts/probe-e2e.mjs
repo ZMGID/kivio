@@ -27,7 +27,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-const APP_IDENTIFIER = 'com.zmair.kivio'
+const APP_IDENTIFIER = 'com.zmair.kivio.dev'
 /**
  * 首次就绪握手的等待上限（秒）。默认 60s 够覆盖「app 正在启动」；`npm run dev` 还要先编译
  * Rust，那种情况用 `--wait 600` 让脚本一直等。等不到就 skip（不是 fail）。

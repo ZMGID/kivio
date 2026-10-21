@@ -254,7 +254,9 @@ pub async fn computer_control_install(
             home.join(".cua-driver/skills/cua-driver")
         }
         ControlTool::Playwright => {
-            let staging = home.join(".kivio/tool-setup/playwright");
+            let staging = home
+                .join(crate::app_data::user_home_name())
+                .join("tool-setup/playwright");
             std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
             run(
                 "playwright-cli",
@@ -305,7 +307,9 @@ pub async fn computer_control_update(
             )
             .await?;
             crate::path_env::refresh_path_now();
-            let staging = home.join(".kivio/tool-setup/playwright");
+            let staging = home
+                .join(crate::app_data::user_home_name())
+                .join("tool-setup/playwright");
             std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
             run(
                 "playwright-cli",
