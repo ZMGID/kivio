@@ -67,7 +67,7 @@ export function GitStatusPill({ workdir, lang, disabled, onOpenGitPanel }: GitSt
         aria-haspopup="dialog"
         title="Git"
       >
-        <GitBranch strokeWidth={1.75} className="!text-emerald-600 dark:!text-emerald-400" />
+        <GitBranch strokeWidth={1.75} className="!text-neutral-800 dark:!text-neutral-200" />
         <span className="min-w-0 max-w-[140px] truncate">{label}</span>
       </button>
 
