@@ -4,7 +4,7 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
 import { clearChatReadingPositions, rememberChatReadingPosition } from './chatReadingPosition'
-import { reset } from './streamingStore'
+import { reset, setCoarse } from './streamingStore'
 
 let list: Virtualizer<Element, Element>
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
@@ -294,4 +294,34 @@ it.each(['auto-prefetch', undefined])('prefetches within two viewports, coalesce
   fireEvent.scroll(viewport)
   fireEvent.wheel(viewport, { deltaY: -100 })
   expect(load).toHaveBeenCalledTimes(2)
+})
+
+
+it.each([0, 40])('keeps reserve independent of mounted history and clears it on rewind (%i older rows)', async (olderCount) => {
+  const earlier = [
+    ...Array.from({ length: olderCount }, (_, index) => ({
+      id: `older-${index}`, role: 'assistant' as const, content: 'Older answer', timestamp: index,
+    })),
+    { id: 'old-question', role: 'user' as const, content: 'Earlier question', timestamp: 1 },
+    { id: 'old-answer', role: 'assistant' as const, content: 'Earlier answer', timestamp: 2 },
+  ]
+  const question = { id: 'new-question', role: 'user' as const, content: 'New question', timestamp: 3 }
+  const { container, rerender } = render(<MessageList conversationId="reserve-rewind" messages={earlier} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 800 })
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const top = this.dataset.messageId ? 0 : 200
+    return { top, bottom: top + 100, height: 100, width: 280, left: 0, right: 280, x: 0, y: top, toJSON() {} }
+  })
+  act(() => setCoarse({ streaming: true }))
+  rerender(<MessageList conversationId="reserve-rewind" messages={[...earlier, question]} />)
+  act(() => setCoarse({ streaming: false }))
+  rerender(<MessageList conversationId="reserve-rewind" messages={[...earlier, question,
+    { id: 'new-answer', role: 'assistant', content: 'Short answer', timestamp: 4 },
+  ]} />)
+  const spacer = container.querySelector<HTMLElement>('[data-chat-message-list-item="tail"] > div > div:last-child')!
+  expect(parseFloat(spacer.style.height)).toBeGreaterThan(16)
+  rerender(<MessageList conversationId="reserve-rewind" messages={earlier} />)
+  expect(spacer.style.height).toBe('16px')
 })

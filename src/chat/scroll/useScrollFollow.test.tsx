@@ -11,6 +11,7 @@ type ResizeObserverHarness = {
 type ScrollToOptions = { top: number; behavior?: ScrollBehavior }
 
 function Harness() {
+  const [contentVersion, setContentVersion] = useState(0)
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
   const [content, setContent] = useState<HTMLDivElement | null>(null)
   const { handle, following, showJumpButton } = useScrollFollow({ viewport, content })
@@ -18,6 +19,7 @@ function Harness() {
     <>
       <output data-testid="following">{String(following)}</output>
       <output data-testid="show-jump-button">{String(showJumpButton)}</output>
+      <button type="button" onClick={() => setContentVersion(value => value + 1)}>replace-content</button>
       <button type="button" onClick={handle.jumpToBottom}>jump</button>
       <button type="button" onClick={handle.releaseFollow}>release</button>
       <button type="button" onClick={() => handle.restoreReadingPosition(200)}>restore</button>
@@ -26,7 +28,7 @@ function Harness() {
       <button type="button" onClick={() => handle.scrollToOffset(240, { behavior: 'smooth' })}>scroll-smooth</button>
       <button type="button" onClick={handle.markLayoutCompensation}>mark-layout</button>
       <div ref={setViewport} data-testid="viewport">
-        <div ref={setContent} />
+        <div key={contentVersion} ref={setContent} />
       </div>
     </>
   )
@@ -95,6 +97,17 @@ describe('useScrollFollow scroll source timing', () => {
     expect(viewport.scrollTop).toBe(200)
     expect(screen.getByTestId('following')).toHaveTextContent('false')
     fireEvent.wheel(viewport, { deltaY: -40 })
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+  })
+
+  it.each(['restore', 'wheel'])('keeps the current reading position when content observers rebind after %s', (action) => {
+    const viewport = mount()
+    if (action === 'restore') fireEvent.click(screen.getByText('restore'))
+    else fireEvent.wheel(viewport, { deltaY: -40 })
+    viewport.scrollTop = 320
+    fireEvent.scroll(viewport)
+    fireEvent.click(screen.getByText('replace-content'))
+    expect(viewport.scrollTop).toBe(320)
     expect(screen.getByTestId('following')).toHaveTextContent('false')
   })
 

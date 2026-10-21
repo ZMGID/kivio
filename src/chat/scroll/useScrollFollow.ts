@@ -199,10 +199,13 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
   }, [dispatch])
 
   const restoreReadingPosition = useCallback((offset: number) => {
-    pendingRestoreRef.current = Math.max(0, offset)
+    const target = Math.max(0, offset)
+    // A restore is consumed once. Keeping an already-applied offset would
+    // replay it when content/listener bindings change after the reader moves.
+    pendingRestoreRef.current = boundViewportRef.current ? null : target
     dispatch({ type: 'release' })
     const el = boundViewportRef.current ?? viewport
-    if (el) applyScrollTop(el, pendingRestoreRef.current)
+    if (el) applyScrollTop(el, target)
   }, [applyScrollTop, dispatch, viewport])
 
   const scrollToOffset = useCallback((offset: number, options?: { adjustments?: number; behavior?: ScrollBehavior }) => {
@@ -220,6 +223,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     stickToBottom()
   }, [stickToBottom])
 
+  const initializedViewportRef = useRef<HTMLElement | null>(null)
   useEffect(() => {
     if (!enabled || !viewport) {
       return
@@ -227,17 +231,23 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     const root = listenerRoot ?? viewport
     const growthTarget = content ?? viewport.firstElementChild
 
-    // 新绑定总是跟随：新挂载、视口重建、重新启用都从钉底开始，元素到位前 dispatch 的 forceFollow 也由此兑现。
+    // Observer/listener rebinding is not a new reading session. Only a new
+    // viewport initializes follow; the same viewport retains the user's intent.
+    const newViewport = initializedViewportRef.current !== viewport
+    initializedViewportRef.current = viewport
     boundViewportRef.current = viewport
     const restoredOffset = pendingRestoreRef.current
     pendingRestoreRef.current = null
-    stateRef.current = restoredOffset === null
-      ? createFollowState()
-      : { ...createFollowState(), following: false, userDetached: true }
-    setFollowing(restoredOffset === null)
-    setShowJumpButton(restoredOffset !== null && restoredOffset < viewport.scrollHeight - viewport.clientHeight - jumpButtonThreshold())
-    if (restoredOffset === null) pinToBottom()
-    else applyScrollTop(viewport, restoredOffset)
+    if (restoredOffset !== null) {
+      stateRef.current = { ...createFollowState(), following: false, userDetached: true }
+      applyScrollTop(viewport, restoredOffset)
+    } else if (newViewport) {
+      stateRef.current = createFollowState()
+      pinToBottom()
+    }
+    setFollowing(stateRef.current.following)
+    setShowJumpButton(!stateRef.current.following
+      && viewport.scrollTop < viewport.scrollHeight - viewport.clientHeight - jumpButtonThreshold())
     lastScrollHeightRef.current = viewport.scrollHeight
     lastScrollTopRef.current = viewport.scrollTop
     geometrySampledRef.current = false

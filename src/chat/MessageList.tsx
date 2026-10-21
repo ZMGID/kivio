@@ -1027,6 +1027,7 @@ function MessageListBase({
   }
 
   const virtualItems = virtualizer.getVirtualItems()
+  const historySize = virtualizer.getTotalSize()
   const measureHistoryRow = useCallback((element: HTMLDivElement | null) => {
     // Ref attachment is already inside React's commit. Its measurements must
     // schedule the follow-up render without recursively calling flushSync.
@@ -2144,23 +2145,27 @@ function MessageListBase({
   // During generation minHeight reserves space below the latest user message.
   // On settle transfer the same reserve to the spacer before paint. Ordinary
   // conversation opens do not inherit this send-time whitespace.
-  const reserveHandoffRef = useRef(false)
+  const reserveTurnRef = useRef<string | null>(null)
   useLayoutEffect(() => {
-    reserveHandoffRef.current = false
+    reserveTurnRef.current = null
   }, [conversationId])
   useLayoutEffect(() => {
     const wrap = tailWrapRef.current
     const spacer = tailSpacerRef.current
     if (!wrap || !spacer || !viewportEl) return
-    if (streaming) reserveHandoffRef.current = true
+    const lastUser = [...messages].reverse().find((message) => message.role === 'user')
+    // Whitespace belongs to the sent turn, not to the lifetime of this list.
+    // Rewind/delete must never transfer it to an earlier question.
+    if (streaming) reserveTurnRef.current = lastUser?.id ?? null
+    else if (reserveTurnRef.current !== lastUser?.id) reserveTurnRef.current = null
 
     const apply = () => {
-      const lastUser = [...messages].reverse().find((m) => m.role === 'user')
-      const row = lastUser && contentEl
-        ? contentEl.querySelector(`[data-message-id="${CSS.escape(lastUser.id)}"]`)
-        : null
-      const anchorH = row?.getBoundingClientRect().height ?? 0
-      const reserve = sendReserveHeight(viewportEl.clientHeight, anchorH, LIST_EDGE_PADDING_PX)
+      // Use the measured model even when the question is outside the mounted
+      // window. DOM presence must not change the document's total height.
+      const index = historyItems.findIndex((item) => item.kind === 'message' && item.message.id === lastUser?.id)
+      const totalSize = virtualizer.getTotalSize()
+      const anchor = index >= 0 ? virtualizer.measurementsCache[index] : undefined
+      const reserve = sendReserveHeight(viewportEl.clientHeight, anchor?.size ?? 0, LIST_EDGE_PADDING_PX)
       // Clear minHeight in the handoff commit; retaining it would count the reserve twice.
       if (streaming || streamFrozen) {
         wrap.style.minHeight = `${Math.round(reserve)}px`
@@ -2170,11 +2175,12 @@ function MessageListBase({
       }
       const hadStreamingMinHeight = Boolean(wrap.style.minHeight)
       wrap.style.minHeight = ''
-      if (!reserveHandoffRef.current || !row) {
+      if (!reserveTurnRef.current || !anchor) {
         spacer.style.height = `${LIST_EDGE_PADDING_PX}px`
       } else {
         // 跨度用 spacer 自己的顶边量，与 spacer 当前高度无关，避免自反馈。
-        const span = spacer.getBoundingClientRect().top - row.getBoundingClientRect().bottom
+        const span = totalSize - anchor.end
+          + spacer.getBoundingClientRect().top - wrap.getBoundingClientRect().top
         spacer.style.height = `${Math.max(LIST_EDGE_PADDING_PX, Math.round(reserve - span))}px`
       }
       // minHeight → spacer transfer changes scrollHeight. Re-pin so we don't
@@ -2191,7 +2197,7 @@ function MessageListBase({
     const observer = new ResizeObserver(apply)
     observer.observe(viewportEl)
     return () => observer.disconnect()
-  }, [streaming, streamFrozen, messages, contentEl, viewportEl, reserveEpoch, followHandle])
+  }, [streaming, streamFrozen, messages, historyItems, viewportEl, reserveEpoch, followHandle, virtualizer, historySize])
 
   const renderItem = useCallback(
     (item: RenderItem) => {
@@ -2472,7 +2478,7 @@ function MessageListBase({
         <ScrollFollowingContext.Provider value={followContext}>
         <div ref={setContentEl} className={`chat-message-list-inner mx-auto w-full px-6 ${hasWideGroups ? 'chat-message-list-inner--wide' : 'max-w-4xl'}`}>
           <div data-chat-rows-root className="relative w-full">
-            <div aria-hidden="true" style={{ height: virtualizer.getTotalSize() }} />
+            <div aria-hidden="true" style={{ height: historySize }} />
             <div data-chat-message-list-item="tail" className="w-full pb-0.5">
               {renderTail()}
             </div>
