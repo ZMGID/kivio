@@ -658,6 +658,9 @@ mod tests {
                         Err(e) => panic!("{e}"),
                     }
                 };
+                // Windows inherits the listener's nonblocking mode. Only accept
+                // polls; request/response I/O uses blocking reads with a timeout.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
