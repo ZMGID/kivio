@@ -1,0 +1,8 @@
+{
+  "id": "study",
+  "name": "Kivio Study",
+  "description": "阅读论文与教材，整理文献、笔记和带出处的对话。",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "legacyRoutes": ["chat/reading"]
+}

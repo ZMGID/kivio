@@ -32,6 +32,7 @@ path = "tests/traffic_lights.rs"
 harness = false
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]

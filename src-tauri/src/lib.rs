@@ -12,6 +12,9 @@ mod computer_control;
 pub mod connectors;
 pub mod desktop_pet;
 pub mod dock;
+#[path = "../../extensions/sdk/native.rs"]
+mod extension_sdk;
+mod extensions;
 pub mod external_agents;
 pub mod fonts;
 mod html_preview;
@@ -34,6 +37,7 @@ pub mod prompts;
 pub mod provider_oauth;
 pub mod provider_request;
 pub mod rapidocr;
+#[path = "../../extensions/study/native/mod.rs"]
 pub mod reading;
 pub mod replace_translation;
 pub mod scheduled_tasks;
@@ -255,7 +259,7 @@ pub fn run() {
         .setup(|app| {
             backup::apply_pending(&app.path().app_data_dir()?)
                 .map_err(std::io::Error::other)?;
-            reading::writing::word::resume(app.handle().clone());
+            extensions::resume(app.handle().clone());
             let launched_from_autostart = std::env::args().any(|arg| arg == AUTOSTART_ARG);
 
             // Windows：退出后台执行速度节流（EcoQoS）。无可见窗口时进程会被 Win11 当后台空闲
@@ -520,7 +524,13 @@ pub fn run() {
             macos_hang_watchdog::start(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(|invoke| {
+            if extensions::owns_command(invoke.message.command()) {
+                return extensions::invoke(invoke);
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            extensions::extensions_list,
+            extensions::extensions_set_enabled,
             html_preview::create_html_preview,
             html_preview::release_html_preview,
             desktop_pet::desktop_pet_get_enabled,
@@ -792,34 +802,6 @@ pub fn run() {
             plugins::plugins_run_official_install,
             plugins::plugins_set_enabled,
             plugins::plugins_uninstall,
-            reading::setup::reading_setup_status,
-            reading::setup::reading_setup_save,
-            reading::setup::reading_setup_start,
-            reading::operations::reading_translation_status,
-            reading::operations::reading_versions,
-            reading::operations::reading_view_select,
-            reading::operations::reading_translation_start,
-            reading::operations::reading_translation_cancel,
-            reading::operations::reading_export,
-            reading::reading_list,
-            reading::reading_import_many,
-            reading::reading_import,
-            reading::reading_save,
-            reading::reading_pdf,
-            reading::chat::reading_prepare_chat,
-            reading::chat::reading_text,
-            reading::reading_create,
-            reading::reading_attach,
-            reading::reading_collections,
-            reading::reading_save_collections,
-            reading::reading_lookup,
-            reading::reading_import_ris,
-            reading::reading_export_ris,
-            reading::writing::reading_export_bib,
-            reading::writing::word::reading_word_status,
-            reading::writing::word::reading_word_start,
-            reading::writing::word::reading_word_stop,
-            reading::writing::word::reading_word_install,
             notes::notes_list,
             notes::notes_read,
             notes::notes_create,
@@ -907,7 +889,9 @@ pub fn run() {
             dock::terminal::dock_terminal_write,
             dock::terminal::dock_terminal_resize,
             dock::terminal::dock_terminal_close,
-        ])
+        ];
+            handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
@@ -927,8 +911,7 @@ pub fn run() {
                             return;
                         }
                     }
-                    tauri::async_runtime::block_on(reading::setup::shutdown());
-                    tauri::async_runtime::block_on(reading::operations::shutdown());
+                    tauri::async_runtime::block_on(extensions::shutdown());
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或
                     // 命令节点（Child 靠 kill_on_drop 收尸）。先标记取消、限时等收尾，
                     // 此时运行时还活着，select! 的取消分支才来得及 drop 掉 Child。

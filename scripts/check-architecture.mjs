@@ -67,8 +67,8 @@ function relativeFile(root, file) {
 
 export function moduleInfo(root, file, config = DEFAULT_CONFIG) {
   const rel = relativeFile(root, file)
-  if (!rel.startsWith('src/')) return null
-  const matches = (config.modules ?? []).filter((module) => module.paths?.some((pattern) => matchesPath(pattern, rel)))
+  if (!rel.startsWith('src/') && !rel.startsWith('extensions/')) return null
+  const matches = (config.modules ?? []).filter((module) => module.paths?.some((pattern) => matchesPath(pattern, rel)) && !module.exclude?.includes(rel))
   if (matches.length > 1) throw new Error(`Ambiguous Module mapping for ${rel}: ${matches.map((module) => module.name).join(', ')}`)
   if (matches.length === 0) return null
   const module = matches[0]
@@ -81,15 +81,15 @@ export function moduleInfo(root, file, config = DEFAULT_CONFIG) {
 
 /** Every resolved local TS import/re-export/dynamic-literal edge, including same-module edges. */
 function collectDetailedEdges(root) {
-  const src = path.join(root, 'src')
+  const roots = ['src', 'extensions'].map(dir => path.join(root, dir)).filter(dir => fs.existsSync(dir))
   const options = compilerOptions(root)
   const edges = new Map()
-  for (const source of walk(src)) {
+  for (const source of roots.flatMap(walk)) {
     for (const { specifier, type, line } of moduleSpecifiers(source)) {
       const resolved = ts.resolveModuleName(specifier, source, options, ts.sys).resolvedModule?.resolvedFileName
       if (!resolved || resolved.includes('/node_modules/') || resolved.includes('\\node_modules\\')) continue
       const target = path.resolve(resolved.replace(/\.d\.[cm]?ts$/, '.ts'))
-      if (!target.startsWith(`${src}${path.sep}`)) continue
+      if (!roots.some(dir => target.startsWith(`${dir}${path.sep}`))) continue
       const edge = {
         source: relativeFile(root, source),
         target: relativeFile(root, target),
@@ -254,7 +254,7 @@ export function newViolations(root, config) {
   const baseline = new Set((policy.existingViolations ?? []).map(violationKey))
   const edges = collectDependencyEdges(root)
   const detailedEdges = collectDetailedEdges(root)
-  const mappedPaths = new Set([...walk(path.join(root, 'src')).map((file) => relativeFile(root, file)), ...edges.flatMap((edge) => [edge.source, edge.target])])
+  const mappedPaths = new Set([...['src', 'extensions'].filter(dir => fs.existsSync(path.join(root, dir))).flatMap(dir => walk(path.join(root, dir))).map((file) => relativeFile(root, file)), ...edges.flatMap((edge) => [edge.source, edge.target])])
   const unknown = [...mappedPaths].filter((file) => !moduleInfo(root, path.join(root, file), policy))
     .map((file) => ({ kind: 'unknown_module_path', source: file, target: file }))
   const direct = edges.flatMap((edge) => {

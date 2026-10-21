@@ -96,7 +96,7 @@ export function setHash(next: string): void {
 }
 
 /** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
-export type ChatExtensionsNavItem = 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'reading' | 'tasks' | 'artifacts' | 'plugins' | 'media'
+export type ChatExtensionsNavItem = 'extensions' | `extension:${string}` | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'reading' | 'tasks' | 'artifacts' | 'plugins' | 'media'
 
 export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
   if (chatView === 'media') return 'media'
@@ -106,6 +106,7 @@ export function extensionsNavItemForView(chatView: string): ChatExtensionsNavIte
   if (chatView === 'skill') return 'plugins'
   if (chatView === 'mcp') return 'plugins'
   if (chatView === 'knowledge') return 'knowledge'
+  if (chatView === 'extensions') return 'extensions'
   if (chatView === 'reading') return 'reading'
   if (chatView === 'notes') return 'notes'
   if (chatView === 'automations' || chatView === 'schedules') return 'tasks'

@@ -120,9 +120,9 @@ export function useChatRouting({
         onViewChange('knowledge')
         return
       }
-      if (isChatReadingPath(path)) {
+      if (isChatReadingPath(path) || path === 'chat/extensions' || path.startsWith('chat/extensions/')) {
         onLeaveConversation()
-        onViewChange('reading')
+        onViewChange('extensions')
         return
       }
       if (isChatNotesPath(path)) {
@@ -281,8 +281,13 @@ export function useChatRouting({
       openTasksCenter()
       return
     }
+    if (item === 'extensions' || item.startsWith('extension:')) {
+      onViewChange('extensions')
+      syncNonConversationRoute(item === 'extensions' ? '#chat/extensions' : `#chat/extensions/${item.slice('extension:'.length)}`)
+      return
+    }
     if (item === 'reading') {
-      onViewChange('reading')
+      onViewChange('extensions')
       syncNonConversationRoute('#chat/reading')
       return
     }

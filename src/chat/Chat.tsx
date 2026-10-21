@@ -1,3 +1,4 @@
+import { ExtensionCenter, catalog, initializeExtensions, extensionIdForPath, useExtensions, useExtensionPath } from '../extensions/public/host'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
@@ -199,7 +200,6 @@ const KnowledgeCenter = lazy(() => import('./KnowledgeCenter').then((module) => 
   default: module.KnowledgeCenter,
 })))
 
-const ReadingCenter = lazy(() => import('./reading/ReadingCenter'))
 const NotesCenter = lazy(() => import('./NotesCenter').then((module) => ({
   default: module.NotesCenter,
 })))
@@ -316,7 +316,7 @@ function setStreamError(error: string): void {
 }
 
 type SendMessageOptions = {
-  reading?: boolean
+  embedded?: boolean
   planMessageId?: string
   forceNewConversation?: boolean
   conversationOverride?: Conversation | null
@@ -334,6 +334,9 @@ const NO_QUEUED_MESSAGES: QueuedMessage[] = []
 export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useChatPerfRenderProbe('Chat', { view: hashPath() })
   useChatPerfLongTaskProbe()
+  const extensions = useExtensions()
+  const extensionId = extensionIdForPath(useExtensionPath())
+  useEffect(() => { void initializeExtensions().catch(() => {}) }, [])
   const [chatView, setChatView] = useState<ChatView>(() => {
     const path = hashPath()
     if (isChatOnboardingRoute(path)) return 'onboarding'
@@ -342,7 +345,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatSkillCenterPath(path)) return 'skill'
     if (isChatMcpCenterPath(path)) return 'mcp'
     if (isChatKnowledgeCenterPath(path)) return 'knowledge'
-    if (isChatReadingPath(path)) return 'reading'
+    if (isChatReadingPath(path) || path === 'chat/extensions' || path.startsWith('chat/extensions/')) return 'extensions'
     if (isChatNotesPath(path)) return 'notes'
     if (isChatMediaPath(path)) return 'media'
     if (isChatArtifactsPath(path)) return 'artifacts'
@@ -1089,7 +1092,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     tasksLeaveGuardRef,
     requestTasksLeave,
   })
-  const extensionsActive = extensionsNavItemForView(chatView)
+  const extensionsActive = chatView === 'extensions' && extensionId && extensions.enabled.includes(extensionId) ? `extension:${extensionId}` as const : extensionsNavItemForView(chatView)
 
   const handleOnboardingExit = useCallback(() => {
     setChatView('conversation')
@@ -1900,7 +1903,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     attachments: PendingAttachment[] = [],
     options: SendMessageOptions = {},
   ) => {
-    const attachmentSkillId = options.reading ? null : resolveSendSkillId(
+    const attachmentSkillId = options.embedded ? null : resolveSendSkillId(
       attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
@@ -1915,23 +1918,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         forceNew: Boolean(options.forceNewConversation),
         providerId: activeProviderId,
         model: activeModel,
-        projectName: options.reading ? null : selectedProject?.name ?? null,
-        projectId: options.reading ? null : selectedProject?.id ?? null,
-        setId: options.reading ? null : selectedSet?.id ?? null,
+        projectName: options.embedded ? null : selectedProject?.name ?? null,
+        projectId: options.embedded ? null : selectedProject?.id ?? null,
+        setId: options.embedded ? null : selectedSet?.id ?? null,
         draft: {
-          agentRuntime: options.reading ? BUILTIN_AGENT_RUNTIME : draftAgentRuntime,
-          knowledgeBaseIds: options.reading ? [] : draftKnowledgeBaseIds,
-          forceKnowledgeSearch: options.reading ? false : draftForceKnowledgeSearch,
-          additionalDirectories: options.reading ? [] : draftAdditionalDirectories,
+          agentRuntime: options.embedded ? BUILTIN_AGENT_RUNTIME : draftAgentRuntime,
+          knowledgeBaseIds: options.embedded ? [] : draftKnowledgeBaseIds,
+          forceKnowledgeSearch: options.embedded ? false : draftForceKnowledgeSearch,
+          additionalDirectories: options.embedded ? [] : draftAdditionalDirectories,
           thinkingLevel: draftThinkingLevel,
           webSearchMode: draftWebSearchMode,
           rememberedWebSearchMode: loadLastWebSearchMode(),
-          replyModels: options.reading ? [] : draftReplyModels,
+          replyModels: options.embedded ? [] : draftReplyModels,
         },
         providerOAuthTypes,
       },
       attachmentSkillId,
-      disabledReason: options.reading ? '' : sendDisabledReason,
+      disabledReason: options.embedded ? '' : sendDisabledReason,
       planMessageId: options.planMessageId,
       onPartialConversation: options.onPartialConversation,
       onAccepted: options.onAccepted,
@@ -1944,21 +1947,21 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
-  const activateReadingConversation = useCallback(async (id: string | null) => {
+  const activateExtensionConversation = useCallback(async (id: string | null) => {
     if (!id) { navigation.resetRouteConversation(); return }
-    // The navigation owner loads and restores the same stream; keep the reading route.
+    // The navigation owner loads and restores the same stream; keep the extension route.
     await navigation.loadEmbeddedConversation(id)
   }, [navigation])
-  const createReadingConversation = useCallback(async (name: string) => {
+  const createExtensionConversation = useCallback(async (name: string) => {
     const { activeProviderId, activeModel } = newConversationDefaultsRef.current
     const conversation = await chatApi.createConversation(activeProviderId || undefined, activeModel || undefined)
     await chatApi.setAgentRuntime(conversation.id, BUILTIN_AGENT_RUNTIME)
-    const updated = await chatApi.updateConversation(conversation.id, { title: `阅读 · ${name}` })
+    const updated = await chatApi.updateConversation(conversation.id, { title: name })
     refreshSidebar()
     return updated
   }, [refreshSidebar])
-  const sendReadingMessage = useCallback((conversation: Conversation, content: string, attachments: PendingAttachment[], onAccepted?: () => void) =>
-    handleSendMessage(content, attachments, { conversationOverride: conversation, reading: true, onAccepted }), [handleSendMessage])
+  const sendExtensionMessage = useCallback((conversation: Conversation, content: string, attachments: PendingAttachment[], onAccepted?: () => void) =>
+    handleSendMessage(content, attachments, { conversationOverride: conversation, embedded: true, onAccepted }), [handleSendMessage])
   // 历史预置（Lens「在 AI 客户端继续」交接）：用最新 reactive 值（provider/model/project）创建带历史的新会话。
   // 插件市场“使用”：新建对话并发出开场消息；原有单入口插件仍兼容 Skill 绑定。
   // Skill 由会话的 activeSkillId 决定（后端在对话初始化时发现技能），不依赖本地 skills 列表是否已刷新。
@@ -2931,6 +2934,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           onOpenUsage={handleSidebarOpenUsage}
           settingsActive={settingsPanelActive}
           extensionsActive={extensionsActive}
+          extensionEntries={catalog.filter(p => extensions.enabled.includes(p.manifest.id)).map(p => ({ id: `extension:${p.manifest.id}` as const, name: p.manifest.name }))}
           collapsed={sidebarCollapsed || settingsPanelActive}
           onToggleCollapsed={handleCollapseSidebar}
           width={sidebarWidth}
@@ -3011,10 +3015,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
           </div>
-        ) : chatView === 'reading' ? (
+        ) : chatView === 'extensions' || chatView === 'reading' ? (
           <div key="center" className="chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col">
-            <Suspense fallback={null}><ReadingCenter
-              headerControls={usesNativeTitlebar && sidebarCollapsed ? (
+            <ExtensionCenter id={extensionId} onOpen={id => handleSidebarOpenExtensionsItem(`extension:${id}`)} host={{
+              headerControls: usesNativeTitlebar && sidebarCollapsed ? (
                 <div className={`chat-titlebar-row ${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`} data-tauri-drag-region>
                   <ChatTitlebarActions
                     sidebarExpanded={false}
@@ -3022,15 +3026,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                     onNewConversation={() => void handleNewConversation()}
                   />
                 </div>
-              ) : undefined}
-              inputBarProps={inputBarProps}
-              messageListProps={messageListProps}
-              onCreateConversation={createReadingConversation}
-              onActivateConversation={activateReadingConversation}
-              onSend={sendReadingMessage}
-              selectedModel={{ providerId: activeProviderId, model: activeModel }}
-              modelControls={<ModelSelector portal currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />}
-            /></Suspense>
+              ) : undefined,
+              inputBarProps,
+              messageListProps,
+              onCreateConversation: createExtensionConversation,
+              onActivateConversation: activateExtensionConversation,
+              onSend: sendExtensionMessage,
+              selectedModel: { providerId: activeProviderId, model: activeModel },
+              modelControls: <ModelSelector portal currentProviderId={activeProviderId} currentModel={activeModel} onModelChange={handleModelChange} />,
+            }} />
           </div>
         ) : chatView === 'notes' ? (
           <div key="center" className={centerPageClass}>

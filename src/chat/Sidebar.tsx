@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
-import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, StudyIcon, SearchNavIcon } from '../settings/public/icons'
+import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, PortfolioIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
 import { ConversationList } from './ConversationList'
 import { useScheduledTasks } from './scheduledTasks/useScheduledTasks'
 import { ChatSectionMenu } from './ChatSectionMenu'
@@ -82,7 +82,7 @@ const extensionSubItems: Array<{
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
   { id: 'media', label: (t) => t.chatNavMedia, icon: MediaIcon },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: NotesIcon },
-  { id: 'reading', label: (t) => t.chatNavReading, icon: StudyIcon },
+  { id: 'extensions', label: () => '管理扩展', icon: ExtensionsIcon },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -220,6 +220,7 @@ export interface SidebarProps {
   onOpenUsage: () => void
   settingsActive?: boolean
   extensionsActive?: ExtensionsNavItem | null
+  extensionEntries?: Array<{ id: `extension:${string}`; name: string }>
   collapsed: boolean
   onToggleCollapsed: () => void
   /** 展开态宽度。拖拽过程只写 CSS 变量，松手才回传。 */
@@ -354,9 +355,11 @@ function SidebarUserFooter({
 
 
 function ExtensionsNav({
+  entries,
   activeItem,
   onSelectItem,
 }: {
+  entries: Array<{ id: `extension:${string}`; name: string }>
   activeItem?: ExtensionsNavItem | null
   onSelectItem: (item: ExtensionsNavItem) => void
 }) {
@@ -395,7 +398,7 @@ function ExtensionsNav({
       </button>
       {expanded && (
         <div className="ml-[12px] mt-0.5 grid grid-cols-2 gap-x-1">
-          {extensionSubItems.map((item) => {
+          {[...extensionSubItems, ...entries.map(entry => ({ id: entry.id, label: () => entry.name, icon: ExtensionsIcon }))].map((item) => {
             const active = activeItem === item.id
             const Icon = item.icon
             return (
@@ -403,7 +406,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`${item.id === 'reading' ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
+                className={`${item.id === 'extensions' || item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900'
                     : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'
@@ -639,6 +642,7 @@ export const Sidebar = memo(function Sidebar({
   onOpenUsage,
   settingsActive = false,
   extensionsActive = null,
+  extensionEntries = [],
   collapsed,
   onToggleCollapsed,
   width = SIDEBAR_DEFAULT_WIDTH,
@@ -1562,6 +1566,7 @@ export const Sidebar = memo(function Sidebar({
           active={extensionsActive === 'artifacts'}
         />
         <ExtensionsNav
+          entries={extensionEntries}
           activeItem={extensionsActive === 'artifacts' || extensionsActive === 'plugins' || extensionsActive === 'tasks' ? null : extensionsActive}
           onSelectItem={onOpenExtensionsItem}
         />

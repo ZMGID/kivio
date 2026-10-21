@@ -79,8 +79,9 @@ export default defineConfig({
     environment: 'node',
     environmentMatchGlobs: [
       ['src/**/*.test.tsx', 'jsdom'],
+      ['extensions/**/*.test.tsx', 'jsdom'],
     ],
-    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}', 'extensions/**/*.{test,spec}.{ts,tsx}'],
     setupFiles: ['./src/test/setup.ts'],
   },
 })

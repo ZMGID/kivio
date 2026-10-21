@@ -2,6 +2,39 @@
 mod resources;
 
 fn main() {
+    // Share package discovery with Vite: every bundled manifest is included in the native catalog.
+    println!("cargo:rerun-if-changed=../extensions");
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir("../extensions").expect("extension directory") {
+        let manifest = entry.expect("extension entry").path().join("manifest.json");
+        if !manifest.is_file() {
+            continue;
+        }
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest).unwrap()).expect("extension manifest");
+        let id = data["id"].as_str().expect("extension id");
+        assert!(data["apiVersion"] == 1, "unsupported extension API: {id}");
+        assert!(
+            id.starts_with(|c: char| c.is_ascii_lowercase())
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "invalid extension id"
+        );
+        assert!(
+            !ids.contains(&id.to_owned()),
+            "duplicate extension id: {id}"
+        );
+        ids.push(id.to_owned());
+    }
+    ids.sort();
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(
+        out.join("extension_ids.json"),
+        serde_json::to_vec(&ids).unwrap(),
+    )
+    .unwrap();
+
     // tauri-build does not track the ICO used by the Windows resource compiler.
     // Without this, incremental builds can keep the old icon inside the EXE.
     println!("cargo:rerun-if-changed=icons");

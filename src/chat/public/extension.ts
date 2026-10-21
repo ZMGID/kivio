@@ -1,0 +1,11 @@
+/** Supported embedded-chat surface for first-party, bundled extensions. */
+export { AttachmentPresentationContext } from '../attachmentPresentation'
+export { ChatMarkdown } from '../ChatMarkdown'
+export { MessageList, type MessageListProps } from '../MessageList'
+export { InputBar, type InputBarProps } from '../InputBar'
+export { insertTextIntoComposer } from '../composerInsert'
+export { beginComposerAttachmentOperation, updateComposerDraft, migrateComposerDraft } from '../composerDraft'
+export { KivioBlob } from '../KivioBlob'
+export { DockContextMenu, type DockMenuAnchor, type DockMenuItem } from '../dock/DockContextMenu'
+export { chatApi } from '../api'
+export type { Conversation, PendingAttachment } from '../types'
