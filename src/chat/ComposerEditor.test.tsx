@@ -4,6 +4,10 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor'
 import type { SlashCommandDefinition } from './slashCommands'
 
+vi.hoisted(() => {
+  Object.defineProperty(navigator, 'vendor', { configurable: true, value: 'Apple Computer, Inc.' })
+})
+
 const commands: SlashCommandDefinition[] = [
   { id: 'plan', slash: '/plan', title: 'Plan', description: 'Plan a task', category: 'Actions', keywords: [], kind: 'action' },
   { id: 'skill:review', slash: '/review', title: 'Review', description: 'Review code', category: 'Skills', keywords: [], kind: 'skill' },
@@ -122,6 +126,37 @@ describe('ComposerEditor', () => {
     act(() => editor.current!.replaceText(0, 5, 'changed'))
     expect(editor.current!.value).toBe('other draft')
     expect(screen.getByRole('textbox')).toHaveAttribute('contenteditable', 'false')
+  })
+
+  it('handles the first send Enter after IME confirmation without sending the confirmation key', async () => {
+    const onKeyDown = vi.fn((event: KeyboardEvent) => {
+      if (event.key === 'Enter') event.preventDefault()
+    })
+    render(<ComposerEditor value="中文" scopeKey="a" commands={commands} placeholder="Write"
+      onChange={() => {}} onSelect={() => {}} onKeyDown={onKeyDown}
+      onPaste={() => {}} onContextMenu={() => {}} />)
+    const textbox = screen.getByRole('textbox')
+    fireEvent.compositionStart(textbox)
+    fireEvent.keyDown(textbox, { key: 'Enter', keyCode: 229, isComposing: true })
+    fireEvent.compositionEnd(textbox, { data: '中文' })
+    fireEvent.keyUp(textbox, { key: ' ', keyCode: 32 })
+    expect(onKeyDown).not.toHaveBeenCalled()
+    fireEvent.keyDown(textbox, { key: 'Enter', keyCode: 13 })
+    expect(onKeyDown).toHaveBeenCalledTimes(1)
+  })
+
+  it('defers external draft replacement until composition finishes', async () => {
+    const props = { commands, placeholder: 'Write', scopeKey: 'a', onChange: vi.fn(),
+      onSelect: vi.fn(), onKeyDown: vi.fn(), onPaste: vi.fn(), onContextMenu: vi.fn() }
+    const { rerender } = render(<ComposerEditor {...props} value="/review 三）" />)
+    const textbox = screen.getByRole('textbox')
+    fireEvent.compositionStart(textbox)
+    const text = textbox.lastChild
+    rerender(<ComposerEditor {...props} value="/review 三）时间安排" />)
+    expect(textbox.textContent).toBe('/review 三）')
+    expect(textbox.lastChild).toBe(text)
+    fireEvent.compositionEnd(textbox)
+    await waitFor(() => expect(textbox.textContent).toBe('/review 三）时间安排'))
   })
 
   it('refreshes an existing chip icon when its command metadata changes without changing the draft', () => {

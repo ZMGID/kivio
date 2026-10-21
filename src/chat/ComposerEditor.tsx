@@ -109,6 +109,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   const current = useRef(props)
   current.current = props
   const scope = useRef(props.scopeKey)
+  const [, finishComposition] = useState(0)
   const [iconMounts, setIconMounts] = useState<{ key: number; commandId: string; dom: HTMLElement }[]>([])
 
   useImperativeHandle(ref, () => {
@@ -155,6 +156,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     if (!mount.current) return
     let active = true
     let iconKey = 0
+    let compositionJustEnded = false
+    let compositionTimer: ReturnType<typeof setTimeout> | undefined
     setIconMounts([])
     const normalize = new Plugin({
       appendTransaction(transactions, _old, state) {
@@ -195,9 +198,26 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         return event.defaultPrevented
       },
       handleDOMEvents: {
+        keydown(view, event) {
+          // Handle send before ProseMirror's 500ms Safari composition heuristic.
+          // Candidate confirmation must still stay with the native IME.
+          if (event.key !== 'Enter' || event.shiftKey || current.current.readOnly
+            || view.composing || event.isComposing || event.keyCode === 229 || compositionJustEnded) return false
+          current.current.onKeyDown(event)
+          return event.defaultPrevented
+        },
+        keyup() { compositionJustEnded = false; return false },
         contextmenu(_view, event) { current.current.onContextMenu(event); return event.defaultPrevented },
         compositionend() {
-          queueMicrotask(() => { if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta('normalize', true)) })
+          compositionJustEnded = true
+          clearTimeout(compositionTimer)
+          // Let ProseMirror flush the final IME DOM mutation before normalization.
+          compositionTimer = setTimeout(() => {
+            compositionJustEnded = false
+            if (view.isDestroyed) return
+            view.dispatch(view.state.tr.setMeta('normalize', true))
+            finishComposition(revision => revision + 1)
+          }, 0)
           return false
         },
       },
@@ -234,12 +254,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       },
     })
     viewRef.current = view
-    return () => { active = false; viewRef.current = null; view.destroy() }
+    return () => { active = false; clearTimeout(compositionTimer); viewRef.current = null; view.destroy() }
   }, [])
 
   useLayoutEffect(() => {
     const view = viewRef.current
-    if (!view) return
+    if (!view || (view.composing && scope.current === props.scopeKey)) return
     view.setProps({ attributes: {
       role: 'textbox', 'aria-multiline': 'true', 'aria-label': props.placeholder,
       'data-placeholder': props.placeholder, 'aria-busy': String(!!props.busy),

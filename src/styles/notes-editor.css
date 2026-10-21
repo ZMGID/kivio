@@ -31,3 +31,25 @@
 .kv-note-editor .milkdown .ProseMirror:focus {
   outline: none;
 }
+
+/* CodeMirror's default dark code theme must follow the surrounding note. */
+.kv-note-editor .milkdown .cm-editor {
+  color: var(--text);
+}
+
+.kv-note-editor .milkdown .cm-gutters {
+  color: var(--text-muted);
+}
+
+.kv-note-editor .milkdown .cm-activeLine,
+.kv-note-editor .milkdown .cm-activeLineGutter {
+  background-color: var(--theme-surface-active);
+}
+
+.kv-note-editor .milkdown .cm-activeLineGutter {
+  color: var(--text);
+}
+
+.kv-note-editor .milkdown .cm-cursor {
+  border-left-color: var(--text);
+}
