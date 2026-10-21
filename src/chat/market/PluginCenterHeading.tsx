@@ -1,7 +1,7 @@
 import { useLang } from '../../components/i18n'
 import './market.css'
 
-type PluginSection = 'plugins' | 'skill' | 'mcp'
+type PluginSection = 'plugins' | 'skill' | 'mcp' | 'extensions'
 
 export function PluginCenterHeading({ value, onChange }: {
   value: PluginSection
@@ -14,7 +14,7 @@ export function PluginCenterHeading({ value, onChange }: {
         {zh ? '插件市场' : 'Plugin marketplace'}
       </h1>
       <nav className="kv-plugin-segments" aria-label={zh ? '插件类别' : 'Plugin categories'}>
-        {([['plugins', zh ? '插件' : 'Plugins'], ['skill', 'Skill'], ['mcp', 'MCP']] as const).map(([id, label]) => (
+        {([['plugins', zh ? '插件' : 'Plugins'], ['skill', 'Skill'], ['mcp', 'MCP'], ['extensions', zh ? '扩展' : 'Extensions']] as const).map(([id, label]) => (
           <button key={id} type="button" className="kv-plugin-segment"
             aria-current={value === id ? 'page' : undefined}
             onClick={() => onChange(id)}>

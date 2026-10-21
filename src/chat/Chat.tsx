@@ -3017,7 +3017,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           </div>
         ) : chatView === 'extensions' || chatView === 'reading' ? (
           <div key="center" className="chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col">
-            <ExtensionCenter id={extensionId} onOpen={id => handleSidebarOpenExtensionsItem(`extension:${id}`)} host={{
+            <ExtensionCenter heading={<PluginCenterHeading value="extensions" onChange={handleSidebarOpenExtensionsItem} />} id={extensionId} onOpen={id => handleSidebarOpenExtensionsItem(`extension:${id}`)} host={{
               headerControls: usesNativeTitlebar && sidebarCollapsed ? (
                 <div className={`chat-titlebar-row ${chatTitlebarRowClass} ${chatTitlebarMacInsetClass} chat-titlebar-row--collapsed-mac`} data-tauri-drag-region>
                   <ChatTitlebarActions

@@ -106,7 +106,7 @@ export function extensionsNavItemForView(chatView: string): ChatExtensionsNavIte
   if (chatView === 'skill') return 'plugins'
   if (chatView === 'mcp') return 'plugins'
   if (chatView === 'knowledge') return 'knowledge'
-  if (chatView === 'extensions') return 'extensions'
+  if (chatView === 'extensions') return 'plugins'
   if (chatView === 'reading') return 'reading'
   if (chatView === 'notes') return 'notes'
   if (chatView === 'automations' || chatView === 'schedules') return 'tasks'

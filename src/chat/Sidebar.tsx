@@ -82,7 +82,6 @@ const extensionSubItems: Array<{
   { id: 'knowledge', label: (t) => t.chatNavKnowledge, icon: KnowledgeIcon },
   { id: 'media', label: (t) => t.chatNavMedia, icon: MediaIcon },
   { id: 'notes', label: (t) => t.chatNavNotes, icon: NotesIcon },
-  { id: 'extensions', label: () => '管理扩展', icon: ExtensionsIcon },
 ]
 
 const PROJECT_PREVIEW_LIMIT = 5
@@ -406,7 +405,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`${item.id === 'extensions' || item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
+                className={`${item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900'
                     : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'
