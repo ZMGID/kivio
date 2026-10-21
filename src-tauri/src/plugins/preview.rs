@@ -1054,6 +1054,23 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stop_releases_listener_and_closes_sse_connection() {
+        async fn released_listener(port: u16) -> TcpListener {
+            // abort() schedules cancellation; the runtime still has to drop the socket.
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    match TcpListener::bind(("127.0.0.1", port)).await {
+                        Ok(listener) => return listener,
+                        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
+                        Err(error) => panic!("cannot bind released preview port: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("preview port should be released within one second")
+        }
+
         let _serial = PREVIEW_TEST_LOCK.lock().unwrap();
         stop_all_previews();
         let port = ensure_preview_server(None).await.expect("preview server");
@@ -1085,9 +1102,7 @@ mod tests {
                 .expect("half-open connection close timeout");
         assert!(matches!(half_open_closed, Ok(0) | Err(_)));
 
-        let listener = TcpListener::bind(("127.0.0.1", port))
-            .await
-            .expect("preview port should be released");
+        let listener = released_listener(port).await;
         drop(listener);
 
         let restarted_port = ensure_preview_server(None)
@@ -1101,9 +1116,7 @@ mod tests {
             Some(restarted_port)
         );
         stop_all_previews();
-        let restarted_listener = TcpListener::bind(("127.0.0.1", restarted_port))
-            .await
-            .expect("restarted preview port should also be released");
+        let restarted_listener = released_listener(restarted_port).await;
         drop(restarted_listener);
     }
 }

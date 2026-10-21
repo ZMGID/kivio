@@ -124,10 +124,16 @@ fn disable_process_power_throttling() {
     }
 }
 
+// Generate once: on macOS this macro embeds a process-wide Info.plist symbol.
+// The identity regression test must use the same context as the application.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 /// 应用入口函数
 /// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
 pub fn run() {
-    let context = tauri::generate_context!();
+    let context = app_context();
     assert_eq!(
         context.config().identifier,
         app_data::APP_IDENTIFIER,

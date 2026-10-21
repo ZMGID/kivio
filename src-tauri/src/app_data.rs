@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn effective_identity_keeps_storage_credentials_and_defaults_in_one_channel() {
-        let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+        let context = crate::app_context();
         let (identifier, name, home, service, dev) = match context.config().identifier.as_str() {
             "com.zmair.kivio.dev" => (
                 "com.zmair.kivio.dev",
