@@ -141,11 +141,19 @@ export function ChatWindowHost({ children, translucentSidebar }: ChatWindowHostP
       clearTimeout(timer)
       timer = setTimeout(() => void measure(gen), 150)
     }
-    const observer = new MutationObserver(schedule)
+    const observer = new MutationObserver(records => {
+      // Lazy routes may mount the titlebar after startup retries end.
+      // Ignore unrelated message/stream mutations instead of polling the page.
+      if (records.some(record => record.type === 'attributes'
+        || [...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element
+          && (node.closest('.chat-titlebar-row') || node.querySelector('.chat-titlebar-row'))))) schedule()
+    })
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+    observer.observe(document.body, { childList: true, subtree: true })
     window.addEventListener('resize', schedule)
     window.addEventListener('focus', schedule)
     window.addEventListener('blur', schedule)
+    window.addEventListener('hashchange', schedule)
     const win = getCurrentWindow()
     void win.onResized(schedule).then(stop => cancelled ? stop() : stops.push(stop)).catch(() => {})
     void win.onFocusChanged(schedule).then(stop => cancelled ? stop() : stops.push(stop)).catch(() => {})
@@ -158,6 +166,7 @@ export function ChatWindowHost({ children, translucentSidebar }: ChatWindowHostP
       window.removeEventListener('resize', schedule)
       window.removeEventListener('focus', schedule)
       window.removeEventListener('blur', schedule)
+      window.removeEventListener('hashchange', schedule)
     }
   }, [])
 

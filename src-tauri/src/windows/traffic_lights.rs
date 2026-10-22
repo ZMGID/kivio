@@ -5,28 +5,15 @@
 #[cfg(target_os = "macos")]
 const CHAT_TRAFFIC_LIGHT_X: f64 = 22.0;
 
-/// 把 close 按钮的 bounds 转到 contentView 坐标系，换算成「距内容顶缘」。
-/// 按 contentView 的实际坐标方向换算，避免依赖 NSView 子类的翻转约定。
-/// Overlay 标题栏下 contentView 铺满整个窗口 frame，所以这就是 CSS 的 y。
-#[cfg(target_os = "macos")]
-pub(super) unsafe fn measure_traffic_light_center_y(window: cocoa::base::id) -> Option<f64> {
-    use cocoa::base::id;
-    use objc::{msg_send, sel, sel_impl};
-
-    let close: id = msg_send![window, standardWindowButton: 0_u64];
-    measure_button_position(window, close).map(|point| point.y)
-}
-
-/// (left edge, vertical center), relative to the content's top-left corner.
+/// (left edge, vertical center), in the supplied NSView's top-left coordinates.
 unsafe fn measure_button_position(
-    window: cocoa::base::id,
+    content: cocoa::base::id,
     button: cocoa::base::id,
 ) -> Option<cocoa::foundation::NSPoint> {
-    use cocoa::base::{id, nil};
+    use cocoa::base::nil;
     use cocoa::foundation::{NSPoint, NSRect};
     use objc::{msg_send, sel, sel_impl};
 
-    let content: id = msg_send![window, contentView];
     if button == nil || content == nil {
         return None;
     }
@@ -47,6 +34,57 @@ unsafe fn measure_button_position(
         in_content.origin.x - content_bounds.origin.x,
         y,
     ))
+}
+
+/// Align native controls to a measured CSS center and return it in CSS coordinates.
+/// Called with the owning WKWebView on the AppKit main thread.
+pub(super) unsafe fn align_to_webview(
+    window: cocoa::base::id,
+    webview: cocoa::base::id,
+    css_center_y: f64,
+) -> Option<f64> {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSPoint, NSRect};
+    use objc::{msg_send, sel, sel_impl};
+
+    if window == nil || webview == nil || !css_center_y.is_finite() {
+        return None;
+    }
+    // WKWebView pageZoom is independent of the display's Retina backing scale.
+    let zoom: f64 = msg_send![webview, pageZoom];
+    if !zoom.is_finite() || zoom <= 0.0 {
+        return None;
+    }
+    let content: id = msg_send![window, contentView];
+    if content == nil {
+        return None;
+    }
+    let bounds: NSRect = msg_send![webview, bounds];
+    let flipped: bool = msg_send![webview, isFlipped];
+    let y = bounds.origin.y
+        + if flipped {
+            css_center_y * zoom
+        } else {
+            bounds.size.height - css_center_y * zoom
+        };
+    let point: NSPoint = msg_send![content,
+        convertPoint: NSPoint::new(bounds.origin.x, y) fromView: webview];
+    let content_bounds: NSRect = msg_send![content, bounds];
+    let content_flipped: bool = msg_send![content, isFlipped];
+    let native_center = if content_flipped {
+        point.y - content_bounds.origin.y
+    } else {
+        content_bounds.origin.y + content_bounds.size.height - point.y
+    };
+    if !native_center.is_finite()
+        || !(8.0..=160.0).contains(&native_center)
+        || !restore_macos_traffic_lights(window, native_center)
+    {
+        return None;
+    }
+    // Return the measured result in the same CSS coordinate space as the request.
+    let close: id = msg_send![window, standardWindowButton: 0_u64];
+    measure_button_position(webview, close).map(|point| point.y / zoom)
 }
 
 /// Reapply the saved target when showing/reusing the window. Main thread only.
@@ -455,7 +493,7 @@ unsafe fn layout_macos_traffic_lights(
     }
     let buttons = [close, mini, zoom];
     let is_aligned = |(index, button): (usize, &id)| {
-        measure_button_position(window, *button).is_some_and(|point| {
+        measure_button_position(content, *button).is_some_and(|point| {
             (point.y - center_y).abs() < 0.25
                 && (point.x - (CHAT_TRAFFIC_LIGHT_X + index as f64 * spacing)).abs() < 0.25
         })

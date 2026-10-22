@@ -46,7 +46,7 @@ pub fn apply_chat_window_min_size(window: &WebviewWindow, sidebar_expanded: bool
 #[cfg(target_os = "macos")]
 mod traffic_lights;
 #[cfg(target_os = "macos")]
-use traffic_lights::{measure_traffic_light_center_y, restore_macos_traffic_lights};
+use traffic_lights::align_to_webview;
 
 /// 将原生交通灯对齐页面顶栏按钮，返回实际中心供确认；不反向修改页面布局。
 #[tauri::command]
@@ -58,20 +58,15 @@ pub async fn chat_traffic_light_center_y(window: WebviewWindow, center_y: f64) -
     {
         // NSView 几何只能在主线程读，命令本身在 worker 线程，用 channel 取回。
         let (tx, rx) = std::sync::mpsc::channel();
-        let window_for_main = window.clone();
         window
-            .run_on_main_thread(move || {
-                let measured = window_for_main
-                    .ns_window()
-                    .ok()
-                    .filter(|ptr| !ptr.is_null())
-                    .and_then(|ptr| unsafe {
-                        let window = ptr as cocoa::base::id;
-                        if !restore_macos_traffic_lights(window, center_y) {
-                            return None;
-                        }
-                        measure_traffic_light_center_y(window)
-                    });
+            .with_webview(move |webview| {
+                let measured = unsafe {
+                    align_to_webview(
+                        webview.ns_window() as cocoa::base::id,
+                        webview.inner() as cocoa::base::id,
+                        center_y,
+                    )
+                };
                 let _ = tx.send(measured);
             })
             .ok()?;

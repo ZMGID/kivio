@@ -208,6 +208,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
         },
         keyup() { compositionJustEnded = false; return false },
         contextmenu(_view, event) { current.current.onContextMenu(event); return event.defaultPrevented },
+        compositionstart(view) {
+          // Preedit text is visible before the draft updates; hide the overlay now.
+          view.dom.dataset.empty = 'false'
+          return false
+        },
         compositionend() {
           compositionJustEnded = true
           clearTimeout(compositionTimer)

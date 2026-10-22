@@ -13,6 +13,8 @@ fn main() {}
 fn main() {
     use cocoa::base::{id, nil};
     use cocoa::foundation::{NSPoint, NSRect, NSSize};
+    #[link(name = "WebKit", kind = "framework")]
+    extern "C" {}
     use objc::{class, msg_send, sel, sel_impl};
     extern "C" {
         fn objc_initWeak(location: *mut id, object: id) -> id;
@@ -44,6 +46,7 @@ fn main() {
         let pool: id = msg_send![class!(NSAutoreleasePool), new];
         let _: id = msg_send![class!(NSApplication), sharedApplication];
         let mut recoveries = 0;
+        let mut webview_alignments = 0;
         for _ in 0..20 {
             let lifetime_pool: id = msg_send![class!(NSAutoreleasePool), new];
             let window: id = msg_send![class!(NSWindow), alloc];
@@ -62,10 +65,39 @@ fn main() {
             let mini_rect: NSRect = msg_send![mini, frame];
             let native_spacing = mini_rect.origin.x - close_rect.origin.x;
             traffic_lights::apply_saved_position(window);
-            assert_eq!(
-                traffic_lights::measure_traffic_light_center_y(window),
-                Some(26.0)
-            );
+            assert_aligned(window, 26.0, native_spacing);
+
+            // Exercise the production WebView/native boundary, including zoom and
+            // a non-zero WebView inset. The old CSS == AppKit-points assumption
+            // passed every geometry-recovery case below but fails this contract.
+            let content: id = msg_send![window, contentView];
+            let configuration: id = msg_send![class!(WKWebViewConfiguration), new];
+            let webview: id = msg_send![class!(WKWebView), alloc];
+            let webview: id = msg_send![webview,
+                initWithFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0))
+                configuration: configuration];
+            let _: () = msg_send![configuration, release];
+            let _: () = msg_send![content, addSubview: webview];
+            for (scale, inset, expected_center) in [
+                (1.0_f64, 0.0, 26.0),
+                (1.4, 0.0, 36.4),
+                (0.8, 0.0, 20.8),
+                (1.0, 8.0, 34.0),
+            ] {
+                let _: () = msg_send![webview, setPageZoom: scale];
+                let _: () = msg_send![webview, setFrame: NSRect::new(
+                    NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0 - inset))];
+                let measured = traffic_lights::align_to_webview(window, webview, 26.0).unwrap();
+                assert!(
+                    (measured - 26.0).abs() < 0.25,
+                    "IPC result must remain in CSS pixels"
+                );
+                assert_aligned(window, expected_center, native_spacing);
+                webview_alignments += 1;
+            }
+            let _: () = msg_send![webview, removeFromSuperview];
+            let _: () = msg_send![webview, release];
+            traffic_lights::restore_macos_traffic_lights(window, 26.0);
 
             // A background button update must not rely on a frame notification,
             // a parent layout pass, or the next focus event to restore alignment.
@@ -173,7 +205,7 @@ fn main() {
             let _: () = msg_send![mini, setFrameOrigin: frame.origin];
             let _: () = msg_send![mini, release];
         }
-        println!("{recoveries} geometry recoveries passed across 20 window lifecycles");
+        println!("{recoveries} geometry recoveries and {webview_alignments} WebView alignments passed across 20 window lifecycles");
         let _: () = msg_send![pool, drain];
     }
 }

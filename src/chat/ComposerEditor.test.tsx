@@ -145,6 +145,24 @@ describe('ComposerEditor', () => {
     expect(onKeyDown).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['', '中文'])('hides the placeholder during IME input and restores the correct state after finishing with %j', async (committed) => {
+    const { textbox, editor } = setup()
+    expect(textbox).toHaveAttribute('data-empty', 'true')
+    fireEvent.compositionStart(textbox)
+    expect(textbox).toHaveAttribute('data-empty', 'false')
+    // The browser owns preedit DOM before ProseMirror flushes it to the draft.
+    textbox.prepend(document.createTextNode('zhong'))
+    fireEvent.input(textbox, { inputType: 'insertCompositionText', data: 'zhong', isComposing: true })
+    await waitFor(() => expect(editor.current!.value).toBe('zhong'))
+    expect(textbox).toHaveAttribute('data-empty', 'false')
+    ;(textbox.firstChild as Text).data = committed
+    fireEvent.compositionEnd(textbox, { data: committed })
+    await waitFor(() => {
+      expect(editor.current!.value).toBe(committed)
+      expect(textbox).toHaveAttribute('data-empty', String(!committed))
+    })
+  })
+
   it('defers external draft replacement until composition finishes', async () => {
     const props = { commands, placeholder: 'Write', scopeKey: 'a', onChange: vi.fn(),
       onSelect: vi.fn(), onKeyDown: vi.fn(), onPaste: vi.fn(), onContextMenu: vi.fn() }
