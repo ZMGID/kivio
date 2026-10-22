@@ -26,6 +26,7 @@ vi.mock('../../api/tauri', () => ({
     onChatToolConfirmWithdraw: listen('toolConfirmWithdraw'),
     onChatSessionConsent: listen('sessionConsent'),
     onChatUserPrompt: listen('userPrompt'),
+    onChatUserPromptResolved: listen('userPromptResolved'),
     onChatHook: listen('hook'),
     onChatQueuedTextsRestored: listen('queuedTexts'),
     onChatStatusNote: listen('statusNote'),
@@ -101,6 +102,25 @@ async function setupStreamedAnswer() {
 }
 
 describe('usePopoutSession run settle', () => {
+  it('withdraws only the resolved question while the run continues', async () => {
+    const { result } = await setupStreamedAnswer()
+    const prompt = (runId: string, toolCallId: string) => ({
+      conversationId: CONVERSATION_ID, runId, messageId: TWIN_ID, toolCallId,
+      id: toolCallId, name: 'ask_user', source: 'native', prompt: { questions: [] },
+    })
+    await act(async () => {
+      handlers.get('userPrompt')?.(prompt('run-1', 'first'))
+      handlers.get('userPrompt')?.(prompt('run-1', 'second'))
+      handlers.get('userPromptResolved')?.(prompt('old-run', 'first'))
+    })
+    expect(result.current.pendingUserPrompt?.toolCallId).toBe('first')
+    await act(async () => { handlers.get('userPromptResolved')?.(prompt('run-1', 'first')) })
+    expect(result.current.pendingUserPrompt?.toolCallId).toBe('second')
+    await act(async () => { handlers.get('userPromptResolved')?.(prompt('run-1', 'second')) })
+    expect(result.current.pendingUserPrompt).toBeNull()
+    expect(getCoarse().streaming).toBe(true)
+  })
+
   beforeEach(() => {
     vi.useFakeTimers()
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>

@@ -307,9 +307,37 @@ pub enum SlashStrategy {
     None,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default)]
+    pub service_tiers: Vec<ModelServiceTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_service_tier: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServiceTier {
+    pub id: String,
+    pub label: String,
+}
+
+impl ModelCapabilities {
+    pub fn accepts_images(&self) -> bool {
+        self.input_modalities
+            .as_ref()
+            .is_none_or(|types| types.iter().any(|kind| kind == "image"))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeModelOption {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ModelCapabilities>,
     pub id: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,8 +485,8 @@ pub struct RuntimeAgentDef {
     ///
     /// Codex 使用 `turn/steer`，Pi 使用 RPC `steer`，dsh 使用 bridge `session/steer`
     ///（`agent.steer()`，next-step inbox）。都只在对端成功响应后确认。
-    /// claude 的 stream-json 输入是顺序处理、ACP 只有 `session/prompt` 与 `session/cancel`，
-    /// 因而仍不声明该能力。
+    /// Claude 使用带 priority="now" 的 stream-json 用户消息，并等待输入回显；
+    /// ACP 只有 `session/prompt` 与 `session/cancel`，不声明该能力。
     pub supports_steering: bool,
     /// 该 CLI 的协议能否把一条用户消息排到当前运行完成后继续处理。
     /// Pi 使用 RPC `follow_up`；dsh 使用官方 `session/prompt` → `agent.followup()`。
@@ -486,6 +514,19 @@ pub struct ExternalCliSlashCommand {
 pub enum UnifiedAgentEvent {
     TextDelta {
         delta: String,
+    },
+    /// Native message identity keeps final text corrections scoped to their timeline item.
+    TextItemDelta {
+        id: String,
+        delta: String,
+    },
+    TextItemCompleted {
+        id: String,
+        text: String,
+    },
+    /// The CLI has cleared this request; withdraw its existing host card and waiter.
+    InteractionResolved {
+        tool_call_id: String,
     },
     ThinkingDelta {
         delta: String,
@@ -644,6 +685,7 @@ pub struct ExternalAgentSession {
 
 pub fn default_model_option() -> RuntimeModelOption {
     RuntimeModelOption {
+        capabilities: None,
         id: "default".to_string(),
         label: "Default".to_string(),
         context_window_tokens: None,
@@ -657,6 +699,7 @@ pub fn fallback_models_from_pairs(pairs: &[(&str, &str)]) -> Vec<RuntimeModelOpt
             continue;
         }
         out.push(RuntimeModelOption {
+            capabilities: None,
             id: (*id).to_string(),
             label: (*label).to_string(),
             context_window_tokens: None,
@@ -669,6 +712,7 @@ pub fn reasoning_options_from_pairs(pairs: &[(&str, &str)]) -> Vec<RuntimeModelO
     pairs
         .iter()
         .map(|(id, label)| RuntimeModelOption {
+            capabilities: None,
             id: (*id).to_string(),
             label: (*label).to_string(),
             context_window_tokens: None,

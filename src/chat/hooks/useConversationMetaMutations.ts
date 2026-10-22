@@ -135,8 +135,8 @@ export function useConversationMetaMutations({
   }, [applyConversationIfCurrent, currentConversationRef, draft, setStreamErrorForConversation])
 
   // 下面三个都经 changeRuntime：没有会话时草稿也要更新（首次发送创建会话时应用）。
-  const changeExternalModel = useCallback(async (model: string, reasoning?: string | null) => {
-    await changeRuntime(withExternalModel(activeAgentRuntime, model, reasoning))
+  const changeExternalModel = useCallback(async (model: string, reasoning?: string | null, serviceTier?: string | null) => {
+    await changeRuntime(withExternalModel(activeAgentRuntime, model, reasoning, serviceTier))
   }, [activeAgentRuntime, changeRuntime])
 
   const changeExternalSandbox = useCallback(async (sandbox: string) => {

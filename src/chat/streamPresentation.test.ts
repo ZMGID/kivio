@@ -9,6 +9,27 @@ const event = (type: string, runId: string, delta?: string): ChatStreamPayload =
 
 describe('conversation stream presentation', () => {
 
+  it('applies a final text correction without moving other timeline items and rejects stale runs', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    snapshot.runId = 'run-a'
+    snapshot.content = 'draftlater'
+    snapshot.segments = [
+      { id: 'first', kind: 'text', phase: 'plain', order: 1, text: 'draft' },
+      { id: 'tool', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'call' },
+      { id: 'last', kind: 'text', phase: 'synthesis', order: 3, text: 'later' },
+    ]
+    const correction = { ...event('text_segment_replaced', 'run-a'), segmentId: 'first',
+      text: '最终🌱', content: '最终🌱later' } as ChatStreamPayload
+    expect(applyConversationStreamEvent(snapshot, { ...correction, runId: 'old-run' })).toBe(false)
+    expect(snapshot.content).toBe('draftlater')
+    expect(applyConversationStreamEvent(snapshot, correction)).toBe(true)
+    expect(applyConversationStreamEvent(snapshot, correction)).toBe(true)
+    expect(snapshot.content).toBe('最终🌱later')
+    expect(snapshot.segments.map(segment => [segment.id, segment.text])).toEqual([
+      ['first', '最终🌱'], ['tool', undefined], ['last', 'later'],
+    ])
+  })
+
   it('clears retry status when content resumes and finalizes reasoning duration on terminal', () => {
     const snapshot = createEmptyStreamSnapshot()
     snapshot.statusNote = 'retrying'

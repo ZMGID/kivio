@@ -174,6 +174,10 @@ fn stamp_disabled(
 ) -> Vec<crate::external_agents::types::DetectedAgent> {
     for agent in agents.iter_mut() {
         agent.disabled = crate::external_agents::overrides::is_disabled(&agent.id);
+        if let Some(def) = get_agent_def(&agent.id) {
+            agent.supports_steering = def.supports_steering;
+            agent.supports_follow_up = def.supports_follow_up;
+        }
         agent.native_providers = get_agent_def(&agent.id)
             .map(native_provider_summaries)
             .unwrap_or_default();
@@ -197,6 +201,7 @@ fn merge_custom_models(
             custom.label
         };
         merged.push(crate::external_agents::types::RuntimeModelOption {
+            capabilities: None,
             id: custom.id,
             label,
             context_window_tokens: None,
@@ -435,6 +440,7 @@ mod tests {
             external_agent_id: Some(id.to_string()),
             external_model: Some(model.to_string()),
             external_reasoning: None,
+            external_service_tier: None,
             external_sandbox: None,
             external_agent_preset: None,
         }
@@ -500,6 +506,7 @@ mod tests {
 
         let cached = CachedAgentModels {
             models: vec![RuntimeModelOption {
+                capabilities: None,
                 id: "kimi-code/kimi-for-coding".into(),
                 label: "K2.7 Coding".into(),
                 context_window_tokens: None,
@@ -507,16 +514,19 @@ mod tests {
             source: ModelSource::Probed,
             reasoning_options: vec![
                 RuntimeModelOption {
+                    capabilities: None,
                     id: "low".into(),
                     label: "Low".into(),
                     context_window_tokens: None,
                 },
                 RuntimeModelOption {
+                    capabilities: None,
                     id: "high".into(),
                     label: "High".into(),
                     context_window_tokens: None,
                 },
                 RuntimeModelOption {
+                    capabilities: None,
                     id: "max".into(),
                     label: "Max".into(),
                     context_window_tokens: None,
@@ -607,4 +617,18 @@ pub fn chat_imported_history_stale(app: AppHandle, conversation_id: String) -> b
 #[tauri::command]
 pub fn chat_external_native_session_id(app: AppHandle, conversation_id: String) -> Option<String> {
     crate::external_agents::session::bound_native_session_id(&app, &conversation_id)
+}
+
+#[tauri::command]
+pub async fn chat_external_cli_account(
+    app: AppHandle,
+    agent_id: String,
+    conversation_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let def = get_agent_def(&agent_id).ok_or("未知 CLI")?;
+    let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
+    let bin = crate::external_agents::spawn::resolve_binary(def)
+        .await
+        .ok_or("CLI 未安装或不在 PATH")?;
+    crate::external_agents::account::probe(&agent_id, &bin, &cwd).await
 }

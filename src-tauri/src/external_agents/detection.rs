@@ -425,6 +425,7 @@ const DSH_PI_EFFORT_ORDER: &[&str] = &["off", "minimal", "low", "medium", "high"
 
 fn dsh_effort_option(id: &str) -> RuntimeModelOption {
     RuntimeModelOption {
+        capabilities: None,
         id: id.to_string(),
         label: match id {
             "default" => "Default",
@@ -641,6 +642,7 @@ fn push_dsh_model(
         return;
     }
     models.push(RuntimeModelOption {
+        capabilities: None,
         id: id.to_string(),
         label: label.to_string(),
         context_window_tokens,
@@ -918,6 +920,7 @@ fn parse_kimi_model_efforts(
                     other => other,
                 };
                 RuntimeModelOption {
+                    capabilities: None,
                     id: id.clone(),
                     label: label.to_string(),
                     context_window_tokens: None,
@@ -1024,6 +1027,7 @@ pub fn sandbox_options_for(def: &RuntimeAgentDef) -> Vec<RuntimeModelOption> {
     def.sandbox_options
         .iter()
         .map(|(id, label)| RuntimeModelOption {
+            capabilities: None,
             id: (*id).to_string(),
             label: (*label).to_string(),
             context_window_tokens: None,
@@ -1406,6 +1410,7 @@ fn parse_opencode_models(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
             continue;
         }
         out.push(RuntimeModelOption {
+            capabilities: None,
             id: id.to_string(),
             label: id.to_string(),
             context_window_tokens: None,
@@ -1435,6 +1440,7 @@ fn parse_models_list(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
             continue;
         }
         out.push(RuntimeModelOption {
+            capabilities: None,
             id: id.into(),
             label: label.into(),
             context_window_tokens: None,

@@ -575,6 +575,66 @@
         },
         {
           "additionalProperties": false,
+          "description": "A provider's completed message can revise previously streamed text.",
+          "properties": {
+            "baseRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "content": {
+              "type": "string"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "run",
+              "type": "string"
+            },
+            "segmentId": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_segment_replaced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "segmentId",
+            "text",
+            "content",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "runId",
+            "messageId",
+            "seq",
+            "baseRevision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "properties": {
             "baseRevision": {
               "format": "uint64",
@@ -1229,6 +1289,57 @@
             },
             "type": {
               "const": "tool_approval_withdrawn",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "toolCallId",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "runId",
+            "messageId",
+            "seq",
+            "baseRevision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "baseRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "conversationId": {
+              "type": "string"
+            },
+            "messageId": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "run",
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "user_prompt_resolved",
               "type": "string"
             }
           },

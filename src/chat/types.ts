@@ -496,6 +496,8 @@ export interface AgentRuntimeConfig {
   external_model?: string | null
   externalReasoning?: string | null
   external_reasoning?: string | null
+  externalServiceTier?: string | null
+  external_service_tier?: string | null
   externalSandbox?: string | null
   external_sandbox?: string | null
   externalAgentPreset?: string | null

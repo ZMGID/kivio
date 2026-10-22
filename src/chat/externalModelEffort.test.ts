@@ -16,3 +16,10 @@ it('distinguishes explicit clearing from retaining an unspecified effort', () =>
   expect(withExternalModel(runtime, 'claude-sonnet-4-6').externalReasoning).toBe('high')
   expect(withExternalModel({ ...runtime, externalAgentId: 'codex' }, 'custom-low', 'high').externalReasoning).toBe('high')
 })
+
+it('retains a tier for effort changes and clears it when selecting a different model', () => {
+  const rt: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'codex', externalModel: 'model-a', externalServiceTier: 'priority' }
+  expect(withExternalModel(rt, 'model-a', 'high').externalServiceTier).toBe('priority')
+  expect(withExternalModel(rt, 'model-b').externalServiceTier).toBeNull()
+  expect(withExternalModel(rt, 'model-b', undefined, 'fast').externalServiceTier).toBe('fast')
+})

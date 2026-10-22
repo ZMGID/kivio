@@ -47,6 +47,7 @@ fn pi_model_reasoning(model: &Value) -> Vec<RuntimeModelOption> {
             continue;
         }
         options.push(RuntimeModelOption {
+            capabilities: None,
             id: level.to_string(),
             label: level.to_string(),
             context_window_tokens: None,
@@ -99,7 +100,12 @@ pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Opti
             let full_id = format!("{provider}/{id}");
             out.reasoning_by_model.insert(full_id.clone(), pi_model_reasoning(&model));
             out.models.push(RuntimeModelOption {
-                id: full_id, label: format!("{id} · {provider}"),
+                capabilities: Some(crate::external_agents::types::ModelCapabilities {
+                    input_modalities: model.get("input").and_then(Value::as_array)
+                        .map(|types| types.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+                    ..Default::default()
+                }),
+id: full_id, label: format!("{id} · {provider}"),
                 context_window_tokens: model.get("contextWindow").and_then(Value::as_u64)
                     .and_then(|tokens| u32::try_from(tokens).ok()),
             });
@@ -107,6 +113,11 @@ pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Opti
         if let Some(state) = state {
             if let Some(model) = state.get("model").filter(|model| model.is_object()) {
                 out.reasoning_by_model.insert("default".to_string(), pi_model_reasoning(model));
+                out.models[0].capabilities = Some(crate::external_agents::types::ModelCapabilities {
+                    input_modalities: model.get("input").and_then(Value::as_array)
+                        .map(|types| types.iter().filter_map(Value::as_str).map(str::to_string).collect()),
+                    ..Default::default()
+                });
                 out.current_model = model.get("provider").and_then(Value::as_str).zip(model.get("id").and_then(Value::as_str))
                     .map(|(provider, id)| format!("{provider}/{id}"));
             }
@@ -578,6 +589,7 @@ pub fn parse_pi_models(stderr: &str) -> Option<Vec<RuntimeModelOption>> {
             // 下拉框标签用「模型 · 供应商」：供应商 id 现在已是短名（relay），
             // 比 `kivio-p-xxx/model` 整串塞进一行可读得多；id 仍保留完整 provider/model。
             out.push(RuntimeModelOption {
+                capabilities: None,
                 id: full_id,
                 label: format!("{} · {}", parts[1], parts[0]),
                 context_window_tokens,

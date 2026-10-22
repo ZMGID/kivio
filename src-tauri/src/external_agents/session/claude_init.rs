@@ -209,6 +209,7 @@ fn build_claude_model_catalog() -> (Vec<RuntimeModelOption>, Option<String>) {
 
     // Kivio Auto 行：不传 `--model`，让 CLI 用自己的默认 / settings。
     let mut out = vec![RuntimeModelOption {
+        capabilities: None,
         id: "default".to_string(),
         label: "Default".to_string(),
         context_window_tokens: None,
@@ -226,6 +227,7 @@ fn get_builtin_claude_models() -> Vec<RuntimeModelOption> {
     CLAUDE_BUILTIN_TIERS
         .iter()
         .map(|(id, label)| RuntimeModelOption {
+            capabilities: None,
             id: (*id).to_string(),
             label: (*label).to_string(),
             context_window_tokens: None,

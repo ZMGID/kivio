@@ -290,6 +290,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                         out[0].context_window_tokens = window;
                     }
                     out.push(RuntimeModelOption {
+                        capabilities: None,
                         id: id.to_string(),
                         label: if name != id {
                             format!("{name} ({id})")
@@ -327,6 +328,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                     out[0].context_window_tokens = window;
                 }
                 out.push(RuntimeModelOption {
+                    capabilities: None,
                     id: id.to_string(),
                     label: if name != id {
                         format!("{name} ({id})")
@@ -480,6 +482,7 @@ fn extract_acp_reasoning(value: &Value) -> (Vec<RuntimeModelOption>, Option<Stri
             }
             let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or(id);
             out.push(RuntimeModelOption {
+                capabilities: None,
                 id: id.to_string(),
                 label: name.to_string(),
                 context_window_tokens: None,
@@ -3824,6 +3827,9 @@ mod tests {
     fn event_variant(event: &UnifiedAgentEvent) -> &'static str {
         match event {
             UnifiedAgentEvent::TextDelta { .. } => "TextDelta",
+            UnifiedAgentEvent::TextItemDelta { .. } => "TextItemDelta",
+            UnifiedAgentEvent::TextItemCompleted { .. } => "TextItemCompleted",
+            UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",

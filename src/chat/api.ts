@@ -90,6 +90,7 @@ export function normalizeAgentRuntime(
     externalAgentId: raw.externalAgentId ?? raw.external_agent_id ?? null,
     externalModel: raw.externalModel ?? raw.external_model ?? 'default',
     externalReasoning: raw.externalReasoning ?? raw.external_reasoning ?? null,
+    externalServiceTier: raw.externalServiceTier ?? raw.external_service_tier ?? null,
     externalSandbox: raw.externalSandbox ?? raw.external_sandbox ?? null,
     externalAgentPreset: raw.externalAgentPreset ?? raw.external_agent_preset ?? null,
   }
@@ -110,6 +111,7 @@ export function agentRuntimesEqual(
     && (a.externalAgentId ?? null) === (b.externalAgentId ?? null)
     && (a.externalModel ?? 'default') === (b.externalModel ?? 'default')
     && (a.externalReasoning ?? null) === (b.externalReasoning ?? null)
+    && (a.externalServiceTier ?? null) === (b.externalServiceTier ?? null)
     && (a.externalSandbox ?? null) === (b.externalSandbox ?? null)
     && (a.externalAgentPreset ?? null) === (b.externalAgentPreset ?? null)
 }
@@ -2029,6 +2031,7 @@ export const chatApi = {
       externalAgentId: agentRuntime.externalAgentId ?? null,
       externalModel: agentRuntime.externalModel ?? null,
       externalReasoning: agentRuntime.externalReasoning ?? null,
+      externalServiceTier: agentRuntime.externalServiceTier ?? null,
       externalSandbox: agentRuntime.externalSandbox ?? null,
       externalAgentPreset: agentRuntime.externalAgentPreset ?? null,
     }

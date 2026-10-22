@@ -27,7 +27,7 @@ use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{ChildStdin, ChildStdout};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -51,8 +51,9 @@ const READ_POLL: Duration = Duration::from_millis(200);
 
 /// 等 `set_model` 的 `control_response` 最多多久。超时按「CLI 不认这条请求」处理，
 /// 退回换进程 —— 宁可白跑一次重连，也不能让用户换了模型却静默跑旧的。
-/// 这不是模型推理时间，只是一次本地控制往返，3s 已经很宽松。
-const SET_MODEL_ACK_TIMEOUT: Duration = Duration::from_secs(3);
+/// Claude 2.1.307 waits up to 15s for API-side model confirmation. Leave transport
+/// margin so a valid late acknowledgement does not force an unnecessary reconnect.
+const SET_MODEL_ACK_TIMEOUT: Duration = Duration::from_secs(20);
 /// 连续可恢复读错误的上限：防止一个反复报错的 pipe 把读循环变成忙等。
 const MAX_RECOVERABLE_READ_ERRORS: u32 = 32;
 
@@ -208,7 +209,19 @@ const APPROVAL_INTERACTIVE_UNSUPPORTED: &str =
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingApproval {
     request_id: String,
+    tool_call_id: String,
     tool_name: String,
+}
+
+/// A priority input remains unsent while its foreground Agent calls move to background.
+struct PendingClaudeSteer {
+    id: String,
+    text: String,
+    uuid: String,
+    payload: Option<String>,
+    receipt: oneshot::Sender<bool>,
+    background: std::collections::HashMap<String, String>,
+    deadline: tokio::time::Instant,
 }
 
 /// 挂起表 → 一批 deny 响应行（每条询问恰好一行，顺序与挂起顺序一致）。
@@ -840,7 +853,7 @@ impl ClaudeStreamJsonSession {
             if tokio::time::Instant::now() >= deadline {
                 return Err(crate::external_agents::session::acp::NEEDS_RECONNECT.to_string());
             }
-            // 用户在这 3s 里点了停止 / 关会话：立刻按取消收场，别让他多等一个握手。
+            // Waiting for model confirmation must remain cancellable.
             match control.try_recv() {
                 Ok(SessionCommand::Cancel) => return Err("cancelled".to_string()),
                 Ok(SessionCommand::Close) => return Err("closed".to_string()),
@@ -851,7 +864,7 @@ impl ClaudeStreamJsonSession {
                 Ok(SessionCommand::RunTurn { done, .. }) => {
                     let _ = done.send(Err("session busy".to_string()));
                 }
-                // 换模型握手只有 3s，停任务不急这一下：静默丢掉，用户重点一次即可。
+                // 等待换模型确认期间不处理后台停止请求；用户可在确认后再次操作。
                 Ok(SessionCommand::StopTask { .. }) => {}
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -910,7 +923,11 @@ impl ClaudeStreamJsonSession {
         // 必须排在写 prompt 之前 —— 否则这一轮的问题已经喂给旧模型了。
         self.apply_model_change(model, control).await?;
 
-        let payload = stream_json_user_line(prompt, images)?;
+        let mut user: Value = serde_json::from_str(&stream_json_user_line(prompt, images)?)
+            .map_err(|e| e.to_string())?;
+        let mut active_input_uuid = Uuid::new_v4().to_string();
+        user["uuid"] = json!(active_input_uuid);
+        let payload = format!("{user}\n");
         if let Err(err) = self.stdin.write_all(payload.as_bytes()).await {
             return Err(self
                 .fold_tail(format!("写入 claude stdin 失败: {err}"))
@@ -934,6 +951,10 @@ impl ClaudeStreamJsonSession {
         // 所以下面每一条 `return` 之前都要先把它整批拒掉。
         let mut pending: Vec<PendingApproval> = Vec::new();
 
+        let mut pending_steer: Option<PendingClaudeSteer> = None;
+        let mut foreground_agents = std::collections::HashSet::<String>::new();
+        let mut superseded_inputs = std::collections::HashSet::<String>::new();
+        let mut pending_segment_aborts = 0u32;
         let mut cancelled = false;
         let mut recoverable_errors = 0u32;
         // `--resume` 的会话在 claude 那边已经不存在了（见 `stream::claude::is_missing_session_error`）。
@@ -944,8 +965,75 @@ impl ClaudeStreamJsonSession {
         // `(request_id, 目标档位)`。见下面读到答复时的处理。
         let mut pending_mode_switch: Option<(String, String)> = None;
         loop {
+            if pending_steer.as_ref().is_some_and(|steer| {
+                steer.payload.is_some()
+                    && !steer.background.is_empty()
+                    && tokio::time::Instant::now() >= steer.deadline
+            }) {
+                if let Some(steer) = pending_steer.take() {
+                    let _ = steer.receipt.send(false);
+                }
+            }
+            // stdout may report another foreground Agent while earlier moves are pending.
+            // Reconcile the live set before every attempt to write the priority input.
+            if let Some(steer) = pending_steer
+                .as_mut()
+                .filter(|steer| steer.payload.is_some())
+            {
+                let mut wrote_request = false;
+                for tool_use_id in &foreground_agents {
+                    if steer
+                        .background
+                        .values()
+                        .any(|pending| pending == tool_use_id)
+                    {
+                        continue;
+                    }
+                    let request_id = format!("kivio-background-{}", Uuid::new_v4());
+                    let request = json!({"type":"control_request","request_id":request_id,
+                        "request":{"subtype":"background_tasks","tool_use_id":tool_use_id}});
+                    self.stdin
+                        .write_all(format!("{request}\n").as_bytes())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    steer.background.insert(request_id, tool_use_id.clone());
+                    wrote_request = true;
+                }
+                if wrote_request {
+                    self.stdin.flush().await.map_err(|e| e.to_string())?;
+                }
+            }
+            if let Some(steer) = pending_steer
+                .as_mut()
+                .filter(|steer| steer.payload.is_some() && steer.background.is_empty())
+            {
+                for entry in &pending {
+                    let _ = events
+                        .send(UnifiedAgentEvent::InteractionResolved {
+                            tool_call_id: entry.tool_call_id.clone(),
+                        })
+                        .await;
+                }
+                self.reject_pending(&mut pending, APPROVAL_ABORTED_MESSAGE)
+                    .await;
+                let payload = steer.payload.take().unwrap();
+                self.stdin
+                    .write_all(payload.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                self.stdin.flush().await.map_err(|e| e.to_string())?;
+                superseded_inputs.insert(std::mem::replace(
+                    &mut active_input_uuid,
+                    steer.uuid.clone(),
+                ));
+                pending_segment_aborts += 1;
+            }
+
             match control.try_recv() {
                 Ok(SessionCommand::Cancel) => {
+                    if let Some(steer) = pending_steer.take() {
+                        let _ = steer.receipt.send(false);
+                    }
                     if !cancelled {
                         cancelled = true;
                         // **顺序不能反：先拒掉挂起的权限询问，再发中断。**
@@ -966,17 +1054,36 @@ impl ClaudeStreamJsonSession {
                         .await;
                     return Err("closed".to_string());
                 }
-                // **不能**往在飞的轮次里写第二条 user 行。官方对 stream-json 输入的语义是
-                // 「多条消息**顺序**处理」（Streaming Input 文档 + `--input-format stream-json`
-                // 没有任何注入用的 control_request：只有 initialize / interrupt /
-                // set_permission_mode / can_use_tool / hook_callback / mcp_message / set_model）。
-                // 真写进去的后果是 CLI 在本轮 `result` 之后**自己再起一轮**回答它，那一轮的事件
-                // 会漏进下一次 run_turn 的读循环里，把轮次边界搞乱。
-                //
-                // TUI 里那种「打字即插话」是交互界面自己的循环做的，不经过 stdin 协议。
-                // 所以这里回 false：那条消息留在前端队列里，轮末按普通消息发出去。
-                Ok(SessionCommand::Steer { accepted, .. }) => {
-                    let _ = accepted.send(false);
+                Ok(SessionCommand::Steer {
+                    id,
+                    text,
+                    images,
+                    kind,
+                    accepted,
+                }) => {
+                    if cancelled
+                        || pending_steer.is_some()
+                        || kind
+                            != crate::external_agents::session::live::MessageInjectionKind::Steer
+                    {
+                        let _ = accepted.send(false);
+                        continue;
+                    }
+                    let mut user: Value =
+                        serde_json::from_str(&stream_json_user_line(&text, &images)?)
+                            .map_err(|e| e.to_string())?;
+                    let uuid = Uuid::new_v4().to_string();
+                    user["uuid"] = json!(uuid);
+                    user["priority"] = json!("now");
+                    pending_steer = Some(PendingClaudeSteer {
+                        id,
+                        text,
+                        uuid,
+                        payload: Some(format!("{user}\n")),
+                        receipt: accepted,
+                        background: std::collections::HashMap::new(),
+                        deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+                    });
                 }
                 Ok(SessionCommand::RunTurn { done, .. }) => {
                     let _ = done.send(Err("session busy".to_string()));
@@ -1091,6 +1198,85 @@ impl ClaudeStreamJsonSession {
                     continue;
                 }
             };
+            if value["type"] == "system"
+                && value["subtype"] == "task_started"
+                && value["is_backgrounded"] == true
+            {
+                if let Some(tool_id) = value.get("tool_use_id").and_then(Value::as_str) {
+                    foreground_agents.remove(tool_id);
+                }
+            }
+            if value["type"] == "control_response" {
+                if let Some(id) = value
+                    .pointer("/response/request_id")
+                    .and_then(Value::as_str)
+                {
+                    if let Some(tool_id) = pending_steer
+                        .as_mut()
+                        .and_then(|steer| steer.background.remove(id))
+                    {
+                        if value["response"]["subtype"] == "success"
+                            && value["response"]["response"]["backgrounded"] != false
+                        {
+                            foreground_agents.remove(&tool_id);
+                        } else if let Some(steer) = pending_steer.take() {
+                            // Keep the message queued if the CLI cannot preserve its agent.
+                            let _ = steer.receipt.send(false);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // --replay-user-messages is the CLI's receipt. No UI acknowledgement is
+            // emitted while a priority input is merely waiting to be written.
+            let received_uuid = value.get("uuid").and_then(Value::as_str);
+            let result_uuid = value.get("user_message_uuid").and_then(Value::as_str);
+            if pending_steer.as_ref().is_some_and(|steer| {
+                steer.payload.is_none()
+                    && ((value["type"] == "user" && received_uuid == Some(steer.uuid.as_str()))
+                        || (value["type"] == "result" && result_uuid == Some(steer.uuid.as_str())))
+            }) {
+                if let Some(steer) = pending_steer.take() {
+                    let _ = steer.receipt.send(true);
+                    let _ = events
+                        .send(UnifiedAgentEvent::UserSteer {
+                            id: steer.id,
+                            text: steer.text,
+                        })
+                        .await;
+                }
+            }
+            let old_result = result_uuid.is_some_and(|uuid| superseded_inputs.contains(uuid))
+                || value
+                    .get("user_message_uuids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|uuids| {
+                        !uuids.is_empty()
+                            && uuids.iter().all(|uuid| {
+                                uuid.as_str()
+                                    .is_some_and(|uuid| superseded_inputs.contains(uuid))
+                            })
+                    });
+            let steering_abort = !cancelled
+                && pending_segment_aborts > 0
+                && result_uuid.is_none()
+                && value
+                    .get("user_message_uuids")
+                    .and_then(Value::as_array)
+                    .is_none_or(|ids| ids.is_empty())
+                && matches!(
+                    value.get("terminal_reason").and_then(Value::as_str),
+                    Some("aborted_streaming" | "aborted_tools")
+                );
+            if value["type"] == "result" && (old_result || steering_abort) {
+                pending_segment_aborts = pending_segment_aborts.saturating_sub(1);
+                // This is a segment boundary, not the end of the host run. Keep its actual
+                // usage while allowing the replacement generation and next normal turn.
+                if let Some(usage) = crate::external_agents::stream::claude::result_usage(&value) {
+                    let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
+                }
+                continue;
+            }
             // 切档位请求的回执。失败必须说出来 —— 用户刚点了「批准计划」，而 claude 还在
             // 计划档里，它接下来每一次编辑都会被挡回去，界面上却什么都看不出来。
             if let Some((request_id, mode)) = pending_mode_switch.as_ref() {
@@ -1120,6 +1306,7 @@ impl ClaudeStreamJsonSession {
                 InboundFrame::Ask(ask) => {
                     let request_id = ask.request_id.clone();
                     let tool_name = ask.tool_name.clone();
+                    let tool_call_id = ask.tool_call_id.clone();
                     // 当场就能定的（需要在卡片上作答的交互式工具）直接拒，不打扰用户。
                     let immediate_deny = match approval_verdict(&ask) {
                         Err(reason) => Some(reason),
@@ -1146,6 +1333,7 @@ impl ClaudeStreamJsonSession {
                         }
                         None => pending.push(PendingApproval {
                             request_id,
+                            tool_call_id,
                             tool_name,
                         }),
                     }
@@ -1153,6 +1341,16 @@ impl ClaudeStreamJsonSession {
                 }
                 // CLI 撤回了那条询问：从挂起表摘掉，**不回任何东西**。
                 InboundFrame::CancelAsk(request_id) => {
+                    for entry in pending
+                        .iter()
+                        .filter(|entry| entry.request_id == request_id)
+                    {
+                        let _ = events
+                            .send(UnifiedAgentEvent::InteractionResolved {
+                                tool_call_id: entry.tool_call_id.clone(),
+                            })
+                            .await;
+                    }
                     pending.retain(|entry| entry.request_id != request_id);
                     continue;
                 }
@@ -1184,6 +1382,22 @@ impl ClaudeStreamJsonSession {
             self.handler
                 .handle_value(&value, &mut |event| buf.push(event));
             for event in buf {
+                if value.get("parent_tool_use_id").is_none_or(Value::is_null) {
+                    match &event {
+                        UnifiedAgentEvent::ToolUse { id, name, input }
+                            if matches!(name.as_str(), "Agent" | "Task")
+                                && input.get("run_in_background").and_then(Value::as_bool)
+                                    != Some(true) =>
+                        {
+                            foreground_agents.insert(id.clone());
+                        }
+                        UnifiedAgentEvent::ToolResult { tool_use_id, .. } => {
+                            foreground_agents.remove(tool_use_id);
+                        }
+                        _ => {}
+                    }
+                }
+
                 if suppress_after_cancel(cancelled, &event) {
                     continue;
                 }
@@ -1565,8 +1779,215 @@ pub fn spawn_claude_stream_session_actor_with_sink(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn priority_steer_peer() {
+        if !std::env::args()
+            .any(|arg| arg == "external_agents::session::claude_stream::tests::priority_steer_peer")
+        {
+            return;
+        }
+        use std::io::{BufRead, Write};
+        let mut input = std::io::stdin().lock().lines();
+        let first: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        let emit = |value: Value| {
+            println!("{value}");
+            std::io::stdout().flush().unwrap();
+        };
+        emit(
+            json!({"type":"assistant","uuid":"agent-start","message":{"id":"agent-call","content":[{"type":"tool_use","id":"foreground-agent","name":"Agent","input":{"prompt":"work","run_in_background":false}}]}}),
+        );
+        emit(
+            json!({"type":"assistant","uuid":"first-answer","message":{"id":"a1","content":[{"type":"text","text":"before"}]}}),
+        );
+        let background: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        assert_eq!(background["request"]["subtype"], "background_tasks");
+        assert_eq!(background["request"]["tool_use_id"], "foreground-agent");
+        // A parallel Agent starts while the first background transfer is in flight.
+        emit(
+            json!({"type":"assistant","uuid":"late-agent-start","message":{"id":"late-agent-call","content":[{"type":"tool_use","id":"late-foreground-agent","name":"Agent","input":{"prompt":"parallel work"}}]}}),
+        );
+        emit(
+            json!({"type":"control_response","response":{"subtype":"success","request_id":background["request_id"],"response":{"backgrounded":true}}}),
+        );
+        let late_background: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            late_background["request"]["subtype"], "background_tasks",
+            "priority input must preserve the newly started Agent too"
+        );
+        assert_eq!(
+            late_background["request"]["tool_use_id"],
+            "late-foreground-agent"
+        );
+        emit(
+            json!({"type":"control_response","response":{"subtype":"success","request_id":late_background["request_id"],"response":{"backgrounded":true}}}),
+        );
+        let steer: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        assert_eq!(steer["priority"], "now");
+        emit(steer.clone());
+        emit(
+            json!({"type":"result","subtype":"success","is_error":false,"terminal_reason":"aborted_streaming","user_message_uuid":first["uuid"]}),
+        );
+        emit(
+            json!({"type":"assistant","uuid":"second-answer","message":{"id":"a2","content":[{"type":"text","text":"after"}]}}),
+        );
+        emit(
+            json!({"type":"result","subtype":"success","is_error":false,"result":"after","user_message_uuid":steer["uuid"]}),
+        );
+        let next: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        emit(
+            json!({"type":"result","subtype":"success","is_error":false,"result":"next","user_message_uuid":next["uuid"]}),
+        );
+        let _ = input.next();
+    }
+
+    #[tokio::test]
+    async fn priority_steering_waits_for_echo_and_survives_superseded_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let args = vec![
+            "--exact".into(),
+            "external_agents::session::claude_stream::tests::priority_steer_peer".into(),
+            "--nocapture".into(),
+        ];
+        let session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
+            .await
+            .unwrap();
+        let actor = spawn_claude_stream_session_actor(session);
+        let (events, mut output) = mpsc::channel(64);
+        let (done, completion) = oneshot::channel();
+        actor
+            .send(SessionCommand::RunTurn {
+                prompt: "first".into(),
+                model: None,
+                reasoning: None,
+                images: vec![],
+                extra_writable_roots: vec![],
+                events: events.clone(),
+                done,
+                approvals: None,
+            })
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            while let Some(event) = output.recv().await {
+                if matches!(event, UnifiedAgentEvent::TextDelta { delta } if delta == "before") {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let (accepted, receipt) = oneshot::channel();
+        actor
+            .send(SessionCommand::Steer {
+                id: "steer-1".into(),
+                text: "change direction".into(),
+                images: vec![],
+                kind: crate::external_agents::session::live::MessageInjectionKind::Steer,
+                accepted,
+            })
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_secs(5), receipt)
+                .await
+                .unwrap()
+                .unwrap(),
+            "priority input was not accepted"
+        );
+        assert!(timeout(Duration::from_secs(5), completion)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok());
+        let mut saw_after = false;
+        let mut steer_count = 0;
+        while let Ok(event) = output.try_recv() {
+            if matches!(&event, UnifiedAgentEvent::TextDelta { delta } if delta == "after") {
+                saw_after = true;
+            }
+            if matches!(event, UnifiedAgentEvent::UserSteer { .. }) {
+                steer_count += 1;
+            }
+        }
+        assert!(saw_after, "superseded result ended the replacement turn");
+        assert_eq!(steer_count, 1);
+        let (done, completion) = oneshot::channel();
+        actor
+            .send(SessionCommand::RunTurn {
+                prompt: "next".into(),
+                model: None,
+                reasoning: None,
+                images: vec![],
+                extra_writable_roots: vec![],
+                events,
+                done,
+                approvals: None,
+            })
+            .await
+            .unwrap();
+        assert!(timeout(Duration::from_secs(5), completion)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok());
+        actor.send(SessionCommand::Close).await.unwrap();
+    }
+
     use super::*;
     use serde_json::Value;
+    use tokio::sync::oneshot;
+
+    #[test]
+    fn delayed_model_ack_peer() {
+        if std::env::var_os("KIVIO_MODEL_ACK_PEER").is_none() {
+            return;
+        }
+        use std::io::{BufRead, Write};
+        let line = std::io::stdin().lock().lines().next().unwrap().unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["request"]["subtype"], "set_model");
+        std::thread::sleep(Duration::from_secs(4));
+        println!(
+            "{}",
+            serde_json::json!({"type":"control_response", "response":{
+            "subtype":"success","request_id":request["request_id"],"response":{}}})
+        );
+        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdin().lock().lines().next();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn model_change_accepts_slow_valid_ack_without_reconnecting() {
+        let exe = std::env::current_exe().unwrap();
+        // The test executable is the pipe peer; the environment switch is passed through argv
+        // via a small wrapper so production connect/handshake code runs unchanged.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("claude");
+            let exe = exe.to_string_lossy().replace('\'', "'\\''");
+            std::fs::write(&bin, format!("#!/bin/sh\nKIVIO_MODEL_ACK_PEER=1 exec '{exe}' --exact external_agents::session::claude_stream::tests::delayed_model_ack_peer --nocapture\n")).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut session = ClaudeStreamJsonSession::connect(&bin, &[], dir.path())
+                .await
+                .unwrap();
+            let pid = session.child_pid();
+            let (_tx, mut control) = mpsc::channel(8);
+            let result = session
+                .apply_model_change(Some("model-after"), &mut control)
+                .await;
+            assert!(
+                result.is_ok(),
+                "valid slow acknowledgement triggered reconnect: {result:?}"
+            );
+            assert_eq!(session.child_pid(), pid);
+            assert_eq!(session.active_model.as_deref(), Some("model-after"));
+            session.close().await;
+        }
+    }
 
     // ---- 取消后的两道防御（纯函数 + 单测，spec 第 13 条）----
 
@@ -1798,6 +2219,7 @@ mod tests {
         let lines = reject_pending_lines(
             &[PendingApproval {
                 request_id: "e1".to_string(),
+                tool_call_id: "tool-e1".to_string(),
                 tool_name: CLAUDE_ELICITATION.to_string(),
             }],
             "x",
@@ -2045,6 +2467,7 @@ mod tests {
             .iter()
             .map(|id| PendingApproval {
                 request_id: (*id).to_string(),
+                tool_call_id: format!("tool-{id}"),
                 tool_name: "Bash".to_string(),
             })
             .collect();

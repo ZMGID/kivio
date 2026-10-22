@@ -530,6 +530,7 @@ mod tests {
                 external_agent_id: Some("pi".to_string()),
                 external_model: Some("anthropic/claude-sonnet-4-5".to_string()),
                 external_reasoning: None,
+                external_service_tier: None,
                 external_sandbox: None,
                 external_agent_preset: None,
             },
@@ -685,6 +686,7 @@ mod tests {
         assert!(!estimated);
         // 探测上报也必须让位给实报。
         let detected = vec![RuntimeModelOption {
+            capabilities: None,
             id: "gpt-5".to_string(),
             label: "GPT-5".to_string(),
             context_window_tokens: Some(272_000),
@@ -714,6 +716,7 @@ mod tests {
         assert!(estimated);
         // codex：探测上报（debug models 的 context_window）
         let detected = vec![RuntimeModelOption {
+            capabilities: None,
             id: "gpt-5-codex".to_string(),
             label: "GPT-5 Codex".to_string(),
             context_window_tokens: Some(272_000),
@@ -723,6 +726,7 @@ mod tests {
         assert_eq!(window, Some(272_000));
         // pi：--list-models 表同样走探测上报这一级
         let pi_models = vec![RuntimeModelOption {
+            capabilities: None,
             id: "anthropic/claude-sonnet-4-5".to_string(),
             label: "Sonnet".to_string(),
             context_window_tokens: Some(128_000),

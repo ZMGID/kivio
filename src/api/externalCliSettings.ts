@@ -17,7 +17,7 @@ export interface DetectedExternalAgent {
   nativeProviders?: NativeProviderSummary[]
   path?: string | null
   version?: string | null
-  models: Array<{ id: string; label: string; contextWindowTokens?: number | null; context_window_tokens?: number | null }>
+  models: Array<{ id: string; label: string; contextWindowTokens?: number | null; context_window_tokens?: number | null; capabilities?: { inputModalities?: string[] | null; serviceTiers: Array<{ id: string; label: string }>; defaultServiceTier?: string | null } | null }>
   reasoningOptions?: Array<{ id: string; label: string }>
   reasoning_options?: Array<{ id: string; label: string }>
   sandboxOptions?: Array<{ id: string; label: string }>
@@ -188,8 +188,21 @@ export interface ExternalCliInstallInfo {
   configDir: string | null
 }
 
+export interface ExternalCliAccount {
+  agentId: string
+  account: { type: string | null; email: string | null; plan: string | null } | null
+  windows: Array<{ name: string; usedPercent: number; resetsAt: string | number | null; windowDurationMins: number | null }>
+  credits: { label: string; unlimited?: boolean; balance?: string | null; used?: number | null; limit?: number | null; currency?: string | null } | null
+  unavailable: string | null
+  checkedAt: number
+}
+
 /** Settings and Chat share one transport owner for external CLI configuration. */
 export const externalCliSettingsApi = {
+  async getExternalCliAccount(agentId: string, conversationId?: string | null): Promise<ExternalCliAccount> {
+    if (!isTauriRuntime()) throw new Error('Account discovery requires the desktop app')
+    return invoke<ExternalCliAccount>('chat_external_cli_account', { agentId, conversationId })
+  },
   async detectExternalAgents(forceRefresh = false, conversationId?: string | null): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
       return [{ id: 'claude', name: 'Claude Code', available: false, models: [{ id: 'default', label: 'Default' }] }]

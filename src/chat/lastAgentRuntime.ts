@@ -16,6 +16,7 @@ export const LAST_AGENT_RUNTIME_KEY = 'kivio.chat.lastAgentRuntime'
 export type ExternalRuntimeSnapshot = {
   externalModel: string
   externalReasoning: string | null
+  externalServiceTier?: string | null
   externalSandbox: string | null
   externalAgentPreset: string | null
 }
@@ -29,6 +30,7 @@ function snapshotFromRuntime(runtime: AgentRuntimeConfig): ExternalRuntimeSnapsh
   return {
     externalModel: runtime.externalModel ?? 'default',
     externalReasoning: runtime.externalReasoning ?? null,
+    ...(runtime.externalServiceTier ? { externalServiceTier: runtime.externalServiceTier } : {}),
     externalSandbox: runtime.externalSandbox ?? null,
     externalAgentPreset: runtime.externalAgentPreset ?? null,
   }
@@ -40,6 +42,7 @@ function parseSnapshot(raw: unknown): ExternalRuntimeSnapshot | null {
   return {
     externalModel: asNonEmptyString(value.externalModel) ?? 'default',
     externalReasoning: asNonEmptyString(value.externalReasoning),
+    ...(asNonEmptyString(value.externalServiceTier) ? { externalServiceTier: asNonEmptyString(value.externalServiceTier) } : {}),
     externalSandbox: asNonEmptyString(value.externalSandbox),
     externalAgentPreset: asNonEmptyString(value.externalAgentPreset),
   }

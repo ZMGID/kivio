@@ -393,9 +393,18 @@ fn map_codex_notification(
         "item/agentMessage/delta" => {
             if let Some(delta) = params.get("delta").and_then(|v| v.as_str()) {
                 if !delta.is_empty() {
-                    sink(UnifiedAgentEvent::TextDelta {
-                        delta: delta.to_string(),
-                    });
+                    if let Some(id) = params.get("itemId").and_then(Value::as_str) {
+                        if !emitted_tools.contains(&format!("codex-text-{id}")) {
+                            sink(UnifiedAgentEvent::TextItemDelta {
+                                id: id.to_string(),
+                                delta: delta.to_string(),
+                            });
+                        }
+                    } else {
+                        sink(UnifiedAgentEvent::TextDelta {
+                            delta: delta.to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -510,6 +519,9 @@ fn map_codex_notification(
         }
         "turn/completed" => {
             if let Some(turn) = params.get("turn").and_then(|v| v.as_object()) {
+                if turn.get("status").and_then(Value::as_str) == Some("interrupted") {
+                    return CodexMapResult::TurnFailed("cancelled".to_string());
+                }
                 if turn.get("status").and_then(|v| v.as_str()) == Some("failed") {
                     return CodexMapResult::TurnFailed(codex_error_message(
                         turn.get("error").unwrap_or(&Value::Null),
@@ -787,6 +799,16 @@ fn emit_thread_item(
 ) {
     match item.get("type").and_then(|v| v.as_str()) {
         Some("agentMessage") if include_result => {
+            if let (Some(id), Some(text)) =
+                (item_id(item), item.get("text").and_then(Value::as_str))
+            {
+                if emitted_tools.insert(format!("codex-text-{id}")) {
+                    sink(UnifiedAgentEvent::TextItemCompleted {
+                        id,
+                        text: text.to_string(),
+                    });
+                }
+            }
             // 0.153 async questions are notifications, not reverse RPC. Emit a completed
             // display card; its answer is an ordinary user message, never an approval reply.
             let questions: Vec<Value> = item
@@ -1442,6 +1464,7 @@ pub struct CodexAppServerSession {
     plan_mode: bool,
     /// thread/start / resume 回报的模型，`collaborationMode.settings.model` 的兜底。
     thread_model: Option<String>,
+    service_tier: Option<String>,
 }
 
 /// Handshake timeouts (缺陷 4 / R3): 30s each, up from 15/20s.
@@ -1614,6 +1637,12 @@ impl CodexAppServerSession {
                 sandbox_policy,
                 plan_mode: tier == CODEX_PLAN_MODE,
                 thread_model,
+                service_tier: args
+                    .windows(2)
+                    .filter(|pair| pair[0] == "-c" || pair[0] == "--config")
+                    .filter_map(|pair| pair[1].strip_prefix("service_tier="))
+                    .filter_map(|value| serde_json::from_str::<String>(value).ok())
+                    .last(),
             }),
             Err(msg) => {
                 let tail = join_stderr_tail(&mut child, stderr_tail).await;
@@ -1771,6 +1800,9 @@ impl CodexAppServerSession {
             ) {
                 turn_params["collaborationMode"] = mode;
             }
+            if let Some(tier) = &self.service_tier {
+                turn_params["serviceTier"] = json!(tier);
+            }
             write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
         }
 
@@ -1780,6 +1812,7 @@ impl CodexAppServerSession {
             u64,
             (String, String, oneshot::Sender<bool>),
         > = std::collections::HashMap::new();
+        let mut pending_requests = std::collections::HashMap::<String, CodexPendingRequest>::new();
         loop {
             match control.try_recv() {
                 Ok(SessionCommand::Cancel) => {
@@ -1848,6 +1881,59 @@ impl CodexAppServerSession {
                 }
             }
 
+            // User answers may arrive out of order; only a still-pending request can write
+            // a response. Never hold the stdout reader while a card awaits user input.
+            if let Some(bridge) = approvals.as_deref_mut() {
+                loop {
+                    match bridge.decisions.try_recv() {
+                        Ok(decision) => {
+                            if let Some(request) = pending_requests.remove(&decision.request_id) {
+                                answer_pending_codex_request(
+                                    &mut self.stdin,
+                                    &request,
+                                    Some(decision),
+                                )
+                                .await?;
+                            }
+                        }
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            for (_, request) in pending_requests.drain() {
+                                answer_pending_codex_request(&mut self.stdin, &request, None)
+                                    .await?;
+                                let _ = events
+                                    .send(UnifiedAgentEvent::InteractionResolved {
+                                        tool_call_id: request.tool_call_id,
+                                    })
+                                    .await;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            let expired: Vec<String> = pending_requests
+                .iter()
+                .filter(|(_, request)| {
+                    request
+                        .deadline
+                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in expired {
+                if let Some(request) = pending_requests.remove(&id) {
+                    // autoResolutionMs belongs to requestUserInput only. An unanswered
+                    // question returns no answers; it never grants command/file permissions.
+                    write_rpc_result(&mut self.stdin, &request.id, json!({"answers":{}})).await?;
+                    let _ = events
+                        .send(UnifiedAgentEvent::InteractionResolved {
+                            tool_call_id: request.tool_call_id,
+                        })
+                        .await;
+                }
+            }
+
             let line = match timeout(Duration::from_millis(200), self.reader.next_line()).await {
                 Ok(Ok(Some(l))) => l,
                 Ok(Ok(None)) => return Err("codex app-server exited mid-turn".to_string()),
@@ -1867,15 +1953,13 @@ impl CodexAppServerSession {
                 value.get("id"),
             ) {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
-                answer_codex_server_request(
+                queue_codex_server_request(
                     &mut self.stdin,
                     method,
                     id,
                     &params,
                     approvals.as_deref_mut(),
-                    control,
-                    &self.thread_id,
-                    &mut self.next_id,
+                    &mut pending_requests,
                     self.approval_policy != "never",
                 )
                 .await?;
@@ -1886,15 +1970,40 @@ impl CodexAppServerSession {
                 // 服务端给的活跃 turn id：每条 turn 相关通知的 params 都带 turnId。
                 // `turn/steer` 的 `expectedTurnId` 只能取自这里。子代理线程的通知也带 turnId，
                 // 只认本线程的，否则中断 / 引导会打到子线程的轮次上。
+                if method == "serverRequest/resolved" {
+                    if let Some(id) = params.get("requestId") {
+                        if let Some(request) = pending_requests.remove(&rpc_id_key(id)) {
+                            let _ = events
+                                .send(UnifiedAgentEvent::InteractionResolved {
+                                    tool_call_id: request.tool_call_id,
+                                })
+                                .await;
+                        }
+                    }
+                    continue;
+                }
                 let own_thread = params
                     .get("threadId")
                     .and_then(|v| v.as_str())
                     .is_none_or(|t| t == self.thread_id);
-                if let Some(turn) = params
+                // Child threads share this connection. Their text/usage/terminal events
+                // must not enter the root answer or complete its pending run_turn.
+                // The root collabAgentToolCall item already projects child activity.
+                if !own_thread {
+                    continue;
+                }
+                let notification_turn = params
                     .get("turnId")
                     .and_then(|v| v.as_str())
-                    .filter(|_| own_thread)
+                    .or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
+                if let (Some(active), Some(incoming)) =
+                    (self.active_turn_id.as_deref(), notification_turn)
                 {
+                    if active != incoming {
+                        continue;
+                    }
+                }
+                if let Some(turn) = notification_turn {
                     self.active_turn_id = Some(turn.to_string());
                 }
                 let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
@@ -1936,6 +2045,11 @@ impl CodexAppServerSession {
                     }
                     continue;
                 }
+                if rpc_id == turn_id {
+                    if let Some(turn) = value.pointer("/result/turn/id").and_then(Value::as_str) {
+                        self.active_turn_id = Some(turn.to_string());
+                    }
+                }
             }
             if let Some(err) = value.get("error") {
                 let message = err
@@ -1974,47 +2088,123 @@ impl CodexAppServerSession {
     }
 }
 
-/// Answer a server→client JSON-RPC request.
-///
-/// `requestUserInput` always goes through the ask-user host. Command / file / permissions
-/// approvals ask the host when the session is `on-request`; the 「完全」档 (`never`) still
-/// auto-allows so picking that capsule stays silent. Handshake auto-accepts because there
-/// is no UI yet. Unknown requests are fail-closed so the turn cannot hang.
-async fn answer_codex_server_request(
+struct CodexPendingRequest {
+    id: Value,
+    method: String,
+    params: Value,
+    tool_call_id: String,
+    deadline: Option<tokio::time::Instant>,
+}
+
+async fn queue_codex_server_request(
     stdin: &mut ChildStdin,
     method: &str,
     id: &Value,
     params: &Value,
     approvals: Option<&mut ApprovalBridge>,
-    control: &mut mpsc::Receiver<SessionCommand>,
-    thread_id: &str,
-    next_id: &mut u64,
+    pending: &mut std::collections::HashMap<String, CodexPendingRequest>,
     asks_for_approval: bool,
 ) -> Result<(), String> {
-    if method == "item/tool/requestUserInput" || is_codex_elicitation(method) {
-        return answer_codex_user_interaction(
-            stdin, method, id, params, approvals, control, thread_id, next_id,
-        )
-        .await;
+    let interaction = method == "item/tool/requestUserInput" || is_codex_elicitation(method);
+    let approval = is_codex_tool_approval(method);
+    if approval && !asks_for_approval {
+        return write_rpc_result(stdin, id, approval_response(method, params).unwrap()).await;
     }
-    if is_codex_tool_approval(method) {
-        return answer_codex_tool_approval(
+    if !interaction && !approval {
+        return write_rpc_result(
             stdin,
-            method,
             id,
-            params,
-            approvals,
-            control,
-            thread_id,
-            next_id,
-            asks_for_approval,
+            approval_response(method, params).unwrap_or_else(unknown_server_request_result),
         )
         .await;
     }
-    if let Some(result) = approval_response(method, params) {
-        return write_rpc_result(stdin, id, result).await;
+    let request_id = rpc_id_key(id);
+    if pending.contains_key(&request_id) {
+        return write_rpc_error(stdin, id, -32600, "duplicate pending request id").await;
     }
-    write_rpc_result(stdin, id, unknown_server_request_result()).await
+    let ask = if approval {
+        approval_ask_from_params(method, id, params)
+    } else {
+        ApprovalAsk {
+            request_id: request_id.clone(),
+            tool_call_id: json_str(params, "itemId")
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("codex-ask-{request_id}")),
+            tool_name: if is_codex_elicitation(method) {
+                method.to_string()
+            } else {
+                "requestUserInput".to_string()
+            },
+            input: params.clone(),
+            requires_user_interaction: true,
+            requires_manual_approval: false,
+            permission_suggestions: None,
+        }
+    };
+    let deadline = (method == "item/tool/requestUserInput")
+        .then(|| params.get("autoResolutionMs").and_then(Value::as_u64))
+        .flatten()
+        .and_then(|ms| tokio::time::Instant::now().checked_add(Duration::from_millis(ms)));
+    let request = CodexPendingRequest {
+        id: id.clone(),
+        method: method.to_string(),
+        params: params.clone(),
+        tool_call_id: ask.tool_call_id.clone(),
+        deadline,
+    };
+    if approvals.is_some_and(|bridge| bridge.requests.try_send(ask).is_ok()) {
+        pending.insert(request_id, request);
+        Ok(())
+    } else {
+        // A missing/closed/full host is never an implicit permission grant.
+        answer_pending_codex_request(stdin, &request, None).await
+    }
+}
+
+async fn answer_pending_codex_request(
+    stdin: &mut ChildStdin,
+    request: &CodexPendingRequest,
+    decision: Option<crate::external_agents::session::live::ApprovalDecision>,
+) -> Result<(), String> {
+    let approved = decision.as_ref().is_some_and(|decision| decision.approved);
+    if is_codex_tool_approval(&request.method) {
+        let result = if approved {
+            approval_response(&request.method, &request.params)
+        } else {
+            approval_deny_response(&request.method, false)
+        };
+        return write_rpc_result(stdin, &request.id, result.ok_or("unknown approval method")?)
+            .await;
+    }
+    let elicitation = is_codex_elicitation(&request.method);
+    if approved {
+        let payload = decision
+            .and_then(|decision| decision.updated_input)
+            .unwrap_or_else(|| {
+                if elicitation {
+                    json!({"action":"accept","content":{}})
+                } else {
+                    json!({"answers":{}})
+                }
+            });
+        return write_rpc_result(stdin, &request.id, payload).await;
+    }
+    if elicitation {
+        write_rpc_result(
+            stdin,
+            &request.id,
+            json!({"action":"decline","content":null}),
+        )
+        .await
+    } else {
+        write_rpc_error(
+            stdin,
+            &request.id,
+            -32603,
+            "user input unavailable or declined",
+        )
+        .await
+    }
 }
 
 /// `turn/interrupt` 的 `turnId` 是必填项（0.148–0.160 schema 均如此）；缺了服务端回
@@ -2030,223 +2220,6 @@ fn turn_interrupt_params(thread_id: &str, turn_id: Option<&str>) -> Value {
 /// 未知的带 `id` 请求：回 decline 结果而不是 `-32601`，避免这一轮挂死。
 fn unknown_server_request_result() -> Value {
     json!({ "decision": "decline" })
-}
-
-async fn answer_codex_tool_approval(
-    stdin: &mut ChildStdin,
-    method: &str,
-    id: &Value,
-    params: &Value,
-    approvals: Option<&mut ApprovalBridge>,
-    control: &mut mpsc::Receiver<SessionCommand>,
-    thread_id: &str,
-    next_id: &mut u64,
-    asks_for_approval: bool,
-) -> Result<(), String> {
-    if !asks_for_approval {
-        let result = approval_response(method, params)
-            .ok_or_else(|| format!("no approve payload for {method}"))?;
-        return write_rpc_result(stdin, id, result).await;
-    }
-    let Some(bridge) = approvals else {
-        let denied = approval_deny_response(method, false)
-            .ok_or_else(|| format!("no deny payload for {method}"))?;
-        return write_rpc_result(stdin, id, denied).await;
-    };
-    let ask = approval_ask_from_params(method, id, params);
-    let request_id = ask.request_id.clone();
-    if bridge.requests.send(ask).await.is_err() {
-        let denied = approval_deny_response(method, false)
-            .ok_or_else(|| format!("no deny payload for {method}"))?;
-        return write_rpc_result(stdin, id, denied).await;
-    }
-    loop {
-        match control.try_recv() {
-            Ok(SessionCommand::Cancel) => {
-                if let Some(denied) = approval_deny_response(method, true) {
-                    let _ = write_rpc_result(stdin, id, denied).await;
-                }
-                let iid = *next_id;
-                *next_id += 1;
-                let _ = write_rpc(
-                    stdin,
-                    iid,
-                    "turn/interrupt",
-                    turn_interrupt_params(thread_id, params.get("turnId").and_then(|v| v.as_str())),
-                )
-                .await;
-                return Err("cancelled".to_string());
-            }
-            Ok(SessionCommand::Close) => {
-                if let Some(denied) = approval_deny_response(method, true) {
-                    let _ = write_rpc_result(stdin, id, denied).await;
-                }
-                return Err("closed".to_string());
-            }
-            Ok(SessionCommand::RunTurn { done, .. }) => {
-                let _ = done.send(Err("session busy".to_string()));
-            }
-            Ok(SessionCommand::Steer { accepted, .. }) => {
-                let _ = accepted.send(false);
-            }
-            Ok(SessionCommand::StopTask { .. }) => {}
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                if let Some(denied) = approval_deny_response(method, true) {
-                    let _ = write_rpc_result(stdin, id, denied).await;
-                }
-                return Err("control channel closed".to_string());
-            }
-        }
-        match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
-            Ok(Some(decision)) if decision.request_id == request_id => {
-                if decision.approved {
-                    let result = approval_response(method, params)
-                        .ok_or_else(|| format!("no approve payload for {method}"))?;
-                    return write_rpc_result(stdin, id, result).await;
-                }
-                let denied = approval_deny_response(method, false)
-                    .ok_or_else(|| format!("no deny payload for {method}"))?;
-                return write_rpc_result(stdin, id, denied).await;
-            }
-            Ok(Some(_)) | Err(_) => continue,
-            Ok(None) => {
-                let denied = approval_deny_response(method, false)
-                    .ok_or_else(|| format!("no deny payload for {method}"))?;
-                return write_rpc_result(stdin, id, denied).await;
-            }
-        }
-    }
-}
-
-async fn answer_codex_user_interaction(
-    stdin: &mut ChildStdin,
-    method: &str,
-    id: &Value,
-    params: &Value,
-    approvals: Option<&mut ApprovalBridge>,
-    control: &mut mpsc::Receiver<SessionCommand>,
-    thread_id: &str,
-    next_id: &mut u64,
-) -> Result<(), String> {
-    let elicitation = is_codex_elicitation(method);
-    let Some(bridge) = approvals else {
-        if elicitation {
-            return write_rpc_result(stdin, id, json!({ "action": "decline", "content": null }))
-                .await;
-        }
-        return write_rpc_error(stdin, id, -32603, "ask-user host unavailable").await;
-    };
-    let request_id = rpc_id_key(id);
-    let tool_call_id = json_str(params, "itemId")
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("codex-ask-{request_id}"));
-    let ask = ApprovalAsk {
-        request_id: request_id.clone(),
-        tool_call_id,
-        tool_name: if elicitation {
-            method.to_string()
-        } else {
-            "requestUserInput".to_string()
-        },
-        input: params.clone(),
-        requires_user_interaction: true,
-        requires_manual_approval: false,
-        permission_suggestions: None,
-    };
-    if bridge.requests.send(ask).await.is_err() {
-        if elicitation {
-            return write_rpc_result(stdin, id, json!({ "action": "decline", "content": null }))
-                .await;
-        }
-        return write_rpc_error(stdin, id, -32603, "ask-user host closed").await;
-    }
-    loop {
-        match control.try_recv() {
-            Ok(SessionCommand::Cancel) => {
-                if elicitation {
-                    let _ =
-                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
-                            .await;
-                } else {
-                    let _ = write_rpc_error(stdin, id, -32603, "cancelled").await;
-                }
-                let iid = *next_id;
-                *next_id += 1;
-                let _ = write_rpc(
-                    stdin,
-                    iid,
-                    "turn/interrupt",
-                    turn_interrupt_params(thread_id, params.get("turnId").and_then(|v| v.as_str())),
-                )
-                .await;
-                return Err("cancelled".to_string());
-            }
-            Ok(SessionCommand::Close) => {
-                if elicitation {
-                    let _ =
-                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
-                            .await;
-                } else {
-                    let _ = write_rpc_error(stdin, id, -32603, "closed").await;
-                }
-                return Err("closed".to_string());
-            }
-            Ok(SessionCommand::RunTurn { done, .. }) => {
-                let _ = done.send(Err("session busy".to_string()));
-            }
-            Ok(SessionCommand::Steer { accepted, .. }) => {
-                let _ = accepted.send(false);
-            }
-            Ok(SessionCommand::StopTask { .. }) => {}
-            Err(mpsc::error::TryRecvError::Empty) => {}
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                if elicitation {
-                    let _ =
-                        write_rpc_result(stdin, id, json!({ "action": "cancel", "content": null }))
-                            .await;
-                } else {
-                    let _ = write_rpc_error(stdin, id, -32603, "control channel closed").await;
-                }
-                return Err("control channel closed".to_string());
-            }
-        }
-        match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
-            Ok(Some(decision)) if decision.request_id == request_id => {
-                if decision.approved {
-                    let payload = decision.updated_input.unwrap_or_else(|| {
-                        if elicitation {
-                            json!({ "action": "accept", "content": {} })
-                        } else {
-                            json!({ "answers": {} })
-                        }
-                    });
-                    return write_rpc_result(stdin, id, payload).await;
-                }
-                if elicitation {
-                    return write_rpc_result(
-                        stdin,
-                        id,
-                        json!({ "action": "decline", "content": null }),
-                    )
-                    .await;
-                }
-                return write_rpc_error(stdin, id, -32603, "user declined").await;
-            }
-            Ok(Some(_)) | Err(_) => continue,
-            Ok(None) => {
-                if elicitation {
-                    return write_rpc_result(
-                        stdin,
-                        id,
-                        json!({ "action": "decline", "content": null }),
-                    )
-                    .await;
-                }
-                return write_rpc_error(stdin, id, -32603, "ask-user host closed").await;
-            }
-        }
-    }
 }
 
 /// Read JSON-RPC lines until the response with `target_id` arrives, auto-answering any
@@ -2555,6 +2528,7 @@ fn effort_options(ids: &[&str]) -> Vec<crate::external_agents::types::RuntimeMod
     use crate::external_agents::types::RuntimeModelOption;
     ids.iter()
         .map(|id| RuntimeModelOption {
+            capabilities: None,
             id: (*id).to_string(),
             label: title_case_effort(id),
             context_window_tokens: None,
@@ -2599,6 +2573,7 @@ pub fn merge_codex_model_catalog(
         for (id, label, efforts) in CODEX_CURATED_CATALOG {
             seen.insert((*id).to_string());
             models.push(RuntimeModelOption {
+                capabilities: None,
                 id: (*id).to_string(),
                 label: (*label).to_string(),
                 context_window_tokens: None,
@@ -2632,6 +2607,7 @@ pub fn merge_codex_model_catalog(
             models.insert(
                 1,
                 RuntimeModelOption {
+                    capabilities: None,
                     id: cfg.to_string(),
                     label: format!("{cfg} (config)"),
                     context_window_tokens: None,
@@ -2697,38 +2673,64 @@ pub async fn detect_codex_models(
         .spawn()
         .map(crate::external_agents::spawn::AgentChild::from)
         .ok()?;
+    let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
     let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let mut reader = BufReader::new(stdout).lines();
     let overall = Duration::from_secs(timeout_secs);
 
-    let ok = write_rpc(
-        &mut stdin,
-        1,
-        "initialize",
-        json!({ "clientInfo": { "name": "kivio", "title": "kivio", "version": "0" } }),
-    )
+    // One deadline covers initialization and every catalog page. A per-page budget
+    // would multiply the advertised picker timeout as the catalog grows.
+    let probe = timeout(overall, async {
+        write_rpc(&mut stdin, 1, "initialize", codex_initialize_params())
+            .await
+            .ok()?;
+        read_until_response(&mut reader, &mut stdin, 1, overall)
+            .await
+            .ok()?;
+        write_rpc_notification(&mut stdin, "initialized", json!({}))
+            .await
+            .ok()?;
+        let mut entries = Vec::new();
+        let mut cursor = None;
+        let mut cursors = HashSet::new();
+        let mut id = 2;
+        loop {
+            let params = cursor
+                .as_ref()
+                .map(|cursor| json!({"cursor":cursor}))
+                .unwrap_or_else(|| json!({}));
+            write_rpc(&mut stdin, id, "model/list", params).await.ok()?;
+            let page = read_until_response(&mut reader, &mut stdin, id, overall)
+                .await
+                .ok()?;
+            entries.extend(
+                page.get("data")
+                    .or_else(|| page.get("models"))?
+                    .as_array()?
+                    .iter()
+                    .cloned(),
+            );
+            cursor = match page.get("nextCursor") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(cursor)) if cursor.is_empty() => None,
+                Some(Value::String(cursor)) => Some(cursor.clone()),
+                _ => return None,
+            };
+            let Some(next) = cursor.as_ref() else {
+                break;
+            };
+            if !cursors.insert(next.clone()) {
+                return None;
+            }
+            id += 1;
+        }
+        parse_codex_model_list_result(&json!({"data":entries}))
+    })
     .await
-    .is_ok()
-        && read_until_response(&mut reader, &mut stdin, 1, overall)
-            .await
-            .is_ok()
-        && write_rpc_notification(&mut stdin, "initialized", json!({}))
-            .await
-            .is_ok()
-        && write_rpc(&mut stdin, 2, "model/list", json!({}))
-            .await
-            .is_ok();
+    .ok()
+    .flatten();
 
-    let probe = if ok {
-        read_until_response(&mut reader, &mut stdin, 2, overall)
-            .await
-            .ok()
-            .and_then(|result| parse_codex_model_list_result(&result))
-    } else {
-        None
-    };
-
-    let _ = child.start_kill();
+    let _ = join_stderr_tail(&mut child, stderr_tail).await;
     let _ = child.wait().await;
     probe
 }
@@ -2755,13 +2757,11 @@ pub fn parse_codex_model_list_result(result: &Value) -> Option<CodexModelsProbe>
         if entry.get("hidden").and_then(|v| v.as_bool()) == Some(true) {
             continue;
         }
-        let Some(id) = entry
-            .get("id")
-            .or_else(|| entry.get("model"))
-            .or_else(|| entry.get("slug"))
-            .and_then(|v| v.as_str())
+        let Some(id) = ["model", "id", "slug"]
+            .iter()
+            .filter_map(|key| entry.get(*key).and_then(Value::as_str))
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .find(|s| !s.is_empty())
             .map(str::to_string)
         else {
             continue;
@@ -2797,6 +2797,7 @@ pub fn parse_codex_model_list_result(result: &Value) -> Option<CodexModelsProbe>
         }
 
         models.push(RuntimeModelOption {
+            capabilities: Some(codex_model_capabilities(entry)),
             id,
             label,
             context_window_tokens,
@@ -2821,6 +2822,7 @@ pub fn parse_codex_model_list_result(result: &Value) -> Option<CodexModelsProbe>
     // Auto inherits the first real model's window when known.
     if let Some(first) = models.first() {
         out[0].context_window_tokens = first.context_window_tokens;
+        out[0].capabilities = first.capabilities.clone();
     }
     out.extend(models);
 
@@ -2840,6 +2842,64 @@ pub fn parse_codex_model_list_result(result: &Value) -> Option<CodexModelsProbe>
         reasoning_by_model,
         reasoning_options,
     })
+}
+
+fn codex_model_capabilities(entry: &Value) -> crate::external_agents::types::ModelCapabilities {
+    use crate::external_agents::types::{ModelCapabilities, ModelServiceTier};
+    let tiers = entry
+        .get("serviceTiers")
+        .and_then(Value::as_array)
+        .map(|tiers| {
+            tiers
+                .iter()
+                .filter_map(|tier| {
+                    let id = tier.get("id")?.as_str()?.to_string();
+                    Some(ModelServiceTier {
+                        label: tier
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(&id)
+                            .to_string(),
+                        id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|tiers| !tiers.is_empty())
+        .unwrap_or_else(|| {
+            entry
+                .get("additionalSpeedTiers")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|id| ModelServiceTier {
+                    id: id.into(),
+                    label: if id == "fast" {
+                        "Fast".into()
+                    } else {
+                        id.into()
+                    },
+                })
+                .collect()
+        });
+    ModelCapabilities {
+        input_modalities: entry
+            .get("inputModalities")
+            .and_then(Value::as_array)
+            .map(|types| {
+                types
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            }),
+        default_service_tier: entry
+            .get("defaultServiceTier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        service_tiers: tiers,
+    }
 }
 
 /// Extract per-model effort options from a model/list or debug-models entry.
@@ -2874,6 +2934,7 @@ fn parse_codex_reasoning_efforts(
         // reasoning"). The picker only wants the effort id; those sentences blow out
         // the 64px pill and the menu.
         out.push(RuntimeModelOption {
+            capabilities: None,
             id: id.to_string(),
             label: title_case_effort(id),
             context_window_tokens: None,
@@ -3032,6 +3093,28 @@ pub fn spawn_codex_session_actor(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_catalog_preserves_input_and_service_capabilities() {
+        let probe = super::parse_codex_model_list_result(&serde_json::json!({"data":[
+          {"id":"row","model":"text-only","inputModalities":["text"],
+           "serviceTiers":[{"id":"priority","name":"Fast","description":"Higher speed"}],
+           "defaultServiceTier":"priority","isDefault":true},
+          {"model":"legacy","additionalSpeedTiers":["fast"]}
+        ]}))
+        .unwrap();
+        let models = serde_json::to_value(probe.models).unwrap();
+        assert_eq!(
+            models[1]["capabilities"]["inputModalities"],
+            serde_json::json!(["text"])
+        );
+        assert_eq!(
+            models[1]["capabilities"]["serviceTiers"][0]["id"],
+            "priority"
+        );
+        assert_eq!(models[2]["capabilities"]["serviceTiers"][0]["id"], "fast");
+        assert_eq!(models[0]["capabilities"], models[1]["capabilities"]);
+    }
+
     use super::*;
 
     #[test]
@@ -3089,10 +3172,15 @@ mod tests {
                     {"type":"skill", "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md"}
                 ])
             );
-            println!(
-                "{}",
-                json!({"method":"turn/completed", "params":{"turn":{"id":"turn-1", "status":"completed"}}})
-            );
+            for notification in [
+                json!({"method":"turn/started", "params":{"threadId":"thread-1", "turn":{"id":"turn-1"}}}),
+                json!({"method":"item/agentMessage/delta", "params":{"threadId":"child-thread", "turnId":"child-turn", "delta":"child answer"}}),
+                json!({"method":"turn/completed", "params":{"threadId":"child-thread", "turn":{"id":"child-turn", "status":"completed"}}}),
+                json!({"method":"item/agentMessage/delta", "params":{"threadId":"thread-1", "turnId":"turn-1", "delta":"root answer"}}),
+                json!({"method":"turn/completed", "params":{"threadId":"thread-1", "turn":{"id":"turn-1", "status":"completed"}}}),
+            ] {
+                println!("{notification}");
+            }
             std::io::stdout().flush().unwrap();
         }
         let finish: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -3136,8 +3224,9 @@ mod tests {
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
                 thread_model: None,
+                service_tier: None,
             };
-            let (events, _event_rx) = mpsc::channel(32);
+            let (events, mut event_rx) = mpsc::channel(32);
             let (_control_tx, mut control) = mpsc::channel(8);
             let result = timeout(
                 Duration::from_secs(5),
@@ -3156,6 +3245,16 @@ mod tests {
             .expect("protocol exchange timed out");
             if mode == "enabled" {
                 assert!(result.is_ok(), "{result:?}");
+                let mut text = String::new();
+                while let Ok(event) = event_rx.try_recv() {
+                    if let UnifiedAgentEvent::TextDelta { delta } = event {
+                        text.push_str(&delta);
+                    }
+                }
+                assert_eq!(
+                    text, "root answer",
+                    "child events must not finish or pollute the root turn"
+                );
             } else {
                 assert!(result.unwrap_err().contains("无法明确加载"));
             }
@@ -3233,8 +3332,8 @@ mod tests {
                 assert!(events.is_empty());
             }
         }
-        assert_eq!(events.len(), 2);
-        let UnifiedAgentEvent::ToolUse { input, .. } = &events[0] else {
+        assert_eq!(events.len(), 3);
+        let UnifiedAgentEvent::ToolUse { input, .. } = &events[1] else {
             panic!("card missing");
         };
         assert_eq!(input["askUser"]["async"], true);
@@ -3244,7 +3343,7 @@ mod tests {
         );
         assert_eq!(input["askUser"]["questions"][1]["options"], json!([]));
         assert!(matches!(
-            &events[1],
+            &events[2],
             UnifiedAgentEvent::ToolResult {
                 is_error: false,
                 ..
@@ -3266,6 +3365,179 @@ mod tests {
         }
     }
 
+    #[test]
+    fn completed_agent_message_preserves_authoritative_text() {
+        let (events, _) = collect(
+            "item/completed",
+            r#"{"item":{"type":"agentMessage","id":"m1","text":"最终答案"}}"#,
+        );
+        let values: Vec<Value> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        assert!(
+            values
+                .iter()
+                .any(|event| event.get("text").and_then(Value::as_str) == Some("最终答案")),
+            "{values:?}"
+        );
+    }
+
+    #[test]
+    fn interaction_protocol_peer() {
+        let Ok(mode) = std::env::var("KIVIO_INTERACTION_PEER") else {
+            return;
+        };
+        use std::io::{BufRead, Write};
+        let mut lines = std::io::stdin().lock().lines();
+        let turn: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(turn["method"], "turn/start");
+        println!(
+            "{}",
+            json!({"method":"turn/started", "params":{"threadId":"thread-1","turn":{"id":"turn-1"}}})
+        );
+        for id in ["ask-a", "ask-b"] {
+            println!(
+                "{}",
+                json!({"id":id,"method":"item/tool/requestUserInput","params":{
+                    "threadId":"thread-1","turnId":"turn-1","itemId":id,
+                    "autoResolutionMs": if mode == "auto" { json!(20) } else { Value::Null },
+                    "questions":[{"id":"q","header":"Choice","question":"Continue?","options":[]}]
+                }})
+            );
+        }
+        std::io::stdout().flush().unwrap();
+        if mode == "resolved" {
+            for id in ["ask-a", "ask-b"] {
+                println!(
+                    "{}",
+                    json!({"method":"serverRequest/resolved","params":{"threadId":"thread-1","requestId":id}})
+                );
+            }
+        } else {
+            let mut ids = HashSet::new();
+            for _ in 0..2 {
+                let reply: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                assert!(reply.get("result").is_some(), "{reply}");
+                ids.insert(reply["id"].as_str().unwrap().to_string());
+                if mode == "auto" {
+                    assert_eq!(reply["result"], json!({"answers":{}}));
+                }
+            }
+            assert_eq!(ids.len(), 2);
+        }
+        println!(
+            "{}",
+            json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})
+        );
+        std::io::stdout().flush().unwrap();
+        let finish: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(
+            finish["method"], "test/finish",
+            "resolved requests must not receive late replies"
+        );
+    }
+
+    #[tokio::test]
+    async fn interactions_keep_reading_and_resolve_concurrent_or_expired_requests() {
+        use crate::external_agents::session::live::ApprovalDecision;
+        for mode in ["resolved", "decisions", "auto"] {
+            let exe = std::env::current_exe().unwrap();
+            let mut child = tokio::process::Command::new(&exe)
+                .args([
+                    "--exact",
+                    "external_agents::session::codex_app_server::tests::interaction_protocol_peer",
+                    "--nocapture",
+                ])
+                .env("KIVIO_INTERACTION_PEER", mode)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map(crate::external_agents::spawn::AgentChild::from)
+                .unwrap();
+            let mut session = CodexAppServerSession {
+                stdin: child.stdin.take().unwrap(),
+                reader: BufReader::new(child.stdout.take().unwrap()).lines(),
+                stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
+                child,
+                thread_id: "thread-1".into(),
+                cwd: "/work".into(),
+                cli_bin: exe,
+                next_id: 1,
+                emitted_tools: HashSet::new(),
+                active_turn_id: None,
+                approval_policy: "on-request",
+                sandbox_policy: json!({"type":"workspaceWrite"}),
+                plan_mode: false,
+                thread_model: None,
+                service_tier: None,
+            };
+            let (events, mut event_rx) = mpsc::channel(32);
+            let (_control_tx, mut control) = mpsc::channel(8);
+            let (request_tx, mut request_rx) = mpsc::channel(8);
+            let (decision_tx, decision_rx) = mpsc::channel(8);
+            let mut bridge = ApprovalBridge {
+                requests: request_tx,
+                decisions: decision_rx,
+            };
+            let host = async {
+                let first = request_rx.recv().await.unwrap();
+                let second = request_rx.recv().await.unwrap();
+                if mode == "decisions" {
+                    for ask in [second, first] {
+                        decision_tx
+                            .send(ApprovalDecision {
+                                request_id: ask.request_id,
+                                approved: true,
+                                updated_input: Some(json!({"answers":{}})),
+                                set_permission_mode: None,
+                                updated_permissions: None,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                }
+            };
+            let (result, ()) = timeout(Duration::from_secs(2), async {
+                tokio::join!(
+                    session.run_turn(
+                        "test",
+                        None,
+                        None,
+                        &[],
+                        &[],
+                        &events,
+                        &mut control,
+                        Some(&mut bridge)
+                    ),
+                    host
+                )
+            })
+            .await
+            .expect("request handling blocked stdout or the second concurrent ask");
+            assert!(result.is_ok(), "{mode}: {result:?}");
+            if mode == "resolved" || mode == "auto" {
+                let mut resolved = 0;
+                while let Ok(event) = event_rx.try_recv() {
+                    if serde_json::to_value(event).unwrap()["type"] == "interaction_resolved" {
+                        resolved += 1;
+                    }
+                }
+                assert_eq!(resolved, 2, "host must withdraw each settled card");
+            }
+            write_rpc_notification(&mut session.stdin, "test/finish", json!({}))
+                .await
+                .unwrap();
+            assert!(timeout(Duration::from_secs(2), session.child.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success());
+        }
+    }
+
     fn collect(method: &str, raw: &str) -> (Vec<UnifiedAgentEvent>, CodexMapResult) {
         let params: Value = serde_json::from_str(raw).unwrap();
         let mut events = Vec::new();
@@ -3275,6 +3547,65 @@ mod tests {
     }
 
     /// Shape mirrors live `codex app-server` → `model/list` (2026-08 probe).
+    #[test]
+    fn model_catalog_protocol_peer() {
+        let Ok(mode) = std::env::var("KIVIO_MODEL_CATALOG_PEER") else {
+            return;
+        };
+        use std::io::{BufRead, Write};
+        std::io::stderr()
+            .write_all(&vec![b'x'; 512 * 1024])
+            .unwrap();
+        for line in std::io::stdin().lock().lines() {
+            let request: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let result = match request["method"].as_str().unwrap() {
+                "initialize" => json!({}),
+                "initialized" => continue,
+                "model/list" if request["params"]["cursor"].is_null() => json!({
+                    "data":[{"id":"catalog-row-1", "model":"model-first"}], "nextCursor":"page-2"
+                }),
+                "model/list" => {
+                    assert_eq!(request["params"]["cursor"], "page-2");
+                    json!({"data":[{"id":"catalog-row-2", "model":"model-default", "isDefault":true,
+                        "supportedReasoningEfforts":[{"reasoningEffort":"high"}]}],
+                        "nextCursor": if mode == "cycle" { json!("page-2") } else { Value::Null }})
+                }
+                other => panic!("unexpected method {other}"),
+            };
+            println!("{}", json!({"id":request["id"], "result":result}));
+            std::io::stdout().flush().unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn model_discovery_reads_all_pages_and_rejects_cursor_cycles() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("codex");
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.to_string_lossy().replace('\'', "'\\''");
+        for mode in ["complete", "cycle"] {
+            std::fs::write(&bin, format!("#!/bin/sh\nKIVIO_MODEL_CATALOG_PEER={mode} exec '{exe}' --exact external_agents::session::codex_app_server::tests::model_catalog_protocol_peer --nocapture\n")).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let probe = detect_codex_models(&bin, dir.path(), 5).await;
+            if mode == "cycle" {
+                assert!(probe.is_none(), "a looping cursor must fail discovery");
+            } else {
+                let probe = probe.expect("complete catalog");
+                assert_eq!(
+                    probe
+                        .models
+                        .iter()
+                        .map(|m| m.id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["default", "model-default", "model-first"]
+                );
+                assert_eq!(probe.reasoning_options[0].id, "high");
+            }
+        }
+    }
+
     #[test]
     fn parse_model_list_result_matches_cc_gui_shape() {
         let result = json!({
@@ -3664,8 +3995,8 @@ mod tests {
             loop {
                 tokio::select! {
                     biased;
-                    r = &mut drx => { while let Ok(e) = erx.try_recv() { if let UnifiedAgentEvent::TextDelta { delta } = e { text.push_str(&delta); } } r.unwrap().unwrap(); break; }
-                    ev = erx.recv() => { if let Some(UnifiedAgentEvent::TextDelta { delta }) = ev { text.push_str(&delta); } }
+                    r = &mut drx => { while let Ok(e) = erx.try_recv() { if let UnifiedAgentEvent::TextDelta { delta } | UnifiedAgentEvent::TextItemDelta { delta, .. } = e { text.push_str(&delta); } } r.unwrap().unwrap(); break; }
+                    ev = erx.recv() => { if let Some(UnifiedAgentEvent::TextDelta { delta } | UnifiedAgentEvent::TextItemDelta { delta, .. }) = ev { text.push_str(&delta); } }
                 }
             }
             text
@@ -3725,7 +4056,7 @@ mod tests {
         assert_eq!(ended, CodexMapResult::Continue);
         assert!(matches!(
             events.first(),
-            Some(UnifiedAgentEvent::TextDelta { delta }) if delta == "hi"
+            Some(UnifiedAgentEvent::TextItemDelta { id, delta }) if id == "i" && delta == "hi"
         ));
     }
 
@@ -3941,6 +4272,11 @@ mod tests {
             r#"{"threadId":"t","turn":{"id":"u","items":[],"status":"completed"}}"#,
         );
         assert_eq!(ended, CodexMapResult::TurnEnded);
+        let (_, interrupted) = collect(
+            "turn/completed",
+            r#"{"turn":{"id":"turn-1","status":"interrupted"}}"#,
+        );
+        assert_eq!(interrupted, CodexMapResult::TurnFailed("cancelled".into()));
     }
 
     #[test]
@@ -4048,6 +4384,9 @@ mod tests {
     fn event_variant(event: &UnifiedAgentEvent) -> &'static str {
         match event {
             UnifiedAgentEvent::TextDelta { .. } => "TextDelta",
+            UnifiedAgentEvent::TextItemDelta { .. } => "TextItemDelta",
+            UnifiedAgentEvent::TextItemCompleted { .. } => "TextItemCompleted",
+            UnifiedAgentEvent::InteractionResolved { .. } => "InteractionResolved",
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",
@@ -4250,9 +4589,12 @@ mod tests {
         );
         // 被拒的 steer 不该赔掉整轮；受理的更不该。这一轮必须仍然正常产出内容。
         assert!(
-            captured
-                .iter()
-                .any(|e| matches!(e, UnifiedAgentEvent::TextDelta { .. })),
+            captured.iter().any(|e| matches!(
+                e,
+                UnifiedAgentEvent::TextDelta { .. }
+                    | UnifiedAgentEvent::TextItemDelta { .. }
+                    | UnifiedAgentEvent::TextItemCompleted { .. }
+            )),
             "插话之后这一轮没有任何正文，疑似被 steer 的响应误判成致命错误：{seq:?}"
         );
     }
@@ -4275,9 +4617,14 @@ mod tests {
         let seq: Vec<&str> = captured.iter().map(event_variant).collect();
         eprintln!("codex sequence: {seq:?}");
 
-        let got_text = captured
-            .iter()
-            .any(|e| matches!(e, UnifiedAgentEvent::TextDelta { .. }));
+        let got_text = captured.iter().any(|e| {
+            matches!(
+                e,
+                UnifiedAgentEvent::TextDelta { .. }
+                    | UnifiedAgentEvent::TextItemDelta { .. }
+                    | UnifiedAgentEvent::TextItemCompleted { .. }
+            )
+        });
         let got_error = captured
             .iter()
             .any(|e| matches!(e, UnifiedAgentEvent::Error { .. }));

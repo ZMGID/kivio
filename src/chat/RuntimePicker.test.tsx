@@ -22,6 +22,17 @@ const runtime: AgentRuntimeConfig = {
 }
 
 describe('ExternalModelSelector', () => {
+  it('offers catalog service tiers and persists the selection without changing model or effort', async () => {
+    const onModelChange = vi.fn()
+    detectModels.mockResolvedValue({ models: [{ id: 'gpt-test', label: 'Test model', capabilities: { serviceTiers: [{ id: 'priority', label: 'Fast' }] } }],
+      reasoningOptions: [], source: 'probed' })
+    render(<ExternalModelSelector agentRuntime={{ kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-test', externalReasoning: 'high' }} onModelChange={onModelChange} />)
+    const tier = await screen.findByRole('button', { name: '服务等级' })
+    fireEvent.click(tier)
+    fireEvent.click(await screen.findByRole('option', { name: 'Fast' }))
+    expect(onModelChange).toHaveBeenLastCalledWith('gpt-test', undefined, 'priority')
+  })
+
   beforeEach(() => {
     detectModels.mockReset()
   })
@@ -357,9 +368,9 @@ describe('ExternalModelSelector', () => {
       />,
     )
     await waitFor(() =>
-      expect(screen.getByRole('button')).toHaveTextContent('获取中…'),
+      expect(screen.getByRole('button', { name: /获取中/ })).toHaveTextContent('获取中…'),
     )
-    expect(screen.getByRole('button')).not.toHaveTextContent('Grok 4.5')
+    expect(screen.queryByRole('button', { name: 'Grok 4.5' })).not.toBeInTheDocument()
   })
 })
 

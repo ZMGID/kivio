@@ -529,6 +529,8 @@ pub struct AgentRuntimeConfig {
     pub external_model: Option<String>,
     #[serde(default)]
     pub external_reasoning: Option<String>,
+    #[serde(default)]
+    pub external_service_tier: Option<String>,
     /// External-CLI sandbox/permission level (claude --permission-mode / codex --sandbox).
     #[serde(default)]
     pub external_sandbox: Option<String>,
@@ -544,6 +546,7 @@ impl Default for AgentRuntimeConfig {
             external_agent_id: None,
             external_model: None,
             external_reasoning: None,
+            external_service_tier: None,
             external_sandbox: None,
             external_agent_preset: None,
         }

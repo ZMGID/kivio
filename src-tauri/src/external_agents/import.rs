@@ -1163,6 +1163,7 @@ pub async fn import_one_session(
             external_agent_id: Some(agent_id.to_string()),
             external_model: None,
             external_reasoning: None,
+            external_service_tier: None,
             external_sandbox: None,
             external_agent_preset: None,
         },

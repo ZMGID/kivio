@@ -92,6 +92,21 @@ describe('chat protocol sequencing', () => {
 
   const flushSync = () => new Promise((resolve) => setTimeout(resolve, 0))
 
+  it('validates and delivers an authoritative text correction exactly once', async () => {
+    const seen: ChatRunEventEnvelope[] = []
+    chatProtocolTesting.subscribe((item) => {
+      if (item.scope === 'run') seen.push(item)
+    })
+    chatProtocolTesting.ingest(event(1))
+    const correction: ChatRunEventEnvelope = { ...event(2), type: 'text_segment_replaced',
+      segmentId: 'text-1', text: '最终🌱', content: '最终🌱' }
+    chatProtocolTesting.ingest(correction)
+    chatProtocolTesting.ingest(correction)
+    await flushSync()
+    expect(seen).toEqual([event(1), correction])
+    expect(invokeMock).not.toHaveBeenCalled()
+  })
+
   it('drops duplicates and drains a buffered gap in order', async () => {
     const seen: number[] = []
     chatProtocolTesting.subscribe((item) => {

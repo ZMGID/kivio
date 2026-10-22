@@ -20,6 +20,16 @@ export function applyConversationStreamEvent(
   if (!acceptStreamRun(snapshot, payload.runId)) return false
   if (payload.messageId) snapshot.messageId = payload.messageId
   if (payload.type === 'run_cancelled') snapshot.streamOutcome = 'cancelled'
+  if (payload.type === 'text_segment_replaced') {
+    if (!snapshot.segments.some(segment => segment.id === payload.segmentId)) return true
+    snapshot.segments = snapshot.segments.map(segment => segment.id === payload.segmentId
+      ? { ...segment, text: payload.text }
+      : segment)
+    snapshot.content = payload.content
+    snapshot.statusNote = null
+    snapshot.retryStatus = null
+    return true
+  }
   if (streamTextDelta(payload) || streamReasoningDelta(payload) || isStreamTerminal(payload)) {
     snapshot.statusNote = null
     snapshot.retryStatus = null

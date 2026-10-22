@@ -1531,8 +1531,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       syncGeneratingConversationIds()
   }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
 
-  /** 面板作答完（或那一轮结束了）就把它收起来。后端没有「已答复」事件 ——
-   *  `resolve_user_prompt` 只清重放快照、不发事件，所以收起由前端自己负责。 */
+  useTauriEvent(api.onChatUserPromptResolved, (payload) => {
+    if (popoutOwner.owns(payload.conversationId)) return
+    interactionInbox.observe({ kind: 'userAnswered', ...payload })
+  }, [interactionInbox])
+
+  /** 本地答复成功后立即收起；上游撤回也经同一个队列入口清理。 */
   const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, toolCallId: string) => {
     interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, toolCallId })
   }, [interactionInbox])
@@ -2027,7 +2031,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   //   - 内置 agent 循环 → 能（轮首注入，见 chat/agent/steering.rs）；
   //   - 外部 CLI → 看它的协议支不支持（`supportsSteering`，后端 RuntimeAgentDef 是唯一真源）。
   //     codex 有 `turn/steer`；pi 有 RPC `steer`；dsh 有 bridge `session/steer`。
-  //     claude 的 stream-json 输入是顺序处理的、ACP 只有 prompt/cancel。
+  //     claude 使用 priority="now" 的输入并等待回显；ACP 只有 prompt/cancel。
   //   - 多模型一问多答 → 一律不给：同会话 N 条并发 run，按 conversation 键的信箱定不到某条臂。
   const activeExternalAgentSupportsSteering = useMemo(() => {
     const agentId = activeAgentRuntime.externalAgentId

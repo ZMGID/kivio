@@ -438,13 +438,43 @@ pub(crate) async fn run_external_cli_reply_in(
     // Skill commands are model requests and may carry files/images. Control commands
     // retain their existing passthrough behavior. 图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
+    // Catalog input types are authoritative; older catalogs retain native protocol support.
+    let accepts_images = if def.supports_native_image && !image_paths.is_empty() {
+        let key = crate::external_agents::slash::cache_key(&agent_id, &cwd.to_string_lossy());
+        let cached = state.external_discovery().get_cached_external_agent_models(
+            &key,
+            crate::external_agents::detection::EXTERNAL_AGENT_MODELS_CACHE_TTL,
+            crate::external_agents::detection::EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
+        );
+        let models = match cached {
+            Some(cached) => cached.models,
+            None => {
+                crate::external_agents::detection::detect_agent_models(def, &cwd)
+                    .await
+                    .models
+            }
+        };
+        let selected = conversation
+            .agent_runtime
+            .external_model
+            .as_deref()
+            .unwrap_or("default");
+        models
+            .iter()
+            .find(|model| model.id == selected)
+            .and_then(|model| model.capabilities.as_ref())
+            .is_none_or(|capabilities| capabilities.accepts_images())
+    } else {
+        def.supports_native_image
+    };
+    let mut attachment_note = String::new();
     let include_attachments = accepts_prompt_attachments(def.stream_format, latest_user_message);
     let (image_blocks, degraded_image_paths): (
         Vec<crate::external_agents::attachments::ImageBlock>,
         Vec<std::path::PathBuf>,
     ) = if !include_attachments {
         (Vec::new(), Vec::new())
-    } else if def.supports_native_image {
+    } else if accepts_images {
         crate::external_agents::attachments::load_image_blocks(
             image_paths,
             def.image_mime_whitelist,
@@ -461,6 +491,8 @@ pub(crate) async fn run_external_cli_reply_in(
             Some(&resolved_bin),
             file_paths,
         );
+        attachment_note.push_str(&image_note);
+        attachment_note.push_str(&file_note);
         composed.full_prompt.push_str(&image_note);
         composed.full_prompt.push_str(&file_note);
         for prompt in pi_regenerate_root_prompt
@@ -561,7 +593,20 @@ pub(crate) async fn run_external_cli_reply_in(
     } else {
         Some(composed.full_prompt.as_str())
     };
-    let args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
+    let mut args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
+    if agent_id == "codex" {
+        if let Some(tier) = conversation
+            .agent_runtime
+            .external_service_tier
+            .as_deref()
+            .filter(|tier| !tier.is_empty())
+        {
+            args.extend([
+                "-c".to_string(),
+                format!("service_tier={}", serde_json::to_string(tier).unwrap()),
+            ]);
+        }
+    }
     // A1：系统指令以 flag 追加（不改 `build_args` 的形状，也不动 `RuntimeContext` ——
     // 那两处是所有 CLI 共用的，为一个 claude 专属 flag 加字段要牵动全部 def 与其单测）。
     let args = match system_prompt_file.as_deref() {
@@ -757,7 +802,7 @@ pub(crate) async fn run_external_cli_reply_in(
         let persistent_mcp: Vec<AcpMcpServer> = vec![];
         // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
         // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
-        let launch_config = launch_config_for_turn(
+        let mut launch_config = launch_config_for_turn(
             def.stream_format,
             conversation.agent_runtime.external_model.as_deref(),
             conversation.agent_runtime.external_reasoning.as_deref(),
@@ -769,6 +814,16 @@ pub(crate) async fn run_external_cli_reply_in(
                 .as_deref(),
             &additional_dirs_key,
         );
+        if agent_id == "codex" {
+            launch_config.flags.push_str(&format!(
+                "|service-tier:{}",
+                conversation
+                    .agent_runtime
+                    .external_service_tier
+                    .as_deref()
+                    .unwrap_or_default()
+            ));
+        }
         run_persistent_turn(
             app,
             state,
@@ -790,10 +845,11 @@ pub(crate) async fn run_external_cli_reply_in(
                 .map_or(composed.full_prompt.as_str(), |prompt| {
                     prompt.full_prompt.as_str()
                 }),
-            persistent_turn_prompt(
+            &persistent_turn_prompt(
                 def.stream_format,
                 &composed.full_prompt,
                 latest_user_message,
+                &attachment_note,
             ),
             &image_blocks,
             &extra_writable_roots,
@@ -1054,9 +1110,70 @@ pub(crate) async fn run_external_cli_reply_in(
 struct StreamSegmentTracker {
     active_text_idx: Option<usize>,
     active_reasoning_idx: Option<usize>,
+    native_text_items: HashMap<String, usize>,
 }
 
 impl StreamSegmentTracker {
+    fn append_text_item(
+        &mut self,
+        id: &str,
+        delta: &str,
+        segments: &mut Vec<ChatMessageSegment>,
+        segment_order: &mut u32,
+        tool_calls_len: usize,
+    ) -> ChatMessageSegment {
+        if let Some(index) = self.native_text_items.get(id).copied() {
+            let segment = &mut segments[index];
+            segment.text.get_or_insert_default().push_str(delta);
+            return segment.clone();
+        }
+        self.reset_text();
+        let segment = self.append(
+            ChatMessageSegmentKind::Text,
+            segments,
+            segment_order,
+            tool_calls_len,
+            delta,
+        );
+        self.native_text_items
+            .insert(id.to_string(), segments.len() - 1);
+        self.reset_text();
+        segment
+    }
+
+    /// None delta means a genuine revision; a prefix completion stays on the fast delta path.
+    fn complete_text_item(
+        &mut self,
+        id: &str,
+        text: &str,
+        segments: &mut Vec<ChatMessageSegment>,
+        segment_order: &mut u32,
+        tool_calls_len: usize,
+    ) -> Option<(ChatMessageSegment, Option<String>)> {
+        if let Some(index) = self.native_text_items.get(id).copied() {
+            let previous = segments[index].text.as_deref().unwrap_or_default();
+            if previous == text {
+                return None;
+            }
+            if let Some(suffix) = text.strip_prefix(previous) {
+                let delta = suffix.to_string();
+                let tail = !segments[index + 1..]
+                    .iter()
+                    .any(|segment| segment.kind == ChatMessageSegmentKind::Text);
+                let segment =
+                    self.append_text_item(id, &delta, segments, segment_order, tool_calls_len);
+                return Some((segment, tail.then_some(delta)));
+            }
+            segments[index].text = Some(text.to_string());
+            return Some((segments[index].clone(), None));
+        }
+        if text.is_empty() {
+            return None;
+        }
+        let segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
+        Some((segment, Some(text.to_string())))
+    }
+
     fn reset_text(&mut self) {
         self.active_text_idx = None;
     }
@@ -1875,13 +1992,14 @@ fn launch_config_for_turn(
 /// 这些每轮都必须整份发出去 —— 只发最新用户消息会让 skill 正文与文件路径从第 2 轮起
 /// 静默消失（dsh 没有 file ContentBlock，非图片只能靠这段路径说明）。
 ///
-/// 其余持久协议（codex / ACP）的 full_prompt 首轮**含**指令，复用轮只发最新用户消息，
-/// 保持现有行为。Codex 显式 Skill 使用无指令包装的 passthrough 正文，需保留附件说明。
+/// 其余持久协议（codex / ACP）的 full_prompt 首轮**含**指令，复用轮发送最新用户消息
+/// 与本轮附件路径，避免重复注入会话指令。Codex 显式 Skill 保留完整 passthrough 正文。
 fn persistent_turn_prompt<'a>(
     protocol: StreamFormat,
     composed_prompt: &'a str,
     latest_user_message: &'a str,
-) -> &'a str {
+    attachment_note: &'a str,
+) -> std::borrow::Cow<'a, str> {
     match protocol {
         StreamFormat::CodexAppServer
             if crate::external_agents::session::codex_app_server::codex_skill_command(
@@ -1889,13 +2007,16 @@ fn persistent_turn_prompt<'a>(
             )
             .is_some() =>
         {
-            composed_prompt
+            composed_prompt.into()
         }
         StreamFormat::ClaudeStreamJson
         | StreamFormat::DshJsonRpc
         | StreamFormat::PiRpc
-        | StreamFormat::AntigravityStreamJson => composed_prompt,
-        _ => latest_user_message,
+        | StreamFormat::AntigravityStreamJson => composed_prompt.into(),
+        _ if !attachment_note.is_empty() => {
+            format!("{latest_user_message}{attachment_note}").into()
+        }
+        _ => latest_user_message.into(),
     }
 }
 
@@ -2201,6 +2322,7 @@ where
     // 本轮问过的 toolCallId。返回前必须把 `pending_chat_tool_approvals` 里可能残留的条目扫掉
     // ——那张表按 id 存 oneshot sender，走了异常出口（EOF / 硬 Close）不扫就是一条永久泄漏。
     let mut asked_ids: Vec<String> = Vec::new();
+    let mut resolved_interactions = std::collections::HashSet::new();
 
     let mut done_rx = done_rx;
     let mut events_open = true;
@@ -2219,6 +2341,10 @@ where
             }
             maybe_event = events_rx.recv(), if events_open => {
                 match maybe_event {
+                    Some(UnifiedAgentEvent::InteractionResolved { tool_call_id }) => {
+                        resolved_interactions.insert(tool_call_id.clone());
+                        if let Some(host) = approvals { host.forget(&[tool_call_id]); }
+                    }
                     Some(event) => emit(event),
                     None => events_open = false,
                 }
@@ -2233,6 +2359,7 @@ where
                 }
             }, if ask_rx.is_some() => {
                 if let Some(host) = approvals {
+                    if resolved_interactions.contains(&ask.tool_call_id) { continue; }
                     asked_ids.push(ask.tool_call_id.clone());
                     in_flight.push(host.ask(ask));
                 }
@@ -3463,6 +3590,69 @@ fn apply_unified_event(
             );
             emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
         }
+        UnifiedAgentEvent::TextItemDelta { id, delta } => {
+            let segment = segment_tracker.append_text_item(
+                &id,
+                &delta,
+                segments,
+                segment_order,
+                tool_calls.len(),
+            );
+            let tail = segments
+                .iter()
+                .rev()
+                .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                .is_some_and(|last| last.id == segment.id);
+            if tail {
+                content.push_str(&delta);
+                emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+            } else {
+                *content = segments
+                    .iter()
+                    .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                    .filter_map(|segment| segment.text.as_deref())
+                    .collect();
+                crate::chat::protocol::emit_run_event(
+                    app,
+                    run_id,
+                    crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
+                        segment_id: segment.id,
+                        text: segment.text.unwrap_or_default(),
+                        content: content.clone(),
+                    },
+                );
+            }
+        }
+        UnifiedAgentEvent::TextItemCompleted { id, text } => {
+            if let Some((segment, delta)) = segment_tracker.complete_text_item(
+                &id,
+                &text,
+                segments,
+                segment_order,
+                tool_calls.len(),
+            ) {
+                if let Some(delta) = delta {
+                    content.push_str(&delta);
+                    emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+                } else {
+                    *content = segments
+                        .iter()
+                        .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
+                        .filter_map(|segment| segment.text.as_deref())
+                        .collect();
+                    crate::chat::protocol::emit_run_event(
+                        app,
+                        run_id,
+                        crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
+                            segment_id: segment.id,
+                            text,
+                            content: content.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        UnifiedAgentEvent::InteractionResolved { .. } => {}
         UnifiedAgentEvent::ThinkingDelta { delta } => {
             reasoning.push_str(&delta);
             let segment = segment_tracker.append(
@@ -4159,7 +4349,7 @@ mod tests {
             )));
         }
         assert_eq!(
-            persistent_turn_prompt(protocol, "skill + attachment + message", "message"),
+            persistent_turn_prompt(protocol, "skill + attachment + message", "message", ""),
             "skill + attachment + message"
         );
         assert!(!cancel_keeps_live_session("cancelled", protocol));
@@ -4721,6 +4911,53 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(segments[0].text.as_deref(), Some("你好"));
         assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Plain);
+    }
+
+    #[test]
+    fn native_text_completion_corrects_only_its_item_without_moving_tool_timeline() {
+        let mut tracker = StreamSegmentTracker::default();
+        let mut segments = Vec::new();
+        let mut order = 0;
+        tracker.append_text_item("first", "草稿", &mut segments, &mut order, 0);
+        tracker.append(
+            ChatMessageSegmentKind::Reasoning,
+            &mut segments,
+            &mut order,
+            1,
+            "thought",
+        );
+        tracker.append_text_item("second", "后续", &mut segments, &mut order, 1);
+        let ids: Vec<_> = segments.iter().map(|s| s.id.clone()).collect();
+        let (_, delta) = tracker
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .unwrap();
+        assert!(delta.is_none());
+        assert_eq!(
+            segments.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| s.text.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["最终🌱", "thought", "后续"]
+        );
+        assert!(tracker
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .is_none());
+        let (_, delta) = tracker
+            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1)
+            .unwrap();
+        assert_eq!(delta.as_deref(), Some("补全"));
+        let (_, delta) = tracker
+            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1)
+            .unwrap();
+        assert!(
+            delta.is_none(),
+            "an earlier item's suffix must not append after later text"
+        );
+        assert_eq!(segments.len(), 3);
     }
 
     #[test]
@@ -5447,22 +5684,37 @@ mod tests {
         let composed = "## Skill: pdf\n<body>\n\n# 附带文件\nPath: C:\\\\tmp\\\\a.pdf\n\n用户消息";
         let latest = "用户消息";
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::ClaudeStreamJson, composed, latest),
+            persistent_turn_prompt(StreamFormat::ClaudeStreamJson, composed, latest, ""),
             composed
         );
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::DshJsonRpc, composed, latest),
+            persistent_turn_prompt(StreamFormat::DshJsonRpc, composed, latest, ""),
             composed
         );
         // codex / ACP 的 full_prompt 首轮含指令，复用轮只发最新消息（保持原行为）。
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, latest),
+            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, latest, ""),
             latest
         );
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::AcpJsonRpc, composed, latest),
+            persistent_turn_prompt(StreamFormat::AcpJsonRpc, composed, latest, ""),
             latest
         );
+    }
+
+    #[test]
+    fn reused_native_turn_preserves_attachment_paths_without_repeating_instructions() {
+        for protocol in [StreamFormat::CodexAppServer, StreamFormat::AcpJsonRpc] {
+            assert_eq!(
+                persistent_turn_prompt(
+                    protocol,
+                    "SESSION INSTRUCTIONS\nlook\nImage: /work/picture.png",
+                    "look",
+                    "\nImage: /work/picture.png",
+                ),
+                "look\nImage: /work/picture.png"
+            );
+        }
     }
 
     #[test]
@@ -5487,7 +5739,7 @@ mod tests {
         assert!(!accepts_prompt_attachments(StreamFormat::PiRpc, "/skill:"));
         let composed = "/wizard task\n\n# 附带文件\nPath: /work/example.pdf";
         assert_eq!(
-            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, "/wizard task"),
+            persistent_turn_prompt(StreamFormat::CodexAppServer, composed, "/wizard task", ""),
             composed
         );
     }

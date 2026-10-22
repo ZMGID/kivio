@@ -172,7 +172,7 @@ fn result_error_subtype_reason(subtype: &str) -> Option<&'static str> {
 
 /// 判断一条 `result` 是否代表失败，若是则给出**交给 `errors::classify` 的原始文案**。
 ///
-/// 两个判据都要看，缺一不可：
+/// 显式终止原因优先于成功外壳；同时保留两个旧判据：
 /// - `subtype` ∈ 四种 `error_*`（官方 `SDKResultError`）；
 /// - `is_error == true`，**即使 `subtype` 是 `success`**。本机未登录时的真实样本正是
 ///   `{"type":"result","subtype":"success","is_error":true,`
@@ -192,7 +192,7 @@ fn terminal_reason_text(reason: &str) -> Option<&'static str> {
         "structured_output_retry_exhausted" => "claude 无法生成要求的结构化输出。",
         "tool_deferred_unavailable" => "claude 无法继续挂起的工具调用：该工具已不可用。",
         "turn_setup_failed" => "claude 无法开始本轮。",
-        "blocking_limit" => "claude 已停止：请求被用量上限挡住。",
+        "blocking_limit" => "claude 已停止：请求达到用量或上下文上限，请检查额度或压缩对话。",
         "rapid_refill_breaker" => "claude 已停止：压缩后上下文又被迅速填满。",
         "prompt_too_long" => "claude 已停止：提示超出了模型的上下文窗口，请压缩对话或开新会话。",
         "image_error" => "claude 已停止：对话中有一张图片无法处理。",
@@ -208,13 +208,19 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let subtype_reason = result_error_subtype_reason(subtype);
+    let terminal_reason = obj
+        .get("terminal_reason")
+        .and_then(Value::as_str)
+        .and_then(terminal_reason_text);
     // 529 过载在 2.1.287 是 `subtype:"success"` + `api_error_status:529`，可能连 `is_error`
     // 都没有、`errors` 为空（t3code `isOverloadedResult` 同一判据）——不认的话这一轮
     // 无声地「成功」结束，没有回答也没有提示。
     if obj.get("api_error_status").and_then(|v| v.as_u64()) == Some(529) {
         return Some("Claude API overloaded (529)，请稍后重试。".to_string());
     }
-    if !is_error && subtype_reason.is_none() {
+    let rate_limited = obj.get("api_error_status").and_then(Value::as_u64) == Some(429);
+    let rate_limit_message = "Claude API rate limited (429)，请检查额度或稍后重试。";
+    if !is_error && subtype_reason.is_none() && terminal_reason.is_none() && !rate_limited {
         return None;
     }
 
@@ -236,6 +242,13 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
         return Some(joined);
     }
 
+    // A success envelope can contain a partial answer even when terminal_reason failed.
+    // Keep that text in the answer; the error must explain why the run stopped.
+    if !is_error && subtype_reason.is_none() {
+        return terminal_reason
+            .or(rate_limited.then_some(rate_limit_message))
+            .map(str::to_string);
+    }
     let result_text = obj
         .get("result")
         .and_then(|v| v.as_str())
@@ -245,12 +258,11 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
         return Some(text.to_string());
     }
 
-    if let Some(reason) = obj
-        .get("terminal_reason")
-        .and_then(|v| v.as_str())
-        .and_then(terminal_reason_text)
-    {
+    if let Some(reason) = terminal_reason {
         return Some(reason.to_string());
+    }
+    if rate_limited {
+        return Some(rate_limit_message.to_string());
     }
 
     Some(match subtype_reason {
@@ -275,11 +287,13 @@ fn claude_result_error_message(obj: &serde_json::Map<String, Value>) -> Option<S
 /// **之前**的一道豁免，而不是削弱后者的 `is_error` 判据（spec 第 20 条——未登录的真实样本
 /// 正是 `subtype:"success"` + `is_error:true`，那条判据必须保留）。
 pub fn result_is_user_abort(value: &Value) -> bool {
-    value
-        .get("terminal_reason")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        == Some("aborted_streaming")
+    matches!(
+        value
+            .get("terminal_reason")
+            .and_then(|v| v.as_str())
+            .map(str::trim),
+        Some("aborted_streaming" | "aborted_tools")
+    )
 }
 
 /// `--resume <id>` 指向的会话在 claude 那边**已经不存在了**。
@@ -2254,6 +2268,30 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(47_300));
     }
 
+    #[test]
+    fn terminal_failures_override_a_success_envelope() {
+        for reason in [
+            "budget_exhausted",
+            "prompt_too_long",
+            "image_error",
+            "model_error",
+        ] {
+            let value = serde_json::json!({"type":"result", "subtype":"success",
+                "is_error":false, "terminal_reason":reason, "result":"partial answer"});
+            let line = value.to_string();
+            let events = run(&[&line]);
+            assert_eq!(errors(&events).len(), 1, "{reason}: {events:?}");
+            assert_ne!(errors(&events)[0], "partial answer");
+        }
+        let events = run(&[
+            r#"{"type":"result","subtype":"success","is_error":false,"api_error_status":429}"#,
+        ]);
+        assert_eq!(errors(&events).len(), 1);
+        let events = run(&[r#"{"type":"result","subtype":"success","is_error":true,
+            "api_error_status":429,"result":"Credit balance is too low"}"#]);
+        assert_eq!(errors(&events), vec!["Credit balance is too low"]);
+    }
+
     /// 失败轮次的 usage 同样要上报——错误分支不能把用量吞掉（用量条不该因失败而停更）。
     #[test]
     fn failed_result_still_reports_usage() {
@@ -2951,6 +2989,15 @@ mod tests {
             !texts(&events).contains("[ede_diagnostic]"),
             "内部诊断串不得落进正文：{events:?}"
         );
+        for is_error in [true, false] {
+            let mut state = ClaudeStreamState::default();
+            let value = serde_json::json!({"type":"result", "subtype":"success",
+                "is_error":is_error, "terminal_reason":"aborted_tools"});
+            let mut events = Vec::new();
+            state.handle_value(&value, &mut |event| events.push(event));
+            assert!(errors(&events).is_empty(), "{events:?}");
+            assert!(state.last_result_aborted());
+        }
     }
 
     /// 判据只认 `terminal_reason`：spec 第 20 条的 `is_error` 判据必须保持不变——

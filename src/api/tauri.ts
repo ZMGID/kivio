@@ -84,7 +84,7 @@ export type ChatStreamSegment = GeneratedChatSegmentPayload
 
 export type ChatStreamPayload = Extract<
   ChatRunEventEnvelope,
-  { type: 'run_started' | 'text_delta' | 'reasoning_delta' | 'stream_attempt_discarded' | 'run_completed' | 'run_cancelled' | 'run_failed' }
+  { type: 'run_started' | 'text_delta' | 'text_segment_replaced' | 'reasoning_delta' | 'stream_attempt_discarded' | 'run_completed' | 'run_cancelled' | 'run_failed' }
 > & { restoredFromSnapshot?: boolean }
 
 export type ChatExternalSendAttachment = {
@@ -2090,6 +2090,7 @@ export const api = {
       if (
         event.type === 'run_started'
         || event.type === 'text_delta'
+        || event.type === 'text_segment_replaced'
         || event.type === 'reasoning_delta'
         || event.type === 'stream_attempt_discarded'
         || event.type === 'run_completed'
@@ -2246,6 +2247,15 @@ export const api = {
         prompt: event.prompt as AskUserPromptPayload,
         structuredContent: event.structuredContent,
       })
+    })
+  },
+  onChatUserPromptResolved: (
+    listener: (payload: { conversationId: string; runId: string; toolCallId: string }) => void,
+  ) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return onChatProtocol((event) => {
+      if (event.scope !== 'run' || event.type !== 'user_prompt_resolved') return
+      listener({ conversationId: event.conversationId, runId: event.runId, toolCallId: event.toolCallId })
     })
   },
   onChatToolConfirm: (listener: (payload: ChatToolConfirmPayload) => void) => {

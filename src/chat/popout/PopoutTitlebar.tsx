@@ -14,7 +14,7 @@ type PopoutTitlebarProps = {
   approvalPolicy: string
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void | Promise<void>
   onModelChange: (providerId: string, model: string) => void | Promise<void>
-  onExternalModelChange: (model: string, reasoning?: string | null) => void | Promise<void>
+  onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void | Promise<void>
 }

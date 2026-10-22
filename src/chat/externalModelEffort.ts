@@ -7,11 +7,14 @@ export function modelIncludesEffort(agentId: string | null | undefined, modelId:
   )
 }
 
-export function withExternalModel(runtime: AgentRuntimeConfig, model: string, reasoning?: string | null): AgentRuntimeConfig {
+export function withExternalModel(runtime: AgentRuntimeConfig, model: string, reasoning?: string | null, serviceTier?: string | null): AgentRuntimeConfig {
   return {
     ...runtime,
     kind: 'external',
     externalModel: model,
+    externalServiceTier: serviceTier === undefined
+      ? model === runtime.externalModel ? runtime.externalServiceTier ?? null : null
+      : serviceTier,
     externalReasoning: modelIncludesEffort(runtime.externalAgentId, model)
       ? null
       : reasoning === undefined ? runtime.externalReasoning ?? null : reasoning,

@@ -189,6 +189,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     setPendingUserPrompt(queue[0] ?? null)
   }, [])
 
+  useTauriEvent(api.onChatUserPromptResolved, (payload) => {
+    if (payload.conversationId !== conversationIdRef.current) return
+    const rest = pendingUserPromptsRef.current.filter((item) => (
+      item.runId !== payload.runId || item.toolCallId !== payload.toolCallId
+    ))
+    pendingUserPromptsRef.current = rest
+    setPendingUserPrompt(rest[0] ?? null)
+  }, [])
+
   useTauriEvent(api.onChatHook, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     setHookWarning(payload)
@@ -391,9 +400,9 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     acceptPersistedConversation(next)
   }, [acceptPersistedConversation, conversation, conversationId])
 
-  const handleExternalModelChange = useCallback(async (model: string, reasoning?: string | null) => {
+  const handleExternalModelChange = useCallback(async (model: string, reasoning?: string | null, serviceTier?: string | null) => {
     const current = normalizeAgentRuntime(conversation)
-    await handleRuntimeChange(withExternalModel(current, model, reasoning))
+    await handleRuntimeChange(withExternalModel(current, model, reasoning, serviceTier))
   }, [conversation, handleRuntimeChange])
 
   const handleApprovalPolicyChange = useCallback(async (nextApprovalPolicy: string) => {

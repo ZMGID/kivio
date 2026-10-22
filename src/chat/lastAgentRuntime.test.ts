@@ -14,11 +14,13 @@ describe('parseLastAgentRuntime', () => {
       externalAgentId: 'claude',
       externalModel: 'claude-opus-5',
       externalReasoning: 'high',
+      externalServiceTier: 'priority',
     })).toEqual({
       kind: 'external',
       externalAgentId: 'claude',
       externalModel: 'claude-opus-5',
       externalReasoning: 'high',
+      externalServiceTier: 'priority',
       externalSandbox: null,
       externalAgentPreset: null,
     })

@@ -514,8 +514,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
       } else {
         await api.chatSubmitUserChoice(toolCallId, answers, skipped)
       }
-      // 后端没有「已答复」事件（`resolve_user_prompt` 只清重放快照），所以由这里通知宿主
-      // 收起面板。答复成功才收 —— 失败要把错误留在面板上让用户重试。
+      // 答复成功后立即通知宿主收起面板；失败则保留面板供用户重试。
       onResolved?.()
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))

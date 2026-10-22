@@ -613,6 +613,7 @@ mod tests {
         use crate::external_agents::types::{CachedAgentModels, ModelSource, RuntimeModelOption};
         let st = test_state();
         let one = |id: &str| RuntimeModelOption {
+            capabilities: None,
             id: id.to_string(),
             label: id.to_string(),
             context_window_tokens: None,

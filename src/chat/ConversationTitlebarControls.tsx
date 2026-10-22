@@ -23,7 +23,7 @@ export interface ConversationTitlebarControlsProps {
   dockOpen: boolean
   uiLang: Lang
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void | Promise<void>
-  onExternalModelChange: (model: string, reasoning?: string | null) => void | Promise<void>
+  onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void | Promise<void>
   onModelChange: (providerId: string, model: string) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void

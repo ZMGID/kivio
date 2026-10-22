@@ -747,6 +747,7 @@ pub fn run() {
             chat::commands::mutations::chat_fork_conversation,
             external_agents::commands::chat_detect_external_agents,
             external_agents::commands::chat_detect_external_agent_models,
+            external_agents::commands::chat_external_cli_account,
             external_agents::commands::chat_list_external_cli_slash_commands,
             external_agents::commands::chat_external_cli_provider_cleanup,
             external_agents::commands::chat_external_cli_pi_agent_dir,

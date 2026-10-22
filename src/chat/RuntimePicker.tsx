@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Check, Brain, RefreshCw } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
-import { useT } from '../components/i18n'
+import { useT, useLang } from '../components/i18n'
 import { chatApi, type DetectedExternalAgent } from './api'
 import { chatTitlebarPillButtonClass } from './platform'
 import { IconButton } from '../components/Button'
@@ -10,6 +10,8 @@ import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
+import { Select } from '../settings/public/controls'
+import { ExternalCliAccount } from './ExternalCliAccount'
 import './runtimePicker.css'
 
 const KIVIO_LOGO_SRC = '/logo-mark.png'
@@ -293,7 +295,7 @@ function RuntimePickerBase({ agentRuntime, onRuntimeChange, conversationId, lock
 
 interface ExternalModelSelectorProps {
   agentRuntime: AgentRuntimeConfig
-  onModelChange: (model: string, reasoning?: string | null) => void
+  onModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void
   conversationId?: string | null
 }
 
@@ -303,6 +305,7 @@ function ExternalModelSelectorBase({
   conversationId,
 }: ExternalModelSelectorProps) {
   const t = useT()
+  const zh = useLang() === 'zh'
   const [open, setOpen] = useState(false)
   const [reasoningOpen, setReasoningOpen] = useState(false)
   const modelMenuRef = useRef<HTMLDivElement>(null)
@@ -388,7 +391,8 @@ function ExternalModelSelectorBase({
             ? saneReasoning
             : rt.externalReasoning ?? null
           if (nextModel !== (rt.externalModel ?? 'default') || nextReasoning !== (rt.externalReasoning ?? null)) {
-            onModelChangeRef.current(nextModel, nextReasoning)
+            if (rt.externalServiceTier) onModelChangeRef.current(nextModel, nextReasoning, rt.externalServiceTier)
+            else onModelChangeRef.current(nextModel, nextReasoning)
           }
         })
         .catch((error: unknown) => {
@@ -443,6 +447,9 @@ function ExternalModelSelectorBase({
     }
     return reasoningOptions
   }, [agentRuntime.externalAgentId, agentRuntime.externalModel, currentModel, models, reasoningByModel, reasoningOptions])
+
+  const selectedModel = models.find(model => model.id === (agentRuntime.externalModel || currentModel || 'default'))
+  const serviceTiers = selectedModel?.capabilities?.serviceTiers ?? []
 
   const reasoningPillValue = agentRuntime.externalReasoning ?? 'default'
   const currentReasoningLabel = useMemo(() => {
@@ -577,6 +584,7 @@ function ExternalModelSelectorBase({
                     }`}
                   >
                     {model.id === 'default' ? t.chatRuntimeAutoCliDefault : model.label}
+                    {model.capabilities?.inputModalities && !model.capabilities.inputModalities.includes('image') && <span className="ml-2 text-xs text-neutral-500">{zh ? '仅文本' : 'Text only'}</span>}
                   </button>
                 ))
               )}
@@ -584,6 +592,22 @@ function ExternalModelSelectorBase({
           </>
         )}
       </div>
+
+      <ExternalCliAccount agentId={agentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
+      {agentRuntime.externalAgentId === 'codex' && serviceTiers.length > 0 && (
+        <Select
+          ariaLabel={zh ? '服务等级' : 'Service tier'}
+          title={zh ? '服务等级由当前模型提供，计费与可用性取决于 CLI 账号' : 'Service tiers come from the model catalog; pricing and availability depend on the CLI account'}
+          size="sm"
+          value={agentRuntime.externalServiceTier ?? ''}
+          onChange={value => onModelChange(agentRuntime.externalModel ?? 'default', undefined, value || null)}
+          options={[
+            { value: '', label: zh ? '默认等级' : 'Default tier' },
+            { value: 'default', label: 'Standard' },
+            ...serviceTiers.filter(tier => tier.id !== 'default').map(tier => ({ value: tier.id, label: tier.label })),
+          ]}
+        />
+      )}
 
       {/* Standalone thinking-level pill, mirroring the builtin ThinkingLevelSelector. */}
       {activeReasoningOptions.length > 0 && (
