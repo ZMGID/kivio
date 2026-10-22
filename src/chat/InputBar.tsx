@@ -2346,7 +2346,10 @@ export const InputBar = memo(function InputBar({
             {/* Git 分支胶囊 + diff 徽标（ml-auto 把徽标顶到右侧、挨着上下文指示器）。 */}
             {gitStatusEnabled && gitWorkdir && gitLang && onOpenGitPanel && (
               <GitStatusPill
+                key={`${effectiveProject?.id ?? ''}:${gitWorkdir}`}
                 workdir={gitWorkdir}
+                projectId={effectiveProject?.id ?? null}
+                onChooseProject={projectEntryEnabled ? toggleProjectMenu : undefined}
                 lang={gitLang}
                 disabled={disabled}
                 onOpenGitPanel={onOpenGitPanel}

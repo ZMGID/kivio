@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   gitStatus: vi.fn(),
   gitDiffStat: vi.fn(),
   gitInit: vi.fn(),
+  resolveCwd: vi.fn(),
   gitSnapshot: vi.fn(),
   listeners: new Map<string, Set<(event: WorkspaceActivityEvent) => void>>(),
   subscribe: vi.fn(),
@@ -40,7 +41,7 @@ const stat = { filesChanged: 1, additions: 3, deletions: 1, files: [] }
 
 function Badges({ workdir = '/repo' }: { workdir?: string }) {
   return <>
-    <GitStatusPill workdir={workdir} lang="en" onOpenGitPanel={() => {}} />
+    <GitStatusPill projectId="project" workdir={workdir} lang="en" onOpenGitPanel={() => {}} />
     <GitDiffChip workdir={workdir} lang="en" onOpenGitPanel={() => {}} />
   </>
 }
@@ -54,6 +55,7 @@ function emit(workdir = '/repo') {
 beforeEach(() => {
   vi.resetAllMocks()
   mocks.available = true
+  mocks.resolveCwd.mockResolvedValue('/repo')
   mocks.gitStatus.mockResolvedValue(state)
   mocks.gitDiffStat.mockResolvedValue(stat)
   mocks.gitSnapshot.mockImplementation(async (_workdir: string, includeDiffStat: boolean) => ({
@@ -74,6 +76,46 @@ function deferred<T>() {
 }
 
 describe('Git badges resource sharing', () => {
+  it('requires a project before initializing an ordinary chat workspace', async () => {
+    const noRepo = { ...state, status: 'not_repo' as const, head: '' }
+    mocks.gitSnapshot.mockResolvedValue({ state: noRepo, diffStat: null })
+    const chooseProject = vi.fn()
+    render(<GitStatusPill workdir="/shared" lang="en" projectId={null}
+      onChooseProject={chooseProject} onOpenGitPanel={() => {}} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByTitle('Git'))
+    fireEvent.click(screen.getByText('Choose a project to initialize Git'))
+    expect(chooseProject).toHaveBeenCalledOnce()
+    expect(mocks.gitInit).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('initializes the selected project even while the displayed directory is stale', async () => {
+    const noRepo = { ...state, status: 'not_repo' as const, head: '' }
+    mocks.gitSnapshot.mockResolvedValue({ state: noRepo, diffStat: null })
+    mocks.resolveCwd.mockResolvedValue('/selected-project')
+    mocks.gitInit.mockResolvedValue({ ok: true, state, stdout: '', stderr: '', message: '' })
+    render(<GitStatusPill workdir="/shared" projectId="selected" lang="en" onOpenGitPanel={() => {}} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByTitle('Git'))
+    fireEvent.click(screen.getByText('Initialize repository'))
+    await waitFor(() => expect(mocks.gitInit).toHaveBeenCalledWith('/selected-project'))
+    expect(mocks.resolveCwd).toHaveBeenCalledWith(null, 'selected')
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('does not fall back to the shared directory when a project cannot be resolved', async () => {
+    const noRepo = { ...state, status: 'not_repo' as const, head: '' }
+    mocks.gitSnapshot.mockResolvedValue({ state: noRepo, diffStat: null })
+    mocks.resolveCwd.mockRejectedValue(new Error('Project directory missing'))
+    render(<GitStatusPill workdir="/shared" projectId="missing" lang="en" onOpenGitPanel={() => {}} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByTitle('Git'))
+    fireEvent.click(screen.getByText('Initialize repository'))
+    await screen.findByText('Project directory missing')
+    expect(mocks.gitInit).not.toHaveBeenCalled()
+  })
+
   it('shares one refresh when both real consumers mount', async () => {
     render(<StrictMode><Badges /></StrictMode>)
     await screen.findByText('+3')
@@ -94,7 +136,7 @@ describe('Git badges resource sharing', () => {
   })
 
   it('does not calculate line statistics for a branch-only consumer', async () => {
-    render(<GitStatusPill workdir="/repo" lang="en" onOpenGitPanel={() => {}} />)
+    render(<GitStatusPill projectId="project" workdir="/repo" lang="en" onOpenGitPanel={() => {}} />)
     await screen.findByText('main')
     expect(mocks.gitDiffStat).not.toHaveBeenCalled()
     expect(mocks.gitSnapshot).toHaveBeenCalledTimes(1)
@@ -152,7 +194,7 @@ describe('Git badges resource sharing', () => {
   it('adds diff statistics when the diff consumer arrives during a branch query', async () => {
     const pending = deferred<GitSnapshot>()
     mocks.gitSnapshot.mockReturnValueOnce(pending.promise)
-    const view = render(<GitStatusPill workdir="/repo" lang="en" onOpenGitPanel={() => {}} />)
+    const view = render(<GitStatusPill projectId="project" workdir="/repo" lang="en" onOpenGitPanel={() => {}} />)
     await waitFor(() => expect(mocks.gitSnapshot).toHaveBeenCalledWith('/repo', false))
     view.rerender(<Badges />)
     await act(async () => pending.resolve({ state, diffStat: null }))
@@ -165,8 +207,8 @@ describe('Git badges resource sharing', () => {
     const view = render(<Badges />)
     await screen.findByText('+3')
     view.rerender(<>
-      <GitStatusPill workdir="/repo" lang="en" onOpenGitPanel={() => {}} />
-      <GitStatusPill workdir="/repo" lang="en" onOpenGitPanel={() => {}} />
+      <GitStatusPill projectId="project" workdir="/repo" lang="en" onOpenGitPanel={() => {}} />
+      <GitStatusPill projectId="project" workdir="/repo" lang="en" onOpenGitPanel={() => {}} />
     </>)
     expect(mocks.gitSnapshot).toHaveBeenCalledTimes(1)
     await act(async () => emit())
