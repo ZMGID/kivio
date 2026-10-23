@@ -1564,3 +1564,21 @@ fn default_retry_enabled() -> bool {
 fn default_onboarding_status() -> String {
     "pending".to_string()
 }
+
+/// Resolve the existing reading-language migration without requiring a desktop host.
+pub fn resolve_reading_language(settings: &Settings) -> String {
+    // 旧的自动中英互译只属于输入翻译；阅读翻译始终有一个明确目标。
+    let reading = settings.reading_target_lang.trim();
+    let reading = if reading.is_empty() {
+        settings.target_lang.trim()
+    } else {
+        reading
+    };
+    match reading {
+        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "it" | "ru" | "ar" | "hi"
+        | "th" | "vi" | "id" | "ms" | "tr" | "nl" | "pl" | "uk" | "sv" | "da" | "no" | "fi" => {
+            reading.to_string()
+        }
+        _ => "zh".to_string(),
+    }
+}

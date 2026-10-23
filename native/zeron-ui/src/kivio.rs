@@ -9,10 +9,14 @@ use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
 use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 
+mod attachments;
+mod terminal;
+
 pub const DEVICE: &str = "kivio-local";
 #[derive(Clone)]
 pub struct KivioService {
     directory: PathBuf,
+    terminals: Arc<terminal::Terminals>,
     store: Arc<ConversationStore>,
     changes: tokio::sync::watch::Sender<u64>,
     catalog_changes: tokio::sync::watch::Sender<u64>,
@@ -44,6 +48,7 @@ impl KivioService {
         Arc::new(Self {
             store: Arc::new(ConversationStore::new(directory.join("conversations"))),
             directory,
+            terminals: Arc::new(terminal::Terminals::new()),
             changes,
             catalog_changes,
             runs: Default::default(),
@@ -58,11 +63,14 @@ impl KivioService {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| RpcError::BadParams("chatId missing".into()))?
             .to_owned();
-        let text = params["text"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| RpcError::BadParams("消息不能为空".into()))?
-            .to_owned();
+        let text = params["text"].as_str().unwrap_or("").to_owned();
+        if text.trim().is_empty()
+            && !params["attachments"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty())
+        {
+            return Err(failed("消息不能为空"));
+        }
         let existing = self
             .store
             .load_all()
@@ -92,6 +100,12 @@ impl KivioService {
             runs.insert(id.clone(), cancellation.clone());
         }
         let prepared = (|| {
+            let batch = attachments::prepare(
+                self.directory
+                    .join("conversations")
+                    .join(format!("{id}_attachments")),
+                &params,
+            )?;
             let now = chrono::Utc::now().timestamp();
             let mut c = match existing {
                 Some(c) => c,
@@ -102,7 +116,7 @@ impl KivioService {
             };
             let message_id = uuid::Uuid::new_v4().to_string();
             let message = serde_json::from_value(
-                json!({"id":message_id,"role":"user","content":text,"timestamp":now}),
+                json!({"id":message_id,"role":"user","content":text,"timestamp":now,"attachments":batch.attachments()}),
             )
             .map_err(failed)?;
             c.messages.push(message);
@@ -110,6 +124,7 @@ impl KivioService {
             c.model = model.clone();
             let revision = c.revision;
             let c = self.store.save(c, revision).map_err(failed)?;
+            batch.commit();
             let run = chat_runtime::start(
                 provider,
                 model,
@@ -194,6 +209,7 @@ impl KivioService {
         RpcReply::value(&reply)
     }
     pub async fn shutdown(&self) {
+        self.terminals.shutdown();
         for cancel in self.runs.lock().unwrap().values() {
             cancel.cancel();
         }
@@ -225,8 +241,20 @@ impl KivioService {
                 let mut c=self.store.load(id).map_err(failed)?;
                 if let Some(message)=self.live.lock().map_err(failed)?.get(id) { c.messages.push(message.clone()); }
                 let entries=c.messages.iter().map(|m| {
-                    let mut parts=vec![json!({"kind":"text","id":format!("{}-text",m.id),"text":m.content})];
+                    let mut parts=vec![json!({"kind":"text","id":format!("{}-text",m.id),"text": if m.attachments.is_empty() { m.content.clone() } else {
+                        let directory = self.directory.join("conversations").join(format!("{id}_attachments"));
+                        let paths = m.attachments.iter().map(|a| kivio_model_runtime::attachment_files::resolve_attachment_file_path_in_dir(Some(&directory), &a.path).map(|p| p.to_string_lossy().into_owned())).collect::<Result<Vec<_>,_>>().unwrap_or_default();
+                        crate::attachments::with_attachments(&m.content, &paths)
+                    }})];
                     if let Some(reasoning)=&m.reasoning { parts.insert(0,json!({"kind":"reasoning","id":format!("{}-reasoning",m.id),"text":reasoning})); }
+                    for tool in &m.tool_calls {
+                        use kivio_model_runtime::conversation_data::ToolCallStatus;
+                        let input = serde_json::from_str::<Value>(&tool.arguments).unwrap_or_else(|_| json!({"raw":tool.arguments}));
+                        let resolved = !matches!(tool.status, ToolCallStatus::Pending | ToolCallStatus::Running);
+                        parts.push(json!({"kind":"tool","id":tool.id,"call":{"kind":"unknown","name":tool.name,"input":input},
+                            "resolved":resolved,"isError":matches!(tool.status, ToolCallStatus::Error | ToolCallStatus::Cancelled),
+                            "output":tool.error.as_ref().or(tool.result_preview.as_ref())}));
+                    }
                     json!({"id":m.id,"role":m.role,"parts":parts,"createdAt":date(m.timestamp).timestamp_millis(),"deviceId":DEVICE})
                 }).collect::<Vec<_>>();
                 json!({"reset":entries})
@@ -236,7 +264,10 @@ impl KivioService {
     }
     fn stream(&self, method: &str, params: Value) -> Result<RpcReply, RpcError> {
         // The subscription remains open. Every durable mutation invalidates its snapshot.
-        let rx = if matches!(method, methods::WATCH_DOC_MESSAGES | methods::WATCH_SESSIONS) {
+        let rx = if matches!(
+            method,
+            methods::WATCH_DOC_MESSAGES | methods::WATCH_SESSIONS
+        ) {
             self.changes.subscribe()
         } else {
             self.catalog_changes.subscribe()
@@ -261,6 +292,42 @@ impl KivioService {
 impl RpcService for KivioService {
     async fn handle(&self, method: &str, params: Value) -> Result<RpcReply, RpcError> {
         match method {
+            methods::READ_ATTACHMENT_CHUNK => attachments::read(&self.directory, &params),
+            methods::OPEN_TERMINAL => {
+                let cwd = if let Some(cwd) = params["cwd"].as_str().filter(|s| !s.is_empty()) {
+                    cwd.to_owned()
+                } else {
+                    let project = params["chatId"]
+                        .as_str()
+                        .and_then(|id| self.store.load(id).ok())
+                        .and_then(|c| c.project_id);
+                    let projects =
+                        group_catalog::load_project_index(&self.directory.join("conversations"))
+                            .map_err(failed)?;
+                    let path = project
+                        .and_then(|id| projects.projects.into_iter().find(|p| p.id == id))
+                        .and_then(|p| p.root_path);
+                    match path {
+                        Some(path) => path,
+                        None => {
+                            let path = self.directory.join("workspace");
+                            std::fs::create_dir_all(&path).map_err(failed)?;
+                            path.to_string_lossy().into_owned()
+                        }
+                    }
+                };
+                self.terminals
+                    .open(
+                        cwd,
+                        terminal::dimension(&params, "cols", 80)?,
+                        terminal::dimension(&params, "rows", 24)?,
+                    )
+                    .await
+            }
+            methods::WRITE_TERMINAL
+            | methods::RESIZE_TERMINAL
+            | methods::CLOSE_TERMINAL
+            | methods::SUBSCRIBE_TERMINAL => self.terminals.handle(method, params),
             "KivioSend" => self.send(params).await,
             "KivioCancel" => {
                 let id = params["chatId"]

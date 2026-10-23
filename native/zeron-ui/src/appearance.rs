@@ -111,6 +111,7 @@ pub fn init(
         surface,
         cx,
     );
+    sync_kit_appearance(appearance, cx);
     settings::wallpaper_colors::ensure_color(cx);
 }
 
@@ -265,6 +266,7 @@ pub fn apply(cx: &mut App) {
     if changed {
         tracing::debug!(?wanted, %variant_id, "appearance: installing palette");
         Theme::install_selection(wanted, &variant_id, accent, surface, cx);
+        sync_kit_appearance(wanted, cx);
         cx.refresh_windows();
     }
     // Unconditional, even when the palette did not move: this is the only thing
@@ -407,5 +409,33 @@ mod tests {
                 "{json} should parse back"
             );
         }
+    }
+}
+
+// Imported Zeron views and Kit forms share the same effective light/dark choice.
+fn sync_kit_appearance(appearance: Appearance, cx: &mut App) {
+    use gpui_kit::component::{Theme as KitTheme, ThemeMode};
+    let mode = match appearance { Appearance::Light => ThemeMode::Light, Appearance::Dark => ThemeMode::Dark };
+    KitTheme::change(mode, None, cx);
+    let palette = Theme::of(cx).clone();
+    if palette.family_id.starts_with("kivio-") {
+        let kit = KitTheme::global_mut(cx);
+        kit.background = palette.bg;
+        kit.foreground = palette.text;
+        kit.muted_foreground = palette.text_muted;
+        kit.border = palette.border;
+        kit.input = palette.border_strong;
+        kit.primary = palette.accent;
+        kit.primary_foreground = palette.on_accent;
+        kit.button_primary = palette.accent;
+        kit.button_primary_foreground = palette.on_accent;
+        kit.button_primary_hover = palette.accent_strong;
+        kit.button = palette.surface_card;
+        kit.button_foreground = palette.text;
+        kit.button_hover = palette.element_hover;
+        kit.button_active = palette.element_active;
+        kit.accent = palette.element_active;
+        kit.accent_foreground = palette.text;
+        kit.ring = palette.accent;
     }
 }

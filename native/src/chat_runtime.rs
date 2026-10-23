@@ -85,14 +85,24 @@ pub fn start(
                 .ok_or_else(|| ModelError::new("缺少对话数据目录"))?
                 .to_path_buf();
             let prepare_provider = provider.clone();
-            let request = tokio::task::spawn_blocking(move || {
-                prepare_request(
+            let (request, attempts) = tokio::task::spawn_blocking(move || {
+                let root = catalog_dir.parent().ok_or("缺少设置目录")?;
+                let settings = kivio_model_runtime::native_preferences::load(root)?;
+                let attempts = if settings.retry_enabled {
+                    settings.retry_attempts.clamp(1, 11) as usize
+                } else {
+                    1
+                };
+                let mut request = prepare_request(
                     prepare_provider,
                     model,
                     history,
                     conversation_id,
                     catalog_dir,
-                )
+                )?;
+                request.options.thinking_enabled = settings.chat.thinking_enabled;
+                request.system = settings.chat.system_prompt;
+                Ok::<_, String>((request, attempts))
             })
             .await
             .map_err(|error| ModelError::new(error.to_string()))?
@@ -101,8 +111,10 @@ pub fn start(
                 .await
                 .map_err(ModelError::new)?;
             let host = kivio_model_runtime::RuntimeHost::shared(&provider, &data_root);
-            kivio_model_runtime::dispatch::stream_resolved(&*host, &provider, 3, request, &mut sink)
-                .await
+            kivio_model_runtime::dispatch::stream_resolved(
+                &*host, &provider, attempts, request, &mut sink,
+            )
+            .await
         };
         let result = tokio::select! { _=cancel_rx => return, result=call=>result };
         let event = match result {

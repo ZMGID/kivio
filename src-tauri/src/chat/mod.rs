@@ -88,3 +88,6 @@ pub(crate) fn session_model_for_conversation(
         model: conversation.model.as_str(),
     }
 }
+
+pub(crate) mod conversation_library;
+pub(crate) mod memory_files;

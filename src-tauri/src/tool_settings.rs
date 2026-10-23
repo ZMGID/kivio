@@ -364,3 +364,37 @@ impl Default for ChatToolsConfig {
         }
     }
 }
+
+pub fn sanitize_hooks(hooks: &mut Vec<HookDef>) {
+    hooks.retain_mut(|hook| {
+        hook.event = hook.event.trim().to_string();
+        hook.kind = hook.kind.trim().to_lowercase();
+        if crate::chat::hooks::HookEvent::parse(&hook.event).is_none() {
+            return false;
+        }
+        match hook.kind.as_str() {
+            "command" => {
+                if hook.script.trim().is_empty() {
+                    return false;
+                }
+            }
+            "http" => {
+                if hook.url.trim().is_empty() {
+                    return false;
+                }
+                hook.method = hook.method.trim().to_uppercase();
+                if hook.method.is_empty() {
+                    hook.method = default_hook_method();
+                }
+            }
+            _ => return false,
+        }
+        if hook.id.trim().is_empty() {
+            hook.id = uuid::Uuid::new_v4().to_string();
+        }
+        hook.timeout_ms = hook
+            .timeout_ms
+            .clamp(HOOK_MIN_TIMEOUT_MS, HOOK_MAX_TIMEOUT_MS);
+        true
+    });
+}

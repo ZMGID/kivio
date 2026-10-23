@@ -85,12 +85,8 @@ pub(crate) fn request_quit(cx: &mut App) {
 
 fn prepare_quit(cx: &mut App) {
     let mut ready = true;
-    for window in cx.windows() {
-        if let Some(window) = window.downcast::<shell::Shell>() {
-            ready &= window
-                .update(cx, |shell, _, cx| shell.prepare_quit(cx))
-                .unwrap_or(false);
-        }
+    for (_, shell) in crate::shell_windows(cx) {
+        ready &= shell.update(cx, |shell, cx| shell.prepare_quit(cx));
     }
     if ready {
         quit_after_save(cx);
@@ -109,9 +105,9 @@ fn close_window(_: &CloseWindow, cx: &mut App) {
 
 fn close_active_window(cx: &mut App) {
     if let Some(window) = cx.active_window() {
-        if let Some(window) = window.downcast::<shell::Shell>() {
-            window
-                .update(cx, |shell, window, cx| {
+        if let Some((handle, shell)) = crate::shell_windows(cx).into_iter().find(|(handle, _)| handle.window_id() == window.window_id()) {
+            handle
+                .update(cx, |_, window, cx| shell.update(cx, |shell, cx| {
                     // ⌘W closes the right pane's active surface first (the tab
                     // the user just opened); an empty or closed pane falls
                     // through to the window close, unsaved-file gate and all.
@@ -121,7 +117,7 @@ fn close_active_window(cx: &mut App) {
                     if shell.prepare_window_close(cx) {
                         window.remove_window();
                     }
-                })
+                }))
                 .ok();
         } else {
             window

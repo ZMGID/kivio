@@ -83,16 +83,30 @@ impl Default for ProviderDocument {
     }
 }
 
-pub(crate) fn load_selection(path: &Path, selection: Option<(&str, &str)>) -> Result<(ModelProvider, String), String> {
+pub(crate) fn load_selection(
+    path: &Path,
+    selection: Option<(&str, &str)>,
+) -> Result<(ModelProvider, String), String> {
     let document = ProviderDocument::load(path)?;
     let (provider, model) = selection.unwrap_or((&document.selection.0, &document.selection.1));
     resolve_selection(&document.providers, provider, model)
 }
 
-fn resolve_selection(providers: &[ModelProvider], provider_id: &str, model: &str) -> Result<(ModelProvider, String), String> {
-    let provider = providers.iter().find(|p| p.id == provider_id && p.enabled)
+fn resolve_selection(
+    providers: &[ModelProvider],
+    provider_id: &str,
+    model: &str,
+) -> Result<(ModelProvider, String), String> {
+    let provider = providers
+        .iter()
+        .find(|p| p.id == provider_id && p.enabled)
         .ok_or_else(|| "请在供应商设置中添加并启用供应商，然后选择模型。".to_string())?;
-    if model.trim().is_empty() || !provider.enabled_models.iter().any(|candidate| candidate == model) {
+    if model.trim().is_empty()
+        || !provider
+            .enabled_models
+            .iter()
+            .any(|candidate| candidate == model)
+    {
         return Err("此模型尚未启用，请在供应商设置中启用后重试。".into());
     }
     Ok((provider.clone(), model.to_owned()))
@@ -214,6 +228,7 @@ fn read_document(path: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 pub(crate) struct ProviderSettings {
+    mixer_only: bool,
     path: PathBuf,
     confirmed: ProviderDocument,
     draft: Vec<ModelProvider>,
@@ -239,6 +254,9 @@ pub(crate) struct ProviderSettings {
 impl EventEmitter<ProviderEvent> for ProviderSettings {}
 
 impl ProviderSettings {
+    pub(crate) fn set_mixer_only(&mut self, value: bool) {
+        self.mixer_only = value;
+    }
     pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("供应商名称"));
         let endpoint =
@@ -289,6 +307,7 @@ impl ProviderSettings {
             }),
         );
         let mut settings = Self {
+            mixer_only: false,
             path,
             confirmed: ProviderDocument::default(),
             draft: vec![],
@@ -630,7 +649,7 @@ fn field(label: &'static str, control: impl IntoElement) -> impl IntoElement {
 impl Render for ProviderSettings {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let disabled = self.busy || !self.ready;
-        let mut content = div().v_flex().w_full().min_w_0().gap_5();
+        let mut content = div().v_flex().w_full().min_w_0().gap_4();
         if !self.ready {
             return content
                 .child(div().text_sm().child(if self.busy {
@@ -649,37 +668,19 @@ impl Render for ProviderSettings {
                 )
                 .into_any_element();
         }
-        content = content
-            .child(field(
-                "新对话默认模型",
-                Select::new(&self.model)
-                    .id("provider-default-model")
-                    .placeholder("先添加供应商和模型")
-                    .disabled(disabled || self.dirty)
-                    .w_full(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("已有对话继续使用它绑定的模型。"),
-                    )
-                    .child(
-                        Button::new("provider-add")
-                            .label("添加供应商")
-                            .disabled(disabled)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.add_provider(window, cx)),
-                            ),
-                    ),
-            );
-        let mut providers = div().flex().flex_wrap().gap_2();
+        if self.mixer_only {
+            return self.render_purposes(cx);
+        }
+        // ProvidersTab owns a collection/detail layout. Keep the native editor's
+        // retained inputs and durable writer while restoring that navigation.
+        let mut providers = div().v_flex().gap_2().child(
+            Button::new("provider-add")
+                .label("添加供应商")
+                .primary()
+                .w_full()
+                .disabled(disabled)
+                .on_click(cx.listener(|this, _, window, cx| this.add_provider(window, cx))),
+        );
         for provider in &self.draft {
             let id = provider.id.clone();
             providers = providers.child(
@@ -689,6 +690,8 @@ impl Render for ProviderSettings {
                     } else {
                         format!("{} · 已停用", provider.name)
                     })
+                    .ghost()
+                    .w_full().justify_start()
                     .selected(self.editing.as_ref() == Some(&provider.id))
                     .disabled(disabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -698,7 +701,7 @@ impl Render for ProviderSettings {
                     })),
             );
         }
-        content = content.child(providers);
+
         if let Some(provider) = self
             .draft
             .iter()
@@ -724,6 +727,13 @@ impl Render for ProviderSettings {
             let enabled_models = provider.enabled_models.clone();
             let model_owner = cx.weak_entity();
             content = content
+                .child(field(
+                    "名称",
+                    Input::new(&self.name)
+                        .id("provider-name")
+                        .aria_label("供应商名称")
+                        .disabled(disabled),
+                ))
                 .child(field(
                     "认证方式",
                     Button::new("provider-auth-method")
@@ -762,25 +772,27 @@ impl Render for ProviderSettings {
                         }),
                 ))
                 .child(field(
-                    "名称",
-                    Input::new(&self.name)
-                        .id("provider-name")
-                        .aria_label("供应商名称")
-                        .disabled(disabled),
-                ))
-                .child(field(
-                    "API 地址",
-                    Input::new(&self.endpoint)
-                        .id("provider-endpoint")
-                        .aria_label("API 地址")
-                        .disabled(disabled || oauth),
-                ))
-                .child(field(
-                    "API 协议",
-                    Select::new(&self.format)
-                        .id("provider-format")
-                        .disabled(disabled || oauth)
-                        .w_full(),
+                    "接口地址",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                Input::new(&self.endpoint)
+                                    .id("provider-endpoint")
+                                    .aria_label("API 地址")
+                                    .disabled(disabled || oauth),
+                            ),
+                        )
+                        .child(
+                            div().w(px(180.)).flex_none().child(
+                                Select::new(&self.format)
+                                    .id("provider-format")
+                                    .disabled(disabled || oauth)
+                                    .w_full(),
+                            ),
+                        ),
                 ))
                 .child(field(
                     "启用的模型",
@@ -985,7 +997,75 @@ impl Render for ProviderSettings {
                             }),
                     ),
             );
-        content.child(self.render_purposes(cx)).into_any_element()
+        div()
+            .v_flex()
+            .size_full()
+            .min_h_0()
+            .text_size(px(14.))
+            .child(
+                div()
+                    .flex_none()
+                    .px_6()
+                    .pt(px(48.))
+                    .pb_5()
+                    .child(
+                        div()
+                            .text_size(px(22.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("模型"),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("管理 OpenAI 兼容供应商、密钥和启用模型。"),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_5()
+                    .px_6()
+                    .pb_6()
+                    .child(
+                        div()
+                            .id("provider-list-scroll")
+                            .w(px(190.))
+                            .flex_none()
+                            .h_full()
+                            .overflow_y_scroll()
+                            .pr_4()
+                            .border_r_1()
+                            .border_color(cx.theme().border)
+                            .child(providers),
+                    )
+                    .child(
+                        div()
+                            .id("provider-detail-scroll")
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_y_scroll()
+                            .child(
+                                div()
+                                    .v_flex()
+                                    .gap_4()
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .bg(cx.theme().background)
+                                    .rounded_lg()
+                                    .p_4()
+                                    .child(
+                                        div().font_weight(FontWeight::MEDIUM).child("供应商配置"),
+                                    )
+                                    .child(content),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }
 

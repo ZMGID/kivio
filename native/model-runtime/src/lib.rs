@@ -33,6 +33,9 @@ pub mod responses;
 pub mod runtime;
 #[path = "../../../src-tauri/src/tool_settings.rs"]
 pub mod tool_settings;
+#[path = "../../../src-tauri/src/settings_config.rs"]
+pub mod settings_config;
+pub mod native_preferences;
 pub mod settings {
     pub use crate::provider_settings::*;
     pub use crate::tool_settings::*;
@@ -267,3 +270,14 @@ pub mod utf8_locale;
 pub mod conversation_files;
 #[path = "../../../src-tauri/src/chat/group_catalog.rs"]
 pub mod group_catalog;
+
+#[path = "../../../src-tauri/src/chat/conversation_library.rs"]
+pub mod conversation_library;
+#[path = "../../../src-tauri/src/chat/conversation_search.rs"]
+pub mod conversation_search;
+
+#[path = "../../../src-tauri/src/chat/memory_files.rs"]
+pub mod memory_files;
+
+#[path = "../../../src-tauri/src/prompts.rs"]
+pub mod prompts;

@@ -8862,22 +8862,30 @@ impl Composer {
     /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, _queue: bool, cx: &mut Context<Self>) {
         if self.sending { return; }
-        if !self.staged().is_empty() || !self.staged_appshots().is_empty() || !self.staged_comments(cx).is_empty() {
-            self.failure = Some("附件与引用的发送尚未接入，请先移除后发送文本。".into()); cx.notify(); return;
+        if !self.staged_appshots().is_empty() || !self.staged_comments(cx).is_empty() {
+            self.failure = Some("屏幕引用与审查评论尚未接入，请先移除后发送。".into()); cx.notify(); return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else { return; };
         let chat_id = self.state.read(cx).selected_chat.clone().unwrap_or_else(|| format!("conv_{}", uuid::Uuid::new_v4()));
         let project_id = self.state.read(cx).selected_space_row().map(|s| s.id.clone());
         let key = self.current_key.clone();
+        let staged = self.staged().to_vec();
+        let attachment_ids: Vec<_> = staged.iter().map(|a| a.id.clone()).collect();
         self.sending = true; self.failure = None; cx.notify();
         self.send_task = Some(cx.spawn(async move |this, cx| {
+            let payload = cx.background_executor().spawn(async move {
+                use base64::Engine as _;
+                staged.iter().map(|a| serde_json::json!({"name":a.name,"data":base64::engine::general_purpose::STANDARD.encode(a.bytes())})).collect::<Vec<_>>()
+            }).await;
             let result = engine.client().call("KivioSend", serde_json::json!({
-                "chatId":chat_id,"text":text,"projectId":project_id
+                "chatId":chat_id,"text":text,"projectId":project_id,"attachments":payload
             })).await;
             let _ = this.update(cx, |this, cx| {
                 this.sending = false;
                 match result {
                     Ok(reply) => {
+                        if let Some(staged) = this.attachments.get_mut(&key) { staged.retain(|a| !attachment_ids.contains(&a.id)); }
+                        if this.current_key == key { this.sync_attachment_chips(cx); }
                         if this.current_key == key && this.input.read(cx).text() == text {
                             this.input.update(cx, |input, cx| input.set_text("", cx));
                             this.drafts.remove(&key);

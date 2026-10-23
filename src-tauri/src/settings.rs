@@ -19,7 +19,7 @@ pub use tools::{
     HOOK_MIN_TIMEOUT_MS, HookDef, MCP_IDLE_TIMEOUT_MAX_MS, MCP_IDLE_TIMEOUT_MIN_MS,
     SubAgentModelSelection, default_chat_working_directory,
 };
-use tools::{default_chat_approval_policy, default_hook_method, default_skill_fallback_mode};
+use tools::{default_chat_approval_policy, default_skill_fallback_mode, sanitize_hooks};
 
 #[path = "settings_config.rs"]
 pub(crate) mod config;
@@ -165,39 +165,6 @@ struct SettingsChangedEvent {
 #[cfg(test)]
 const LEGACY_DEFAULT_APPROVAL_POLICY: &str = "readonly_auto_sensitive_confirm";
 
-fn sanitize_hooks(hooks: &mut Vec<HookDef>) {
-    hooks.retain_mut(|hook| {
-        hook.event = hook.event.trim().to_string();
-        hook.kind = hook.kind.trim().to_lowercase();
-        if crate::chat::hooks::HookEvent::parse(&hook.event).is_none() {
-            return false;
-        }
-        match hook.kind.as_str() {
-            "command" => {
-                if hook.script.trim().is_empty() {
-                    return false;
-                }
-            }
-            "http" => {
-                if hook.url.trim().is_empty() {
-                    return false;
-                }
-                hook.method = hook.method.trim().to_uppercase();
-                if hook.method.is_empty() {
-                    hook.method = default_hook_method();
-                }
-            }
-            _ => return false,
-        }
-        if hook.id.trim().is_empty() {
-            hook.id = uuid::Uuid::new_v4().to_string();
-        }
-        hook.timeout_ms = hook
-            .timeout_ms
-            .clamp(HOOK_MIN_TIMEOUT_MS, HOOK_MAX_TIMEOUT_MS);
-        true
-    });
-}
 
 /**
  * 设置数据清理与迁移
@@ -286,20 +253,7 @@ fn mirror_explicit_chat_default_for_persistence(settings: &mut Settings) {
 }
 
 pub fn sanitize_settings(mut settings: Settings) -> Settings {
-    // 旧的自动中英互译只属于输入翻译；阅读翻译始终有一个明确目标。
-    let reading = settings.reading_target_lang.trim();
-    let reading = if reading.is_empty() {
-        settings.target_lang.trim()
-    } else {
-        reading
-    };
-    settings.reading_target_lang = match reading {
-        "zh-Hant" | "en" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "it" | "ru" | "ar" | "hi"
-        | "th" | "vi" | "id" | "ms" | "tr" | "nl" | "pl" | "uk" | "sv" | "da" | "no" | "fi" => {
-            reading.to_string()
-        }
-        _ => "zh".to_string(),
-    };
+    settings.reading_target_lang = resolve_reading_language(&settings);
     let token = settings.chat_tools.playwright_extension_token.trim();
     let token = token.strip_prefix("export ").unwrap_or(token).trim();
     let token = token

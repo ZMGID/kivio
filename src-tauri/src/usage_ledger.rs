@@ -943,3 +943,26 @@ fn finalize_groups(groups: BTreeMap<String, UsageGroupStatsAccumulator>) -> Vec<
     stats.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
     stats
 }
+
+/// Report across per-conversation native ledgers using the same filtering,
+/// accounting and grouping as the application-wide legacy ledger.
+pub fn stats_in_directories(directories: &[PathBuf], query: UsageStatsQuery) -> UsageStatsResponse {
+    let mut records = Vec::new();
+    let mut skipped_records = 0;
+    for directory in directories {
+        let (next, skipped) = read_records(directory, range_start(&query.range));
+        records.extend(next);
+        skipped_records += skipped;
+    }
+    let filtered = filter_records(records, &query);
+    UsageStatsResponse {
+        summary: summarize(&filtered),
+        trend: build_trend(&filtered, &query.range),
+        provider_stats: group_provider_stats(&filtered),
+        model_stats: group_model_stats(&filtered),
+        total_logs: filtered.len(),
+        logs: filtered.iter().skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(DEFAULT_LOG_LIMIT).min(MAX_LOG_LIMIT)).cloned().collect(),
+        skipped_records,
+    }
+}

@@ -200,7 +200,7 @@ impl ArchivedPage {
                             })),
                     )
                     .child(
-                        popover::btn_danger(&theme, "Delete all")
+                        popover::btn_danger(&theme, "删除全部归档")
                             .id("delete-archived-confirm")
                             .on_click(cx.listener(|this, _, _, cx| this.delete_all(cx))),
                     ),
@@ -267,7 +267,7 @@ impl Render for ArchivedPage {
                 let title: SharedString = chat
                     .title
                     .clone()
-                    .unwrap_or_else(|| "Untitled session".into())
+                    .unwrap_or_else(|| "未命名对话".into())
                     .into();
                 // Unknown device → no fragment at all (zeron renders the
                 // device span only when the name resolves); a Cloud chat's
@@ -399,9 +399,9 @@ impl Render for ArchivedPage {
                                     .text_color(theme.text_muted),
                             )
                             .child(SharedString::from(if is_busy {
-                                "Unarchiving…"
+                                "正在恢复…"
                             } else {
-                                "Unarchive"
+                                "恢复对话"
                             })),
                     )
                     .into_any_element()
@@ -428,7 +428,7 @@ impl Render for ArchivedPage {
                     div()
                         .mt(px(12.0))
                         .text_size(crate::typography::ui_rems(14.0))
-                        .child(SharedString::from("Nothing archived")),
+                        .child(SharedString::from("没有已归档的对话")),
                 )
                 .child(
                     div()
@@ -436,7 +436,7 @@ impl Render for ArchivedPage {
                         .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted)
                         .child(SharedString::from(
-                            "Right-click a session in the sidebar to archive it.",
+                            "在侧栏右键点击对话即可归档。",
                         )),
                 )
                 .into_any_element()
@@ -469,7 +469,7 @@ impl Render for ArchivedPage {
                             this.scroll.reset();
                             cx.notify();
                         }))
-                        .child("Previous"),
+                        .child("上一页"),
                 )
                 .child(format!(
                     "{}–{} of {}",
@@ -494,7 +494,7 @@ impl Render for ArchivedPage {
                             this.scroll.reset();
                             cx.notify();
                         }))
-                        .child("Next"),
+                        .child("下一页"),
                 )
         });
         let deleting = self.delete_all_task.is_some();
@@ -513,9 +513,9 @@ impl Render for ArchivedPage {
                         .text_color(gpui_kit::white()),
                 )
                 .child(SharedString::from(if deleting {
-                    "Deleting…"
+                    "正在删除…"
                 } else {
-                    "Delete all"
+                    "删除全部归档"
                 }))
         });
         let scrollbar = popover::rail(self, "archived-page-scrollbar", &theme, cx);
@@ -550,12 +550,12 @@ impl Render for ArchivedPage {
                                                 .min_w_0()
                                                 .child(widgets::page_header(
                                                     &theme,
-                                                    "Archived sessions",
+                                                    "对话库",
                                                     (count > 0).then_some(count),
                                                 ))
                                                 .child(widgets::page_subtitle(
                                                     &theme,
-                                                    "Hidden from the sidebar until restored.",
+                                                    "已归档对话。恢复后重新显示在侧栏。",
                                                 )),
                                         )
                                         .children(delete_all),

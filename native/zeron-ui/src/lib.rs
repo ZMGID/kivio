@@ -19,6 +19,7 @@ pub use kivio_model_runtime::{conversation_data, settings as provider_settings};
 mod chat_runtime;
 #[path = "../../src/providers.rs"]
 mod providers;
+mod kivio_settings;
 #[path = "../../../src-tauri/src/chat/file_io.rs"]
 mod file_io;
 pub mod app_menus;
@@ -324,20 +325,17 @@ pub(crate) fn activate_main_window(cx: &mut App) {
 /// reopening the main window first if ⌘W closed it.
 fn open_notification_target(target: String, state: &gpui_kit::Entity<state::AppState>, cx: &mut App) {
     activate_main_window(cx);
-    let shell = cx
-        .windows()
-        .into_iter()
-        .find_map(|window| window.downcast::<shell::Shell>());
+    let shell = shell_windows(cx).into_iter().next();
     match shell {
-        Some(shell) => {
-            let _ = shell.update(cx, |shell, window, cx| {
+        Some((handle, shell)) => {
+            let _ = handle.update(cx, |_, window, cx| shell.update(cx, |shell, cx| {
                 window.activate_window();
                 if target == notify::AGENT_UPDATES_TARGET {
                     shell.open_settings(shell::SettingsSection::Harnesses, cx);
                 } else {
                     shell.open_chat(target, cx);
                 }
-            });
+            }));
         }
         None if target != notify::AGENT_UPDATES_TARGET => {
             state.update(cx, |state, cx| state.select_chat(Some(target), cx))
@@ -419,7 +417,7 @@ fn open_main_window(
     state: gpui_kit::Entity<state::AppState>,
     boot: EngineBootConfig,
     cx: &mut App,
-) -> gpui_kit::WindowHandle<shell::Shell> {
+) -> gpui_kit::WindowHandle<gpui_kit::base::Root> {
     let (bounds, display_id) = restored_main_window_bounds(cx);
     let handle = cx
         .open_window(
@@ -497,7 +495,7 @@ fn open_main_window(
                     }
                     should_close
                 });
-                shell
+                cx.new(|cx| gpui_kit::base::Root::new(shell, window, cx))
             },
         )
         .expect("failed to open window");
@@ -609,11 +607,7 @@ fn deliver_appshot(
         }
         Err(error) => Some(error),
     };
-    let handle = cx
-        .window_stack()
-        .unwrap_or_else(|| cx.windows())
-        .into_iter()
-        .find_map(|handle| handle.downcast::<shell::Shell>())
+    let handle = shell_windows(cx).into_iter().next().map(|(h, _)| h)
         .or_else(|| {
             let reopen = cx.try_global::<ReopenState>()?;
             Some(open_main_window(
@@ -637,7 +631,9 @@ fn deliver_appshot(
     };
     let captured = !captures.is_empty();
     cx.activate(true);
-    let _ = handle.update(cx, |shell, window, cx| {
+    let _ = handle.update(cx, |root, window, cx| {
+        let shell = root.view().clone().downcast::<shell::Shell>().expect("main shell");
+        shell.update(cx, |shell, cx| {
         window.activate_window();
         for appshot in captures {
             shell.receive_appshot(appshot, window, cx);
@@ -645,8 +641,18 @@ fn deliver_appshot(
         if let Some(error) = error {
             shell.show_appshot_error(error.to_string(), window, cx);
         }
+        });
     });
     if captured {
         appshots::foreground_after_capture();
     }
+}
+
+/// Only main windows, excluding provider and other auxiliary Kit windows.
+pub(crate) fn shell_windows(cx: &App) -> Vec<(gpui_kit::WindowHandle<gpui_kit::base::Root>, gpui_kit::Entity<shell::Shell>)> {
+    cx.windows().into_iter().filter_map(|window| {
+        let window = window.downcast::<gpui_kit::base::Root>()?;
+        let shell = window.read(cx).ok()?.view().clone().downcast::<shell::Shell>().ok()?;
+        Some((window, shell))
+    }).collect()
 }

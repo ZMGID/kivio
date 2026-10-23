@@ -10,8 +10,8 @@ use crate::{
 
 pub fn builtin_registry() -> &'static ThemeRegistry {
     static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| ThemeRegistry {
-        families: vec![
+    REGISTRY.get_or_init(|| {
+        let mut families = vec![
             family("zeron", "Zeron", vec![zeron_light(), zeron_dark()]),
             family(
                 "vscode-default",
@@ -59,7 +59,9 @@ pub fn builtin_registry() -> &'static ThemeRegistry {
             ),
             family("cobalt2", "Cobalt2", vec![cobalt2()]),
             family("andromeda", "Andromeda", vec![andromeda()]),
-        ],
+        ];
+        families.extend(kivio_families());
+        ThemeRegistry { families }
     })
 }
 
@@ -1335,4 +1337,70 @@ fn andromeda() -> ThemeVariant {
             "MIT",
         ),
     })
+}
+
+/// Kivio's authored palettes are shared with the installed web frontend.
+/// Syntax and ANSI colors retain Zeron's complete native defaults.
+fn kivio_families() -> Vec<ThemeFamily> {
+    let definitions: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("../../../../src/theme/builtins.json"))
+            .expect("bundled Kivio palettes are valid JSON");
+    definitions
+        .into_iter()
+        .map(|definition| {
+            let id = format!("kivio-{}", definition["id"].as_str().unwrap());
+            let name = definition["name"].as_str().unwrap().to_owned();
+            let variants = [("light", zeron_light()), ("dark", zeron_dark())]
+                .into_iter()
+                .map(|(mode, mut variant)| {
+                    let p = &definition[mode];
+                    let color = |key: &str| c(p[key].as_str().expect("complete authored palette"));
+                    variant.id = format!("{id}-{mode}");
+                    variant.family_id = id.clone();
+                    variant.name = format!("{name} · {mode}");
+                    variant.recommended_surface_treatment = SurfaceTreatment::Opaque;
+                    variant.colors.background = color("surface");
+                    variant.colors.shell = color("surfaceSoft");
+                    variant.colors.raised = color("surfaceMuted");
+                    variant.colors.card = color("surface");
+                    variant.colors.dialog = color("surface");
+                    variant.colors.overlay = color("surface");
+                    variant.colors.hover = color("surfaceHover");
+                    variant.colors.active = color("surfaceActive");
+                    variant.colors.border = color("border");
+                    variant.colors.border_strong = color("borderStrong");
+                    variant.colors.text = color("text");
+                    variant.colors.text_muted = color("textMuted");
+                    variant.colors.text_faint = color("textFaint");
+                    variant.colors.solid = color("accent");
+                    variant.colors.on_solid = color("onAccent");
+                    variant.colors.danger = color("danger");
+                    variant.colors.danger_muted = color("dangerSoft");
+                    variant.colors.input = color("surface");
+                    variant.colors.cursor = color("accent");
+                    variant.accent = AccentRoles {
+                        primary: color("accent"),
+                        strong: color("accentHover"),
+                        wash: color("accentSoft"),
+                        on: color("onAccent"),
+                        selection: color("surfaceActive"),
+                        caret: color("accent"),
+                        activity: color("accent"),
+                        glyph: [color("accent"); 3],
+                    };
+                    variant.terminal.background = color("surface");
+                    variant.terminal.foreground = color("text");
+                    variant.source = ThemeSource {
+                        format: "kivio".into(),
+                        url: "src/theme/builtins.json".into(),
+                        revision: "shared".into(),
+                        license: "GPL-3.0-or-later".into(),
+                        asset_hash: String::new(),
+                    };
+                    variant
+                })
+                .collect();
+            ThemeFamily { id, name, variants }
+        })
+        .collect()
 }

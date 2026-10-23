@@ -541,6 +541,7 @@ pub fn apply_keymap(
 /// The settings sections (feature-inventory §1.5 routes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsSection {
+    Kivio(crate::kivio_settings::Section),
     Devices,
     /// The user's Cloud device: lifecycle, its providers, GitHub.
     Cloud,
@@ -565,33 +566,38 @@ pub enum SettingsSection {
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 12] = [
-        SettingsSection::General,
-        SettingsSection::Appearance,
-        SettingsSection::Notifications,
-        SettingsSection::Voice,
-        SettingsSection::Shortcuts,
-        SettingsSection::Harnesses,
-        SettingsSection::Devices,
-        SettingsSection::Cloud,
-        SettingsSection::Billing,
-        SettingsSection::Files,
-        SettingsSection::Appshots,
-        SettingsSection::Archived,
+    pub const ALL: [SettingsSection; 17] = [
+        Self::General, Self::Appearance, Self::Harnesses, Self::Shortcuts,
+        Self::Kivio(crate::kivio_settings::Section::Translate),
+        Self::Kivio(crate::kivio_settings::Section::Lens),
+        Self::Kivio(crate::kivio_settings::Section::Chat),
+        Self::Kivio(crate::kivio_settings::Section::Memory),
+        Self::Kivio(crate::kivio_settings::Section::Mixer),
+        Self::Kivio(crate::kivio_settings::Section::Cli),
+        Self::Kivio(crate::kivio_settings::Section::Computer),
+        Self::Kivio(crate::kivio_settings::Section::Hooks),
+        Self::Archived,
+        Self::Kivio(crate::kivio_settings::Section::Search),
+        Self::Kivio(crate::kivio_settings::Section::Usage),
+        Self::Kivio(crate::kivio_settings::Section::Backup),
+        Self::Kivio(crate::kivio_settings::Section::About),
     ];
 
     /// The former Accounts page is folded into Providers. Keep its route alias
     /// for old navigation entries and dev links without showing a hidden tab.
     fn canonical(self) -> Self {
-        if self == Self::Agents {
-            Self::Harnesses
-        } else {
-            self
+        match self {
+            Self::Agents => Self::Harnesses,
+            Self::Devices => Self::Kivio(crate::kivio_settings::Section::Cli),
+            Self::Cloud | Self::Billing => Self::Kivio(crate::kivio_settings::Section::About),
+            Self::Appshots => Self::Kivio(crate::kivio_settings::Section::Computer),
+            Self::Notifications | Self::Voice | Self::Files => Self::General,
+            section => section,
         }
     }
 
     fn visible_in_nav(self) -> bool {
-        self != Self::Agents && (self != Self::Appshots || crate::appshots::is_desktop())
+        Self::ALL.contains(&self)
     }
 
     /// [`Self::visible_in_nav`], plus what depends on the account: Cloud
@@ -620,6 +626,7 @@ impl SettingsSection {
     /// Stable name shared by `ui-settings.json` and `ZERON_OPEN_ROUTE`.
     fn slug(self) -> &'static str {
         match self {
+            SettingsSection::Kivio(section) => section.slug(),
             SettingsSection::Devices => "devices",
             SettingsSection::Cloud => "cloud",
             SettingsSection::Billing => "billing",
@@ -652,33 +659,34 @@ impl SettingsSection {
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
-            _ => return None,
+            value => return crate::kivio_settings::Section::from_slug(value).map(Self::Kivio),
         })
     }
 
     /// Nav groups are separated by spacing alone: preferences, providers and
     /// devices, then workspace data.
     fn starts_nav_group(self) -> bool {
-        matches!(self, Self::Harnesses | Self::Files)
+        false
     }
 
     /// Sidebar + header label (zeron settings-sidebar.tsx SECTIONS / __root.tsx
     /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
+            SettingsSection::Kivio(section) => section.label(),
             SettingsSection::Devices => "Devices",
             SettingsSection::Cloud => "Cloud",
             SettingsSection::Billing => "Billing",
-            SettingsSection::Harnesses => "Providers",
+            SettingsSection::Harnesses => "模型",
             SettingsSection::Agents => "Accounts",
-            SettingsSection::Appearance => "Appearance",
+            SettingsSection::Appearance => "主题",
             SettingsSection::Files => "Files",
             SettingsSection::Notifications => "Notifications",
             SettingsSection::Voice => "Voice",
-            SettingsSection::Shortcuts => "Shortcuts",
-            SettingsSection::General => "General",
+            SettingsSection::Shortcuts => "快捷键",
+            SettingsSection::General => "基础",
             SettingsSection::Appshots => "Appshots",
-            SettingsSection::Archived => "Archived sessions",
+            SettingsSection::Archived => "对话库",
         }
     }
 }
@@ -2127,12 +2135,20 @@ pub struct Shell {
     cloud_page: Option<Entity<CloudPage>>,
     billing_page: Option<Entity<BillingPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    library_page: Option<Entity<settings::library::LibraryPage>>,
+    library_events: Option<Subscription>,
+    search_page: Option<Entity<settings::search::SearchPage>>,
+    hooks_page: Option<Entity<settings::hooks::HooksPage>>,
+    memory_page: Option<Entity<settings::memory::MemoryPage>>,
+    usage_page: Option<Entity<settings::usage::UsagePage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
     accounts_page: Option<Entity<AccountsPage>>,
     harnesses_page: Option<Entity<HarnessesPage>>,
+    provider_page: Option<Entity<crate::providers::ProviderSettings>>,
+    kivio_settings_page: Option<Entity<crate::kivio_settings::SettingsPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
     files_settings_sub: Option<Subscription>,
@@ -2673,12 +2689,20 @@ impl Shell {
             cloud_page: None,
             billing_page: None,
             archived_page: None,
+            library_page: None,
+            library_events: None,
+            search_page: None,
+            hooks_page: None,
+            memory_page: None,
+            usage_page: None,
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
             shortcuts_page: None,
             accounts_page: None,
             harnesses_page: None,
+            provider_page: None,
+            kivio_settings_page: None,
             shortcuts_sub: None,
             notifications_sub: None,
             files_settings_sub: None,
@@ -5710,277 +5734,62 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match section {
-            SettingsSection::Devices => {
-                if self.devices_page.is_none() {
-                    let state = self.state.clone();
-                    self.devices_page = Some(cx.new(|cx| DevicesPage::new(state, cx)));
-                }
-                match &self.devices_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Search) {
+            if self.search_page.is_none() {
+                self.search_page = Some(cx.new(|cx| settings::search::SearchPage::new(self.data_dir.clone(), window, cx)));
             }
-            SettingsSection::Cloud => {
-                if self.cloud_page.is_none() {
-                    let state = self.state.clone();
-                    self.cloud_page = Some(cx.new(|cx| CloudPage::new(state, cx)));
-                }
-                match &self.cloud_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Billing => {
-                if self.billing_page.is_none() {
-                    let state = self.state.clone();
-                    self.billing_page = Some(cx.new(|cx| BillingPage::new(state, cx)));
-                }
-                match &self.billing_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Harnesses => {
-                if self.harnesses_page.is_none() {
-                    let state = self.state.clone();
-                    self.harnesses_page = Some(cx.new(|cx| HarnessesPage::new(state, cx)));
-                }
-                match &self.harnesses_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Agents => {
-                if self.accounts_page.is_none() {
-                    let state = self.state.clone();
-                    self.accounts_page = Some(cx.new(|cx| AccountsPage::new(state, cx)));
-                }
-                match &self.accounts_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Appearance => {
-                self.ensure_appearance_page(cx);
-                match &self.appearance_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Files => {
-                if self.files_settings_page.is_none() {
-                    let page = cx.new(|cx| {
-                        FilesSettingsPage::new(
-                            self.settings.files_autosave_enabled,
-                            self.settings.files_autosave_delay_ms,
-                            self.settings.files_word_wrap,
-                            self.settings.files_show_all,
-                            cx,
-                        )
-                    });
-                    self.files_settings_sub = Some(cx.subscribe_in(
-                        &page,
-                        window,
-                        |this: &mut Shell, _, event: &FilesSettingsEvent, window, cx| match *event {
-                            FilesSettingsEvent::AutosaveChanged(autosave_enabled) => {
-                                this.settings.files_autosave_enabled = autosave_enabled;
-                                for surface in
-                                    this.files.values().chain(this.file_surfaces.values())
-                                {
-                                    surface.update(cx, |surface, cx| {
-                                        surface.set_autosave_enabled(autosave_enabled, cx)
-                                    });
-                                }
-                                this.schedule_save(cx);
-                                cx.notify();
-                            }
-                            FilesSettingsEvent::AutosaveDelayChanged(autosave_delay_ms) => {
-                                this.settings.files_autosave_delay_ms = autosave_delay_ms;
-                                for surface in
-                                    this.files.values().chain(this.file_surfaces.values())
-                                {
-                                    surface.update(cx, |surface, cx| {
-                                        surface.set_autosave_delay_ms(autosave_delay_ms, cx)
-                                    });
-                                }
-                                this.schedule_save(cx);
-                                cx.notify();
-                            }
-                            FilesSettingsEvent::WordWrapChanged(word_wrap) => {
-                                this.set_files_word_wrap(word_wrap, window, cx);
-                            }
-                            FilesSettingsEvent::ShowAllFilesChanged(show_all_files) => {
-                                this.set_files_show_all(show_all_files, cx);
-                            }
-                        },
-                    ));
-                    self.files_settings_page = Some(page);
-                }
-                match &self.files_settings_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Notifications => {
-                if self.notifications_page.is_none() {
-                    let page = cx.new(|cx| {
-                        NotificationsPage::new(
-                            self.settings.sound_enabled,
-                            self.settings.sound_completion_enabled,
-                            self.settings.sound_input_enabled,
-                            self.settings.sound_attention_enabled,
-                            self.settings.notifications_enabled,
-                            self.settings.notifications_background_only,
-                            self.settings.agent_update_notifications,
-                            cx,
-                        )
-                    });
-                    // Persist the flags whenever the page flips one.
-                    self.notifications_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &NotificationsEvent, cx| {
-                            let NotificationsEvent::Changed {
-                                sound,
-                                completion_sound,
-                                input_sound,
-                                attention_sound,
-                                desktop,
-                                background_only,
-                                agent_updates,
-                            } = *event;
-                            this.settings.sound_enabled = sound;
-                            this.settings.sound_completion_enabled = completion_sound;
-                            this.settings.sound_input_enabled = input_sound;
-                            this.settings.sound_attention_enabled = attention_sound;
-                            this.settings.notifications_enabled = desktop;
-                            this.settings.notifications_background_only = background_only;
-                            this.settings.agent_update_notifications = agent_updates;
-                            this.schedule_save(cx);
-                            cx.notify();
-                        },
-                    ));
-                    self.notifications_page = Some(page);
-                }
-                match &self.notifications_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Voice => {
-                let card = crate::dictation::card(cx);
-                let state = self.state.read(cx);
-                let mut hosts = vec![(None, "This device".to_owned(), true, "Local".to_owned())];
-                for device in &state.devices {
-                    if state.local_device_id.as_deref() == Some(&device.id) {
-                        continue;
-                    }
-                    let online = state.device_online(&device.id, chrono::Utc::now());
-                    let compatible = device.supports(zeron_proto::voice::remote::CAPABILITY);
-                    let detail = if !online {
-                        "Offline"
-                    } else if !compatible {
-                        "Update Zeron to use remote voice"
-                    } else {
-                        "Available"
-                    };
-                    hosts.push((
-                        Some(device.id.clone()),
-                        device.name.clone(),
-                        online && compatible,
-                        detail.into(),
-                    ));
-                }
-                let live = self.voice.read(cx).is_live();
-                card.update(cx, |card, cx| card.set_hosts(hosts, live, cx));
-                if let Some(snapshot) = &self.voice.read(cx).snapshot {
-                    let voices = snapshot.voices.clone();
-                    card.update(cx, |card, cx| card.set_voices(&voices, cx));
-                }
-                card.into_any_element()
-            }
-            SettingsSection::Shortcuts | SettingsSection::General | SettingsSection::Appshots => {
-                if self.shortcuts_page.is_none() {
-                    let state = self.state.clone();
-                    let keymap = self.settings.keymap.clone();
-                    let escape_stops_active_agent = self.settings.escape_stops_active_agent;
-                    let composer_send_behavior = self.settings.composer_send_behavior;
-                    let appshots_enabled = self.settings.appshots_enabled;
-                    let appshot_sound_enabled = self.settings.appshot_sound_enabled;
-                    let appshot_destination = self.settings.appshot_destination;
-                    let page = cx.new(|cx| {
-                        ShortcutsPage::new(
-                            state,
-                            keymap,
-                            escape_stops_active_agent,
-                            composer_send_behavior,
-                            appshots_enabled,
-                            appshot_sound_enabled,
-                            appshot_destination,
-                            cx,
-                        )
-                    });
-                    // Persist + re-apply shortcut preferences whenever the page changes them.
-                    self.shortcuts_sub = Some(cx.subscribe(
-                        &page,
-                        |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            match event {
-                                ShortcutsEvent::KeymapChanged(keymap) => {
-                                    this.settings.keymap = keymap.clone();
-                                }
-                                ShortcutsEvent::EscapeStopsActiveAgentChanged(enabled) => {
-                                    this.settings.escape_stops_active_agent = *enabled;
-                                }
-                                ShortcutsEvent::ComposerSendBehaviorChanged(behavior) => {
-                                    this.settings.composer_send_behavior = *behavior;
-                                }
-                                ShortcutsEvent::AppshotsChanged {
-                                    enabled,
-                                    sound_enabled,
-                                    destination,
-                                } => {
-                                    this.settings.appshots_enabled = *enabled;
-                                    this.settings.appshot_sound_enabled = *sound_enabled;
-                                    crate::appshots::set_capture_sound_enabled(*sound_enabled);
-                                    this.settings.appshot_destination = *destination;
-                                    crate::appshots::set_enabled(*enabled);
-                                }
-                            }
-                            apply_keymap(
-                                cx,
-                                &this.settings.keymap,
-                                this.settings.composer_send_behavior,
-                            );
-                            this.schedule_save(cx);
-                            cx.notify();
-                        },
-                    ));
-                    self.shortcuts_page = Some(page);
-                }
-                match &self.shortcuts_page {
-                    Some(page) => {
-                        page.update(cx, |page, _| {
-                            page.show_section(
-                                section == SettingsSection::Appshots,
-                                section == SettingsSection::General,
-                            )
-                        });
-                        page.clone().into_any_element()
-                    }
-                    None => Empty.into_any_element(),
-                }
-            }
-            SettingsSection::Archived => {
-                if self.archived_page.is_none() {
-                    let state = self.state.clone();
-                    self.archived_page = Some(cx.new(|cx| ArchivedPage::new(state, cx)));
-                }
-                match &self.archived_page {
-                    Some(page) => page.clone().into_any_element(),
-                    None => Empty.into_any_element(),
-                }
-            }
+            return self.search_page.as_ref().unwrap().clone().into_any_element();
         }
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Hooks) {
+            if self.hooks_page.is_none() {
+                self.hooks_page = Some(cx.new(|cx| settings::hooks::HooksPage::new(self.data_dir.clone(), cx)));
+            }
+            return self.hooks_page.as_ref().unwrap().clone().into_any_element();
+        }
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Usage) {
+            if self.usage_page.is_none() {
+                self.usage_page = Some(cx.new(|cx| settings::usage::UsagePage::new(self.data_dir.clone(), cx)));
+            }
+            return self.usage_page.as_ref().unwrap().clone().into_any_element();
+        }
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Memory) {
+            if self.memory_page.is_none() {
+                self.memory_page = Some(cx.new(|cx| settings::memory::MemoryPage::new(self.data_dir.clone(), window, cx)));
+            }
+            return self.memory_page.as_ref().unwrap().clone().into_any_element();
+        }
+        if matches!(section, SettingsSection::Harnesses | SettingsSection::Kivio(crate::kivio_settings::Section::Mixer)) {
+            if self.provider_page.is_none() {
+                let path = self.data_dir.join("conversations/providers.json");
+                self.provider_page = Some(cx.new(|cx| crate::providers::ProviderSettings::new(path, window, cx)));
+            }
+            let page = self.provider_page.as_ref().unwrap().clone();
+            page.update(cx, |page, _| page.set_mixer_only(section != SettingsSection::Harnesses));
+            if section == SettingsSection::Harnesses {
+                return page.into_any_element();
+            }
+            return crate::kivio_settings::page_frame(section.label(),
+                if section == SettingsSection::Harnesses { "管理供应商、模型和新对话默认模型。" } else { "按副任务路由模型：视觉、标题总结、上下文压缩、生图。" },
+                page.into_any_element(), cx);
+        }
+        if section != SettingsSection::Archived {
+            if self.kivio_settings_page.is_none() {
+                self.kivio_settings_page = Some(cx.new(|cx| crate::kivio_settings::SettingsPage::new(self.data_dir.clone(), window, cx)));
+            }
+            let page = self.kivio_settings_page.as_ref().unwrap().clone();
+            page.update(cx, |page, _| page.section = section);
+            return page.into_any_element();
+        }
+        if self.library_page.is_none() {
+            let page = cx.new(|cx| settings::library::LibraryPage::new(self.data_dir.join("conversations"), self.state.clone(), window, cx));
+            self.library_events = Some(cx.subscribe(&page, |this, _, event: &settings::library::OpenConversation, cx| {
+                this.close_settings(cx);
+                this.state.update(cx, |state, cx| state.select_chat(Some(event.0.clone()), cx));
+                cx.notify();
+            }));
+            self.library_page = Some(page);
+        }
+        self.library_page.as_ref().unwrap().clone().into_any_element()
     }
 
     // ---- sidebar mutations ----
@@ -8366,23 +8175,20 @@ impl Shell {
             // Tab remains the explicit way to enter its navigation or content.
             window.focus(&self.settings_focus, cx);
         }
-        let sidebar_width = self.settings.sidebar_width;
+        let sidebar_width = 196.0;
         // Dropdowns contain themselves to the page pane beside this column.
         settings::widgets::set_sidebar_width(sidebar_width, cx);
         let nav = self.render_settings_nav(section, &theme, window, cx);
-        // The footer uses the chat sidebar's theme so the account and
-        // settings buttons render identically in both places.
-        let footer_theme = Theme::of(cx).clone();
-        let footer = self.render_sidebar_footer_row(&footer_theme, cx);
         let outlet = self.settings_outlet(section, window, cx);
         div()
             .id("settings-page")
             .role(gpui_kit::Role::Group)
-            .aria_label("Settings")
+            .aria_label("设置")
             .track_focus(&self.settings_focus)
             .tab_group()
             .tab_stop(false)
             .size_full()
+            .bg(theme.bg)
             .flex()
             .flex_row()
             .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
@@ -8404,15 +8210,19 @@ impl Shell {
                 }
             }))
             .child(
-                // Same width and footer wrapper as the chat sidebar, so the
-                // account controls hold their position across the swap.
+                // Keep Kivio settings navigation independent of the chat sidebar width.
                 div()
                     .w(px(sidebar_width))
+                    .bg(theme.surface)
+                    .border_r_1()
+                    .border_color(theme.border)
                     .h_full()
                     .flex_none()
                     .flex()
                     .flex_col()
                     .pt(px(Theme::TITLEBAR_HEIGHT))
+                    .child(div().px(px(20.)).py(px(12.)).text_size(px(20.)).font_weight(gpui_kit::FontWeight::MEDIUM).child("设置"))
+                    .child(div().flex_1().min_h_0().child(nav))
                     .child(
                         div().flex_none().px(px(Theme::SPACE_SM)).child(
                             settings::widgets::section_tab(
@@ -8423,7 +8233,7 @@ impl Shell {
                                 "settings-back-hover",
                             )
                             .role(gpui_kit::Role::Button)
-                            .aria_label("Back")
+                            .aria_label("返回对话")
                             .tab_index(0)
                             .focus_visible(|s| s.border_2().border_color(theme.accent))
                             .cursor_pointer()
@@ -8435,11 +8245,9 @@ impl Shell {
                                     theme.text,
                                 ),
                             ))
-                            .child("Back"),
+                            .child("返回对话"),
                         ),
-                    )
-                    .child(div().flex_1().min_h_0().child(nav))
-                    .child(div().p(px(Theme::SPACE_SM)).flex_none().child(footer)),
+                    ),
             )
             .child(
                 div()
@@ -8474,6 +8282,20 @@ impl Shell {
     ) -> AnyElement {
         let cloud_offered = self.state.read(cx).cloud_offered();
         let section_icon = |item: SettingsSection| match item {
+            SettingsSection::Kivio(section) => match section {
+                crate::kivio_settings::Section::Translate => icons::GLOBE,
+                crate::kivio_settings::Section::Lens => icons::MONITOR,
+                crate::kivio_settings::Section::Chat => icons::CHAT_ROUND_LINE,
+                crate::kivio_settings::Section::Memory => icons::FOLDER_WITH_FILES,
+                crate::kivio_settings::Section::Mixer => icons::TUNING,
+                crate::kivio_settings::Section::Cli => icons::TERMINAL,
+                crate::kivio_settings::Section::Computer => icons::MONITOR,
+                crate::kivio_settings::Section::Hooks => icons::FORK,
+                crate::kivio_settings::Section::Search => icons::GLOBE,
+                crate::kivio_settings::Section::Usage => icons::LIST,
+                crate::kivio_settings::Section::Backup => icons::CLOUD,
+                crate::kivio_settings::Section::About => icons::INFO_CIRCLE,
+            },
             SettingsSection::Devices => icons::MONITOR,
             SettingsSection::Cloud => icons::CLOUD,
             SettingsSection::Billing => icons::WALLET,
