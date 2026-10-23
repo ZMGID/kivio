@@ -1,0 +1,26 @@
+[package]
+name = "kivio-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+license = "GPL-3.0-or-later"
+
+[dependencies]
+gpui-kit = "=0.8.0"
+zeron-markdown = { path = "vendor/zeron-markdown" }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.8.0", features = ["test-support"] }
+
+[features]
+profiler = ["gpui-kit/profiler"]
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+
+[workspace]
+members = ["vendor/zeron-markdown"]

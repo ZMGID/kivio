@@ -1,0 +1,54 @@
+{
+  "recorded_date": "2026-10-23",
+  "timezone": "Asia/Shanghai",
+  "kivio_base_commit": "2dafd0d95e7c482f3f6ff94c70e1dc4b294f8fcf",
+  "kivio_branch": "codex/gpui-migration",
+  "repositories": [
+    {
+      "directory": "references/gpui-kit",
+      "url": "https://github.com/longbridge/gpui-kit.git",
+      "commit": "47ae1eff3a070d24c25ec223d2b619aef167b787",
+      "commit_date": "2026-10-23T00:03:48Z",
+      "shallow": true,
+      "sparse_paths": []
+    },
+    {
+      "directory": "references/Ely-GPUI-Components",
+      "url": "https://github.com/ELY-Open-Source/Ely-GPUI-Components.git",
+      "commit": "41176e523231092f0798c6250ccef14dad822599",
+      "commit_date": "2026-10-23T01:42:12-04:00",
+      "shallow": true,
+      "sparse_paths": []
+    },
+    {
+      "directory": "references/zed",
+      "url": "https://github.com/zed-industries/zed.git",
+      "commit": "9e84b066b55bc3609a30dd965075c12255b38b45",
+      "commit_date": "2026-10-22T23:46:23Z",
+      "shallow": true,
+      "sparse_paths": [
+        "crates/gpui",
+        "crates/gpui_macros",
+        "crates/gpui_platform",
+        "crates/gpui_util",
+        "crates/ui"
+      ]
+    },
+    {
+      "directory": "references/gpui-skills",
+      "url": "https://github.com/lassejlv/skills.git",
+      "commit": "07d8ada0d9cc14baa814525e29fabc4682c7c370",
+      "commit_date": "2026-10-03T17:32:38+02:00",
+      "shallow": true,
+      "sparse_paths": []
+    },
+    {
+      "directory": "references/zeron",
+      "url": "https://github.com/zeronsh/zeron.git",
+      "commit": "c04487045e5f934818ab21bf5b7b7fbed16ef3d6",
+      "commit_date": "2026-10-22T21:48:48-07:00",
+      "shallow": true,
+      "sparse_paths": []
+    }
+  ]
+}

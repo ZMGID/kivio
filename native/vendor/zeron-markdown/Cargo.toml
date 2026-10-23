@@ -1,0 +1,9 @@
+[package]
+name = "zeron-markdown"
+version = "0.2.119"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+pulldown-cmark = "0.12"

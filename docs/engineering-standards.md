@@ -13,6 +13,7 @@
 
 ### UI 必须优先复用全局实现
 
+- 原生 GPUI 客户端（`native/`）使用已选定的 `gpui-kit` 组件、Base 行为与主题；以下 TS/CSS/Tauri 具体入口只适用于旧客户端。原生界面共享控件与主题仍只有一个归属：应用主题由 `native/src/theme.rs` 配置，页面使用 Kit 控件和语义 token，不复制输入、菜单、滚动、焦点或动效机制。原生业务直接调用 Rust 领域入口，流式结果使用由所属生命周期持有的订阅；不再为同进程调用建立 IPC。原生验证程序在接入业务前只使用内存合成数据，不读取正式或 Dev 身份的数据与凭据。
 - 新增或重做页面前，先查找已有全局组件、样式和主题 token。有全局实现就使用全局实现：动作按钮用 `src/components/Button.tsx` 的 `Button` / `IconButton`，输入与选择控件通过 `src/settings/public/controls.ts` 复用，滚动容器使用 `custom-scrollbar`，弹窗复用 `kv-modal`，颜色、字体和动效使用全局语义 token。
 - 引用了共享组件后，不得再用页面 CSS 覆盖其尺寸、颜色、边框、圆角、悬停、聚焦或禁用状态；使用组件现有的属性和变体。页面样式只负责业务内容与布局，不复制一套基础控件或明暗主题。共享能力有缺口时，在原负责人中补齐并验证原调用方。
 - 普通操作失败统一使用 `src/components/AppNotice.tsx` 的 `ErrorNotice`（已有页面错误状态）或 `src/components/appNoticeStore.ts` 的 `notifyError`（事件处理），由窗口的 `AppNoticeHost` 在右上角展示短摘要与可展开详情，不再新增页面错误条或用确认弹窗报告普通失败。字段校验、聊天失败记录、模态框内需要就地恢复的错误保留上下文；后台诊断不自动弹出。
