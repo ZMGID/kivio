@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::model::{
-    generate_with_chat_provider, stream_with_chat_provider, GenerateOutput, GenerateRequest,
+    generate_with_vendor_provider, stream_with_vendor_provider, GenerateOutput, GenerateRequest,
     ModelError, StreamPart, StreamSink,
 };
 use crate::settings::{
@@ -436,7 +436,9 @@ async fn stream_vendor_with_first_token_timeout(
         inner: sink,
         first: first.clone(),
     };
-    let fut = stream_with_chat_provider(state, provider, 1, request, &mut watch);
+    // Concrete endpoint. The top-level stream entry re-enters FreeRoute and
+    // makes `dispatch` an infinitely sized async fn (E0733).
+    let fut = stream_with_vendor_provider(state, provider, 1, request, &mut watch);
     tokio::pin!(fut);
     let sleep = tokio::time::sleep(timeout);
     tokio::pin!(sleep);
@@ -578,7 +580,8 @@ async fn dispatch(
             )
             .await
         } else {
-            let result = generate_with_chat_provider(state, &synthetic, 1, hop).await;
+            // Same constraint as the stream hop: do not re-enter FreeRoute.
+            let result = generate_with_vendor_provider(state, &synthetic, 1, hop).await;
             let produced = result.is_ok();
             (result, produced)
         };
