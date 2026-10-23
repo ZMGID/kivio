@@ -4,6 +4,9 @@
 
 # Kivio Desktop
 
+> 当前 `codex/gpui-migration` 分支默认启动 Rust + GPUI Kit 客户端，直接采用移入的 Zeron UI 源码。运行与接入范围见 [native/README.md](native/README.md)。下方原有 Tauri/Web 功能说明保留作迁移参考，不代表原生版已经全部接入。
+
+
 ### macOS / Windows 屏幕级 AI 助手：Agent 客户端，加上翻译、截图 OCR 与视觉问答
 
 [![Release](https://img.shields.io/github/v/release/ZMGID/kivio?style=flat-square&color=4f46e5&label=release)](https://github.com/ZMGID/kivio/releases/latest)

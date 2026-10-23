@@ -1141,3 +1141,21 @@ mod tests {
         );
     }
 }
+
+impl crate::chat::model::host::ModelHost for AppState {
+    fn client_for(&self, provider: &crate::settings::ModelProvider) -> &reqwest::Client {
+        AppState::client_for(self, provider)
+    }
+    fn provider_runtime(&self) -> &crate::chat::provider_runtime::ProviderRequestRuntime {
+        AppState::provider_runtime(self)
+    }
+    fn request_debug_enabled(&self) -> bool {
+        AppState::request_debug_enabled(self)
+    }
+    fn record_usage(&self, input: crate::usage::UsageRecordInput<'_>) {
+        crate::usage::record_model_call(self, input);
+    }
+    fn record_debug(&self, record: crate::chat::request_debug::RequestDebugRecord) {
+        crate::chat::request_debug::record(self, record);
+    }
+}

@@ -13,7 +13,6 @@ use crate::{
     },
     mcp::ChatToolDefinition,
     settings::ModelProvider,
-    state::AppState,
 };
 
 use super::{
@@ -92,7 +91,7 @@ pub(crate) trait ProviderRuntime: Send + Sync {
     fn summarize<'a>(&'a self, request: SummaryRequest<'a>) -> ProviderFuture<'a, CompactOutcome>;
 }
 
-impl ProviderRuntime for AppState {
+impl<T: crate::chat::model::host::ModelHost> ProviderRuntime for T {
     fn stream<'a>(
         &'a self,
         request: StreamRequest<'a>,

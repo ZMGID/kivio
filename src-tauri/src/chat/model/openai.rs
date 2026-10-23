@@ -1,30 +1,36 @@
 use reqwest::header::ACCEPT_ENCODING;
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
+use super::host::ModelHost;
+use crate::api::{runtime::send_with_failover, with_chat_request_timeout};
 use crate::settings::ModelProvider;
+#[cfg(test)]
 use crate::state::AppState;
 use crate::usage::{
-    chat_usage_source_for_label, error_kind_from_message, model_usage_from_openai_value,
-    model_usage_from_stream_value, operation_from_label, record_model_call, UsageRecordInput,
+    UsageRecordInput, chat_usage_source_for_label, error_kind_from_message,
+    model_usage_from_openai_value, model_usage_from_stream_value, operation_from_label,
 };
 use crate::utils;
 
 use super::{
-    openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
-    stream_read_error, FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
+    FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
     LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall, StreamPart,
-    StreamSink,
+    StreamSink, openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
+    stream_read_error,
 };
 
 pub struct OpenAiChatProvider<'a> {
-    state: &'a AppState,
+    state: &'a dyn ModelHost,
     provider: &'a ModelProvider,
     retry_attempts: usize,
 }
 
 impl<'a> OpenAiChatProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
+    pub fn new(
+        state: &'a dyn ModelHost,
+        provider: &'a ModelProvider,
+        retry_attempts: usize,
+    ) -> Self {
         Self {
             state,
             provider,
@@ -47,16 +53,9 @@ impl LanguageModelProvider for OpenAiChatProvider<'_> {
     }
 }
 
-/// 判断错误是否是"端点拒绝 prompt_cache_key 字段"。仅在本次确实发了该字段时配合调用，
-/// 错误体点名该字段即视为命中（NVIDIA NIM / 智谱 GLM 等严格端点的 400 会带上字段名）。
-pub(super) fn error_rejects_prompt_cache_key(err: &str) -> bool {
-    err.contains("prompt_cache_key")
-}
-
-/// 判断错误是否点名拒绝 `prompt_cache_retention`（long 的 24h 字段）。
-pub(super) fn error_rejects_prompt_cache_retention(err: &str) -> bool {
-    err.contains("prompt_cache_retention")
-}
+pub(super) use super::endpoint_compatibility::{
+    error_rejects_prompt_cache_key, error_rejects_prompt_cache_retention,
+};
 
 impl OpenAiChatProvider<'_> {
     /// 发送 chat 请求；若严格端点拒绝 `prompt_cache_key` / `prompt_cache_retention` 而 400，
@@ -113,7 +112,7 @@ impl OpenAiChatProvider<'_> {
             return Err("OpenCode Free only supports free models; refresh the model list".into());
         }
         send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             label,
             self.retry_attempts,
             &self.provider.id,
@@ -516,7 +515,7 @@ impl OpenAiChatProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -550,7 +549,7 @@ impl OpenAiChatProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
@@ -687,26 +686,23 @@ impl OpenAiChatProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -727,26 +723,23 @@ impl OpenAiChatProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -1798,9 +1791,11 @@ mod tests {
         state
             .provider_runtime()
             .mark_prompt_cache_key_unsupported("https://integrate.api.nvidia.com/v1");
-        assert!(make("https://integrate.api.nvidia.com/v1")
-            .get("prompt_cache_key")
-            .is_none());
+        assert!(
+            make("https://integrate.api.nvidia.com/v1")
+                .get("prompt_cache_key")
+                .is_none()
+        );
         // 其它端点不受影响，仍发送。
         assert_eq!(
             make("https://api.openai.com/v1")["prompt_cache_key"],
@@ -1854,9 +1849,11 @@ mod tests {
         let short = body_with("https://api.openai.com/v1", "short");
         assert_eq!(short["prompt_cache_key"], "conv_abc");
         assert!(short.get("prompt_cache_retention").is_none());
-        assert!(body_with("https://api.openai.com/v1", "none")
-            .get("prompt_cache_key")
-            .is_none());
+        assert!(
+            body_with("https://api.openai.com/v1", "none")
+                .get("prompt_cache_key")
+                .is_none()
+        );
         let long = body_with("https://api.openai.com/v1", "long");
         assert_eq!(long["prompt_cache_key"], "conv_abc");
         assert_eq!(long["prompt_cache_retention"], "24h");

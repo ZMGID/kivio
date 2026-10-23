@@ -1,7 +1,7 @@
+pub(super) use crate::chat::conversation_mutations::{find_message_index, remove_assistant_answer, apply_regenerate_truncation, restore_todo_state_from_history, build_fork_messages, build_fork_messages_before_anchor};
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
-use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{
     compose_text_attachments_for_api, compose_user_content_for_api,
     stored_image_paths_for_attachments, text_attachments_from_attachments,
@@ -14,54 +14,19 @@ use super::super::storage::{
     resolve_conversation_working_directory,
 };
 use super::super::{
-    AdditionalDirectory, AgentPlanState, ChatMessage, Conversation, ConversationContextState,
-    ForkOrigin,
+    AdditionalDirectory, ChatMessage, Conversation,
 };
 use super::catalog::{reconcile_conversation_orphan_tool_segments, strip_transcripts_for_frontend};
 use super::context::{
     compute_context_state, emit_chat_context_state, mark_summary_stale_if_needed,
 };
 use super::messages::{
-    build_error_arm_message, replace_final_text_segments_for_edit, upsert_assistant_message,
+    build_error_arm_message, upsert_assistant_message,
 };
 use super::{
     agent_run_entry_label, complete_assistant_reply, complete_assistant_reply_inner,
     ChatSendReservation, ReplyArm, CHAT_REPLY_BUSY_ERROR, MAX_REPLY_MODELS,
 };
-
-fn find_message_index(conversation: &Conversation, message_id: &str) -> Result<usize, String> {
-    conversation
-        .messages
-        .iter()
-        .position(|m| m.id == message_id)
-        .ok_or_else(|| "消息不存在".to_string())
-}
-
-/// 只拿掉这一条助手回答。同组其它模型、用户提问和之后的轮次都留着。
-/// 组选中若正指向被删的那条，清掉该组记录，续聊回退到剩余回答里的第一条；
-/// 选中的是别的回答、或别的组，则不动。
-pub(super) fn remove_assistant_answer(
-    conversation: &mut Conversation,
-    message_id: &str,
-) -> Result<(), String> {
-    let idx = find_message_index(conversation, message_id)?;
-    if conversation.messages[idx].role != "assistant" {
-        return Err("仅支持删除助手回复".to_string());
-    }
-    mark_summary_stale_if_needed(conversation, idx);
-    let removed = conversation.messages.remove(idx);
-    if let Some(group_id) = removed.group_id.as_deref() {
-        if conversation
-            .group_selections
-            .get(group_id)
-            .map(String::as_str)
-            == Some(removed.id.as_str())
-        {
-            conversation.group_selections.remove(group_id);
-        }
-    }
-    Ok(())
-}
 
 /// Validated turn for 「换模型回答」: add another model's answer as a sibling
 /// column on the last user question, without replacing the existing reply.
@@ -263,13 +228,8 @@ pub(crate) async fn chat_update_message(
     let mut attempt = 0;
     let (mut conversation, context_state) = loop {
         let mut candidate = snapshot.clone();
+        crate::chat::conversation_mutations::edit_assistant_answer(&mut candidate, &message_id, trimmed)?;
         let idx = find_message_index(&candidate, &message_id)?;
-        if candidate.messages[idx].role != "assistant" {
-            return Err("仅支持编辑助手回复".to_string());
-        }
-        mark_summary_stale_if_needed(&mut candidate, idx);
-        replace_final_text_segments_for_edit(&mut candidate.messages[idx], trimmed);
-        candidate.messages[idx].timestamp = chrono::Local::now().timestamp();
         super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
         let edited_message = candidate.messages[idx].clone();
@@ -311,60 +271,6 @@ pub(crate) async fn chat_update_message(
         "success": true,
         "conversation": conversation,
     }))
-}
-
-/// `chat_regenerate_message` 的截断/编辑核心（纯函数，便于单测）：
-/// - assistant：截到它之前（`new_content` 无意义 → 报错）。
-/// - user + `new_content`：trim 校验非空 → 替换内容（编辑提问；附件保留）→ 保留该条截掉其后。
-///   摘要失效用 `idx`（内容变了，覆盖到该条的摘要即失效）。
-/// - user 无 `new_content`：孤儿重试，摘要失效用 `idx + 1`，保留该条截掉其后。
-pub(super) fn apply_regenerate_truncation(
-    conversation: &mut Conversation,
-    idx: usize,
-    new_content: Option<String>,
-) -> Result<(), String> {
-    match conversation.messages[idx].role.as_str() {
-        "assistant" => {
-            if new_content.is_some() {
-                return Err("编辑内容仅支持用户消息".to_string());
-            }
-            mark_summary_stale_if_needed(conversation, idx);
-            conversation.messages.truncate(idx);
-        }
-        "user" => {
-            if let Some(content) = new_content {
-                let trimmed = content.trim();
-                if trimmed.is_empty() {
-                    return Err("消息内容不能为空".to_string());
-                }
-                mark_summary_stale_if_needed(conversation, idx);
-                conversation.messages[idx].content = trimmed.to_string();
-                conversation.messages[idx].timestamp = chrono::Local::now().timestamp();
-            } else {
-                mark_summary_stale_if_needed(conversation, idx + 1);
-            }
-            conversation.messages.truncate(idx + 1);
-        }
-        _ => return Err("仅支持重新生成助手回复或重试用户消息".to_string()),
-    }
-    Ok(())
-}
-
-/// Truncating history also rewinds the agent todo list to the last snapshot the
-/// retained messages recorded, so it never shows steps from a removed future.
-/// External CLIs keep their list: Codex plan updates and ACP todo notifications
-/// leave no tool record to rebuild it from.
-pub(super) fn restore_todo_state_from_history(conversation: &mut Conversation) {
-    if conversation.agent_runtime.is_external() {
-        return;
-    }
-    let restored = crate::chat::todo::state_from_messages(
-        &conversation.messages,
-        &conversation.group_selections,
-    );
-    if restored.items != conversation.agent_todo_state.items {
-        conversation.agent_todo_state = restored;
-    }
 }
 
 /// 重新生成助手回复（移除该条及之后的消息，再基于此前上下文请求新回复）。
@@ -668,21 +574,7 @@ pub(crate) async fn chat_rewind_to_message(
         let content = snapshot.messages[idx].content.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
-                let latest_idx = find_message_index(latest, &message_id)?;
-                if latest.messages[latest_idx].role != "user" {
-                    return Err("仅支持回到用户提问".to_string());
-                }
-                mark_summary_stale_if_needed(latest, latest_idx);
-                latest.messages.truncate(latest_idx);
-                let existing_ids: std::collections::HashSet<String> = latest
-                    .messages
-                    .iter()
-                    .map(|message| message.id.clone())
-                    .collect();
-                latest
-                    .group_selections
-                    .retain(|_, selected| existing_ids.contains(selected));
-                restore_todo_state_from_history(latest);
+                crate::chat::conversation_mutations::rewind_to_user_message(latest, &message_id)?;
                 Ok(())
             })
             .await
@@ -733,38 +625,6 @@ pub(crate) async fn chat_rewind_to_message(
     }))
 }
 
-/// 组装分叉分支的消息前缀（纯函数，便于单测）：
-/// - 取 `messages[0..=anchor_idx]`（含锚点）。
-/// - 若锚点属于某多模型多答组（`group_id = Some(g)`，决策 Q2）：只保留锚点那一列，
-///   移除前缀内其余同组兄弟列（组内更晚的列已被切片排除），并把锚点的 `group_id` 置 None
-///   转为普通单答，使新对话该轮成为干净的线性单答。
-/// - 保留原 message id（跨对话无需唯一，`group_selections` 引用因此仍有效）。
-pub(super) fn build_fork_messages(messages: &[ChatMessage], anchor_idx: usize) -> Vec<ChatMessage> {
-    let anchor_id = messages[anchor_idx].id.clone();
-    let anchor_group = messages[anchor_idx].group_id.clone();
-    let mut out: Vec<ChatMessage> = messages[..=anchor_idx].to_vec();
-
-    if let Some(group) = anchor_group {
-        // 丢弃同组的其它兄弟列，仅留锚点那条。
-        out.retain(|m| m.group_id.as_deref() != Some(group.as_str()) || m.id == anchor_id);
-        // 锚点转普通单答。
-        if let Some(anchor) = out.iter_mut().find(|m| m.id == anchor_id) {
-            anchor.group_id = None;
-        }
-    }
-
-    out
-}
-
-pub(super) fn build_fork_messages_before_anchor(
-    messages: &[ChatMessage],
-    anchor_idx: usize,
-) -> Vec<ChatMessage> {
-    anchor_idx
-        .checked_sub(1)
-        .map(|index| build_fork_messages(messages, index))
-        .unwrap_or_default()
-}
 /// 分叉成新对话（方案 B）：把源对话某消息及其之前的消息复制进一个全新对话，之后独立继续。
 /// 纯复制 + 打开，不自动发送（决策 Q1）。新对话继承源的会话级配置、深拷被引用的附件/图片
 /// artifact，并记录 `forked_from` 供 UI 面包屑回跳。源对话完全只读、不受影响。
@@ -802,73 +662,11 @@ pub(crate) async fn chat_fork_conversation(
             .map_err(crate::chat::repository::repository_error)?;
         crate::chat::goal::emit_goal_state(&app, &source);
     }
-    let anchor_idx = find_message_index(&source, &message_id)?;
-
-    let now = chrono::Local::now().timestamp();
-    let new_id = format!("conv_{}", Uuid::new_v4());
-    let messages = if exclude_anchor.unwrap_or(false) {
-        build_fork_messages_before_anchor(&source.messages, anchor_idx)
-    } else {
-        build_fork_messages(&source.messages, anchor_idx)
-    };
-
-    // 深拷被复制消息引用的附件 / 图片 artifact 文件到新对话目录（裸文件名同名拷贝，路径保持有效）。
-    // Missing attachment files are warnings rather than fork blockers. Workbench outputs are not copied when forking.
-    copy_forked_conversation_files(&app, &conversation_id, &new_id, &messages);
-    crate::reading::chat::fork_sources(&app, &conversation_id, &new_id, &messages)?;
-
-    // 清理 group_selections：仅保留其选中 message_id 仍存在于新 messages、且该消息仍带 group_id 的条目。
-    let existing_groups: std::collections::HashMap<&str, &str> = messages
-        .iter()
-        .filter_map(|m| m.group_id.as_deref().map(|g| (m.id.as_str(), g)))
-        .collect();
-    let mut group_selections = source.group_selections.clone();
-    group_selections.retain(|group_id, sel_msg_id| {
-        existing_groups.get(sel_msg_id.as_str()) == Some(&group_id.as_str())
-    });
-
-    // 标题加「（分支）」后缀（R7）。先把源标题截到留出后缀空间，保证后缀在 40 字上限内始终可见。
-    const FORK_SUFFIX: &str = "（分支）";
-    let base = truncate_chars(&source.title, 40 - FORK_SUFFIX.chars().count());
-    let title = format!("{base}{FORK_SUFFIX}");
-
-    // The branch keeps the todo list as it stood at the fork point.
-    let agent_todo_state = crate::chat::todo::state_from_messages(&messages, &group_selections);
-    let conversation = Conversation {
-        id: new_id,
-        revision: 0,
-        title,
-        provider_id: source.provider_id.clone(),
-        model: source.model.clone(),
-        messages,
-        agent_runtime: source.agent_runtime.clone(),
-        active_skill_id: source.active_skill_id.clone(),
-        assistant_id: source.assistant_id.clone(),
-        assistant_snapshot: source.assistant_snapshot.clone(),
-        created_at: now,
-        updated_at: now,
-        pinned: false,
-        archived: false,
-        folder: source.folder.clone(),
-        project_id: source.project_id.clone(),
-        set_id: source.set_id.clone(),
-        context_state: ConversationContextState::default(),
-        agent_todo_state,
-        agent_plan_state: AgentPlanState::default(),
-        goal_state: None,
-        knowledge_base_ids: source.knowledge_base_ids.clone(),
-        force_knowledge_search: source.force_knowledge_search,
-        additional_directories: source.additional_directories.clone(),
-        thinking_level: source.thinking_level.clone(),
-        web_search_mode: source.web_search_mode,
-        reply_models: source.reply_models.clone(),
-        group_selections,
-        forked_from: Some(ForkOrigin {
-            conversation_id: source.id.clone(),
-            message_id: source.messages[anchor_idx].id.clone(),
-            title: source.title.clone(),
-        }),
-    };
+    let mut conversation = crate::chat::conversation_mutations::build_fork_conversation(
+        &source, &message_id, exclude_anchor.unwrap_or(false),
+    )?;
+    copy_forked_conversation_files(&app, &conversation_id, &conversation.id, &mut conversation.messages);
+    crate::reading::chat::fork_sources(&app, &conversation_id, &conversation.id, &conversation.messages)?;
 
     let conversation = crate::chat::repository::repository(&app)
         .create(&app, conversation)
@@ -890,38 +688,8 @@ pub(crate) async fn chat_fork_conversation(
 /// 深拷分叉消息引用的对话目录文件（附件 + 图片 artifact）到新对话附件目录。
 /// path 为裸文件名（相对源对话附件目录），同名拷贝到新目录后引用保持有效。
 fn copy_forked_conversation_files(
-    app: &AppHandle,
-    source_id: &str,
-    new_id: &str,
-    messages: &[ChatMessage],
+    app: &AppHandle, source_id: &str, new_id: &str, messages: &mut [ChatMessage],
 ) {
-    // 收集所有被引用的裸文件名（附件 + 消息级 artifact + 各 tool_call 内 artifact）。
-    let mut names: Vec<&str> = Vec::new();
-    for message in messages {
-        for att in &message.attachments {
-            if !att.path.is_empty() {
-                names.push(att.path.as_str());
-            }
-        }
-        for artifact in &message.artifacts {
-            if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
-                names.push(p);
-            }
-        }
-        for tool_call in &message.tool_calls {
-            for artifact in &tool_call.artifacts {
-                if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
-                    names.push(p);
-                }
-            }
-        }
-    }
-    if names.is_empty() {
-        return;
-    }
-    names.sort_unstable();
-    names.dedup();
-
     let (Ok(src_dir), Ok(dst_dir)) = (
         conversation_attachments_dir(app, source_id),
         conversation_attachments_dir(app, new_id),
@@ -929,22 +697,8 @@ fn copy_forked_conversation_files(
         eprintln!("fork: 无法解析附件目录，跳过附件深拷（source={source_id} new={new_id}）");
         return;
     };
-
-    for name in names {
-        // 只接受裸文件名，拒绝任何路径分隔符（防越目录）。
-        if name.contains('/') || name.contains('\\') {
-            eprintln!("fork: 跳过非法附件路径 {name}");
-            continue;
-        }
-        let src = src_dir.join(name);
-        let dst = dst_dir.join(name);
-        if !src.is_file() {
-            eprintln!("fork: 源附件不存在，跳过 {name}");
-            continue;
-        }
-        if let Err(e) = std::fs::copy(&src, &dst) {
-            eprintln!("fork: 拷贝附件失败 {name}: {e}");
-        }
+    for warning in crate::chat::conversation_resources::copy_forked_conversation_files_in_dirs(&src_dir, &dst_dir, messages) {
+        eprintln!("fork: {warning}");
     }
 }
 

@@ -1,5 +1,6 @@
+use super::conversation_files::{increment_revision, validate_expected_revision};
+pub use super::conversation_files::{ConversationRepositoryError, RepositoryResult};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
@@ -12,40 +13,6 @@ use super::{
     ChatMessage, Conversation, ConversationContextState, ConversationListItem, ModelRef,
     WebSearchMode,
 };
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConversationRepositoryError {
-    Conflict {
-        id: String,
-        expected: u64,
-        actual: u64,
-    },
-    Storage(String),
-}
-
-impl fmt::Display for ConversationRepositoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Conflict {
-                id,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "conversation revision conflict ({id}): expected {expected}, actual {actual}"
-            ),
-            Self::Storage(message) => f.write_str(message),
-        }
-    }
-}
-
-impl From<String> for ConversationRepositoryError {
-    fn from(value: String) -> Self {
-        Self::Storage(value)
-    }
-}
-
-pub type RepositoryResult<T> = Result<T, ConversationRepositoryError>;
 
 /// Explicit metadata changes. `Option` values mean set/clear, never "ignore";
 /// choosing a variant is what expresses that the field must be changed.
@@ -97,30 +64,6 @@ pub enum MessageMutation {
         include_anchor: bool,
     },
     ReplaceAll(Vec<ChatMessage>),
-}
-
-fn validate_expected_revision(
-    id: &str,
-    actual: u64,
-    expected: Option<u64>,
-) -> RepositoryResult<()> {
-    if let Some(expected) = expected {
-        if actual != expected {
-            return Err(ConversationRepositoryError::Conflict {
-                id: id.to_string(),
-                expected,
-                actual,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn increment_revision(conversation: &mut Conversation) -> RepositoryResult<()> {
-    conversation.revision = conversation.revision.checked_add(1).ok_or_else(|| {
-        ConversationRepositoryError::Storage("conversation revision overflow".into())
-    })?;
-    Ok(())
 }
 
 /// Apply a context-stats cache write without bumping `updated_at`.

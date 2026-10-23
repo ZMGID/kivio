@@ -7,10 +7,22 @@ publish = false
 license = "GPL-3.0-or-later"
 
 [dependencies]
+zeron-ui = { path = "zeron-ui" }
+alacritty_terminal = "0.26"
+kivio-model-runtime = { path = "model-runtime" }
+async-channel = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 gpui-kit = "=0.8.0"
 zeron-markdown = { path = "vendor/zeron-markdown" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+schemars = "1.2.2"
+ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+tempfile = "3"
 gpui-kit = { version = "=0.8.0", features = ["test-support"] }
 
 [features]
@@ -23,4 +35,104 @@ debug = 1
 lto = "thin"
 
 [workspace]
-members = ["vendor/zeron-markdown"]
+members = ["vendor/zeron-markdown", "model-runtime", "zeron-ui"]
+
+[workspace.package]
+version = "0.2.119"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+zeron-voice = { path = "zeron-support/voice" }
+zeron-voice-session = { path = "zeron-support/voice-session" }
+zeron-orb = { path = "zeron-support/orb" }
+zeron-veil = { path = "zeron-support/veil" }
+zeron-voice-media = { path = "zeron-support/voice-media" }
+zeron-proto = { path = "zeron-support/proto" }
+zeron-preview = { path = "zeron-support/preview" }
+zeron-doc = { path = "zeron-support/doc" }
+zeron-sync = { path = "zeron-support/sync" }
+zeron-harness = { path = "zeron-support/harness" }
+zeron-engine = { path = "zeron-support/engine" }
+zeron-rpc = { path = "zeron-support/rpc" }
+zeron-update = { path = "zeron-support/update" }
+zeron-ui = { path = "zeron-ui" }
+zeron-notify = { path = "zeron-support/notify" }
+zeron-syntax = { path = "zeron-support/syntax" }
+zeron-markdown = { path = "vendor/zeron-markdown" }
+zeron-theme = { path = "zeron-support/theme" }
+zeron-mcp = { path = "zeron-support/mcp" }
+zatex = { path = "zeron-support/zatex" }
+zeron-visual = { path = "zeron-support/visual" }
+zeron-visual-gpu = { path = "zeron-support/visual-gpu" }
+
+# CRDT
+loro = "1.13"
+# Wire protocol for the SessionRoom DO rooms — official Rust twin of the npm
+# `loro-protocol` package the TS edge speaks (same monorepo, byte-identical
+# frames, cross-checked by its js_snapshots tests).
+loro-protocol = "0.3"
+
+# GPUI is supplied by Longbridge GPUI Kit.
+gpui-kit = "=0.8.0"
+gpui_tokio = { path = "zeron-support/gpui-tokio" }
+
+# diffs
+similar = "2"
+
+# async / net
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+libc = "0.2"
+gethostname = "1"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+json5 = "0.4"
+# antigravity writes `settings.json` but reads it back with `hjson.load`, so a
+# user's comments and unquoted keys have to survive our read of the same file.
+deser-hjson = "2.2"
+plist = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# misc
+# Global allocator on macOS only: libmalloc retains the churn high-water mark
+# as permanent RSS - measured as the top residency cause in
+# docs/memory-plan.md. Pinned to mimalloc v2: the crate's default (v3.3.2)
+# has the same watermark pathology itself - transient streaming/render churn
+# became permanent RSS (~6x glibc growth, daemon at 908MB for 7.3MB of docs,
+# no idle recovery). Linux stays on glibc, which measured flat on the same
+# workloads.
+mimalloc = { version = "0.1", features = ["v2"] }
+anyhow = "1"
+tempfile = "3"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+notify = "7"
+portable-pty = "0.8"
+alacritty_terminal = "0.26"
+pulldown-cmark = "0.12"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+fontdb = "0.23"
+ttf-parser = "0.25.1"
+# Packaged GUI apps do not inherit shell proxy variables; honor the macOS and
+# Windows system proxy for provider usage probes and other HTTP clients.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "system-proxy"] }
+ignore = "0.4"
+# Workspace file/content search index (@ mentions, file tree, cmd+K).
+# Pinned exactly: crates.io also carries `0.11.1-nightly.*` prereleases.
+fff-search = "=0.11.0"

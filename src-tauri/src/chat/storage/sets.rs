@@ -2,45 +2,20 @@ use super::*;
 
 // ===== Chat 集(Set) 存储：照搬 project 模式，去掉 root_path/folder 迁移，加 system_prompt/默认助手 =====
 
-pub(super) fn validate_set_id(id: &str) -> Result<(), String> {
-    let valid = id.starts_with("set_")
-        && id.len() > "set_".len()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(format!("Invalid set id: {id}"))
-    }
-}
+pub(super) use super::super::group_catalog::validate_set_id;
 
-pub(super) fn normalize_set_name(name: &str) -> Result<String, String> {
-    let normalized = name.trim();
-    if normalized.is_empty() {
-        return Err("集名称不能为空".to_string());
-    }
-    Ok(normalized.chars().take(80).collect())
-}
+pub(super) use super::super::group_catalog::normalize_set_name;
 
 pub fn sets_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(conversations_dir(app)?.join("sets.json"))
 }
 
 pub fn load_set_index(app: &AppHandle) -> Result<ChatSetIndex, String> {
-    let path = sets_file_path(app)?;
-    if !path.exists() {
-        return Ok(ChatSetIndex::default());
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("read sets file: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("parse sets file: {e}"))
+    super::super::group_catalog::load_set_index(&conversations_dir(app)?)
 }
 
 pub fn save_set_index(app: &AppHandle, index: &ChatSetIndex) -> Result<(), String> {
-    let path = sets_file_path(app)?;
-    let content =
-        serde_json::to_string_pretty(index).map_err(|e| format!("serialize sets: {e}"))?;
-    atomic_write(&path, &content, "sets")
+    super::super::group_catalog::save_set_index(&conversations_dir(app)?, index)
 }
 
 pub fn get_sets(app: &AppHandle) -> Result<Vec<ChatSet>, String> {
@@ -68,17 +43,9 @@ pub fn live_set_system_prompt(app: &AppHandle, conversation: &Conversation) -> O
         .filter(|prompt| !prompt.trim().is_empty())
 }
 
-pub fn create_set(app: &AppHandle, mut set: ChatSet) -> Result<ChatSet, String> {
+pub fn create_set(app: &AppHandle, set: ChatSet) -> Result<ChatSet, String> {
     let _catalog = catalog_mutation_lock();
-    validate_set_id(&set.id)?;
-    set.name = normalize_set_name(&set.name)?;
-    let mut index = load_set_index(app)?;
-    if index.sets.iter().any(|item| item.name == set.name) {
-        return Err("集名称已存在".to_string());
-    }
-    index.sets.insert(0, set.clone());
-    save_set_index(app, &index)?;
-    Ok(set)
+    super::super::group_catalog::create_set(&conversations_dir(app)?, set)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -94,42 +61,17 @@ pub fn update_set(
     color_set: bool,
 ) -> Result<ChatSet, String> {
     let _catalog = catalog_mutation_lock();
-    validate_set_id(set_id)?;
-    let mut index = load_set_index(app)?;
-    let pos = index
-        .sets
-        .iter()
-        .position(|set| set.id == set_id)
-        .ok_or_else(|| "集不存在".to_string())?;
-
-    let old_name = index.sets[pos].name.clone();
-    if let Some(name) = name {
-        let next_name = normalize_set_name(&name)?;
-        if next_name != old_name && index.sets.iter().any(|set| set.name == next_name) {
-            return Err("集名称已存在".to_string());
-        }
-        index.sets[pos].name = next_name;
-    }
-    if system_prompt_set {
-        index.sets[pos].system_prompt = system_prompt.unwrap_or_default();
-    }
-    if default_assistant_id_set {
-        index.sets[pos].default_assistant_id = default_assistant_id.and_then(|id| {
-            let trimmed = id.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        });
-    }
-    if color_set {
-        index.sets[pos].color = color;
-    }
-    index.sets[pos].updated_at = chrono::Local::now().timestamp();
-    let set = index.sets[pos].clone();
-    save_set_index(app, &index)?;
-    Ok(set)
+    super::super::group_catalog::update_set(
+        &conversations_dir(app)?,
+        set_id,
+        name,
+        system_prompt,
+        system_prompt_set,
+        default_assistant_id,
+        default_assistant_id_set,
+        color,
+        color_set,
+    )
 }
 
 pub async fn delete_set(app: &AppHandle, set_id: &str) -> Result<(), String> {

@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::mcp::{self, types::ChatToolArtifact, ChatToolDefinition};
+use crate::mcp::{self, ChatToolDefinition};
 
 /// 外置图片读不回来时的替身文本。落盘的 `MessagePart::Image` 只有 `path`，回放前
 /// 必须经 `attachments::rehydrate_model_message_images` 填回 `data`；文件被用户删掉
@@ -15,144 +15,7 @@ pub const MISSING_IMAGE_PLACEHOLDER: &str = "[图片已不可用（附件文件�
 /// off the stable prefix (cross-conversation prompt cache).
 pub const WORKBENCH_LOCATION_PROMPT_HEAD: &str = "Current default workbench:";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelRole {
-    User,
-    Assistant,
-    Tool,
-}
-
-impl ModelRole {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ModelRole::User => "user",
-            ModelRole::Assistant => "assistant",
-            ModelRole::Tool => "tool",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MessagePart {
-    /// Runtime video bytes; persistence uses the same external attachment path as images.
-    Video {
-        mime_type: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        data: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-    },
-    Text {
-        text: String,
-    },
-    /// 用户/工具上行的一张图。
-    ///
-    /// **落盘时 `data` 必须为空、`path` 必须有值**：图片字节存进
-    /// `<会话id>_attachments/`，JSON 里只留文件名（见
-    /// `attachments::externalize_model_message_images`）。运行期反过来——回放时
-    /// `attachments::rehydrate_model_message_images` 按 `path` 读盘填回 `data`，
-    /// 各 provider 适配器只认 `data`，感知不到这层。
-    ///
-    /// 一张 1.8MB 的截图 base64 后 2.5MB；被 `read` 看三次就是三份，实测把会话
-    /// 文件撑到 7.59MB（99.8% 是同一张图的副本），而每轮工具执行完的快照都要把
-    /// 整本读出来、clone、序列化、fsync 一遍。所以这里绝不能存 base64。
-    Image {
-        mime_type: String,
-        /// base64 编码的图片字节。**运行期形态**，落盘前会被外置清空。
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        data: String,
-        /// 外置后的附件文件名（相对于会话附件目录）。**落盘形态**。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
-        /// Preserve OpenAI image sizing through history and provider conversion.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    ImageUrl {
-        url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    ToolCall {
-        id: String,
-        name: String,
-        arguments: Value,
-        arguments_raw: String,
-        /// Provider-specific opaque signature that must be echoed back when this
-        /// tool call is replayed (Gemini 3.x `thoughtSignature`: required on
-        /// `functionCall` parts in follow-up requests, else 400). Other providers
-        /// leave this `None` and ignore it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<String>,
-    },
-    ToolResult {
-        tool_call_id: String,
-        content: String,
-        is_error: bool,
-        artifacts: Vec<ChatToolArtifact>,
-    },
-    Reasoning {
-        text: String,
-    },
-    /// Complete Anthropic blocks are immutable replay data, separate from display reasoning.
-    AnthropicThinking {
-        thinking: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_model: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_provider_id: Option<String>,
-    },
-    AnthropicRedactedThinking {
-        data: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_model: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_provider_id: Option<String>,
-    },
-    /// Provider-local server tool blocks and citation-bearing text. Opaque wire
-    /// payloads are replayed only to the source model/provider, in native order.
-    AnthropicNativeBlock {
-        block: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_model: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source_provider_id: Option<String>,
-    },
-    /// OpenAI Responses 原生 reasoning item（`{"type":"reasoning","id":"rs_…",
-    /// "summary":[…],"encrypted_content":"…"}`），整只按输出顺序保存。
-    ///
-    /// **为什么必须回放**：Responses 上的 gpt-5 / codex 系模型做工具循环时，思维链
-    /// 靠这些 item 跨轮延续——Codex 官方客户端每轮都把它们随 `input` 原样送回
-    /// （store:false + include:["reasoning.encrypted_content"]）。不回放等于每个
-    /// 工具轮把模型的思维链清零，多步任务（生成→检查→重做）退化成短视反应。
-    ///
-    /// `model` 记录产出该 item 的模型：encrypted_content 只有同模型能解，会话中途
-    /// 换模型后旧 item 不得回放（否则 400）。仅 `openai_responses` 协议回放；其余
-    /// 适配器一律忽略本变体。
-    ReasoningItem {
-        model: String,
-        item: Value,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelMessage {
-    pub role: ModelRole,
-    pub content: Vec<MessagePart>,
-}
-
-impl ModelMessage {
-    pub fn text(role: ModelRole, text: impl Into<String>) -> Self {
-        Self {
-            role,
-            content: vec![MessagePart::Text { text: text.into() }],
-        }
-    }
-}
+pub use crate::chat::conversation_data::{MessagePart, ModelMessage, ModelRole, ModelUsage};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTool {
@@ -295,33 +158,6 @@ pub struct GenerateRequest {
     pub tools: Vec<ModelTool>,
     pub options: GenerateOptions,
     pub metadata: RequestMetadata,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelUsage {
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
-    pub total_tokens: Option<u64>,
-    #[serde(default)]
-    pub cached_input_tokens: Option<u64>,
-    #[serde(default)]
-    pub cache_creation_input_tokens: Option<u64>,
-    #[serde(default)]
-    pub reasoning_tokens: Option<u64>,
-    /// CLI 自报的**上下文窗口总大小**（不是用量）。来源：ACP `usage_update.size`
-    /// （官方 RFD「Session Usage and Context Status」，字段平铺在 `update` 下）。
-    ///
-    /// 只有外部 CLI 会话填；内置 provider 恒 `None`——内置路径的窗口来自
-    /// `model_metadata::context_window_for_model`，与本字段无关。放在 `ModelUsage` 里
-    /// 是因为窗口与用量由 CLI 在同一次上报中给出，随消息一起持久化后
-    /// `collect_external_session_usage` 能一并读到，无需为分母另开事件通道。
-    #[serde(default)]
-    pub context_window_tokens: Option<u64>,
-    /// Latest agent request footprint, separate from accumulated billing usage.
-    /// Antigravity includes disjoint cached input and output, and excludes checkpoint calls.
-    /// Missing on old messages and protocols which only report accumulated usage.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1796,20 +1632,24 @@ MCP note after the path.";
             &request.messages[1].content[0],
             MessagePart::ToolResult { is_error: true, .. }
         ));
-        assert!(wire
-            .iter()
-            .any(|m| m["content"].as_str().is_some_and(|s| s.contains("keep"))));
-        assert!(wire
-            .iter()
-            .any(|m| m["content"].as_str().is_some_and(|s| s.contains("late"))));
+        assert!(
+            wire.iter()
+                .any(|m| m["content"].as_str().is_some_and(|s| s.contains("keep")))
+        );
+        assert!(
+            wire.iter()
+                .any(|m| m["content"].as_str().is_some_and(|s| s.contains("late")))
+        );
         assert_eq!(wire.iter().filter(|m| m["role"] == "tool").count(), 1);
         let responses = responses_input_from_model_messages(&request.messages, None);
         assert_eq!(responses[1]["type"], "function_call_output");
         assert_eq!(responses[1]["call_id"], "missing");
-        assert!(responses[1]["output"]
-            .as_str()
-            .unwrap()
-            .contains("interrupted"));
+        assert!(
+            responses[1]["output"]
+                .as_str()
+                .unwrap()
+                .contains("interrupted")
+        );
         let gemini = crate::chat::model::gemini::gemini_contents_from_generate_request(&request);
         assert_eq!(gemini[1]["parts"][0]["functionResponse"]["name"], "read");
     }

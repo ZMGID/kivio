@@ -7,6 +7,7 @@ pub mod filter;
 pub(crate) mod finalize;
 pub mod host;
 pub mod loop_;
+pub(crate) mod model_calls;
 pub(crate) mod planning;
 pub mod prepare;
 pub(crate) mod provider_runtime;

@@ -389,56 +389,7 @@ pub(super) fn messages_match(conv: &Conversation, needle: &str) -> bool {
     first_message_match(conv, needle).is_some()
 }
 
-pub(super) fn first_message_match(
-    conv: &Conversation,
-    needle: &str,
-) -> Option<(String, String, String)> {
-    for message in &conv.messages {
-        if message.content.to_lowercase().contains(needle) {
-            return Some((
-                "content".into(),
-                message.id.clone(),
-                make_search_snippet(&message.content, needle),
-            ));
-        }
-        if let Some(reasoning) = message.reasoning.as_deref() {
-            if reasoning.to_lowercase().contains(needle) {
-                return Some((
-                    "reasoning".into(),
-                    message.id.clone(),
-                    make_search_snippet(reasoning, needle),
-                ));
-            }
-        }
-    }
-    None
-}
-
-/// 围绕关键词截取一段可读上下文；字符边界安全，折叠换行。
-pub(super) fn make_search_snippet(text: &str, needle_lower: &str) -> String {
-    let flat: String = text
-        .chars()
-        .map(|c| if c.is_whitespace() { ' ' } else { c })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let lower = flat.to_lowercase();
-    let Some(pos) = lower.find(needle_lower) else {
-        return crate::chat::agent::execute::truncate_chars(&flat, 140);
-    };
-    let start = flat.floor_char_boundary(pos.saturating_sub(48));
-    let end = flat.ceil_char_boundary((pos + needle_lower.len() + 72).min(flat.len()));
-    let mut out = String::new();
-    if start > 0 {
-        out.push('…');
-    }
-    out.push_str(&flat[start..end]);
-    if end < flat.len() {
-        out.push('…');
-    }
-    out
-}
+pub(super) use crate::chat::conversation_search::{first_message_match, make_search_snippet};
 
 #[cfg(test)]
 mod tests {

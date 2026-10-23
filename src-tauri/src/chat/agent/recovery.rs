@@ -17,35 +17,7 @@
 
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 
-/// 降级回答的结构化描述，落到 `ChatMessage.degraded` 供前端渲染成独立卡片。
-///
-/// 为什么不只发拼好的文本：降级信息此前是一段纯文本塞进 assistant 正文，看起来和
-/// 模型的真实回答一模一样，会被复制、会进对话历史再发回模型。结构化后正文归正文、
-/// 故障归卡片。`text` 保留同样的纯文本，供旧前端与外部 CLI 回落。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DegradedAnswer {
-    /// 失败归类的稳定标识（`rate_limited` / `context_overflow` / `moderation` /
-    /// `empty_response` / `unknown`），前端据此选图标与措辞，不解析文案。
-    pub kind: String,
-    /// 一行人读的失败原因（已按 kind 精确化，不再笼统说"可能上下文过长"）。
-    pub reason: String,
-    /// 供应商返回的原始报错（已剥壳裁剪）。`reason` 只是分类话术，真正能排查的是这个。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    /// 本轮已完成的工具调用摘要（名称 + 结果首行），让用户知道哪些工作没白做。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_summaries: Vec<DegradedToolSummary>,
-    /// 与 `tool_summaries` 同源的纯文本版本；旧前端 / 外部 CLI 直接显示这个。
-    pub text: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DegradedToolSummary {
-    pub name: String,
-    pub preview: String,
-}
+pub use crate::chat::conversation_data::{DegradedAnswer, DegradedToolSummary};
 
 impl FailureKind {
     /// 稳定的 wire 标识。前端按它分支，不依赖本地化文案。

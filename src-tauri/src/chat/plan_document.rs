@@ -1,16 +1,10 @@
 use crate::chat::types::{AgentPlanMode, AgentPlanState, AgentPlanStatus, Conversation};
 use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema, ts_rs::TS)]
-pub struct PlanDocument {
-    pub id: String,
-    pub title: String,
-    pub path: String,
-}
+pub use crate::chat::conversation_data::PlanDocument;
 
 pub fn tool() -> ChatToolDefinition {
     ChatToolDefinition {

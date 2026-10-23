@@ -1,3 +1,13 @@
+pub(crate) mod conversation_resources;
+pub(crate) mod attachment_files;
+pub(crate) mod message_content;
+pub(crate) mod conversation_mutations;
+pub(crate) mod todo_history;
+pub(crate) mod conversation_data;
+pub(crate) mod conversation_search;
+pub(crate) mod conversation_files;
+pub(crate) mod file_io;
+pub(crate) mod group_catalog;
 // Chat 模块：AI 客户端核心功能
 pub mod agent;
 pub(crate) mod artifacts;

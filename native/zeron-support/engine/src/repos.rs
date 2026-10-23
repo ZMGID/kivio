@@ -1,0 +1,3637 @@
+//! Repos — this device's git repositories, branches, worktrees, and the folder
+//! browser (feature-inventory §3.5; port of zeron's `repos.ts` + `folder-lister.ts`).
+//!
+//! Repos are device-local (paths differ per machine), so the known set is a plain
+//! JSON list (`{data_dir}/repos.json`) — no sync. Existing repos can live anywhere
+//! the user points us; cloned/created ones land in `{data_dir}/repos`. Worktrees are
+//! created under `~/.zeron/worktrees/<repoName>/<worktreeName>` (NOT the data
+//! dir — worktrees are user-facing working checkouts), with an auto-generated name +
+//! matching `zeron/<name>` branch. Device preferences can choose another root;
+//! `ZERON_WORKTREES_DIR` takes precedence over those preferences.
+//!
+//! All git access is via subprocess (`tokio::process`) — never libgit2.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use futures::{StreamExt, stream};
+use sha2::{Digest, Sha256};
+
+use zeron_proto::{
+    DriveEntry, FileSearchMatch, FolderEntry, FolderListing, GitHistoryCommit,
+    GitHistoryComparison, GitHistoryPage, GitHistoryRef, GitHistoryRefKind, HomeFolderMatch,
+    HomeFolderSearchResult, Repo, RepoRef, Worktree,
+};
+
+use crate::EngineError;
+use crate::WorkspaceSearch;
+use crate::workspace_search::{NameKinds, normalize_name_query};
+
+/// Existence probe timeout for user-chosen / remembered paths, which can point at
+/// dead network mounts where a bare `stat` hangs for minutes.
+const PATH_EXISTS_TIMEOUT: Duration = Duration::from_secs(2);
+/// Hard wall-clock ceiling for a folder listing (the walk runs in a disposable
+/// blocking task; on expiry the caller unblocks and the task is abandoned).
+const FOLDER_LIST_TIMEOUT: Duration = Duration::from_secs(6);
+/// Cap on returned folder entries (bounds response size).
+const FOLDER_LIST_MAX_ENTRIES: usize = 500;
+/// Cap on returned drives (a machine with more mounts than this is a server
+/// farm, not a laptop picking a project folder).
+const DRIVE_LIST_MAX_ENTRIES: usize = 50;
+/// File mentions should remain responsive even in very large checkouts.
+const FILE_SEARCH_MAX_RESULTS: usize = 8;
+/// A dead network mount must not leave the composer search spinning forever.
+const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(6);
+/// Folders `SearchHomeFolders` returns by default, and at most.
+pub const HOME_FOLDER_RESULTS: usize = 20;
+pub const HOME_FOLDER_MAX_RESULTS: usize = 50;
+/// Candidates taken from the index before re-ranking by name; more for a
+/// `/` query, which searches only its last segment.
+const HOME_FOLDER_CANDIDATES: usize = 300;
+const HOME_FOLDER_PATH_CANDIDATES: usize = 2_000;
+const GITHUB_AVATAR_TIMEOUT: Duration = Duration::from_secs(6);
+pub const GIT_HISTORY_DEFAULT_LIMIT: usize = 100;
+pub const GIT_HISTORY_MAX_LIMIT: usize = 200;
+
+const ADJECTIVES: &[&str] = &[
+    "swift", "calm", "bright", "bold", "keen", "brave", "clever", "lucky", "quiet", "warm", "cool",
+    "sharp", "gentle", "vivid", "amber", "cobalt",
+];
+const NOUNS: &[&str] = &[
+    "otter", "harbor", "falcon", "cedar", "meadow", "zeron", "delta", "ember", "lynx", "maple",
+    "onyx", "quartz", "raven", "summit", "willow", "aspen",
+];
+
+/// Canonical identity shared by every chat operating in this exact worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutIdentity {
+    /// `sha256(deviceId ‖ NUL ‖ canonical git dir)` — device-scoped, path-stable.
+    pub id: String,
+    /// Canonical worktree root (`rev-parse --show-toplevel`, symlinks resolved).
+    pub root: PathBuf,
+    /// Canonical git dir (worktree-specific for linked worktrees).
+    pub git_dir: PathBuf,
+}
+
+/// Best-effort home directory (the `ListFolders` default and worktree root base).
+pub(crate) fn home_dir() -> PathBuf {
+    let variables = if cfg!(windows) {
+        ["USERPROFILE", "HOME"]
+    } else {
+        ["HOME", "USERPROFILE"]
+    };
+    variables
+        .into_iter()
+        .find_map(|name| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// `~` / `~/…` → this host's home directory. Anything else passes through.
+/// An unavailable home is an error so `~` never silently becomes `/`.
+pub(crate) fn expand_home(cwd: &str) -> Result<String, &'static str> {
+    match cwd.strip_prefix('~') {
+        Some("") => Ok(session_home_dir()?.to_string_lossy().into_owned()),
+        Some(rest) if rest.starts_with('/') => Ok(session_home_dir()?
+            .join(&rest[1..])
+            .to_string_lossy()
+            .into_owned()),
+        _ => Ok(cwd.to_string()),
+    }
+}
+
+/// A chat cwd on this host: [`expand_home`], or a projectless chat's scratch
+/// folder under `scratch_root`, created on first use — createChat only names
+/// it, possibly on another device.
+pub(crate) fn resolve_chat_cwd(cwd: &str, scratch_root: &Path) -> Result<String, String> {
+    if !zeron_proto::projectless::is_scratch_cwd(cwd) {
+        return expand_home(cwd).map_err(str::to_string);
+    }
+    let name = cwd.trim().rsplit('/').next().unwrap_or_default();
+    let folder = scratch_root.join(name);
+    std::fs::create_dir_all(&folder).map_err(|error| {
+        format!(
+            "could not create the chat's folder {}: {error}",
+            folder.display()
+        )
+    })?;
+    Ok(folder.to_string_lossy().into_owned())
+}
+
+/// Resolve the host user's home for a session that explicitly uses `~`.
+/// An absent home must not silently turn a projectless session into `/`.
+pub(crate) fn session_home_dir() -> Result<PathBuf, &'static str> {
+    session_home_dir_with(|name| std::env::var_os(name))
+}
+
+fn session_home_dir_with(
+    mut env: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> Result<PathBuf, &'static str> {
+    #[cfg(windows)]
+    let names = ["USERPROFILE", "HOME"];
+    #[cfg(not(windows))]
+    let names = ["HOME", "USERPROFILE"];
+    for name in names {
+        let Some(value) = env(name).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let path = PathBuf::from(value);
+        if path.is_absolute() && path.is_dir() && path.to_str().is_some() {
+            return Ok(path);
+        }
+    }
+    Err("User home directory unavailable on this device")
+}
+
+struct ReposInner {
+    data_dir: PathBuf,
+    device_id: String,
+    worktrees: crate::worktree_settings::WorktreePreferences,
+    http: reqwest::Client,
+    github_avatars: std::sync::Mutex<HashMap<String, String>>,
+    github_avatar_pages: std::sync::Mutex<HashSet<String>>,
+    /// The engine's one workspace search index set (`@`, file tree, cmd+K).
+    workspace_search: WorkspaceSearch,
+    /// HEAD commit → its trunk's root commit. History behind a commit never
+    /// changes, so the full first-parent walk runs once per HEAD, not on
+    /// every spaces repair pass.
+    trunk_roots: std::sync::Mutex<HashMap<String, String>>,
+}
+
+#[derive(Clone)]
+pub struct Repos {
+    inner: std::sync::Arc<ReposInner>,
+}
+
+impl Repos {
+    pub(crate) fn data_dir(&self) -> &Path {
+        &self.inner.data_dir
+    }
+
+    /// Where projectless chats' folders live on this host: the engine data
+    /// dir's `scratch` (`~/.zeron/scratch` for the default data dir), as
+    /// t3code keeps its under `~/.t3/scratch`.
+    pub(crate) fn scratch_root(&self) -> PathBuf {
+        self.inner.data_dir.join("scratch")
+    }
+
+    pub fn workspace_search(&self) -> &WorkspaceSearch {
+        &self.inner.workspace_search
+    }
+
+    /// Device preferences live in `data_dir`. New worktrees use the custom
+    /// location or `~/.zeron/worktrees`; a nonempty `$ZERON_WORKTREES_DIR`
+    /// overrides both (including test isolation).
+    pub fn new(data_dir: &Path, device_id: &str) -> Self {
+        Self::with_worktree_preferences(
+            data_dir,
+            device_id,
+            home_dir().join(".zeron").join("worktrees"),
+            std::env::var_os("ZERON_WORKTREES_DIR")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+        )
+    }
+
+    /// Explicit default worktree root, without the environment override (tests).
+    pub fn with_worktrees_root(data_dir: &Path, device_id: &str, worktrees_root: PathBuf) -> Self {
+        Self::with_worktree_preferences(data_dir, device_id, worktrees_root, None)
+    }
+
+    fn with_worktree_preferences(
+        data_dir: &Path,
+        device_id: &str,
+        worktrees_root: PathBuf,
+        environment_override: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            inner: std::sync::Arc::new(ReposInner {
+                data_dir: data_dir.to_path_buf(),
+                device_id: device_id.to_string(),
+                worktrees: crate::worktree_settings::WorktreePreferences::open(
+                    data_dir,
+                    worktrees_root,
+                    environment_override,
+                ),
+                http: reqwest::Client::builder()
+                    .timeout(GITHUB_AVATAR_TIMEOUT)
+                    .user_agent("Comet-Git-History")
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
+                github_avatars: std::sync::Mutex::new(HashMap::new()),
+                trunk_roots: std::sync::Mutex::new(HashMap::new()),
+                github_avatar_pages: std::sync::Mutex::new(HashSet::new()),
+                workspace_search: WorkspaceSearch::new(),
+            }),
+        }
+    }
+
+    pub fn worktree_settings(&self) -> zeron_proto::WorktreeSettingsStatus {
+        self.inner.worktrees.status()
+    }
+
+    pub async fn set_worktree_settings(
+        &self,
+        settings: zeron_proto::WorktreeSettings,
+    ) -> Result<zeron_proto::WorktreeSettingsStatus, EngineError> {
+        self.inner.worktrees.set(settings).await
+    }
+
+    // ── registry (repos.json) ───────────────────────────────────────────────
+
+    fn registry_path(&self) -> PathBuf {
+        self.inner.data_dir.join("repos.json")
+    }
+
+    fn load_paths(&self) -> Vec<String> {
+        std::fs::read_to_string(self.registry_path())
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_paths(&self, paths: &[String]) -> Result<(), EngineError> {
+        let mut seen = HashSet::new();
+        let deduped: Vec<&String> = paths.iter().filter(|p| seen.insert(p.as_str())).collect();
+        let json = serde_json::to_string_pretty(&deduped)
+            .map_err(|e| EngineError::Other(format!("repos registry serialize: {e}")))?;
+        std::fs::create_dir_all(&self.inner.data_dir)?;
+        std::fs::write(self.registry_path(), json)?;
+        Ok(())
+    }
+
+    fn register(&self, path: &str) -> Result<(), EngineError> {
+        let mut paths = self.load_paths();
+        paths.push(path.to_string());
+        self.save_paths(&paths)
+    }
+
+    // ── git plumbing ────────────────────────────────────────────────────────
+
+    /// Run `git <args>` (optionally under `cwd`), returning trimmed stdout.
+    async fn git(&self, args: &[&str], cwd: Option<&Path>) -> Result<String, EngineError> {
+        let mut cmd = tokio::process::Command::new("git");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.as_std_mut().creation_flags(0x08000000);
+            // Let Git handle long native paths without persisting user config.
+            cmd.args(["-c", "core.longpaths=true"]);
+        }
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.args(args);
+        cmd.stdin(std::process::Stdio::null());
+        let output = cmd.output().await.map_err(|e| {
+            EngineError::Other(format!("git {args:?} in {cwd:?} failed to start: {e}"))
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let message = stderr.trim();
+            return Err(EngineError::Other(if message.is_empty() {
+                format!(
+                    "git {} failed ({})",
+                    args.first().unwrap_or(&"?"),
+                    output.status
+                )
+            } else {
+                format!("git: {message}")
+            }));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Like [`Self::git`], for commands that answer "no" with a silent exit
+    /// status 1 (`rev-parse --verify --quiet`): `Ok(None)` then, `Err` for
+    /// any other failure.
+    async fn git_probe(
+        &self,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> Result<Option<String>, EngineError> {
+        let mut cmd = tokio::process::Command::new("git");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.as_std_mut().creation_flags(0x08000000);
+        }
+        cmd.args(args);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        cmd.stdin(std::process::Stdio::null());
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
+        if output.status.success() {
+            return Ok(Some(
+                String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            ));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if output.status.code() == Some(1) && stderr.trim().is_empty() {
+            return Ok(None);
+        }
+        Err(EngineError::Other(format!(
+            "git {} failed ({}): {}",
+            args.first().unwrap_or(&"?"),
+            output.status,
+            stderr.trim()
+        )))
+    }
+
+    /// Async existence probe with a timeout: a wedged network mount just reads
+    /// as "gone" instead of hanging every caller.
+    async fn path_exists(path: &Path) -> bool {
+        let path = path.to_path_buf();
+        matches!(
+            tokio::time::timeout(PATH_EXISTS_TIMEOUT, tokio::fs::metadata(path)).await,
+            Ok(Ok(_))
+        )
+    }
+
+    /// Is `path` inside a git work tree? (Also the SpacesSync git-presence probe.)
+    /// The GitHub repository (`owner/name`) of `path`'s `origin` remote.
+    pub async fn github_repo(&self, path: &Path) -> Option<String> {
+        let remote = self
+            .git(&["remote", "get-url", "origin"], Some(path))
+            .await
+            .ok()?;
+        let (owner, name) = parse_github_remote(&remote)?;
+        Some(format!("{owner}/{name}"))
+    }
+
+    pub async fn is_repo(&self, path: &Path) -> bool {
+        matches!(
+            self.git(&["rev-parse", "--is-inside-work-tree"], Some(path)).await,
+            Ok(out) if out == "true"
+        )
+    }
+
+    /// The branch currently checked out at a repo/worktree path (`"HEAD"` when detached).
+    pub async fn current_branch(&self, path: &Path) -> Result<String, EngineError> {
+        let branch = self.git(&["branch", "--show-current"], Some(path)).await?;
+        Ok(if branch.is_empty() {
+            "HEAD".to_string()
+        } else {
+            branch
+        })
+    }
+
+    /// Commit checked out at `path`, or `None` for a repository without an
+    /// initial commit.
+    pub async fn head_sha(&self, path: &Path) -> Result<Option<String>, EngineError> {
+        match self
+            .git(&["rev-parse", "--verify", "HEAD^{commit}"], Some(path))
+            .await
+        {
+            Ok(sha) if !sha.is_empty() => Ok(Some(sha)),
+            Ok(_) => Ok(None),
+            Err(_) if self.is_repo(path).await => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Fetch every configured remote without pruning or integrating anything
+    /// into the active branch. This intentionally updates refs only.
+    pub async fn fetch_all(&self, repo_path: &Path) -> Result<(), EngineError> {
+        self.git(&["fetch", "--all", "--quiet"], Some(repo_path))
+            .await
+            .map(drop)
+    }
+
+    /// The absolute Git `HEAD` file for event-driven external branch reconciliation.
+    pub async fn git_head_path(&self, path: &Path) -> Result<PathBuf, EngineError> {
+        let git_dir = self
+            .git(&["rev-parse", "--absolute-git-dir"], Some(path))
+            .await?;
+        Ok(PathBuf::from(git_dir).join("HEAD"))
+    }
+
+    /// Canonical identity shared by every chat operating in this exact worktree:
+    /// `sha256(deviceId ‖ NUL ‖ canonical git dir)`.
+    pub async fn checkout_identity(&self, path: &Path) -> Result<CheckoutIdentity, EngineError> {
+        let out = self
+            .git(
+                &[
+                    "rev-parse",
+                    "--show-toplevel",
+                    "--path-format=absolute",
+                    "--git-dir",
+                ],
+                Some(path),
+            )
+            .await?;
+        let mut lines = out.lines();
+        let (root, git_dir) = match (lines.next(), lines.next(), lines.next()) {
+            (Some(root), Some(git_dir), None) => (root.to_owned(), git_dir.to_owned()),
+            // Fallback for a path with a `\n` in its name.
+            _ => (
+                self.git(&["rev-parse", "--show-toplevel"], Some(path))
+                    .await?,
+                self.git(
+                    &["rev-parse", "--path-format=absolute", "--git-dir"],
+                    Some(path),
+                )
+                .await?,
+            ),
+        };
+        let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
+        let canonical_git_dir =
+            std::fs::canonicalize(&git_dir).unwrap_or_else(|_| PathBuf::from(&git_dir));
+        let mut hasher = Sha256::new();
+        hasher.update(self.inner.device_id.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(canonical_git_dir.to_string_lossy().as_bytes());
+        let id = hex(&hasher.finalize());
+        Ok(CheckoutIdentity {
+            id,
+            root: canonical_root,
+            git_dir: canonical_git_dir,
+        })
+    }
+
+    /// Identity shared by every clone and worktree of one repository: the
+    /// root commit its trunk grew from, `commit:<sha>`. Unlike a remote URL it
+    /// survives repository renames and transfers, SSH host aliases and
+    /// transport spellings, and it needs no network. Forks share it with
+    /// their upstream (the same codebase).
+    ///
+    /// A history that cannot vouch for its root — a shallow clone, or no
+    /// commits yet — falls back to the normalized `origin` remote (else the
+    /// first remote) as `host/owner/repo`, then to
+    /// `local:sha256(deviceId ‖ NUL ‖ canonical common git dir)`, so the
+    /// repository's worktrees on this device still match each other.
+    ///
+    /// A folder below the repository's top level carries its in-repository
+    /// path (`<identity>:apps/web`): sibling folders of one monorepo, or
+    /// plain folders inside an enclosing repository, stay separate projects,
+    /// while the same subfolder in another clone or worktree still matches.
+    ///
+    /// Errors are real failures (git missing, a lock, I/O) — never a silent
+    /// fallback to a different identity form, which would regroup the
+    /// sidebar on a transient hiccup. Callers keep their last value.
+    pub async fn repository_identity(&self, path: &Path) -> Result<String, EngineError> {
+        let base = match self.trunk_root_commit(path).await? {
+            Some(root) => format!("commit:{root}"),
+            None => self.remote_or_local_identity(path).await?,
+        };
+        let prefix = self
+            .git(&["rev-parse", "--show-prefix"], Some(path))
+            .await?;
+        let prefix = prefix.trim_end_matches('/');
+        Ok(if prefix.is_empty() {
+            base
+        } else {
+            format!("{base}:{prefix}")
+        })
+    }
+
+    /// The normalized remote, else the device-scoped common-git-dir hash.
+    async fn remote_or_local_identity(&self, path: &Path) -> Result<String, EngineError> {
+        let remote = match self.git(&["remote", "get-url", "origin"], Some(path)).await {
+            Ok(url) => Some(url),
+            Err(_) => match self.git(&["remote"], Some(path)).await {
+                Ok(names) => match names.lines().next() {
+                    Some(name) => self
+                        .git(&["remote", "get-url", name.trim()], Some(path))
+                        .await
+                        .ok(),
+                    None => None,
+                },
+                Err(_) => None,
+            },
+        };
+        if let Some(remote) = remote
+            .as_deref()
+            .and_then(crate::source_control::parse_git_remote)
+        {
+            return Ok(
+                format!("{}/{}/{}", remote.host, remote.owner, remote.repository)
+                    .to_ascii_lowercase(),
+            );
+        }
+        let common_dir = self
+            .git(
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                Some(path),
+            )
+            .await?;
+        let canonical =
+            std::fs::canonicalize(&common_dir).unwrap_or_else(|_| PathBuf::from(&common_dir));
+        let mut hasher = Sha256::new();
+        hasher.update(self.inner.device_id.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(canonical.to_string_lossy().as_bytes());
+        Ok(format!("local:{}", hex(&hasher.finalize())))
+    }
+
+    /// The root of HEAD's first-parent chain — the trunk's first commit. A
+    /// merged-in unrelated history arrives as a second parent, so its roots
+    /// never displace this one. `Ok(None)` when the history can't vouch for
+    /// a root: a shallow clone (its boundary commits only look parentless,
+    /// and differ with the fetch depth) or an unborn HEAD.
+    async fn trunk_root_commit(&self, path: &Path) -> Result<Option<String>, EngineError> {
+        let shallow = self
+            .git(&["rev-parse", "--is-shallow-repository"], Some(path))
+            .await?;
+        if shallow == "true" {
+            return Ok(None);
+        }
+        let Some(head) = self
+            .git_probe(
+                &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                Some(path),
+            )
+            .await?
+        else {
+            return Ok(None); // unborn HEAD: no commits yet
+        };
+        if let Some(root) = self
+            .inner
+            .trunk_roots
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&head).cloned())
+        {
+            return Ok(Some(root));
+        }
+        let roots = self
+            .git(
+                &["rev-list", "--first-parent", "--max-parents=0", &head],
+                Some(path),
+            )
+            .await?;
+        let Some(root) = roots
+            .lines()
+            .map(str::trim)
+            .find(|sha| !sha.is_empty())
+            .map(str::to_owned)
+        else {
+            return Ok(None);
+        };
+        if let Ok(mut cache) = self.inner.trunk_roots.lock() {
+            if cache.len() >= 4096 {
+                cache.clear();
+            }
+            cache.insert(head, root.clone());
+        }
+        Ok(Some(root))
+    }
+
+    async fn to_repo(&self, path: &Path) -> Result<Repo, EngineError> {
+        let branch = self.current_branch(path).await.ok();
+        Ok(Repo {
+            path: path.to_string_lossy().to_string(),
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string()),
+            default_branch: branch,
+        })
+    }
+
+    // ── ListRepos / AddRepo / CloneRepo / CreateRepo ────────────────────────
+
+    /// Known repos that still exist, each with its current branch. Never fails:
+    /// vanished paths and non-repos are silently dropped.
+    pub async fn list(&self) -> Vec<Repo> {
+        let mut repos = Vec::new();
+        for path in self.load_paths() {
+            let path = PathBuf::from(path);
+            if !Self::path_exists(&path).await || !self.is_repo(&path).await {
+                continue;
+            }
+            match self.to_repo(&path).await {
+                Ok(repo) => repos.push(repo),
+                Err(err) => {
+                    tracing::debug!(path = %path.display(), error = %err, "repo listing skip")
+                }
+            }
+        }
+        repos
+    }
+
+    /// Remember an existing repository the user pointed us at.
+    pub async fn add(&self, path: &str) -> Result<Repo, EngineError> {
+        let abs = absolutize(Path::new(path));
+        if !Self::path_exists(&abs).await {
+            return Err(EngineError::Other(format!(
+                "No such folder: {}",
+                abs.display()
+            )));
+        }
+        if !self.is_repo(&abs).await {
+            return Err(EngineError::Other(format!(
+                "Not a git repository: {}",
+                abs.display()
+            )));
+        }
+        self.register(&abs.to_string_lossy())?;
+        self.to_repo(&abs).await
+    }
+
+    /// `git clone <url>` under `{data_dir}/repos`. (Named `clone_repo` to keep
+    /// `Clone::clone` unambiguous on the service handle.)
+    ///
+    /// Idempotent: when the destination already holds a clone whose `origin`
+    /// is the same repository (scheme, `.git`, trailing slash, embedded
+    /// credentials and owner/name case ignored), that checkout is the answer —
+    /// same reply as a fresh clone. A destination holding anything else stays
+    /// an "Already exists" error.
+    pub async fn clone_repo(&self, url: &str) -> Result<Repo, EngineError> {
+        let repos_dir = self.inner.data_dir.join("repos");
+        self.clone_repo_into(url, &repos_dir).await
+    }
+
+    /// [`Self::clone_repo`] into `<parent>/<name>` instead: where the user
+    /// chose to keep it (New project → a folder → clone here). `parent`
+    /// must be an existing folder; the same idempotence holds.
+    pub async fn clone_repo_in(&self, url: &str, parent: &str) -> Result<Repo, EngineError> {
+        let parent = absolutize(Path::new(parent));
+        if !parent.is_dir() {
+            return Err(EngineError::Other(format!(
+                "No such folder: {}",
+                parent.display()
+            )));
+        }
+        self.clone_repo_into(url, &parent).await
+    }
+
+    async fn clone_repo_into(&self, url: &str, repos_dir: &Path) -> Result<Repo, EngineError> {
+        let trimmed = url.trim().trim_end_matches('/');
+        let name = clone_folder_name(trimmed);
+        let target = repos_dir.join(&name);
+        if target.exists() {
+            // `.git` must be the destination's own: `git remote` inside a
+            // plain folder would answer for an enclosing repository.
+            let origin = if target.join(".git").exists() {
+                self.git(&["remote", "get-url", "origin"], Some(&target))
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            if origin.is_some_and(|origin| same_remote(&origin, trimmed)) {
+                self.register(&target.to_string_lossy())?;
+                return self.to_repo(&target).await;
+            }
+            return Err(EngineError::Other(format!(
+                "Already exists: {}",
+                target.display()
+            )));
+        }
+        std::fs::create_dir_all(repos_dir)?;
+        // `--`: a URL is never read as an option (`--upload-pack=…`).
+        self.git(&["clone", "--", trimmed, &target.to_string_lossy()], None)
+            .await?;
+        self.register(&target.to_string_lossy())?;
+        self.to_repo(&target).await
+    }
+
+    /// `git init -b main` a fresh repository under `{data_dir}/repos`.
+    pub async fn create(&self, name: &str) -> Result<Repo, EngineError> {
+        let clean: String = name
+            .trim()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        if clean.is_empty() || clean.chars().all(|c| c == '-' || c == '.') {
+            return Err(EngineError::Other("Invalid repository name".into()));
+        }
+        let target = self.inner.data_dir.join("repos").join(&clean);
+        if target.exists() {
+            return Err(EngineError::Other(format!(
+                "Already exists: {}",
+                target.display()
+            )));
+        }
+        std::fs::create_dir_all(&target)?;
+        self.git(&["init", "-b", "main"], Some(&target)).await?;
+        self.register(&target.to_string_lossy())?;
+        self.to_repo(&target).await
+    }
+
+    // ── branches ────────────────────────────────────────────────────────────
+
+    /// All branches (`git branch -a`), local first, deduped against their remote
+    /// counterparts, with the repo's default branch first.
+    pub async fn branches(&self, repo_path: &Path) -> Result<Vec<String>, EngineError> {
+        let out = self
+            .git(&["branch", "-a", "--format=%(refname)"], Some(repo_path))
+            .await?;
+        let mut names: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut push = |name: &str| {
+            if !name.is_empty() && name != "HEAD" && seen.insert(name.to_string()) {
+                names.push(name.to_string());
+            }
+        };
+        // Locals first, then remote-only branches (stripped of their remote prefix).
+        for line in out.lines().map(str::trim) {
+            if let Some(local) = line.strip_prefix("refs/heads/") {
+                push(local);
+            }
+        }
+        for line in out.lines().map(str::trim) {
+            if let Some(remote) = line.strip_prefix("refs/remotes/")
+                && let Some((_, name)) = remote.split_once('/')
+            {
+                push(name);
+            }
+        }
+        // Default branch first: origin/HEAD's target, else the checked-out branch.
+        let default = match self
+            .git(
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                Some(repo_path),
+            )
+            .await
+        {
+            Ok(short) => short.split_once('/').map(|(_, b)| b.to_string()),
+            Err(_) => None,
+        };
+        let default = match default {
+            Some(branch) => Some(branch),
+            None => self
+                .current_branch(repo_path)
+                .await
+                .ok()
+                .filter(|b| b != "HEAD"),
+        };
+        if let Some(default) = default
+            && let Some(pos) = names.iter().position(|n| *n == default)
+        {
+            let head = names.remove(pos);
+            names.insert(0, head);
+        }
+        Ok(names)
+    }
+
+    /// [`Self::branches`] enriched with checkout state: which branch the MAIN
+    /// folder has checked out (`current`) and which branches are materialized
+    /// as linked worktrees (`worktree_path`). Feeds the composer's ref picker
+    /// and its checkout-kind selector.
+    pub async fn refs(&self, repo_path: &Path) -> Result<Vec<RepoRef>, EngineError> {
+        let names = self.branches(repo_path).await?;
+        let current = self.current_branch(repo_path).await.ok();
+        // `git worktree list --porcelain`: stanzas of `worktree <path>` /
+        // `HEAD <sha>` / `branch refs/heads/<name>`. The first stanza is the
+        // main checkout — excluded (it's `current`, not a linked worktree).
+        let mut worktrees: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Ok(out) = self
+            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+            .await
+        {
+            let mut stanza = 0usize;
+            let mut path: Option<String> = None;
+            for line in out.lines().map(str::trim) {
+                if let Some(p) = line.strip_prefix("worktree ") {
+                    stanza += 1;
+                    // The first stanza is the main checkout, not a linked tree.
+                    path = (stanza > 1).then(|| p.to_string());
+                } else if let Some(branch) = line.strip_prefix("branch refs/heads/")
+                    && let Some(path) = path.take()
+                {
+                    worktrees.insert(branch.to_string(), path);
+                }
+            }
+        }
+        Ok(names
+            .into_iter()
+            .map(|name| RepoRef {
+                current: current.as_deref() == Some(name.as_str()),
+                worktree_path: worktrees.get(&name).cloned(),
+                name,
+            })
+            .collect())
+    }
+
+    /// Public commit history in topological order. Only user-facing branches,
+    /// remotes, and tags seed the walk, so Zeron's internal refs never leak
+    /// into the graph or keep otherwise-unreachable checkpoints visible.
+    pub async fn history(
+        &self,
+        repo_path: &Path,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<GitHistoryPage, EngineError> {
+        let limit = limit.clamp(1, GIT_HISTORY_MAX_LIMIT);
+        let head_sha = self
+            .git(&["rev-parse", "--verify", "HEAD^{commit}"], Some(repo_path))
+            .await
+            .ok()
+            .filter(|sha| !sha.is_empty());
+
+        let refs_out = self
+            .git(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00",
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+                Some(repo_path),
+            )
+            .await?;
+        let refs_by_sha = parse_history_refs(&refs_out);
+
+        if head_sha.is_none() && refs_by_sha.is_empty() {
+            return Ok(GitHistoryPage {
+                commits: Vec::new(),
+                branch_tips: Vec::new(),
+                head_sha: None,
+                next_cursor: None,
+                total_count: Some(0),
+                head_commit_count: Some(0),
+                comparison: None,
+            });
+        }
+
+        let skip = format!("--skip={cursor}");
+        let max_count = format!("--max-count={}", limit + 1);
+        let mut log_args = vec![
+            "log",
+            "--topo-order",
+            "--no-color",
+            "--no-decorate",
+            "--no-show-signature",
+            "--no-patch",
+            skip.as_str(),
+            max_count.as_str(),
+            "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%aI%x00",
+        ];
+        if head_sha.is_some() {
+            log_args.push("HEAD");
+        }
+        log_args.extend(["--branches", "--remotes", "--tags"]);
+        let log = self.git(&log_args, Some(repo_path)).await?;
+        let mut commits = parse_history_log(&log, &refs_by_sha);
+        let has_next = commits.len() > limit;
+        commits.truncate(limit);
+
+        // Branch tips are deliberately independent from history pagination.
+        // `--no-walk` resolves every local/remote tip while deduplicating refs
+        // that point at the same commit. Include HEAD as a useful anchor for a
+        // detached checkout, but do not let tags seed extra overview rows.
+        let branch_tips = if cursor == 0 {
+            let mut tip_args = vec![
+                "log",
+                "--no-walk=sorted",
+                "--no-color",
+                "--no-decorate",
+                "--no-show-signature",
+                "--no-patch",
+                "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%aI%x00",
+            ];
+            if head_sha.is_some() {
+                tip_args.push("HEAD");
+            }
+            tip_args.extend(["--branches", "--remotes"]);
+            let tips = self.git(&tip_args, Some(repo_path)).await?;
+            parse_history_log(&tips, &refs_by_sha)
+        } else {
+            Vec::new()
+        };
+
+        let total_count = if cursor == 0 {
+            let mut count_args = vec!["rev-list", "--count"];
+            if head_sha.is_some() {
+                count_args.push("HEAD");
+            }
+            count_args.extend(["--branches", "--remotes", "--tags"]);
+            self.git(&count_args, Some(repo_path))
+                .await
+                .ok()
+                .and_then(|count| count.parse().ok())
+        } else {
+            None
+        };
+        let head_commit_count = if cursor == 0 && head_sha.is_some() {
+            self.git(&["rev-list", "--count", "HEAD"], Some(repo_path))
+                .await
+                .ok()
+                .and_then(|count| count.parse().ok())
+        } else {
+            None
+        };
+        let comparison = if cursor == 0 && head_sha.is_some() {
+            self.history_comparison(repo_path).await
+        } else {
+            None
+        };
+
+        Ok(GitHistoryPage {
+            next_cursor: has_next.then_some(cursor + commits.len()),
+            commits,
+            branch_tips,
+            head_sha,
+            total_count,
+            head_commit_count,
+            comparison,
+        })
+    }
+
+    /// Compare the checked-out branch with the best locally available
+    /// integration ref. This deliberately never talks to the network: `Fetch
+    /// all` refreshes remote-tracking refs, then the next History load sees
+    /// those new counts.
+    async fn history_comparison(&self, repo_path: &Path) -> Option<GitHistoryComparison> {
+        // Detached checkouts do not have a branch relationship to present.
+        self.git(
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            Some(repo_path),
+        )
+        .await
+        .ok()?;
+
+        // An integration remote is more useful than the branch's push/tracking
+        // ref: a feature usually tracks origin/feature, whereas the status the
+        // user needs in History is its relationship to upstream/main.
+        let mut candidates = Vec::new();
+        for remote in ["upstream", "origin"] {
+            let remote_head = format!("refs/remotes/{remote}/HEAD");
+            if let Ok(base) = self
+                .git(
+                    &["symbolic-ref", "--quiet", "--short", &remote_head],
+                    Some(repo_path),
+                )
+                .await
+                && !base.is_empty()
+            {
+                candidates.push(base);
+            }
+        }
+        // A remote HEAD is not guaranteed to have been configured locally.
+        // Conventional default names keep the result useful in that case.
+        candidates.extend([
+            "upstream/main".to_string(),
+            "origin/main".to_string(),
+            "upstream/master".to_string(),
+            "origin/master".to_string(),
+        ]);
+        // Fall back to the configured tracking ref only after integration
+        // defaults. This still gives sensible data in a single-remote repo.
+        if let Ok(base) = self
+            .git(
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
+                Some(repo_path),
+            )
+            .await
+            && !base.is_empty()
+        {
+            candidates.push(base);
+        }
+
+        let mut seen = HashSet::new();
+        for base in candidates
+            .into_iter()
+            .filter(|base| seen.insert(base.clone()))
+        {
+            let commit_ref = format!("{base}^{{commit}}");
+            if self
+                .git(
+                    &["rev-parse", "--verify", "--quiet", &commit_ref],
+                    Some(repo_path),
+                )
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            let range = format!("HEAD...{base}");
+            let Ok(counts) = self
+                .git(
+                    &["rev-list", "--left-right", "--count", &range],
+                    Some(repo_path),
+                )
+                .await
+            else {
+                continue;
+            };
+            let mut counts = counts.split_whitespace();
+            let (Some(ahead), Some(behind)) = (counts.next(), counts.next()) else {
+                continue;
+            };
+            let (Ok(ahead), Ok(behind)) = (ahead.parse(), behind.parse()) else {
+                continue;
+            };
+            return Some(GitHistoryComparison {
+                base,
+                ahead,
+                behind,
+            });
+        }
+        None
+    }
+
+    /// Fuzzy subject / SHA search across the complete public history. Results
+    /// stay in `--topo-order`; fuzzy score decides inclusion, never row order,
+    /// so the client can keep rendering a meaningful commit graph.
+    pub async fn search_history(
+        &self,
+        repo_path: &Path,
+        query: &str,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<GitHistoryPage, EngineError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(GitHistoryPage {
+                commits: Vec::new(),
+                branch_tips: Vec::new(),
+                head_sha: None,
+                next_cursor: None,
+                total_count: Some(0),
+                head_commit_count: None,
+                comparison: None,
+            });
+        }
+        let limit = limit.clamp(1, GIT_HISTORY_MAX_LIMIT);
+        let head_sha = self
+            .git(&["rev-parse", "--verify", "HEAD^{commit}"], Some(repo_path))
+            .await
+            .ok()
+            .filter(|sha| !sha.is_empty());
+        let refs_out = self
+            .git(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00",
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+                Some(repo_path),
+            )
+            .await?;
+        let refs_by_sha = parse_history_refs(&refs_out);
+        if head_sha.is_none() && refs_by_sha.is_empty() {
+            return Ok(GitHistoryPage {
+                commits: Vec::new(),
+                branch_tips: Vec::new(),
+                head_sha: None,
+                next_cursor: None,
+                total_count: Some(0),
+                head_commit_count: None,
+                comparison: None,
+            });
+        }
+
+        let mut log_args = vec![
+            "log",
+            "--topo-order",
+            "--no-color",
+            "--no-decorate",
+            "--no-show-signature",
+            "--no-patch",
+            "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%aI%x00",
+        ];
+        if head_sha.is_some() {
+            log_args.push("HEAD");
+        }
+        log_args.extend(["--branches", "--remotes", "--tags"]);
+        let log = self.git(&log_args, Some(repo_path)).await?;
+        let all_commits = parse_history_log(&log, &refs_by_sha);
+        let visible: HashSet<String> = all_commits
+            .iter()
+            .filter(|commit| git_history_matches(query, commit))
+            .map(|commit| commit.sha.clone())
+            .collect();
+        let matches = compact_history_commits(&all_commits, &visible);
+        let total_count = matches.len();
+        let start = cursor.min(total_count);
+        let end = start.saturating_add(limit).min(total_count);
+        let commits = matches[start..end].to_vec();
+
+        Ok(GitHistoryPage {
+            commits,
+            branch_tips: Vec::new(),
+            head_sha,
+            next_cursor: (end < total_count).then_some(end),
+            total_count: Some(total_count),
+            head_commit_count: None,
+            comparison: None,
+        })
+    }
+
+    /// Best-effort GitHub profile images for the authors in one history page.
+    /// Git itself only stores names and emails, so this resolves the hosting
+    /// metadata separately and caches it by both commit and normalized email.
+    pub async fn history_avatar_urls(
+        &self,
+        repo_path: &Path,
+        authors: &[(String, String)],
+        cursor: usize,
+        limit: usize,
+    ) -> HashMap<String, String> {
+        let Ok(remote) = self
+            .git(&["remote", "get-url", "origin"], Some(repo_path))
+            .await
+        else {
+            return HashMap::new();
+        };
+        let Some((owner, repo)) = parse_github_remote(&remote) else {
+            return HashMap::new();
+        };
+        let repo_key = format!("{owner}/{repo}").to_ascii_lowercase();
+        let per_page = limit.clamp(1, 100);
+        let page = cursor / per_page + 1;
+        let page_key = format!("{repo_key}|{page}|{per_page}");
+        let should_fetch = self
+            .inner
+            .github_avatar_pages
+            .lock()
+            .map(|mut pages| pages.insert(page_key.clone()))
+            .unwrap_or(false);
+
+        if should_fetch {
+            let url = format!("https://api.github.com/repos/{owner}/{repo}/commits");
+            let mut request = self.inner.http.get(url).query(&[
+                ("per_page", per_page.to_string()),
+                ("page", page.to_string()),
+            ]);
+            if let Some(token) = std::env::var("GITHUB_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+                .or_else(|| {
+                    std::env::var("GH_TOKEN")
+                        .ok()
+                        .filter(|token| !token.is_empty())
+                })
+            {
+                request = request.bearer_auth(token);
+            }
+
+            let rows = match request.send().await {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<Vec<GitHubCommitAvatar>>().await.ok()
+                }
+                _ => None,
+            };
+            if let Some(rows) = rows {
+                let mut identities_by_url: HashMap<String, Vec<(String, String)>> = HashMap::new();
+                for row in rows {
+                    let Some(author) = row.author else {
+                        continue;
+                    };
+                    if !author.avatar_url.starts_with("https://") {
+                        continue;
+                    }
+                    let avatar_url = if author.avatar_url.contains('?') {
+                        format!("{}&s=40", author.avatar_url)
+                    } else {
+                        format!("{}?s=40", author.avatar_url)
+                    };
+                    identities_by_url.entry(avatar_url).or_default().push((
+                        row.sha.to_ascii_lowercase(),
+                        row.commit.author.email.trim().to_ascii_lowercase(),
+                    ));
+                }
+                let downloads = stream::iter(identities_by_url.into_iter().map(
+                    |(url, identities)| async move {
+                        self.cache_github_avatar(&url)
+                            .await
+                            .map(|path| (identities, path))
+                    },
+                ))
+                .buffer_unordered(8)
+                .filter_map(|download| async move { download })
+                .collect::<Vec<_>>()
+                .await;
+                if let Ok(mut cache) = self.inner.github_avatars.lock() {
+                    for (identities, path) in downloads {
+                        for (sha, email) in identities {
+                            cache.insert(format!("{repo_key}|sha|{sha}"), path.clone());
+                            if !email.is_empty() {
+                                cache.insert(format!("{repo_key}|email|{email}"), path.clone());
+                            }
+                        }
+                    }
+                }
+            } else if let Ok(mut pages) = self.inner.github_avatar_pages.lock() {
+                // A transient network/auth failure may be retried on refresh.
+                pages.remove(&page_key);
+            }
+        }
+
+        let Ok(cache) = self.inner.github_avatars.lock() else {
+            return HashMap::new();
+        };
+        authors
+            .iter()
+            .filter_map(|(sha, email)| {
+                let avatar = cache
+                    .get(&format!("{repo_key}|sha|{}", sha.to_ascii_lowercase()))
+                    .or_else(|| {
+                        cache.get(&format!(
+                            "{repo_key}|email|{}",
+                            email.trim().to_ascii_lowercase()
+                        ))
+                    })?;
+                Some((email.trim().to_ascii_lowercase(), avatar.clone()))
+            })
+            .collect()
+    }
+
+    async fn cache_github_avatar(&self, url: &str) -> Option<String> {
+        const MAX_AVATAR_BYTES: u64 = 2 * 1024 * 1024;
+
+        let digest = Sha256::digest(url.as_bytes());
+        let cache_dir = self.inner.data_dir.join("cache").join("git-avatars");
+        let path = cache_dir.join(format!("{}.img", hex(&digest[..16])));
+        if tokio::fs::metadata(&path)
+            .await
+            .ok()
+            .is_some_and(|metadata| metadata.len() > 0)
+        {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        tokio::fs::create_dir_all(&cache_dir).await.ok()?;
+        let response = self.inner.http.get(url).send().await.ok()?;
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|size| size > MAX_AVATAR_BYTES)
+        {
+            return None;
+        }
+        let bytes = response.bytes().await.ok()?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_AVATAR_BYTES {
+            return None;
+        }
+        let temporary = cache_dir.join(format!(
+            ".{}.{}.tmp",
+            hex(&digest[..8]),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&temporary, &bytes).await.ok()?;
+        if tokio::fs::rename(&temporary, &path).await.is_err() {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            if !path.is_file() {
+                return None;
+            }
+        }
+        Some(path.to_string_lossy().into_owned())
+    }
+
+    /// Every checkout of the repository at `repo_path`, main one first.
+    /// NUL-terminated so a `\n` in a worktree's path can't forge another entry.
+    async fn worktree_paths(&self, repo_path: &Path) -> Result<Vec<PathBuf>, EngineError> {
+        let out = match self
+            .git(&["worktree", "list", "--porcelain", "-z"], Some(repo_path))
+            .await
+        {
+            Ok(out) => out,
+            // Git before 2.36 has no `-z`.
+            Err(_) => self
+                .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+                .await?
+                .replace('\n', "\0"),
+        };
+        Ok(out
+            .split('\0')
+            .filter_map(|line| line.strip_prefix("worktree "))
+            .map(PathBuf::from)
+            .collect())
+    }
+
+    /// Whether `candidate` is the repository root or one of its linked
+    /// worktrees. Filesystem resolution happens on a disposable thread because
+    /// user-selected paths may be dead mounts.
+    pub async fn workspace_checkout(&self, repo_path: &Path, candidate: &Path) -> Option<PathBuf> {
+        let repo_path = repo_path.to_path_buf();
+        let candidate = candidate.to_path_buf();
+        let worktrees = self.worktree_paths(&repo_path).await.unwrap_or_default();
+        disposable_worker("checkout-auth", move || {
+            let candidate = std::fs::canonicalize(candidate).ok()?;
+            std::iter::once(repo_path)
+                .chain(worktrees)
+                .filter_map(|path| std::fs::canonicalize(path).ok())
+                .any(|path| path == candidate)
+                .then_some(candidate)
+        })
+        .await
+        .flatten()
+    }
+
+    /// Switch the checkout at `cwd` (a main folder OR a linked worktree) to
+    /// `ref_name` — the t3code `switchRef` port: an existing local branch is
+    /// checked out directly; a remote-only branch gets a local tracking
+    /// branch (`checkout --track origin/<ref>`). A dirty tree or a branch
+    /// already checked out in another worktree fails with git's own message.
+    /// Returns the resulting current branch.
+    pub async fn switch_ref(&self, cwd: &Path, ref_name: &str) -> Result<String, EngineError> {
+        let local = self
+            .git(
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{ref_name}"),
+                ],
+                Some(cwd),
+            )
+            .await
+            .is_ok();
+        if local {
+            self.git(&["checkout", ref_name], Some(cwd)).await?;
+        } else {
+            let remote = format!("origin/{ref_name}");
+            let has_remote = self
+                .git(
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/remotes/{remote}"),
+                    ],
+                    Some(cwd),
+                )
+                .await
+                .is_ok();
+            if has_remote {
+                self.git(&["checkout", "--track", &remote], Some(cwd))
+                    .await?;
+            } else {
+                // Unknown ref: let git produce the authoritative error.
+                self.git(&["checkout", ref_name], Some(cwd)).await?;
+            }
+        }
+        let out = self.git(&["branch", "--show-current"], Some(cwd)).await?;
+        Ok(out.trim().to_string())
+    }
+
+    // ── worktrees ───────────────────────────────────────────────────────────
+
+    /// `git worktree add` an isolated checkout under
+    /// `{worktrees_root}/<repoName>/<generatedName>`, on a fresh `zeron/<name>`
+    /// branch off `branch`.
+    pub async fn create_worktree(
+        &self,
+        repo_path: &Path,
+        branch: &str,
+    ) -> Result<Worktree, EngineError> {
+        let repo_name = repo_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".to_string());
+        // Snapshot the destination once per creation. Changes never relocate
+        // existing worktrees or alter the cwd already stored on a chat.
+        let base = self.inner.worktrees.root().join(&repo_name);
+        // A location that contains the repository (e.g. its parent folder)
+        // would nest checkouts inside the primary one, where they show up as
+        // untracked embedded repositories.
+        let root = self.inner.worktrees.root();
+        if let (Ok(root), Ok(repo)) = (
+            std::fs::canonicalize(&root),
+            std::fs::canonicalize(repo_path),
+        ) && root.join(&repo_name).starts_with(&repo)
+        {
+            return Err(EngineError::Other(format!(
+                "Worktrees for {repo_name} would be created inside the repository at {}. Choose a different worktree location in Settings.",
+                repo_path.display()
+            )));
+        }
+        // Auto-generate a name colliding with neither an existing dir nor branch.
+        let existing: HashSet<String> = self
+            .branches(repo_path)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut name = None;
+        for attempt in 0..50u64 {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64)
+                .unwrap_or(attempt)
+                .wrapping_add(attempt.wrapping_mul(0x9E37_79B9));
+            let candidate = format!(
+                "{}-{}",
+                ADJECTIVES[(seed % ADJECTIVES.len() as u64) as usize],
+                NOUNS[((seed / 31) % NOUNS.len() as u64) as usize]
+            );
+            if !base.join(&candidate).exists() && !existing.contains(&format!("zeron/{candidate}"))
+            {
+                name = Some(candidate);
+                break;
+            }
+        }
+        let name =
+            name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
+        let path = base.join(&name);
+        #[cfg(windows)]
+        validate_windows_worktree_path(&path.to_string_lossy())?;
+        std::fs::create_dir_all(&base)?;
+        let branch_name = format!("zeron/{name}");
+        #[cfg(windows)]
+        self.add_worktree_in_two_steps(repo_path, &path, &branch_name, branch)
+            .await?;
+        #[cfg(not(windows))]
+        self.git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                &path.to_string_lossy(),
+                branch,
+            ],
+            Some(repo_path),
+        )
+        .await?;
+        let checkout = self.checkout_identity(&path).await?;
+        Ok(Worktree {
+            repo_path: repo_path.to_string_lossy().to_string(),
+            path: path.to_string_lossy().to_string(),
+            branch: branch_name,
+            name,
+            checkout_id: Some(checkout.id),
+        })
+    }
+
+    /// Git's built-in checkout passes `<destination>/.git` in GIT_DIR, whose
+    /// separate PATH_MAX - 40 check rejects some launchable Windows paths even
+    /// with core.longpaths enabled. Register first, then reset from the new
+    /// checkout using a short, relative GIT_DIR. Keep native add's hook and
+    /// failure semantics: incomplete checkouts are removed, hook failures
+    /// retain the populated worktree (the hook may have written user data).
+    #[cfg(any(windows, test))]
+    async fn add_worktree_in_two_steps(
+        &self,
+        repo_path: &Path,
+        path: &Path,
+        branch_name: &str,
+        base: &str,
+    ) -> Result<(), EngineError> {
+        #[cfg(windows)]
+        let git_path = windows_git_worktree_path(&path.to_string_lossy());
+        #[cfg(not(windows))]
+        let git_path = path.to_string_lossy();
+        self.git(
+            &[
+                "worktree",
+                "add",
+                "--no-checkout",
+                "-b",
+                branch_name,
+                &git_path,
+                base,
+            ],
+            Some(repo_path),
+        )
+        .await?;
+
+        let checkout = async {
+            let head = self
+                .git(
+                    &["--git-dir=.git", "rev-parse", "--verify", "HEAD"],
+                    Some(path),
+                )
+                .await?;
+            self.git(
+                &[
+                    "--git-dir=.git",
+                    "reset",
+                    "--hard",
+                    "--no-recurse-submodules",
+                ],
+                Some(path),
+            )
+            .await?;
+            Ok::<_, EngineError>(head)
+        }
+        .await;
+        let head = match checkout {
+            Ok(head) => head,
+            Err(error) => {
+                // Force is limited to the checkout this call just registered;
+                // a failed reset may have left partially written files. Like
+                // native worktree add, keep the new branch on failure.
+                if let Err(cleanup) = self
+                    .git(
+                        &["worktree", "remove", "--force", &git_path],
+                        Some(repo_path),
+                    )
+                    .await
+                {
+                    return Err(EngineError::Other(format!(
+                        "{error}; could not remove incomplete worktree {}: {cleanup}",
+                        path.display()
+                    )));
+                }
+                return Err(error);
+            }
+        };
+
+        // Match worktree add's null old OID, initial commit, and branch flag.
+        // Let Git find the configured hook and run it from the checkout, with
+        // no explicit GIT_DIR/GIT_WORK_TREE override in the hook environment.
+        let null_oid = "0".repeat(head.len());
+        self.git(
+            &[
+                "hook",
+                "run",
+                "--ignore-missing",
+                "post-checkout",
+                "--",
+                &null_oid,
+                &head,
+                "1",
+            ],
+            Some(path),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
+        self.git(
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+            Some(path),
+        )
+        .await
+        .is_ok()
+    }
+
+    /// Rename a zeron-created worktree branch after its chat's generated title
+    /// (port of zeron's `renameWorktreeBranch`). Guards:
+    /// - respect an external checkout/rename: only act while the worktree is still
+    ///   on `expected_branch` AND that branch is the original `zeron/<folderName>`;
+    /// - a title-slug collision gets a stable 6-hex suffix (hash of the worktree
+    ///   path); a collision on THAT too fails.
+    ///
+    /// Returns the branch the worktree ends up on (re-read after the rename so a
+    /// concurrent external checkout always wins the metadata race).
+    pub async fn rename_worktree_branch(
+        &self,
+        worktree_path: &Path,
+        expected_branch: &str,
+        title: &str,
+    ) -> Result<String, EngineError> {
+        let current = self.current_branch(worktree_path).await?;
+        let folder = worktree_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if current != expected_branch || expected_branch != format!("zeron/{folder}") {
+            return Ok(current);
+        }
+        let preferred = worktree_branch_from_title(title);
+        if preferred == current {
+            return Ok(current);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(worktree_path.to_string_lossy().as_bytes());
+        let suffix = &hex(&hasher.finalize())[..6];
+        let target = if self.branch_exists(worktree_path, &preferred).await {
+            format!("{preferred}-{suffix}")
+        } else {
+            preferred
+        };
+        if self.branch_exists(worktree_path, &target).await {
+            return Err(EngineError::Other(format!(
+                "Branch already exists: {target}"
+            )));
+        }
+        self.git(
+            &["branch", "-m", "--", &current, &target],
+            Some(worktree_path),
+        )
+        .await?;
+        self.current_branch(worktree_path).await
+    }
+
+    /// Best-effort worktree removal (if it still exists), then prune stale refs.
+    /// Deletes the worktree's branch ONLY when zeron created it (`zeron/…`) — the
+    /// user may have checked out their own branch inside the worktree.
+    pub async fn delete_worktree(
+        &self,
+        repo_path: &Path,
+        worktree_path: &Path,
+    ) -> Result<(), EngineError> {
+        let branch = if worktree_path.exists() {
+            self.current_branch(worktree_path).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
+        if worktree_path.exists() {
+            let removed = self
+                .git(
+                    &[
+                        "worktree",
+                        "remove",
+                        "--force",
+                        &worktree_path.to_string_lossy(),
+                    ],
+                    Some(repo_path),
+                )
+                .await;
+            if removed.is_err() {
+                // git refused (or the dir is half-gone) — delete the folder directly.
+                let _ = std::fs::remove_dir_all(worktree_path);
+            }
+        }
+        let _ = self.git(&["worktree", "prune"], Some(repo_path)).await;
+        if branch.starts_with("zeron/") {
+            let _ = self.git(&["branch", "-D", &branch], Some(repo_path)).await;
+        }
+        Ok(())
+    }
+
+    // ── ListFolders ─────────────────────────────────────────────────────────
+
+    /// One directory level (home by default): dotfiles hidden, directories first,
+    /// capped at [`FOLDER_LIST_MAX_ENTRIES`] with a `truncated` flag. The walk runs
+    /// in a spawned blocking task under a 6s wall-clock ceiling — a wedged path
+    /// (dead mount, permission-gated folder) fails this listing without blocking
+    /// anything else; the abandoned task unwinds on its own thread.
+    pub async fn list_folders(&self, path: Option<String>) -> Result<FolderListing, EngineError> {
+        self.list_folders_with(path, FOLDER_LIST_TIMEOUT, false)
+            .await
+    }
+
+    // ── SearchHomeFolders ───────────────────────────────────────────────────
+
+    /// Folders anywhere under home whose names match `query`, from the home
+    /// workspace search index — the one projectless chats use, so it skips
+    /// dot folders, dependency and cache folders, and each repository's
+    /// ignored paths. An empty query only starts the index.
+    pub async fn search_home_folders(
+        &self,
+        query: String,
+        limit: usize,
+    ) -> Result<HomeFolderSearchResult, EngineError> {
+        let search = self.inner.workspace_search.clone();
+        let worker = disposable_worker("home-folder-search", move || {
+            search_home_folders_blocking(&search, &query, limit)
+        });
+        match tokio::time::timeout(FILE_SEARCH_TIMEOUT, worker).await {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(EngineError::Other("folder search worker exited".into())),
+            Err(_) => Err(EngineError::Other("folder search timed out".into())),
+        }
+    }
+
+    /// The new-project picker is done with the home index: drop it now
+    /// unless a projectless chat warmed it.
+    pub fn release_home_folder_search(&self) {
+        if let Ok(home) = home_search_root() {
+            self.inner.workspace_search.release_unless_warmed(&home);
+        }
+    }
+
+    /// Search a checkout's files and directories by fuzzy relative path,
+    /// from the workspace search index (fff), which honors `.gitignore`,
+    /// `.ignore`, and global git excludes. An empty query lists the chat's
+    /// featured paths first, then recently changed files.
+    pub async fn search_files(
+        &self,
+        root: PathBuf,
+        query: String,
+        featured_paths: Vec<String>,
+    ) -> Result<Vec<FileSearchMatch>, EngineError> {
+        let search = self.inner.workspace_search.clone();
+        let worker = disposable_worker("file-search", move || {
+            search_files_blocking(&search, &root, &query, &featured_paths)
+        });
+        match tokio::time::timeout(FILE_SEARCH_TIMEOUT, worker).await {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(EngineError::Other("file search worker exited".into())),
+            Err(_) => Err(EngineError::Other("file search timed out".into())),
+        }
+    }
+
+    /// `hang_for_test` makes the worker never respond — exercises the timeout path.
+    ///
+    /// The walk runs on a DETACHED OS thread (not the tokio blocking pool): a
+    /// readdir wedged in the kernel can't be cancelled, and a poisoned blocking
+    /// pool — or a runtime shutdown waiting on it — must never be possible. On
+    /// timeout the thread is simply abandoned (the zeron backend's disposable
+    /// worker, minus the terminate()).
+    #[doc(hidden)]
+    pub async fn list_folders_with(
+        &self,
+        path: Option<String>,
+        timeout: Duration,
+        hang_for_test: bool,
+    ) -> Result<FolderListing, EngineError> {
+        let target = match path.filter(|p| !p.trim().is_empty()) {
+            Some(p) => absolutize(Path::new(&p)),
+            None => session_home_dir().map_err(|error| EngineError::Other(error.to_string()))?,
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let spawned = std::thread::Builder::new()
+            .name("folder-list".into())
+            .spawn(move || {
+                if hang_for_test {
+                    // Hold the sender without responding (detached thread; process
+                    // exit reclaims it) — the caller must hit its timeout.
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+                let _ = tx.send(list_folders_blocking(&target));
+            });
+        if let Err(err) = spawned {
+            return Err(EngineError::Other(format!("folder listing failed: {err}")));
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(EngineError::Other("folder listing worker exited".into())),
+            Err(_) => Err(EngineError::Other(
+                "folder listing timed out on the device".into(),
+            )),
+        }
+    }
+
+    // ── ListDrives ──────────────────────────────────────────────────────────
+
+    /// Mounted drives/volumes — the browse roots beyond home. Same disposable
+    /// worker + wall-clock ceiling as `ListFolders`: a dead network mount can
+    /// wedge the probe (macOS `canonicalize` stats each volume), and that must
+    /// fail this listing, not the runtime.
+    pub async fn list_drives(&self) -> Result<Vec<DriveEntry>, EngineError> {
+        let worker = disposable_worker("drive-list", list_drives_blocking);
+        match tokio::time::timeout(FOLDER_LIST_TIMEOUT, worker).await {
+            Ok(Some(drives)) => Ok(drives),
+            Ok(None) => Err(EngineError::Other("drive listing worker exited".into())),
+            Err(_) => Err(EngineError::Other(
+                "drive listing timed out on the device".into(),
+            )),
+        }
+    }
+}
+
+async fn disposable_worker<T: Send + 'static>(
+    name: &'static str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = tx.send(work());
+        })
+        .ok()?;
+    rx.await.ok()
+}
+
+/// The blocking walk: ONE readdir of the target; `is_repo` is a cheap `.git`
+/// existence probe per directory entry.
+fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
+    let read = std::fs::read_dir(target).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            EngineError::Other("Zeron doesn't have access to this folder on the device.".into())
+        }
+        _ => EngineError::Other(format!("could not read that folder: {e}")),
+    })?;
+    let mut entries: Vec<FolderEntry> = Vec::new();
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_repo = is_dir && entry.path().join(".git").exists();
+        entries.push(FolderEntry {
+            name,
+            is_dir,
+            is_repo,
+        });
+    }
+    // Directories first, each group name-sorted (case-insensitive).
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let truncated = entries.len() > FOLDER_LIST_MAX_ENTRIES;
+    entries.truncate(FOLDER_LIST_MAX_ENTRIES);
+    Ok(FolderListing {
+        path: folder_browser_path(target),
+        entries,
+        truncated,
+    })
+}
+
+/// The blocking drive walk. Best-effort everywhere: the list is navigation
+/// sugar for the folder browser, so an unreadable source means fewer rows,
+/// never an error (home always remains reachable without it).
+fn list_drives_blocking() -> Vec<DriveEntry> {
+    #[cfg(target_os = "macos")]
+    let drives = macos_drives();
+    #[cfg(target_os = "linux")]
+    let drives = linux_drives(&std::fs::read_to_string("/proc/mounts").unwrap_or_default());
+    #[cfg(windows)]
+    let drives = windows_drives();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    let drives = Vec::new();
+    finish_drives(drives)
+}
+
+/// `/Volumes` holds every mounted volume; the boot volume is a symlink to `/`,
+/// which `canonicalize` resolves — so the system drive arrives under its real
+/// name ("Macintosh HD") and the fallback "System" row never shows on macOS.
+#[cfg(target_os = "macos")]
+fn macos_drives() -> Vec<DriveEntry> {
+    let mut drives: Vec<DriveEntry> = Vec::new();
+    if let Ok(read) = std::fs::read_dir("/Volumes") {
+        for entry in read.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            // Follows the symlink — a dangling one (mid-eject) drops out here.
+            if !path.is_dir() {
+                continue;
+            }
+            let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+            drives.push(DriveEntry {
+                name,
+                path: resolved.to_string_lossy().to_string(),
+            });
+        }
+    }
+    drives
+}
+
+/// Top-level directories the FHS (or its de-facto extensions) owns. A
+/// depth-one mount point OUTSIDE this set is a user-created drive root
+/// (`/disk2`, `/data`, `/tank`) — the system's own split partitions
+/// (`/boot`, a separate `/var` or `/home`) are plumbing, not drives.
+#[cfg(any(target_os = "linux", test))]
+const FHS_TOP_LEVEL: &[&str] = &[
+    "bin",
+    "boot",
+    "dev",
+    "efi",
+    "etc",
+    "home",
+    "lib",
+    "lib32",
+    "lib64",
+    "libx32",
+    "lost+found",
+    "media",
+    "mnt",
+    "nix",
+    "opt",
+    "proc",
+    "root",
+    "run",
+    "sbin",
+    "snap",
+    "srv",
+    "sys",
+    "tmp",
+    "usr",
+    "var",
+];
+
+/// Mounted drives from `/proc/mounts`: the conventional removable locations
+/// (`/media`, `/run/media`, `/mnt` — udisks, WSL drive letters, manual
+/// mounts, whatever the filesystem) plus block-device partitions mounted at
+/// custom top-level paths like `/disk2` (PR #144 feedback) — `/dev/*`
+/// sources at depth-one non-FHS points, minus squashfs/erofs images (snaps).
+/// Plus "System" for `/`: anything mounted deeper stays reachable by
+/// browsing from the root, and the palette accepts typed paths besides.
+#[cfg(any(target_os = "linux", test))]
+fn linux_drives(mounts: &str) -> Vec<DriveEntry> {
+    let mut drives: Vec<DriveEntry> = Vec::new();
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(source), Some(point), fstype) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let point = unescape_mount_point(point);
+        let conventional = point.starts_with("/media/")
+            || point.starts_with("/run/media/")
+            || point == "/mnt"
+            || point.starts_with("/mnt/");
+        let custom_block = source.starts_with("/dev/")
+            && !matches!(fstype, Some("squashfs") | Some("erofs"))
+            && point
+                .strip_prefix('/')
+                .is_some_and(|p| !p.is_empty() && !p.contains('/') && !FHS_TOP_LEVEL.contains(&p));
+        if !conventional && !custom_block {
+            continue;
+        }
+        let name = point
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Drive")
+            .to_string();
+        drives.push(DriveEntry { name, path: point });
+    }
+    drives.push(DriveEntry {
+        name: "System".into(),
+        path: "/".into(),
+    });
+    drives
+}
+
+/// Probe the drive letters. `exists` on a wedged network letter can hang —
+/// covered by the caller's disposable-worker timeout.
+#[cfg(windows)]
+fn windows_drives() -> Vec<DriveEntry> {
+    ('A'..='Z')
+        .filter_map(|letter| {
+            let path = format!("{letter}:\\");
+            std::path::Path::new(&path).exists().then(|| DriveEntry {
+                name: format!("{letter}:"),
+                path,
+            })
+        })
+        .collect()
+}
+
+/// Dedupe by mount point (first mention wins — the named row beats a
+/// late generic duplicate), system root first, then name order, capped.
+fn finish_drives(mut drives: Vec<DriveEntry>) -> Vec<DriveEntry> {
+    let mut seen = HashSet::new();
+    drives.retain(|d| seen.insert(d.path.clone()));
+    drives.sort_by(|a, b| {
+        (a.path != "/")
+            .cmp(&(b.path != "/"))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    drives.truncate(DRIVE_LIST_MAX_ENTRIES);
+    drives
+}
+
+/// `/proc/mounts` octal-escapes whitespace in mount points (`\040` = space).
+#[cfg(any(target_os = "linux", test))]
+fn unescape_mount_point(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let digits: String = chars.clone().take(3).collect();
+            if digits.len() == 3
+                && let Ok(code) = u8::from_str_radix(&digits, 8)
+            {
+                out.push(code as char);
+                chars.nth(2);
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Case-insensitive subsequence score. Lower is better: adjacent and earlier
+/// characters win, while still allowing `cmp rs` to find `composer.rs`.
+fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
+    let candidate = candidate.to_lowercase();
+    query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .try_fold(0usize, |total, term| {
+            let mut at = 0;
+            let mut score = 0usize;
+            let mut previous_end = None;
+            for needle in term.chars() {
+                let found = candidate[at..].find(needle)? + at;
+                score += found;
+                if previous_end == Some(found) {
+                    score = score.saturating_sub(2);
+                }
+                at = found + needle.len_utf8();
+                previous_end = Some(at);
+            }
+            Some(total.saturating_add(score))
+        })
+}
+
+/// Match a history commit using the same semantics as the history UI.
+///
+/// This remains the shared entry point so RPC filtering and client-side
+/// filtering cannot disagree about Unicode case normalization.
+pub fn git_history_matches(query: &str, commit: &GitHistoryCommit) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let normalized = query.to_ascii_lowercase();
+    commit.sha.to_ascii_lowercase().starts_with(&normalized)
+        || fuzzy_score(query, &format!("{} {}", commit.sha, commit.subject)).is_some()
+}
+
+/// Contract hidden commits to their nearest visible ancestors. Search results
+/// remain sparse without leaving graph lanes aimed at rows that are absent.
+fn compact_history_commits(
+    commits: &[GitHistoryCommit],
+    visible: &HashSet<String>,
+) -> Vec<GitHistoryCommit> {
+    let by_sha: HashMap<_, _> = commits
+        .iter()
+        .map(|commit| (commit.sha.as_str(), commit))
+        .collect();
+
+    /// Resolve a hidden commit to its nearest visible ancestors without using
+    /// the call stack. Completed nodes are cached across visible commits so a
+    /// shared hidden branch is contracted only once.
+    fn nearest_visible_parents(
+        sha: &str,
+        visible: &HashSet<String>,
+        by_sha: &HashMap<&str, &GitHistoryCommit>,
+        memo: &mut HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        if visible.contains(sha) || !by_sha.contains_key(sha) {
+            return vec![sha.to_string()];
+        }
+        if let Some(cached) = memo.get(sha) {
+            return cached.clone();
+        }
+
+        struct Frame {
+            sha: String,
+            next_parent: usize,
+            resolved: Vec<String>,
+            seen: HashSet<String>,
+        }
+
+        impl Frame {
+            fn new(sha: String) -> Self {
+                Self {
+                    sha,
+                    next_parent: 0,
+                    resolved: Vec::new(),
+                    seen: HashSet::new(),
+                }
+            }
+
+            fn extend(&mut self, parents: &[String]) {
+                for parent in parents {
+                    if self.seen.insert(parent.clone()) {
+                        self.resolved.push(parent.clone());
+                    }
+                }
+            }
+        }
+
+        let mut visiting = HashSet::from([sha.to_string()]);
+        let mut stack = vec![Frame::new(sha.to_string())];
+        loop {
+            let next_parent = {
+                let frame = stack.last_mut().expect("history traversal frame");
+                let parents = &by_sha[frame.sha.as_str()].parent_shas;
+                (frame.next_parent < parents.len()).then(|| {
+                    let parent = parents[frame.next_parent].clone();
+                    frame.next_parent += 1;
+                    parent
+                })
+            };
+
+            let Some(parent) = next_parent else {
+                let frame = stack.pop().expect("history traversal frame");
+                visiting.remove(&frame.sha);
+                let resolved = frame.resolved;
+                memo.insert(frame.sha, resolved.clone());
+                if let Some(caller) = stack.last_mut() {
+                    caller.extend(&resolved);
+                    continue;
+                }
+                return resolved;
+            };
+
+            let resolved = if visible.contains(&parent) || !by_sha.contains_key(parent.as_str()) {
+                Some(vec![parent.clone()])
+            } else if let Some(cached) = memo.get(&parent) {
+                Some(cached.clone())
+            } else if visiting.contains(&parent) {
+                // Git commit graphs are acyclic, but keep malformed input from
+                // looping forever just as the previous `visiting` guard did.
+                Some(Vec::new())
+            } else {
+                None
+            };
+
+            if let Some(resolved) = resolved {
+                stack
+                    .last_mut()
+                    .expect("history traversal frame")
+                    .extend(&resolved);
+            } else {
+                visiting.insert(parent.clone());
+                stack.push(Frame::new(parent));
+            }
+        }
+    }
+
+    let mut memo = HashMap::new();
+    commits
+        .iter()
+        .filter(|commit| visible.contains(&commit.sha))
+        .cloned()
+        .map(|mut commit| {
+            let mut seen = HashSet::new();
+            commit.parent_shas = commit
+                .parent_shas
+                .iter()
+                .flat_map(|parent| nearest_visible_parents(parent, visible, &by_sha, &mut memo))
+                .filter(|parent| seen.insert(parent.clone()))
+                .collect();
+            commit
+        })
+        .collect()
+}
+
+/// Whether two remote URLs name the same repository: `https://`, `ssh://` and
+/// scp-style spellings, a `.git` suffix, a trailing slash, embedded
+/// credentials, and host/owner/name case are all ignored.
+/// The folder a clone of `url` lands in: its last path segment minus
+/// `.git`. Local paths split on `\\` too (a Windows path must not become an
+/// absolute "name" that replaces the destination), and a segment that would
+/// step out of the destination (`.`, `..`) falls back to `repo`.
+fn clone_folder_name(url: &str) -> String {
+    url.trim_end_matches(['/', '\\'])
+        .trim_end_matches(".git")
+        .rsplit(['/', '\\', ':'])
+        .next()
+        .filter(|s| !s.is_empty() && *s != "." && *s != "..")
+        .unwrap_or("repo")
+        .to_string()
+}
+
+pub(crate) fn same_remote(a: &str, b: &str) -> bool {
+    fn key(url: &str) -> String {
+        if let Some(remote) = crate::source_control::parse_git_remote(url) {
+            return format!(
+                "{}/{}/{}",
+                remote.host,
+                remote.owner.to_ascii_lowercase(),
+                remote.repository.to_ascii_lowercase()
+            );
+        }
+        // Not owner/name shaped (nested groups, local paths): compare the
+        // URL minus scheme, credentials, trailing slash and `.git`.
+        let url = url.trim().trim_end_matches('/');
+        let url = url.strip_suffix(".git").unwrap_or(url);
+        let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let rest = match rest.split_once('/') {
+            Some((authority, path)) => format!(
+                "{}/{path}",
+                authority
+                    .rsplit_once('@')
+                    .map_or(authority, |(_, host)| host)
+            ),
+            None => rest.to_string(),
+        };
+        rest.to_ascii_lowercase()
+    }
+    key(a) == key(b)
+}
+
+fn search_files_blocking(
+    search: &WorkspaceSearch,
+    root: &Path,
+    query: &str,
+    featured_paths: &[String],
+) -> Result<Vec<FileSearchMatch>, EngineError> {
+    let root = canonical_search_root(root)?;
+    let mut matches: Vec<FileSearchMatch> = Vec::with_capacity(FILE_SEARCH_MAX_RESULTS);
+    if query.trim().is_empty() {
+        for path in featured_paths {
+            if matches.len() == FILE_SEARCH_MAX_RESULTS {
+                break;
+            }
+            let path = Path::new(path);
+            let full = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                root.join(path)
+            };
+            let Ok(canonical) = std::fs::canonicalize(full) else {
+                continue;
+            };
+            let Ok(relative) = canonical.strip_prefix(&root) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if relative.is_empty()
+                || is_git_metadata(&relative)
+                || matches.iter().any(|found| found.path == relative)
+            {
+                continue;
+            }
+            matches.push(FileSearchMatch {
+                is_dir: canonical.is_dir(),
+                path: relative,
+            });
+        }
+    }
+    let found = search
+        .search_names_within(
+            &root,
+            query,
+            FILE_SEARCH_MAX_RESULTS + matches.len(),
+            NameKinds::FilesAndDirectories,
+            crate::workspace_search::NAME_SCAN_WAIT,
+        )
+        .map_err(|e| EngineError::Other(e.to_string()))?;
+    for found in found.matches {
+        if matches.len() == FILE_SEARCH_MAX_RESULTS {
+            break;
+        }
+        if is_git_metadata(&found.path)
+            || matches.iter().any(|known| known.path == found.path)
+            || crate::workspace_search::escapes_through_symlink(&root, &found.path, true)
+        {
+            continue;
+        }
+        matches.push(FileSearchMatch {
+            path: found.path,
+            is_dir: found.is_dir,
+        });
+    }
+    Ok(matches)
+}
+
+/// The home folder as the workspace search index keys it.
+fn home_search_root() -> Result<PathBuf, EngineError> {
+    let home = session_home_dir().map_err(|error| EngineError::Other(error.to_string()))?;
+    canonical_search_root(&home)
+}
+
+fn search_home_folders_blocking(
+    search: &WorkspaceSearch,
+    query: &str,
+    limit: usize,
+) -> Result<HomeFolderSearchResult, EngineError> {
+    let mut found = search_folders_under(search, &home_search_root()?, query, limit)?;
+    // The index keys Home by its canonical path; clients compare results
+    // with Home and existing projects as the folder browser spells them. A
+    // symlinked Home (`/home/me` → `/data/home/me`) must not read as a
+    // second copy of every folder.
+    if let Ok(home) = session_home_dir() {
+        for found in &mut found.matches {
+            found.path = folder_browser_path(&home.join(&found.relative));
+        }
+    }
+    Ok(found)
+}
+
+/// `SearchHomeFolders` against an already-resolved (canonical) root.
+fn search_folders_under(
+    search: &WorkspaceSearch,
+    home: &Path,
+    query: &str,
+    limit: usize,
+) -> Result<HomeFolderSearchResult, EngineError> {
+    let query = normalize_name_query(query);
+    let query = query.as_ref();
+    // fff scores a `/` query against whole paths, where a folder loses to
+    // its many descendants; ask for the last segment's folders instead and
+    // let `rank_home_folders` check the leading segments.
+    let (index_query, candidates) = match query.trim().trim_end_matches('/').rsplit_once('/') {
+        Some((_, last)) if !last.is_empty() => (last, HOME_FOLDER_PATH_CANDIDATES),
+        _ => (query, HOME_FOLDER_CANDIDATES),
+    };
+    let found = search
+        .search_names(home, index_query, candidates, NameKinds::Directories)
+        .map_err(|e| EngineError::Other(e.to_string()))?;
+    // A `.git` probe per candidate (a few hundred stats) lets repositories
+    // rank first.
+    let candidates = found
+        .matches
+        .into_iter()
+        .filter(|found| !is_git_metadata(&found.path))
+        .map(|found| {
+            let is_repo = home.join(&found.path).join(".git").exists();
+            (found.path, is_repo)
+        })
+        .collect();
+    let matches = rank_home_folders(query, candidates)
+        .into_iter()
+        .take(limit)
+        .map(|(relative, is_repo)| HomeFolderMatch {
+            path: folder_browser_path(&home.join(&relative)),
+            relative,
+            is_repo,
+        })
+        .collect();
+    Ok(HomeFolderSearchResult {
+        matches,
+        indexing: found.indexing,
+    })
+}
+
+/// Keep canonical index keys internal. Ordinary Windows paths are easier for
+/// browser clients to compare with Home and existing spaces; retain extended
+/// paths when their length or names require them, and for UNC shares.
+fn folder_browser_path(path: &Path) -> String {
+    #[cfg(windows)]
+    let path = dunce::simplified(path);
+    path.to_string_lossy().into_owned()
+}
+
+/// Re-rank fuzzy folder candidates `(relative path, is a repository)`, given
+/// in index order, by how well the folder itself matches: an exact name,
+/// then a name starting with the query, then one containing it. A query
+/// with `/` matches the path's last segments instead, each query segment a
+/// prefix of its path segment (`dev/com` → `…/development/comet`). Within a
+/// tier repositories go first, then shallower folders. Candidates matching
+/// only through a typo or a parent's name are kept only when nothing better
+/// matched, ordered the same way.
+fn rank_home_folders(query: &str, candidates: Vec<(String, bool)>) -> Vec<(String, bool)> {
+    let query = query.trim().to_lowercase();
+    let segments: Vec<&str> = query.split('/').filter(|s| !s.is_empty()).collect();
+    let tier = |relative: &str| -> u8 {
+        let relative = relative.to_lowercase();
+        let path: Vec<&str> = relative.split('/').collect();
+        if query.contains('/') {
+            if segments.is_empty() || segments.len() > path.len() {
+                return 0;
+            }
+            let tail = &path[path.len() - segments.len()..];
+            if !tail
+                .iter()
+                .zip(&segments)
+                .all(|(seg, q)| seg.starts_with(q))
+            {
+                return 0;
+            }
+            return if tail.last() == segments.last() { 3 } else { 2 };
+        }
+        let name = path.last().copied().unwrap_or_default();
+        if name == query {
+            3
+        } else if name.starts_with(&query) {
+            2
+        } else {
+            u8::from(name.contains(&query))
+        }
+    };
+    let mut ranked: Vec<(u8, usize, usize, (String, bool))> = candidates
+        .into_iter()
+        .enumerate()
+        .map(|(order, (relative, is_repo))| {
+            let depth = relative.matches('/').count();
+            (tier(&relative), depth, order, (relative, is_repo))
+        })
+        .collect();
+    if ranked.iter().any(|(tier, ..)| *tier > 0) {
+        ranked.retain(|(tier, ..)| *tier > 0);
+    }
+    ranked.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then(b.3.1.cmp(&a.3.1))
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+    ranked.into_iter().map(|(.., found)| found).collect()
+}
+
+/// Repository metadata is never offered, even if an index surfaced it.
+fn is_git_metadata(relative: &str) -> bool {
+    relative.split('/').any(|component| component == ".git")
+}
+
+fn canonical_search_root(root: &Path) -> Result<PathBuf, EngineError> {
+    std::fs::canonicalize(root)
+        .map_err(|e| EngineError::Other(format!("could not search workspace: {e}")))
+}
+
+/// Turn a generated chat title into the semantic portion of a Zeron branch
+/// (port of zeron's `worktreeBranchFromTitle`). Zeron NFKD-normalizes accented
+/// letters first; native keeps it ASCII-only (generated titles are Title Case
+/// English), so non-ASCII characters collapse into the `-` separator.
+pub fn worktree_branch_from_title(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.trim().chars() {
+        if matches!(c, '\'' | '"' | '`') {
+            continue; // dropped entirely (cafe's → cafes), not a separator
+        }
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(48);
+    let slug = slug.trim_matches('-');
+    format!("zeron/{}", if slug.is_empty() { "update" } else { slug })
+}
+
+fn bounded_field(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommitAvatar {
+    sha: String,
+    author: Option<GitHubAvatarUser>,
+    commit: GitHubCommitMetadata,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAvatarUser {
+    avatar_url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommitMetadata {
+    author: GitHubCommitAuthor,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommitAuthor {
+    email: String,
+}
+
+fn parse_github_remote(remote: &str) -> Option<(String, String)> {
+    let remote = remote.trim();
+    let path = remote
+        .strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("http://github.com/"))
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote.strip_prefix("git@github.com:"))?;
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if owner.is_empty()
+        || repo.is_empty()
+        || parts.next().is_some()
+        || !owner
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        || !repo.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+fn parse_history_log(
+    output: &str,
+    refs_by_sha: &HashMap<String, Vec<GitHistoryRef>>,
+) -> Vec<GitHistoryCommit> {
+    let fields: Vec<&str> = output.split('\0').collect();
+    fields
+        .chunks(6)
+        .filter_map(|record| {
+            if record.len() != 6 {
+                return None;
+            }
+            let sha = record[0].trim_start_matches(['\r', '\n']);
+            if sha.is_empty() {
+                return None;
+            }
+            Some(GitHistoryCommit {
+                sha: sha.to_string(),
+                parent_shas: record[1]
+                    .split_ascii_whitespace()
+                    .map(str::to_string)
+                    .collect(),
+                subject: bounded_field(record[2], 4_096),
+                author_name: bounded_field(record[3], 512),
+                author_email: bounded_field(record[4], 512),
+                authored_at: bounded_field(record[5], 128),
+                refs: refs_by_sha.get(sha).cloned().unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+fn parse_history_refs(output: &str) -> HashMap<String, Vec<GitHistoryRef>> {
+    let fields: Vec<&str> = output.split('\0').collect();
+    let mut refs_by_sha: HashMap<String, Vec<GitHistoryRef>> = HashMap::new();
+    for record in fields.chunks(6) {
+        if record.len() != 6 {
+            continue;
+        }
+        let full_name = record[0].trim_start_matches(['\r', '\n']);
+        let object_sha = record[1];
+        let object_type = record[2];
+        let peeled_sha = record[3];
+        let peeled_type = record[4];
+        let symbolic_target = record[5];
+        if full_name.is_empty() || !symbolic_target.is_empty() {
+            continue;
+        }
+        let Some((kind, label)) = (if let Some(label) = full_name.strip_prefix("refs/heads/") {
+            Some((GitHistoryRefKind::Branch, label))
+        } else if let Some(label) = full_name.strip_prefix("refs/remotes/") {
+            Some((GitHistoryRefKind::Remote, label))
+        } else {
+            full_name
+                .strip_prefix("refs/tags/")
+                .map(|label| (GitHistoryRefKind::Tag, label))
+        }) else {
+            continue;
+        };
+        let target_sha = if object_type == "commit" {
+            object_sha
+        } else if object_type == "tag" && peeled_type == "commit" {
+            peeled_sha
+        } else {
+            continue;
+        };
+        refs_by_sha
+            .entry(target_sha.to_string())
+            .or_default()
+            .push(GitHistoryRef {
+                kind,
+                label: bounded_field(label, 1_024),
+            });
+    }
+    for refs in refs_by_sha.values_mut() {
+        refs.sort_by(|left, right| {
+            let order = |kind| match kind {
+                GitHistoryRefKind::Branch => 0,
+                GitHistoryRefKind::Tag => 1,
+                GitHistoryRefKind::Remote => 2,
+            };
+            order(left.kind)
+                .cmp(&order(right.kind))
+                .then_with(|| left.label.cmp(&right.label))
+        });
+    }
+    refs_by_sha
+}
+
+/// Absolute form of a possibly-relative path (no filesystem access).
+fn absolutize(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Win32 process working directories remain limited to MAX_PATH even when
+/// file I/O supports extended paths. A usable worktree must be able to launch
+/// Git, hooks, and agents, not merely be created on disk. Count UTF-16 units,
+/// excluding the verbatim prefix and reserving the terminating NUL.
+#[cfg(any(windows, test))]
+pub(crate) fn validate_windows_worktree_path(path: &str) -> Result<(), EngineError> {
+    if windows_git_worktree_path(path).encode_utf16().count() >= 260 {
+        return Err(EngineError::Other(
+            "This worktree path is too long to start tools on Windows. Choose a shorter location, such as C:\\worktrees.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Git's worktree command normalizes backslashes to slashes, which breaks
+/// Win32 verbatim prefixes (`\\?\` becomes `//?/`). Keep native paths for
+/// filesystem access, but pass drive/UNC paths without that prefix to Git.
+#[cfg(any(windows, test))]
+fn windows_git_worktree_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    if let Some(unc) = path.strip_prefix("//?/UNC/") {
+        return format!("//{unc}");
+    }
+    if let Some(drive) = path.strip_prefix("//?/") {
+        let bytes = drive.as_bytes();
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1..3] == *b":/" {
+            return drive.to_owned();
+        }
+    }
+    path
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn git_worktree_paths_strip_only_drive_and_unc_verbatim_prefixes() {
+        for (native, expected) in [
+            (
+                r"\\?\C:\other disk\日本語\repo",
+                "C:/other disk/日本語/repo",
+            ),
+            (r"\\?\UNC\server\share\repo", "//server/share/repo"),
+            (r"C:\worktrees\repo", "C:/worktrees/repo"),
+            (r"\\server\share\repo", "//server/share/repo"),
+            ("//?/C:/worktrees/repo", "C:/worktrees/repo"),
+            ("//?/UNC/server/share/repo", "//server/share/repo"),
+        ] {
+            assert_eq!(super::windows_git_worktree_path(native), expected);
+        }
+        let suffix = "folder/".repeat(50);
+        assert_eq!(
+            super::windows_git_worktree_path(&format!("//?/C:/{suffix}")),
+            format!("C:/{suffix}")
+        );
+    }
+
+    use super::*;
+
+    #[test]
+    fn windows_worktree_limit_counts_utf16_without_verbatim_prefix() {
+        for prefix in ["C:/", "//?/C:/", "//server/share/", "//?/UNC/server/share/"] {
+            let prefix_len = windows_git_worktree_path(prefix).encode_utf16().count();
+            let path = format!("{prefix}{}", "a".repeat(259 - prefix_len));
+            assert!(validate_windows_worktree_path(&path).is_ok());
+            assert!(validate_windows_worktree_path(&format!("{path}a")).is_err());
+        }
+        assert!(validate_windows_worktree_path(&format!("C:/{}", "日本語".repeat(80))).is_ok());
+        assert!(validate_windows_worktree_path(&format!("C:/{}", "😀".repeat(129))).is_err());
+    }
+
+    #[tokio::test]
+    async fn worktree_location_containing_the_repository_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = tmp.path().join("code");
+        let repo = code.join("comet");
+        std::fs::create_dir_all(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(&tmp.path().join("data"), "test", code.clone());
+        repos
+            .git(&["init", "-b", "main"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "init",
+                ],
+                Some(&repo),
+            )
+            .await
+            .unwrap();
+        let error = repos.create_worktree(&repo, "main").await.unwrap_err();
+        assert!(
+            error.to_string().contains("inside the repository"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_dir(&repo).unwrap().count(), 1, "only .git");
+        assert!(
+            repos
+                .branches(&repo)
+                .await
+                .unwrap()
+                .iter()
+                .all(|b| !b.starts_with("zeron/"))
+        );
+
+        // A sibling location for the same parent is fine.
+        let sibling =
+            Repos::with_worktrees_root(&tmp.path().join("data2"), "test", code.join("wt"));
+        let worktree = sibling.create_worktree(&repo, "main").await.unwrap();
+        assert!(Path::new(&worktree.path).starts_with(code.join("wt").join("comet")));
+    }
+
+    async fn two_step_fixture(hook_exit: u8) -> (tempfile::TempDir, Repos, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let repos = Repos::with_worktrees_root(
+            &tmp.path().join("data"),
+            "test",
+            tmp.path().join("worktrees"),
+        );
+        repos
+            .git(&["init", "-b", "main"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "user.name", "Test"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "core.autocrlf", "false"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "user.email", "test@example.com"], Some(&repo))
+            .await
+            .unwrap();
+        std::fs::write(repo.join("README.txt"), "original checkout\n").unwrap();
+        std::fs::write(repo.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
+        std::fs::create_dir(repo.join(".githooks")).unwrap();
+        let hook = repo.join(".githooks/post-checkout");
+        std::fs::write(&hook, format!(
+            "#!/bin/sh\ntest -f README.txt || exit 42\nprintf '%s\\n' \"$1\" \"$2\" \"$3\" >> hook-arguments\nprintf ran >> hook-count\nexit {hook_exit}\n"
+        )).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        repos.git(&["add", "."], Some(&repo)).await.unwrap();
+        repos
+            .git(&["commit", "-m", "fixture"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "core.hooksPath", ".githooks"], Some(&repo))
+            .await
+            .unwrap();
+        (tmp, repos, repo)
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_runs_configured_hook_once_after_checkout() {
+        let (tmp, repos, repo) = two_step_fixture(0).await;
+        let path = tmp.path().join("new checkout");
+        repos
+            .add_worktree_in_two_steps(&repo, &path, "zeron/test", "main")
+            .await
+            .unwrap();
+        let head = repos
+            .git(&["rev-parse", "HEAD"], Some(&repo))
+            .await
+            .unwrap();
+        let arguments = std::fs::read_to_string(path.join("hook-arguments")).unwrap();
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            ["0".repeat(head.len()), head, "1".into()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("hook-count")).unwrap(),
+            "ran"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("README.txt")).unwrap(),
+            "original checkout\n"
+        );
+        assert!(!repo.join("hook-count").exists());
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+        assert!(repos.refs(&repo).await.unwrap().iter().any(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_some_and(|listed| same_file::is_same_file(listed, &path).unwrap_or(false))
+        }));
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_removes_partial_checkout_when_reset_fails() {
+        let (tmp, repos, repo) = two_step_fixture(0).await;
+        repos
+            .git(&["config", "filter.fixture.smudge", "exit 1"], Some(&repo))
+            .await
+            .unwrap();
+        repos
+            .git(&["config", "filter.fixture.required", "true"], Some(&repo))
+            .await
+            .unwrap();
+        let path = tmp.path().join("failed checkout");
+        let error = repos
+            .add_worktree_in_two_steps(&repo, &path, "zeron/failed", "main")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("smudge"), "{error}");
+        assert!(!path.exists());
+        assert!(repos.refs(&repo).await.unwrap().iter().all(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_none_or(|listed| same_file::is_same_file(listed, &repo).unwrap_or(false))
+        }));
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README.txt")).unwrap(),
+            "original checkout\n"
+        );
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+    }
+
+    #[tokio::test]
+    async fn two_step_worktree_keeps_completed_checkout_when_hook_fails() {
+        let (tmp, repos, repo) = two_step_fixture(1).await;
+        let path = tmp.path().join("hook failure");
+        assert!(
+            repos
+                .add_worktree_in_two_steps(&repo, &path, "zeron/hook-failure", "main")
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("hook-count")).unwrap(),
+            "ran"
+        );
+        assert!(path.join("README.txt").is_file());
+        assert!(repos.refs(&repo).await.unwrap().iter().any(|entry| {
+            entry
+                .worktree_path
+                .as_ref()
+                .is_some_and(|listed| same_file::is_same_file(listed, &path).unwrap_or(false))
+        }));
+        assert_eq!(repos.current_branch(&repo).await.unwrap(), "main");
+    }
+
+    #[test]
+    fn same_remote_ignores_scheme_suffix_slash_credentials_and_case() {
+        let canonical = "https://github.com/Acme/App";
+        for same in [
+            "https://github.com/acme/app.git",
+            "https://github.com/Acme/App/",
+            "https://x-access-token:ghu_secret@github.com/acme/app.git",
+            "git@github.com:acme/app.git",
+            "ssh://git@github.com/acme/app",
+            "http://GitHub.com/acme/app",
+        ] {
+            assert!(same_remote(canonical, same), "{same}");
+        }
+        for other in [
+            "https://github.com/acme/app2",
+            "https://github.com/other/app",
+            "https://gitlab.com/acme/app",
+        ] {
+            assert!(!same_remote(canonical, other), "{other}");
+        }
+        assert!(same_remote("/srv/git/src.git", "file:///srv/git/src.git/"));
+        assert!(!same_remote("/srv/git/src.git", "/srv/other/src.git"));
+    }
+
+    #[tokio::test]
+    async fn github_repo_names_the_origins_owner_and_name() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        let repos = Repos::new(&root.path().join("data"), "device-1");
+        git(&["init", "-q"]);
+        assert_eq!(repos.github_repo(root.path()).await, None, "no origin");
+        git(&["remote", "add", "origin", "git@github.com:Acme/app.git"]);
+        assert_eq!(
+            repos.github_repo(root.path()).await.as_deref(),
+            Some("Acme/app")
+        );
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://gitlab.com/acme/app.git",
+        ]);
+        assert_eq!(repos.github_repo(root.path()).await, None, "not GitHub");
+    }
+
+    #[tokio::test]
+    async fn clone_repo_in_puts_the_checkout_where_the_user_chose() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], cwd: &Path| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        let work = root.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        git(&["init", "-q", "-b", "main"], &work);
+        std::fs::write(work.join("README.md"), "hi").unwrap();
+        git(&["add", "."], &work);
+        git(&["commit", "-q", "-m", "init"], &work);
+        let bare = root.path().join("app.git");
+        git(
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+            root.path(),
+        );
+        let code = root.path().join("code");
+        std::fs::create_dir_all(&code).unwrap();
+        let repos = Repos::new(&root.path().join("data"), "device-1");
+        let repo = repos
+            .clone_repo_in(bare.to_str().unwrap(), code.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(repo.path, code.join("app").to_string_lossy());
+        assert!(code.join("app/README.md").exists());
+        // Again: the same checkout, not an error.
+        let again = repos
+            .clone_repo_in(bare.to_str().unwrap(), code.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(again, repo);
+        // A folder that isn't there is refused, not created.
+        let err = repos
+            .clone_repo_in(
+                bare.to_str().unwrap(),
+                root.path().join("nope").to_str().unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("No such folder"), "{err}");
+    }
+
+    #[test]
+    fn clone_folder_name_is_the_last_segment_and_stays_inside() {
+        for (url, name) in [
+            ("https://github.com/acme/app.git", "app"),
+            ("https://github.com/acme/app/", "app"),
+            ("git@github.com:acme/app.git", "app"),
+            ("git@github.com:app.git", "app"),
+            ("/srv/git/app.git", "app"),
+            (r"C:\Users\me\code\app.git", "app"),
+            (r"C:\Users\me\code\app\", "app"),
+            ("https://example.com/acme/..", "repo"),
+            ("https://example.com/acme/.", "repo"),
+            (r"C:\..", "repo"),
+            ("", "repo"),
+        ] {
+            assert_eq!(clone_folder_name(url), name, "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn clone_repo_is_idempotent_for_the_same_origin_only() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str], cwd: &Path| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "git {args:?}: {status:?}");
+        };
+        // Two different upstreams that would both clone into `repos/src`.
+        let mut upstreams = Vec::new();
+        for dir in ["a", "b"] {
+            let work = root.path().join(dir).join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            git(&["init", "-q", "-b", "main"], &work);
+            std::fs::write(work.join("README.md"), dir).unwrap();
+            git(&["add", "."], &work);
+            git(&["commit", "-q", "-m", "init"], &work);
+            let bare = root.path().join(dir).join("src.git");
+            git(
+                &[
+                    "clone",
+                    "-q",
+                    "--bare",
+                    work.to_str().unwrap(),
+                    bare.to_str().unwrap(),
+                ],
+                root.path(),
+            );
+            upstreams.push(bare);
+        }
+        let data = root.path().join("data");
+        let repos = Repos::new(&data, "device-1");
+        let first = repos
+            .clone_repo(upstreams[0].to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(first.path, data.join("repos").join("src").to_string_lossy());
+        // Same repository again (different spelling): the same success reply.
+        let again = repos
+            .clone_repo(&format!("file://{}/", upstreams[0].display()))
+            .await
+            .unwrap();
+        assert_eq!(again, first);
+        assert_eq!(repos.list().await.len(), 1, "registered once");
+        // A different repository with the same folder name stays an error.
+        let err = repos
+            .clone_repo(upstreams[1].to_str().unwrap())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Already exists"), "{err}");
+    }
+
+    #[test]
+    fn session_home_requires_an_explicit_usable_directory() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            session_home_dir_with(|name| (name == "HOME").then(|| home.path().as_os_str().into()))
+                .unwrap(),
+            home.path()
+        );
+        assert!(session_home_dir_with(|_| None).is_err());
+        assert!(session_home_dir_with(|name| (name == "HOME").then(|| "relative".into())).is_err());
+    }
+
+    fn history_commit(sha: String, parent_sha: Option<String>) -> GitHistoryCommit {
+        GitHistoryCommit {
+            subject: sha.clone(),
+            sha,
+            parent_shas: parent_sha.into_iter().collect(),
+            author_name: "Test".into(),
+            author_email: "test@example.com".into(),
+            authored_at: "2026-08-20T12:00:00Z".into(),
+            refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn expand_home_rewrites_tilde_and_leaves_other_paths() {
+        let home = session_home_dir().unwrap();
+        assert_eq!(expand_home("~").unwrap(), home.to_string_lossy());
+        assert_eq!(
+            expand_home("~/proj").unwrap(),
+            home.join("proj").to_string_lossy()
+        );
+        assert_eq!(expand_home("/abs/path").unwrap(), "/abs/path");
+        assert_eq!(expand_home("~nope").unwrap(), "~nope");
+    }
+
+    #[test]
+    fn parses_common_github_remote_forms() {
+        let expected = Some(("openai".to_string(), "codex".to_string()));
+        assert_eq!(
+            parse_github_remote("https://github.com/openai/codex.git"),
+            expected
+        );
+        assert_eq!(
+            parse_github_remote("git@github.com:openai/codex.git"),
+            expected
+        );
+        assert_eq!(parse_github_remote("https://gitlab.com/openai/codex"), None);
+    }
+
+    #[tokio::test]
+    async fn github_avatar_downloads_once_into_the_local_cache() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bytes = b"\xff\xd8\xffavatar".to_vec();
+        let served = bytes.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        served.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&served).await.unwrap();
+        });
+
+        let data = tempfile::tempdir().unwrap();
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+        let url = format!("http://{address}/avatar.jpg");
+        let first = repos.cache_github_avatar(&url).await.expect("downloaded");
+        server.await.unwrap();
+        assert_eq!(tokio::fs::read(&first).await.unwrap(), bytes);
+        assert_eq!(
+            repos.cache_github_avatar(&url).await.as_deref(),
+            Some(first.as_str())
+        );
+    }
+
+    #[test]
+    fn linux_drives_take_media_and_mnt_mounts_system_first() {
+        let mounts = "\
+sysfs /sys sysfs rw 0 0
+/dev/nvme0n1p2 / ext4 rw 0 0
+tmpfs /run tmpfs rw 0 0
+/dev/sda1 /media/wing/T7\\040Shield exfat rw 0 0
+/dev/sdb1 /run/media/wing/Backup ext4 rw 0 0
+/dev/sdc1 /mnt/scratch ext4 rw 0 0
+/dev/nvme0n1p2 /var/lib/docker ext4 rw 0 0
+";
+        let drives = finish_drives(linux_drives(mounts));
+        let rows: Vec<(&str, &str)> = drives
+            .iter()
+            .map(|d| (d.name.as_str(), d.path.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("System", "/"),
+                ("Backup", "/run/media/wing/Backup"),
+                ("scratch", "/mnt/scratch"),
+                ("T7 Shield", "/media/wing/T7 Shield"),
+            ]
+        );
+    }
+
+    #[test]
+    fn linux_drives_take_custom_top_level_block_mounts_not_system_splits() {
+        let mounts = "\
+/dev/nvme0n1p2 / ext4 rw 0 0
+/dev/sdb1 /disk2 ext4 rw 0 0
+/dev/mapper/vault /tank btrfs rw 0 0
+/dev/nvme0n1p1 /boot/efi vfat rw 0 0
+/dev/sdd1 /boot ext4 rw 0 0
+/dev/sde1 /home ext4 rw 0 0
+/dev/sdf1 /data/disks/a ext4 rw 0 0
+/dev/loop3 /snap/core22/1234 squashfs ro 0 0
+/dev/loop9 /disk3 ext4 rw 0 0
+";
+        let drives = finish_drives(linux_drives(mounts));
+        let rows: Vec<&str> = drives.iter().map(|d| d.path.as_str()).collect();
+        // /disk2 and /tank are user drive roots; a loop-mounted ext4 image at
+        // a custom root counts too (it's squashfs snaps that are noise). The
+        // system's own split partitions and deep mounts stay out.
+        assert_eq!(rows, vec!["/", "/disk2", "/disk3", "/tank"]);
+    }
+
+    #[test]
+    fn finish_drives_dedupes_by_mount_point_keeping_the_first_name() {
+        let drives = finish_drives(vec![
+            DriveEntry {
+                name: "Macintosh HD".into(),
+                path: "/".into(),
+            },
+            DriveEntry {
+                name: "System".into(),
+                path: "/".into(),
+            },
+        ]);
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0].name, "Macintosh HD");
+    }
+
+    #[test]
+    fn mount_point_unescape_handles_octal_and_lone_backslash() {
+        assert_eq!(unescape_mount_point("/media/a\\040b"), "/media/a b");
+        assert_eq!(unescape_mount_point("/media/tab\\011x"), "/media/tab\tx");
+        assert_eq!(unescape_mount_point("/media/plain"), "/media/plain");
+        assert_eq!(unescape_mount_point("/media/tail\\"), "/media/tail\\");
+    }
+
+    #[tokio::test]
+    async fn list_drives_resolves_on_this_platform() {
+        let data = tempfile::tempdir().unwrap();
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+        // Content is machine-dependent; the call must succeed and dedupe.
+        let drives = repos.list_drives().await.unwrap();
+        let mut paths: Vec<&String> = drives.iter().map(|d| &d.path).collect();
+        paths.dedup();
+        assert_eq!(paths.len(), drives.len());
+    }
+
+    #[test]
+    fn git_history_matches_unicode_case_insensitively() {
+        let mut candidate = history_commit("a1b2c3d4".into(), None);
+        candidate.subject = "RÉPARER la recherche".into();
+
+        assert!(git_history_matches("réparer", &candidate));
+    }
+
+    #[test]
+    fn history_compaction_handles_a_twenty_thousand_commit_gap() {
+        const DEPTH: usize = 20_000;
+        let commits = (0..DEPTH)
+            .rev()
+            .map(|index| {
+                history_commit(
+                    format!("c{index:05}"),
+                    (index > 0).then(|| format!("c{:05}", index - 1)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let newest = format!("c{:05}", DEPTH - 1);
+        let oldest = "c00000".to_string();
+        let visible = HashSet::from([newest.clone(), oldest.clone()]);
+
+        let compact = compact_history_commits(&commits, &visible);
+
+        assert_eq!(compact.len(), 2);
+        assert_eq!(compact[0].sha, newest);
+        assert_eq!(compact[0].parent_shas, vec![oldest.clone()]);
+        assert_eq!(compact[1].sha, oldest);
+        assert!(compact[1].parent_shas.is_empty());
+    }
+
+    #[test]
+    fn home_folder_search_finds_nested_repositories() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in [
+            "work/clients/comet/.git",
+            "work/clients/comet/src",
+            "notes/comet-ideas",
+            "notes/other",
+        ] {
+            std::fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        std::fs::write(home.path().join("notes/comet-ideas/todo.md"), b"").unwrap();
+        let home = std::fs::canonicalize(home.path()).unwrap();
+        let search = WorkspaceSearch::new();
+        // The first call starts the index; wait out its scan.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let result = loop {
+            let result = search_folders_under(&search, &home, "comet", 20).unwrap();
+            if !result.indexing && !result.matches.is_empty() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline, "index never finished");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let found: Vec<_> = result
+            .matches
+            .iter()
+            .map(|m| (m.relative.as_str(), m.is_repo))
+            .collect();
+        // The exact name outranks the shallower prefix match.
+        assert_eq!(
+            found,
+            [("work/clients/comet", true), ("notes/comet-ideas", false)]
+        );
+        assert_eq!(
+            result.matches[0].path,
+            folder_browser_path(&home.join("work/clients/comet"))
+        );
+        assert!(
+            search_folders_under(&search, &home, "", 20)
+                .unwrap()
+                .matches
+                .is_empty()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn home_folder_search_accepts_both_windows_separators() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in ["aa/bb/cc/dd/src", "aa/bb/cc/dd-other", "elsewhere/dd"] {
+            std::fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        let home = std::fs::canonicalize(home.path()).unwrap();
+        let search = WorkspaceSearch::new();
+        search.warm(&home).unwrap();
+        assert!(search.wait_until_indexed(&home, Duration::from_secs(20)));
+
+        let forward = search_folders_under(&search, &home, "aa/bb/cc/dd", 20).unwrap();
+        assert_eq!(forward.matches[0].relative, "aa/bb/cc/dd");
+        assert!(
+            forward
+                .matches
+                .iter()
+                .any(|m| m.relative == "aa/bb/cc/dd-other")
+        );
+        for query in [r"aa\bb\cc\dd", r"aa\bb/cc\dd", r"aa\bb\cc\dd\"] {
+            let found = search_folders_under(&search, &home, query, 20).unwrap();
+            assert_eq!(found.matches, forward.matches);
+        }
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn home_folder_search_preserves_literal_posix_backslashes() {
+        let home = tempfile::tempdir().unwrap();
+        let literal = r"aa\bb\cc\dd";
+        for dir in [literal, "aa/bb/cc/dd"] {
+            std::fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        let home = std::fs::canonicalize(home.path()).unwrap();
+        let search = WorkspaceSearch::new();
+        search.warm(&home).unwrap();
+        assert!(search.wait_until_indexed(&home, Duration::from_secs(20)));
+
+        let found = search_folders_under(&search, &home, literal, 20).unwrap();
+        assert_eq!(found.matches.len(), 1);
+        assert_eq!(found.matches[0].relative, literal);
+        let forward = search_folders_under(&search, &home, "aa/bb/cc/dd", 20).unwrap();
+        assert_eq!(forward.matches.len(), 1);
+        assert_eq!(forward.matches[0].relative, "aa/bb/cc/dd");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn browser_paths_preserve_native_posix_spelling() {
+        for path in [
+            "/home/ana/code",
+            "/Users/Ana/code",
+            r"/tmp/name\with\backslashes",
+        ] {
+            assert_eq!(folder_browser_path(Path::new(path)), path);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn browser_paths_simplify_only_safe_windows_drive_paths() {
+        assert_eq!(
+            folder_browser_path(Path::new(r"\\?\C:\Users\Ana\repo")),
+            r"C:\Users\Ana\repo"
+        );
+        for path in [
+            r"\\?\C:\repo.",
+            r"\\?\C:\NUL.txt",
+            r"\\?\UNC\server\share\repo",
+        ] {
+            assert_eq!(folder_browser_path(Path::new(path)), path);
+        }
+        let long = format!(r"\\?\C:\{}\{}", "a".repeat(150), "b".repeat(150));
+        assert_eq!(folder_browser_path(Path::new(&long)), long);
+    }
+
+    fn ranked(query: &str, candidates: &[(&str, bool)]) -> Vec<String> {
+        let candidates = candidates
+            .iter()
+            .map(|(path, is_repo)| ((*path).to_owned(), *is_repo))
+            .collect();
+        rank_home_folders(query, candidates)
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect()
+    }
+
+    #[test]
+    fn home_folders_rank_by_their_own_name() {
+        let candidates = [
+            ("Drive/notes about comet launch", false),
+            ("dev/comet/apps/ios", false),
+            ("old/comet-archive", false),
+            ("dev/comet", false),
+            ("dev/mycomet", false),
+        ];
+        assert_eq!(
+            ranked("Comet", &candidates),
+            [
+                "dev/comet",
+                "old/comet-archive",
+                // Same tier, repo flag and depth: the index's order decides.
+                "Drive/notes about comet launch",
+                "dev/mycomet",
+            ]
+        );
+    }
+
+    #[test]
+    fn home_folders_put_repositories_first_within_a_tier() {
+        let candidates = [("a/comet-docs", false), ("b/c/comet-app", true)];
+        assert_eq!(
+            ranked("comet", &candidates),
+            ["b/c/comet-app", "a/comet-docs"]
+        );
+        // Typo matches survive only when nothing contains the query, and
+        // order the same way.
+        let candidates = [
+            ("Models/Comfy/comfy_types", false),
+            ("dev/comet", true),
+            ("dev/tools", false),
+        ];
+        assert_eq!(
+            ranked("comt", &candidates),
+            ["dev/comet", "dev/tools", "Models/Comfy/comfy_types"]
+        );
+    }
+
+    #[test]
+    fn slash_queries_match_trailing_segment_prefixes() {
+        let candidates = [
+            ("Documentos/development/comet/apps", false),
+            ("Documentos/development/comet", true),
+            ("Documentos/dev/tools", false),
+            ("dev/com", false),
+        ];
+        assert_eq!(
+            ranked("dev/com", &candidates),
+            ["dev/com", "Documentos/development/comet"]
+        );
+    }
+
+    fn search_files_blocking(
+        root: &Path,
+        query: &str,
+        featured_paths: &[String],
+    ) -> Result<Vec<FileSearchMatch>, EngineError> {
+        super::search_files_blocking(&WorkspaceSearch::new(), root, query, featured_paths)
+    }
+
+    #[test]
+    fn search_files_obeys_gitignore_and_returns_directories() {
+        let root = tempfile::tempdir().unwrap();
+        // Dotfiles are indexed only inside a real repository.
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root.path())
+            .status()
+            .unwrap();
+        assert!(init.success());
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/composer.rs"), "").unwrap();
+        std::fs::write(root.path().join(".secret"), "").unwrap();
+        std::fs::write(root.path().join(".gitignore"), "ignored\n").unwrap();
+        std::fs::create_dir(root.path().join("ignored")).unwrap();
+        std::fs::write(root.path().join("ignored/nope.rs"), "").unwrap();
+
+        let matches = search_files_blocking(root.path(), "src", &[]).unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|entry| entry.path == "src" && entry.is_dir)
+        );
+        assert!(matches.iter().any(|entry| entry.path == "src/composer.rs"));
+        assert!(
+            !matches
+                .iter()
+                .any(|entry| entry.path.starts_with("ignored"))
+        );
+        assert!(
+            search_files_blocking(root.path(), "secret", &[])
+                .unwrap()
+                .iter()
+                .any(|entry| entry.path == ".secret")
+        );
+        assert!(!matches.iter().any(|entry| entry.path.starts_with(".git/")));
+    }
+
+    #[test]
+    fn empty_search_features_recent_paths_before_shallow_entries() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("README.md"), "").unwrap();
+        std::fs::write(root.path().join("src/deep.rs"), "").unwrap();
+
+        let matches = search_files_blocking(root.path(), "", &["src/deep.rs".into()]).unwrap();
+        assert_eq!(
+            matches.first().map(|entry| entry.path.as_str()),
+            Some("src/deep.rs")
+        );
+        assert!(matches.iter().any(|entry| entry.path == "README.md"));
+    }
+
+    #[test]
+    fn search_files_prefers_filename_matches() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("composer/docs")).unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("composer/docs/readme.md"), "").unwrap();
+        std::fs::write(root.path().join("src/composer.rs"), "").unwrap();
+
+        let matches = search_files_blocking(root.path(), "composer", &[]).unwrap();
+        let composer = matches
+            .iter()
+            .position(|entry| entry.path == "src/composer.rs")
+            .unwrap();
+        let path_only = matches
+            .iter()
+            .position(|entry| entry.path == "composer/docs/readme.md")
+            .unwrap();
+        assert!(composer < path_only);
+    }
+
+    #[tokio::test]
+    async fn workspace_checkout_rejects_sibling_paths() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+
+        assert_eq!(
+            repos.workspace_checkout(root.path(), root.path()).await,
+            std::fs::canonicalize(root.path()).ok()
+        );
+        assert!(
+            repos
+                .workspace_checkout(root.path(), sibling.path())
+                .await
+                .is_none()
+        );
+    }
+
+    async fn git(cwd: &Path, args: &[&str]) {
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .await
+            .expect("git spawns");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_checkout_accepts_every_linked_worktree() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("repo");
+        let branch = tmp.path().join("branch");
+        let detached = tmp.path().join("detached");
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        std::fs::create_dir_all(&elsewhere).expect("unrelated dir");
+        git(&root, &["init", "-b", "main"]).await;
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]).await;
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                &branch.to_string_lossy(),
+            ],
+        )
+        .await;
+        git(
+            &root,
+            &["worktree", "add", "--detach", &detached.to_string_lossy()],
+        )
+        .await;
+        let data = tmp.path().join("data");
+        let repos = Repos::with_worktrees_root(&data, "device", data.join("worktrees"));
+
+        for checkout in [&root, &branch, &detached] {
+            assert_eq!(
+                repos.workspace_checkout(&root, checkout).await,
+                std::fs::canonicalize(checkout).ok(),
+                "{}",
+                checkout.display()
+            );
+        }
+        // A newline in a worktree's path must not smuggle in another entry.
+        #[cfg(unix)]
+        {
+            let forged = tmp
+                .path()
+                .join(format!("forged\nworktree {}", elsewhere.display()));
+            git(
+                &root,
+                &["worktree", "add", "--detach", &forged.to_string_lossy()],
+            )
+            .await;
+        }
+        assert!(repos.workspace_checkout(&root, &elsewhere).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_searches_of_one_checkout_do_not_cancel_each_other() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("alpha.rs"), "").unwrap();
+        std::fs::write(root.path().join("beta.rs"), "").unwrap();
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+
+        let alpha = repos.search_files(root.path().into(), "alpha".into(), Vec::new());
+        let beta = repos.search_files(root.path().into(), "beta".into(), Vec::new());
+        let (alpha, beta) = tokio::join!(alpha, beta);
+
+        assert_eq!(alpha.unwrap()[0].path, "alpha.rs");
+        assert_eq!(beta.unwrap()[0].path, "beta.rs");
+    }
+}

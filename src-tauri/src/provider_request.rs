@@ -12,22 +12,9 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 
 use crate::settings::{ModelProvider, ProviderApiFormat, ProviderCustomHeader};
-
-/// 由 Kivio 自己管理、不允许用户覆盖的头。放开会让鉴权/路由错乱。
-const RESERVED_HEADER_KEYS: &[&str] = &[
-    "authorization",
-    "x-api-key",
-    "x-goog-api-key",
-    "host",
-    "content-length",
-    "content-encoding",
-    "content-type",
-    // 适配器已经发了 `Accept-Encoding: identity`，而 reqwest 的 `.header()` 是 append 不是
-    // 覆盖 —— 用户再填一条 gzip 会变成 `identity, gzip`，客户端没开 gzip 解码，
-    // 认这条头的供应商回来的 SSE 就是一堆二进制垃圾。
-    "accept-encoding",
-    "anthropic-version",
-];
+pub use crate::settings::{
+    is_reserved_header_key, is_usable_header, is_valid_header_key, is_valid_header_value,
+};
 
 // 内置 CLI 版本号。手填版本为空时用它们。
 pub const CLAUDE_CODE_BUILTIN_VERSION: &str = "2.1.287";
@@ -159,50 +146,6 @@ fn stainless_arch() -> &'static str {
         "x86" => "x32",
         other => other,
     }
-}
-
-/// RFC 7230 token 字符集。
-pub fn is_valid_header_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(
-                    b,
-                    b'!' | b'#'
-                        | b'$'
-                        | b'%'
-                        | b'&'
-                        | b'\''
-                        | b'*'
-                        | b'+'
-                        | b'-'
-                        | b'.'
-                        | b'^'
-                        | b'_'
-                        | b'`'
-                        | b'|'
-                        | b'~'
-                )
-        })
-}
-
-/// 只允许可见 ASCII 与水平制表符：CR/LF 是 header 注入，非 ASCII 会让部分网关直接 400。
-pub fn is_valid_header_value(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
-}
-
-pub fn is_reserved_header_key(key: &str) -> bool {
-    let normalized = key.to_ascii_lowercase();
-    RESERVED_HEADER_KEYS.contains(&normalized.as_str())
-}
-
-/// 一条自定义头是否可用（合法且非保留）。
-pub fn is_usable_header(header: &ProviderCustomHeader) -> bool {
-    is_valid_header_key(&header.key)
-        && is_valid_header_value(&header.value)
-        && !is_reserved_header_key(&header.key)
 }
 
 /// 版本号会被拼进 User-Agent，所以必须先过头值校验：含 CR/LF 会让 reqwest 构造请求
@@ -443,9 +386,11 @@ mod tests {
         provider.api_keys.clear();
         assert!(provider.authentication_ready());
         let pairs = header_pairs(&provider, Some("conversation-1"));
-        assert!(!pairs
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
+        assert!(
+            !pairs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        );
         assert!(pairs.contains(&("x-opencode-session".into(), "conversation-1".into())));
         provider.base_url = "https://opencode.ai/zen/go/v1".into();
         assert!(provider.authentication_ready());
@@ -641,15 +586,21 @@ mod tests {
             concat!("Kivio/", env!("CARGO_PKG_VERSION")).into()
         )));
         assert!(pairs.contains(&("Accept".into(), "application/json".into())));
-        assert!(model_header_pairs(&plain, None, false, true)
-            .contains(&("Accept".into(), "text/event-stream".into())));
+        assert!(
+            model_header_pairs(&plain, None, false, true)
+                .contains(&("Accept".into(), "text/event-stream".into()))
+        );
         // 不要会话亲和或没有会话：不发亲和头。
-        assert!(!model_header_pairs(&plain, Some("conv_1"), false, false)
-            .iter()
-            .any(|(k, _)| k == "x-session-id"));
-        assert!(!model_header_pairs(&plain, None, true, false)
-            .iter()
-            .any(|(k, _)| k == "x-session-id"));
+        assert!(
+            !model_header_pairs(&plain, Some("conv_1"), false, false)
+                .iter()
+                .any(|(k, _)| k == "x-session-id")
+        );
+        assert!(
+            !model_header_pairs(&plain, None, true, false)
+                .iter()
+                .any(|(k, _)| k == "x-session-id")
+        );
 
         // 身份 UA / 用户自定义头优先，且同名只留一条。
         let custom = provider_with(ProviderRequestConfig {
@@ -673,9 +624,11 @@ mod tests {
         }
         assert!(pairs.contains(&("accept".into(), "text/event-stream".into())));
         assert!(pairs.contains(&("X-Session-Id".into(), "mine".into())));
-        assert!(pairs
-            .iter()
-            .any(|(k, v)| k == "User-Agent" && v.starts_with("codex_cli_rs/")));
+        assert!(
+            pairs
+                .iter()
+                .any(|(k, v)| k == "User-Agent" && v.starts_with("codex_cli_rs/"))
+        );
     }
 
     #[test]

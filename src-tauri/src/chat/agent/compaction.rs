@@ -317,7 +317,7 @@ const COMPACT_TOOL_KEEP_MAX_COUNT: usize = 100;
 /// borrowed across every attempt, including media and context-overflow retries.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn summarize_history(
-    state: &AppState,
+    state: &dyn crate::chat::model::host::ModelHost,
     provider: &crate::settings::ModelProvider,
     model: &str,
     messages: &[Value],

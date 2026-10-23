@@ -1,0 +1,8 @@
+[package]
+name = "gpui_tokio"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+[dependencies]
+gpui-kit.workspace = true
+tokio.workspace = true

@@ -1061,13 +1061,7 @@ fn timeout_argument_summary(arguments: &Value) -> String {
     }
 }
 
-pub fn truncate_chars(value: &str, max_chars: usize) -> String {
-    let mut out = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        out.push_str("...");
-    }
-    out
-}
+pub use crate::chat::conversation_data::truncate_chars;
 
 fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
     match max_chars {

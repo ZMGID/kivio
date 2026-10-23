@@ -3,11 +3,8 @@ use super::migration::{
     conversation_has_project_binding, conversation_list_item_has_project_binding,
 };
 use super::*;
-
-pub(crate) fn read_conversation_file(path: &Path, id: &str) -> Result<Conversation, String> {
-    let content = fs::read_to_string(path).map_err(|e| format!("读取对话文件失败（{id}）：{e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))
-}
+pub(crate) use crate::chat::conversation_files::read_conversation_file;
+use crate::chat::conversation_files::write_conversation_file_at_path;
 
 /// Only the identity needed to recheck a restart candidate under its keyed lock.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -95,18 +92,6 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, Stri
     }
 
     read_conversation_file(&path, id)
-}
-
-fn write_conversation_file_at_path(
-    path: &Path,
-    conversation: Conversation,
-) -> Result<Conversation, String> {
-    // compact 而非 pretty：长对话数 MB 级,pretty 徒增 ~30-50% 体积与序列化时间,
-    // 且每个工具轮都要整本重写。人读导出走 export.rs,不靠这份文件的排版。
-    let content =
-        serde_json::to_string(&conversation).map_err(|e| format!("serialize conversation: {e}"))?;
-    atomic_write(path, &content, "conversation")?;
-    Ok(conversation)
 }
 
 /// 保存对话详情
@@ -396,13 +381,7 @@ pub fn conversation_pins_file_path(app: &AppHandle) -> Result<PathBuf, String> {
 pub fn load_conversation_pins(
     app: &AppHandle,
 ) -> Result<std::collections::HashMap<String, Vec<ConversationPin>>, String> {
-    let path = conversation_pins_file_path(app)?;
-    if !path.exists() {
-        return Ok(Default::default());
-    }
-    let content = fs::read_to_string(&path).map_err(|e| format!("read conversation pins: {e}"))?;
-    // 坏文件不该让侧栏起不来：钉子丢了最多是顺序回到时间序。
-    Ok(serde_json::from_str(&content).unwrap_or_default())
+    crate::chat::group_catalog::load_conversation_pins(&conversations_dir(app)?)
 }
 
 pub fn set_conversation_pins(
@@ -411,19 +390,7 @@ pub fn set_conversation_pins(
     pins: Vec<ConversationPin>,
 ) -> Result<(), String> {
     let _catalog = catalog_mutation_lock();
-    let mut all = load_conversation_pins(app)?;
-    if pins.is_empty() {
-        all.remove(group_id);
-    } else {
-        all.insert(group_id.to_string(), pins);
-    }
-    let content = serde_json::to_string_pretty(&all)
-        .map_err(|e| format!("serialize conversation pins: {e}"))?;
-    atomic_write(
-        &conversation_pins_file_path(app)?,
-        &content,
-        "conversation pins",
-    )
+    crate::chat::group_catalog::set_conversation_pins(&conversations_dir(app)?, group_id, pins)
 }
 
 #[cfg(test)]

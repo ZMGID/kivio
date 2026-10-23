@@ -1,0 +1,60 @@
+[package]
+name = "zeron-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+zeron-preview.workspace = true
+zeron-proto.workspace = true
+zeron-doc.workspace = true
+zeron-sync.workspace = true
+zeron-harness.workspace = true
+zeron-rpc.workspace = true
+zeron-update.workspace = true
+zeron-notify.workspace = true
+zeron-visual.workspace = true
+loro.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+notify.workspace = true
+portable-pty.workspace = true
+base64 = "0.22"
+# Cloud runner identity: Ed25519 device key (already in the tree via rustls).
+ring = "0.17"
+toml = "0.8"
+libc.workspace = true
+gethostname.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+sha2.workspace = true
+reqwest.workspace = true
+ignore.workspace = true
+fff-search.workspace = true
+
+same-file = "1"
+tempfile.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+dunce = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+zeron-mcp.workspace = true
+zeron-harness = { workspace = true, features = ["installer-fixture"] }
+# Paused-clock tests (the 30-minute idle reaper).
+tokio = { workspace = true, features = ["test-util"] }
+zip.workspace = true
+tokio-tungstenite.workspace = true
+# In-process registry server for the two-engine workspace integration tests.
+zeron-sync = { workspace = true, features = ["mock-server"] }

@@ -6,35 +6,32 @@
 
 use std::path::PathBuf;
 
+#[path = "app_identity.rs"]
+pub mod identity;
+
 /// Effective Tauri identifier, including the CLI configuration overlay.
 pub const APP_IDENTIFIER: &str = env!("KIVIO_APP_IDENTIFIER");
 
+const IDENTITY: identity::AppIdentity = match identity::AppIdentity::from_identifier(APP_IDENTIFIER)
+{
+    Some(identity) => identity,
+    None => panic!("unsupported Kivio application identity"),
+};
+
 pub const fn is_dev() -> bool {
-    matches!(APP_IDENTIFIER.as_bytes(), b"com.zmair.kivio.dev")
+    IDENTITY.is_development()
 }
 
 pub fn product_name() -> &'static str {
-    if is_dev() {
-        "Kivio Dev"
-    } else {
-        "Kivio Desktop"
-    }
+    IDENTITY.product_name()
 }
 
 pub fn user_home_name() -> &'static str {
-    if is_dev() {
-        ".kivio-dev"
-    } else {
-        ".kivio"
-    }
+    IDENTITY.user_home_name()
 }
 
 pub fn oauth_service() -> &'static str {
-    if is_dev() {
-        "Kivio.Dev.ModelOAuth"
-    } else {
-        "Kivio.ModelOAuth"
-    }
+    IDENTITY.oauth_service()
 }
 
 /// 与 Tauri `app_data_dir` = `dirs::data_dir()/<identifier>` 完全一致:
@@ -46,7 +43,7 @@ pub fn oauth_service() -> &'static str {
 /// 后者在 Windows 会多追加一层 `\data`,导致读到错误路径。
 /// 无法确定 home/data 目录时返回 `None`。
 pub fn app_data_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|base| base.data_dir().join(APP_IDENTIFIER))
+    directories::BaseDirs::new().map(|base| base.data_dir().join(IDENTITY.identifier()))
 }
 
 #[cfg(test)]

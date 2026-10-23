@@ -1,0 +1,16 @@
+[package]
+name = "zeron-doc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+zeron-proto.workspace = true
+loro.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+similar.workspace = true

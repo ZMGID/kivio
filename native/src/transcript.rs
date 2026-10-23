@@ -1,9 +1,11 @@
+mod details;
+pub(crate) use details::fork_marker;
 use std::time::Duration;
 
 use crate::streaming_markdown::StreamingMarkdown;
 
 use gpui_kit::component::{
-    ActiveTheme, Sizable, StyledExt,
+    ActiveTheme, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     clipboard::Clipboard,
     menu::{ContextMenuExt, PopupMenuItem},
@@ -15,6 +17,7 @@ use gpui_kit::{assets::IconName, prelude::FluentBuilder, *};
 const RESPONSE: &str = "这是离线生成的示例回复，用于观察原生界面的输入、滚动和流式呈现。\n\n你可以在回复过程中向上滚动，阅读位置会保留；点击“回到最新”后继续跟随输出。停止后，已经显示的文字仍然保留。\n\n### 原生交互\n\n- 中文、Emoji 和多行文本由原生输入控件处理。\n- 历史消息使用动态高度虚拟列表。\n- 更新只作用于当前回复，输入区可以继续编辑。\n\n```rust\nfn main() {\n    println!(\"你好，Kivio\");\n}\n```\n\n这段内容不代表模型回答，也不会连接供应商或访问你的资料。";
 
 struct Message {
+    record: crate::conversation_data::ChatMessage,
     id: usize,
     user: bool,
     body: SharedString,
@@ -52,6 +55,10 @@ impl Message {
                 html(&format!("{excerpt}…"))
             });
         Self {
+            record: crate::conversation_data::ChatMessage::text(
+                if user { "user" } else { "assistant" },
+                body.to_string(),
+            ),
             id,
             user,
             body,
@@ -65,19 +72,37 @@ impl Message {
 
 pub struct Changed;
 pub struct RewindRequested(pub usize);
+pub struct RetryRequested;
+#[derive(Clone, Copy)]
+pub enum MessageAction {
+    Edit,
+    Delete,
+    Fork,
+    Rewind,
+}
+#[derive(Clone)]
+pub struct MessageActionRequested {
+    pub message_id: String,
+    pub action: MessageAction,
+}
 
-/// Owns only the offline preview, never a production chat or process.
+/// Owns the visible transcript and cancels its request when stopped or dropped.
 pub struct Transcript {
     messages: Vec<Message>,
+    tool_folds: std::collections::HashMap<String, bool>,
     scroller: Entity<MessageScrollerState>,
     next_id: usize,
+    attachment_directory: Option<std::path::PathBuf>,
+    sample_mode: bool,
     stream_id: Option<usize>,
     task: Option<Task<()>>,
     markdown: Option<StreamingMarkdown>,
     subscriptions: Vec<Subscription>,
 }
 
+impl EventEmitter<MessageActionRequested> for Transcript {}
 impl EventEmitter<Changed> for Transcript {}
+impl EventEmitter<RetryRequested> for Transcript {}
 impl EventEmitter<RewindRequested> for Transcript {}
 
 impl Transcript {
@@ -86,8 +111,11 @@ impl Transcript {
         let subscription = cx.observe(&scroller, |_, _, cx| cx.notify());
         Self {
             messages: Vec::new(),
+            tool_folds: Default::default(),
             scroller,
             next_id: 0,
+            attachment_directory: None,
+            sample_mode: false,
             stream_id: None,
             task: None,
             markdown: None,
@@ -95,9 +123,20 @@ impl Transcript {
         }
     }
 
+    pub fn set_attachment_directory(&mut self, directory: std::path::PathBuf) {
+        self.attachment_directory = Some(directory);
+    }
+
     pub fn watch_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.subscriptions
             .push(cx.observe_window_bounds(window, |this, _, cx| this.remeasure(cx)));
+    }
+
+    pub fn canonical_id(&self, id: usize) -> Option<String> {
+        self.messages
+            .iter()
+            .find(|message| message.id == id)
+            .map(|message| message.record.id.clone())
     }
 
     pub fn count(&self) -> usize {
@@ -107,11 +146,32 @@ impl Transcript {
         self.stream_id.is_some()
     }
 
+    pub fn reveal_message(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(index) = self
+            .messages
+            .iter()
+            .position(|message| message.record.id == id)
+        {
+            self.messages[index].expanded = true;
+            self.scroller.update(cx, |state, cx| {
+                state.remeasure_items(index..index + 1, cx);
+                state.scroll_to_item(index, cx);
+            });
+            cx.notify();
+        }
+    }
+
     pub fn remeasure(&mut self, cx: &mut Context<Self>) {
         self.scroller.update(cx, |state, cx| state.remeasure(cx));
     }
 
+    pub fn set_sample_mode(&mut self, sample: bool) {
+        self.sample_mode = sample;
+    }
+
     pub fn load(&mut self, count: usize, cx: &mut Context<Self>) {
+        self.sample_mode = true;
+        self.tool_folds.clear();
         self.stop(cx);
         self.messages = (0..count).map(|ix| {
             let id = self.next_id;
@@ -135,6 +195,47 @@ impl Transcript {
         }).collect();
         self.scroller.update(cx, |state, cx| state.reset(count, cx));
         cx.emit(Changed);
+        cx.notify();
+    }
+
+    pub fn snapshot(&self) -> Vec<crate::conversation_data::ChatMessage> {
+        self.messages
+            .iter()
+            .map(|message| {
+                let mut record = message.record.clone();
+                record.content = message.body.to_string();
+                if message.stopped {
+                    record.stream_outcome = Some("cancelled".into());
+                }
+                record
+            })
+            .collect()
+    }
+
+    pub fn restore(
+        &mut self,
+        messages: Vec<crate::conversation_data::ChatMessage>,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop(cx);
+        self.tool_folds
+            .retain(|id, _| messages.iter().any(|message| &message.id == id));
+        self.messages = messages
+            .into_iter()
+            .map(|record| {
+                let mut message = Message::new(
+                    self.next_id,
+                    record.role == "user",
+                    record.content.clone().into(),
+                );
+                self.next_id += 1;
+                message.stopped = record.stream_outcome.as_deref() == Some("cancelled");
+                message.record = record;
+                message
+            })
+            .collect();
+        self.scroller
+            .update(cx, |state, cx| state.reset(self.messages.len(), cx));
         cx.notify();
     }
 
@@ -169,7 +270,7 @@ impl Transcript {
         }
     }
 
-    pub fn send(&mut self, body: SharedString, cx: &mut Context<Self>) -> bool {
+    pub fn send_sample(&mut self, body: SharedString, cx: &mut Context<Self>) -> bool {
         if self.is_streaming() || body.trim().is_empty() {
             return false;
         }
@@ -229,6 +330,179 @@ impl Transcript {
         true
     }
 
+    pub fn send(
+        &mut self,
+        body: SharedString,
+        attachments: Vec<crate::conversation_data::Attachment>,
+        provider: crate::provider_settings::ModelProvider,
+        model: String,
+        conversation_id: String,
+        catalog_dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        if self.is_streaming() || (body.trim().is_empty() && attachments.is_empty()) {
+            return Ok(false);
+        }
+        let mut user = Message::new(self.next_id, true, body);
+        user.record.attachments = attachments;
+        let mut history = self.snapshot();
+        history.push(user.record.clone());
+        let run = crate::chat_runtime::start(
+            provider,
+            model,
+            history,
+            conversation_id.clone(),
+            catalog_dir.join("runtime"),
+        )?;
+        self.attachment_directory =
+            Some(catalog_dir.join(format!("{conversation_id}_attachments")));
+        self.sample_mode = false;
+        let reply_id = self.next_id + 1;
+        self.next_id += 2;
+        self.messages.push(user);
+        self.messages.push(Message::new(reply_id, false, "".into()));
+        self.stream_id = Some(reply_id);
+        self.markdown = Some(StreamingMarkdown::new());
+        self.scroller.update(cx, |state, cx| {
+            state.append(2, cx);
+            state.scroll_to_end(cx);
+        });
+        cx.emit(Changed);
+        cx.notify();
+        self.receive(run, reply_id, cx);
+        Ok(true)
+    }
+
+    pub fn retry(
+        &mut self,
+        provider: crate::provider_settings::ModelProvider,
+        model: String,
+        conversation_id: String,
+        catalog_dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        if self.is_streaming() || self.messages.last().is_none_or(|m| m.user) {
+            return Ok(false);
+        }
+        let mut history = self.snapshot();
+        history.pop();
+        let run = crate::chat_runtime::start(
+            provider,
+            model,
+            history,
+            conversation_id.clone(),
+            catalog_dir.join("runtime"),
+        )?;
+        self.attachment_directory =
+            Some(catalog_dir.join(format!("{conversation_id}_attachments")));
+        self.sample_mode = false;
+        let ix = self.messages.len() - 1;
+        let id = self.next_id;
+        self.next_id += 1;
+        self.messages[ix] = Message::new(id, false, "".into());
+        self.messages[ix].record.run_entry = Some("regenerate".into());
+        self.stream_id = Some(id);
+        self.markdown = Some(StreamingMarkdown::new());
+        self.scroller
+            .update(cx, |state, cx| state.remeasure_items(ix..ix + 1, cx));
+        cx.emit(Changed);
+        cx.notify();
+        self.receive(run, id, cx);
+        Ok(true)
+    }
+
+    fn receive(
+        &mut self,
+        run: crate::chat_runtime::ChatRun,
+        reply_id: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.task = Some(cx.spawn(async move |owner, cx| {
+            while let Ok(event) = run.events.recv().await {
+                let terminal = matches!(
+                    &event,
+                    crate::chat_runtime::ChatEvent::Finished(_)
+                        | crate::chat_runtime::ChatEvent::Failed(_)
+                );
+                let keep = owner
+                    .update(cx, |this, cx| {
+                        if this.stream_id != Some(reply_id) {
+                            return false;
+                        }
+                        let ix = this.messages.len() - 1;
+                        let message = &mut this.messages[ix];
+                        match event {
+                            crate::chat_runtime::ChatEvent::Delta(chunk) => {
+                                let markdown =
+                                    this.markdown.as_mut().expect("active request owns parser");
+                                markdown.append(&chunk);
+                                message.body = markdown.source().to_owned().into();
+                                message.display = Some(markdown.display().into());
+                            }
+                            crate::chat_runtime::ChatEvent::Reasoning(chunk) => {
+                                message
+                                    .record
+                                    .reasoning
+                                    .get_or_insert_default()
+                                    .push_str(&chunk);
+                            }
+                            crate::chat_runtime::ChatEvent::Finished(result) => {
+                                message.body = result.text.into();
+                                message.record.reasoning = result.reasoning;
+                                if result.finish_reason.as_deref() == Some("length") {
+                                    message.record.degraded =
+                                        Some(crate::conversation_data::DegradedAnswer {
+                                            kind: "max_tokens".into(),
+                                            reason: "回复达到模型输出上限，可继续提问。".into(),
+                                            detail: None,
+                                            tool_summaries: Vec::new(),
+                                            text: String::new(),
+                                        });
+                                }
+                                message.record.model_messages = result.provider_messages;
+                                message.record.usage = result.usage.clone();
+                                message.record.anchor_usage = result.usage;
+                                message.record.stream_outcome = Some("completed".into());
+                                this.stream_id = None;
+                                this.markdown = None;
+                                message.display = None;
+                            }
+                            crate::chat_runtime::ChatEvent::Failed(error) => {
+                                message.record.stream_outcome = Some("error".into());
+                                message.record.degraded =
+                                    Some(crate::conversation_data::DegradedAnswer {
+                                        kind: "unknown".into(),
+                                        reason: error,
+                                        detail: None,
+                                        tool_summaries: Vec::new(),
+                                        text: String::new(),
+                                    });
+                                this.stream_id = None;
+                                this.markdown = None;
+                                message.display = None;
+                            }
+                        }
+                        this.scroller
+                            .update(cx, |state, cx| state.remeasure_items(ix..ix + 1, cx));
+                        if terminal {
+                            cx.emit(Changed);
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep || terminal {
+                    return;
+                }
+            }
+            let _ = owner.update(cx, |this, cx| {
+                if this.stream_id == Some(reply_id) {
+                    this.stop(cx);
+                }
+            });
+        }));
+    }
+
     pub fn stop(&mut self, cx: &mut Context<Self>) {
         self.task = None;
         self.markdown = None;
@@ -250,6 +524,7 @@ impl Render for Transcript {
         MessageScroller::new("transcript", self.scroller.clone(), move |ix, _, cx| {
             owner
                 .update(cx, |this, cx| {
+                    let tools = (!this.messages[ix].record.tool_calls.is_empty()).then(|| this.tool_details(ix, cx));
                     let message = &this.messages[ix];
                     let copy = message.body.clone();
                     let context_copy = copy.clone();
@@ -259,6 +534,11 @@ impl Render for Transcript {
                     let user = message.user;
                     let rewind = cx.entity().downgrade();
                     let context_rewind = rewind.clone();
+                    let message_actions = rewind.clone();
+                    let canonical_id = message.record.id.clone();
+                    let can_mutate = !this.is_streaming();
+                    let retry = rewind.clone();
+                    let can_retry = !this.sample_mode && !user && ix + 1 == this.messages.len() && !this.is_streaming();
                     let text = (if message.user {
                         TextView::html(
                             ("message", message.id),
@@ -316,6 +596,22 @@ impl Render for Transcript {
                                     ),
                                 );
                             }
+                            for (label, action) in [("从这里建立分支", MessageAction::Fork)] {
+                                let owner = message_actions.clone();
+                                let message_id = canonical_id.clone();
+                                menu = menu.separator().item(PopupMenuItem::new(label).disabled(!can_mutate).on_click(move |_, _, cx| {
+                                    let _ = owner.update(cx, |_, cx| cx.emit(MessageActionRequested {message_id: message_id.clone(), action}));
+                                }));
+                            }
+                            if !user {
+                                for (label, action) in [("编辑回答", MessageAction::Edit), ("删除回答", MessageAction::Delete)] {
+                                    let owner = message_actions.clone();
+                                    let message_id = canonical_id.clone();
+                                    menu = menu.item(PopupMenuItem::new(label).disabled(!can_mutate).on_click(move |_, _, cx| {
+                                        let _ = owner.update(cx, |_, cx| cx.emit(MessageActionRequested {message_id: message_id.clone(), action}));
+                                    }));
+                                }
+                            }
                             menu
                         })
                         .w_full()
@@ -342,6 +638,49 @@ impl Render for Transcript {
                                                 .bg(cx.theme().muted)
                                         })
                                         .when(!message.user, |body| body.w_full())
+                                        .when_some(
+                                            message
+                                                .record
+                                                .reasoning
+                                                .as_ref()
+                                                .filter(|text| !text.is_empty()),
+                                            |body, reasoning| {
+                                                body.child(
+                                                    div()
+                                                        .text_sm()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child(
+                                                            TextView::markdown(
+                                                                ("reasoning", id),
+                                                                reasoning.clone(),
+                                                            )
+                                                            .selectable(true),
+                                                        ),
+                                                )
+                                            },
+                                        )
+                                        .when_some(tools, |body, tools| body.child(tools))
+                                        .when(!message.record.attachments.is_empty(), |body| {
+                                            body.child(div().flex().flex_wrap().gap_2().children(message.record.attachments.iter().map(|attachment| {
+                                                let attachment = attachment.clone();
+                                                let directory = this.attachment_directory.clone();
+                                                Button::new(SharedString::from(format!("message-{id}-attachment-{}", attachment.id)))
+                                                    .small().ghost().icon(IconName::File).label(attachment.name.clone())
+                                                    .tooltip("打开附件")
+                                                    .on_click(move |_, window, cx| {
+                                                        if let Some(content) = &attachment.content {
+                                                            let content = content.clone();
+                                                            let name = attachment.name.clone();
+                                                            window.open_dialog(cx, move |dialog, _, _| dialog.title(name.clone()).child(TextView::markdown("attachment-text", content.clone()).selectable(true)));
+                                                        } else {
+                                                            match kivio_model_runtime::attachment_files::resolve_attachment_file_path_in_dir(directory.as_deref(), &attachment.path) {
+                                                                Ok(path) => cx.open_with_system(&path),
+                                                                Err(error) => window.push_notification(gpui_kit::component::notification::Notification::error(error), cx),
+                                                            }
+                                                        }
+                                                    })
+                                            })))
+                                        })
                                         .child(
                                             div()
                                                 .when(foldable && !expanded, |body| {
@@ -399,6 +738,30 @@ impl Render for Transcript {
                                                     }),
                                             )
                                         })
+                                        .when_some(
+                                            message.record.degraded.as_ref(),
+                                            |row, failure| {
+                                                row.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().danger)
+                                                        .child(failure.reason.clone()),
+                                                )
+                                            },
+                                        )
+                                        .when(can_retry, |row| {
+                                            row.child(
+                                                Button::new(("retry-reply", id))
+                                                    .small()
+                                                    .ghost()
+                                                    .label("重新生成")
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = retry.update(cx, |_, cx| {
+                                                            cx.emit(RetryRequested)
+                                                        });
+                                                    }),
+                                            )
+                                        })
                                         .when(message.stopped, |row| {
                                             row.child(
                                                 div()
@@ -432,7 +795,7 @@ mod tests {
     fn stopping_and_replacing_a_stream_rejects_late_output(cx: &mut TestAppContext) {
         let view = cx.update(|cx| cx.new(Transcript::new));
         view.update(cx, |view, cx| {
-            assert!(view.send("第一条".into(), cx));
+            assert!(view.send_sample("第一条".into(), cx));
         });
         cx.run_until_parked();
         cx.executor().advance_clock(Duration::from_millis(100));
@@ -447,7 +810,7 @@ mod tests {
         cx.run_until_parked();
         view.update(cx, |view, cx| {
             assert_eq!(view.messages.last().unwrap().body, partial);
-            assert!(view.send("第二条".into(), cx));
+            assert!(view.send_sample("第二条".into(), cx));
             view.load(3, cx);
         });
         cx.executor().advance_clock(Duration::from_secs(10));

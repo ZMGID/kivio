@@ -1,20 +1,19 @@
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING};
+use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
+use super::host::ModelHost;
+use crate::api::{runtime::send_with_failover, with_chat_request_timeout};
 use crate::provider_oauth::antigravity;
 use crate::settings::ModelProvider;
-use crate::state::AppState;
 use crate::usage::{
-    chat_usage_source_for_label, error_kind_from_message, operation_from_label, record_model_call,
-    UsageRecordInput,
+    UsageRecordInput, chat_usage_source_for_label, error_kind_from_message, operation_from_label,
 };
 
 use super::{
-    parse_tool_arguments, stream_read_error, BuiltinWebSearch, FirstTokenStreamSink,
-    GenerateOutput, GenerateRequest, GeneratedImageData, LanguageModelProvider, MessagePart,
-    ModelError, ModelFuture, ModelMessage, ModelRole, ModelTool, ModelUsage, PendingToolCall,
-    StreamPart, StreamSink, WebCitation,
+    BuiltinWebSearch, FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
+    LanguageModelProvider, MessagePart, ModelError, ModelFuture, ModelMessage, ModelRole,
+    ModelTool, ModelUsage, PendingToolCall, StreamPart, StreamSink, WebCitation,
+    parse_tool_arguments, stream_read_error,
 };
 
 /// Google Gemini **原生** `generateContent` adapter（peer of openai/anthropic）。
@@ -22,7 +21,7 @@ use super::{
 /// 绕开 Gemini OpenAI-compat 端点对未知 body 字段的 400 严格校验。
 /// wire 形状据 opencode 真实流量确认（见任务 research/opencode-real-traffic.md）。
 pub struct GeminiProvider<'a> {
-    state: &'a AppState,
+    state: &'a dyn ModelHost,
     provider: &'a ModelProvider,
     retry_attempts: usize,
 }
@@ -35,7 +34,11 @@ impl StreamSink for DiscardSink {
 }
 
 impl<'a> GeminiProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
+    pub fn new(
+        state: &'a dyn ModelHost,
+        provider: &'a ModelProvider,
+        retry_attempts: usize,
+    ) -> Self {
         Self {
             state,
             provider,
@@ -73,7 +76,7 @@ impl GeminiProvider<'_> {
         }
         let url = self.endpoint_url(&request.model, false);
         let response = send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             &label,
             self.retry_attempts,
             &self.provider.id,
@@ -158,7 +161,9 @@ impl GeminiProvider<'_> {
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<GenerateOutput, ModelError> {
         if antigravity::is_provider(self.provider) && request.options.builtin_web_search {
-            return Err(ModelError::new("Antigravity does not support built-in Google Search here. Turn off native search or use agent web-search tools."));
+            return Err(ModelError::new(
+                "Antigravity does not support built-in Google Search here. Turn off native search or use agent web-search tools.",
+            ));
         }
         let label = request_label(&request, "Gemini stream");
         let started_at = chrono::Local::now().timestamp();
@@ -172,7 +177,7 @@ impl GeminiProvider<'_> {
         }
         let url = self.endpoint_url(&request.model, true);
         let mut response = send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             &label,
             self.retry_attempts,
             &self.provider.id,
@@ -518,7 +523,7 @@ impl GeminiProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     fn record_debug_failure(
@@ -551,7 +556,7 @@ impl GeminiProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     fn record_usage_success(
@@ -573,26 +578,23 @@ impl GeminiProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -613,26 +615,23 @@ impl GeminiProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -1435,16 +1434,22 @@ mod tests {
             body["request"]["systemInstruction"]["parts"][0]["text"],
             "System prompt"
         );
-        assert!(body["request"]["generationConfig"]
-            .get("thinkingConfig")
-            .is_none());
-        assert!(adapter
-            .endpoint_url(&request.model, false)
-            .ends_with("/v1internal:streamGenerateContent?alt=sse"));
+        assert!(
+            body["request"]["generationConfig"]
+                .get("thinkingConfig")
+                .is_none()
+        );
+        assert!(
+            adapter
+                .endpoint_url(&request.model, false)
+                .ends_with("/v1internal:streamGenerateContent?alt=sse")
+        );
         assert!(!adapter.auth_headers("token").contains_key("x-goog-api-key"));
-        assert!(crate::provider_request::header_pairs(&p, None)
-            .iter()
-            .any(|(k, v)| k == "Authorization" && v == "Bearer AIza-test"));
+        assert!(
+            crate::provider_request::header_pairs(&p, None)
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "Bearer AIza-test")
+        );
         let value = antigravity::unwrap_response(serde_json::json!({"response":{
             "candidates":[{"content":{"parts":[{"text":"Hello"},{"functionCall":{"id":"server-call","name":"glob","args":{}},"thoughtSignature":"signature"}]},"finishReason":"STOP"}],
             "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}

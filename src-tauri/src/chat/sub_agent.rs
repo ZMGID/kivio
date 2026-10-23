@@ -13,14 +13,14 @@ use crate::agents::AgentDefinition;
 use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::types::AgentRunResult;
 use crate::chat::agent::{
-    run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext, ToolExecutor,
-    ToolExecutorFuture,
+    AgentHost, AgentHostFuture, AgentRunConfig, ToolExecutionContext, ToolExecutor,
+    ToolExecutorFuture, run_agent_loop,
 };
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::types::{ChatMessageSegment, ToolCallRecord, ToolCallStatus};
+use crate::mcp::ChatToolDefinition;
 use crate::mcp::native_registry::NativeToolFuture;
 use crate::mcp::types::McpToolCallResult;
-use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, Settings};
 use crate::skills::SkillRegistry;
 
@@ -37,9 +37,9 @@ pub const MAX_SUB_AGENT_DEPTH: u8 = 1;
 /// Default concurrent sub-agent cap. User-overridable (live) via
 /// `settings.chat_tools.sub_agent_concurrency`, clamped to
 /// `[SUB_AGENT_CONCURRENCY_MIN, SUB_AGENT_CONCURRENCY_MAX]`.
-pub const DEFAULT_SUB_AGENT_CONCURRENCY: usize = 12;
-pub const SUB_AGENT_CONCURRENCY_MIN: usize = 1;
-pub const SUB_AGENT_CONCURRENCY_MAX: usize = 64;
+pub use crate::settings::tools::{
+    DEFAULT_SUB_AGENT_CONCURRENCY, SUB_AGENT_CONCURRENCY_MAX, SUB_AGENT_CONCURRENCY_MIN,
+};
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 350;
 
 pub const AGENT_TOOL_NAME: &str = "agent";
@@ -1374,9 +1374,11 @@ mod tests {
         assert!(description.contains("财报结构化分析"));
         // No `enum`: an inline ad-hoc role omits the field, and a role file
         // created mid-run must not be rejected provider-side.
-        assert!(tool.input_schema["properties"]["subagent_type"]
-            .get("enum")
-            .is_none());
+        assert!(
+            tool.input_schema["properties"]["subagent_type"]
+                .get("enum")
+                .is_none()
+        );
     }
 
     /// The inline ad-hoc fields are declared even though `additionalProperties`
@@ -1757,12 +1759,9 @@ mod tests {
             (model.as_str(), effort.as_deref()),
             ("shared-model", Some("high"))
         );
-        assert!(resolve_sub_agent_provider_model(
-            &settings,
-            "parent-p",
-            "parent-model",
-            Some("@typo")
-        )
-        .is_err());
+        assert!(
+            resolve_sub_agent_provider_model(&settings, "parent-p", "parent-model", Some("@typo"))
+                .is_err()
+        );
     }
 }

@@ -1,8 +1,13 @@
+mod catalog;
 mod header;
+mod history;
 mod library;
+mod message_actions;
 mod navigation;
+mod persistence;
 mod search;
 mod settings;
+mod terminal;
 use crate::{
     preview::{ConversationEvent, Preview},
     theme,
@@ -26,8 +31,12 @@ actions!(
     [
         NewChat,
         SearchChats,
+        CommandPalette,
+        ToggleTerminal,
         OpenSettings,
         ToggleSidebar,
+        NavigateBack,
+        NavigateForward,
         BackToChat,
         RenameChat,
         RemoveChat,
@@ -41,6 +50,7 @@ actions!(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsPage {
+    Providers,
     Appearance,
     Shortcuts,
     About,
@@ -62,6 +72,11 @@ impl Runtime {
 
 struct Conversation {
     id: usize,
+    record: crate::conversation_data::Conversation,
+    persisted: bool,
+    dirty: bool,
+    record_dirty: bool,
+    membership_dirty: bool,
     title: SharedString,
     title_is_user_set: bool,
     runtime: Runtime,
@@ -76,14 +91,28 @@ struct Conversation {
 }
 
 pub struct Shell {
+    nav: history::NavHistory,
+    closed_sections: std::collections::HashSet<usize>,
+    terminal: Option<Entity<crate::terminal::TerminalHost>>,
+    terminal_picker: Option<Task<()>>,
+    providers: Entity<crate::providers::ProviderSettings>,
     conversations: Vec<Conversation>,
+    persistence: persistence::Persistence,
+    preferences_busy: bool,
+    preferences_ready: bool,
+    preferences_task: Option<Task<()>>,
     tab: SidebarTab,
     library: bool,
     library_filter: LibraryFilter,
     groups: Vec<Group>,
+    catalog_dir: std::path::PathBuf,
+    catalog_busy: bool,
+    catalog_ready: bool,
+    catalog_task: Option<Task<()>>,
     collapsed_groups: std::collections::HashSet<usize>,
     panels: Entity<ResizableState>,
     searching: bool,
+    command_palette: bool,
     search_selection: usize,
     search_scroll: ScrollHandle,
     next_group: usize,
@@ -95,6 +124,7 @@ pub struct Shell {
     next_id: usize,
     search: Entity<InputState>,
     rename: Option<Entity<InputState>>,
+    message_editor: Option<message_actions::MessageEditor>,
     rename_subscription: Option<Subscription>,
     settings: Option<SettingsPage>,
     sidebar_override: Option<bool>,
@@ -106,11 +136,19 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        catalog_dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.bind_keys([
+            KeyBinding::new("secondary-j", ToggleTerminal, Some("Kivio")),
             KeyBinding::new("secondary-n", NewChat, Some("Kivio")),
             KeyBinding::new("secondary-f", SearchChats, Some("Kivio")),
+            KeyBinding::new("secondary-k", CommandPalette, Some("Kivio")),
             KeyBinding::new("secondary-comma", OpenSettings, Some("Kivio")),
+            KeyBinding::new("secondary-[", NavigateBack, Some("Kivio")),
+            KeyBinding::new("secondary-]", NavigateForward, Some("Kivio")),
             KeyBinding::new("secondary-b", ToggleSidebar, Some("Kivio")),
             KeyBinding::new("escape", BackToChat, Some("Kivio")),
         ]);
@@ -152,15 +190,37 @@ impl Shell {
                 cx.notify();
             }),
         ];
+        let providers = cx.new(|cx| {
+            crate::providers::ProviderSettings::new(catalog_dir.join("providers.json"), window, cx)
+        });
+        let mut subscriptions = subscriptions;
+        subscriptions.push(cx.subscribe(
+            &providers,
+            |_, _, _: &crate::providers::ProviderEvent, cx| cx.notify(),
+        ));
         let mut shell = Self {
+            nav: history::NavHistory::new(0),
+            closed_sections: Default::default(),
+            terminal: None,
+            terminal_picker: None,
+            providers,
             conversations: Vec::new(),
+            persistence: persistence::Persistence::new(catalog_dir.clone()),
+            preferences_busy: false,
+            preferences_ready: false,
+            preferences_task: None,
             tab: SidebarTab::Recent,
             library: false,
             library_filter: LibraryFilter::Active,
             groups: Vec::new(),
+            catalog_dir,
+            catalog_busy: false,
+            catalog_ready: false,
+            catalog_task: None,
             collapsed_groups: Default::default(),
             panels,
             searching: false,
+            command_palette: false,
             search_selection: 0,
             search_scroll: ScrollHandle::new(),
             next_group: 0,
@@ -172,6 +232,7 @@ impl Shell {
             next_id: 0,
             search,
             rename: None,
+            message_editor: None,
             rename_subscription: None,
             settings: None,
             sidebar_override: None,
@@ -182,6 +243,9 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         shell.new_chat(window, cx);
+        shell.catalog_operation(|_| Ok(None), false, window, cx);
+        shell.load_preferences(window, cx);
+        shell.load_conversations(window, cx);
         shell
     }
 
@@ -200,15 +264,40 @@ impl Shell {
         let set = group.filter(|group| !group.project).map(|group| group.id);
         let id = self.next_id;
         self.next_id += 1;
+        let record = crate::conversation_data::Conversation::new(String::new(), String::new());
         let view = cx.new(|cx| Preview::new(window, cx));
-        let events = cx.subscribe(&view, move |this, _, event, cx| {
+        view.update(cx, |view, _| {
+            view.configure(
+                self.providers.clone(),
+                None,
+                record.id.clone(),
+                self.catalog_dir.clone(),
+            )
+        });
+        let events = cx.subscribe_in(&view, window, move |this, _, event, window, cx| {
+            if matches!(event, ConversationEvent::ConfigureProviders) {
+                this.open_settings(window, cx);
+                return;
+            }
+            if let ConversationEvent::MessageAction(request) = event {
+                this.handle_message_action(id, request, window, cx);
+                return;
+            }
             if matches!(
                 event,
-                ConversationEvent::FirstMessage(_) | ConversationEvent::Submitted
+                ConversationEvent::FirstMessage(_)
+                    | ConversationEvent::Submitted
+                    | ConversationEvent::BindingChanged
             ) {
                 this.activity_clock += 1;
                 if let Some(chat) = this.conversations.iter_mut().find(|chat| chat.id == id) {
-                    chat.locked = true;
+                    if let Some((provider, model)) = chat.view.read(cx).binding() {
+                        chat.record.provider_id = provider.clone();
+                        chat.record.model = model.clone();
+                    }
+                    if !matches!(event, ConversationEvent::BindingChanged) {
+                        chat.locked = true;
+                    }
                     chat.activity = this.activity_clock;
                 }
             }
@@ -226,15 +315,25 @@ impl Shell {
                     this.conversations[ix].title = title.into();
                 }
             }
+            if matches!(event, ConversationEvent::DraftChanged) {
+                this.mark_draft_dirty(id, window, cx);
+            } else {
+                this.mark_dirty(id, window, cx);
+            }
             cx.notify();
         });
         self.conversations.insert(
             0,
             Conversation {
                 id,
+                record,
+                persisted: false,
+                dirty: false,
+                record_dirty: false,
+                membership_dirty: project.is_some() || set.is_some(),
                 title: "新对话".into(),
                 title_is_user_set: false,
-                runtime: Runtime::Agent,
+                runtime: Runtime::Chat,
                 locked: false,
                 archived: false,
                 activity: {
@@ -251,7 +350,8 @@ impl Shell {
         self.group_editor = None;
         self.path_task = None;
         self.active = id;
-        self.settings = None;
+        self.nav.push(id);
+        self.set_settings_page(None, cx);
         self.rename = None;
         self.rename_subscription = None;
         self.search
@@ -264,7 +364,8 @@ impl Shell {
         self.group_editor = None;
         self.path_task = None;
         self.active = id;
-        self.settings = None;
+        self.nav.push(id);
+        self.set_settings_page(None, cx);
         self.rename = None;
         self.rename_subscription = None;
         window.close_dialog(cx);
@@ -274,11 +375,35 @@ impl Shell {
         cx.notify();
     }
 
+    fn navigate(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Deleted conversations remain historical entries, but never become a
+        // route target. Walking history does not recreate a deleted record.
+        while let Some(id) = if forward {
+            self.nav.forward()
+        } else {
+            self.nav.back()
+        } {
+            if self.conversations.iter().any(|chat| chat.id == id) {
+                self.select(id, window, cx);
+                return;
+            }
+        }
+        cx.notify();
+    }
+
+    fn set_settings_page(&mut self, page: Option<SettingsPage>, cx: &mut Context<Self>) {
+        if self.settings == Some(SettingsPage::Providers) && page != self.settings {
+            self.providers
+                .update(cx, |providers, cx| providers.cancel_pending_login(cx));
+        }
+        self.settings = page;
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.group_editor = None;
         self.path_task = None;
         self.library = false;
-        self.settings = Some(SettingsPage::Appearance);
+        self.set_settings_page(Some(SettingsPage::Providers), cx);
         self.rename = None;
         self.rename_subscription = None;
         window.focus(&self.focus, cx);
@@ -352,6 +477,8 @@ impl Shell {
                 chat.title_is_user_set = true;
             }
         }
+        self.mark_dirty(self.active, window, cx);
+        window.close_dialog(cx);
         self.rename = None;
         self.rename_subscription = None;
         self.current()
@@ -361,16 +488,13 @@ impl Shell {
     }
 
     fn remove_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.conversations.retain(|chat| chat.id != self.active);
-        if let Some(chat) = self.conversations.first() {
-            self.select(chat.id, window, cx);
-        } else {
-            self.new_chat(window, cx);
-        }
+        self.delete_current(window, cx);
     }
 
     fn sample(&mut self, count: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.new_chat(window, cx);
+        self.conversations[0].record.provider_id = "native-preview".into();
+        self.conversations[0].record.model = "offline".into();
         self.conversations[0].locked = count > 0;
         self.conversations[0].title = format!("示例对话 · {count} 条").into();
         self.current()
@@ -416,18 +540,71 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.persistence.ready {
+            return div()
+                .size_full()
+                .v_flex()
+                .items_center()
+                .justify_center()
+                .gap_3()
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
+                .child(if self.persistence.error.is_some() {
+                    "无法读取对话"
+                } else {
+                    "正在读取对话…"
+                })
+                .when_some(self.persistence.error.clone(), |view, error| {
+                    view.child(error)
+                        .child(Button::new("retry-load").label("重试读取").on_click(
+                            cx.listener(|this, _, window, cx| this.retry_persistence(window, cx)),
+                        ))
+                })
+                .into_any_element();
+        }
         let sidebar_max = (window.bounds().size.width - px(400.)).clamp(px(200.), px(400.));
         let content = div()
             .v_flex()
             .size_full()
             .min_w_0()
             .min_h_0()
-            .child(if self.settings.is_some() {
+            .child(div().flex_1().min_h_0().child(if self.settings.is_some() {
                 self.render_settings(window, cx)
             } else if self.library {
                 self.render_library(window, cx)
             } else {
                 self.current().view.clone().into_any_element()
+            }))
+            .when_some(self.terminal.clone(), |content, terminal| {
+                content.child(
+                    div()
+                        .v_flex()
+                        .h(px(260.))
+                        .min_h(px(120.))
+                        .flex_shrink_0()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .px_3()
+                                .child(div().text_sm().child("终端"))
+                                .child(
+                                    Button::new("close-terminal")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::X)
+                                        .tooltip("关闭终端进程")
+                                        .accessibility_label("关闭终端进程")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_terminal(window, cx)
+                                        })),
+                                ),
+                        )
+                        .child(div().flex_1().min_h_0().child(terminal)),
+                )
             })
             .into_any_element();
         div()
@@ -438,9 +615,28 @@ impl Render for Shell {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(
+                cx.listener(|this, _: &crate::Quit, window, cx| this.request_quit(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(false, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavigateForward, window, cx| {
+                    this.navigate(true, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &NewChat, window, cx| {
                 this.selected_group = None;
                 this.new_chat(window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &ToggleTerminal, window, cx| {
+                    this.toggle_terminal(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                this.open_palette(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SearchChats, window, cx| {
                 this.open_search(window, cx);
@@ -451,16 +647,21 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &ToggleSidebar, window, cx| this.toggle_sidebar(window, cx)),
             )
-            .on_action(
-                cx.listener(|this, _: &BackToChat, window, cx| {
-                    this.select(this.active, window, cx)
-                }),
-            )
+            .on_action(cx.listener(|this, _: &BackToChat, window, cx| {
+                if this.settings.is_none()
+                    && !this.library
+                    && this.current().view.read(cx).is_streaming(cx)
+                {
+                    this.current().view.update(cx, |view, cx| view.stop(cx));
+                } else {
+                    this.select(this.active, window, cx);
+                }
+            }))
             .on_action(
                 cx.listener(|this, _: &RenameChat, window, cx| this.start_rename(window, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenLibrary, _, cx| this.open_library(cx)))
-            .on_action(cx.listener(|this, _: &ArchiveChat, _, cx| {
+            .on_action(cx.listener(|this, _: &ArchiveChat, window, cx| {
                 if let Some(chat) = this
                     .conversations
                     .iter_mut()
@@ -468,6 +669,7 @@ impl Render for Shell {
                 {
                     chat.archived = !chat.archived;
                 }
+                this.mark_dirty(this.active, window, cx);
                 cx.notify();
             }))
             .on_action(
@@ -480,6 +682,9 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &SampleTenThousand, window, cx| {
                 this.sample(10_000, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &crate::Quit, window, cx| this.request_quit(window, cx)),
+            )
             .child(
                 TitleBar::new()
                     .h(px(44.))
@@ -489,45 +694,7 @@ impl Render for Shell {
                         cx.theme().background
                     })
                     .border_b_0()
-                    .when(self.sidebar_visible(window), |bar| {
-                        bar.child(
-                            div()
-                                .w(self
-                                    .panels
-                                    .read(cx)
-                                    .sizes()
-                                    .first()
-                                    .copied()
-                                    .unwrap_or(px(240.))
-                                    - px(80.))
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .pr_2()
-                                .gap_1()
-                                .child(
-                                    SidebarToggleButton::new()
-                                        .collapsed(false)
-                                        .accessibility_label("收起侧栏")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_sidebar(window, cx)
-                                        })),
-                                )
-                                .child(
-                                    Button::new("title-new-chat")
-                                        .small()
-                                        .ghost()
-                                        .icon(IconName::SquarePen)
-                                        .tooltip("新建对话 · ⌘N")
-                                        .accessibility_label("新建对话")
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.selected_group = None;
-                                            this.new_chat(window, cx);
-                                        })),
-                                ),
-                        )
-                    })
+                    .child(self.render_window_controls(window, cx))
                     .child(
                         div()
                             .flex_1()
@@ -567,6 +734,7 @@ impl Render for Shell {
                         content
                     }),
             )
+            .into_any_element()
     }
 }
 

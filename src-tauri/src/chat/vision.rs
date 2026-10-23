@@ -728,24 +728,7 @@ pub(super) fn image_content_part(path: &PathBuf) -> Result<serde_json::Value, St
     image_bytes_content_part(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
-pub(super) fn image_bytes_content_part(bytes: &[u8]) -> Result<serde_json::Value, String> {
-    // 入口降采样（治本）：超尺寸/超体积的图在进上下文前收敛到有界大小，
-    // 历史层的字节预算（compaction::prune_image_parts）只剩保险作用。
-    let (bytes, mime) = match super::image_prep::prepare_image_bytes_for_model(bytes)? {
-        Some((processed, mime)) => (processed, mime),
-        None => (
-            bytes.to_vec(),
-            image::guess_format(bytes)
-                .map_err(|e| format!("图片格式无效: {e}"))?
-                .to_mime_type(),
-        ),
-    };
-    let base64 = general_purpose::STANDARD.encode(bytes);
-    Ok(serde_json::json!({
-        "type": "image_url",
-        "image_url": { "url": format!("data:{mime};base64,{base64}") },
-    }))
-}
+pub(super) use super::attachment_files::image_bytes_content_part;
 
 fn image_mime_for_path(path: &Path) -> &'static str {
     let ext = path

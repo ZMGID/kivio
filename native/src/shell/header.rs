@@ -1,82 +1,118 @@
 use super::*;
 
 impl Shell {
-    pub(super) fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    // Zeron shell.rs::render_titlebar_cluster, using Kit's semantic controls.
+    pub(super) fn render_window_controls(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .pr_2()
+            .child(
+                SidebarToggleButton::new()
+                    .collapsed(!self.sidebar_visible(window))
+                    .accessibility_label("切换侧栏")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
+            )
+            .child(
+                Button::new("nav-back")
+                    .small()
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .disabled(!self.nav.can_back())
+                    .accessibility_label("后退")
+                    .tooltip("后退 · ⌘[")
+                    .on_click(cx.listener(|this, _, window, cx| this.navigate(false, window, cx))),
+            )
+            .child(
+                Button::new("nav-forward")
+                    .small()
+                    .ghost()
+                    .icon(IconName::ArrowRight)
+                    .disabled(!self.nav.can_forward())
+                    .accessibility_label("前进")
+                    .tooltip("前进 · ⌘]")
+                    .on_click(cx.listener(|this, _, window, cx| this.navigate(true, window, cx))),
+            )
+            .child(
+                Button::new("title-new-chat")
+                    .small()
+                    .ghost()
+                    .icon(IconName::Plus)
+                    .accessibility_label("新建对话")
+                    .tooltip("新建对话 · ⌘N")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.selected_group = None;
+                        this.new_chat(window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_header(&self, _window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let in_chat = self.settings.is_none() && !self.library;
-        let mut leading = div().flex().items_center().gap_1().flex_1().min_w_0().when(
-            !self.sidebar_visible(window),
-            |row| {
-                row.child(
-                    SidebarToggleButton::new()
-                        .collapsed(!self.sidebar_visible(window))
-                        .accessibility_label("切换侧栏")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx)),
-                        ),
-                )
-            },
-        );
+        let mut leading = div().flex().items_center().gap_2().flex_1().min_w_0();
         if in_chat {
             let runtime = self.current().runtime;
             let locked = self.current().locked;
             let chat_id = self.active;
             let owner = cx.entity().downgrade();
-            leading = leading
-                .child(
-                    Button::new("runtime")
-                        .ghost()
-                        .small()
-                        .label(runtime.label())
-                        .dropdown_caret(true)
-                        .when(locked, |button| button.icon(IconName::Lock))
-                        .tooltip(if locked {
+            leading = leading.child(
+                Button::new("runtime")
+                    .ghost()
+                    .small()
+                    .label(runtime.label())
+                    .dropdown_caret(true)
+                    .when(locked, |button| button.icon(IconName::Lock))
+                    .tooltip(if locked {
+                        "已有消息，运行时已锁定"
+                    } else {
+                        "选择运行时"
+                    })
+                    .dropdown_menu(move |mut menu, _, _| {
+                        menu = menu.label(if locked {
                             "已有消息，运行时已锁定"
                         } else {
-                            "选择运行时"
-                        })
-                        .dropdown_menu(move |mut menu, _, _| {
-                            menu = menu.label(if locked {
-                                "已有消息，运行时已锁定"
-                            } else {
-                                "选择此对话的运行时"
-                            });
-                            for value in [Runtime::Agent, Runtime::Chat] {
-                                let owner = owner.clone();
-                                menu = menu.item(
-                                    PopupMenuItem::new(value.label())
-                                        .checked(runtime == value)
-                                        .disabled(locked)
-                                        .on_click(move |_, _, cx| {
-                                            let _ = owner.update(cx, |this, cx| {
-                                                if let Some(chat) = this
-                                                    .conversations
-                                                    .iter_mut()
-                                                    .find(|chat| chat.id == chat_id && !chat.locked)
-                                                {
-                                                    chat.runtime = value;
-                                                }
-                                                cx.notify();
-                                            });
-                                        }),
-                                );
-                            }
-                            menu.separator()
-                                .item(PopupMenuItem::new("外部 CLI 暂未接入").disabled(true))
-                        }),
-                )
-                .child(
-                    Button::new("model")
-                        .ghost()
-                        .small()
-                        .label("离线示例")
-                        .dropdown_caret(true)
-                        .text_color(cx.theme().muted_foreground)
-                        .dropdown_menu(|menu, _, _| {
-                            menu.label("当前未连接模型")
-                                .item(PopupMenuItem::new("离线示例 · 不调用模型").checked(true))
-                                .item(PopupMenuItem::new("原生预览暂未连接供应商").disabled(true))
-                        }),
-                );
+                            "选择此对话的运行时"
+                        });
+                        for value in [Runtime::Agent, Runtime::Chat] {
+                            let owner = owner.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(value.label())
+                                    .checked(runtime == value)
+                                    .disabled(locked || value == Runtime::Agent)
+                                    .on_click(move |_, window, cx| {
+                                        let _ = owner.update(cx, |this, cx| {
+                                            if let Some(chat) = this
+                                                .conversations
+                                                .iter_mut()
+                                                .find(|chat| chat.id == chat_id && !chat.locked)
+                                            {
+                                                chat.runtime = value;
+                                            }
+                                            this.mark_dirty(chat_id, window, cx);
+                                            cx.notify();
+                                        });
+                                    }),
+                            );
+                        }
+                        menu.separator()
+                            .item(PopupMenuItem::new("外部 CLI 暂未接入").disabled(true))
+                    }),
+            );
+            leading = leading.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(self.current().title.clone()),
+            );
         } else {
             leading = leading.child(div().text_sm().child(if self.settings.is_some() {
                 "设置"
@@ -86,7 +122,24 @@ impl Shell {
                 "对话库"
             }));
         }
-        let mut trailing = div().flex().items_center().gap_1();
+        let mut trailing = div().flex().items_center().gap_1().child(
+            Button::new("toggle-terminal")
+                .ghost()
+                .small()
+                .label("终端")
+                .tooltip("打开或关闭终端 · ⌘J")
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_terminal(window, cx))),
+        );
+        if self.persistence.error.is_some() {
+            trailing = trailing.child(
+                Button::new("retry-save")
+                    .small()
+                    .label("重试保存")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.retry_persistence(window, cx)),
+                    ),
+            );
+        }
         if in_chat {
             let owner = cx.entity().downgrade();
             let id = self.active;
@@ -123,25 +176,19 @@ impl Shell {
                                         set == Some(group_id)
                                     })
                                     .on_click(
-                                        move |_, _, cx| {
+                                        move |_, window, cx| {
                                             let _ = owner.update(cx, |this, cx| {
-                                                if let Some(chat) = this
-                                                    .conversations
-                                                    .iter_mut()
-                                                    .find(|chat| chat.id == id)
-                                                {
-                                                    let target = if is_project {
-                                                        &mut chat.project
-                                                    } else {
-                                                        &mut chat.set
-                                                    };
-                                                    *target = if *target == Some(group_id) {
-                                                        None
-                                                    } else {
-                                                        Some(group_id)
-                                                    };
-                                                }
-                                                cx.notify();
+                                                let selected = if is_project {
+                                                    project == Some(group_id)
+                                                } else {
+                                                    set == Some(group_id)
+                                                };
+                                                this.assign_conversation_group(
+                                                    id,
+                                                    if selected { None } else { Some(group_id) },
+                                                    window,
+                                                    cx,
+                                                );
                                             });
                                         },
                                     ),
@@ -176,7 +223,7 @@ impl Shell {
                                     )
                                     .menu("打开对话库", Box::new(OpenLibrary))
                                     .separator()
-                                    .menu("移除此预览对话", Box::new(RemoveChat))
+                                    .menu("删除对话", Box::new(RemoveChat))
                                     .separator()
                                     .menu("开发样本 · 短对话", Box::new(SampleSmall))
                                     .menu("开发样本 · 1,000 条", Box::new(SampleThousand))

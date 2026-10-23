@@ -13,7 +13,7 @@
 use std::io::Cursor;
 
 use image::{
-    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ImageDecoder, RgbImage,
+    DynamicImage, ImageDecoder, RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType,
 };
 
 /// 喂给模型的图片最长边上限。pi / Claude Code 同为 2000，Codex 为 2048；
@@ -144,9 +144,11 @@ mod tests {
     #[test]
     fn small_image_passes_through_untouched() {
         let img = DynamicImage::ImageRgb8(RgbImage::from_pixel(400, 300, image::Rgb([10, 20, 30])));
-        assert!(prepare_image_bytes_for_model(&png_bytes(&img))
-            .unwrap()
-            .is_none());
+        assert!(
+            prepare_image_bytes_for_model(&png_bytes(&img))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

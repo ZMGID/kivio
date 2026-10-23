@@ -14,19 +14,19 @@
 use reqwest::header::ACCEPT_ENCODING;
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
+use super::host::ModelHost;
+use crate::api::{runtime::send_with_failover, with_chat_request_timeout};
 use crate::settings::{ModelProvider, ProviderApiFormat};
-use crate::state::AppState;
 use crate::usage::{
-    chat_usage_source_for_label, error_kind_from_message, model_usage_from_openai_value,
-    operation_from_label, record_model_call, UsageRecordInput,
+    UsageRecordInput, chat_usage_source_for_label, error_kind_from_message,
+    model_usage_from_openai_value, operation_from_label,
 };
 
 use super::{
-    parse_tool_arguments, responses_input_from_model_messages, stream_read_error, BuiltinWebSearch,
-    FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
+    BuiltinWebSearch, FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
     LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall,
-    ProviderReasoningItem, StreamPart, StreamSink, WebCitation,
+    ProviderReasoningItem, StreamPart, StreamSink, WebCitation, parse_tool_arguments,
+    responses_input_from_model_messages, stream_read_error,
 };
 
 /// UI 档位 → xAI 官方 effort。
@@ -86,13 +86,17 @@ fn xai_include_values(tools: Option<&Value>) -> Vec<Value> {
 }
 
 pub struct OpenAiResponsesProvider<'a> {
-    state: &'a AppState,
+    state: &'a dyn ModelHost,
     provider: &'a ModelProvider,
     retry_attempts: usize,
 }
 
 impl<'a> OpenAiResponsesProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
+    pub fn new(
+        state: &'a dyn ModelHost,
+        provider: &'a ModelProvider,
+        retry_attempts: usize,
+    ) -> Self {
         Self {
             state,
             provider,
@@ -129,14 +133,14 @@ impl OpenAiResponsesProvider<'_> {
         if let Err(ref err) = result {
             let mut learned = false;
             if body.get("prompt_cache_key").is_some()
-                && super::openai::error_rejects_prompt_cache_key(err)
+                && super::endpoint_compatibility::error_rejects_prompt_cache_key(err)
             {
                 self.state
                     .provider_runtime()
                     .mark_prompt_cache_key_unsupported(&self.provider.base_url);
                 learned = true;
             } else if body.get("prompt_cache_retention").is_some()
-                && super::openai::error_rejects_prompt_cache_retention(err)
+                && super::endpoint_compatibility::error_rejects_prompt_cache_retention(err)
             {
                 self.state
                     .provider_runtime()
@@ -172,7 +176,7 @@ impl OpenAiResponsesProvider<'_> {
         label: &str,
     ) -> Result<reqwest::Response, String> {
         send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             label,
             self.retry_attempts,
             &self.provider.id,
@@ -721,7 +725,7 @@ impl OpenAiResponsesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -756,7 +760,7 @@ impl OpenAiResponsesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     fn record_usage_success(
@@ -778,26 +782,23 @@ impl OpenAiResponsesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -818,26 +819,23 @@ impl OpenAiResponsesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -2699,12 +2697,16 @@ mod tests {
         assert!(call.arguments_parse_error.is_none());
         assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
         assert_eq!(output.usage.and_then(|u| u.total_tokens), Some(15));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::ToolCallStart { .. })));
-        assert!(parts
-            .iter()
-            .any(|p| matches!(p, StreamPart::ToolCallDone { .. })));
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::ToolCallStart { .. }))
+        );
+        assert!(
+            parts
+                .iter()
+                .any(|p| matches!(p, StreamPart::ToolCallDone { .. }))
+        );
     }
 
     #[test]
@@ -3012,7 +3014,9 @@ mod tests {
             serde_json::json!({"type":"error","message":"stream ended without terminal event or completed response"}),
             serde_json::json!({"type":"response.failed","response":{"error":{"message":"stream ended without terminal event or completed response"}}}),
         ] {
-            let body = format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\n\ndata: {error}\n\n");
+            let body = format!(
+                "data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\n\ndata: {error}\n\n"
+            );
             let err =
                 output_from_sse_body(&body).expect_err("partial stream must not count as success");
             assert!(err.is_stream_read_interrupted(), "{err}");

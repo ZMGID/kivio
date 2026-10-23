@@ -361,26 +361,7 @@ fn summary_message(summary: &ConversationContextSummary) -> Value {
     })
 }
 
-fn prune_clear_boundaries_if_needed(conversation: &mut Conversation) {
-    conversation
-        .context_state
-        .clear_boundaries
-        .retain(|boundary| {
-            conversation
-                .messages
-                .iter()
-                .any(|message| message.id == boundary.source_until_message_id)
-                || conversation
-                    .messages
-                    .iter()
-                    .any(|message| message.timestamp > boundary.created_at)
-        });
-}
-
-pub(super) fn mark_summary_stale_if_needed(conversation: &mut Conversation, changed_index: usize) {
-    prune_clear_boundaries_if_needed(conversation);
-    conversation.invalidate_summary_from(changed_index);
-}
+pub(super) use crate::chat::conversation_mutations::mark_summary_stale_if_needed;
 
 pub(super) fn count_tokens_in_value(value: &Value) -> usize {
     // 口径统一：委托压缩侧共用的 estimate_value_tokens（图片部件记 0，文本按文本，

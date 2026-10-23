@@ -11,9 +11,9 @@
     "models:sync": "node scripts/model-database.mjs",
     "protocol:generate": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol",
     "protocol:check": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --bin export-chat-protocol -- --check",
-    "dev": "npm run build:word && (npm run build:swift || true) && tauri dev --config src-tauri/tauri.dev.conf.json",
+    "dev": "cargo run --manifest-path native/Cargo.toml --locked -p kivio-native",
     "dev:ui": "vite --port 5713",
-    "build": "npm run package:check && npm run icons:check && npm run build:swift && npm run protocol:check && tauri build",
+    "build": "cargo build --manifest-path native/Cargo.toml --locked -p kivio-native --release",
     "tauri": "tauri",
     "build:ui": "npm run build:word && vite build",
     "build:swift": "node scripts/build-swift-sidecar.js",
@@ -32,7 +32,10 @@
     "probe:chat-performance": "node scripts/check-chat-performance-report.mjs",
     "preview": "vite preview",
     "build:word": "node scripts/build-word.mjs",
-    "build:dev": "npm run package:check && npm run build:swift && npm run protocol:check && tauri build --config src-tauri/tauri.dev.conf.json"
+    "build:dev": "npm run package:check && npm run build:swift && npm run protocol:check && tauri build --config src-tauri/tauri.dev.conf.json",
+    "dev:tauri-legacy": "npm run build:word && (npm run build:swift || true) && tauri dev --config src-tauri/tauri.dev.conf.json",
+    "build:tauri-legacy": "npm run package:check && npm run icons:check && npm run build:swift && npm run protocol:check && tauri build",
+    "native:bundle": "python3 native/scripts/bundle-preview.py"
   },
   "dependencies": {
     "@lobehub/icons": "^5.10.0",

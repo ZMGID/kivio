@@ -1,12 +1,9 @@
-# Kivio GPUI 重写准备
+# GPUI 参考源码
 
 创建日期：2026-10-23（Asia/Shanghai）。工作分支：`codex/gpui-migration`。
 
-- [重写任务与验收](TASK.md)：范围、现有代码入口、实施顺序、风险和完成标准。
 - [参考版本清单](references.lock.json)：实际克隆的远端、提交 SHA、提交日期及稀疏检出范围。
 - `references/`：本地参考仓库，保留各自的 Git 历史和许可证，由本目录的 `.gitignore` 排除，避免把嵌套仓库或第三方源码误提交到 Kivio。
-
-当前任务面向 Kivio 主应用。Kivio Study 整个扩展（含 Word 插件）不在重写范围内，暂不做；具体边界见任务文档。
 
 ## 本地参考
 
@@ -36,4 +33,4 @@ git clone --depth 1 https://github.com/zeronsh/zeron.git task-GPUI/references/ze
 
 上述命令获取运行时的默认分支。复现本次快照时，对每个目录使用清单中的 `commit` 执行 `git fetch --depth 1 origin <commit>`，再 `git checkout --detach <commit>`。若上游不再提供该对象，明确报告，不用新 HEAD 冒充原快照。更新参考前检查各仓库状态，更新后同步清单。
 
-本目录保存重写任务，不另立工程规范。规则仍以 [统一工程规范](../docs/engineering-standards.md)、[领域术语](../CONTEXT.md)及 [ADR](../docs/adr/) 为准。
+本目录仅保存参考源码及其版本、恢复说明，不另立工程规范。规则仍以 [统一工程规范](../docs/engineering-standards.md)、[领域术语](../CONTEXT.md)及 [ADR](../docs/adr/) 为准。

@@ -1,0 +1,32 @@
+[package]
+name = "kivio-model-runtime"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+portable-pty = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+schemars = "1.2.2"
+ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "=0.13.4", features = ["json", "rustls", "multipart", "form", "stream"] }
+tokio = { version = "1", features = ["time", "io-util", "net", "sync", "rt-multi-thread", "macros", "process"] }
+flate2 = "1"
+parking_lot = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+directories = "5"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
+url = "2.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+
+libc = "0.2"

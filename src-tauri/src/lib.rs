@@ -31,6 +31,7 @@ pub mod notes;
 pub mod offline_models;
 mod opencode_free;
 pub mod path_env;
+mod utf8_locale;
 pub mod plugins;
 pub mod proc;
 pub mod prompts;
@@ -439,7 +440,7 @@ pub fn run() {
                 app.handle().clone(),
             )));
             // Dock 终端面板的 PTY 会话登记表（会话 drop 时兜底 kill 子进程）。
-            app.manage(std::sync::Arc::new(dock::terminal::TerminalService::new(
+            app.manage(std::sync::Arc::new(dock::terminal::new_service(
                 app.handle().clone(),
             )));
 

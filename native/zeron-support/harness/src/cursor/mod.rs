@@ -1,0 +1,1169 @@
+//! Cursor harness: drives Cursor's agent runtime through the PINNED
+//! `@cursor/sdk` via a thin zeron-owned Node shim (`shim.mjs`, JSONL over
+//! stdio) — NOT over ACP, and NOT over `cursor-agent`'s print surface.
+//!
+//! Why: Cursor's ACP surface is lossy (subagent transcripts are stripped at
+//! the boundary — verified live) and Cursor points integrators at the SDK.
+//! The SDK does not wrap the cursor-agent binary at all: it is the agent
+//! runtime bundled in-process, speaking proprietary protobuf/ConnectRPC to
+//! Cursor's backend with client-side tool execution — there is no speakable
+//! stdio wire to drive from Rust, so the shim IS the wire. The print surface
+//! (`cursor-agent -p --trust`) is permission-free and is never used.
+//!
+//! VERSION PIN: [`CURSOR_SDK_PIN`]. The SDK is PUBLIC BETA with ~weekly
+//! releases; the shim maps only the update kinds this pin ships and ignores
+//! unknown ones, so churn degrades output rather than erroring the chat.
+//! Revalidate the shim against the typings on every bump.
+//!
+//! - The shim is materialized into the SDK's managed npm install
+//!   (`~/.zeron/adapters/…`, [`crate::adapter_install::ensure_installed_shim`])
+//!   and spawned as `node <shim>`.
+//! - Done = the SDK run's terminal result (`turn` frame off `run.wait()` /
+//!   `turn-ended`) — a crisp turn end by construction.
+//! - Subagents: the SDK streams the FULL nested transcript as
+//!   `tool-call-delta { callId, taskUpdate }`; the shim tags those frames
+//!   with the spawning task's call id and they surface here as
+//!   [`AgentEvent::Subagent`].
+//! - Questions: the SDK has no public answer channel for `askQuestion`
+//!   (its `request` stream message carries only an id), so the tool is
+//!   disallowed at agent creation — a question would otherwise block the
+//!   run forever with no way to answer it. Known gap vs the ACP surface.
+//! - AUTH: the SDK's credentials are SEPARATE from `cursor-agent login`
+//!   (verified live). Runs need `CURSOR_API_KEY` (or a prior SDK browser
+//!   login); the shim surfaces the exact fix as an error chip otherwise.
+//! - Steering: native SDK input at the next model step, acknowledged only
+//!   when consumed. Inputs that race turn completion become a coalesced follow-up.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+mod catalog;
+mod state;
+
+use async_trait::async_trait;
+use futures::StreamExt;
+use futures::stream::BoxStream;
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
+
+use zeron_proto::{
+    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
+    RunRequest, SteeringMode, TodoItem, TodoStatus, ToolCall,
+};
+
+use crate::process::{Child, ChildStdin, Command, Stdio};
+use crate::{Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
+
+/// The pinned SDK (public beta 1.0.x line; inspected against 1.0.31's
+/// typings). Bump deliberately — see the module header.
+const CURSOR_SDK_PIN: &str = "@cursor/sdk@1.0.32";
+const SHIM_NAME: &str = "zeron-cursor-shim.mjs";
+const SHIM_SOURCE: &str = include_str!("shim.mjs");
+
+fn cursor_cli_paths() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    // USERPROFILE-aware home (see `crate::executable::home_dir`), plus the
+    // Windows native installer location when LOCALAPPDATA is reachable.
+    if let Some(home) = crate::executable::home_dir() {
+        dirs.push(home.join(".local").join("bin").join("cursor-agent"));
+        dirs.push(home.join(".cursor").join("bin").join("cursor-agent"));
+    }
+    if cfg!(windows)
+        && let Some(local) = std::env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join("AppData").join("Local"))
+            })
+    {
+        dirs.push(local.join("cursor-agent").join("cursor-agent"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin/cursor-agent"));
+    dirs.push(PathBuf::from("/usr/local/bin/cursor-agent"));
+    dirs
+}
+
+/// The Cursor harness. Construct with [`CursorHarness::new`]; tests point it
+/// at a fake shim process with [`CursorHarness::with_executable`].
+pub struct CursorHarness {
+    /// Test seam: run this program AS the shim instead of node+managed SDK.
+    executable: Option<PathBuf>,
+    interrupt_grace: Duration,
+    kill_grace: Duration,
+    /// Credential-scoped successful catalog, with bounded refresh and backoff.
+    pub(crate) models_cache: catalog::Catalog,
+    /// Models whose catalog default is a Max Mode variant, from the latest
+    /// discovery. Their defaults are never sent: the backend can reject the
+    /// very variant the catalog marks default (verified live: Grok 4.7's
+    /// 500k default fails "Invalid parameters" while the bare id runs).
+    max_mode_defaults: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl Default for CursorHarness {
+    fn default() -> Self {
+        Self {
+            executable: None,
+            interrupt_grace: Duration::from_secs(2),
+            kill_grace: Duration::from_secs(3),
+            models_cache: catalog::Catalog::default(),
+            max_mode_defaults: Default::default(),
+        }
+    }
+}
+
+impl CursorHarness {
+    /// The SDK selected by this engine, not the viewer or installed native CLI.
+    pub fn sdk_version() -> &'static str {
+        if std::env::var_os("CURSOR_SDK_SHIM_EXECUTABLE").is_some() {
+            "custom override (unverified)"
+        } else {
+            CURSOR_SDK_PIN.strip_prefix("@cursor/sdk@").unwrap()
+        }
+    }
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_executable(mut self, path: impl Into<PathBuf>) -> Self {
+        self.executable = Some(path.into());
+        self
+    }
+
+    pub fn with_graces(mut self, interrupt_grace: Duration, kill_grace: Duration) -> Self {
+        self.interrupt_grace = interrupt_grace;
+        self.kill_grace = kill_grace;
+        self
+    }
+
+    /// Spawn the shim in models mode and map its one catalog frame.
+    async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
+        let (exe, args) = self.resolve_shim().await?;
+        let mut cmd = Command::new(&exe);
+        cmd.args(&args);
+        crate::compose_child_path(&mut cmd, &exe);
+        cmd.arg("models")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let run = async {
+            let output = cmd
+                .output()
+                .await
+                .map_err(|e| HarnessError::Protocol(format!("cursor models probe: {e}")))?;
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Ok(frame) = serde_json::from_str::<Value>(line)
+                    && frame.get("ev").and_then(Value::as_str) == Some("fatal")
+                {
+                    return Err(HarnessError::Protocol(
+                        frame
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Cursor model discovery failed")
+                            .to_owned(),
+                    ));
+                }
+            }
+            if !output.status.success() {
+                return Err(HarnessError::Protocol(format!(
+                    "cursor models probe exited with {}",
+                    output.status
+                )));
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let items = stdout
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+                .find(|v| v.get("ev").and_then(Value::as_str) == Some("models"))
+                .and_then(|v| v.get("items").cloned())
+                .ok_or_else(|| {
+                    HarnessError::Protocol("cursor models probe returned no catalog".into())
+                })?;
+            *self
+                .max_mode_defaults
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = max_mode_default_ids(&items);
+            Ok::<_, HarnessError>(map_model_items(&items))
+        };
+        tokio::time::timeout(Duration::from_secs(15), run)
+            .await
+            .map_err(|_| HarnessError::Protocol("cursor models probe timed out".into()))?
+    }
+
+    /// The catalog that supplies omitted parameter defaults. The picker has
+    /// normally loaded it already, so a run never waits on a refresh; only a
+    /// cold catalog is fetched. A failed fetch yields none (bare SDK ids), and
+    /// Max Mode defaults are left out (bare ids, as before).
+    async fn catalog_for_defaults(&self) -> Vec<Model> {
+        let mut models = match self
+            .model_context()
+            .ok()
+            .flatten()
+            .and_then(|context| self.models_cache.cached_for(context.key()))
+        {
+            Some(models) => models,
+            None => self.models().await.unwrap_or_default(),
+        };
+        let max_mode = self
+            .max_mode_defaults
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        models.retain(|model| !max_mode.contains(&model.id));
+        models
+    }
+
+    /// (program, args) for the shim process: the test override, or node
+    /// running the shim inside the managed SDK install (installing it on
+    /// first use).
+    pub async fn resolve_shim(&self) -> Result<(PathBuf, Vec<String>), HarnessError> {
+        if let Some(p) = &self.executable {
+            return Ok((p.clone(), Vec::new()));
+        }
+        if let Some(p) = std::env::var_os("CURSOR_SDK_SHIM_EXECUTABLE")
+            && !p.is_empty()
+        {
+            return Ok((PathBuf::from(p), Vec::new()));
+        }
+        let pin = crate::adapter_install::NpmPin::parse(CURSOR_SDK_PIN);
+        let shim =
+            crate::adapter_install::ensure_installed_shim(pin, "Cursor", SHIM_NAME, SHIM_SOURCE)
+                .await?;
+        crate::adapter_install::launch_for_entry(&shim)
+    }
+}
+
+/// A ready-to-spawn command for the shim's LOGIN mode: the SDK's PKCE
+/// browser flow, minting the key into `store_path` (never the live
+/// `~/.cursor/sdk/auth.json` — the engine snapshots the store file as an
+/// account slot). Emits `{"ev":"auth-url"}` then `{"ev":"logged-in"}` /
+/// `{"ev":"fatal"}` JSONL on stdout; kill to cancel.
+pub async fn login_command(store_path: &std::path::Path) -> Result<Command, HarnessError> {
+    let (exe, args) = CursorHarness::default().resolve_shim().await?;
+    let mut cmd = Command::new(&exe);
+    cmd.args(&args);
+    crate::compose_child_path(&mut cmd, &exe);
+    cmd.arg("login").arg(store_path);
+    Ok(cmd)
+}
+
+#[async_trait]
+impl Harness for CursorHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Cursor
+    }
+    fn display_name(&self) -> &str {
+        "Cursor"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    /// Native SDK steering appends input to the active turn.
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[]
+    }
+    /// "Installed" means the user's own cursor-agent CLI is present — the
+    /// user-visible signal they use Cursor (the SDK itself is a managed
+    /// install zeron performs on demand).
+    fn installed(&self) -> bool {
+        self.executable.is_some()
+            || crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()).is_some()
+    }
+    fn executable_path(&self) -> Option<PathBuf> {
+        self.executable
+            .clone()
+            .or_else(|| crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()))
+    }
+    /// Done is the SDK run's terminal result, for every turn shape.
+    fn deterministic_turn_end(&self) -> bool {
+        true
+    }
+    /// The shim's `stop` cancels the turn's SDK run; the agent (and the
+    /// shim holding it) take the next prompt.
+    fn stops_turn_in_place(&self) -> bool {
+        true
+    }
+    /// Each SDK send names its model, so a change runs from the next turn on
+    /// the same agent; no model is Cursor's `auto`.
+    fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
+        live.cwd == next.cwd
+    }
+
+    /// Keep a successful catalog during transient outages. A cold failure
+    /// is an error, never a fabricated two-model success.
+    fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
+        use sha2::{Digest, Sha256};
+        let binary = self
+            .executable
+            .clone()
+            .or_else(|| std::env::var_os("CURSOR_SDK_SHIM_EXECUTABLE").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from(CURSOR_SDK_PIN));
+        let binary = binary.canonicalize().unwrap_or(binary);
+        let mut hash = Sha256::new();
+        hash.update(catalog::credential_context()?);
+        hash.update(binary.as_os_str().as_encoded_bytes());
+        hash.update(Self::sdk_version().as_bytes());
+        if let Ok(metadata) = binary.metadata() {
+            hash.update(format!("{:?}:{}", metadata.modified().ok(), metadata.len()));
+        }
+        Ok(Some(crate::ModelContext {
+            hash: format!("{:x}", hash.finalize()),
+            binary_path: binary,
+            binary_version: Some(Self::sdk_version().into()),
+        }))
+    }
+    async fn model_catalog(&self, force: bool) -> Result<crate::ModelCatalog, HarnessError> {
+        self.model_context()?.unwrap().log();
+        self.models_cache
+            .get_with(
+                force,
+                || self.model_context().map(|c| c.unwrap().key()),
+                || self.discover_models(),
+            )
+            .await
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        self.model_catalog(false).await.map(|c| c.models)
+    }
+
+    // No `commands()` override: @cursor/sdk 1.0.28 exposes no slash-command
+    // listing (the cursor-agent TUI's slash commands are client-side only),
+    // so the trait's empty default is the honest answer, not a gap.
+
+    async fn run(
+        &self,
+        mut request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        // Plus requires explicit defaults, but catalog outages must not block
+        // existing SDK runs. The same snapshot fills mid-session model switches.
+        let catalog = self.catalog_for_defaults().await;
+        fill_catalog_defaults(
+            &catalog,
+            request.model.as_deref(),
+            &mut request.model_options,
+        );
+
+        let lease = if self.executable.is_none() {
+            Some(state::Lease::acquire(&state::state_root(), request.resume.as_deref()).await?)
+        } else {
+            None
+        };
+        let (exe, args) = self.resolve_shim().await?;
+        let mut cmd = Command::new(&exe);
+        cmd.args(&args);
+        if lease.is_some() {
+            cmd.env("ZERON_CURSOR_STATE_DIR", state::state_root());
+        }
+        crate::compose_child_path(&mut cmd, &exe);
+        crate::apply_run_env(&mut cmd, &request.env);
+        if !request.cwd.is_empty() {
+            cmd.current_dir(&request.cwd);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                HarnessError::NotInstalled(exe.display().to_string())
+            } else {
+                HarnessError::Io(e)
+            }
+        })?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HarnessError::Protocol("cursor shim has no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| HarnessError::Protocol("cursor shim has no stdout".into()))?;
+        let stderr_tail = crate::StderrTail::default();
+        if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::debug!(target: "zeron_harness::cursor", "stderr: {line}");
+                    tail.push(&line);
+                }
+            });
+        }
+
+        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(stdin_writer(stdin, stdin_rx));
+        let first = json!({
+            "op": "run",
+            "prompt": request.prompt,
+            "cwd": request.cwd,
+            "model": request.model,
+            // Typed parameter picks (thinking/context/effort/fast/…) — the
+            // shim folds them into the SDK's ModelSelection params.
+            "modelOptions": request.model_options,
+            "resume": request.resume,
+            "mcp": request.mcp,
+            "storeDir": lease.as_ref().and_then(|lease| lease.store_dir.as_ref()),
+        });
+        let _ = stdin_tx.send(first.to_string());
+
+        let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
+        tokio::spawn(run_session(Session {
+            lease,
+            child,
+            stdout_lines: BufReader::new(stdout).lines(),
+            stdin_tx,
+            event_tx,
+            controls,
+            request_cwd: request.cwd,
+            request_model: request.model.unwrap_or_default(),
+            catalog,
+            interrupt_grace: self.interrupt_grace,
+            kill_grace: self.kill_grace,
+            stderr_tail,
+        }));
+
+        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
+            rx.recv().await.map(|ev| (ev, rx))
+        })
+        .boxed())
+    }
+}
+
+/// Send every parameter the user left implicit as the account catalog's
+/// default — the value the picker shows. Cursor resolves a bare model id
+/// server-side, which on some plans (Plus) is a variant the account cannot
+/// run, while the catalog's credential-scoped default is one it can.
+fn fill_catalog_defaults(
+    catalog: &[Model],
+    model: Option<&str>,
+    options: &mut serde_json::Map<String, Value>,
+) {
+    let Some(model) = model.and_then(|id| catalog.iter().find(|m| m.id == id)) else {
+        return;
+    };
+    for option in &model.options {
+        // Legacy sessions carry the pre-discovery `optimizeFor`, which the
+        // shim translates; its catalog twin must not ride beside it.
+        if option.id == "optimize_for" && options.contains_key("optimizeFor") {
+            continue;
+        }
+        options
+            .entry(option.id.clone())
+            .or_insert_with(|| Value::String(option.default_choice.clone()));
+    }
+}
+
+/// Catalog items whose default variant is a Max Mode variant.
+fn max_mode_default_ids(items: &Value) -> std::collections::HashSet<String> {
+    items
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .filter(|item| {
+            item.get("variants")
+                .and_then(Value::as_array)
+                .and_then(|variants| {
+                    variants
+                        .iter()
+                        .find(|v| v.get("isDefault").and_then(Value::as_bool) == Some(true))
+                })
+                .and_then(|v| v.get("isMaxMode").and_then(Value::as_bool))
+                == Some(true)
+        })
+        .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// `Cursor.models.list()` items → picker models. Item shape (1.0.28
+/// `options.d.ts` `ModelListItem`): `{id, displayName, description?,
+/// aliases?, parameters?: [{id, displayName?, values: [{value,
+/// displayName?}]}], variants?: [{params: [{id, value}], isDefault?}]}`.
+fn map_model_items(items: &Value) -> Vec<Model> {
+    let str_of = |v: &Value, key: &str| -> Option<String> {
+        v.get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    items
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| {
+            let id = str_of(item, "id")?;
+            // `default` is a bare alias twin of the parameterized Auto entry
+            // (`auto-smart`) — two "Auto" rows would just confuse the picker.
+            if id == "default" {
+                return None;
+            }
+            let label = str_of(item, "displayName").unwrap_or_else(|| id.clone());
+            // A variant marked default carries the catalog's preferred value
+            // for each parameter (e.g. Auto's optimize_for=balanced).
+            let default_variant = item
+                .get("variants")
+                .and_then(Value::as_array)
+                .map(|a| a.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .find(|v| v.get("isDefault").and_then(Value::as_bool) == Some(true))
+                .and_then(|v| v.get("params").and_then(Value::as_array).cloned())
+                .unwrap_or_default();
+            let options: Vec<ModelOption> = item
+                .get("parameters")
+                .and_then(Value::as_array)
+                .map(|a| a.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| {
+                    let pid = str_of(p, "id")?;
+                    let choices: Vec<ModelOptionChoice> = p
+                        .get("values")
+                        .and_then(Value::as_array)
+                        .map(|a| a.as_slice())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|c| {
+                            let cid = str_of(c, "value")?;
+                            Some(ModelOptionChoice {
+                                label: str_of(c, "displayName").unwrap_or_else(|| cid.clone()),
+                                id: cid,
+                            })
+                        })
+                        .collect();
+                    if choices.is_empty() {
+                        return None;
+                    }
+                    let default_choice = default_variant
+                        .iter()
+                        .find(|dv| dv.get("id").and_then(Value::as_str) == Some(pid.as_str()))
+                        .and_then(|dv| str_of(dv, "value"))
+                        .unwrap_or_else(|| choices[0].id.clone());
+                    Some(ModelOption {
+                        label: str_of(p, "displayName").unwrap_or_else(|| pid.clone()),
+                        id: pid,
+                        choices,
+                        default_choice,
+                    })
+                })
+                .collect();
+            Some(Model {
+                id,
+                label,
+                description: str_of(item, "description"),
+                reasoning_levels: Vec::new(),
+                options,
+            })
+        })
+        .collect()
+}
+
+async fn stdin_writer(mut stdin: ChildStdin, mut rx: mpsc::UnboundedReceiver<String>) {
+    while let Some(line) = rx.recv().await {
+        let write = async {
+            stdin.write_all(line.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            stdin.flush().await
+        };
+        if let Err(e) = write.await {
+            tracing::debug!(target: "zeron_harness::cursor", "stdin write failed (tolerated): {e}");
+            return;
+        }
+    }
+    let _ = stdin.shutdown().await;
+}
+
+struct Session {
+    lease: Option<state::Lease>,
+    child: Child,
+    stdout_lines: tokio::io::Lines<BufReader<crate::process::ChildStdout>>,
+    stdin_tx: mpsc::UnboundedSender<String>,
+    event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
+    controls: RunControls,
+    request_cwd: String,
+    request_model: String,
+    /// Fills implicit parameters of a model the session switches to.
+    catalog: Vec<Model>,
+    interrupt_grace: Duration,
+    kill_grace: Duration,
+    stderr_tail: crate::StderrTail,
+}
+
+fn new_message_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+async fn run_session(session: Session) {
+    let Session {
+        lease: _lease,
+        mut child,
+        mut stdout_lines,
+        stdin_tx,
+        event_tx,
+        controls,
+        request_cwd,
+        request_model,
+        catalog,
+        interrupt_grace,
+        kill_grace,
+        stderr_tail,
+    } = session;
+    let RunControls {
+        realtime: _,
+        execution_lease: _execution_lease,
+        request_input: _request_input,
+        mut steering,
+        interrupt,
+        turn,
+    } = controls;
+
+    let mut assistant_message_id = new_message_id();
+    let mut session_id: Option<String> = None;
+    let mut steering_open = true;
+    let mut interrupted = false;
+    let mut interrupt_sent = false;
+    // A turn stop (`TurnControl::stop_turn`) in flight: the shim cancels the
+    // run; the agent stays up for the next prompt.
+    let mut stopping = false;
+    let mut any_done = false;
+    let mut done_after_interrupt = false;
+    // A turn is settled and the session is parked awaiting the next prompt.
+    let mut parked = false;
+    let mut pending_steers = 0usize;
+    let mut escalation: Option<tokio::task::JoinHandle<()>> = None;
+
+    let send = |ev: AgentEvent| {
+        let tx = event_tx.clone();
+        async move { tx.send(Ok(ev)).await.is_ok() }
+    };
+
+    'main: loop {
+        tokio::select! {
+            // A saturated steering queue must not starve cancellation.
+            biased;
+            _ = interrupt.cancelled(), if !interrupt_sent => {
+                interrupt_sent = true;
+                interrupted = true;
+                let _ = stdin_tx.send(json!({ "op": "interrupt" }).to_string());
+                if let Some(pid) = crate::process::signal_target(&child) {
+                    escalation = Some(tokio::spawn(async move {
+                        tokio::time::sleep(interrupt_grace).await;
+                        send_signal(&pid, Signal::Term);
+                        tokio::time::sleep(kill_grace).await;
+                        send_signal(&pid, Signal::Kill);
+                    }));
+                }
+            },
+
+            // Cancel this turn's SDK run, not the agent: the shim answers
+            // with a cancelled turn and takes the next prompt. Steers still
+            // undelivered go with the stopped turn.
+            _ = turn.stop_requested(), if !interrupted => {
+                if parked {
+                    if !send(AgentEvent::Done {
+                        status: DoneStatus::Interrupted,
+                        result: None,
+                        error: None,
+                        session_id: session_id.clone(),
+                    }).await { break 'main; }
+                } else {
+                    stopping = true;
+                    pending_steers = 0;
+                    let _ = stdin_tx.send(json!({ "op": "stop" }).to_string());
+                }
+            },
+
+            line = stdout_lines.next_line() => match line {
+                Ok(Some(line)) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let Ok(frame) = serde_json::from_str::<Value>(line) else {
+                        tracing::debug!(target: "zeron_harness::cursor", "unparseable shim frame (skipped)");
+                        continue;
+                    };
+                    match frame.get("ev").and_then(Value::as_str).unwrap_or("") {
+                        "ready" => {
+                            let agent_id = frame
+                                .get("agentId")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            session_id = Some(agent_id.clone());
+                            let model = frame
+                                .get("model")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| request_model.clone());
+                            if !send(AgentEvent::SessionStarted {
+                                harness: HarnessId::Cursor,
+                                model,
+                                tools: Vec::new(),
+                                cwd: request_cwd.clone(),
+                                session_id: agent_id,
+                                assistant_message_id: assistant_message_id.clone(),
+                            })
+                            .await
+                            {
+                                break 'main;
+                            }
+                        }
+                        "steered" => {
+                            pending_steers = pending_steers.saturating_sub(1);
+                            parked = false;
+                            any_done = false;
+                            let prev = std::mem::replace(&mut assistant_message_id, new_message_id());
+                            if !send(AgentEvent::Steered {
+                                assistant_message_id: Some(prev),
+                                next_assistant_message_id: Some(assistant_message_id.clone()),
+                            }).await { break 'main; }
+                        }
+                        _ => {
+                            if frame.get("ev").and_then(Value::as_str) == Some("fatal")
+                                || frame.get("status").and_then(Value::as_str) == Some("error")
+                            {
+                                tracing::warn!(target: "zeron_harness::cursor",
+                                    session_id = ?session_id,
+                                    error = ?frame.get("error").or_else(|| frame.get("message")),
+                                    "Cursor SDK run failed");
+                            }
+                            for ev in map_shim_frame(&frame, interrupted || stopping) {
+                                let is_done = matches!(ev, AgentEvent::Done { .. });
+                                let failed = matches!(ev, AgentEvent::Done { status: DoneStatus::Errored, .. });
+                                // Stamp the session id onto Dones the mapper
+                                // couldn't know.
+                                let ev = if let AgentEvent::Done { status, result, error, .. } = ev {
+                                    AgentEvent::Done { status, result, error, session_id: session_id.clone() }
+                                } else {
+                                    ev
+                                };
+                                if !send(ev).await {
+                                    break 'main;
+                                }
+                                if is_done {
+                                    any_done = true;
+                                    stopping = false;
+                                    if interrupted {
+                                        done_after_interrupt = true;
+                                        break 'main;
+                                    }
+                                    if failed { break 'main; }
+                                    if !steering_open && pending_steers == 0 {
+                                        break 'main;
+                                    }
+                                    parked = pending_steers == 0;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break 'main, // shim exited
+                Err(e) => {
+                    let _ = event_tx.send(Err(HarnessError::Io(e))).await;
+                    break 'main;
+                }
+            },
+
+            steer = steering.recv(), if steering_open && !interrupted => match steer {
+                Some(msg) => {
+                    pending_steers += 1;
+                    parked = false;
+                    any_done = false;
+                    let mut line = json!({ "op": "steer", "prompt": msg.prompt });
+                    // A changed model runs from this message's own turn.
+                    if let Some(mut next) = msg.config {
+                        fill_catalog_defaults(&catalog, next.model.as_deref(), &mut next.model_options);
+                        line["reconfigure"] = Value::Bool(true);
+                        line["model"] = json!(next.model);
+                        line["modelOptions"] = Value::Object(next.model_options);
+                    }
+                    let _ = stdin_tx.send(line.to_string());
+                }
+                None => {
+                    steering_open = false;
+                    if parked && pending_steers == 0 {
+                        break 'main;
+                    }
+                }
+            },
+
+            _ = event_tx.closed() => break 'main,
+        }
+    }
+
+    if !event_tx.is_closed() {
+        if interrupted && !done_after_interrupt {
+            let _ = event_tx
+                .send(Ok(AgentEvent::Done {
+                    status: DoneStatus::Interrupted,
+                    result: None,
+                    error: None,
+                    session_id: session_id.clone(),
+                }))
+                .await;
+        } else if !interrupted && !any_done {
+            // Give the just-died child a beat to be reaped and its stderr
+            // reader to drain, so the crash message carries the real exit
+            // status and tail instead of "still running".
+            let status = tokio::time::timeout(Duration::from_millis(500), child.wait())
+                .await
+                .ok()
+                .and_then(Result::ok);
+            tokio::task::yield_now().await;
+            let _ = event_tx
+                .send(Ok(AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    result: None,
+                    error: Some(crate::crash_message("cursor shim", status, &stderr_tail)),
+                    session_id: session_id.clone(),
+                }))
+                .await;
+        }
+    }
+
+    // The SDK runs tools in the shim's process: snapshot them before it
+    // goes, so none outlives the runtime (see [`crate::shutdown_agent`]).
+    #[cfg(unix)]
+    let tree = match child.id() {
+        Some(pid) => crate::process::descendants(pid).await,
+        None => Vec::new(),
+    };
+    drop(stdin_tx);
+    // EOF asks the shim to cancel/close the SDK and settle its durable state.
+    // Signals remain the bounded fallback when the SDK cannot shut down.
+    if !matches!(
+        tokio::time::timeout(interrupt_grace, child.wait()).await,
+        Ok(Ok(_))
+    ) {
+        shutdown_child(&mut child, kill_grace).await;
+    }
+    #[cfg(unix)]
+    crate::process::terminate_tree(&tree, kill_grace).await;
+    if let Some(handle) = escalation {
+        handle.abort();
+    }
+}
+
+/// Decode one cursor SDK tool (public vocabulary name + args) into a typed
+/// [`ToolCall`], tolerant of arg spellings.
+fn decode_tool(name: &str, args: &Value) -> ToolCall {
+    let s = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| args.get(*k).and_then(Value::as_str))
+            .unwrap_or("")
+            .to_owned()
+    };
+    let opt = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| args.get(*k).and_then(Value::as_str))
+            .map(str::to_owned)
+    };
+    match name {
+        "shell" => ToolCall::Exec {
+            command: s(&["command"]),
+        },
+        "read" => ToolCall::ReadFile {
+            path: s(&["path", "filePath", "file_path"]),
+        },
+        "write" => ToolCall::WriteFile {
+            path: s(&["path", "filePath", "file_path"]),
+            content: None,
+        },
+        "edit" => ToolCall::EditFile {
+            path: s(&["path", "filePath", "file_path"]),
+            old_string: None,
+            new_string: None,
+        },
+        "delete" => ToolCall::Unknown {
+            name: format!("Delete: {}", s(&["path", "filePath", "file_path"])),
+            input: (!args.is_null()).then(|| args.clone()),
+        },
+        "grep" => ToolCall::Search {
+            pattern: s(&["pattern", "query"]),
+            path: opt(&["path", "directory"]),
+        },
+        "glob" => ToolCall::Glob {
+            pattern: s(&["pattern", "globPattern"]),
+        },
+        "webSearch" => ToolCall::WebSearch {
+            query: s(&["query", "search"]),
+        },
+        "webFetch" => ToolCall::WebFetch {
+            url: s(&["url"]),
+            prompt: None,
+        },
+        "updateTodos" => ToolCall::Todo {
+            items: args
+                .get("todos")
+                .or_else(|| args.get("items"))
+                .and_then(Value::as_array)
+                .map(|a| a.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .map(|t| {
+                    let status = if t.get("completed").and_then(Value::as_bool) == Some(true) {
+                        TodoStatus::Completed
+                    } else {
+                        TodoStatus::parse(t.get("status").and_then(Value::as_str).unwrap_or(""))
+                    };
+                    TodoItem::new(
+                        t.get("content")
+                            .or_else(|| t.get("text"))
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                        status,
+                    )
+                })
+                .collect(),
+        },
+        "mcp" => ToolCall::Mcp {
+            server: s(&["server", "serverName"]),
+            tool: s(&["tool", "toolName", "name"]),
+            input: args.get("args").or(args.get("input")).cloned(),
+        },
+        // The subagent spawn: the chip the engine folds; its interior
+        // arrives as tagged frames keyed by this call's id.
+        "task" => ToolCall::Unknown {
+            name: {
+                let description = s(&["description", "prompt"]);
+                if description.is_empty() {
+                    "Agent".to_owned()
+                } else {
+                    format!("Agent: {description}")
+                }
+            },
+            input: (!args.is_null()).then(|| args.clone()),
+        },
+        other => ToolCall::Unknown {
+            name: other.to_owned(),
+            input: (!args.is_null()).then(|| args.clone()),
+        },
+    }
+}
+
+/// Map one shim frame to events. `Done` session ids are stamped by the loop.
+fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
+    let text = || {
+        frame
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let parent = frame
+        .get("parent")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let tag = |ev: AgentEvent| -> AgentEvent {
+        match &parent {
+            Some(parent) => AgentEvent::Subagent {
+                parent_tool_use_id: parent.clone(),
+                event: Box::new(ev),
+            },
+            None => ev,
+        }
+    };
+    match frame.get("ev").and_then(Value::as_str).unwrap_or("") {
+        "text" => vec![tag(AgentEvent::TextDelta { text: text() })],
+        "thinking" => vec![tag(AgentEvent::ReasoningDelta { text: text() })],
+        "tool" => {
+            let id = frame
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let name = frame.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let args = frame.get("args").cloned().unwrap_or(Value::Null);
+            match frame.get("phase").and_then(Value::as_str) {
+                Some("start") => {
+                    let mut events = vec![tag(AgentEvent::ToolCall {
+                        id: id.clone(),
+                        call: decode_tool(name, &args),
+                    })];
+                    // A spawn's prompt is the subagent's opening user
+                    // message — the SDK's nested stream never carries it
+                    // (only the child's own updates), so seed it at the
+                    // spawn and the subagent transcript starts the way
+                    // every chat does. Top-level spawns only: nested
+                    // spawns' interiors share their parent's doc.
+                    if name == "task" && parent.is_none() {
+                        if let Some(prompt) = args
+                            .get("prompt")
+                            .or_else(|| args.get("description"))
+                            .and_then(Value::as_str)
+                            .filter(|p| !p.trim().is_empty())
+                        {
+                            events.push(AgentEvent::Subagent {
+                                parent_tool_use_id: id,
+                                event: Box::new(AgentEvent::UserMessage {
+                                    text: prompt.to_owned(),
+                                }),
+                            });
+                        }
+                    }
+                    events
+                }
+                Some("end") => {
+                    let is_error = frame.get("error").and_then(Value::as_bool) == Some(true);
+                    let mut events = vec![
+                        tag(AgentEvent::ToolCall {
+                            id: id.clone(),
+                            call: decode_tool(name, &args),
+                        }),
+                        tag(AgentEvent::ToolResult {
+                            id: id.clone(),
+                            is_error,
+                            output: None,
+                            diff: None,
+                        }),
+                    ];
+                    // A finished task IS the subagent finishing: the SDK has
+                    // no separate terminal frame for the nested transcript,
+                    // so the spawn tool's end doubles as the tagged Done that
+                    // flips the chip and freezes the subagent doc.
+                    if name == "task" && parent.is_none() {
+                        events.push(AgentEvent::Subagent {
+                            parent_tool_use_id: id,
+                            event: Box::new(AgentEvent::Done {
+                                status: if is_error {
+                                    DoneStatus::Errored
+                                } else {
+                                    DoneStatus::Completed
+                                },
+                                result: None,
+                                error: None,
+                                session_id: None,
+                            }),
+                        });
+                    }
+                    events
+                }
+                _ => Vec::new(),
+            }
+        }
+        "usage" => vec![AgentEvent::Usage {
+            input_tokens: frame.get("input").and_then(Value::as_u64).unwrap_or(0),
+            output_tokens: frame.get("output").and_then(Value::as_u64).unwrap_or(0),
+        }],
+        "turn" => {
+            let status = frame.get("status").and_then(Value::as_str).unwrap_or("");
+            let error = frame
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let status = if interrupted || status == "cancelled" {
+                DoneStatus::Interrupted
+            } else if status == "error" {
+                DoneStatus::Errored
+            } else {
+                DoneStatus::Completed
+            };
+            vec![AgentEvent::Done {
+                status,
+                result: None,
+                error,
+                session_id: None,
+            }]
+        }
+        "fatal" => vec![AgentEvent::Done {
+            status: if interrupted {
+                DoneStatus::Interrupted
+            } else {
+                DoneStatus::Errored
+            },
+            result: None,
+            error: Some(
+                frame
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("cursor shim failed")
+                    .to_owned(),
+            ),
+            session_id: None,
+        }],
+        other => {
+            tracing::debug!(target: "zeron_harness::cursor", "unknown shim frame (skipped): {other}");
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_cursor_tool_vocabulary() {
+        assert_eq!(
+            decode_tool("shell", &json!({"command": "ls"})),
+            ToolCall::Exec {
+                command: "ls".into()
+            }
+        );
+        assert_eq!(
+            decode_tool("grep", &json!({"pattern": "foo", "path": "/src"})),
+            ToolCall::Search {
+                pattern: "foo".into(),
+                path: Some("/src".into())
+            }
+        );
+        assert!(matches!(
+            decode_tool("task", &json!({"description": "map the repo"})),
+            ToolCall::Unknown { name, .. } if name == "Agent: map the repo"
+        ));
+        assert!(matches!(
+            decode_tool("somethingNew", &json!({})),
+            ToolCall::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn task_start_seeds_the_subagent_opening_user_message() {
+        let frame: Value = serde_json::from_str(
+            r#"{"ev":"tool","phase":"start","id":"call_task_1","name":"task","args":{"description":"probe","prompt":"scan the fold path"}}"#,
+        )
+        .unwrap();
+        let events = map_shim_frame(&frame, false);
+        assert!(matches!(
+            &events[..],
+            [
+                AgentEvent::ToolCall { id, .. },
+                AgentEvent::Subagent { parent_tool_use_id, event },
+            ] if id == "call_task_1"
+                && parent_tool_use_id == "call_task_1"
+                && matches!(event.as_ref(), AgentEvent::UserMessage { text } if text == "scan the fold path")
+        ));
+        // A NESTED spawn's interior shares its parent's doc: no seeding.
+        let nested: Value = serde_json::from_str(
+            r#"{"ev":"tool","phase":"start","id":"call_task_2","name":"task","args":{"prompt":"inner"},"parent":"call_task_1"}"#,
+        )
+        .unwrap();
+        assert_eq!(map_shim_frame(&nested, false).len(), 1);
+    }
+
+    #[test]
+    fn nested_frames_arrive_tagged() {
+        let frame: Value =
+            serde_json::from_str(r#"{"ev":"text","text":"sub says","parent":"call_task_1"}"#)
+                .unwrap();
+        assert_eq!(
+            map_shim_frame(&frame, false),
+            vec![AgentEvent::Subagent {
+                parent_tool_use_id: "call_task_1".into(),
+                event: Box::new(AgentEvent::TextDelta {
+                    text: "sub says".into()
+                }),
+            }]
+        );
+    }
+}

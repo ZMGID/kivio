@@ -1,19 +1,18 @@
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING};
+use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue};
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
+use super::host::ModelHost;
+use crate::api::{runtime::send_with_failover, with_chat_request_timeout};
 use crate::settings::ModelProvider;
-use crate::state::AppState;
 use crate::usage::{
-    chat_usage_source_for_label, error_kind_from_message, model_usage_from_anthropic_value,
-    operation_from_label, record_model_call, UsageRecordInput,
+    UsageRecordInput, chat_usage_source_for_label, error_kind_from_message,
+    model_usage_from_anthropic_value, operation_from_label,
 };
 
 use super::{
-    parse_tool_arguments, stream_read_error, BuiltinWebSearch, FirstTokenStreamSink,
-    GenerateOutput, GenerateRequest, LanguageModelProvider, MessagePart, ModelError, ModelFuture,
-    ModelMessage, ModelRole, ModelTool, ModelUsage, PendingToolCall, StreamPart, StreamSink,
-    WebCitation,
+    BuiltinWebSearch, FirstTokenStreamSink, GenerateOutput, GenerateRequest, LanguageModelProvider,
+    MessagePart, ModelError, ModelFuture, ModelMessage, ModelRole, ModelTool, ModelUsage,
+    PendingToolCall, StreamPart, StreamSink, WebCitation, parse_tool_arguments, stream_read_error,
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -247,7 +246,7 @@ fn mark_last_cacheable_block(blocks: &mut [Value], cache_control: &Value) {
                     .and_then(Value::as_str)
                     .is_none_or(|t| t.trim().is_empty()) =>
             {
-                continue
+                continue;
             }
             _ => {}
         }
@@ -257,13 +256,17 @@ fn mark_last_cacheable_block(blocks: &mut [Value], cache_control: &Value) {
 }
 
 pub struct AnthropicMessagesProvider<'a> {
-    state: &'a AppState,
+    state: &'a dyn ModelHost,
     provider: &'a ModelProvider,
     retry_attempts: usize,
 }
 
 impl<'a> AnthropicMessagesProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
+    pub fn new(
+        state: &'a dyn ModelHost,
+        provider: &'a ModelProvider,
+        retry_attempts: usize,
+    ) -> Self {
         Self {
             state,
             provider,
@@ -351,7 +354,7 @@ impl AnthropicMessagesProvider<'_> {
         let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
         let response = send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             &label,
             self.retry_attempts,
             &self.provider.id,
@@ -445,7 +448,7 @@ impl AnthropicMessagesProvider<'_> {
         let sink = &mut measured_sink;
         let body = self.request_body(&request, true);
         let mut response = send_with_failover(
-            self.state,
+            self.state.provider_runtime(),
             &label,
             self.retry_attempts,
             &self.provider.id,
@@ -982,7 +985,7 @@ impl AnthropicMessagesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -1016,7 +1019,7 @@ impl AnthropicMessagesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        self.state.record_debug(record);
     }
 
     fn record_usage_success(
@@ -1038,26 +1041,23 @@ impl AnthropicMessagesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -1078,26 +1078,23 @@ impl AnthropicMessagesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        self.state.record_usage(UsageRecordInput {
+            provider: self.provider,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -2337,17 +2334,23 @@ mod tests {
         .unwrap();
         request.messages = vec![output.canonical_message.unwrap()];
         let openai = crate::chat::model::openai_messages_from_generate_request(&request);
-        assert!(openai
-            .iter()
-            .all(|message| message.get("anthropic_content").is_none()));
+        assert!(
+            openai
+                .iter()
+                .all(|message| message.get("anthropic_content").is_none())
+        );
         let responses =
             crate::chat::model::responses_input_from_model_messages(&request.messages, None);
-        assert!(!serde_json::to_string(&responses)
-            .unwrap()
-            .contains("opaque"));
-        assert!(!serde_json::to_string(&responses)
-            .unwrap()
-            .contains("redacted"));
+        assert!(
+            !serde_json::to_string(&responses)
+                .unwrap()
+                .contains("opaque")
+        );
+        assert!(
+            !serde_json::to_string(&responses)
+                .unwrap()
+                .contains("redacted")
+        );
     }
 
     #[test]
@@ -2439,17 +2442,20 @@ mod tests {
             .unwrap()["id"]
             .as_str()
             .unwrap();
-        assert!(mapped
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
+        assert!(
+            mapped
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        );
         assert_ne!(
             mapped, "toolu_kivio_66756e6374696f6e732e783a30",
             "encoded foreign id must not collide with an existing valid id"
         );
-        assert!(wire
-            .iter()
-            .flat_map(|m| m["content"].as_array().unwrap())
-            .all(|b| b["type"] != "text" || !b["text"].as_str().unwrap().trim().is_empty()));
+        assert!(
+            wire.iter()
+                .flat_map(|m| m["content"].as_array().unwrap())
+                .all(|b| b["type"] != "text" || !b["text"].as_str().unwrap().trim().is_empty())
+        );
 
         // Every tool_use id must have a tool_result in the immediately following turn.
         for (i, msg) in wire.iter().enumerate() {
@@ -2838,21 +2844,25 @@ mod tests {
 
         let short_provider = cache_test_provider(true, "short");
         let short_adapter = AnthropicMessagesProvider::new(&state, &short_provider, 1);
-        assert!(short_adapter
-            .debug_request_headers(&in_session, false)
-            .get("anthropic-beta")
-            .is_none());
+        assert!(
+            short_adapter
+                .debug_request_headers(&in_session, false)
+                .get("anthropic-beta")
+                .is_none()
+        );
         // 一次性调用（无会话 id）连断点都不打，自然也不该带 beta 头。
-        assert!(adapter
-            .debug_request_headers(
-                &GenerateRequest {
-                    metadata: Default::default(),
-                    ..cache_test_request()
-                },
-                false,
-            )
-            .get("anthropic-beta")
-            .is_none());
+        assert!(
+            adapter
+                .debug_request_headers(
+                    &GenerateRequest {
+                        metadata: Default::default(),
+                        ..cache_test_request()
+                    },
+                    false,
+                )
+                .get("anthropic-beta")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2897,10 +2907,12 @@ mod tests {
         assert!(!body.to_string().contains("cache_control"), "body: {body}");
         // 空串也算没有会话。
         request.metadata.conversation_id = Some(String::new());
-        assert!(!adapter
-            .request_body(&request, false)
-            .to_string()
-            .contains("cache_control"));
+        assert!(
+            !adapter
+                .request_body(&request, false)
+                .to_string()
+                .contains("cache_control")
+        );
     }
 
     #[test]
