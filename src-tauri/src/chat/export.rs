@@ -299,6 +299,7 @@ mod tests {
                     group_id: None,
                     provider_id: None,
                     model: None,
+                    served_vendor: None,
                     timestamp: 1_700_000_000,
                     degraded: None,
                 },
@@ -330,6 +331,7 @@ mod tests {
                     group_id: None,
                     provider_id: None,
                     model: None,
+                    served_vendor: None,
                     timestamp: 1_700_000_001,
                     degraded: None,
                 },
@@ -417,6 +419,7 @@ mod tests {
             group_id: None,
             provider_id: None,
             model: None,
+            served_vendor: None,
             timestamp: 1_700_000_002,
             degraded: None,
         });

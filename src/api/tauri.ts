@@ -988,11 +988,34 @@ export type ProviderApiFormat =
   | 'gemini'
   | 'xai_responses'
 
+export const FREEROUTE_BASE_URL = 'kivio://freeroute'
+
+export type FreeRouteVendorId = 'opencode' | 'openrouter' | 'sensenova' | 'groq'
+
+export type FreeRouteVendor = {
+  id: string
+  enabled: boolean
+  apiKey: string
+}
+
+export type FreeRouteConfig = {
+  vendors: FreeRouteVendor[]
+}
+
 export function isOpenCodeFree(provider: ModelProvider): boolean {
   return !provider.request.oauth
     && provider.apiFormat === 'openai_chat'
     && provider.baseUrl.trim().replace(/\/+$/, '') === 'https://opencode.ai/zen/v1'
     && provider.apiKeys.every(key => !key.trim())
+}
+
+export function isFreeRoute(provider: Pick<ModelProvider, 'baseUrl'>): boolean {
+  return provider.baseUrl.trim().replace(/\/+$/, '') === FREEROUTE_BASE_URL
+}
+
+/** Keep the first non-empty token so a paste cannot become multi-key rotation. */
+export function singleVendorApiKey(raw: string): string {
+  return raw.split(/[\r\n,]+/).map((part) => part.trim()).find((part) => part.length > 0) ?? ''
 }
 
 export function providerAuthenticationReady(provider: ModelProvider): boolean {
@@ -1222,6 +1245,8 @@ export type Settings = {
   knowledgeBase?: KnowledgeBaseConfig
   /** 供应商自定义图标：provider id → 图标 key（见 chat/ModelIcon 的 PROVIDER_BRANDS） */
   providerIcons?: Record<string, string>
+  /** FreeRoute vendor keys. Same settings.json store as provider apiKeys. */
+  freeRoute?: FreeRouteConfig
   retryEnabled: boolean
   retryAttempts: number
   screenshotTranslation: {

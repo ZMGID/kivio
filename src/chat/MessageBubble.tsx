@@ -1569,6 +1569,8 @@ function MessageBubbleComponent({
             runEntry={message.run_entry ?? message.runEntry}
             streamOutcome={message.stream_outcome ?? message.streamOutcome}
             usage={message.usage}
+            servedVendor={message.served_vendor ?? message.servedVendor}
+            servedModel={message.model}
             onRegenerate={
               canMutate
                 ? () => {

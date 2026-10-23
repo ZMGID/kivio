@@ -7,6 +7,19 @@ use std::{
     time::{Duration, Instant},
 };
 const KEY_COOLDOWN: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug)]
+pub(crate) struct FreeRouteServed {
+    pub vendor_name: String,
+    pub model: String,
+}
+
+#[derive(Default)]
+struct FreeRouteHealth {
+    consecutive_failures: u32,
+    cooldown_until: Option<Instant>,
+}
+
 #[derive(Default)]
 pub(crate) struct ProviderRuntimeState {
     key_cooldowns: Mutex<HashMap<(String, usize), Instant>>,
@@ -15,6 +28,8 @@ pub(crate) struct ProviderRuntimeState {
     prompt_cache_retention_unsupported: Mutex<HashSet<String>>,
     reasoning_replay_unsupported: Mutex<HashSet<String>>,
     image_route_cache: Mutex<HashMap<(String, String), ImageRoute>>,
+    freeroute_health: Mutex<HashMap<String, FreeRouteHealth>>,
+    freeroute_served: Mutex<HashMap<(String, String), FreeRouteServed>>,
 }
 impl ProviderRuntimeState {
     pub(crate) fn new(settings: &Settings) -> Self {
@@ -136,6 +151,68 @@ impl ProviderRuntimeState {
             (provider_id.to_string(), idx),
             Instant::now() + KEY_COOLDOWN,
         );
+    }
+
+    pub(crate) fn freeroute_cooling(&self, vendor_id: &str, now: Instant) -> bool {
+        self.freeroute_health
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(vendor_id)
+            .and_then(|h| h.cooldown_until)
+            .is_some_and(|until| until > now)
+    }
+
+    pub(crate) fn freeroute_success(&self, vendor_id: &str) {
+        let mut health = self
+            .freeroute_health
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        health.insert(vendor_id.to_string(), FreeRouteHealth::default());
+    }
+
+    pub(crate) fn freeroute_failure(
+        &self,
+        vendor_id: &str,
+        kind: crate::chat::freeroute::FailKind,
+    ) {
+        let mut health = self
+            .freeroute_health
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = health.entry(vendor_id.to_string()).or_default();
+        entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+        let cooldown = crate::chat::freeroute::cooldown_for(kind, entry.consecutive_failures);
+        entry.cooldown_until = Some(Instant::now() + cooldown);
+    }
+
+    pub(crate) fn remember_freeroute_served(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        _vendor_id: &str,
+        vendor_name: &str,
+        model: &str,
+    ) {
+        if let Ok(mut map) = self.freeroute_served.lock() {
+            map.insert(
+                (conversation_id.to_string(), message_id.to_string()),
+                FreeRouteServed {
+                    vendor_name: vendor_name.to_string(),
+                    model: model.to_string(),
+                },
+            );
+        }
+    }
+
+    pub(crate) fn take_freeroute_served(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Option<FreeRouteServed> {
+        self.freeroute_served
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&(conversation_id.to_string(), message_id.to_string())))
     }
 
     pub fn mark_key_ok(&self, provider_id: &str, idx: usize) {

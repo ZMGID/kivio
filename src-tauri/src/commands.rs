@@ -1070,6 +1070,14 @@ async fn fetch_models_with_state(
     let request_override = provider.as_ref().and_then(|p| p.request.clone());
     let preferred_idx = provider.as_ref().and_then(|p| p.active_key_index);
     let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+    if crate::chat::freeroute::is_freeroute_url(&base_url) {
+        let ids = crate::chat::freeroute::catalog_model_ids(&settings.free_route);
+        return Ok(if include_capabilities == Some(true) {
+            serde_json::json!({"models": ids, "capabilities": {}})
+        } else {
+            serde_json::json!(ids)
+        });
+    }
     let anonymous = api_format == ProviderApiFormat::OpenAiChat
         && crate::opencode_free::is_endpoint(&base_url)
         && api_keys.iter().all(|key| key.trim().is_empty());
@@ -1207,6 +1215,21 @@ async fn test_provider_connection_with_state(
         })
         .unwrap_or(0);
     let (base_url, api_keys) = resolve_provider_credentials(&settings, &provider_id, provider)?;
+    if crate::chat::freeroute::is_freeroute_url(&base_url) {
+        let ready = crate::chat::freeroute::rank_candidates(&settings.free_route, "auto");
+        return Ok(if ready.is_empty() {
+            serde_json::json!({
+                "success": false,
+                "error": "FreeRoute has no ready vendor. Add a key or enable OpenCode Zen."
+            })
+        } else {
+            serde_json::json!({
+                "success": true,
+                "model": ready[0].model,
+                "vendor": ready[0].vendor_name
+            })
+        });
+    }
     let anonymous = api_format == ProviderApiFormat::OpenAiChat
         && crate::opencode_free::is_endpoint(&base_url)
         && api_keys.iter().all(|key| key.trim().is_empty());

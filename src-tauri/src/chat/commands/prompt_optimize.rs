@@ -331,6 +331,7 @@ mod tests {
             group_id: None,
             provider_id: None,
             model: None,
+            served_vendor: None,
             timestamp: 1,
             degraded: None,
         }

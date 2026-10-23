@@ -253,6 +253,34 @@ pub struct ModelProvider {
     pub active_key_index: usize,
 }
 
+/// FreeRoute vendor keys. Same persistence as `ModelProvider.api_keys` (settings.json).
+/// Exactly one key per vendor; sanitizer keeps the first non-empty line.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FreeRouteVendorConfig {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+/// Free-tier aggregation settings. Lives beside `providers` so ModelProvider
+/// literals stay unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FreeRouteConfig {
+    pub vendors: Vec<FreeRouteVendorConfig>,
+}
+
+impl Default for FreeRouteConfig {
+    fn default() -> Self {
+        Self {
+            vendors: crate::chat::freeroute::default_vendor_configs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderApiFormat {
     OpenAiChat,
@@ -299,6 +327,10 @@ impl ModelProvider {
             && self.api_format_kind() == ProviderApiFormat::OpenAiChat
             && crate::opencode_free::is_endpoint(&self.base_url)
             && self.api_keys.iter().all(|key| key.trim().is_empty())
+    }
+
+    pub fn is_freeroute(&self) -> bool {
+        crate::chat::freeroute::is_freeroute_url(&self.base_url)
     }
 
     /// API-key requests may be anonymous; OAuth still requires a saved login.
@@ -2027,6 +2059,10 @@ pub struct Settings {
     /// 只在 chat 模型选择器里展示为顶部"收藏"组；失效项（provider 删/禁用/模型没了）展示时过滤。
     #[serde(default)]
     pub favorite_models: Vec<String>,
+    /// FreeRoute vendor keys and enable flags. Keys use the same settings.json
+    /// store as provider `api_keys`.
+    #[serde(default)]
+    pub free_route: FreeRouteConfig,
     // 旧版字段，用于迁移
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai: Option<OpenAIConfig>,
@@ -2186,6 +2222,7 @@ impl Default for Settings {
             image_archive_enabled: false,
             image_archive_path: String::new(),
             favorite_models: Vec::new(),
+            free_route: FreeRouteConfig::default(),
             openai: None,
         }
     }
@@ -2429,6 +2466,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
         // 请求配置归一：settings.json 是用户可以手改的文件，非法头名会让 reqwest
         // 构造请求时直接失败，头值里的 CR/LF 是 header 注入，这里一并丢掉。
+        crate::chat::freeroute::sanitize_freeroute_provider(provider);
         provider
             .request
             .custom_headers
@@ -2466,6 +2504,7 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
                 String::new()
             };
     }
+    settings.free_route = crate::chat::freeroute::sanitize_config(settings.free_route);
 
     let removed_legacy_local_provider_ids: std::collections::HashSet<String> = settings
         .providers
@@ -4470,6 +4509,52 @@ mod tests {
         let s = sanitize_settings(s);
         assert_eq!(s.screenshot_translation.rapid_ocr_tier, "standard");
         assert_eq!(s.document_processing.rapid_ocr_tier, "high");
+    }
+
+    #[test]
+    fn sanitize_settings_keeps_one_freeroute_key_per_vendor() {
+        let mut s = Settings::default();
+        s.providers.push(ModelProvider {
+            id: "fr".into(),
+            name: "FreeRoute".into(),
+            api_keys: vec!["should-not-live-on-aggregator".into()],
+            api_key_legacy: None,
+            base_url: crate::chat::freeroute::FREEROUTE_BASE_URL.into(),
+            available_models: vec![],
+            enabled_models: vec![],
+            enabled: true,
+            api_format: "openai_chat".into(),
+            model_overrides: Default::default(),
+            compress_request_body: false,
+            request: Default::default(),
+            active_key_index: 0,
+        });
+        s.free_route.vendors = vec![
+            FreeRouteVendorConfig {
+                id: "openrouter".into(),
+                enabled: true,
+                api_key: "sk-a\nsk-b".into(),
+            },
+            FreeRouteVendorConfig {
+                id: "not-real".into(),
+                enabled: true,
+                api_key: "x".into(),
+            },
+        ];
+        let s = sanitize_settings(s);
+        let provider = s.get_provider("fr").unwrap();
+        assert!(provider.is_freeroute());
+        assert!(provider.api_keys.is_empty());
+        assert!(provider.enabled_models.iter().any(|m| m == "auto"));
+        let openrouter = s
+            .free_route
+            .vendors
+            .iter()
+            .find(|v| v.id == "openrouter")
+            .unwrap();
+        assert_eq!(openrouter.api_key, "sk-a");
+        assert!(!s.free_route.vendors.iter().any(|v| v.id == "not-real"));
+        assert!(s.free_route.vendors.iter().any(|v| v.id == "opencode"));
     }
 
     #[test]
