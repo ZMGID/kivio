@@ -233,6 +233,7 @@ pub(super) fn build_assistant_message(
         group_id,
         provider_id,
         model,
+        served_vendor: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     }
@@ -309,6 +310,7 @@ pub(crate) async fn push_assistant_message(
     let mut message = message;
     message.provider_id = Some(conversation.provider_id.clone());
     message.model = Some(conversation.model.clone());
+    crate::chat::freeroute::apply_served_attribution(state.inner(), &conversation.id, &mut message);
     message.degraded = degraded;
     if let Some(live) = state
         .chat_runtime()
@@ -529,6 +531,7 @@ pub(super) async fn persist_partial_assistant_snapshot(
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     };

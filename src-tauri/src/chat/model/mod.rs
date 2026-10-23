@@ -54,6 +54,9 @@ pub(crate) async fn generate_with_chat_provider(
     request: GenerateRequest,
 ) -> Result<GenerateOutput, ModelError> {
     crate::chat::video::validate_request(provider, &request)?;
+    if crate::chat::freeroute::is_freeroute_url(&provider.base_url) {
+        return crate::chat::freeroute::generate(state, provider, request).await;
+    }
     let resolved = crate::provider_oauth::resolve_provider(state, provider)
         .await
         .map_err(ModelError::new)?;
@@ -107,6 +110,9 @@ pub(crate) async fn stream_with_chat_provider(
     sink: &mut (dyn StreamSink + Send),
 ) -> Result<GenerateOutput, ModelError> {
     crate::chat::video::validate_request(provider, &request)?;
+    if crate::chat::freeroute::is_freeroute_url(&provider.base_url) {
+        return crate::chat::freeroute::stream(state, provider, request, sink).await;
+    }
     let resolved = crate::provider_oauth::resolve_provider(state, provider)
         .await
         .map_err(ModelError::new)?;

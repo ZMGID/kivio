@@ -1709,6 +1709,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: 1,
         degraded: None,
     };
@@ -1814,6 +1815,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: 1,
         degraded: None,
     };
@@ -1853,6 +1855,7 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp,
         degraded: None,
     }
@@ -2575,6 +2578,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 group_id: None,
                 provider_id: None,
                 model: None,
+                served_vendor: None,
                 timestamp: 1,
                 degraded: None,
             },
@@ -2624,6 +2628,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 group_id: None,
                 provider_id: None,
                 model: None,
+                served_vendor: None,
                 timestamp: 2,
                 degraded: None,
             },
@@ -2757,6 +2762,7 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
                     group_id: None,
                     provider_id: None,
                     model: None,
+                    served_vendor: None,
                     timestamp: 2,
                     degraded: None,
                 },

@@ -224,6 +224,9 @@ export interface ChatMessage {
   providerId?: string | null
   /** 该 assistant 实际所用 model（多模型时每条各记自己的；单模型缺省回退会话级）。 */
   model?: string | null
+  /** FreeRoute: which upstream vendor actually answered. */
+  served_vendor?: string | null
+  servedVendor?: string | null
   timestamp: number
 }
 
