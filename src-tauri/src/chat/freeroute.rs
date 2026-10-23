@@ -208,7 +208,7 @@ pub fn is_vendor_free_model(vendor_id: &str, model: &str) -> bool {
 
 /// Keep the first non-empty token so a paste of several keys cannot become rotation.
 pub fn single_api_key(raw: &str) -> String {
-    raw.split(|c: char| c == '\n' || c == '\r' || c == ',')
+    raw.split(['\n', '\r', ','])
         .map(str::trim)
         .find(|part| !part.is_empty())
         .unwrap_or("")
@@ -349,7 +349,7 @@ fn split_pinned(requested: &str) -> Option<(&str, &str)> {
 
 pub fn classify_error(err: &str) -> FailKind {
     match crate::api::extract_status_code(err) {
-        Some(401 | 402 | 403) => FailKind::Auth,
+        Some(401..=403) => FailKind::Auth,
         Some(429) => FailKind::RateLimit,
         _ => FailKind::Other,
     }
@@ -442,13 +442,14 @@ async fn stream_vendor_with_first_token_timeout(
     tokio::pin!(fut);
     let sleep = tokio::time::sleep(timeout);
     tokio::pin!(sleep);
-    let result = loop {
-        tokio::select! {
-            biased;
-            result = &mut fut => break result,
-            _ = &mut sleep, if !first.load(Ordering::SeqCst) => {
-                break Err(first_token_timeout_error(vendor_id, model, timeout));
-            }
+    // One select is enough: the stream arm completes the call, and the sleep
+    // arm is disabled once a visible token has arrived. A loop would always
+    // break on the first iteration (clippy::never_loop).
+    let result = tokio::select! {
+        biased;
+        result = &mut fut => result,
+        _ = &mut sleep, if !first.load(Ordering::SeqCst) => {
+            Err(first_token_timeout_error(vendor_id, model, timeout))
         }
     };
     (result, first.load(Ordering::SeqCst))
