@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Check, Brain, RefreshCw } from 'lucide-react'
+import { ChevronDown, Check, Brain, RefreshCw, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
 import { useT, useLang } from '../components/i18n'
 import { chatApi, type DetectedExternalAgent } from './api'
@@ -10,8 +10,6 @@ import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
-import { Select } from '../settings/public/controls'
-import { ExternalCliAccount } from './ExternalCliAccount'
 import './runtimePicker.css'
 
 const KIVIO_LOGO_SRC = '/logo-mark.png'
@@ -593,22 +591,6 @@ function ExternalModelSelectorBase({
         )}
       </div>
 
-      <ExternalCliAccount agentId={agentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
-      {agentRuntime.externalAgentId === 'codex' && serviceTiers.length > 0 && (
-        <Select
-          ariaLabel={zh ? '服务等级' : 'Service tier'}
-          title={zh ? '服务等级由当前模型提供，计费与可用性取决于 CLI 账号' : 'Service tiers come from the model catalog; pricing and availability depend on the CLI account'}
-          size="sm"
-          value={agentRuntime.externalServiceTier ?? ''}
-          onChange={value => onModelChange(agentRuntime.externalModel ?? 'default', undefined, value || null)}
-          options={[
-            { value: '', label: zh ? '默认等级' : 'Default tier' },
-            { value: 'default', label: 'Standard' },
-            ...serviceTiers.filter(tier => tier.id !== 'default').map(tier => ({ value: tier.id, label: tier.label })),
-          ]}
-        />
-      )}
-
       {/* Standalone thinking-level pill, mirroring the builtin ThinkingLevelSelector. */}
       {activeReasoningOptions.length > 0 && (
         <div className="relative shrink-0" data-tauri-drag-region="false">
@@ -669,6 +651,16 @@ function ExternalModelSelectorBase({
             </>
           )}
         </div>
+      )}
+
+      {agentRuntime.externalAgentId === 'codex' && serviceTiers.some(tier => tier.id === 'priority') && (
+        <IconButton variant="ghost" size="sm"
+          label={`${zh ? '服务等级' : 'Service tier'}: ${agentRuntime.externalServiceTier === 'priority' ? 'Fast' : 'Standard'}`}
+          aria-pressed={agentRuntime.externalServiceTier === 'priority'}
+          onClick={() => onModelChange(agentRuntime.externalModel ?? 'default', undefined,
+            agentRuntime.externalServiceTier === 'priority' ? 'default' : 'priority')}>
+          <Zap size={15} fill={agentRuntime.externalServiceTier === 'priority' ? 'currentColor' : 'none'} />
+        </IconButton>
       )}
     </div>
   )

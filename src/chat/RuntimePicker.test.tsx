@@ -22,15 +22,22 @@ const runtime: AgentRuntimeConfig = {
 }
 
 describe('ExternalModelSelector', () => {
-  it('offers catalog service tiers and persists the selection without changing model or effort', async () => {
+  it('toggles Standard and Fast directly without changing model or effort', async () => {
     const onModelChange = vi.fn()
     detectModels.mockResolvedValue({ models: [{ id: 'gpt-test', label: 'Test model', capabilities: { serviceTiers: [{ id: 'priority', label: 'Fast' }] } }],
       reasoningOptions: [], source: 'probed' })
-    render(<ExternalModelSelector agentRuntime={{ kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-test', externalReasoning: 'high' }} onModelChange={onModelChange} />)
-    const tier = await screen.findByRole('button', { name: '服务等级' })
+    const { rerender } = render(<ExternalModelSelector agentRuntime={{ kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-test', externalReasoning: 'high' }} onModelChange={onModelChange} />)
+    const tier = await screen.findByRole('button', { name: /^服务等级:/ })
+    expect(tier).toHaveAccessibleName('服务等级: Standard')
+    expect(tier).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(tier)
-    fireEvent.click(await screen.findByRole('option', { name: 'Fast' }))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
     expect(onModelChange).toHaveBeenLastCalledWith('gpt-test', undefined, 'priority')
+    rerender(<ExternalModelSelector agentRuntime={{ kind: 'external', externalAgentId: 'codex', externalModel: 'gpt-test', externalReasoning: 'high', externalServiceTier: 'priority' }} onModelChange={onModelChange} />)
+    const fast = screen.getByRole('button', { name: '服务等级: Fast' })
+    expect(fast).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(fast)
+    expect(onModelChange).toHaveBeenLastCalledWith('gpt-test', undefined, 'default')
   })
 
   beforeEach(() => {

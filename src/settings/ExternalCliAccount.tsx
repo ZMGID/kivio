@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { RefreshCw, UserRound } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { externalCliSettingsApi, type ExternalCliAccount as Account } from '../api/externalCliSettings'
-import { usePopoverMenu } from './usePopoverMenu'
-import { useClampedMenuPosition } from './useClampedMenuPosition'
 
-/** One read-only account view shared by the main and independent chat titlebars. */
+/** Read-only account and usage entry in local CLI settings. */
 export function ExternalCliAccount({ agentId, conversationId }: { agentId: string; conversationId?: string | null }) {
   const zh = useLang() === 'zh'
   const [open, setOpen] = useState(false)
@@ -15,10 +12,6 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const request = useRef({ version: 0 })
-  const [anchor, setAnchor] = useState({ left: 0, top: 0 })
-  const menu = useRef<HTMLDivElement>(null)
-  const position = useClampedMenuPosition(menu, anchor)
-  usePopoverMenu(open, () => setOpen(false), menu)
   useEffect(() => {
     const tracker = request.current
     tracker.version++
@@ -41,7 +34,7 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
       if (request.current.version === id) setLoading(false)
     }
   }
-  if (agentId !== 'codex' && agentId !== 'claude') return null
+  if (!['codex', 'claude', 'antigravity', 'grok'].includes(agentId)) return null
   const resetLabel = (value: string | number | null) => {
     if (value == null) return zh ? '重置时间未知' : 'Reset time unavailable'
     const date = new Date(typeof value === 'number' ? value * 1000 : value)
@@ -53,26 +46,22 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
     return labels[name] ?? (mins ? `${name.replace(/primary|secondary/g, '').trim()} · ${mins < 1440 ? `${mins / 60}h` : `${mins / 1440}d`}` : name)
   }
   return <div className="relative">
-    <IconButton variant="ghost" size="sm" label={zh ? 'CLI 账号与额度' : 'CLI account and usage'} aria-expanded={open}
-      onClick={event => {
-        const rect = event.currentTarget.getBoundingClientRect()
-        setAnchor({ left: rect.left, top: rect.bottom + 8 })
+    <Button size="sm" aria-expanded={open}
+      onClick={() => {
         setOpen(!open)
         if (!open) void refresh()
-      }}><UserRound size={15} /></IconButton>
-    {open && createPortal(<>
-      <div className="fixed inset-0 z-[1000]" aria-hidden onClick={() => setOpen(false)} />
-      <section ref={menu} style={position} aria-label={zh ? '账号与额度' : 'Account and usage'}
-      className="kv-menu custom-scrollbar fixed z-[1001] flex max-h-[70vh] w-[320px] max-w-[calc(100vw-32px)] flex-col gap-3 overflow-y-auto p-3 text-sm">
+      }}><UserRound size={15} />{zh ? 'CLI 账号与额度' : 'CLI account and usage'}</Button>
+    {open && <section aria-label={zh ? '账号与额度' : 'Account and usage'}
+      className="flex flex-col gap-3 py-3 text-sm">
       <div className="flex items-center justify-between gap-2">
-        <strong>{agentId === 'codex' ? 'Codex' : 'Claude Code'}</strong>
+        <strong>{{ codex: 'Codex', claude: 'Claude Code', antigravity: 'Antigravity', grok: 'Grok' }[agentId]}</strong>
         <IconButton size="xs" variant="ghost" label={zh ? '刷新账号与额度' : 'Refresh account and usage'} disabled={loading} onClick={() => void refresh()}><RefreshCw size={13} /></IconButton>
       </div>
       {loading && <p role="status">{zh ? '正在读取 CLI 账号…' : 'Reading CLI account…'}</p>}
       {error && <div role="alert"><p>{error}</p><Button size="sm" onClick={() => void refresh()}>{zh ? '重试' : 'Retry'}</Button></div>}
       {status && <>
         <div className="break-words">
-          <p>{status.account?.email ?? (zh ? 'CLI 未提供账号邮箱' : 'No account email provided')}</p>
+          <p>{status.account?.email ?? (zh ? '当前 CLI 登录账号' : 'Current CLI account')}</p>
           <p className="text-neutral-500 dark:text-neutral-400">{[status.account?.type, status.account?.plan].filter(Boolean).join(' · ') || (zh ? '账号类型未知' : 'Account type unavailable')}</p>
         </div>
         {status.windows.map((window, index) => <div key={`${window.name}-${index}`}>
@@ -83,6 +72,6 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
         {status.unavailable && <p className="text-neutral-500 dark:text-neutral-400">{status.unavailable}</p>}
         <p className="text-xs text-neutral-500 dark:text-neutral-400">{zh ? '更新于' : 'Updated'} {new Date(status.checkedAt * 1000).toLocaleTimeString()}</p>
       </>}
-    </section></>, document.body)}
+    </section>}
   </div>
 }

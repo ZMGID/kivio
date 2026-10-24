@@ -1,3 +1,4 @@
+import { ExternalCliAccount } from './ExternalCliAccount'
 import { notifyError } from '../components/appNoticeStore'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -507,6 +508,7 @@ function AgentDetail({
               : t.externalAgentsInstallFailed}
         </div>
       )}
+      {agent.available && <ExternalCliAccount agentId={agent.id} />}
       {agent.id === 'dsh' && !agent.available && (
         <p className="kv-row-desc">{t.externalAgentsDshInstallHint}</p>
       )}
