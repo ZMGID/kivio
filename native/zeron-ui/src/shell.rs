@@ -76,6 +76,7 @@ mod command_palette;
 mod file_mutations;
 mod files_panel;
 mod harness_updates;
+mod kivio_nav;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
@@ -9678,7 +9679,7 @@ impl Shell {
 
         // The space filter lives ABOVE the scroll region (fixed) so its
         // dropdown can float without being clipped by the list's overflow.
-        let filter_row = self.render_spaces_filter(theme, cx);
+        let filter_row = self.render_kivio_sidebar_head(theme, cx);
         let active_list = if !list_items.is_empty() {
             let mut pinned_items = list_items;
             let mut custom_items = pinned_items.split_off(pinned_count);

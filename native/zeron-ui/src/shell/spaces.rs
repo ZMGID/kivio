@@ -3965,6 +3965,19 @@ impl Shell {
         cx.notify();
     }
 
+    pub(super) fn set_sidebar_organization(
+        &mut self,
+        organization: SidebarOrganization,
+        cx: &mut Context<Self>,
+    ) {
+        let row = match organization {
+            SidebarOrganization::ByProject => SidebarViewRow::ByProject,
+            SidebarOrganization::ByDevice => SidebarViewRow::ByDevice,
+            SidebarOrganization::InOneList => SidebarViewRow::InOneList,
+        };
+        self.activate_sidebar_view_row(row, cx);
+    }
+
     fn activate_sidebar_view_row(&mut self, row: SidebarViewRow, cx: &mut Context<Self>) {
         if let Some(menu) = self.sidebar_view_menu.open_mut() {
             menu.hover_intent.cancel();
