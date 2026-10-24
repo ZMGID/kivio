@@ -296,23 +296,6 @@ export type ChatToolArtifact = {
   sizeBytes?: number | null
 }
 
-export type ArtifactLibraryItem = {
-  id: string
-  workId: string
-  parentId: string | null
-  conversationId: string
-  messageId: string
-  title: string
-  createdAt: number
-  sourceTool: string
-  delivered: boolean
-  artifact: ChatToolArtifact
-  available: boolean
-  sourceAvailable: boolean
-}
-
-export type ArtifactLibraryPage = { items: ArtifactLibraryItem[]; warnings: number }
-
 export type ChatToolProgressPayload = {
   conversationId: string
   runId: string
@@ -1819,9 +1802,6 @@ function chatSubagentControl(conversationId: string, args: SubAgentControlReques
 }
 
 export const api = {
-  chatArtifactsList: (importHistory = true) => invoke<ArtifactLibraryPage>('chat_artifacts_list', { importHistory }),
-  chatArtifactAction: (id: string, action: 'open' | 'reveal' | 'export' | 'export_unique' | 'delete' | 'rename', destination?: string, name?: string) =>
-    invoke<string | null>('chat_artifact_action', { id, action, destination, name }),
   chatSubagentControl,
   /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
   async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {

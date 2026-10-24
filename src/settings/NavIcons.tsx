@@ -185,18 +185,6 @@ export function McpIcon(props: IconProps) {
   )
 }
 
-// 作品：扁封套，口里露出折角 / 方片 / 圆片
-export function WorksIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)}>
-      <path d="M4 9.2 H20 A1.4 1.4 0 0 1 21.4 10.6 V18.6 A1.6 1.6 0 0 1 19.8 20.2 H4.2 A1.6 1.6 0 0 1 2.6 18.6 V10.6 A1.4 1.4 0 0 1 4 9.2 Z" />
-      <path d="M7.2 9.2 V6.4 A1.5 1.5 0 0 1 8.7 4.9 H11.1" />
-      <rect x="12.2" y="3.6" width="4.6" height="5.6" rx="1.3" />
-      <circle cx="18.8" cy="6.2" r="1.35" />
-    </svg>
-  )
-}
-
 // 对话库：前景气泡带尾巴，后面一枚气泡露出右上角
 export function SessionsIcon(props: IconProps) {
   return (
@@ -292,16 +280,6 @@ export function TasksIcon(props: IconProps) {
       <rect x="5" y="4" width="14" height="17" rx="2.5" />
       <path d="M9 3.5 H15 V6.5 H9 Z" />
       <path d="M8.5 12 L10 13.5 L12.5 10.5 M14.5 12 H16 M8.5 17 H16" />
-    </svg>
-  )
-}
-
-export function PortfolioIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)} aria-hidden="true">
-      <path data-nav-motion="portfolio-back" d="M7 3.5 H17" />
-      <path data-nav-motion="portfolio-middle" d="M5 7 H19" />
-      <rect data-nav-motion="portfolio-front" x="3.5" y="10.5" width="17" height="10" rx="2" />
     </svg>
   )
 }

@@ -10,7 +10,6 @@ import {
   isChatMcpCenterPath,
   isChatNotesPath,
   isChatReadingPath,
-  isChatArtifactsPath,
   isChatMediaPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
@@ -133,11 +132,6 @@ export function useChatRouting({
       if (isChatMediaPath(path)) {
         onLeaveConversation()
         onViewChange('media')
-        return
-      }
-      if (isChatArtifactsPath(path)) {
-        onLeaveConversation()
-        onViewChange('artifacts')
         return
       }
       if (isChatAutomationsPath(path)) {
@@ -294,11 +288,6 @@ export function useChatRouting({
     if (item === 'media') {
       onViewChange('media')
       syncNonConversationRoute('#chat/media')
-      return
-    }
-    if (item === 'artifacts') {
-      onViewChange('artifacts')
-      syncNonConversationRoute('#chat/artifacts')
       return
     }
     if (item === 'plugins') {

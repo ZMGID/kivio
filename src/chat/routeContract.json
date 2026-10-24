@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "retiredSegments": ["artifacts"],
   "centerSegments": [
     "settings",
     "assistants",
@@ -12,7 +13,6 @@
     "knowledge",
     "notes",
     "reading",
-    "artifacts",
     "media",
     "onboarding",
     "popout",
@@ -29,7 +29,6 @@
     "knowledge",
     "notes",
     "reading",
-    "artifacts",
     "media",
     "extensions"
   ],
@@ -62,13 +61,13 @@
       "restorable": true
     },
     {
-      "name": "works library",
+      "name": "retired works library",
       "raw": "#chat/artifacts",
       "path": "chat/artifacts",
-      "kind": "artifacts",
+      "kind": "other",
       "decodedConversationId": null,
-      "rememberable": true,
-      "restorable": true
+      "rememberable": false,
+      "restorable": false
     },
     {
       "name": "root",

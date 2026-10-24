@@ -17,7 +17,6 @@ impl Shell {
         };
         let plugins = pending("kivio-nav-plugins", icons::WIDGET, "插件", cx);
         let tasks = pending("kivio-nav-tasks", icons::CHECKLIST, "任务", cx);
-        let artifacts = pending("kivio-nav-artifacts", icons::GALLERY, "作品", cx);
         let extensions = pending("kivio-nav-extensions", icons::MAGIC_STICK_3, "扩展", cx);
 
         let by_project = self.settings.sidebar_organization == SidebarOrganization::ByProject;
@@ -64,7 +63,6 @@ impl Shell {
             )
             .child(plugins)
             .child(tasks)
-            .child(artifacts)
             .child(extensions)
             .child(div().pt(px(8.0)).child(scope))
             .into_any_element()

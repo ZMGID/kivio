@@ -14,6 +14,7 @@ const CONTRACT_SOURCE: &str = include_str!("../../../src/chat/routeContract.json
 #[serde(rename_all = "camelCase")]
 struct ChatRouteContract {
     version: u32,
+    retired_segments: Vec<String>,
     center_segments: Vec<String>,
     rememberable_center_segments: Vec<String>,
     #[cfg(test)]
@@ -115,6 +116,13 @@ fn route_kind(path: &str) -> RouteKind<'_> {
         return RouteKind::Other;
     };
     let segment = remainder.split('/').next().unwrap_or("");
+    if contract()
+        .retired_segments
+        .iter()
+        .any(|retired| retired == segment)
+    {
+        return RouteKind::Other;
+    }
     if is_center_segment(segment) {
         return RouteKind::Center(segment);
     }

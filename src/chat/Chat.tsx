@@ -6,7 +6,6 @@ import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect
 import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { MediaStation } from './MediaStation'
-import { ArtifactsCenter } from './ArtifactsCenter'
 import { MarketPage } from './market/MarketPage'
 import { marketUsePrompt } from './market/marketModel'
 import type { MarketPlugin } from '../api/market'
@@ -40,7 +39,6 @@ import {
   isChatMcpCenterPath,
   isChatNotesPath,
   isChatReadingPath,
-  isChatArtifactsPath,
   isChatMediaPath,
   isChatOnboardingRoute,
   isChatPluginCenterPath,
@@ -348,7 +346,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (isChatReadingPath(path) || path === 'chat/extensions' || path.startsWith('chat/extensions/')) return 'extensions'
     if (isChatNotesPath(path)) return 'notes'
     if (isChatMediaPath(path)) return 'media'
-    if (isChatArtifactsPath(path)) return 'artifacts'
     if (isChatAutomationsPath(path)) return 'automations'
     if (isChatSchedulesPath(path)) return 'schedules'
     // 旧 `#chat/sessions`：对话库已迁设置
@@ -3013,11 +3010,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           <div key="center" className={worksPageClass}>
             {centerPageTopStrip}
             <MediaStation onOpenSettings={handleOpenChatSettings} />
-          </div>
-        ) : chatView === 'artifacts' ? (
-          <div key="center" className={worksPageClass}>
-            {centerPageTopStrip}
-            <ArtifactsCenter onOpenConversation={handleSidebarSelectConversation} />
           </div>
         ) : chatView === 'extensions' || chatView === 'reading' ? (
           <div key="center" className="chat-center-page relative flex min-h-0 min-w-0 flex-1 flex-col">

@@ -15,7 +15,6 @@ export type ChatRouteKind =
   | 'notes'
   | 'reading'
   | 'extensions'
-  | 'artifacts'
   | 'media'
   | 'onboarding'
   | 'popout'
@@ -29,6 +28,7 @@ export type TasksTab = Extract<ChatView, 'schedules' | 'automations'>
  * Route vocabulary is declared once in routeContract.json and consumed by both this codec and
  * Rust's persisted-route validator. The cases in that contract are the cross-language fixture.
  */
+const RETIRED_SEGMENTS = new Set<string>(routeContract.retiredSegments)
 const CENTER_SEGMENTS = new Set<string>(routeContract.centerSegments)
 const REMEMBERABLE_CENTER_SEGMENTS = new Set<string>(routeContract.rememberableCenterSegments)
 
@@ -60,6 +60,7 @@ export function chatRouteKind(path: string): ChatRouteKind {
   if (path === 'chat') return 'root'
   if (!path.startsWith('chat/')) return 'other'
   const segment = path.slice('chat/'.length).split('/')[0]
+  if (RETIRED_SEGMENTS.has(segment)) return 'other'
   if (isCenterRouteKind(segment)) return segment
   return decodeChatRouteId('chat/', path) === null ? 'other' : 'conversation'
 }
