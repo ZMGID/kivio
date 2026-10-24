@@ -53,3 +53,9 @@ Zeron fork 独有的场景模糊、边缘渐隐、圆角子树裁切、背景 al
 使用 `build-gpui-apps`、`gpui-kit`、`gpui-kit-design-guides` 与 `test-audit`。统一规则见 [工程规范](../docs/engineering-standards.md)。主要源码为 `task-GPUI/references/zeron/crates/ui`，锁定 `c04487045e5f934818ab21bf5b7b7fbed16ef3d6`；相关支持 crate 位于 `zeron-support/`。Kit API 依据锁定的 GPUI Kit/Base/Component 0.8.0、gpui-pre 0.3.9 实际依赖源码核对。
 
 来源、原文件哈希及许可见 [UPSTREAM.json](zeron-ui/UPSTREAM.json)、[PORT.md](zeron-ui/PORT.md)、[LICENSE](zeron-ui/LICENSE)、[第三方声明](zeron-ui/THIRD_PARTY_NOTICES.md)。参考仓库本身不参与构建。浏览器源文件保留为来源记录，Wry、WebKit、WebView2 的依赖与编译入口已移除，网页交给系统浏览器。
+
+### 侧边栏页面 UI 适配
+
+插件/Skill/MCP 与助手/知识库/媒体/笔记已接入原生页面路由，可切换分类与筛选，复用 Zeron 标题、搜索输入、内容块和滚动。当前仅 UI 预览，不读取或修改已有数据；创建动作禁用并标明未接入，详情页和编辑器尚未搭齐。任务页统一外层布局与分段样式，保留既有业务接线。
+
+使用 `build-gpui-apps`、`gpui-kit`、`gpui-kit-design-guides`；参考 Zeron `c044870` 的 `crates/ui/src/settings/widgets.rs`，API 核对实际 GPUI Kit/Component 0.8.0。原生构建通过；macOS 亮色窗口已检查插件、扩展、任务布局，逐项点击核对七个插件/扩展子页及定时任务/自动化的选中态和搜索占位。暗色、缩放、窄窗口与完整键盘路径尚未验收；UI 预览不代表业务迁移完成。

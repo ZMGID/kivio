@@ -5932,82 +5932,13 @@ impl Shell {
     pub(super) fn render_sessions_section(
         &mut self,
         content: AnyElement,
-        body_height: f32,
-        count: usize,
-        follows_pinned: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
+        _body_height: f32,
+        _count: usize,
+        _follows_pinned: bool,
+        _theme: &Theme,
+        _cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.settings.sidebar_organization != SidebarOrganization::InOneList {
-            return content;
-        }
-        let open = self.sessions_open;
-        self.begin_queued_sidebar_reveal("sessions", open, body_height);
-        let chevron = self.sidebar_disclosure_chevron("sessions", open, theme);
-        let header = sidebar_disclosure_header(
-            theme,
-            None,
-            "Sessions".into(),
-            (!open).then_some(count),
-            None,
-            chevron,
-        )
-            .id("sessions-toggle")
-            .debug_selector(|| "sessions-toggle".into())
-            .on_drag_move::<SidebarSessionDrag>(cx.listener(
-                |this, event: &gpui_kit::DragMoveEvent<SidebarSessionDrag>, _, _| {
-                    if event.bounds.contains(&event.event.position) {
-                        let top = f32::from(
-                            event.bounds.bottom()
-                                - this.sidebar_scroll.bounds().top()
-                                - this.sidebar_scroll.offset().y,
-                        ) + SIDEBAR_DISCLOSURE_BODY_INSET;
-                        if let Some(drag) = this.sidebar_session_transfer.as_mut() {
-                            drag.preview = Some(SidebarSessionGap {
-                                group: "regular".into(),
-                                index: 0,
-                                pinned: false,
-                                top,
-                            });
-                        }
-                    }
-                },
-            ))
-            .on_drop::<SidebarSessionDrag>(cx.listener(|this, payload, _, cx| {
-                this.finish_sidebar_session_transfer(payload, SidebarSessionDrop::Regular, cx);
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.cancel_sidebar_session_transfer(cx);
-                let was_open = this.sessions_open;
-                this.begin_sidebar_disclosure_motion(
-                    "sessions",
-                    if was_open { body_height } else { 0.0 },
-                    if was_open { 0.0 } else { body_height },
-                );
-                this.sessions_open = !was_open;
-                this.sidebar_prev_order.clear();
-                this.sidebar_resort.clear();
-                this.sidebar_new_keys.clear();
-                cx.notify();
-            }));
-        let content = div()
-            .pt(px(SIDEBAR_DISCLOSURE_BODY_INSET))
-            .child(content)
-            .into_any_element();
-        let body = self.render_sidebar_disclosure_body("sessions", open, body_height, content);
-        div()
-            .id("sidebar-sessions-section")
-            .debug_selector(|| "sidebar-sessions-section".into())
-            .flex()
-            .flex_col()
-            .pt(px(if follows_pinned {
-                SIDEBAR_SECTION_GAP
-            } else {
-                0.0
-            }))
-            .child(header)
-            .child(body)
-            .into_any_element()
+        content
     }
 
     /// The Archived shelf's chats under the project filter, in sidebar order.

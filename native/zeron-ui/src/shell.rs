@@ -726,6 +726,8 @@ fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<Setti
 pub enum Route {
     Chat,
     Tasks,
+    Plugins,
+    Extensions,
     PullRequests,
     Settings(SettingsSection),
 }
@@ -883,6 +885,8 @@ pub enum NavEntry {
     /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
     Tasks,
+    Plugins,
+    Extensions,
     PullRequests,
     /// One pull request's detail view over the board, and the device whose
     /// `gh` reads it (`None` = this device).
@@ -2141,6 +2145,7 @@ pub struct Shell {
     library_page: Option<Entity<settings::library::LibraryPage>>,
     task_center: Option<Entity<crate::task_center::TaskCenter>>,
     task_events: Option<Subscription>,
+    extension_center: Option<Entity<crate::extension_center::ExtensionCenter>>,
     library_events: Option<Subscription>,
     search_page: Option<Entity<settings::search::SearchPage>>,
     hooks_page: Option<Entity<settings::hooks::HooksPage>>,
@@ -2551,6 +2556,8 @@ impl Shell {
         let route = match open_route.as_deref() {
             Some("pull-requests") => Route::PullRequests,
             Some("tasks") => Route::Tasks,
+            Some("plugins") => Route::Plugins,
+            Some("extensions") => Route::Extensions,
             Some(route) if route == "settings" || route.starts_with("settings/") => {
                 match settings_open_route(route, settings.settings_section) {
                     Some(section) => {
@@ -2601,6 +2608,8 @@ impl Shell {
         let nav = NavHistory::new(match route {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Tasks => NavEntry::Tasks,
+            Route::Plugins => NavEntry::Plugins,
+            Route::Extensions => NavEntry::Extensions,
             Route::PullRequests => NavEntry::PullRequests,
             Route::Settings(section) => NavEntry::Settings(section),
         });
@@ -2699,6 +2708,7 @@ impl Shell {
             library_page: None,
             task_center: None,
             task_events: None,
+            extension_center: None,
             library_events: None,
             search_page: None,
             hooks_page: None,
@@ -5720,6 +5730,8 @@ impl Shell {
                 }
             }
             NavEntry::Tasks => { self.set_route(Route::Tasks, cx); }
+            NavEntry::Plugins => self.set_route(Route::Plugins, cx),
+            NavEntry::Extensions => self.set_route(Route::Extensions, cx),
             NavEntry::PullRequests => {
                 self.enter_pull_requests_route(cx);
                 self.dismiss_pull_request_detail(cx);
@@ -7547,7 +7559,7 @@ impl Shell {
     /// The session titlebar, or on the Pull requests route the bar carrying
     /// the pull request pane's tabs.
     fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        if self.route == Route::Tasks {
+        if matches!(self.route, Route::Tasks | Route::Plugins | Route::Extensions) {
             return self.titlebar_drag_region("tasks-titlebar-drag", div().w_full().h(px(Theme::TITLEBAR_HEIGHT)), cx).into_any_element();
         }
         if !matches!(self.route, Route::PullRequests) {
@@ -11233,6 +11245,26 @@ impl Shell {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
         let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+
+        if matches!(self.route, Route::Plugins | Route::Extensions) {
+            let kind = if self.route == Route::Plugins {
+                crate::extension_center::Kind::Plugins
+            } else {
+                crate::extension_center::Kind::Extensions
+            };
+            let page = match self.extension_center.clone() {
+                Some(page) => {
+                    page.update(cx, |page, cx| page.show(kind, cx));
+                    page
+                }
+                None => {
+                    let page = cx.new(|cx| crate::extension_center::ExtensionCenter::new(kind, window, cx));
+                    self.extension_center = Some(page.clone());
+                    page
+                }
+            };
+            return div().size_full().child(page).into_any_element();
+        }
 
         if self.route == Route::Tasks {
             if self.task_center.is_none() {

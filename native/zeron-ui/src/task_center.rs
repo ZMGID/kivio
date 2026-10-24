@@ -1,12 +1,12 @@
 //! Retained task-center presentation; ScheduledTasks remains the business-state owner.
+use crate::{icons, settings::widgets, theme::Theme};
 use gpui_kit::component::{
     ActiveTheme, Disableable, Selectable, Sizable, WindowExt,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
     scroll::ScrollableElement,
     switch::Switch,
-    tab::{Tab, TabBar},
 };
 use gpui_kit::{prelude::*, *};
 use kivio_model_runtime::{
@@ -41,6 +41,7 @@ pub struct TaskCenter {
     read: Option<Task<()>>,
     subscription: Option<Task<()>>,
     _search: Subscription,
+    tab_focus: [FocusHandle; 2],
 }
 impl EventEmitter<OpenTaskConversation> for TaskCenter {}
 impl TaskCenter {
@@ -84,6 +85,10 @@ impl TaskCenter {
             read: None,
             subscription: None,
             _search: subscription,
+            tab_focus: [
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+            ],
         };
         this.refresh(cx);
         this
@@ -376,8 +381,84 @@ impl TaskCenter {
             .into_any_element()
     }
 }
+impl TaskCenter {
+    fn select_tab(&mut self, automation: bool, cx: &mut Context<Self>) {
+        self.automations_tab = automation;
+        self.page = 0;
+        crate::settings::update(crate::settings::SavePolicy::Immediate, cx, move |s| {
+            s.tasks_tab = if automation {
+                "automations"
+            } else {
+                "schedules"
+            }
+            .to_owned();
+        });
+        cx.notify();
+    }
+
+    fn render_tabs(&self, theme: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let mut tabs = div().flex().items_center().gap_1();
+        for (ix, (id, label, glyph, count)) in [
+            (
+                "task-tab-schedules",
+                "定时任务",
+                icons::CLOCK_CIRCLE,
+                self.snapshot.tasks.len(),
+            ),
+            (
+                "task-tab-automations",
+                "自动化",
+                icons::WORKTREE,
+                self.automations.len(),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let selected = self.automations_tab == (ix == 1);
+            let t = widgets::tab_selection_t(
+                window,
+                format!("{id}-selection"),
+                selected,
+                crate::motion::reduced_motion(cx),
+            );
+            tabs = tabs.child(
+                widgets::section_tab(theme, selected, t, id, format!("{id}-hover"))
+                    .role(Role::Tab)
+                    .aria_label(label)
+                    .aria_selected(selected)
+                    .track_focus(&self.tab_focus[ix].clone().tab_stop(selected))
+                    .focus_visible(|el| el.border_2().border_color(theme.accent))
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_tab(ix == 1, cx)))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                        let next = match event.keystroke.key.as_str() {
+                            "left" | "right" => 1 - ix,
+                            "home" => 0,
+                            "end" => 1,
+                            "enter" | "space" => ix,
+                            _ => return,
+                        };
+                        this.select_tab(next == 1, cx);
+                        window.focus(&this.tab_focus[next], cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(icons::icon(glyph).size_4().text_color(theme.text_muted))
+                    .child(label)
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_color(theme.text_muted)
+                            .child(count.to_string()),
+                    ),
+            );
+        }
+        tabs
+    }
+}
+
 impl Render for TaskCenter {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx).for_settings_surface();
         let mut content = div().flex().flex_col().gap_3();
         if self.editing {
             if let Some(editor) = self.editor.clone() {
@@ -411,7 +492,29 @@ impl Render for TaskCenter {
                 );
             }
             if self.automations.is_empty() {
-                content = content.child("没有自动化工作流");
+                content = content.child(
+                    widgets::section_card(&theme).mt_0().child(
+                        div()
+                            .py_12()
+                            .px_6()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                icons::icon(icons::WORKTREE)
+                                    .size_6()
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(widgets::row_title(&theme, "没有自动化工作流"))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child("原生编辑与执行尚未接入"),
+                            ),
+                    ),
+                );
             }
             for warning in &self.automation_warnings {
                 content = content.child(div().text_sm().child(warning.clone()));
@@ -489,8 +592,38 @@ impl Render for TaskCenter {
             let pages = tasks.len().div_ceil(40).max(1);
             let page = self.page.min(pages - 1);
             if tasks.is_empty() && !self.loading {
-                content =
-                    content.child("暂无匹配的定时任务。新建任务后，提示词会按计划发送到绑定对话。");
+                let searching = !needle.trim().is_empty();
+                content = content.child(
+                    widgets::section_card(&theme).mt_0().child(
+                        div()
+                            .py_12()
+                            .px_6()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                icons::icon(icons::CLOCK_CIRCLE)
+                                    .size_6()
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(widgets::row_title(
+                                &theme,
+                                if searching {
+                                    "没有匹配的任务"
+                                } else {
+                                    "还没有定时任务"
+                                },
+                            ))
+                            .child(div().text_sm().text_color(theme.text_muted).child(
+                                if searching {
+                                    "换个关键词试试。"
+                                } else {
+                                    "新建任务，让提示词按计划发送到指定对话。"
+                                },
+                            )),
+                    ),
+                );
             }
             for task in tasks.iter().skip(page * 40).take(40) {
                 content = content.child(self.render_row(task, cx));
@@ -530,51 +663,24 @@ impl Render for TaskCenter {
         if self.loading {
             content = content.child("正在读取任务…");
         }
-        div()
-            .size_full()
-            .min_w_0()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .text_color(cx.theme().foreground)
+        // The task outlet already reserves the platform titlebar above us.
+        let tabs = self.render_tabs(&theme, window, cx);
+        let page = widgets::page_column()
+            .pt_4()
+            .child(widgets::page_header(&theme, "任务", None))
+            .child(widgets::page_subtitle(
+                &theme,
+                "安排定时对话，查看自动化工作流。",
+            ))
             .child(
                 div()
-                    .p_4()
-                    .w_full()
-                    .max_w(rems(52.))
-                    .mx_auto()
+                    .mt_6()
                     .flex()
                     .flex_wrap()
                     .items_center()
                     .gap_3()
-                    .child(div().text_xl().child("任务"))
-                    .child(
-                        TabBar::new("task-center-tabs")
-                            .segmented()
-                            .small()
-                            .selected_index(usize::from(self.automations_tab))
-                            .child(
-                                Tab::new()
-                                    .label(format!("定时任务 · {}", self.snapshot.tasks.len())),
-                            )
-                            .child(Tab::new().label(format!("自动化 · {}", self.automations.len())))
-                            .on_click(cx.listener(|this, ix, _, cx| {
-                                this.automations_tab = *ix == 1;
-                                this.page = 0;
-                                let tab = if this.automations_tab {
-                                    "automations"
-                                } else {
-                                    "schedules"
-                                }
-                                .to_owned();
-                                crate::settings::update(
-                                    crate::settings::SavePolicy::Immediate,
-                                    cx,
-                                    move |s| s.tasks_tab = tab,
-                                );
-                                cx.notify();
-                            })),
-                    )
+                    .child(tabs)
+                    .child(div().flex_1())
                     .child(
                         Button::new("refresh-task-center")
                             .small()
@@ -586,7 +692,12 @@ impl Render for TaskCenter {
                     .when(!self.automations_tab, |v| {
                         v.child(
                             Button::new("create-scheduled-task")
-                                .small()
+                                .custom(
+                                    ButtonCustomVariant::new(cx)
+                                        .color(widgets::select_fill(&theme, false))
+                                        .foreground(theme.text)
+                                        .hover(widgets::select_fill(&theme, true)),
+                                )
                                 .label(if self.editor.is_some() {
                                     "继续编辑…"
                                 } else {
@@ -600,26 +711,32 @@ impl Render for TaskCenter {
             .when(!self.automations_tab && self.history.is_none(), |v| {
                 v.child(
                     div()
+                        .mt_4()
                         .w_full()
-                        .max_w(rems(52.))
-                        .mx_auto()
-                        .px_4()
-                        .pb_3()
-                        .child(Input::new(&self.search)),
+                        .rounded_lg()
+                        .bg(widgets::select_fill(&theme, false))
+                        .child(
+                            Input::new(&self.search).appearance(false).prefix(
+                                icons::icon(icons::MAGNIFER)
+                                    .size_4()
+                                    .text_color(theme.text_muted),
+                            ),
+                        ),
                 )
             })
-            .child(
-                div().flex_1().min_h_0().overflow_y_scrollbar().child(
-                    div()
-                        .w_full()
-                        .max_w(rems(52.))
-                        .mx_auto()
-                        .px_4()
-                        .pb_4()
-                        .child(content),
-                ),
-            )
-            .into_any_element()
+            .child(div().mt_3().child(content));
+        widgets::scroll_faded(
+            "task-center-scroll",
+            div()
+                .id("task-center-scroll-area")
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .overflow_y_scroll()
+                .text_color(theme.text)
+                .child(page),
+        )
+        .into_any_element()
     }
 }
 

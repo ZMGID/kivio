@@ -11,25 +11,26 @@ impl Shell {
         let new_chat = Self::kivio_nav_row("kivio-nav-new", icons::PEN_NEW_SQUARE, "新建聊天", theme)
             .on_click(cx.listener(|this, _, _, cx| this.open_new_session(None, cx)));
         let search = self.kivio_search_button(theme, cx);
-        let pending = |id: &'static str, glyph: &'static str, label: &'static str, cx: &mut Context<Self>| {
-            Self::kivio_nav_row(id, glyph, label, theme)
-                .on_click(cx.listener(move |this, _, _, cx| this.kivio_not_ported(label, cx)))
-        };
-        let plugins = pending("kivio-nav-plugins", icons::WIDGET, "插件", cx);
-        use gpui_kit::component::{button::{Button, ButtonVariants}, Icon, Selectable, Sizable};
-        let tasks = Button::new("kivio-nav-tasks").ghost().small().w_full().justify_start()
-            .accessibility_label("任务")
-            .child(div().w_full().flex().items_center().gap_2()
-                .child(Icon::default().path(icons::CHECKLIST).small())
-                .child("任务"))
-            .selected(self.route == Route::Tasks)
+        let plugins = Self::kivio_nav_row("kivio-nav-plugins", icons::WIDGET, "插件", theme)
+            .when(self.route == Route::Plugins, |el| {
+                el.bg(crate::theme::glass_selected_bg()).text_color(theme.text)
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.open_kivio_route(Route::Plugins, NavEntry::Plugins, cx)));
+        let tasks = Self::kivio_nav_row("kivio-nav-tasks", icons::CHECKLIST, "任务", theme)
+            .when(self.route == Route::Tasks, |el| {
+                el.bg(crate::theme::glass_selected_bg()).text_color(theme.text)
+            })
             .on_click(cx.listener(|this, _, _, cx| {
                 this.suspend_file_images(cx);
                 this.nav.push(NavEntry::Tasks);
                 this.set_route(Route::Tasks, cx);
                 cx.notify();
             }));
-        let extensions = pending("kivio-nav-extensions", icons::MAGIC_STICK_3, "扩展", cx);
+        let extensions = Self::kivio_nav_row("kivio-nav-extensions", icons::MAGIC_STICK_3, "扩展", theme)
+            .when(self.route == Route::Extensions, |el| {
+                el.bg(crate::theme::glass_selected_bg()).text_color(theme.text)
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.open_kivio_route(Route::Extensions, NavEntry::Extensions, cx)));
 
         let by_project = self.settings.sidebar_organization == SidebarOrganization::ByProject;
         let scope = div()
@@ -80,6 +81,13 @@ impl Shell {
             .into_any_element()
     }
 
+    fn open_kivio_route(&mut self, route: Route, entry: NavEntry, cx: &mut Context<Self>) {
+        self.suspend_file_images(cx);
+        self.nav.push(entry);
+        self.set_route(route, cx);
+        cx.notify();
+    }
+
     fn kivio_not_ported(&mut self, what: &str, cx: &mut Context<Self>) {
         self.show_notice(
             crate::toast::ToastKind::Info,
@@ -98,6 +106,8 @@ impl Shell {
         div()
             .id(id)
             .debug_selector(|| id.into())
+            .role(gpui_kit::Role::Button)
+            .aria_label(label)
             .w_full()
             .h(px(29.0))
             .flex()
