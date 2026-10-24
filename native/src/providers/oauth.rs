@@ -467,7 +467,7 @@ impl ProviderSettings {
                         window.label,
                         window
                             .used_percent
-                            .map(|used| format!("剩余 {:.0}%", 100. - used))
+                            .map(|used| crate::ui_format!("剩余 {:.0}%", "{:.0}% remaining", 100. - used))
                             .unwrap_or_else(|| "用量未知".into())
                     )));
             }
@@ -486,11 +486,11 @@ impl ProviderSettings {
                     .child(
                         Button::new("oauth-open-browser")
                             .primary()
-                            .label("打开浏览器授权")
+                            .label(crate::i18n::text("打开浏览器授权"))
                             .on_click(move |_, _, cx| cx.open_url(&url)),
                     )
                     .when(!code.is_empty(), |row| {
-                        row.child(Button::new("oauth-copy-code").label("复制授权码").on_click(
+                        row.child(Button::new("oauth-copy-code").label(crate::i18n::text("复制授权码")).on_click(
                             move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(code.clone()))
                             },
@@ -516,7 +516,7 @@ impl ProviderSettings {
                             .on_click(cx.listener(|this, _, window, cx| this.sign_in(window, cx))),
                     )
                     .when(self.oauth_run.is_some(), |row| {
-                        row.child(Button::new("oauth-cancel").label("取消登录").on_click(
+                        row.child(Button::new("oauth-cancel").label(crate::i18n::text("取消登录")).on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.cancel_pending_login(cx);
                             }),
@@ -525,7 +525,7 @@ impl ProviderSettings {
                     .when(signed, |row| {
                         row.child(
                             Button::new("oauth-fetch-models")
-                                .label("获取可用模型")
+                                .label(crate::i18n::text("获取可用模型"))
                                 .disabled(self.busy || self.dirty)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.fetch_oauth_models(window, cx)
@@ -533,7 +533,7 @@ impl ProviderSettings {
                         )
                         .child(
                             Button::new("oauth-account")
-                                .label("刷新账号与用量")
+                                .label(crate::i18n::text("刷新账号与用量"))
                                 .disabled(self.busy || self.dirty)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.refresh_account(window, cx)
@@ -541,7 +541,7 @@ impl ProviderSettings {
                         )
                         .child(
                             Button::new("oauth-disconnect")
-                                .label("断开账号")
+                                .label(crate::i18n::text("断开账号"))
                                 .disabled(self.busy || self.dirty)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.disconnect(window, cx)),
@@ -555,7 +555,7 @@ impl ProviderSettings {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("保存供应商配置后再登录。"),
+                        .child(crate::i18n::text("保存供应商配置后再登录。")),
                 )
             })
             .into_any_element()

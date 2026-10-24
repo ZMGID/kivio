@@ -13,12 +13,12 @@ use crate::state::AppState;
 
 mod evidence;
 
-pub const GET_GOAL_TOOL: &str = "get_goal";
-pub const INIT_GOAL_CRITERIA_TOOL: &str = "initialize_goal_criteria";
-pub const REPORT_GOAL_PROGRESS_TOOL: &str = "report_goal_progress";
-pub const COMPLETE_GOAL_TOOL: &str = "goal_complete";
-pub const BLOCK_GOAL_TOOL: &str = "goal_blocked";
-pub const WAIT_GOAL_TOOL: &str = "goal_wait";
+pub const GET_GOAL_TOOL: &str = crate::mcp::native_policy::GET_GOAL_TOOL.name;
+pub const INIT_GOAL_CRITERIA_TOOL: &str = crate::mcp::native_policy::INIT_GOAL_CRITERIA_TOOL.name;
+pub const REPORT_GOAL_PROGRESS_TOOL: &str = crate::mcp::native_policy::REPORT_GOAL_PROGRESS_TOOL.name;
+pub const COMPLETE_GOAL_TOOL: &str = crate::mcp::native_policy::COMPLETE_GOAL_TOOL.name;
+pub const BLOCK_GOAL_TOOL: &str = crate::mcp::native_policy::BLOCK_GOAL_TOOL.name;
+pub const WAIT_GOAL_TOOL: &str = crate::mcp::native_policy::WAIT_GOAL_TOOL.name;
 
 pub fn is_goal_tool_name(name: &str) -> bool {
     matches!(

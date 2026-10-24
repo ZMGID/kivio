@@ -341,7 +341,7 @@ pub fn page_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui_kit
                 .line_height(crate::typography::ui_rems(26.0))
                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                 .text_color(theme.text)
-                .child(SharedString::from(title.to_string())),
+                .child(SharedString::from(crate::i18n::text(title).to_string())),
         )
         .when_some(count, |el, count| {
             el.child(
@@ -362,7 +362,7 @@ pub fn page_subtitle(theme: &Theme, copy: impl Into<SharedString>) -> gpui_kit::
         .text_size(crate::typography::ui_rems(13.0))
         .line_height(crate::typography::ui_rems(17.0))
         .text_color(theme.text_muted)
-        .child(copy.into())
+        .child(crate::i18n::display(copy))
 }
 
 /// Small label above a group of controls (`text-[13px] font-medium`) — the
@@ -372,7 +372,7 @@ pub fn field_label(theme: &Theme, label: impl Into<SharedString>) -> gpui_kit::D
         .text_size(crate::typography::ui_rems(13.0))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .text_color(theme.text)
-        .child(label.into())
+        .child(crate::i18n::display(label))
 }
 
 /// A row of equally-sized preview cards for picking one of N *visual* options.
@@ -450,7 +450,7 @@ pub fn option_card(
                         .size(px(16.0))
                         .text_color(selected_color),
                 )
-                .child(label.into()),
+                .child(crate::i18n::display(label)),
         )
 }
 
@@ -467,7 +467,7 @@ pub fn section_label(theme: &Theme, label: impl Into<SharedString>) -> gpui_kit:
         .text_size(crate::typography::ui_rems(13.0))
         .line_height(crate::typography::ui_rems(17.0))
         .text_color(theme.text_muted)
-        .child(label.into())
+        .child(crate::i18n::display(label))
 }
 
 /// A [`section_label`] for a group nested inside a block row (an expanded
@@ -482,7 +482,7 @@ pub fn details_label(theme: &Theme, label: impl Into<SharedString>) -> gpui_kit:
         .text_size(crate::typography::ui_rems(13.0))
         .line_height(crate::typography::ui_rems(17.0))
         .text_color(theme.text_muted)
-        .child(label.into())
+        .child(crate::i18n::display(label))
 }
 
 /// A labeled section: the label, then its block tucked close underneath.
@@ -613,7 +613,7 @@ pub fn badge(theme: &Theme, label: impl Into<SharedString>) -> gpui_kit::Div {
         .bg(theme.wash(0.08))
         .text_size(crate::typography::ui_rems(10.5))
         .text_color(theme.text_muted)
-        .child(label.into())
+        .child(crate::i18n::display(label))
 }
 
 /// Emerald status pill (the Accounts "Active" badge:
@@ -629,7 +629,7 @@ pub fn badge_active(theme: &Theme, label: impl Into<SharedString>) -> gpui_kit::
         .bg(emerald.opacity(0.12))
         .text_size(crate::typography::ui_rems(10.5))
         .text_color(emerald_text.opacity(0.9))
-        .child(label.into())
+        .child(crate::i18n::display(label))
 }
 
 pub const SWITCH_WIDTH: f32 = 44.8;
@@ -1132,7 +1132,7 @@ pub fn select_trigger(
 
 /// The trigger's current value, truncating before the chevron.
 pub fn select_value(label: impl Into<SharedString>) -> gpui_kit::Div {
-    div().flex_1().min_w_0().truncate().child(label.into())
+    div().flex_1().min_w_0().truncate().child(crate::i18n::display(label))
 }
 
 pub fn select_chevron(theme: &Theme, open: bool) -> gpui_kit::Svg {
@@ -1564,7 +1564,7 @@ pub fn action_button(theme: &Theme, tone: ActionTone) -> gpui_kit::Div {
 }
 
 pub fn text_action(theme: &Theme, tone: ActionTone, label: impl Into<SharedString>) -> gpui_kit::Div {
-    action_button(theme, tone).child(label.into())
+    action_button(theme, tone).child(crate::i18n::display(label))
 }
 
 pub fn ghost_action(theme: &Theme) -> gpui_kit::Div {
@@ -1650,15 +1650,38 @@ struct SettingsScroll {
 }
 
 impl RenderOnce for SettingsScroll {
-    fn render(self, window: &mut gpui_kit::Window, _: &mut gpui_kit::App) -> impl IntoElement {
-        let scroll = window.with_global_id(self.key.into(), |id, window| {
-            window.with_element_state(id, |previous: Option<gpui_kit::ScrollHandle>, _| {
-                let scroll = previous.unwrap_or_default();
-                (scroll.clone(), scroll)
+    fn render(self, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) -> impl IntoElement {
+        let rail = window.with_global_id(self.key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<gpui_kit::Entity<SettingsScrollRail>>, _| {
+                let rail = previous.unwrap_or_else(|| cx.new(|_| SettingsScrollRail(PageScroll::default())));
+                (rail.clone(), rail)
             })
         });
-        crate::edge_fade::edge_faded(16.0, true, true, self.area.track_scroll(&scroll))
-            .fade_overflow_y(&scroll)
+        let scroll = rail.read(cx).0.scroll.clone();
+        let hover_rail = rail.clone();
+        div().id("settings-scroll-host").relative().size_full().min_h_0()
+            .on_hover(move |hovered, _, cx| {
+                hover_rail.update(cx, |rail, cx| {
+                    if rail.0.set_list_hovered(*hovered) { cx.notify(); }
+                });
+            })
+            .child(crate::edge_fade::edge_faded(16.0, true, true, self.area.track_scroll(&scroll))
+                .fade_overflow_y(&scroll))
+            .child(rail)
+    }
+}
+
+/// The floating rail owns Zeron's drag/hover/hide lifecycle, while the caller
+/// keeps ownership of the page's inputs. Element state retains one per page.
+struct SettingsScrollRail(PageScroll);
+impl ScrollRailHost for SettingsScrollRail {
+    fn rail_bar(&mut self) -> &mut MenuScrollbarState { self.0.rail_bar() }
+    fn rail_scroll(&self) -> Option<ScrollHandle> { self.0.rail_scroll() }
+}
+impl Render for SettingsScrollRail {
+    fn render(&mut self, _: &mut gpui_kit::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx).for_settings_surface();
+        div().absolute().inset_0().children(popover::rail(self, "settings-page-scrollbar", &theme, cx))
     }
 }
 

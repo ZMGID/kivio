@@ -159,42 +159,12 @@ pub fn resolve_conversation_working_directory(
     conversation: &Conversation,
     ordinary_working_root: &str,
 ) -> Result<PathBuf, String> {
-    if let Some(project) = resolve_conversation_project(app, conversation)? {
-        let root = project
-            .root_path
-            .as_deref()
-            .map(str::trim)
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "Project {} has no working directory configured",
-                    project.name
-                )
-            })?;
-        return Ok(PathBuf::from(root));
-    }
-    crate::native_tools::ordinary_workspace_directory(ordinary_working_root, &conversation.id)
+    crate::chat::workspace::resolve_working_directory(&conversations_dir(app)?, conversation, ordinary_working_root)
 }
 
 pub fn resolve_conversation_project(
     app: &AppHandle,
     conversation: &Conversation,
 ) -> Result<Option<ChatProject>, String> {
-    if let Some(project_id) = conversation
-        .project_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
-        return find_project_by_id(app, project_id).map(Some);
-    }
-    if let Some(folder) = conversation
-        .folder
-        .as_deref()
-        .map(str::trim)
-        .filter(|folder| !folder.is_empty())
-    {
-        return find_project_by_name(app, folder);
-    }
-    Ok(None)
+    crate::chat::workspace::resolve_project(&conversations_dir(app)?, conversation)
 }

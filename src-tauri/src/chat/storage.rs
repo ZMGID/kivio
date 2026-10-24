@@ -1,3 +1,4 @@
+pub(crate) use crate::backup::configuration::SetCatalogBackup;
 use super::conversation_files::validate_conversation_id;
 pub(crate) use super::file_io::atomic_write;
 #[cfg(test)]
@@ -112,18 +113,7 @@ fn validate_project_id(id: &str) -> Result<(), String> {
     }
 }
 
-fn validate_assistant_id(id: &str) -> Result<(), String> {
-    let valid = id.starts_with("asst_")
-        && id.len() > "asst_".len()
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(format!("Invalid assistant id: {id}"))
-    }
-}
+use super::group_catalog::validate_assistant_id;
 
 /// 获取对话存储根目录：{app_data_dir}/conversations/
 pub fn conversations_dir(app: &AppHandle) -> Result<PathBuf, String> {

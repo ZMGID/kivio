@@ -77,7 +77,7 @@ fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
     let shell = host.read_with(cx, |host, _| host.0.clone());
     cx.update(|window, cx| {
         window.activate_window();
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     (shell, cx)
 }
@@ -85,7 +85,7 @@ fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
 fn redraw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.refresh();
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 
@@ -179,7 +179,7 @@ fn menu_rename_opens_the_same_field_and_blur_commits(cx: &mut TestAppContext) {
 
     cx.simulate_input("Moved on");
     // Focus leaving the field saves the edit.
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     redraw(cx);
     assert!(shell.read_with(cx, |shell, _| shell.chat_rename.is_none()));
     assert!(mutated(&shell, cx));

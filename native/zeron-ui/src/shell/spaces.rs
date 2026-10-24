@@ -1165,7 +1165,7 @@ mod pinned_session_tests {
             });
             cx.update(|window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             let bounds = cx.debug_bounds("sidebar-pinned-section").unwrap();
             assert_eq!(
@@ -1305,7 +1305,7 @@ mod pinned_session_tests {
             });
             cx.update(|window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             assert_eq!(cx.debug_bounds("archived-toggle").is_some(), visible);
             assert_eq!(cx.debug_bounds("chat-archived").is_some(), visible);
@@ -1317,7 +1317,7 @@ mod pinned_session_tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         assert!(cx.debug_bounds("archived-toggle").is_some());
         assert!(cx.debug_bounds("chat-archived").is_some());
@@ -5929,6 +5929,8 @@ impl Shell {
             .into_any_element()
     }
 
+    /// The "最近" scope chip is the list heading, so the regular list carries
+    /// no disclosure header of its own.
     pub(super) fn render_sessions_section(
         &mut self,
         content: AnyElement,

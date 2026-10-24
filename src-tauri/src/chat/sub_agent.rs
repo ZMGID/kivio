@@ -42,11 +42,9 @@ pub use crate::settings::tools::{
 };
 const PROGRESS_EMIT_INTERVAL_MS: u128 = 350;
 
-pub const AGENT_TOOL_NAME: &str = "agent";
+pub const AGENT_TOOL_NAME: &str = crate::mcp::native_policy::AGENT_TOOL_NAME.name;
 
-pub fn is_sub_agent_tool_name(name: &str) -> bool {
-    matches!(name, AGENT_TOOL_NAME | "agent_control")
-}
+pub use crate::mcp::native_policy::is_sub_agent_tool_name;
 
 /// Whether an agent at `depth` may spawn a sub-agent. The child runs at
 /// `depth + 1`; an agent at depth ≥ `MAX_SUB_AGENT_DEPTH` is denied

@@ -395,6 +395,7 @@ mod tests {
             external_model: Some("sonnet".to_string()),
             external_reasoning: Some("high".to_string()),
             external_service_tier: None,
+            external_model_options: Default::default(),
             external_sandbox: Some("bypassPermissions".to_string()),
             external_agent_preset: None,
         };

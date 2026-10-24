@@ -132,7 +132,7 @@ fn terminal_clearance_preserves_composer_motion_and_same_frame_layout(
     });
     let draw = |cx: &mut gpui_kit::TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         })
         .unwrap();
         let [actual, baseline] = composers.each_ref().map(|m| m.get().unwrap());
@@ -280,7 +280,7 @@ fn terminal_reservation_keeps_the_composer_shift(cx: &mut gpui_kit::TestAppConte
         geometry: Default::default(),
     });
     cx.update_window(handle.into(), |_, window, cx| {
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     })
     .unwrap();
     let [reserved, plain] = composers.each_ref().map(|m| m.get().unwrap());

@@ -265,27 +265,27 @@ mod tests {
     const CORPUS: &[(&str, &str)] = &[
         (
             "flowchart",
-            include_str!("../../../../scripts/fixtures/markdown-preview/flowchart.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/flowchart.mmd"),
         ),
         (
             "sequence",
-            include_str!("../../../../scripts/fixtures/markdown-preview/sequence.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/sequence.mmd"),
         ),
         (
             "class",
-            include_str!("../../../../scripts/fixtures/markdown-preview/class.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/class.mmd"),
         ),
         (
             "state",
-            include_str!("../../../../scripts/fixtures/markdown-preview/state.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/state.mmd"),
         ),
         (
             "er",
-            include_str!("../../../../scripts/fixtures/markdown-preview/er.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/er.mmd"),
         ),
         (
             "gantt",
-            include_str!("../../../../scripts/fixtures/markdown-preview/gantt.mmd"),
+            include_str!("../../tests/fixtures/markdown-preview/gantt.mmd"),
         ),
     ];
     #[test]

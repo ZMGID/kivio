@@ -1,10 +1,13 @@
 //! Kivio's settings information architecture in the imported Zeron shell.
 //! Unsupported host features remain visibly read-only, never successful no-op controls.
+mod controls;
+mod hotkeys;
+mod mixer;
 use crate::{settings::widgets, shell::SettingsSection, theme::Theme, typography};
 use gpui_kit::component::{
     Disableable, Selectable, Sizable, StyledExt,
     button::Button,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
     switch::Switch,
 };
@@ -84,7 +87,7 @@ impl Section {
 }
 
 pub fn page_frame(title: &str, subtitle: &str, content: AnyElement, cx: &App) -> AnyElement {
-    let theme = Theme::of(cx).clone();
+    let theme = Theme::of(cx).for_settings_surface();
     widgets::scroll_faded(
         format!("kivio-settings-scroll-{title}"),
         div()
@@ -94,17 +97,12 @@ pub fn page_frame(title: &str, subtitle: &str, content: AnyElement, cx: &App) ->
             .size_full()
             .overflow_y_scroll()
             .child(
-                div()
-                    .w_full()
-                    .max_w(px(1040.))
-                    .mx_auto()
-                    .px(px(32.))
-                    .pt(px(24.))
-                    .pb(px(32.))
-                    .text_size(px(14.))
+                widgets::page_column()
+                    .text_size(typography::ui_rems(13.))
+                    .text_color(theme.text)
                     .child(widgets::page_header(&theme, title, None))
                     .child(widgets::page_subtitle(&theme, subtitle.to_owned()))
-                    .child(div().mt(px(20.)).child(content)),
+                    .child(div().mt_8().child(content)),
             ),
     )
     .into_any_element()
@@ -113,15 +111,97 @@ pub fn page_frame(title: &str, subtitle: &str, content: AnyElement, cx: &App) ->
 pub struct SettingsPage {
     pub section: SettingsSection,
     settings: Option<Settings>,
+    settings_value: serde_json::Value,
+    observed_revision: u64,
+    snapshot_refresh: Option<Task<()>>,
     directory: std::path::PathBuf,
     busy: bool,
+    focus: FocusHandle,
+    recording: Option<&'static str>,
+    recording_listener: Option<Subscription>,
+    recording_blur: Option<Subscription>,
+    expanded_prompts: std::collections::HashSet<TextPreference>,
     prompts: std::collections::HashMap<TextPreference, Entity<TextareaState>>,
     name: Option<Entity<InputState>>,
+    fields: std::collections::HashMap<String, Entity<InputState>>,
+    editor_baselines: std::collections::HashMap<String, String>,
+    text_baselines: std::collections::HashMap<TextPreference, serde_json::Value>,
+    field_baselines: std::collections::HashMap<String, serde_json::Value>,
+    _editors: Vec<Subscription>,
+    providers: Entity<crate::providers::ProviderSettings>,
+    computer: Entity<crate::settings::computer::ComputerTools>,
+    model_database: Entity<crate::settings::model_database::ModelDatabaseUpdate>,
+    offline: Entity<crate::settings::offline::OfflinePackages>,
+    custom_themes: Entity<crate::settings::custom_themes::CustomThemes>,
     error: Option<String>,
+    feedback: Option<(String, Result<(), String>)>,
     _load: Task<()>,
+    directory_prompt: Option<Task<()>>,
+    #[cfg(target_os = "macos")]
+    permissions: (bool, bool),
+    #[cfg(target_os = "macos")]
+    _permission_activation: Subscription,
 }
 impl SettingsPage {
-    pub fn new(directory: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn refresh_confirmed_snapshot(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let revision = native_preferences::revision();
+        if self.settings.is_none() || self.busy || self.snapshot_refresh.is_some() || self.observed_revision == revision { return; }
+        let directory = self.directory.clone();
+        let handle = window.window_handle();
+        self.snapshot_refresh = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { native_preferences::load(&directory) }).await;
+            let _ = cx.update_window(handle, |_, window, cx| this.update(cx, |this, cx| {
+                this.snapshot_refresh = None;
+                if !this.busy && native_preferences::revision() == revision {
+                    this.observed_revision = revision;
+                    match result {
+                        Ok(settings) => {
+                            let document = serde_json::to_value(&settings).expect("serializable settings");
+                            let values = this.editor_values(cx);
+                            for (path, input) in &this.fields {
+                                if values.get(path) == this.editor_baselines.get(path) {
+                                    let value = document.pointer(path).cloned().unwrap_or_default();
+                                    let text = value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string());
+                                    if values.get(path) != Some(&text) { input.update(cx, |input, cx| input.set_value(text.clone(), window, cx)); }
+                                    this.editor_baselines.insert(path.clone(), text);
+                                    this.field_baselines.insert(path.clone(), value);
+                                }
+                            }
+                            for (field, input) in &this.prompts {
+                                let key = format!("{field:?}");
+                                if values.get(&key) == this.editor_baselines.get(&key) {
+                                    let value = field.value(&settings);
+                                    let text = value.as_str().filter(|value| !value.is_empty()).map(str::to_owned)
+                                        .unwrap_or_else(|| default_prompt(*field, &settings));
+                                    if values.get(&key) != Some(&text) { input.update(cx, |input, cx| input.set_value(text.clone(), window, cx)); }
+                                    this.editor_baselines.insert(key, text);
+                                    this.text_baselines.insert(*field, value);
+                                }
+                            }
+                            if values.get("UserName") == this.editor_baselines.get("UserName") {
+                                if let Some(input) = &this.name {
+                                    let text = settings.chat.user_display_name.clone();
+                                    if values.get("UserName") != Some(&text) { input.update(cx, |input, cx| input.set_value(text.clone(), window, cx)); }
+                                    this.editor_baselines.insert("UserName".into(), text);
+                                    this.text_baselines.insert(TextPreference::UserName, TextPreference::UserName.value(&settings));
+                                }
+                            }
+                            this.settings_value = document;
+                            this.settings = Some(settings);
+                        }
+                        Err(error) => this.error = Some(error),
+                    }
+                }
+                cx.notify();
+            }));
+        }));
+    }
+    pub fn new(
+        directory: std::path::PathBuf,
+        providers: Entity<crate::providers::ProviderSettings>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let load_directory = directory.clone();
         let handle = window.window_handle();
         let task = cx.spawn(async move |this, cx| {
@@ -177,12 +257,16 @@ impl SettingsPage {
                                     TextPreference::ChatPrompt,
                                     settings.chat.chat_mode.system_prompt.clone(),
                                 ),
+                                (
+                                    TextPreference::PromptOptimize,
+                                    settings.chat.prompt_optimize_prompt.clone(),
+                                ),
                             ];
                             this.prompts = fields
                                 .into_iter()
                                 .map(|(field, text)| {
                                     let text = if text.is_empty() {
-                                        default_prompt(field)
+                                        default_prompt(field, &settings)
                                     } else {
                                         text
                                     };
@@ -200,6 +284,29 @@ impl SettingsPage {
                                 InputState::new(window, cx)
                                     .default_value(settings.chat.user_display_name.clone())
                             }));
+                            let document = serde_json::to_value(&settings).unwrap_or_default();
+                            this.field_baselines = controls::TEXT_FIELDS.iter().map(|path| (path.to_string(), document.pointer(path).cloned().unwrap_or_default())).collect();
+                            this.fields = controls::TEXT_FIELDS
+                                .iter()
+                                .map(|path| {
+                                    let value = document.pointer(path).cloned().unwrap_or_default();
+                                    let text = value
+                                        .as_str()
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| value.to_string());
+                                    (
+                                        path.to_string(),
+                                        cx.new(|cx| {
+                                            InputState::new(window, cx)
+                                                .masked(path.ends_with("Token"))
+                                                .default_value(text)
+                                        }),
+                                    )
+                                })
+                                .collect();
+                            this.text_baselines = this.prompts.keys().copied().chain(std::iter::once(TextPreference::UserName)).map(|field| (field, field.value(&settings))).collect();
+                            this.track_editors(cx);
+                            this.settings_value = document;
                             this.settings = Some(settings);
                         }
                         Err(error) => this.error = Some(error),
@@ -208,16 +315,124 @@ impl SettingsPage {
                 })
             });
         });
+        let custom_themes = cx.new(|cx| {
+            crate::settings::custom_themes::CustomThemes::new(directory.clone(), window, cx)
+        });
+        let model_database = cx.new(|cx| crate::settings::model_database::ModelDatabaseUpdate::new(directory.clone(), cx));
+        let computer = cx.new(|cx| crate::settings::computer::ComputerTools::new(directory.clone(), cx));
+        #[cfg(target_os = "macos")]
+        let permission_activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.permissions = permission_status();
+                cx.notify();
+            }
+        });
+        let offline = crate::settings::offline::OfflinePackages::retained(directory.clone(), cx);
         Self {
+            offline,
+            #[cfg(target_os = "macos")]
+            permissions: permission_status(),
+            #[cfg(target_os = "macos")]
+            _permission_activation: permission_activation,
+            computer,
+            model_database,
+            custom_themes,
             section: SettingsSection::General,
             settings: None,
+            settings_value: serde_json::Value::Null,
+            observed_revision: native_preferences::revision(),
+            snapshot_refresh: None,
             directory,
             busy: false,
+            focus: cx.focus_handle(),
+            recording: None,
+            recording_listener: None,
+            recording_blur: None,
             prompts: Default::default(),
+            expanded_prompts: Default::default(),
+            fields: Default::default(),
+            editor_baselines: Default::default(),
+            text_baselines: Default::default(),
+            field_baselines: Default::default(),
+            _editors: vec![],
+            providers,
             name: None,
             error: None,
+            feedback: None,
             _load: task,
+            directory_prompt: None,
         }
+    }
+    pub(crate) fn is_busy(&self, cx: &App) -> bool {
+        self.busy || self.model_database.read(cx).is_busy() || self.custom_themes.read(cx).is_busy(cx) || self.computer.read(cx).is_busy(cx) || self.offline.read(cx).is_busy()
+    }
+    pub(crate) fn has_unsaved_changes(&self, cx: &App) -> bool {
+        self.custom_themes.read(cx).has_unsaved_changes(cx)
+            || self.editor_values(cx).iter().any(|(key, value)| {
+                self.editor_baselines.get(key).is_some_and(|baseline| baseline != value)
+            })
+    }
+    fn editor_values(&self, cx: &App) -> std::collections::HashMap<String, String> {
+        let mut values: std::collections::HashMap<_, _> = self.fields.iter()
+            .map(|(path, input)| (path.clone(), input.read(cx).value().to_string())).collect();
+        values.extend(self.prompts.iter().map(|(field, input)| (format!("{field:?}"), input.read(cx).value().to_string())));
+        if let Some(name) = &self.name {
+            values.insert("UserName".into(), name.read(cx).value().to_string());
+        }
+        values
+    }
+    fn track_editors(&mut self, cx: &mut Context<Self>) {
+        // Snapshot what was displayed, including generated default prompts. A later
+        // language change must not turn an untouched default into an unsaved edit.
+        self.editor_baselines = self.editor_values(cx);
+        let mut subscriptions = Vec::new();
+        for (path, input) in &self.fields {
+            let key = path.clone();
+            subscriptions.push(cx.subscribe(input, move |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) { this.editor_changed(&key, cx); }
+            }));
+        }
+        for (field, input) in &self.prompts {
+            let key = format!("{field:?}");
+            subscriptions.push(cx.subscribe(input, move |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) { this.editor_changed(&key, cx); }
+            }));
+        }
+        if let Some(name) = &self.name {
+            subscriptions.push(cx.subscribe(name, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) { this.editor_changed("UserName", cx); }
+            }));
+        }
+        self._editors = subscriptions;
+    }
+    fn editor_changed(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.feedback.as_ref().is_some_and(|(field, _)| field == key) {
+            self.feedback = None;
+        }
+        cx.notify();
+    }
+
+    fn error_notice(&self, cx: &Context<Self>) -> Div {
+        let Some(error) = &self.error else {
+            return div();
+        };
+        div().flex().flex_col().gap_2().child(error.clone()).child(
+            Button::new("reload-settings")
+                .small()
+                .label(crate::i18n::text("放弃未保存编辑并重新读取"))
+                .disabled(self.busy)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let section = this.section;
+                    *this = Self::new(this.directory.clone(), this.providers.clone(), window, cx);
+                    this.section = section;
+                    cx.notify();
+                })),
+        )
+    }
+    fn save_text(&mut self, field: TextPreference, after: String, cx: &mut Context<Self>) {
+        let Some(settings) = &self.settings else { return; };
+        let before = self.text_baselines.get(&field).cloned().unwrap_or_else(|| field.value(settings));
+        self.save(Change::Text { field, before, after }, cx);
     }
     fn save(&mut self, change: Change, cx: &mut Context<Self>) {
         if self.busy {
@@ -225,15 +440,86 @@ impl SettingsPage {
         }
         self.busy = true;
         self.error = None;
+        self.feedback = None;
+        let field = match &change {
+            Change::Fields(edits) if edits.len() == 1 => Some(edits[0].path.clone()),
+            Change::Text { field, .. } => Some(format!("{field:?}")),
+            _ => None,
+        };
+        let text_field = match &change { Change::Text { field, .. } => Some(*field), _ => None };
+        let edited_fields: Vec<String> = match &change { Change::Fields(edits) => edits.iter().map(|edit| edit.path.clone()).collect(), _ => vec![] };
+        let undo_hotkeys = match &change {
+            Change::Fields(edits) if edits.iter().any(|edit| matches!(edit.path.as_str(), "/hotkey" | "/chatHotkey" | "/closeChatHotkey" | "/screenshotTranslation/textHotkey" | "/screenshotTranslation/hotkey" | "/screenshotTranslation/enabled" | "/lens/hotkey" | "/lens/enabled")) => Some(edits.iter().map(|edit| native_preferences::FieldEdit { path: edit.path.clone(), before: edit.after.clone(), after: edit.before.clone() }).collect::<Vec<_>>()),
+            _ => None,
+        };
         let directory = self.directory.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { native_preferences::save(&directory, change) })
+                .background_spawn(async move {
+                    if let Change::Fields(edits) = &change {
+                        if edits.len() == 1 && edits[0].path == "/launchAtStartup" {
+                            return kivio_model_runtime::startup::save(
+                                &directory,
+                                edits[0].clone(),
+                            );
+                        }
+                    }
+                    native_preferences::save(&directory, change)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if let (Ok(settings), Some(undo)) = (&result, undo_hotkeys) {
+                    if let Err(error) = crate::global_hotkeys::apply(settings, cx) {
+                        let directory = this.directory.clone();
+                        cx.spawn(async move |this, cx| {
+                            let restored = cx.background_spawn(async move { native_preferences::save(&directory, Change::Fields(undo)) }).await;
+                            let _ = this.update(cx, |this, cx| {
+                                this.busy = false;
+                                this.error = Some(match restored { Ok(settings) => { this.settings_value = serde_json::to_value(&settings).expect("serializable settings"); this.settings = Some(settings); error }, Err(rollback) => crate::ui_format!("{error}；配置回滚失败：{rollback}。请重新读取设置。", "{error}; configuration rollback failed: {rollback}. Reload settings.") });
+                                cx.notify();
+                            });
+                        }).detach();
+                        return;
+                    }
+                }
                 this.busy = false;
+                this.feedback = field
+                    .clone()
+                    .map(|field| (field, result.as_ref().map(|_| ()).map_err(Clone::clone)));
                 match result {
-                    Ok(settings) => this.settings = Some(settings),
+                    Ok(settings) => {
+                        if let Some(field) = text_field {
+                            this.text_baselines.insert(field, field.value(&settings));
+                        }
+                        let confirmed = serde_json::to_value(&settings).expect("serializable settings");
+                        let editor_values = this.editor_values(cx);
+                        for path in &edited_fields {
+                            if let Some(baseline) = this.field_baselines.get_mut(path) {
+                                if let Some(value) = confirmed.pointer(path) { *baseline = value.clone(); }
+                                if let Some(value) = editor_values.get(path) { this.editor_baselines.insert(path.clone(), value.clone()); }
+                            }
+                        }
+                        if let Some(key) = &field {
+                            if let Some(value) = this.editor_values(cx).remove(key) {
+                                this.editor_baselines.insert(key.clone(), value);
+                            }
+                        }
+                        if field.as_deref() == Some("/theme") {
+                            crate::appearance::set_mode(
+                                match settings.theme.as_str() {
+                                    "light" => crate::appearance::AppearanceMode::Light,
+                                    "dark" => crate::appearance::AppearanceMode::Dark,
+                                    _ => crate::appearance::AppearanceMode::System,
+                                },
+                                cx,
+                            );
+                        }
+                        if edited_fields.iter().any(|field| field == "/settingsLanguage") {
+                            crate::i18n::apply(settings.settings_language.as_deref(), cx);
+                        }
+                        this.settings_value = confirmed;
+                        this.settings = Some(settings);
+                    }
                     Err(error) => this.error = Some(error),
                 }
                 cx.notify();
@@ -244,17 +530,30 @@ impl SettingsPage {
     }
 }
 
-fn row(label: impl Into<SharedString>, control: AnyElement, theme: &Theme) -> Div {
+pub(crate) fn row(label: impl Into<SharedString>, control: AnyElement, theme: &Theme) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
-        .gap(px(24.))
-        .py(px(10.))
-        .border_b_1()
-        .border_color(theme.border)
-        .child(div().flex_1().min_w_0().child(label.into()))
-        .child(div().flex_none().max_w(px(300.)).child(control))
+        .gap_4()
+        .min_h(px(60.))
+        .py_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w(rems(8.))
+                .text_size(typography::ui_rems(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .child(crate::i18n::display(label)),
+        )
+        .child(
+            div()
+                .flex_none()
+                .max_w_full()
+                .text_color(theme.text_muted)
+                .child(control),
+        )
 }
 fn value(label: &'static str, value: impl Into<SharedString>, theme: &Theme) -> Div {
     row(
@@ -270,30 +569,33 @@ fn pending(label: &'static str, checked: bool, theme: &Theme) -> Div {
     row(
         label,
         Switch::new(label)
-            .accessibility_label(label)
+            .accessibility_label(crate::i18n::text(label))
             .checked(checked)
             .disabled(true)
             .into_any_element(),
         theme,
     )
 }
-fn card(title: &'static str, rows: Vec<Div>, theme: &Theme) -> Div {
-    div()
-        .bg(theme.surface_card)
-        .border_1()
-        .border_color(theme.border)
-        .rounded(px(12.))
-        .p(px(16.))
-        .flex()
-        .flex_col()
-        .child(div().text_color(theme.text_muted).mb(px(8.)).child(title))
-        .children(rows)
+pub(crate) fn card(title: &'static str, rows: Vec<Div>, theme: &Theme) -> Div {
+    widgets::section(
+        theme,
+        title,
+        widgets::section_card(theme)
+            .mt_0()
+            .px_4()
+            .children(rows.into_iter().enumerate().map(|(index, row)| {
+                row.when(index > 0, |row| {
+                    row.border_t_1().border_color(widgets::row_divider(theme))
+                })
+            })),
+    )
+    .mt_0()
 }
 fn unavailable(theme: &Theme) -> Div {
     div()
         .text_color(theme.text_muted)
         .text_size(px(13.))
-        .child("部分功能尚未迁移，灰色选项和只读信息暂不可修改。")
+        .child(crate::i18n::text("部分功能尚未迁移，灰色选项和只读信息暂不可修改。"))
 }
 fn font_picker(code: bool, cx: &App) -> AnyElement {
     let current = if code {
@@ -303,6 +605,7 @@ fn font_picker(code: bool, cx: &App) -> AnyElement {
     };
     let choices = typography::availability(cx).choices().to_vec();
     Button::new(if code { "code-font" } else { "ui-font" })
+        .small()
         .label(current.label().to_owned())
         .dropdown_caret(true)
         .dropdown_menu(move |mut menu, _, _| {
@@ -326,21 +629,23 @@ fn font_picker(code: bool, cx: &App) -> AnyElement {
 }
 impl Render for SettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::of(cx).clone();
+        self.refresh_confirmed_snapshot(_window, cx);
+        let theme = Theme::of(cx).for_settings_surface();
         let Some(s) = &self.settings else {
             return page_frame(
                 self.section.label(),
                 "",
                 div()
                     .child(self.error.clone().unwrap_or("正在读取 Kivio 设置…".into()))
+                    .child(self.error_notice(cx))
                     .into_any_element(),
                 cx,
             );
         };
-        let mut body = div().flex().flex_col().gap(px(20.));
-        if let Some(error) = &self.error {
-            body = body.child(div().child(format!("保存失败：{error}")));
-        }
+        let mut body = div().flex().flex_col().gap_8();
+        body = body.when(self.error.is_some(), |body| {
+            body.child(self.error_notice(cx))
+        });
 
         if let SettingsSection::Kivio(
             section @ (Section::Translate | Section::Lens | Section::Chat),
@@ -348,12 +653,24 @@ impl Render for SettingsPage {
         {
             return self.render_detail(section, &theme, cx);
         }
+        if self.section == SettingsSection::Kivio(Section::Mixer) {
+            return page_frame(
+                "混音器",
+                "为辅助任务和子代理分配模型。",
+                div()
+                    .child(self.error_notice(cx))
+                    .child(self.mixer(&theme, cx))
+                    .into_any_element(),
+                cx,
+            );
+        }
         let subtitle;
         match self.section {
             SettingsSection::General => {
                 subtitle = "外观、行为、归档和权限。";
                 let size = typography::font_size(cx);
                 let size_picker = Button::new("ui-size")
+                    .small()
                     .label(size.label())
                     .dropdown_caret(true)
                     .dropdown_menu(move |mut menu, _, _| {
@@ -372,7 +689,7 @@ impl Render for SettingsPage {
                     .child(card(
                         "外观",
                         vec![
-                            value("界面语言", "中文（设置页面）", &theme),
+                            self.choice("界面语言", "/settingsLanguage", &[("zh", "中文"), ("en", "English")], &theme, cx),
                             row("界面字号", size_picker.into_any_element(), &theme),
                             row("界面字体", font_picker(false, cx), &theme),
                             row("代码字体", font_picker(true, cx), &theme),
@@ -383,14 +700,14 @@ impl Render for SettingsPage {
                     .child(card(
                         "行为",
                         vec![
-                            pending("开机启动", s.launch_at_startup, &theme),
-                            pending("启动后最小化到托盘", s.launch_minimized_to_tray, &theme),
-                            pending("关闭时保持聊天窗口", s.keep_chat_window_alive, &theme),
-                            pending("回复完成通知", s.chat_completion_notifications, &theme),
+                            self.toggle("开机启动", "/launchAtStartup", false, &theme, cx),
+                            self.toggle("启动后最小化到托盘", "/launchMinimizedToTray", false, &theme, cx),
+                            self.toggle("关闭时保持聊天窗口", "/keepChatWindowAlive", false, &theme, cx),
+                            self.toggle("回复完成通知", "/chatCompletionNotifications", false, &theme, cx),
                             row(
                                 "自动重试",
                                 Switch::new("retry-enabled")
-                                    .accessibility_label("自动重试")
+                                    .accessibility_label(crate::i18n::text("自动重试"))
                                     .checked(s.retry_enabled)
                                     .disabled(self.busy)
                                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -401,7 +718,7 @@ impl Render for SettingsPage {
                             ),
                             row(
                                 "重试次数",
-                                Button::new("retry-count")
+                                Button::new("retry-count").small()
                                     .label(s.retry_attempts.saturating_sub(1).to_string())
                                     .disabled(self.busy || !s.retry_enabled)
                                     .dropdown_caret(true)
@@ -434,14 +751,31 @@ impl Render for SettingsPage {
                         ],
                         &theme,
                     ))
+                    .when(cfg!(target_os = "macos"), |body| {
+                        #[cfg(target_os = "macos")]
+                        { body.child(card("系统权限", vec![
+                            row("辅助功能", Button::new("accessibility-settings").small().label(if self.permissions.0 { "已授权 · 管理…" } else { "未授权 · 前往设置…" }).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")).into_any_element(), &theme),
+                            row("屏幕录制", Button::new("screen-recording-settings").small().label(if self.permissions.1 { "已授权 · 管理…" } else { "未授权 · 前往设置…" }).on_click(|_, _, cx| cx.open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")).into_any_element(), &theme),
+                        ], &theme)) }
+                        #[cfg(not(target_os = "macos"))]
+                        { body }
+                    })
                     .child(card(
                         "首次使用",
-                        vec![value("设置引导", "原生引导尚未接入", &theme)],
+                        vec![row("设置引导", Button::new("restart-native-setup").small()
+                            .label(crate::i18n::text("重新打开设置引导"))
+                            .disabled(self.busy || self.has_unsaved_changes(cx))
+                            .on_click(|_, window, cx| {
+                                let id = window.window_handle().window_id();
+                                if let Some((_, shell)) = crate::shell_windows(cx).into_iter().find(|(handle, _)| handle.window_id() == id) {
+                                    cx.defer(move |cx| shell.update(cx, |shell, cx| shell.start_native_setup(cx)));
+                                }
+                            }).into_any_element(), &theme)],
                         &theme,
                     ));
             }
             SettingsSection::Appearance => {
-                subtitle = "管理明暗色板，预览、编辑与分享自定义主题。";
+                subtitle = "选择明暗模式与主题色板。";
                 let current = crate::appearance::mode(cx);
                 let modes = [
                     (crate::appearance::AppearanceMode::System, "跟随系统"),
@@ -449,23 +783,54 @@ impl Render for SettingsPage {
                     (crate::appearance::AppearanceMode::Dark, "深色"),
                 ];
                 let label = modes.iter().find(|(mode, _)| *mode == current).unwrap().1;
+                let owner = cx.entity().downgrade();
+                let surface = crate::appearance::surface(cx);
+                let surfaces = [
+                    (zeron_theme::SurfacePreference::ThemeDefault, "跟随主题"),
+                    (zeron_theme::SurfacePreference::Frosted, "毛玻璃"),
+                    (zeron_theme::SurfacePreference::Opaque, "不透明"),
+                ];
+                let surface_label = surfaces.iter().find(|(value, _)| *value == surface).unwrap().1;
                 body = body
                     .child(card(
                         "外观",
                         vec![row(
                             "明暗模式",
                             Button::new("theme-mode")
-                                .label(label)
+                                .small()
+                                .label(crate::i18n::display(label))
                                 .dropdown_caret(true)
+                                .disabled(self.busy)
                                 .dropdown_menu(move |mut menu, _, _| {
                                     for (mode, label) in modes {
+                                        let owner = owner.clone();
                                         menu = menu.item(
                                             PopupMenuItem::new(label)
                                                 .checked(mode == current)
                                                 .on_click(move |_, _, cx| {
-                                                    crate::appearance::set_mode(mode, cx)
+                                                    let _ = owner.update(cx, |this, cx| {
+                                                        let Some(settings) = &this.settings else { return; };
+                                                        let after = match mode { crate::appearance::AppearanceMode::Light => "light", crate::appearance::AppearanceMode::Dark => "dark", _ => "system" };
+                                                        this.save(Change::Fields(vec![native_preferences::FieldEdit { path: "/theme".into(), before: serde_json::json!(settings.theme), after: serde_json::json!(after) }]), cx);
+                                                    });
                                                 }),
                                         );
+                                    }
+                                    menu
+                                })
+                                .into_any_element(),
+                            &theme,
+                        ), row(
+                            "窗口材质",
+                            Button::new("theme-surface")
+                                .small()
+                                .label(surface_label)
+                                .dropdown_caret(true)
+                                .dropdown_menu(move |mut menu, _, _| {
+                                    for (value, label) in surfaces {
+                                        menu = menu.item(PopupMenuItem::new(label)
+                                            .checked(value == surface)
+                                            .on_click(move |_, _, cx| crate::appearance::set_surface(value, cx)));
                                     }
                                     menu
                                 })
@@ -474,33 +839,13 @@ impl Render for SettingsPage {
                         )],
                         &theme,
                     ))
-                    .child(theme_library_grid(cx));
+                    .child(theme_library_grid(self.custom_themes.clone(), cx)).child(self.custom_themes.clone());
             }
             SettingsSection::Shortcuts => {
                 subtitle = "集中管理所有全局快捷键。";
-                body = body.child(unavailable(&theme)).child(card(
-                    "快捷键",
-                    vec![
-                        value("输入翻译", s.hotkey.clone(), &theme),
-                        value("打开聊天", s.chat_hotkey.clone(), &theme),
-                        value("关闭聊天", s.close_chat_hotkey.clone(), &theme),
-                        value("截图翻译", s.screenshot_translation.hotkey.clone(), &theme),
-                        value(
-                            "选中文本翻译",
-                            s.screenshot_translation.text_hotkey.clone(),
-                            &theme,
-                        ),
-                        value(
-                            "替换翻译",
-                            s.screenshot_translation.replace_hotkey.clone(),
-                            &theme,
-                        ),
-                        value("截图标注", s.screenshot_annotate.hotkey.clone(), &theme),
-                        value("Lens", s.lens.hotkey.clone(), &theme),
-                    ],
-                    &theme,
-                ));
+                body = body.child(self.shortcuts(&theme, cx));
             }
+
             SettingsSection::Kivio(section) => {
                 subtitle = match section {
                     Section::Translate => "输入翻译与快速翻译的语言、模型、OCR 和提示词。",
@@ -516,7 +861,7 @@ impl Render for SettingsPage {
                     Section::About => "Kivio 原生桌面客户端。",
                     Section::Mixer => "按副任务路由模型。",
                 };
-                if section != Section::About {
+                if !matches!(section, Section::About | Section::Computer) {
                     body = body.child(unavailable(&theme));
                 }
                 let rows = match section {
@@ -530,13 +875,13 @@ impl Render for SettingsPage {
                         value("CLI 检测、版本与路径", "原生管理尚未接入", &theme),
                         value(
                             "模型、环境变量与账号",
-                            format!("{} 个已有配置", s.chat.external_cli_agents.len()),
+                            crate::ui_format!("{} 个已有配置", "{} existing configurations", s.chat.external_cli_agents.len()),
                             &theme,
                         ),
                     ],
                     Section::Computer => vec![
-                        value("桌面操控", "原生权限与执行器尚未接入", &theme),
-                        value("浏览器操控", "浏览器扩展连接尚未接入", &theme),
+                        div().child(self.computer.clone()),
+                        self.text_field("浏览器扩展 Token", "/chatTools/playwrightExtensionToken", "从 Playwright 扩展复制 Token，供已启用的浏览器工具连接扩展。凭据仅保存到本机。", &theme, cx),
                     ],
                     Section::Hooks => {
                         vec![value("工作流 Hooks", "原生规则编辑与运行尚未接入", &theme)]
@@ -561,9 +906,14 @@ impl Render for SettingsPage {
                         value("WebDAV", "原生同步入口尚未接入", &theme),
                     ],
                     Section::About => vec![
-                        value("应用", "Kivio Native", &theme),
-                        value("界面", "Zeron / GPUI Kit 0.8.0", &theme),
-                        value("数据", "独立原生预览配置", &theme),
+                        div().child(self.model_database.clone()),
+                        value("应用", "Kivio Desktop", &theme),
+                        value("开发者", "ZM", &theme),
+                        value("原生预览版本", "0.1.0 · GPUI Kit 0.8.0", &theme),
+                        row("项目主页", Button::new("about-github").small().label(crate::i18n::text("在浏览器中打开")).on_click(|_, _, cx| cx.open_url("https://github.com/ZMGID/kivio")).into_any_element(), &theme),
+                        row("版本发布", Button::new("about-releases").small().label(crate::i18n::text("查看发布版本")).on_click(|_, _, cx| cx.open_url("https://github.com/ZMGID/kivio/releases")).into_any_element(), &theme),
+                        row("原生数据目录", Button::new("about-data").small().label(crate::i18n::text("在 Finder 中显示")).on_click(cx.listener(|this, _, _, cx| cx.reveal_path(&this.directory))).into_any_element(), &theme),
+                        div().py_3().text_size(typography::ui_rems(12.)).text_color(theme.text_muted).child(crate::i18n::text("原生预览使用独立数据目录。发布页上的 Tauri 安装包不会升级当前 GPUI 预览。")),
                     ],
                     Section::Mixer => vec![],
                 };
@@ -573,7 +923,16 @@ impl Render for SettingsPage {
                 subtitle = "";
             }
         }
-        page_frame(self.section.label(), subtitle, body.into_any_element(), cx)
+        div()
+            .size_full()
+            .track_focus(&self.focus)
+            .child(page_frame(
+                self.section.label(),
+                subtitle,
+                body.into_any_element(),
+                cx,
+            ))
+            .into_any_element()
     }
 }
 
@@ -631,7 +990,8 @@ impl SettingsPage {
         let current = current.to_owned();
         let owner = cx.weak_entity();
         Button::new(SharedString::from(format!("language-{field:?}")))
-            .label(label)
+            .small()
+            .label(crate::i18n::display(label))
             .dropdown_caret(true)
             .disabled(self.busy)
             .dropdown_menu(move |mut menu, _, _| {
@@ -646,7 +1006,7 @@ impl SettingsPage {
                             .checked(value == current)
                             .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
-                                    this.save(Change::Text(field, value.clone()), cx)
+                                    this.save_text(field, value.clone(), cx)
                                 });
                             }),
                     );
@@ -668,91 +1028,146 @@ impl SettingsPage {
             return div();
         };
         let input = input.clone();
+        let expanded = self.expanded_prompts.contains(&field);
+        let editor = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .pt_2()
+            .child(
+                Textarea::new(&input)
+                    .disabled(self.busy)
+                    .aria_label(title)
+                    .h(rems(10.)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new(SharedString::from(format!("reset-{field:?}")))
+                            .small()
+                            .label(crate::i18n::text("恢复默认"))
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let Some(settings) = this.settings.as_ref() else {
+                                    return;
+                                };
+                                let value = default_prompt(field, settings);
+                                if let Some(input) = this.prompts.get(&field) {
+                                    input.update(cx, |input, cx| {
+                                        input.set_value(value.clone(), window, cx)
+                                    });
+                                }
+                                this.save_text(field, value, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("save-{field:?}")))
+                            .small()
+                            .label(crate::i18n::text("保存提示词"))
+                            .disabled(self.busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(input) = this.prompts.get(&field) {
+                                    let value = input.read(cx).value().to_string();
+                                    this.save_text(field, value, cx);
+                                }
+                            })),
+                    ),
+            )
+            .child(self.field_feedback(&format!("{field:?}"), theme));
         div()
             .flex()
             .flex_col()
-            .gap_2()
             .py_3()
+            .gap_2()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap_3()
-                    .child(title)
+                    .gap_4()
                     .child(
-                        Button::new(SharedString::from(format!("reset-{field:?}")))
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(widgets::row_title(theme, title))
+                            .child(
+                                div()
+                                    .mt_1()
+                                    .text_size(typography::ui_rems(12.))
+                                    .text_color(theme.text_muted)
+                                    .child(hint),
+                            ),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("edit-{field:?}")))
                             .small()
-                            .label("恢复默认")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(input) = this.prompts.get(&field) {
-                                    input.update(cx, |input, cx| {
-                                        input.set_value(default_prompt(field), window, cx)
-                                    });
+                            .label(if expanded { "收起" } else { "编辑…" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.expanded_prompts.remove(&field) {
+                                    this.expanded_prompts.insert(field);
                                 }
-                                this.save(Change::Text(field, String::new()), cx);
+                                cx.notify();
                             })),
                     ),
             )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(theme.text_muted)
-                    .child(hint),
-            )
-            .child(Textarea::new(&input).aria_label(title).h(px(132.)))
-            .child(
-                div().flex().justify_end().child(
-                    Button::new(SharedString::from(format!("save-{field:?}")))
-                        .small()
-                        .label("保存提示词")
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(input) = this.prompts.get(&field) {
-                                let value = input.read(cx).value().to_string();
-                                this.save(Change::Text(field, value), cx);
-                            }
-                        })),
-                ),
-            )
+            .when(expanded, |view| {
+                if crate::motion::reduced_motion(cx) {
+                    view.child(editor)
+                } else {
+                    view.child(crate::motion::fade_quick(
+                        SharedString::from(format!("prompt-entrance-{field:?}")),
+                        editor,
+                    ))
+                }
+            })
     }
 
     fn render_detail(&self, section: Section, theme: &Theme, cx: &Context<Self>) -> AnyElement {
         let s = self.settings.as_ref().unwrap();
-        let mut body = div().flex().flex_col().gap_3();
-        if let Some(error) = &self.error {
-            body = body.child(div().child(format!("保存失败：{error}")));
-        }
+        let mut body = div().flex().flex_col().gap_8();
+        body = body.when(self.error.is_some(), |body| {
+            body.child(self.error_notice(cx))
+        });
         let subtitle;
         match section {
             Section::Translate => {
-                subtitle = "输入翻译与快速翻译的语言、模型、OCR 和提示词。";
+                subtitle = "输入翻译与快速翻译的语言、模型、OCR 和提示词。输入与选中文本翻译使用原生窗口；截图与替换翻译仍在接入。";
                 body = body
                     .child(card("翻译语言", vec![
                         described_row("阅读目标语言", "你想看的语言，用于划词、截图和替换翻译。", self.language(TextPreference::ReadingLanguage, &s.reading_target_lang, false, cx), theme),
                         described_row("输入翻译输出语言", "你准备发送的语言；自动仅用于中英互译。", self.language(TextPreference::InputLanguage, &s.target_lang, false, cx), theme),
                     ], theme))
                     .child(card("输入翻译", vec![
-                        value("模型组合", format!("{} · {}", s.translator_provider_id, s.translator_model), theme),
+                        self.model_pair("模型组合", "/translatorProviderId", "/translatorModel", false, theme, cx),
+                        row("输入翻译窗口", Button::new("open-input-translation").small().label(crate::i18n::text("打开翻译")).disabled(self.busy).on_click(cx.listener(|this, _, _, cx| {
+                            let result = crate::input_translation::open(this.directory.clone(), cx);
+                            if let Err(error) = result { this.error = Some(error); cx.notify(); }
+                        })).into_any_element(), theme),
                         self.prompt_editor(TextPreference::InputPrompt, "输入翻译提示词", "使用 {lang} 和 {text} 插入目标语言与原文；留空使用内置模板。", theme, cx),
                     ], theme))
                     .child(card("快速翻译 · 选项", vec![
-                        pending("启用快速翻译", s.screenshot_translation.enabled, theme),
-                        pending("显示原文", !s.screenshot_translation.direct_translate, theme),
-                        pending("思考模式", s.screenshot_translation.thinking_enabled, theme),
-                        pending("流式输出", s.screenshot_translation.stream_enabled, theme),
-                        pending("截图后保持全屏覆盖", s.screenshot_translation.keep_fullscreen_after_capture, theme),
-                        value("翻译卡宽度", format!("{} px", s.screenshot_translation.card_width), theme),
+                        row("快速翻译窗口", Button::new("open-selection-translation").small().label(crate::i18n::text("打开快速翻译…")).disabled(self.busy).on_click(cx.listener(|this, _, _, cx| {
+                            if let Err(error) = crate::input_translation::open_selection(this.directory.clone(), String::new(), cx) { this.error = Some(error); cx.notify(); }
+                        })).into_any_element(), theme),
+                        self.toggle("启用快速翻译", "/screenshotTranslation/enabled", false, theme, cx),
+                        self.toggle("显示原文", "/screenshotTranslation/directTranslate", true, theme, cx),
+                        self.toggle("思考模式", "/screenshotTranslation/thinkingEnabled", false, theme, cx),
+                        self.toggle("流式输出", "/screenshotTranslation/streamEnabled", false, theme, cx),
+                        self.toggle("截图后保持全屏覆盖", "/screenshotTranslation/keepFullscreenAfterCapture", false, theme, cx),
+                        self.text_field("翻译卡宽度", "/screenshotTranslation/cardWidth", "360–720 px", theme, cx),
                     ], theme))
                     .child(card("替换翻译", vec![
-                        pending("启用替换翻译", s.screenshot_translation.replace_enabled, theme),
-                        value("替换翻译离线包", if s.screenshot_translation.rapid_ocr_tier == "high" { "高精度 · PP-OCRv6" } else { "标准 · PP-OCRv5" }, theme),
+                        self.toggle("启用替换翻译", "/screenshotTranslation/replaceEnabled", false, theme, cx),
+                        self.choice("替换翻译离线包", "/screenshotTranslation/rapidOcrTier", &[("standard", "标准 · PP-OCRv5"), ("high", "高精度 · PP-OCRv6")], theme, cx),
                     ], theme))
+                    .child(self.offline.clone())
                     .child(card("截图翻译", vec![
-                        value("截图翻译处理方式", match s.screenshot_translation.ocr_mode { Some(kivio_model_runtime::settings_config::OcrMode::System) => "系统 OCR", Some(kivio_model_runtime::settings_config::OcrMode::RapidOcr) => "RapidOCR", _ => "视觉模型" }, theme),
-                        div().text_size(px(12.)).text_color(theme.text_muted).child("替换翻译始终使用 RapidOCR。截图与全局热键的平台入口尚未接入原生窗口。"),
-                        value("模型组合", format!("{} · {}", s.screenshot_translation.provider_id, s.screenshot_translation.model), theme),
+                        self.choice("截图翻译处理方式", "/screenshotTranslation/ocrMode", &[("cloud_vision", "视觉模型"), ("system", "系统 OCR"), ("rapid_ocr", "RapidOCR")], theme, cx),
+                        div().text_size(px(12.)).text_color(theme.text_muted).child(crate::i18n::text("截图翻译支持选区、窗口捕获与全局快捷键。替换翻译使用 RapidOCR，其原生交互仍在接入。")),
+                        self.model_pair("模型组合", "/screenshotTranslation/providerId", "/screenshotTranslation/model", false, theme, cx),
                     ], theme))
                     .child(card("自定义提示词", vec![
                         self.prompt_editor(TextPreference::ScreenshotPrompt, "截图翻译提示词", "留空使用内置截图翻译模板。", theme, cx),
@@ -761,12 +1176,21 @@ impl SettingsPage {
                     ], theme));
             }
             Section::Lens => {
-                subtitle = "视觉问答的响应方式、对话与提示词。";
+                subtitle =
+                    "视觉问答的响应方式、对话与提示词。截图后可在浮窗追问，或发送到 Kivio Agent。";
                 body = body
                     .child(card(
                         "Lens 配置",
                         vec![
-                            pending("启用 Lens", s.lens.enabled, theme),
+                            self.toggle("启用 Lens", "/lens/enabled", false, theme, cx),
+                            div().child(Button::new("try-native-lens").small().label(crate::i18n::text("打开 Lens 截图"))
+                                .disabled(self.busy || !s.lens.enabled)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let root = this.directory.clone(); let owner = cx.entity().downgrade();
+                                    cx.defer(move |cx| { if let Err(error) = crate::native_capture::toggle_lens(root, cx) {
+                                        let _ = owner.update(cx, |this, cx| { this.error = Some(error); cx.notify(); });
+                                    }});
+                                }))),
                             row(
                                 "响应语言",
                                 self.language(
@@ -777,53 +1201,48 @@ impl SettingsPage {
                                 ),
                                 theme,
                             ),
-                            pending("流式输出", s.lens.stream_enabled, theme),
-                            pending("思考模式", s.lens.thinking_enabled, theme),
+                            self.toggle("流式输出", "/lens/streamEnabled", false, theme, cx),
+                            self.toggle("思考模式", "/lens/thinkingEnabled", false, theme, cx),
                         ],
                         theme,
                     ))
                     .child(card(
                         "对话",
                         vec![
-                            pending("发送到 Kivio Agent", s.lens.send_to_chat, theme),
-                            value(
+                            self.toggle("发送到 Kivio Agent", "/lens/sendToChat", false, theme, cx),
+                            self.choice(
                                 "消息顺序",
-                                if s.lens.message_order == "desc" {
-                                    "从新到旧"
-                                } else {
-                                    "从旧到新"
-                                },
+                                "/lens/messageOrder",
+                                &[("asc", "从旧到新"), ("desc", "从新到旧")],
                                 theme,
+                                cx,
                             ),
-                            pending("截图选择提示", s.lens.show_capture_hint, theme),
+                            self.toggle("截图选择提示", "/lens/showCaptureHint", false, theme, cx),
                         ],
                         theme,
                     ))
                     .child(card(
                         "翻译引擎",
-                        vec![value(
+                        vec![self.model_pair(
                             "模型组合",
-                            if s.lens.model.is_empty() {
-                                "跟随输入翻译".to_string()
-                            } else {
-                                format!("{} · {}", s.lens.provider_id, s.lens.model)
-                            },
+                            "/lens/providerId",
+                            "/lens/model",
+                            true,
                             theme,
+                            cx,
                         )],
                         theme,
                     ))
                     .child(card(
                         "截图自动归档",
                         vec![
-                            pending("截图自动归档", s.image_archive_enabled, theme),
-                            value(
+                            self.toggle("截图自动归档", "/imageArchiveEnabled", false, theme, cx),
+                            self.text_field(
                                 "归档路径",
-                                if s.image_archive_path.is_empty() {
-                                    "系统默认".to_string()
-                                } else {
-                                    s.image_archive_path.clone()
-                                },
+                                "/imageArchivePath",
+                                "留空时不自动归档。选择目录后开启截图自动归档。",
                                 theme,
+                                cx,
                             ),
                         ],
                         theme,
@@ -858,20 +1277,25 @@ impl SettingsPage {
                             "用户名",
                             div()
                                 .flex()
+                                .w(rems(20.))
                                 .gap_2()
-                                .child(Input::new(name).aria_label("用户名"))
+                                .child(
+                                    div().flex_1().min_w_0().child(
+                                        Input::new(name)
+                                            .small()
+                                            .aria_label("用户名")
+                                            .disabled(self.busy),
+                                    ),
+                                )
                                 .child(
                                     Button::new("save-display-name")
                                         .small()
-                                        .label("保存")
+                                        .label(crate::i18n::text("保存"))
                                         .disabled(self.busy)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             if let Some(name) = &this.name {
                                                 let value = name.read(cx).value().to_string();
-                                                this.save(
-                                                    Change::Text(TextPreference::UserName, value),
-                                                    cx,
-                                                );
+                                                this.save_text(TextPreference::UserName, value, cx);
                                             }
                                         })),
                                 )
@@ -885,6 +1309,32 @@ impl SettingsPage {
                     .child(card(
                         "Kivio Agent",
                         vec![
+                            self.text_field(
+                                "普通对话工作目录",
+                                "/chatTools/nativeTools/workingDirectory",
+                                "项目对话和导入 CLI 对话保留各自的工作目录。",
+                                theme,
+                                cx,
+                            ),
+                            value(
+                                "最大输出 Token",
+                                self.providers
+                                    .read(cx)
+                                    .selection()
+                                    .map(|(provider, model)| {
+                                        format!(
+                                            "{} · {}",
+                                            kivio_model_runtime::request_max_tokens(
+                                                &provider, &model
+                                            ),
+                                            model
+                                        )
+                                    })
+                                    .unwrap_or_else(|_| "请先选择对话模型".into()),
+                                theme,
+                            ),
+                            self.toggle("流式输出", "/chat/streamEnabled", false, theme, cx),
+                            self.toggle("思考模式", "/chat/thinkingEnabled", false, theme, cx),
                             row(
                                 "响应语言",
                                 self.language(
@@ -919,11 +1369,10 @@ impl SettingsPage {
                             ),
                             value(
                                 "本地 CLI",
-                                format!("{} 个配置", s.chat.external_cli_agents.len()),
+                                crate::ui_format!("{} 个配置", "{} configurations", s.chat.external_cli_agents.len()),
                                 theme,
                             ),
-                            div().text_size(px(12.)).text_color(theme.text_muted).child(
-                                "原生 Agent 的工具执行循环尚未接入；配置状态不代表工具已运行。",
+                            div().text_size(px(12.)).text_color(theme.text_muted).child(crate::i18n::text("Agent 根据当前模型、工具开关与审批规则执行工具；运行状态与结果显示在对话中。"),
                             ),
                         ],
                         theme,
@@ -938,11 +1387,17 @@ impl SettingsPage {
                                 theme,
                                 cx,
                             ),
-                            pending("联网搜索", s.chat.chat_mode.web_search, theme),
-                            pending("读取网页", s.chat.chat_mode.web_fetch, theme),
-                            pending("知识库检索", s.chat.chat_mode.knowledge_search, theme),
-                            pending("记忆只读", s.chat.chat_mode.memory_tools, theme),
-                            pending("只读 MCP", s.chat.chat_mode.mcp_read_only, theme),
+                            self.toggle("联网搜索", "/chat/chatMode/webSearch", false, theme, cx),
+                            self.toggle("读取网页", "/chat/chatMode/webFetch", false, theme, cx),
+                            self.toggle(
+                                "知识库检索",
+                                "/chat/chatMode/knowledgeSearch",
+                                false,
+                                theme,
+                                cx,
+                            ),
+                            self.toggle("记忆只读", "/chat/chatMode/memoryTools", false, theme, cx),
+                            self.toggle("只读 MCP", "/chat/chatMode/mcpReadOnly", false, theme, cx),
                         ],
                         theme,
                     ));
@@ -961,39 +1416,56 @@ fn described_row(
 ) -> Div {
     div()
         .flex()
+        .flex_wrap()
         .items_center()
         .justify_between()
         .gap_4()
         .py_3()
-        .border_b_1()
-        .border_color(theme.border)
+        .min_h(px(60.))
         .child(
-            div().flex_1().min_w_0().child(label).child(
+            div().flex_1().min_w(rems(12.)).child(crate::i18n::display(label)).child(
                 div()
                     .mt_1()
                     .text_size(px(12.))
                     .text_color(theme.text_muted)
-                    .child(description),
+                    .child(crate::i18n::display(description)),
             ),
         )
         .child(div().flex_none().child(control))
 }
 
-fn default_prompt(field: TextPreference) -> String {
+fn default_prompt(field: TextPreference, settings: &Settings) -> String {
     use kivio_model_runtime::{prompts, settings_config};
     match field {
         TextPreference::InputPrompt => prompts::DEFAULT_TRANSLATION_TEMPLATE.into(),
         TextPreference::ScreenshotPrompt => prompts::DEFAULT_SCREENSHOT_TRANSLATION_TEMPLATE.into(),
         TextPreference::TextPrompt => prompts::DEFAULT_SELECTED_TEXT_TRANSLATION_TEMPLATE.into(),
         TextPreference::ReplacementPrompt => prompts::DEFAULT_REPLACE_TRANSLATION_TEMPLATE.into(),
-        TextPreference::LensSystemPrompt => settings_config::default_lens_system_prompt("zh", true),
-        TextPreference::LensQuestionPrompt => settings_config::default_question_prompt("zh", true),
+        TextPreference::LensSystemPrompt => settings_config::default_lens_system_prompt(
+            if settings.lens.default_language.is_empty() {
+                &settings.reading_target_lang
+            } else {
+                &settings.lens.default_language
+            },
+            true,
+        ),
+        TextPreference::LensQuestionPrompt => settings_config::default_question_prompt(
+            if settings.lens.default_language.is_empty() {
+                &settings.reading_target_lang
+            } else {
+                &settings.lens.default_language
+            },
+            true,
+        ),
         TextPreference::AgentPrompt => settings_config::default_chat_system_prompt(false),
         _ => String::new(),
     }
 }
 
-fn theme_library_grid(cx: &App) -> Div {
+fn theme_library_grid(
+    editor: Entity<crate::settings::custom_themes::CustomThemes>,
+    cx: &App,
+) -> Div {
     let registry = zeron_theme::ThemeRegistry::builtin();
     let current = crate::appearance::themes(cx);
     let mut grid = div().flex().flex_wrap().gap_3();
@@ -1021,6 +1493,8 @@ fn theme_library_grid(cx: &App) -> Div {
             .w_full()
             .child(theme_miniature(registry.variant(&light).unwrap()))
             .child(theme_miniature(registry.variant(&dark).unwrap()));
+        let editor = editor.clone();
+        let editing = editor.read(cx).editing();
         grid = grid.child(
             div()
                 .w(px(180.))
@@ -1030,35 +1504,24 @@ fn theme_library_grid(cx: &App) -> Div {
                 .child(previews)
                 .child(
                     Button::new(SharedString::from(format!("theme-{id}")))
+                        .small()
                         .label(if selected {
-                            format!("{label} · 已应用")
+                            crate::ui_format!("{label} · 已应用", "{label} · Applied")
                         } else {
                             label.to_string()
                         })
                         .selected(selected)
+                        .disabled(editing)
                         .w_full()
                         .on_click(move |_, _, cx| {
-                            crate::appearance::set_theme(
-                                crate::theme::Appearance::Light,
-                                light.clone(),
-                                cx,
-                            );
-                            crate::appearance::set_theme(
-                                crate::theme::Appearance::Dark,
-                                dark.clone(),
-                                cx,
-                            );
-                            crate::appearance::set_accent(
-                                zeron_theme::AccentSelection::ThemeDefault,
-                                cx,
-                            );
+                            editor.update(cx, |editor, cx| editor.apply_builtin(id, cx));
                         }),
                 ),
         );
     }
-    div().flex().flex_col().gap_3().child("主题库").child(grid)
+    div().flex().flex_col().gap_3().child(crate::i18n::text("主题库")).child(grid)
 }
-fn theme_miniature(variant: &zeron_theme::ThemeVariant) -> Div {
+pub(crate) fn theme_miniature(variant: &zeron_theme::ThemeVariant) -> Div {
     let color = |color: zeron_theme::Color| -> Hsla {
         rgba(
             ((color.r as u32) << 24)
@@ -1108,4 +1571,13 @@ fn theme_miniature(variant: &zeron_theme::ThemeVariant) -> Div {
                         .bg(color(variant.accent.primary)),
                 ),
         )
+}
+
+#[cfg(target_os = "macos")]
+fn permission_status() -> (bool, bool) {
+    use kivio_model_runtime::platform_permissions::*;
+    (
+        check_accessibility(false),
+        check_screen_recording_permission(),
+    )
 }

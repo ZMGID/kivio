@@ -108,7 +108,7 @@ fn draw(shell: &Entity<Shell>, cx: &mut VisualTestContext, millis: u64) -> Frame
             Duration::from_millis(millis).mul_f32(motion::speed_scale());
         cx.notify();
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let mut width = |id| cx.debug_bounds(id).map_or(0.0, |b| f32::from(b.size.width));
     Frame {
         widths: [

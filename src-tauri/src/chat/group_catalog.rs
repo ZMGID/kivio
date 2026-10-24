@@ -450,7 +450,7 @@ pub fn update_project(
     Ok((project, old_name))
 }
 
-fn validate_project_id(id: &str) -> Result<(), String> {
+pub(super) fn validate_project_id(id: &str) -> Result<(), String> {
     let valid = id.starts_with("proj_")
         && id.len() > "proj_".len()
         && id
@@ -538,5 +538,18 @@ mod tests {
         assert_eq!(load_set_index(&dir).unwrap().sets[0].name, "新名称");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+pub(crate) fn validate_assistant_id(id: &str) -> Result<(), String> {
+    let valid = id.starts_with("asst_")
+        && id.len() > "asst_".len()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("Invalid assistant id: {id}"))
     }
 }

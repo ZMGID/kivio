@@ -284,58 +284,9 @@ pub fn persist_delivered_session(
     Ok(())
 }
 
-/// Whether a user prompt recorded by a CLI is the visible Kivio prompt. Kivio may have wrapped it
-/// in `# Instructions … # User request` and appended attachment notes, so compare the user
-/// section and accept a trailing note. A blank visible prompt (image-only) never matches by text.
-pub(crate) fn native_prompt_matches(native_text: &str, visible_text: &str) -> bool {
-    fn normalize_space(value: &str) -> String {
-        value.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-    let expected = normalize_space(visible_text);
-    if expected.is_empty() {
-        return false;
-    }
-    let user = native_text
-        .rsplit_once("# User request")
-        .map(|(_, value)| value.trim_start_matches(['\r', '\n', ' ', '\t']))
-        .unwrap_or(native_text);
-    let actual = normalize_space(user);
-    actual == expected
-        || actual
-            .strip_prefix(&expected)
-            .is_some_and(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
-}
-
-/// Where a CLI's native history stands relative to the visible Kivio history after a rewind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeRewindPoint {
-    /// The native history already ends where the visible history does: nothing to drop.
-    Aligned,
-    /// Drop the native user turn at this index and every turn after it.
-    DropFrom(usize),
-    /// The histories cannot be matched safely; the native session must not be trimmed.
-    Unmatched,
-}
-
-/// `native` holds the CLI's user prompts on its active history, oldest first. `visible` holds
-/// Kivio's user prompts, oldest first, ending with the prompt about to be sent. A blank visible
-/// prompt (image-only) is matched by position only.
-pub fn native_rewind_point(native: &[String], visible: &[String]) -> NativeRewindPoint {
-    let Some((_, kept)) = visible.split_last() else {
-        return NativeRewindPoint::Unmatched;
-    };
-    let prefix_matches = native.len() >= kept.len()
-        && native.iter().zip(kept).all(|(native, visible)| {
-            visible.trim().is_empty() || native_prompt_matches(native, visible)
-        });
-    if !prefix_matches {
-        NativeRewindPoint::Unmatched
-    } else if native.len() == kept.len() {
-        NativeRewindPoint::Aligned
-    } else {
-        NativeRewindPoint::DropFrom(kept.len())
-    }
-}
+mod history_match;
+pub(crate) use history_match::native_prompt_matches;
+pub use history_match::{native_rewind_point, NativeRewindPoint};
 
 #[cfg(test)]
 mod tests {
@@ -421,30 +372,8 @@ mod tests {
 // drives claude's CLI `--resume`) to avoid clobbering it.
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LiveSessionHandle {
-    pub agent_id: String,
-    /// `"codex_app_server"` | `"acp_json_rpc"` | `"claude_stream_json"`.
-    pub protocol: String,
-    /// Native thread id (codex) / session id (ACP / claude)。
-    pub native_id: String,
-    /// Pi RPC reports the active JSONL file path; older handles and other protocols leave it blank.
-    #[serde(default)]
-    pub native_path: Option<String>,
-    pub cwd: String,
-}
-
-impl LiveSessionHandle {
-    /// Same Kivio conversation + same CLI protocol ⇒ resume this native id.
-    ///
-    /// Cwd is **not** part of the match. The file is already keyed by conversation_id;
-    /// requiring a byte-identical cwd string (Windows `E:\` vs `E:/`, WSL `/mnt/e/...`)
-    /// dropped the id, started a blank thread, and overwrote the binding — so reopening
-    /// the conversation could not continue the original native session.
-    pub fn can_resume(&self, agent_id: &str, protocol: &str) -> bool {
-        self.agent_id == agent_id && self.protocol == protocol && !self.native_id.trim().is_empty()
-    }
-}
+mod live_handle;
+pub use live_handle::LiveSessionHandle;
 
 fn live_handle_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
     Ok(sessions_dir(app)?.join(format!("live-{conversation_id}.json")))

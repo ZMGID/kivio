@@ -122,7 +122,7 @@ fn setup(cx: &mut TestAppContext) -> (Entity<Shell>, &mut VisualTestContext) {
         }
     });
     let shell = host.read_with(cx, |host, _| host.shell.clone());
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     (shell, cx)
 }
 
@@ -133,7 +133,7 @@ fn press(cx: &mut VisualTestContext, forward: bool) {
         ShortcutId::PrevSession
     };
     cx.simulate_keystrokes(&platform_combo(id.default_combo()));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn assert_surface(shell: &Entity<Shell>, cx: &mut VisualTestContext, surface: RightSurface) {
@@ -201,7 +201,7 @@ fn side_chat_to_diff_retains_right_focus_and_custom_bindings(cx: &mut TestAppCon
             shell.activate_right_surface(RightSurface::SideChat(1), window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         assert!(
             shell.read(cx).side_chats[&1]
@@ -215,30 +215,30 @@ fn side_chat_to_diff_retains_right_focus_and_custom_bindings(cx: &mut TestAppCon
         apply_keymap(cx, &keymap, ComposerSendBehavior::default());
     });
     cx.simulate_keystrokes("alt-down");
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_surface(&shell, cx, RightSurface::Diff(1));
     cx.simulate_keystrokes("alt-down");
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_surface(&shell, cx, RightSurface::Subagent(1));
     cx.simulate_keystrokes("alt-up");
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_surface(&shell, cx, RightSurface::Diff(1));
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
             shell.activate_right_surface(RightSurface::SideChat(1), window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
             shell.close_right_surface(RightSurface::SideChat(1), window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     // Closing returns to the most recently visited tab, then cycles in strip order.
     assert_surface(&shell, cx, RightSurface::Diff(1));
     cx.simulate_keystrokes("alt-down");
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     assert_surface(&shell, cx, RightSurface::Subagent(1));
 }
 
@@ -335,13 +335,13 @@ fn hiding_reopening_and_expanding_preserve_navigation_boundaries(cx: &mut TestAp
     press(cx, true);
     assert_surface(&shell, cx, RightSurface::Subagent(2));
     shell.update(cx, |shell, cx| shell.set_surfaces_open(false, cx));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         assert!(!shell.read(cx).navigation_focus.in_right(window, cx));
         assert!(shell.read(cx).composer.focus_handle(cx).is_focused(window));
     });
     shell.update(cx, |shell, cx| shell.set_surfaces_open(true, cx));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         assert!(shell.read(cx).composer.focus_handle(cx).is_focused(window));
     });
@@ -363,7 +363,7 @@ fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppConte
         });
         shell.add_terminal_surface(cx);
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         let terminal = shell.read(cx).right_terminal.as_ref().unwrap().read(cx);
         assert!(terminal.focus_handle().is_focused(window));
@@ -375,7 +375,7 @@ fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppConte
             shell.add_browser_surface(None, window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     press(cx, true);
     assert_surface(&shell, cx, RightSurface::Subagent(1));
     // Exercise the GPUI target the native browser bridge focuses before it
@@ -386,7 +386,7 @@ fn embedded_terminal_and_browser_focus_route_to_right_tabs(cx: &mut TestAppConte
             window.focus(&shell.browsers[&1].focus_handle(cx), cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     press(cx, true);
     assert_surface(&shell, cx, RightSurface::Subagent(1));
 }
@@ -402,7 +402,7 @@ fn bottom_terminal_keeps_session_navigation(cx: &mut TestAppContext) {
             shell.toggle_terminal(window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         assert!(
             shell
@@ -425,7 +425,7 @@ fn bottom_terminal_keeps_session_navigation(cx: &mut TestAppContext) {
 fn each_session_cycles_only_its_own_tabs(cx: &mut TestAppContext) {
     let (shell, cx) = setup(cx);
     shell.update(cx, |shell, cx| shell.open_chat("other".into(), cx));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
             shell.add_subagent_surface("other".into(), "third".into(), "Third".into(), false, cx);
@@ -438,7 +438,7 @@ fn each_session_cycles_only_its_own_tabs(cx: &mut TestAppContext) {
         assert_eq!(shell.resolved_right_active(cx), RightSurface::Subagent(3));
     });
     shell.update(cx, |shell, cx| shell.open_chat("parent".into(), cx));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let tab = cx.debug_bounds("right-surface-tab-0").unwrap().center();
     cx.simulate_click(tab, gpui_kit::Modifiers::default());
     press(cx, true);
@@ -475,7 +475,7 @@ fn copy_shortcut_copies_transcript_selection_after_clicking_the_transcript(
         main.origin + gpui_kit::point(px(100.), px(150.)),
         gpui_kit::Modifiers::default(),
     );
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         let shell = shell.read(cx);
         assert!(!shell.composer.focus_handle(cx).is_focused(window));
@@ -495,7 +495,7 @@ fn copy_shortcut_copies_side_chat_selection_from_the_right_pane(cx: &mut TestApp
         let right = shell.read(cx).navigation_focus.right.clone();
         window.focus(&right, cx);
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     select_transcript_text(cx);
     cx.simulate_keystrokes("ctrl-c");
     assert_eq!(clipboard_text(cx).as_deref(), Some("selected"));
@@ -507,7 +507,7 @@ fn copy_shortcut_prefers_the_focused_composer_selection(cx: &mut TestAppContext)
     let _selection = crate::markdown::selection::test_state_lock();
     let (shell, cx) = setup(cx);
     cx.update(|window, cx| window.focus(&shell.read(cx).composer.focus_handle(cx), cx));
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_input("draft text");
     select_transcript_text(cx);
     cx.simulate_keystrokes("ctrl-a ctrl-c");
@@ -527,7 +527,7 @@ fn ctrl_c_in_a_terminal_is_not_taken_by_a_transcript_selection(cx: &mut TestAppC
             shell.toggle_terminal(window, cx);
         })
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     select_transcript_text(cx);
     cx.simulate_keystrokes("ctrl-c");
     assert_eq!(clipboard_text(cx).as_deref(), Some("sentinel"));

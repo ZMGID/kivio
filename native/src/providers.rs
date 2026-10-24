@@ -4,9 +4,16 @@
 mod oauth;
 #[path = "providers/purposes.rs"]
 mod purposes;
+#[path = "providers/request.rs"]
+mod request;
+#[path = "providers/details.rs"]
+mod details;
+#[path = "providers/probe.rs"]
+mod probe;
 use crate::provider_settings::{
     DefaultModelsConfig, ModelProvider, ProviderRequestConfig, sanitize_provider,
 };
+use gpui_kit::component::Sizable;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Selectable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -69,6 +76,7 @@ struct ProviderDocument {
     providers: Vec<ModelProvider>,
     selection: (String, String),
     defaults: DefaultModelsConfig,
+    video_enabled: bool,
 }
 
 impl Default for ProviderDocument {
@@ -79,6 +87,7 @@ impl Default for ProviderDocument {
             providers: vec![],
             selection: Default::default(),
             defaults: Default::default(),
+            video_enabled: true,
         }
     }
 }
@@ -114,8 +123,13 @@ fn resolve_selection(
 
 impl ProviderDocument {
     fn load(path: &Path) -> Result<Self, String> {
+        let directory = path.parent().ok_or("缺少供应商目录")?;
+        let root = if directory.file_name().is_some_and(|name| name == "conversations") {
+            directory.parent().ok_or("缺少设置目录")?
+        } else { directory };
+        let legacy_video_enabled = kivio_model_runtime::native_preferences::load(root)?.chat.video_analysis_enabled;
         let Some(bytes) = read_document(path)? else {
-            return Ok(Self::default());
+            return Ok(Self { video_enabled: legacy_video_enabled, ..Self::default() });
         };
         let raw: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "供应商配置格式损坏，请先修复配置文件再重试。".to_string())?;
@@ -163,9 +177,11 @@ impl ProviderDocument {
             defaults.chat.provider_id.clone(),
             defaults.chat.model.clone(),
         );
+        let video_enabled = raw.get("videoAnalysisEnabled").and_then(Value::as_bool).unwrap_or(legacy_video_enabled);
         Ok(Self {
             raw,
             baseline: Some(bytes),
+            video_enabled,
             providers,
             selection,
             defaults,
@@ -200,6 +216,7 @@ impl ProviderDocument {
             self.defaults.chat.provider_id.clone(),
             self.defaults.chat.model.clone(),
         );
+        self.raw["videoAnalysisEnabled"] = json!(self.video_enabled);
         self.raw["chatProviderId"] = json!(self.selection.0);
         self.raw["chatModel"] = json!(self.selection.1);
         let defaults = serde_json::to_value(&self.defaults)
@@ -229,6 +246,11 @@ fn read_document(path: &Path) -> Result<Option<Vec<u8>>, String> {
 
 pub(crate) struct ProviderSettings {
     mixer_only: bool,
+    request_page: bool,
+    model_details: Option<details::ModelDetails>,
+    identity_version: Entity<InputState>,
+    headers: Vec<(Entity<InputState>, Entity<InputState>)>,
+    header_subscriptions: Vec<Subscription>,
     path: PathBuf,
     confirmed: ProviderDocument,
     draft: Vec<ModelProvider>,
@@ -258,16 +280,16 @@ impl ProviderSettings {
         self.mixer_only = value;
     }
     pub(crate) fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("供应商名称"));
+        let name = cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::text("供应商名称")));
         let endpoint =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://api.example.com/v1"));
         let key = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("输入新密钥；留空保留已保存的密钥")
+                .placeholder(crate::i18n::text("输入新密钥；留空保留已保存的密钥"))
                 .masked(true)
         });
         let models_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("输入模型 ID，多个模型用逗号分隔"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(crate::i18n::text("输入模型 ID，多个模型用逗号分隔")));
         let format = cx.new(|cx| {
             SelectState::new(
                 FORMATS
@@ -282,8 +304,9 @@ impl ProviderSettings {
         let model = cx.new(|cx| {
             SelectState::new(Vec::<ModelChoice>::new(), None, window, cx).searchable(true)
         });
+        let identity_version = cx.new(|cx| InputState::new(window, cx));
         let mut subscriptions = Vec::new();
-        for input in [&name, &endpoint, &key, &models_input] {
+        for input in [&name, &endpoint, &key, &models_input, &identity_version] {
             subscriptions.push(cx.subscribe(input, |this, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.dirty = true;
@@ -308,6 +331,11 @@ impl ProviderSettings {
         );
         let mut settings = Self {
             mixer_only: false,
+            request_page: false,
+            model_details: None,
+            identity_version,
+            headers: vec![],
+            header_subscriptions: vec![],
             path,
             confirmed: ProviderDocument::default(),
             draft: vec![],
@@ -351,6 +379,42 @@ impl ProviderSettings {
             return Err("供应商配置尚未读取，请在设置中重试。".into());
         }
         resolve_selection(&self.confirmed.providers, provider_id, model)
+    }
+
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy || self.oauth_run.is_some()
+    }
+
+    pub(crate) fn has_unsaved_changes(&self, cx: &App) -> bool {
+        if self.dirty
+            || serde_json::to_value(&self.draft).ok()
+                != serde_json::to_value(&self.confirmed.providers).ok()
+        {
+            return true;
+        }
+        let Some(provider) = self.draft.iter().find(|provider| Some(&provider.id) == self.editing.as_ref()) else {
+            return false;
+        };
+        let mut models = Vec::new();
+        let input = self.models_input.read(cx).value();
+        for model in input.split([',', '，', '\n']).map(str::trim).filter(|model| !model.is_empty()) {
+            if !models.iter().any(|value: &&str| *value == model) {
+                models.push(model);
+            }
+        }
+        let format = self.format.read(cx).selected_value().and_then(|label| {
+            FORMATS.iter().find(|(title, _)| *title == label.as_str()).map(|(_, value)| *value)
+        }).unwrap_or(FORMATS[0].1);
+        let headers: Vec<_> = self.headers.iter().map(|(key, value)| {
+            (key.read(cx).value().trim().to_string(), value.read(cx).value().to_string())
+        }).filter(|(key, value)| !key.is_empty() || !value.is_empty()).collect();
+        self.name.read(cx).value().trim() != provider.name
+            || self.endpoint.read(cx).value().trim() != provider.base_url
+            || self.identity_version.read(cx).value().trim() != provider.request.cli_identity_version
+            || !self.key.read(cx).value().trim().is_empty()
+            || models != provider.enabled_models.iter().map(String::as_str).collect::<Vec<_>>()
+            || format != provider.api_format
+            || headers != provider.request.custom_headers.iter().map(|header| (header.key.clone(), header.value.clone())).collect::<Vec<_>>()
     }
 
     pub(crate) fn models(&self) -> Vec<ModelChoice> {
@@ -467,6 +531,8 @@ impl ProviderSettings {
     }
 
     fn open_editor(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_page = false;
+        self.model_details = None;
         self.editing = id;
         self.oauth_account = None;
         self.oauth_usage = None;
@@ -474,7 +540,31 @@ impl ProviderSettings {
             .draft
             .iter()
             .find(|provider| Some(&provider.id) == self.editing.as_ref());
+        self.headers = provider
+            .map(|p| {
+                p.request
+                    .custom_headers
+                    .iter()
+                    .map(|header| {
+                        (
+                            cx.new(|cx| {
+                                InputState::new(window, cx).default_value(header.key.clone())
+                            }),
+                            cx.new(|cx| {
+                                InputState::new(window, cx).default_value(header.value.clone())
+                            }),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         for (input, value) in [
+            (
+                &self.identity_version,
+                provider
+                    .map(|p| p.request.cli_identity_version.clone())
+                    .unwrap_or_default(),
+            ),
             (
                 &self.name,
                 provider.map(|p| p.name.clone()).unwrap_or_default(),
@@ -504,6 +594,7 @@ impl ProviderSettings {
             .to_owned();
         self.format
             .update(cx, |state, cx| state.set_selected_value(&label, window, cx));
+        self.watch_headers(cx);
     }
 
     fn capture_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -514,6 +605,19 @@ impl ProviderSettings {
         else {
             return;
         };
+        provider.request.cli_identity_version =
+            self.identity_version.read(cx).value().trim().to_string();
+        provider.request.custom_headers = self
+            .headers
+            .iter()
+            .map(
+                |(key, value)| crate::provider_settings::ProviderCustomHeader {
+                    key: key.read(cx).value().trim().to_string(),
+                    value: value.read(cx).value().to_string(),
+                },
+            )
+            .filter(|header| !header.key.is_empty() || !header.value.is_empty())
+            .collect();
         provider.name = self.name.read(cx).value().trim().to_owned();
         provider.base_url = self.endpoint.read(cx).value().trim().to_owned();
         let label = self
@@ -556,11 +660,25 @@ impl ProviderSettings {
         }
     }
 
+    /// Commit both retained editors to the draft before changing its selection.
+    /// Invalid model fields keep their editor open; explicit discard still uses `accept`.
+    fn capture_pending_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Err(error) = self.capture_model(cx) {
+            self.error = Some(error);
+            cx.notify();
+            return false;
+        }
+        self.capture_editor(window, cx);
+        true
+    }
+
     fn add_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || !self.ready {
             return;
         }
-        self.capture_editor(window, cx);
+        if !self.capture_pending_editor(window, cx) {
+            return;
+        }
         let id = uuid::Uuid::new_v4().to_string();
         self.draft.push(ModelProvider {
             id: id.clone(),
@@ -617,8 +735,20 @@ impl ProviderSettings {
         if self.busy || !self.ready {
             return;
         }
-        self.capture_editor(window, cx);
+        if !self.capture_pending_editor(window, cx) {
+            return;
+        }
         for provider in &self.draft {
+            if provider
+                .request
+                .custom_headers
+                .iter()
+                .any(|header| !crate::provider_settings::is_usable_header(header))
+            {
+                self.error = Some("请求头无效：请检查名称、值及保留字段；草稿未保存。".into());
+                cx.notify();
+                return;
+            }
             if provider.name.is_empty() {
                 self.error = Some("请填写供应商名称。".into());
             } else if !(provider.base_url.starts_with("https://")
@@ -640,10 +770,13 @@ impl ProviderSettings {
 
 fn field(label: &'static str, control: impl IntoElement) -> impl IntoElement {
     div()
-        .v_flex()
-        .gap_2()
-        .child(div().text_sm().child(label))
-        .child(control)
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_3()
+        .min_h(px(44.))
+        .child(div().w(px(120.)).text_size(px(13.)).child(crate::i18n::display(label)))
+        .child(div().flex().flex_1().min_w(px(180.)).child(control))
 }
 
 impl Render for ProviderSettings {
@@ -662,7 +795,8 @@ impl Render for ProviderSettings {
                 })
                 .child(
                     Button::new("providers-reload")
-                        .label("重新读取")
+                        .small()
+                        .label(crate::i18n::text("重新读取"))
                         .disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
                 )
@@ -673,11 +807,15 @@ impl Render for ProviderSettings {
         }
         // ProvidersTab owns a collection/detail layout. Keep the native editor's
         // retained inputs and durable writer while restoring that navigation.
-        let mut providers = div().v_flex().gap_2().child(
+        if !self.mixer_only && self.model_details.is_none() && !self.request_page {
+            content = content.child(div().v_flex().gap_2()
+                .child(crate::i18n::text("默认对话模型"))
+                .child(Select::new(&self.model).small().disabled(disabled || self.dirty)));
+        }
+        let mut providers = div().flex().flex_wrap().gap_2().child(
             Button::new("provider-add")
-                .label("添加供应商")
-                .primary()
-                .w_full()
+                .small()
+                .label(crate::i18n::text("添加供应商"))
                 .disabled(disabled)
                 .on_click(cx.listener(|this, _, window, cx| this.add_provider(window, cx))),
         );
@@ -685,21 +823,46 @@ impl Render for ProviderSettings {
             let id = provider.id.clone();
             providers = providers.child(
                 Button::new(SharedString::from(format!("provider-{}", provider.id)))
+                    .small()
                     .label(if provider.enabled {
                         provider.name.clone()
                     } else {
-                        format!("{} · 已停用", provider.name)
+                        crate::ui_format!("{} · 已停用", "{} · Disabled", provider.name)
                     })
                     .ghost()
-                    .w_full().justify_start()
                     .selected(self.editing.as_ref() == Some(&provider.id))
                     .disabled(disabled)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.capture_editor(window, cx);
+                        if !this.capture_pending_editor(window, cx) {
+                            return;
+                        }
                         this.open_editor(Some(id.clone()), window, cx);
                         cx.notify();
                     })),
             );
+        }
+
+        if let Some(index) = self.draft.iter().position(|provider| Some(&provider.id) == self.editing.as_ref()) {
+            providers = providers.child(Button::new("provider-move-before").small().ghost().label(crate::i18n::text("前移"))
+                .tooltip("将当前供应商向前移动一位，保存配置后生效")
+                .disabled(disabled || index == 0)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.capture_editor(window, cx);
+                    if let Some(index) = this.draft.iter().position(|provider| Some(&provider.id) == this.editing.as_ref()) {
+                        if index > 0 { this.draft.swap(index, index - 1); this.dirty = true; }
+                    }
+                    cx.notify();
+                })))
+                .child(Button::new("provider-move-after").small().ghost().label(crate::i18n::text("后移"))
+                .tooltip("将当前供应商向后移动一位，保存配置后生效")
+                .disabled(disabled || index + 1 == self.draft.len())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.capture_editor(window, cx);
+                    if let Some(index) = this.draft.iter().position(|provider| Some(&provider.id) == this.editing.as_ref()) {
+                        if index + 1 < this.draft.len() { this.draft.swap(index, index + 1); this.dirty = true; }
+                    }
+                    cx.notify();
+                })));
         }
 
         if let Some(provider) = self
@@ -730,6 +893,7 @@ impl Render for ProviderSettings {
                 .child(field(
                     "名称",
                     Input::new(&self.name)
+                        .small()
                         .id("provider-name")
                         .aria_label("供应商名称")
                         .disabled(disabled),
@@ -737,6 +901,7 @@ impl Render for ProviderSettings {
                 .child(field(
                     "认证方式",
                     Button::new("provider-auth-method")
+                        .small()
                         .dropdown_caret(true)
                         .label(match auth_kind.as_deref() {
                             Some("codex") => "Codex OAuth",
@@ -774,12 +939,15 @@ impl Render for ProviderSettings {
                 .child(field(
                     "接口地址",
                     div()
+                        .w_full()
+                        .flex_wrap()
                         .flex()
                         .items_center()
                         .gap_2()
                         .child(
-                            div().flex_1().min_w_0().child(
+                            div().flex_1().min_w(px(160.)).child(
                                 Input::new(&self.endpoint)
+                                    .small()
                                     .id("provider-endpoint")
                                     .aria_label("API 地址")
                                     .disabled(disabled || oauth),
@@ -789,78 +957,91 @@ impl Render for ProviderSettings {
                             div().w(px(180.)).flex_none().child(
                                 Select::new(&self.format)
                                     .id("provider-format")
-                                    .disabled(disabled || oauth)
-                                    .w_full(),
+                                    .disabled(disabled || oauth),
                             ),
                         ),
                 ))
                 .child(field(
                     "启用的模型",
                     Input::new(&self.models_input)
+                        .small()
                         .id("provider-models")
                         .aria_label("启用的模型，多个模型用逗号分隔")
                         .disabled(disabled),
                 ))
                 .child(
-                    Button::new("provider-model-catalog")
-                        .label("从可用模型选择")
-                        .dropdown_caret(true)
-                        .disabled(disabled || available_models.is_empty())
-                        .dropdown_menu(move |mut menu, _, _| {
-                            for model in &available_models {
-                                let owner = model_owner.clone();
-                                let model = model.clone();
-                                menu = menu.item(
-                                    PopupMenuItem::new(model.clone())
-                                        .checked(enabled_models.contains(&model))
-                                        .on_click(move |_, window, cx| {
-                                            let _ = owner.update(cx, |this, cx| {
-                                                this.capture_editor(window, cx);
-                                                if let Some(provider) =
-                                                    this.draft.iter_mut().find(|value| {
-                                                        Some(&value.id) == this.editing.as_ref()
-                                                    })
-                                                {
-                                                    if provider.enabled_models.contains(&model) {
-                                                        provider
-                                                            .enabled_models
-                                                            .retain(|value| value != &model);
-                                                    } else {
-                                                        provider.enabled_models.push(model.clone());
+                    div().flex().child(
+                        Button::new("provider-model-catalog")
+                            .small()
+                            .label(crate::i18n::text("从可用模型选择"))
+                            .dropdown_caret(true)
+                            .disabled(disabled || available_models.is_empty())
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for model in &available_models {
+                                    let owner = model_owner.clone();
+                                    let model = model.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(model.clone())
+                                            .checked(enabled_models.contains(&model))
+                                            .on_click(move |_, window, cx| {
+                                                let _ = owner.update(cx, |this, cx| {
+                                                    this.capture_editor(window, cx);
+                                                    if let Some(provider) =
+                                                        this.draft.iter_mut().find(|value| {
+                                                            Some(&value.id) == this.editing.as_ref()
+                                                        })
+                                                    {
+                                                        if provider.enabled_models.contains(&model)
+                                                        {
+                                                            provider
+                                                                .enabled_models
+                                                                .retain(|value| value != &model);
+                                                        } else {
+                                                            provider
+                                                                .enabled_models
+                                                                .push(model.clone());
+                                                        }
+                                                        let models =
+                                                            provider.enabled_models.join(", ");
+                                                        this.models_input.update(
+                                                            cx,
+                                                            |input, cx| {
+                                                                input.set_value(models, window, cx)
+                                                            },
+                                                        );
                                                     }
-                                                    let models = provider.enabled_models.join(", ");
-                                                    this.models_input.update(cx, |input, cx| {
-                                                        input.set_value(models, window, cx)
-                                                    });
-                                                }
-                                                this.dirty = true;
-                                                cx.notify();
-                                            });
-                                        }),
-                                );
-                            }
-                            menu
-                        }),
+                                                    this.dirty = true;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    );
+                                }
+                                menu
+                            }),
+                    ),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("填写供应商提供的模型 ID；已有模型参数覆盖会保留。"),
+                        .child(crate::i18n::text("填写供应商提供的模型 ID；已有模型参数覆盖会保留。")),
                 );
+            content = content.child(div().flex().flex_wrap().gap_2()
+                .child(Button::new("provider-probe").small().label(crate::i18n::text("测试连接")).disabled(disabled).on_click(cx.listener(|this, _, window, cx| this.probe(false, window, cx))))
+                .child(Button::new("provider-fetch-models").small().label(crate::i18n::text("拉取模型")).disabled(disabled).on_click(cx.listener(|this, _, window, cx| this.probe(true, window, cx)))));
             if oauth {
                 content = content.child(self.render_oauth(provider, cx));
             } else {
                 let key_owner = cx.weak_entity();
-                content = content.child(field("API Key", Input::new(&self.key).id("provider-key").aria_label("新的 API Key").disabled(disabled)))
+                content = content.child(field("API Key", Input::new(&self.key).small().id("provider-key").aria_label("新的 API Key").disabled(disabled)))
                     .child(div().flex().flex_wrap().items_center().gap_3()
-                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(if key_count == 0 { "没有配置密钥；匿名端点可以留空。".to_string() } else { format!("当前配置包含 {key_count} 个密钥。输入新值会替换当前密钥。") }))
-                        .child(Button::new("provider-active-key").label(format!("密钥 {}", active_key + 1)).dropdown_caret(true)
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(if key_count == 0 { "没有配置密钥；匿名端点可以留空。".to_string() } else { crate::ui_format!("当前配置包含 {key_count} 个密钥。输入新值会替换当前密钥。", "This configuration has {key_count} keys. Entering a new value replaces the current key.") }))
+                        .child(Button::new("provider-active-key").small().label(crate::ui_format!("密钥 {}", "Key {}", active_key + 1)).dropdown_caret(true)
                             .disabled(disabled || key_count == 0)
                             .dropdown_menu(move |mut menu, _, _| {
                                 for index in 0..key_count {
                                     let owner = key_owner.clone();
-                                    menu = menu.item(PopupMenuItem::new(format!("密钥 {}", index + 1)).checked(index == active_key)
+                                    menu = menu.item(PopupMenuItem::new(crate::ui_format!("密钥 {}", "Key {}", index + 1)).checked(index == active_key)
                                         .on_click(move |_, window, cx| {
                                             let _ = owner.update(cx, |this, cx| {
                                                 this.capture_editor(window, cx);
@@ -874,9 +1055,9 @@ impl Render for ProviderSettings {
                                 }
                                 menu
                             }))
-                        .child(Button::new("provider-add-key").label("添加为新密钥").disabled(disabled)
+                        .child(Button::new("provider-add-key").small().label(crate::i18n::text("添加为新密钥")).disabled(disabled)
                             .on_click(cx.listener(|this, _, window, cx| this.add_key(window, cx))))
-                        .child(Button::new("provider-clear-key").label("移除当前密钥").disabled(disabled || key_count == 0)
+                        .child(Button::new("provider-clear-key").small().label(crate::i18n::text("移除当前密钥")).disabled(disabled || key_count == 0)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.capture_editor(window, cx);
                                 if let Some(provider) = this.draft.iter_mut().find(|provider| Some(&provider.id) == this.editing.as_ref()) {
@@ -895,7 +1076,7 @@ impl Render for ProviderSettings {
                         .gap_4()
                         .child(
                             Checkbox::new("provider-enabled")
-                                .label("启用供应商")
+                                .label(crate::i18n::text("启用供应商"))
                                 .checked(provider.enabled)
                                 .disabled(disabled)
                                 .on_click(cx.listener(|this, value, _, cx| {
@@ -910,7 +1091,7 @@ impl Render for ProviderSettings {
                         )
                         .child(
                             Checkbox::new("provider-proxy")
-                                .label("跟随系统代理")
+                                .label(crate::i18n::text("跟随系统代理"))
                                 .checked(provider.request.use_system_proxy)
                                 .disabled(disabled)
                                 .on_click(cx.listener(|this, value, _, cx| {
@@ -925,38 +1106,78 @@ impl Render for ProviderSettings {
                         ),
                 )
                 .child(
-                    Button::new("provider-remove")
-                        .label("移除此供应商")
-                        .disabled(disabled || signed)
-                        .tooltip(if signed {
-                            "先断开账号再移除供应商"
-                        } else {
-                            "保存后移除此供应商"
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.draft.retain(|provider| provider.id != provider_id);
-                            this.open_editor(
-                                this.draft.first().map(|provider| provider.id.clone()),
-                                window,
-                                cx,
-                            );
-                            this.dirty = true;
-                            cx.notify();
-                        })),
+                    div().flex().child(
+                        Button::new("provider-remove")
+                            .small()
+                            .label(crate::i18n::text("移除此供应商"))
+                            .disabled(disabled || signed)
+                            .tooltip(if signed {
+                                "先断开账号再移除供应商"
+                            } else {
+                                "保存后移除此供应商"
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.draft.retain(|provider| provider.id != provider_id);
+                                this.open_editor(
+                                    this.draft.first().map(|provider| provider.id.clone()),
+                                    window,
+                                    cx,
+                                );
+                                this.dirty = true;
+                                cx.notify();
+                            })),
+                    ),
                 );
         } else {
             content = content.child(
                 div()
                     .text_sm()
-                    .child("添加你的模型供应商，填写 API 地址、密钥和模型后即可开始对话。"),
+                    .child(crate::i18n::text("添加你的模型供应商，填写 API 地址、密钥和模型后即可开始对话。")),
             );
+        }
+        if let Some(provider) = self
+            .draft
+            .iter()
+            .find(|p| Some(&p.id) == self.editing.as_ref())
+        {
+            if self.model_details.is_some() {
+                content = div().v_flex().gap_4().child(self.model_detail_page(cx));
+            } else if self.request_page {
+                content = div()
+                    .v_flex()
+                    .gap_4()
+                    .child(self.request_page(provider, cx));
+            } else {
+                let models = provider.available_models.iter().chain(provider.enabled_models.iter()).cloned().collect::<std::collections::BTreeSet<_>>();
+                let owner = cx.weak_entity();
+                content = content.child(div().flex().child(Button::new("model-details-menu").small().label(crate::i18n::text("模型详情…")).dropdown_caret(true).disabled(disabled || models.is_empty()).dropdown_menu(move |mut menu, _, _| {
+                    for model in &models {
+                        let owner = owner.clone(); let model = model.clone();
+                        menu = menu.item(PopupMenuItem::new(model.clone()).on_click(move |_, window, cx| { let _ = owner.update(cx, |this, cx| this.open_model(model.clone(), window, cx)); }));
+                    }
+                    menu
+                })));
+                content = content.child(
+                    div().flex().child(
+                        Button::new("request-config")
+                            .small()
+                            .label(crate::i18n::text("请求配置…"))
+                            .disabled(disabled)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.request_page = true;
+                                cx.notify();
+                            })),
+                    ),
+                );
+            }
         }
         content = content
             .when_some(self.error.clone(), |view, error| {
                 view.child(div().text_sm().text_color(cx.theme().danger).child(error))
                     .child(
                         Button::new("providers-reload")
-                            .label("放弃编辑并重新读取")
+                            .small()
+                            .label(crate::i18n::text("放弃编辑并重新读取"))
                             .disabled(self.busy)
                             .on_click(cx.listener(|this, _, window, cx| this.reload(window, cx))),
                     )
@@ -968,6 +1189,7 @@ impl Render for ProviderSettings {
                     .gap_3()
                     .child(
                         Button::new("providers-save")
+                            .small()
                             .primary()
                             .label(if self.busy {
                                 "正在处理…"
@@ -979,7 +1201,8 @@ impl Render for ProviderSettings {
                     )
                     .child(
                         Button::new("providers-reset")
-                            .label("放弃编辑")
+                            .small()
+                            .label(crate::i18n::text("放弃编辑"))
                             .disabled(disabled || !self.dirty)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.accept(this.confirmed.clone(), window, cx);
@@ -997,75 +1220,31 @@ impl Render for ProviderSettings {
                             }),
                     ),
             );
-        div()
-            .v_flex()
-            .size_full()
-            .min_h_0()
-            .text_size(px(14.))
-            .child(
-                div()
-                    .flex_none()
-                    .px_6()
-                    .pt(px(48.))
-                    .pb_5()
-                    .child(
-                        div()
-                            .text_size(px(22.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("模型"),
-                    )
-                    .child(
-                        div()
-                            .mt_2()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("管理 OpenAI 兼容供应商、密钥和启用模型。"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_5()
-                    .px_6()
-                    .pb_6()
-                    .child(
-                        div()
-                            .id("provider-list-scroll")
-                            .w(px(190.))
-                            .flex_none()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .pr_4()
-                            .border_r_1()
-                            .border_color(cx.theme().border)
-                            .child(providers),
-                    )
-                    .child(
-                        div()
-                            .id("provider-detail-scroll")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .child(
-                                div()
-                                    .v_flex()
-                                    .gap_4()
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                                    .bg(cx.theme().background)
-                                    .rounded_lg()
-                                    .p_4()
-                                    .child(
-                                        div().font_weight(FontWeight::MEDIUM).child("供应商配置"),
-                                    )
-                                    .child(content),
-                            ),
-                    ),
-            )
-            .into_any_element()
+        crate::kivio_settings::page_frame(
+            "模型",
+            "管理供应商、连接凭据与启用的模型。",
+            div()
+                .v_flex()
+                .gap_5()
+                .child(
+                    div()
+                        .rounded(px(12.))
+                        .bg(cx.theme().group_box)
+                        .p_3()
+                        .child(providers),
+                )
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_4()
+                        .rounded(px(12.))
+                        .bg(cx.theme().group_box)
+                        .p_4()
+                        .child(content),
+                )
+                .into_any_element(),
+            cx,
+        )
     }
 }
 
@@ -1091,6 +1270,41 @@ mod tests {
             "defaultModels": {"chat": {"providerId": "provider-one", "model": "model-a"}, "translator": {"providerId": "translator", "model": "retained"}},
             "unrelatedSetting": {"preserve": true}
         })
+    }
+
+    #[test]
+    fn video_purpose_and_enablement_share_one_commit_and_runtime_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = directory.path().join("conversations");
+        fs::create_dir(&catalog).unwrap();
+        let path = catalog.join("providers.json");
+        fs::write(&path, fixture().to_string()).unwrap();
+        let legacy = r#"{"settings":{"chat":{"videoAnalysisEnabled":false}}}"#;
+        fs::write(directory.path().join("settings.json"), legacy).unwrap();
+        let original = ProviderDocument::load(&path).unwrap();
+        assert!(!original.video_enabled);
+        let mut selected = original.clone();
+        selected.select_purpose(super::purposes::Purpose::Video, crate::provider_settings::DefaultModelSelection {
+            provider_id: "provider-one".into(), model: "model-b".into(),
+        });
+        let mut selected = selected.save(&path).unwrap();
+        let runtime = kivio_model_runtime::native_preferences::load_runtime(directory.path()).unwrap();
+        assert!(runtime.chat.video_analysis_enabled);
+        assert_eq!(runtime.default_models.video_analysis.model, "model-b");
+        assert_eq!(fs::read_to_string(directory.path().join("settings.json")).unwrap(), legacy);
+        assert!(original.save(&path).is_err(), "stale configuration must not partially overwrite the video intent");
+        selected.video_enabled = false;
+        let mut disabled = selected.save(&path).unwrap();
+        assert!(!kivio_model_runtime::native_preferences::load_runtime(directory.path()).unwrap().chat.video_analysis_enabled);
+        disabled.select_purpose(super::purposes::Purpose::Video, Default::default());
+        disabled.save(&path).unwrap();
+        let runtime = kivio_model_runtime::native_preferences::load_runtime(directory.path()).unwrap();
+        assert!(runtime.chat.video_analysis_enabled);
+        assert!(runtime.default_models.video_analysis.provider_id.is_empty());
+        assert!(kivio_model_runtime::native_preferences::save(directory.path(),
+            kivio_model_runtime::native_preferences::Change::Fields(vec![kivio_model_runtime::native_preferences::FieldEdit {
+                path: "/chat/videoAnalysisEnabled".into(), before: json!(false), after: json!(true),
+            }])).is_err(), "preferences cannot become a second video writer");
     }
 
     // Real Kit input and Save → durable file → reopened owner. Failure preserves
@@ -1239,6 +1453,34 @@ mod tests {
         assert_eq!(
             ProviderDocument::load(&path).unwrap().providers[0].name,
             "Retained draft"
+        );
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("request-config", cx);
+            })
+            .unwrap();
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.click(("request-header-value", 0usize), cx);
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window, "secondary-a");
+        cx.simulate_input(window, "changed-workspace");
+        window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("providers-save", cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            ProviderDocument::load(&path).unwrap().providers[0]
+                .request
+                .custom_headers[0]
+                .value,
+            "changed-workspace"
         );
     }
 

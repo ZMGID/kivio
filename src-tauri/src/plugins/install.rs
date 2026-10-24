@@ -6,13 +6,14 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use super::{refresh_process_path_for_detection, resolve_binary_for_status};
 use super::catalog::{catalog_plugin, CatalogPlugin, OFFICECLI_DOMAIN_SKILLS, PLUGIN_CATALOG};
 use super::lifecycle::{
     apply_disable_side_effects, apply_enable_side_effects, plugin_mcp_server_id,
 };
 use super::state::{
-    default_binary_filename, is_enabled, kivio_binary_path, meta_path, plugin_dir, probe_version,
-    read_meta, refresh_process_path_for_detection, resolve_binary, resolve_binary_for_status,
+    default_binary_filename, is_enabled, is_installed, kivio_binary_path, meta_path, plugin_dir, probe_version,
+    read_meta, resolve_binary,
     skill_dir, write_meta, PluginMeta,
 };
 use crate::proc::NoConsoleWindow;
@@ -21,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-const OFFICIAL_INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 const SKILLS_INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
 const OFFICIAL_INSTALL_OUTPUT_CAP: usize = 8_000;
 
@@ -339,25 +339,8 @@ PATH 若仅新终端生效：请用户在插件页点刷新，或重启 Kivio。
     })
 }
 
-fn official_install_program_args(script: &str) -> (&'static str, Vec<String>) {
-    #[cfg(windows)]
-    {
-        (
-            "powershell.exe",
-            vec![
-                "-NoProfile".into(),
-                "-ExecutionPolicy".into(),
-                "Bypass".into(),
-                "-Command".into(),
-                script.to_string(),
-            ],
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        ("bash", vec!["-lc".into(), script.to_string()])
-    }
-}
+#[cfg(test)]
+use super::install_core::official_install_program_args;
 
 fn trim_install_output(stdout: &[u8], stderr: &[u8]) -> String {
     let out = String::from_utf8_lossy(stdout);
@@ -371,7 +354,8 @@ fn trim_install_output(stdout: &[u8], stderr: &[u8]) -> String {
     }
     let mut text = parts.join("\n");
     if text.len() > OFFICIAL_INSTALL_OUTPUT_CAP {
-        let start = text.len() - OFFICIAL_INSTALL_OUTPUT_CAP;
+        let mut start = text.len() - OFFICIAL_INSTALL_OUTPUT_CAP;
+        while !text.is_char_boundary(start) { start += 1; }
         text = format!("…{}", &text[start..]);
     }
     text
@@ -380,41 +364,8 @@ fn trim_install_output(stdout: &[u8], stderr: &[u8]) -> String {
 /// 运行 catalog 里当前系统的 GitHub README 安装命令（允许名单）。
 pub async fn run_official_install(id: &str) -> Result<PluginActionResult, String> {
     let catalog = catalog_plugin(id).ok_or_else(|| format!("unknown plugin: {id}"))?;
-    let script = catalog
-        .host_install_command()
-        .ok_or_else(|| "当前系统暂不支持自动安装该插件".to_string())?;
-    if !catalog
-        .install_commands
-        .iter()
-        .any(|cmd| cmd.command == script)
-    {
-        return Err("安装失败，请稍后重试。".to_string());
-    }
-
-    let (program, args) = official_install_program_args(script);
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .no_console_window();
-
-    let child = cmd.spawn().map_err(|_| "无法开始安装".to_string())?;
-    let output = tokio::time::timeout(OFFICIAL_INSTALL_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| "安装超时（10 分钟）。可再点一次安装。".to_string())?
-        .map_err(|_| "安装失败，请稍后重试。".to_string())?;
-
-    let detail = trim_install_output(&output.stdout, &output.stderr);
-    if !detail.is_empty() {
-        eprintln!("[plugins] official install {}:\n{detail}", catalog.id);
-    }
+    super::install_core::run_official(id, &|line| eprintln!("[plugins] {id}: {line}")).await?;
     refresh_process_path_for_detection();
-
-    if !output.status.success() {
-        return Err("安装失败，请稍后重试。".to_string());
-    }
 
     spawn_official_skill_sync(id);
 
@@ -501,12 +452,7 @@ fn build_downloaded_skill_app_brief(catalog: &CatalogPlugin) -> PluginInstallBri
 /// 启用「下载型」插件时，从 `skill_download_url` 拉取 Skill 到 `plugins/<id>/skills/`
 /// （解压 zip 内首个 SKILL.md 文件夹到 `.../skills/<skill_id>/`）。
 async fn download_plugin_skill(catalog: &CatalogPlugin, url: &str) -> Result<(), String> {
-    let dest = plugin_dir(catalog.id)
-        .ok_or_else(|| "app data directory unavailable".to_string())?
-        .join("skills");
-    std::fs::create_dir_all(&dest).map_err(|e| format!("create plugin skills dir: {e}"))?;
-    crate::skills::download_skill_zip_into(url, &dest).await?;
-    Ok(())
+    super::install_core::download_skill(catalog, url).await
 }
 
 pub async fn set_plugin_enabled(
@@ -850,61 +796,6 @@ fn kill_named_processes(name: &str) {
     }
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-}
-
-/// 官方 `officecli skills install` 把领域 skill 写到 `~/.agents/skills/<folder>`，
-/// folder 是 `pptx` 而 catalog 里的 skill_id 是 `officecli-pptx`。
-fn officecli_skill_folder(skill_id: &str) -> &str {
-    OFFICECLI_DOMAIN_SKILLS
-        .iter()
-        .find(|(_, id)| *id == skill_id)
-        .map(|(folder, _)| *folder)
-        .unwrap_or(skill_id)
-}
-
-fn skill_folder_names(skill_id: &str) -> Vec<&str> {
-    let alias = officecli_skill_folder(skill_id);
-    if alias == skill_id {
-        vec![skill_id]
-    } else {
-        vec![skill_id, alias]
-    }
-}
-
-fn home_agent_skill_parents() -> Vec<PathBuf> {
-    let Some(home) = home_dir() else {
-        return Vec::new();
-    };
-    vec![
-        home.join(".agents").join("skills"),
-        home.join(crate::app_data::user_home_name()).join("skills"),
-        home.join(".claude").join("skills"),
-        home.join(".cursor").join("skills"),
-        home.join(".codex").join("skills"),
-        home.join(".copilot").join("skills"),
-        home.join(".hermes").join("skills"),
-        home.join(".openclaw").join("skills"),
-        home.join(".opencode").join("skills"),
-    ]
-}
-
-/// 官方安装器 / `skills install` 写入的 skill 目录（含 `SKILL.md`）。
-pub(crate) fn official_skill_dir(skill_id: &str) -> Option<PathBuf> {
-    for folder in skill_folder_names(skill_id) {
-        for parent in home_agent_skill_parents() {
-            let dir = parent.join(folder);
-            if dir.join("SKILL.md").is_file() {
-                return Some(dir);
-            }
-        }
-    }
-    None
-}
-
 pub(crate) fn plugin_skill_present(plugin_id: &str, skill_id: &str) -> bool {
     skill_dir(plugin_id, skill_id)
         .map(|dir| dir.join("SKILL.md").is_file())
@@ -1055,23 +946,6 @@ fn plugin_has_any_official_or_copied_skill(catalog: &CatalogPlugin) -> bool {
 
 /// 将插件附属 Skill 落到 `plugins/<id>/skills/`。
 /// 官方共享目录型（OfficeCLI）不拷贝：discover 已扫 `~/.agents/skills`。
-pub(crate) fn write_skill_files(catalog: &CatalogPlugin) -> Result<(), String> {
-    if catalog.skill_ids.is_empty() || catalog.uses_shared_skill_dirs() {
-        return Ok(());
-    }
-    if catalog.skill_md.trim().is_empty() {
-        return Ok(());
-    }
-    for skill_id in catalog.skill_ids {
-        let dir = skill_dir(catalog.id, skill_id)
-            .ok_or_else(|| "app data directory unavailable".to_string())?;
-        std::fs::create_dir_all(&dir).map_err(|e| format!("create skill dir: {e}"))?;
-        std::fs::write(dir.join("SKILL.md"), catalog.skill_md)
-            .map_err(|e| format!("write skill: {e}"))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod skill_sync_tests {
     use super::{
@@ -1146,3 +1020,6 @@ mod skill_sync_tests {
         );
     }
 }
+
+
+use super::skill_files::*;

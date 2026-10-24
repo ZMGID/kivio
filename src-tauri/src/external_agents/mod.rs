@@ -37,3 +37,8 @@ pub mod wsl;
 
 pub(crate) use run::run_external_cli_reply_in;
 pub use run::{run_external_cli_reply, run_external_cli_slash_command};
+
+pub mod process_io;
+pub mod slash_data;
+
+pub mod management_catalog;

@@ -319,7 +319,7 @@ pub(crate) fn chat_kill_background_command(
     state: State<AppState>,
     job_id: String,
 ) -> Result<(), String> {
-    crate::native_tools::kill_background(&state, &serde_json::json!({ "job_id": job_id }), None)
+    crate::native_tools::kill_background(state.inner(), &serde_json::json!({ "job_id": job_id }), None)
         .map(|_| ())
 }
 

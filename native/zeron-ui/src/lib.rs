@@ -14,6 +14,7 @@
 
 mod account_usage;
 mod kivio;
+mod native_tray;
 pub use kivio_model_runtime::{conversation_data, settings as provider_settings};
 #[path = "../../src/chat_runtime.rs"]
 mod chat_runtime;
@@ -90,6 +91,11 @@ mod todo_panel;
 pub(crate) mod tool_images;
 pub mod theme;
 pub mod theme_library;
+mod input_translation;
+mod native_capture;
+mod native_lens;
+mod global_hotkeys;
+pub mod i18n;
 pub mod toast;
 pub mod transcript;
 pub mod typography;
@@ -155,6 +161,20 @@ impl gpui_kit::Global for ReopenState {}
 /// connect-or-embed), 1320×880 window (min 900×600) with [`shell::Shell`] as the
 /// root view, boot splash overlaid until the engine reports ready.
 pub fn run_app(config: UiConfig) {
+    if let Err(error) = kivio_model_runtime::plugins::configure_directory(&config.data_dir) {
+        settings::backup::show_startup_error(config.data_dir, error);
+        return;
+    }
+    if let Err(error) = kivio_model_runtime::model_database::configure_directory(&config.data_dir) {
+        settings::backup::show_startup_error(config.data_dir, error);
+        return;
+    }
+    // Restore before opening any store or starting workers; failure must never
+    // expose a partly restored installation to live writers.
+    if let Err(error) = kivio_model_runtime::native_backup::apply_pending(&config.data_dir) {
+        settings::backup::show_startup_error(config.data_dir, error);
+        return;
+    }
     // Retain ownership for the whole application lifetime. The bridge's
     // default runtime has only two workers, insufficient for a desktop engine.
     let runtime = tokio::runtime::Runtime::new().expect("desktop Tokio runtime");
@@ -186,11 +206,27 @@ pub fn run_app(config: UiConfig) {
     app.run(move |cx: &mut App| {
         gpui_tokio::init_from_handle(cx, runtime_handle);
         gpui_kit::init(cx);
+        i18n::init(None);
         let data_dir = config.boot().data_dir.clone();
         let mut ui_settings = settings::UiSettings::load(&data_dir);
         // Kivio already has local settings; Zeron cloud onboarding does not apply.
         ui_settings.onboarding_completed = true;
         ui_settings.github_star_banner_dismissed = true;
+        if let Ok((mode, color)) = kivio_model_runtime::native_preferences::appearance_selection(&data_dir) {
+            if let Some(mode) = mode {
+                ui_settings.appearance = match mode.as_str() {
+                    "light" => appearance::AppearanceMode::Light,
+                    "dark" => appearance::AppearanceMode::Dark,
+                    _ => appearance::AppearanceMode::System,
+                };
+            }
+            if let Some(color) = color {
+                for (appearance, suffix) in [(zeron_theme::Appearance::Light, "light"), (zeron_theme::Appearance::Dark, "dark")] {
+                    ui_settings.theme_selection.set_variant(appearance, format!("kivio-{color}-{suffix}"));
+                }
+                ui_settings.accent = zeron_theme::AccentSelection::ThemeDefault;
+            }
+        }
         settings::init(ui_settings.clone(), data_dir.clone(), cx);
         let font_availability = typography::register_fonts(cx);
         // Typography first: theme installation reads the effective family, so
@@ -205,7 +241,12 @@ pub fn run_app(config: UiConfig) {
             font_availability,
             cx,
         );
+        if let Ok(preferences) = kivio_model_runtime::native_preferences::load(&data_dir) {
+            i18n::init(preferences.settings_language.as_deref());
+            global_hotkeys::init(data_dir.clone(), &preferences, cx);
+        }
         theme_library::init(data_dir.clone(), cx);
+        if let Ok(settings) = kivio_model_runtime::native_preferences::load(&data_dir) { settings::custom_themes::install(&settings); }
         appearance::init(
             ui_settings.appearance,
             ui_settings.theme_selection,
@@ -308,14 +349,16 @@ pub fn run_app(config: UiConfig) {
         // synchronously, so `set_menus` reads the final bindings for the ⌘-key
         // equivalents (gpui snapshots the keymap at set time).
         cx.set_menus(app_menus::app_menus());
-        cx.activate(true);
+        let tray_ready = match native_tray::init(cx) { Ok(()) => true, Err(error) => { tracing::warn!(%error, "Native tray unavailable"); false } };
+        let minimized = kivio_model_runtime::native_preferences::load(&data_dir).is_ok_and(|settings| settings.launch_minimized_to_tray);
+        if minimized && tray_ready { cx.hide(); } else { cx.activate(true); }
     });
 }
 
 /// Bring Zeron forward, reopening the main window first if ⌘W closed it.
 pub(crate) fn activate_main_window(cx: &mut App) {
     cx.activate(true);
-    if cx.windows().is_empty()
+    if shell_windows(cx).is_empty()
         && let Some(reopen) = cx.try_global::<ReopenState>()
     {
         let (state, boot) = (reopen.state.clone(), reopen.boot.clone());
@@ -415,6 +458,19 @@ fn observe_main_window_geometry<T: 'static>(window: &mut gpui_kit::Window, cx: &
     .detach();
 }
 
+pub(crate) fn main_window_should_close(window: &mut gpui_kit::Window, shell: Option<gpui_kit::Entity<shell::Shell>>, cx: &mut App) -> bool {
+    let root = &cx.global::<ReopenState>().boot.data_dir;
+    if kivio_model_runtime::native_preferences::load(root).is_ok_and(|settings| settings.keep_chat_window_alive) {
+        save_window_geometry(window, false, cx);
+        settings::flush(cx);
+        cx.hide();
+        return false;
+    }
+    let should_close = shell.is_none_or(|shell| shell.update(cx, |shell, cx| shell.prepare_window_close(cx)));
+    if should_close { save_window_geometry(window, false, cx); settings::flush(cx); }
+    should_close
+}
+
 fn open_main_window(
     state: gpui_kit::Entity<state::AppState>,
     boot: EngineBootConfig,
@@ -488,14 +544,7 @@ fn open_main_window(
                 save_main_window_geometry(window, cx);
                 let weak_shell = shell.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let should_close = weak_shell
-                        .update(cx, |shell, cx| shell.prepare_window_close(cx))
-                        .unwrap_or(true);
-                    if should_close {
-                        save_window_geometry(window, false, cx);
-                        settings::flush(cx);
-                    }
-                    should_close
+                    main_window_should_close(window, weak_shell.upgrade(), cx)
                 });
                 cx.new(|cx| gpui_kit::base::Root::new(shell, window, cx))
             },

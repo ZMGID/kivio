@@ -284,7 +284,7 @@ mod tests {
         let (shell, files) = host.read_with(cx, |host, _| (host.shell.clone(), host.files.clone()));
         cx.update(|window, cx| {
             window.activate_window();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         (shell, files, cx)
     }
@@ -301,7 +301,7 @@ mod tests {
         });
         let input = shell.read_with(cx, |shell, cx| shell.composer.read(cx).input.clone());
         input.update(cx, |input, cx| input.set_text("keep this ", cx));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let start = cx.debug_bounds("tree-entry:a.txt").unwrap().center();
         let folder = cx.debug_bounds("tree-entry:folder").unwrap().center();
         let chat = cx.debug_bounds("chat-dropzone").unwrap().center();

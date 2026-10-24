@@ -199,3 +199,21 @@ pub(crate) fn contains_credential(
     }
     false
 }
+
+pub fn l1_prompt_block_at(dir: &Path) -> Result<Option<String>, String> {
+    let memory = read_layer_at(dir, MemoryLayer::L1)?;
+    let trimmed = memory.content.trim();
+    if trimmed.is_empty() || trimmed == "# L1 Online Memory" {
+        return Ok(None);
+    }
+    if memory.bytes > L1_MAX_BYTES {
+        return Err(format!(
+            "L1 memory is {} bytes, over the {L1_MAX_BYTES} byte limit; it was not injected.",
+            memory.bytes
+        ));
+    }
+    Ok(Some(format!(
+        "Kivio Memory (L1 online memory; user-editable; persistent across chats):\n\n{}",
+        trimmed
+    )))
+}

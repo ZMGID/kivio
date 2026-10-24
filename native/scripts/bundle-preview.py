@@ -5,6 +5,7 @@ import plistlib
 import shutil
 import sys
 import argparse
+import platform
 
 if sys.platform != "darwin":
     raise SystemExit("This development bundle is macOS-only.")
@@ -20,6 +21,15 @@ bundle = native / "target" / f"{name}.app"
 contents = bundle / "Contents"
 (contents / "MacOS").mkdir(parents=True, exist_ok=True)
 shutil.copy2(binary, contents / "MacOS/kivio-native")
+architecture = "aarch64" if platform.machine() == "arm64" else platform.machine()
+ocr_helper = native.parent / "src-tauri/binaries" / f"kivio-ocr-helper-{architecture}-apple-darwin"
+if not ocr_helper.is_file():
+    raise SystemExit(f"Build the system OCR helper before bundling: {ocr_helper}")
+shutil.copy2(ocr_helper, contents / "MacOS/kivio-ocr-helper")
+ocr_worker = native / "ocr-worker/target/debug/kivio-ocr-worker"
+if not ocr_worker.is_file():
+    raise SystemExit("Build first: cargo build --manifest-path native/ocr-worker/Cargo.toml --locked")
+shutil.copy2(ocr_worker, contents / "MacOS/kivio-ocr-worker")
 executable = "kivio-native"
 if args.compact:
     executable = "compact-launcher"

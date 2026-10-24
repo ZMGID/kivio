@@ -6,7 +6,7 @@ use crate::chat::types::{AgentTodoItem, AgentTodoState, AgentTodoStatus};
 use crate::mcp::ChatToolDefinition;
 use crate::mcp::types::McpToolCallResult;
 
-pub const TODO_WRITE_TOOL_NAME: &str = "todo_write";
+pub const TODO_WRITE_TOOL_NAME: &str = crate::mcp::native_policy::TODO_WRITE_TOOL_NAME.name;
 
 const MAX_TODO_ITEMS: usize = 50;
 /// Same thresholds as ZCode / Claude Code (`TURNS_SINCE_WRITE` / `TURNS_BETWEEN_REMINDERS`).

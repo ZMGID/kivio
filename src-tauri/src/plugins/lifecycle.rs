@@ -9,7 +9,8 @@
 use tauri::{AppHandle, Manager};
 
 use super::catalog::{catalog_plugin, CatalogPlugin, PLUGIN_CATALOG};
-use super::state::{is_enabled, is_installed, resolve_binary, resolve_binary_for_status};
+use super::state::{is_enabled, is_installed, resolve_binary};
+use super::resolve_binary_for_status;
 use crate::settings::{update_settings, ChatMcpServer, Settings};
 use crate::state::AppState;
 
@@ -79,31 +80,7 @@ pub fn plugin_mcp_connector_id(plugin_id: &str) -> String {
     format!("plugin:{plugin_id}")
 }
 
-/// 某 skill_id 是否由某个插件「拥有」（不论当前是否启用）。
-pub fn skill_owned_by_plugin(skill_id: &str) -> Option<&'static str> {
-    // Keep ownership of retired shared skills so discovery cannot reclassify
-    // them as ordinary, always-available user skills.
-    if super::catalog::OFFICECLI_OFFICIAL_SKILL_IDS.contains(&skill_id) {
-        return Some("officecli");
-    }
-    for plugin in PLUGIN_CATALOG {
-        if plugin.skill_ids.iter().any(|id| *id == skill_id) {
-            return Some(plugin.id);
-        }
-    }
-    None
-}
-
-/// 插件附属 skill 是否应对 agent / 列表可见：仅「已安装且启用」时 true。
-pub fn plugin_skill_available(skill_id: &str) -> bool {
-    if let Some(rest) = skill_id.strip_prefix("pkg-") {
-        return rest.get(..36).is_some_and(super::packages::owner_enabled);
-    }
-    match skill_owned_by_plugin(skill_id) {
-        None => true, // 非插件 skill，不由本门闸拦截
-        Some(plugin_id) => is_enabled(plugin_id) && is_installed(plugin_id),
-    }
-}
+pub use super::state::{skill_owned_by_plugin, plugin_skill_available};
 
 /// 构建插件 MCP 配置（stdio：`binary mcp`）。binary 用绝对路径，避免依赖 PATH。
 pub fn materialize_mcp_server(plugin: &CatalogPlugin) -> Option<ChatMcpServer> {

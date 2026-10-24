@@ -407,8 +407,15 @@ async fn resumed_first_class_model_is_switched_before_prompt() {
 }
 
 #[tokio::test]
-async fn permission_requests_auto_accept_the_preferred_allow_option() {
-    let (controls, _steer, _token) = controls();
+async fn permission_requests_send_the_hosts_explicit_choice() {
+    let (mut controls, _steer, _token) = controls();
+    controls.request_input = Box::new(|questions| {
+        let (tx, rx) = oneshot::channel();
+        tx.send(questions.into_iter().map(|q| UserInputAnswer {
+            question_id: q.id, labels: vec!["Always allow".into()],
+        }).collect()).unwrap();
+        rx
+    });
     let events = run_to_end(&harness(), request("scenario:permission"), controls).await;
     // The fixture answers refusal unless the harness selected "always".
     assert!(events.contains(&AgentEvent::TextDelta {
@@ -1100,7 +1107,7 @@ async fn antigravity_runs_the_picked_effort_variant_unattended() {
     let events = antigravity_config_sets("gemini-3.7-flash", Some(ReasoningLevel::Medium)).await;
     assert!(
         events.contains(&AgentEvent::TextDelta {
-            text: "sets:model=gemini-3.7-flash-medium;mode=yolo;".into()
+            text: "sets:model=gemini-3.7-flash-medium;".into()
         }),
         "{events:?}"
     );
@@ -1143,14 +1150,14 @@ async fn antigravity_clamps_to_an_offered_level_and_keeps_saved_variant_ids() {
     let clamped = antigravity_config_sets("gemini-3.1-pro", Some(ReasoningLevel::Medium)).await;
     assert!(
         clamped.contains(&AgentEvent::TextDelta {
-            text: "sets:model=gemini-pro-agent;mode=yolo;".into()
+            text: "sets:model=gemini-pro-agent;".into()
         }),
         "{clamped:?}"
     );
     let saved = antigravity_config_sets("gemini-3.7-flash-low", Some(ReasoningLevel::High)).await;
     assert!(
         saved.contains(&AgentEvent::TextDelta {
-            text: "sets:model=gemini-3.7-flash-low;mode=yolo;".into()
+            text: "sets:model=gemini-3.7-flash-low;".into()
         }),
         "{saved:?}"
     );
@@ -1785,14 +1792,15 @@ async fn acp_idle_crash_then_load_preserves_session() {
 }
 
 #[tokio::test]
-async fn acp_failed_load_announces_lost_context() {
+async fn acp_failed_load_stops_without_creating_a_new_session() {
     let (ctl, steer, _) = controls();
     drop(steer);
     let mut req = request("fresh");
     req.resume = Some("missing".into());
     let events = run_to_end(&lifecycle_fixture(), req, ctl).await;
-    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { message } if message.contains("without the previous context"))));
-    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Done { status: DoneStatus::Errored, error: Some(message), .. } if message.contains("could not restore session"))), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::SessionStarted { .. } | AgentEvent::TextDelta { .. })));
+    assert!(matches!(dones(&events).as_slice(), [(DoneStatus::Errored, Some(_))]));
 }
 
 #[tokio::test]
@@ -2332,7 +2340,7 @@ async fn antigravity_detection_subprocess() {
 }
 
 #[tokio::test]
-async fn mcp_injection_all_acp_harnesses_new_resume_and_fallback() {
+async fn mcp_injection_all_acp_harnesses_new_and_resume() {
     for harness in [
         AcpHarness::grok(),
         AcpHarness::devin(),
@@ -2340,7 +2348,7 @@ async fn mcp_injection_all_acp_harnesses_new_resume_and_fallback() {
         AcpHarness::antigravity(),
     ] {
         let harness = harness.with_executable(fixture_path());
-        for resume in [None, Some("mcp-loaded"), Some("load-fail")] {
+        for resume in [None, Some("mcp-loaded")] {
             let mut req = request("scenario:mcp");
             req.model = None;
             req.resume = resume.map(str::to_owned);

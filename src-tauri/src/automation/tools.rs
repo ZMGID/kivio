@@ -20,16 +20,9 @@ use super::types::{
 };
 use super::validate;
 
-pub(crate) const RUN_DEFAULT_TIMEOUT_SECS: u64 = 600;
-pub(crate) const RUN_MAX_TIMEOUT_SECS: u64 = 1_800;
-const RUN_TIMEOUT_BUFFER_MS: u64 = 5_000;
+use crate::tool_limits::{RUN_DEFAULT_TIMEOUT_SECS, RUN_MAX_TIMEOUT_SECS, parse_timeout_secs};
+pub(crate) use crate::tool_limits::run_timeout_ms;
 const POLL_MS: u64 = 300;
-
-pub(crate) fn run_timeout_ms(arguments: &Value) -> u64 {
-    parse_timeout_secs(arguments)
-        .saturating_mul(1000)
-        .saturating_add(RUN_TIMEOUT_BUFFER_MS)
-}
 
 pub(crate) fn list(app: &AppHandle) -> Result<McpToolCallResult, String> {
     let items = storage::list(app)?;
@@ -231,16 +224,6 @@ pub(crate) fn parse_run_input(value: Option<&Value>) -> Option<NodeOutput> {
     None
 }
 
-fn parse_timeout_secs(arguments: &Value) -> u64 {
-    arguments
-        .get("timeout_seconds")
-        .and_then(|v| {
-            v.as_u64()
-                .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
-        })
-        .unwrap_or(RUN_DEFAULT_TIMEOUT_SECS)
-        .clamp(5, RUN_MAX_TIMEOUT_SECS)
-}
 
 fn required_id(arguments: &Value) -> Result<String, String> {
     let id = arguments

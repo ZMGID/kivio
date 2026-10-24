@@ -32,8 +32,15 @@ impl Default for PluginMeta {
     }
 }
 
+static DATA_DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// Configure the native host before opening plugin stores or starting workers.
+pub fn configure_directory(directory: &Path) -> Result<(), String> {
+    let selected = DATA_DIRECTORY.get_or_init(|| directory.to_path_buf());
+    if selected != directory { return Err("Plugin data directory is already configured".into()); }
+    Ok(())
+}
 pub fn plugins_root() -> Option<PathBuf> {
-    crate::app_data::app_data_dir().map(|dir| dir.join("plugins"))
+    DATA_DIRECTORY.get().cloned().or_else(crate::app_data::app_data_dir).map(|dir| dir.join("plugins"))
 }
 
 pub fn plugin_dir(id: &str) -> Option<PathBuf> {
@@ -86,23 +93,11 @@ pub fn kivio_binary_path(id: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// 列表/检测前刷新进程 PATH（Windows 注册表用户 Path 可能在 AI 安装后才更新，
-/// GUI 进程启动时的快照不含新目录）。
-pub fn refresh_process_path_for_detection() {
-    #[cfg(target_os = "windows")]
-    {
-        crate::path_env::enrich_path_windows();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        crate::path_env::enrich_path_macos();
-    }
-}
-
 fn which_on_path(binary: &str) -> Option<PathBuf> {
     #[cfg(unix)]
     {
         let output = Command::new("sh")
+            .env("PATH", crate::path_env::command_path())
             .arg("-c")
             .arg(format!("command -v {binary}"))
             .no_console_window()
@@ -119,6 +114,7 @@ fn which_on_path(binary: &str) -> Option<PathBuf> {
         // 同时试 bare name 与 .exe（where 对无扩展名有时不稳）
         for name in [binary, &format!("{binary}.exe")] {
             let output = Command::new("where")
+                .env("PATH", crate::path_env::command_path())
                 .arg(name)
                 .no_console_window()
                 .output()
@@ -205,12 +201,6 @@ pub fn resolve_binary(id: &str) -> Option<PathBuf> {
     known_binary_path(catalog)
 }
 
-/// 列表检测用：先刷新 PATH 再 resolve。
-pub fn resolve_binary_for_status(id: &str) -> Option<PathBuf> {
-    refresh_process_path_for_detection();
-    resolve_binary(id)
-}
-
 pub fn is_installed(id: &str) -> bool {
     resolve_binary(id).is_some()
 }
@@ -290,54 +280,6 @@ fn path_sep() -> &'static str {
 /// 官方共享目录型插件（OfficeCLI）不拷贝：discover 已扫 `~/.agents/skills`。
 /// 这里只补插件目录残留和其它未被全局扫描的官方落点。
 /// ego lite 仍写在插件目录，缺文件时才补下载/写入。
-pub fn enabled_skill_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for plugin in PLUGIN_CATALOG {
-        if !is_enabled(plugin.id) || !is_installed(plugin.id) {
-            continue;
-        }
-        if plugin.uses_shared_skill_dirs() {
-            for skill_id in plugin.skill_ids {
-                if let Some(dir) = skill_dir(plugin.id, skill_id) {
-                    if dir.join("SKILL.md").is_file() {
-                        roots.push(dir);
-                    }
-                }
-                if let Some(dir) = super::install::official_skill_dir(skill_id) {
-                    if !roots.iter().any(|existing| existing == &dir) {
-                        roots.push(dir);
-                    }
-                }
-            }
-            continue;
-        }
-        if !plugin_skill_files_complete(plugin) {
-            if let Err(err) = super::install::write_skill_files(plugin) {
-                eprintln!("[plugins] sync skills for {}: {err}", plugin.id);
-            }
-        }
-        for skill_id in plugin.skill_ids {
-            if let Some(dir) = skill_dir(plugin.id, skill_id) {
-                if dir.join("SKILL.md").is_file() {
-                    roots.push(dir);
-                }
-            }
-        }
-    }
-    roots
-}
-
-fn plugin_skill_files_complete(plugin: &super::catalog::CatalogPlugin) -> bool {
-    if plugin.skill_ids.is_empty() {
-        return true;
-    }
-    plugin.skill_ids.iter().all(|skill_id| {
-        skill_dir(plugin.id, skill_id)
-            .map(|d| d.join("SKILL.md").is_file())
-            .unwrap_or(false)
-    })
-}
-
 /// 已启用插件的 system 适配提示：统一外壳 + 各插件一段（仅已安装且启用）。
 /// 多插件时按 catalog 顺序拼接；关闭则零注入。
 pub fn enabled_system_prompt() -> Option<String> {
@@ -448,5 +390,31 @@ mod version_probe_tests {
         let started = std::time::Instant::now();
         assert_eq!(probe_version(&binary), None);
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+}
+
+/// 某 skill_id 是否由某个插件「拥有」（不论当前是否启用）。
+pub fn skill_owned_by_plugin(skill_id: &str) -> Option<&'static str> {
+    // Keep ownership of retired shared skills so discovery cannot reclassify
+    // them as ordinary, always-available user skills.
+    if super::catalog::OFFICECLI_OFFICIAL_SKILL_IDS.contains(&skill_id) {
+        return Some("officecli");
+    }
+    for plugin in PLUGIN_CATALOG {
+        if plugin.skill_ids.iter().any(|id| *id == skill_id) {
+            return Some(plugin.id);
+        }
+    }
+    None
+}
+
+/// 插件附属 skill 是否应对 agent / 列表可见：仅「已安装且启用」时 true。
+pub fn plugin_skill_available(skill_id: &str) -> bool {
+    if let Some(rest) = skill_id.strip_prefix("pkg-") {
+        return rest.get(..36).is_some_and(super::packages::owner_enabled);
+    }
+    match skill_owned_by_plugin(skill_id) {
+        None => true, // 非插件 skill，不由本门闸拦截
+        Some(plugin_id) => is_enabled(plugin_id) && is_installed(plugin_id),
     }
 }

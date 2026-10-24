@@ -812,6 +812,7 @@ async fn load_or_create_external_conversation(
         external_model: spec.external_model.clone(),
         external_reasoning: None,
         external_service_tier: None,
+            external_model_options: Default::default(),
         external_sandbox: None,
         external_agent_preset: None,
     };

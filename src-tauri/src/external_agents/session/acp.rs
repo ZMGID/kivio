@@ -180,7 +180,7 @@ fn agent_supports_additional_directories(initialize_result: &Value) -> bool {
         == Some(true)
 }
 
-fn acp_initialize_params(terminal: bool) -> Value {
+fn acp_initialize_params(terminal: bool, grok: bool) -> Value {
     // Live chat sessions must advertise `terminal: true` and implement `terminal/*`.
     // Probe/import processes never handle those methods, so they keep it false.
     let mut client_capabilities = json!({ "terminal": terminal });
@@ -189,7 +189,7 @@ fn acp_initialize_params(terminal: bool) -> Value {
         // own an interaction host, so they must not advertise the capability.
         client_capabilities["elicitation"] = json!({ "form": {} });
     }
-    json!({
+    let mut params = json!({
         "protocolVersion": ACP_PROTOCOL_VERSION,
         "clientCapabilities": client_capabilities,
         "clientInfo": {
@@ -197,7 +197,32 @@ fn acp_initialize_params(terminal: bool) -> Value {
             "title": "Kivio",
             "version": env!("CARGO_PKG_VERSION"),
         },
-    })
+    });
+    if grok && terminal {
+        params["_meta"] = json!({"clientType":"extension"});
+    }
+    params
+}
+
+fn acp_cancel_params(session_id: &str, grok: bool) -> Value {
+    let mut params = json!({"sessionId":session_id});
+    if grok {
+        params["_meta"] = json!({"cancelTrigger":"ctrl_c"});
+    }
+    params
+}
+
+async fn write_acp_cancel(
+    stdin: &mut (impl AsyncWrite + Unpin),
+    session_id: &str,
+    grok: bool,
+) -> Result<(), String> {
+    // ACP cancel is a notification, never a request waiting for a response.
+    let payload = json!({"jsonrpc":"2.0", "method":"session/cancel", "params":acp_cancel_params(session_id, grok)});
+    stdin
+        .write_all(format!("{payload}\n").as_bytes())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn rpc_error_message(value: &Value) -> Option<String> {
@@ -588,9 +613,14 @@ pub async fn detect_acp_models(
     let mut reasoning_options: Vec<RuntimeModelOption> = Vec::new();
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(false, false),
+    )
+    .await
+    .ok()?;
 
     let started = std::time::Instant::now();
     // 收到 session/new 结果后再留一个短窗口（1.5s）收异步 session/update 推送的模型（N4）——
@@ -762,9 +792,14 @@ pub async fn detect_acp_commands(
     let mut commands: Option<Vec<ExternalCliSlashCommand>> = None;
     let deadline = Duration::from_secs(timeout_secs);
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(false, false),
+    )
+    .await
+    .ok()?;
 
     let started = std::time::Instant::now();
     loop {
@@ -1396,6 +1431,7 @@ pub struct AcpSession {
     current_model: Option<String>,
     current_reasoning: Option<String>,
     terminals: AcpTerminalHost,
+    grok: bool,
 }
 
 /// Sentinel returned by `run_turn` when a config change (reasoning without a config option) can
@@ -1498,6 +1534,8 @@ impl AcpSession {
         resume_session: Option<&str>,
         additional_directories: &[String],
     ) -> Result<Self, String> {
+        // The Grok definition always supplies this flag, including for custom binary paths.
+        let grok = args.iter().any(|arg| arg == "--no-leader");
         let mut child = crate::external_agents::spawn::cli_command(resolved_bin)
             .args(args)
             .current_dir(cwd)
@@ -1530,9 +1568,14 @@ impl AcpSession {
 
         // Fallible handshake, isolated so an error path can kill the child and fold in stderr.
         let handshake = async {
-            write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(true))
-                .await
-                .map_err(|e| format!("initialize: {e}"))?;
+            write_rpc(
+                &mut stdin,
+                1,
+                "initialize",
+                acp_initialize_params(true, grok),
+            )
+            .await
+            .map_err(|e| format!("initialize: {e}"))?;
             let init_result = acp_read_until_id(
                 &mut reader,
                 &mut stdin,
@@ -1672,6 +1715,7 @@ impl AcpSession {
                     reasoning_config_id,
                     current_model,
                     current_reasoning: normalize_opt(reasoning),
+                    grok,
                     terminals,
                 })
             }
@@ -1781,15 +1825,7 @@ impl AcpSession {
         loop {
             match control.try_recv() {
                 Ok(SessionCommand::Cancel) => {
-                    let cid = self.next_id;
-                    self.next_id += 1;
-                    let _ = write_rpc(
-                        &mut self.stdin,
-                        cid,
-                        "session/cancel",
-                        json!({ "sessionId": self.session_id }),
-                    )
-                    .await;
+                    let _ = write_acp_cancel(&mut self.stdin, &self.session_id, self.grok).await;
                     return Err("cancelled".to_string());
                 }
                 Ok(SessionCommand::Close) => return Err("closed".to_string()),
@@ -1869,8 +1905,8 @@ impl AcpSession {
                         events,
                         control,
                         approvals.as_mut(),
-                        &mut self.next_id,
                         &self.session_id,
+                        self.grok,
                     )
                     .await?;
                     continue;
@@ -2214,8 +2250,8 @@ async fn handle_cursor_extension(
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
     approvals: Option<&mut ApprovalBridge>,
-    next_id: &mut u64,
     session_id: &str,
+    grok: bool,
 ) -> Result<(), String> {
     let params = value.get("params").cloned().unwrap_or(Value::Null);
     for event in cursor_extension_events(method, &params) {
@@ -2269,15 +2305,7 @@ async fn handle_cursor_extension(
         match control.try_recv() {
             Ok(SessionCommand::Cancel) => {
                 let _ = write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
-                let cid = *next_id;
-                *next_id += 1;
-                let _ = write_rpc(
-                    stdin,
-                    cid,
-                    "session/cancel",
-                    json!({ "sessionId": session_id }),
-                )
-                .await;
+                let _ = write_acp_cancel(stdin, session_id, grok).await;
                 return Err("cancelled".to_string());
             }
             Ok(SessionCommand::Close) => {
@@ -2556,7 +2584,6 @@ mod tests {
                 "toolCall": {"toolCallId": "tool-7", "title": "Write file", "rawInput": {"path": "a.txt"}},
                 "options": [{"kind": "allow_once", "optionId": "approve"}]
             }});
-            let mut next_id = 50;
             let handler = handle_cursor_extension(
                 &mut writer,
                 &value,
@@ -2564,8 +2591,8 @@ mod tests {
                 &events,
                 &mut control,
                 Some(&mut bridge),
-                &mut next_id,
                 "session-1",
+                false,
             );
             let user = async {
                 let ask = requests.recv().await.expect("host request");
@@ -2620,7 +2647,6 @@ mod tests {
             }
             let value =
                 json!({"id": "req-1", "method": "session/request_permission", "params": {}});
-            let mut next_id = 50;
             let result = timeout(
                 Duration::from_secs(2),
                 handle_cursor_extension(
@@ -2630,8 +2656,8 @@ mod tests {
                     &events,
                     &mut control,
                     cancel.then_some(&mut bridge),
-                    &mut next_id,
                     "session-1",
+                    true,
                 ),
             )
             .await
@@ -2646,6 +2672,8 @@ mod tests {
                 let response: Value =
                     serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
                 assert_eq!(response["method"], "session/cancel");
+                assert!(response.get("id").is_none());
+                assert_eq!(response["params"]["_meta"]["cancelTrigger"], "ctrl_c");
             }
         }
     }
@@ -2837,7 +2865,7 @@ mod tests {
 
     #[test]
     fn live_handshake_advertises_terminal_capability() {
-        let params = acp_initialize_params(true);
+        let params = acp_initialize_params(true, false);
         assert_eq!(params["clientCapabilities"]["terminal"], json!(true));
         assert!(params["clientCapabilities"]["elicitation"]["form"].is_object());
         assert_eq!(params["protocolVersion"], json!(ACP_PROTOCOL_VERSION));
@@ -2847,7 +2875,11 @@ mod tests {
             params["clientInfo"]["version"],
             json!(env!("CARGO_PKG_VERSION"))
         );
-        let probe = acp_initialize_params(false);
+        assert!(params.get("_meta").is_none());
+        let grok = acp_initialize_params(true, true);
+        assert_eq!(grok["_meta"]["clientType"], "extension");
+        assert!(acp_cancel_params("sid", false).get("_meta").is_none());
+        let probe = acp_initialize_params(false, false);
         assert_eq!(probe["clientCapabilities"]["terminal"], json!(false));
         assert!(probe["clientCapabilities"].get("elicitation").is_none());
     }
@@ -4174,9 +4206,14 @@ pub async fn probe_acp_sessions(
     let deadline = Duration::from_secs(timeout_secs);
     let started = std::time::Instant::now();
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(false, false),
+    )
+    .await
+    .ok()?;
 
     let init = read_rpc_response(&mut reader, 1, started, deadline).await?;
     let supports_load = init
@@ -4314,9 +4351,14 @@ pub async fn probe_acp_session_history(
     let deadline = Duration::from_secs(timeout_secs);
     let started = std::time::Instant::now();
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
-        .await
-        .ok()?;
+    write_rpc(
+        &mut stdin,
+        1,
+        "initialize",
+        acp_initialize_params(false, false),
+    )
+    .await
+    .ok()?;
     read_rpc_response(&mut reader, 1, started, deadline).await?;
 
     write_rpc(

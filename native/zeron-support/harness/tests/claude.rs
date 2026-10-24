@@ -303,7 +303,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
                 .iter()
                 .map(|q| UserInputAnswer {
                     question_id: q.id.clone(),
-                    labels: vec!["B".into()],
+                    labels: vec![if q.header == "Bash" { "允许本次" } else { "B" }.into()],
                 })
                 .collect();
             let _ = tx.send(answers);
@@ -316,6 +316,8 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 
     let asked = asked.lock().unwrap();
+    assert!(asked.iter().any(|q| q.header == "Bash"));
+    let asked: Vec<_> = asked.iter().filter(|q| q.header != "Bash").collect();
     assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].header, "Choice");
     assert_eq!(asked[0].question, "Pick one");
@@ -329,7 +331,7 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
     );
 
     // "answered" proves both control round-trips: the plain Bash can_use_tool
-    // was auto-allowed AND the answers reached the CLI as updatedInput.answers
+    // was explicitly approved AND the answers reached the CLI as updatedInput.answers
     // keyed by question text.
     assert_eq!(
         events.last(),

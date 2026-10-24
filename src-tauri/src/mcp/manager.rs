@@ -27,7 +27,7 @@ use std::{
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter};
+
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::ChildStderr,
@@ -36,10 +36,10 @@ use tokio::{
 
 use crate::settings::{ChatMcpServer, Settings};
 
+use super::McpRuntimeState;
 use super::conn::{self, McpService};
 use super::result;
 use super::types::{McpTool, McpToolCallResult};
-use super::McpRuntimeState;
 
 const MCP_DISCOVERY_RETRY_BASE: Duration = Duration::from_secs(2);
 const MCP_DISCOVERY_RETRY_MAX: Duration = Duration::from_secs(60);
@@ -61,17 +61,13 @@ pub enum McpServerState {
     Disconnected,
 }
 
-/// 状态事件发射器：就是一个可空的 `AppHandle`。
-///
-/// 这里原本是个 `McpEventSink` trait，两个实现分别是 `AppHandle`（生产）和 `()`（只在测试里），
-/// 而 trait 自己就把全部状态暴露成了 `fn app_handle(&self) -> Option<&AppHandle>` —— 也就是说
-/// 它从头到尾等价于 `Option<&AppHandle>`，代价是一个泛型参数穿过约 8 个方法。`None` = 不发事件
-/// （headless / 单测）。
-pub type McpEventSink<'a> = Option<&'a AppHandle>;
+/// Window-host event destination; transport and pool behavior remain shared.
+pub type McpEventSink<'a> = Option<&'a super::host::EventSink>;
 
 fn emit_server_state(sink: McpEventSink<'_>, server: &ChatMcpServer, state: &McpServerState) {
     if let Some(app) = sink {
-        let _ = app.emit(
+        super::host::emit(
+            app,
             "mcp-server-state",
             serde_json::json!({
                 "serverId": server.id,
@@ -85,7 +81,8 @@ fn emit_server_state(sink: McpEventSink<'_>, server: &ChatMcpServer, state: &Mcp
 /// 仅靠 server_id 发 Disconnected（reload / reap 用，可能拿不到完整 server）。
 fn emit_disconnected(sink: McpEventSink<'_>, server_id: &str) {
     if let Some(app) = sink {
-        let _ = app.emit(
+        super::host::emit(
+            app,
             "mcp-server-state",
             serde_json::json!({
                 "serverId": server_id,
@@ -1007,7 +1004,9 @@ pub(crate) fn apply_refreshed_auth_to_settings(
 ) -> bool {
     let mut changed = false;
     for existing in &mut settings.chat_tools.servers {
-        let same_id = existing.id == server.id;
+        // An in-flight refresh belongs to its resource URL. A server may have
+        // been edited while the token request was pending.
+        let same_id = existing.id == server.id && mcp_url_matches(&existing.url, &server.url);
         let same_oauth_url = mcp_url_matches(&existing.url, &server.url)
             && existing
                 .auth
@@ -1353,8 +1352,8 @@ mod tests {
     /// fake HTTP MCP server：第一次 tools/call 返回 `first_call_status`（>=400 视为失败），
     /// 之后 tools/call 正常回 echo。initialize/tools/list 始终正常。
     async fn spawn_test_http_mcp_server(first_call_status: u16) -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -1578,8 +1577,8 @@ mod tests {
         std::sync::Arc<std::sync::atomic::AtomicU64>,
         std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
@@ -2195,11 +2194,7 @@ while True:
         use std::io::Write;
 
         fn python_command() -> &'static str {
-            if cfg!(windows) {
-                "python"
-            } else {
-                "python3"
-            }
+            if cfg!(windows) { "python" } else { "python3" }
         }
 
         fn write_fake_server() -> std::path::PathBuf {
@@ -2561,23 +2556,27 @@ while True:
             let evicted = state.mcp_reap_idle(Duration::ZERO).await;
             assert_eq!(evicted.len(), 1, "idle reap should remove the live session");
             assert!(state.mcp_test_sessions_empty().await);
-            assert!(state
-                .mcp_cached_tools(&server)
-                .await
-                .expect("snapshot survives session removal")
-                .iter()
-                .any(|tool| tool.name == "echo"));
+            assert!(
+                state
+                    .mcp_cached_tools(&server)
+                    .await
+                    .expect("snapshot survives session removal")
+                    .iter()
+                    .any(|tool| tool.name == "echo")
+            );
 
             let restarted = crate::state::AppState::new_headless(
                 crate::settings::Settings::default(),
                 usage_dir.clone(),
             );
-            assert!(restarted
-                .mcp_cached_tools(&server)
-                .await
-                .expect("snapshot reloads across AppState restart")
-                .iter()
-                .any(|tool| tool.name == "echo"));
+            assert!(
+                restarted
+                    .mcp_cached_tools(&server)
+                    .await
+                    .expect("snapshot reloads across AppState restart")
+                    .iter()
+                    .any(|tool| tool.name == "echo")
+            );
 
             let _ = std::fs::remove_file(&script);
             let _ = std::fs::remove_dir_all(&usage_dir);
@@ -2600,12 +2599,14 @@ while True:
                 .mcp_list_tools(None, &server)
                 .await
                 .expect_err("same config should now fail to reconnect");
-            assert!(state
-                .mcp_cached_tools(&server)
-                .await
-                .expect("same config may use last-known schema")
-                .iter()
-                .any(|tool| tool.name == "echo"));
+            assert!(
+                state
+                    .mcp_cached_tools(&server)
+                    .await
+                    .expect("same config may use last-known schema")
+                    .iter()
+                    .any(|tool| tool.name == "echo")
+            );
             assert!(
                 state.mcp_unreachable_server_ids().await.is_empty(),
                 "a failed server with a matching snapshot is degraded, not unreachable"

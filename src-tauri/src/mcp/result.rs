@@ -5,7 +5,7 @@
 //! （`isError` / `structuredContent` / `content[].type|text|data|mimeType`），
 //! 所以换 SDK 时这一层一行都不用改 —— 调用方传 `serde_json::to_value(result)` 进来即可。
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use serde_json::Value;
 
 use super::types::{ChatToolArtifact, McpToolCallResult};

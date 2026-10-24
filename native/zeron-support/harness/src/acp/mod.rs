@@ -11,15 +11,14 @@
 //! wires don't have (turn-hold bookkeeping vs the CLI's own eager result).
 //!
 //! - `initialize` (protocolVersion 1, fs/terminal capabilities declined) →
-//!   `session/new`, or `session/load` with a fresh-session fallback when
+//!   `session/new`, or strict `session/load` when
 //!   resuming; replayed history during a load is dropped (the doc already
 //!   holds it).
 //! - `session/prompt` owns the turn: its response's `stopReason` ends the
 //!   turn (`cancelled` → Interrupted, `refusal` → Errored, else Completed).
 //! - `session/update` notifications normalize per [`normalize::map_update`].
-//! - Permission requests auto-accept with the agent's preferred allow option
-//!   (zeron sessions run unattended); question-shaped requests block on the
-//!   engine's input bridge.
+//! - Permissions and questions wait for the host input bridge. Discovery
+//!   and handshake requests without a visible approval owner are declined.
 //! - Steering: agents advertising `_session/steering` get mid-turn injection;
 //!   others queue steers and deliver them as the next `session/prompt` at the
 //!   turn boundary. The session stays parked between turns while the
@@ -62,7 +61,7 @@ use crate::{
     CancellationToken, Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child,
 };
 use child::Child;
-use normalize::{map_update, parse_commands, preferred_allow_option};
+use normalize::{map_update, parse_commands};
 use subagent::SubagentTracker;
 use subagent_devin::DevinTracker;
 
@@ -2834,21 +2833,7 @@ fn config_option_sets(
                 .get("mode")
                 .and_then(Value::as_str)
                 .filter(|c| available.contains(c))
-                .map(|c| Value::String(c.to_owned()))
-                .or_else(|| {
-                    [
-                        "bypassPermissions",
-                        "bypass_permissions",
-                        "bypass",
-                        "yolo",
-                        "agent-full-access",
-                        "danger-full-access",
-                        "full-access",
-                    ]
-                    .into_iter()
-                    .find(|v| available.contains(v))
-                    .map(|v| Value::String(v.to_owned()))
-                }),
+                .map(|c| Value::String(c.to_owned())),
             ("select", Some("thought_level")) => efforts
                 .iter()
                 .find(|c| available.contains(*c))
@@ -3015,10 +3000,8 @@ fn prompt_turn(
     client.request_now("session/prompt", params)
 }
 
-/// Answer a server→client request. Permission requests are auto-accepted with
-/// the agent's preferred allow option — parity with the claude harness's
-/// bypassPermissions and the codex harness's approvalPolicy "never" (zeron
-/// sessions run unattended). Everything else (fs, terminal, elicitation) was
+/// Answer non-interactive server requests. Permissions require the live host
+/// input bridge and are declined here. Everything else (fs, terminal, elicitation) was
 /// declined at initialize, so a stray request gets method-not-found rather
 /// than wedging the agent.
 fn handle_server_request(
@@ -3029,18 +3012,8 @@ fn handle_server_request(
 ) -> Vec<AgentEvent> {
     match method {
         "session/request_permission" => {
-            let options: Vec<Value> = params
-                .get("options")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            match preferred_allow_option(&options) {
-                Some(option_id) => client.respond(
-                    &id,
-                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
-                ),
-                None => client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } })),
-            }
+            // Catalog/handshake requests have no visible approval owner.
+            client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } }));
             Vec::new()
         }
         _ => {
@@ -3057,27 +3030,8 @@ type RequestInputFn = Box<
         + Sync,
 >;
 
-/// A permission request is a QUESTION (not a tool permission) when any of
-/// its options lacks an allow/reject kind — that's how the agent relays
-/// user-facing choices (Claude's AskUserQuestion arrives this way through
-/// the adapter). Every option carrying an allow/reject kind means a real
-/// tool permission, which auto-accepts (unattended parity); kinds may
-/// legitimately repeat — codex sends two `allow_always` options ("Allow for
-/// Session" and a prefix-rule amendment) on every exec approval.
-fn is_user_question(options: &[Value]) -> bool {
-    options.iter().any(|option| {
-        !matches!(
-            option.get("kind").and_then(Value::as_str),
-            Some("allow_once" | "allow_always" | "reject_once" | "reject_always")
-        )
-    })
-}
-
-/// The live-run request handler: tool permissions auto-accept like
-/// [`handle_server_request`], but question-shaped requests block on the
-/// engine's input bridge (in a subtask so the message loop keeps flowing)
-/// and answer with the option whose name matches the chosen label. A dropped
-/// resolver degrades to `cancelled` — never a silent allow.
+/// Route all live permissions and questions through the host input bridge.
+/// A dropped resolver cancels the request rather than granting access.
 fn handle_server_request_live(
     client: &RpcClient,
     id: Value,
@@ -3102,9 +3056,9 @@ fn handle_server_request_live(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    if !is_user_question(&options) {
-        return handle_server_request(client, id, method, params);
-    }
+    // Keep permission choices on the same host input bridge as questions.
+    // No unattended allow selection in the Kivio host.
+
     let names: Vec<String> = options
         .iter()
         .map(|o| {
@@ -3775,31 +3729,9 @@ async fn run_session(session: Session) {
                 Err(e) if auth_method.is_some() && is_auth_required(&e) => {
                     return Err(HarnessError::Protocol(not_signed_in(agent_name)));
                 }
-                // A missing/foreign session falls back to a fresh one.
-                Err(e) => {
-                    tracing::debug!(
-                        target: "zeron_harness::acp",
-                        "session/load failed (starting fresh): {e}"
-                    );
-                    let _ = send(&event_tx, AgentEvent::Error {
-                        message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
-                    }).await;
-                    let new = new_session(
-                        &client,
-                        &mut incoming,
-                        session_params.clone(),
-                        agent_name,
-                        auth_method.is_some(),
-                    )
-                    .await?;
-                    (
-                        new.get("sessionId")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                        new,
-                    )
-                }
+                Err(e) => return Err(HarnessError::Protocol(format!(
+                    "{agent_name} could not restore session {resume}: {e}"
+                ))),
             }
         } else {
             let new = new_session(
@@ -6063,31 +5995,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_exec_approval_options_are_not_a_question() {
-        // codex-acp's real exec-approval shape: two allow_always entries (the
-        // session allow + a prefix-rule amendment). Must auto-accept.
-        let options = vec![
-            json!({ "optionId": "allow_once", "name": "Allow Once", "kind": "allow_once" }),
-            json!({ "optionId": "allow_always", "name": "Allow for Session", "kind": "allow_always" }),
-            json!({ "optionId": "allow_prefix", "name": "Allow Commands Starting With `cargo test`", "kind": "allow_always" }),
-            json!({ "optionId": "reject", "name": "Reject", "kind": "reject_once" }),
-        ];
-        assert!(!is_user_question(&options));
-        // AskUserQuestion relays choices without allow/reject kinds.
-        let question = vec![
-            json!({ "optionId": "a", "name": "Blue" }),
-            json!({ "optionId": "b", "name": "Green" }),
-        ];
-        assert!(is_user_question(&question));
-        let mixed = vec![
-            json!({ "optionId": "a", "name": "Proceed", "kind": "allow_once" }),
-            json!({ "optionId": "b", "name": "Другое", "kind": "other" }),
-        ];
-        assert!(is_user_question(&mixed));
-    }
-
-    #[test]
-    fn mode_config_option_prefers_a_no_prompt_mode_per_adapter_naming() {
+    fn mode_config_option_keeps_the_agent_default_without_an_explicit_choice() {
         let codex = json!({
             "sessionId": "s-1",
             "configOptions": [{
@@ -6105,7 +6013,7 @@ mod tests {
         let no_opts = serde_json::Map::new();
         assert_eq!(
             config_option_sets(&codex, None, &[], &no_opts),
-            vec![("mode".to_owned(), json!({ "value": "agent-full-access" }))]
+            Vec::<(String, Value)>::new()
         );
     }
 

@@ -1982,7 +1982,7 @@ impl AppearancePage {
                         }))
                     })
                     .when(!available, |row| row.opacity(0.45))
-                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(div().flex_1().min_w_0().truncate().child(crate::i18n::display(label)))
                     .into_any_element()
             })
             .collect();
@@ -2257,7 +2257,7 @@ impl AppearancePage {
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .font_weight(gpui_kit::FontWeight::MEDIUM)
                                 .text_color(if active { theme.text } else { theme.text_muted })
-                                .child(label),
+                                .child(crate::i18n::display(label)),
                         ),
                 )
                 .child(
@@ -2266,7 +2266,7 @@ impl AppearancePage {
                         .ml(px(23.0))
                         .text_size(crate::typography::ui_rems(10.5))
                         .text_color(theme.text_muted)
-                        .child(description),
+                        .child(crate::i18n::display(description)),
                 )
         };
 
@@ -2276,7 +2276,7 @@ impl AppearancePage {
                 .text_size(crate::typography::ui_rems(11.0))
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 .text_color(theme.text_muted)
-                .child(label)
+                .child(crate::i18n::display(label))
         };
 
         let mut main = div()
@@ -4667,12 +4667,12 @@ mod tests {
             );
         });
         let (_page, cx) = cx.add_window_view(|_, cx| AppearancePage::new(cx));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let trigger = cx
             .debug_bounds("appearance-surface")
             .expect("glass trigger");
         cx.simulate_click(trigger.center(), gpui_kit::Modifiers::default());
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let frosted = cx
             .debug_bounds("appearance-surface-option-1")
             .expect("frosted option");

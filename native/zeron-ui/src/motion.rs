@@ -1495,13 +1495,13 @@ mod tests {
             apply(cx);
         });
         let window = cx.add_window(|_, _| Loaders);
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         cx.run_until_parked();
         for _ in 0..20 {
             cx.background_executor.advance_clock(PULSE_TICK);
             cx.run_until_parked();
-            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
         }
         cx.update(|cx| {

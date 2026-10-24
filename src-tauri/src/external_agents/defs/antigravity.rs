@@ -41,7 +41,9 @@ pub fn build_antigravity_args(
         }
     }
     match options.sandbox.as_deref() {
-        Some(mode @ ("plan" | "accept-edits")) => args.extend(["--mode".into(), mode.into()]),
+        Some(mode @ ("plan" | "accept-edits" | "auto")) => {
+            args.extend(["--mode".into(), mode.into()])
+        }
         Some("sandbox") => args.push("--sandbox".into()),
         Some("always-proceed") => args.push("--dangerously-skip-permissions".into()),
         _ => {} // Inherit native permissions; do not silently bypass them.
@@ -72,6 +74,7 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
         ("default", "遵循 CLI 配置"),
         ("plan", "计划"),
         ("accept-edits", "接受编辑"),
+        ("auto", "自动审核（需账号支持）"),
         ("sandbox", "沙箱"),
         ("always-proceed", "完全放行"),
     ],
@@ -157,6 +160,10 @@ mod tests {
             "must go to stdin"
         ]
         .contains(&v.as_str())));
+        options.sandbox = Some("auto".into());
+        assert!(build_antigravity_args(&ctx, &options, None)
+            .windows(2)
+            .any(|pair| pair == ["--mode", "auto"]));
         options.sandbox = Some("always-proceed".into());
         assert!(build_antigravity_args(&ctx, &options, None)
             .contains(&"--dangerously-skip-permissions".into()));

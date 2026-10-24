@@ -166,7 +166,7 @@ impl Render for NotificationsPage {
                 .items_center()
                 .justify_center()
                 .role(gpui_kit::Role::Switch)
-                .aria_label(label)
+                .aria_label(crate::i18n::text(label))
                 .aria_toggled(if enabled {
                     gpui_kit::Toggled::True
                 } else {

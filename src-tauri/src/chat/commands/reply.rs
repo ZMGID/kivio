@@ -968,42 +968,11 @@ pub(super) async fn complete_assistant_reply_inner(
             error: None,
         });
     }
-    if let Some(boundary) = result.compaction_boundary.clone() {
-        conversation
-            .context_state
-            .compaction_boundaries
-            .push(boundary);
-    }
-    // L2 压缩对齐落盘路径：run 结束时把 L2 产出的 summary 写回 context_state.summary +
-    // compression_count（不再只 push boundary）。质量兜底已在 compaction 核心拦截，此处直接采用。
-    if let Some(mut summary) = result.compaction_summary.clone() {
-        // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
-        // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
-        // 与落盘路径 compact_conversation_inner 口径一致。必须在替换 summary **之前**读旧 S1。
-        summary.source_message_ids = crate::chat::agent::compaction::accumulate_source_ids(
-            conversation,
-            &summary.source_until_message_id,
-        );
-        // Files-touched ledger: recompute cumulatively here (this L2 summary was
-        // built on the runtime Value stream, which lacks the Conversation). Same
-        // recompute as the disk path, so neither clobbers the other's ledger.
-        let ledger = crate::chat::agent::file_ledger::build_for_boundary(
-            conversation,
-            &summary.source_until_message_id,
-        );
-        summary.file_ledger = (!ledger.is_empty()).then_some(ledger);
-        conversation.context_state.last_compressed_at = Some(summary.created_at);
-        conversation.context_state.compressed_message_count = summary.source_message_ids.len();
-        conversation.context_state.compression_count = conversation
-            .context_state
-            .compression_count
-            .saturating_add(1);
-        conversation.context_state.summary = Some(summary);
-        // R-4：多次链式压缩后提示准确性下降（与 compact_conversation 口径一致）。
-        conversation.context_state.warning = crate::chat::agent::compaction::decay_warning_for(
-            conversation.context_state.compression_count,
-        );
-    }
+    crate::chat::agent::completion::apply_compaction(
+        conversation,
+        result.compaction_boundary.clone(),
+        result.compaction_summary.clone(),
+    );
     let terminal_content = result.content.clone();
     let terminal_outcome = result.stream_outcome.clone();
     let goal_assistant_message_id = assistant_message_id.clone();
@@ -1134,26 +1103,7 @@ pub(super) fn agent_run_entry_label(entry: crate::chat::agent::AgentRunEntry) ->
 /// `ChatToolArtifact`：`data:{mime};base64,{data}` 内联，name `generated-image-{i}.{ext}`
 /// （1 基）。复用 image_generation 的 `extension_for_mime` / `decoded_base64_len`，与 Mixer
 /// 出图工具的 artifact 形态保持一致。空输入 → 空 Vec（无开销）。
-fn generated_image_artifacts(
-    images: &[crate::chat::model::GeneratedImageData],
-) -> Vec<crate::mcp::types::ChatToolArtifact> {
-    use crate::chat::image_generation::{decoded_base64_len, extension_for_mime};
-    images
-        .iter()
-        .enumerate()
-        .map(|(idx, image)| {
-            let extension = extension_for_mime(&image.mime_type);
-            crate::mcp::types::ChatToolArtifact {
-                id: None,
-                name: format!("generated-image-{}.{}", idx + 1, extension),
-                mime_type: image.mime_type.clone(),
-                data_url: format!("data:{};base64,{}", image.mime_type, image.data),
-                size_bytes: decoded_base64_len(&image.data),
-                path: None,
-            }
-        })
-        .collect()
-}
+use crate::chat::agent::completion::generated_image_artifacts;
 
 #[cfg(test)]
 mod tests {

@@ -332,21 +332,7 @@ pub async fn chat_mcp_warmup(
 }
 
 /// Apply the server's explicit per-tool setting. An empty list means all tools.
-pub(crate) fn tools_from_mcp(
-    server: &ChatMcpServer,
-    tools: Vec<crate::mcp::types::McpTool>,
-) -> Vec<ChatToolDefinition> {
-    let allowed = server
-        .enabled_tools
-        .iter()
-        .map(|tool| tool.as_str())
-        .collect::<Vec<_>>();
-    tools
-        .into_iter()
-        .filter(|tool| allowed.is_empty() || allowed.contains(&tool.name.as_str()))
-        .map(|tool| tool_definition_from_mcp(server, tool))
-        .collect()
-}
+pub(crate) use super::server_policy::tools_from_mcp;
 
 #[tauri::command]
 pub async fn chat_mcp_test_server(
@@ -856,40 +842,7 @@ fn normalize_imported_transport(server: &CursorMcpServer) -> String {
     }
 }
 
-pub(crate) fn mcp_server_is_runtime_eligible(server: &ChatMcpServer) -> bool {
-    if !server.enabled {
-        return false;
-    }
-    // Package ownership must be resolved before the broader catalog-plugin prefix.
-    // Use the same owner switch as package skills and lifecycle reconciliation.
-    if let Some(package_id) = server
-        .connector_id
-        .as_deref()
-        .and_then(|connector_id| connector_id.strip_prefix("plugin:package:"))
-    {
-        return crate::plugins::packages::owner_enabled(package_id);
-    }
-    if let Some(plugin_id) = server
-        .connector_id
-        .as_deref()
-        .and_then(|connector_id| connector_id.strip_prefix("plugin:"))
-    {
-        return crate::plugins::is_enabled(plugin_id) && crate::plugins::is_installed(plugin_id);
-    }
-    true
-}
-
-fn eligible_mcp_servers(settings: &crate::settings::Settings) -> Vec<&ChatMcpServer> {
-    if !settings.chat_tools.enabled {
-        return Vec::new();
-    }
-    settings
-        .chat_tools
-        .servers
-        .iter()
-        .filter(|server| mcp_server_is_runtime_eligible(server))
-        .collect()
-}
+pub(crate) use super::server_policy::{mcp_server_is_runtime_eligible,eligible_mcp_servers};
 
 /// 从未成功连接过（Error 态且无缓存工具）的已启用 server 说明，注入系统提示词：
 /// 让模型知道这些 server 已配置但当前不可用，而不是"不存在"。无此类 server ⇒ None。
@@ -905,67 +858,7 @@ pub fn unavailable_mcp_servers_note(names: &[String]) -> Option<String> {
     ))
 }
 
-fn tinyfish_mcp_configured(settings: &crate::settings::Settings) -> bool {
-    let url = settings.lens.web_search.tinyfish_mcp_url.trim();
-    if url.is_empty() {
-        return false;
-    }
-    if settings
-        .lens
-        .web_search
-        .tinyfish_mcp_auth
-        .as_ref()
-        .is_some_and(|auth| !auth.access_token.trim().is_empty())
-    {
-        return true;
-    }
-    let normalized = url.trim_end_matches('/');
-    settings.chat_tools.servers.iter().any(|server| {
-        if server.url.trim().trim_end_matches('/') != normalized {
-            return false;
-        }
-        server
-            .headers
-            .get("Authorization")
-            .is_some_and(|value| !value.trim().is_empty())
-            || server
-                .auth
-                .as_ref()
-                .is_some_and(|auth| !auth.access_token.trim().is_empty())
-    })
-}
-
-pub(crate) fn web_search_provider_configured(
-    settings: &crate::settings::Settings,
-    provider: WebSearchProvider,
-) -> bool {
-    match provider {
-        WebSearchProvider::Tavily => !settings.lens.web_search.tavily_api_key.trim().is_empty(),
-        WebSearchProvider::Exa => !settings.lens.web_search.exa_api_key.trim().is_empty(),
-        WebSearchProvider::ExaMcp => !settings.lens.web_search.exa_mcp_url.trim().is_empty(),
-        WebSearchProvider::Ollama => !settings.lens.web_search.ollama_api_key.trim().is_empty(),
-        WebSearchProvider::Grok => !settings.lens.web_search.grok_api_key.trim().is_empty(),
-        WebSearchProvider::Deepseek => !settings.lens.web_search.deepseek_api_key.trim().is_empty(),
-        WebSearchProvider::Brave => !settings.lens.web_search.brave_api_key.trim().is_empty(),
-        WebSearchProvider::Serper => !settings.lens.web_search.serper_api_key.trim().is_empty(),
-        WebSearchProvider::Bocha => !settings.lens.web_search.bocha_api_key.trim().is_empty(),
-        WebSearchProvider::Zhipu => !settings.lens.web_search.zhipu_api_key.trim().is_empty(),
-        WebSearchProvider::Tinyfish => !settings.lens.web_search.tinyfish_api_key.trim().is_empty(),
-        WebSearchProvider::TinyfishMcp => tinyfish_mcp_configured(settings),
-        WebSearchProvider::Searxng => !settings.lens.web_search.searxng_base_url.trim().is_empty(),
-        WebSearchProvider::Kimi => !settings.lens.web_search.kimi_api_key.trim().is_empty(),
-        WebSearchProvider::Unknown => false,
-    }
-}
-
-pub(crate) fn web_search_configured(settings: &crate::settings::Settings) -> bool {
-    web_search_provider_configured(settings, settings.lens.web_search.provider)
-}
-
-pub(crate) fn web_fetch_configured(settings: &crate::settings::Settings) -> bool {
-    crate::web_search::resolved_fetch_provider(&settings.lens.web_search)
-        .is_some_and(|provider| web_search_provider_configured(settings, provider))
-}
+pub(crate) use super::search_policy::{web_search_configured,web_fetch_configured,web_search_provider_configured};
 
 async fn call_mixer_tool(
     app: &AppHandle,
@@ -1012,42 +905,7 @@ async fn call_skill_tool(
         .map_err(|e| e.to_string())??;
         &fallback
     };
-    let record = crate::skills::lookup_skill(&registry, &skill_name)
-        .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
-    if let Some(err) = crate::settings::skill_global_unavailable_error(
-        &settings.chat_tools,
-        &record.meta.id,
-        &skill_name,
-    ) {
-        return Err(err);
-    }
-    // 助手技能白名单硬 gate(防绕过):模型报个不在目录里的技能名也会被这里拦下。
-    if let Some(cache) = skill_context.as_deref() {
-        if !cache.skill_id_allowed(&record.meta.id) {
-            return Err(format!(
-                "Skill is not allowed for the active assistant: {skill_name}"
-            ));
-        }
-    }
-
-    let record = record.clone();
-    let record =
-        tauri::async_runtime::spawn_blocking(move || crate::skills::read_skill_record(&record))
-            .await
-            .map_err(|e| e.to_string())??;
-    let content = match tool.name.as_str() {
-        "skill" => crate::skills::activate_skill(&record),
-        other => return Err(format!("Unknown skill tool: {other}")),
-    };
-
-    Ok(McpToolCallResult {
-        content,
-        is_error: false,
-        raw: Value::Null,
-        artifacts: Vec::new(),
-        structured_content: None,
-        follow_up_user_messages: Vec::new(),
-    })
+    crate::skills::execute_skill_tool(&settings, registry, tool, &skill_name, skill_context.as_deref()).await
 }
 
 pub fn skill_runtime_tools_enabled(settings: &crate::settings::Settings) -> bool {
@@ -1171,43 +1029,6 @@ where
 }
 
 /// 文件变更结果给模型的 diff 最多带多少行（对齐 clawspring 的 80 行裁剪）。
-const FILE_MUTATION_DIFF_MAX_LINES: usize = 80;
-
-pub fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallResult, String> {
-    let summary = result.summary();
-    let mut content = summary;
-    if !result.warnings.is_empty() {
-        content = format!("{}\n{}", content, result.warnings.join("\n"));
-    }
-    // 成功只回传摘要和警告；完整 diff 仍留在 structured_content 中用于审阅。
-    // 失败保留原有诊断回显，不修改调用参数或实际文件内容。
-    if !result.ok && !result.diff.trim().is_empty() {
-        let lines: Vec<&str> = result.diff.lines().collect();
-        if lines.len() > FILE_MUTATION_DIFF_MAX_LINES {
-            let clipped = lines[..FILE_MUTATION_DIFF_MAX_LINES].join("\n");
-            content = format!(
-                "{}\n\n{}\n[... diff clipped: showing first {FILE_MUTATION_DIFF_MAX_LINES} of {} lines ...]",
-                content,
-                clipped,
-                lines.len()
-            );
-        } else {
-            content = format!("{}\n\n{}", content, result.diff);
-        }
-    }
-    let is_error = !result.ok;
-    let structured = serde_json::to_value(&result)
-        .map_err(|err| format!("Serialize file mutation result failed: {err}"))?;
-    Ok(McpToolCallResult {
-        content,
-        is_error,
-        raw: structured.clone(),
-        artifacts: Vec::new(),
-        structured_content: Some(structured),
-        follow_up_user_messages: Vec::new(),
-    })
-}
-
 /// Build a downloadable file-card artifact when an ordinary-chat `write` resolves
 /// inside that conversation's workbench. Returns `None` for project/external/temp
 /// writes and for standalone calls
@@ -1227,64 +1048,6 @@ fn delivery_artifact_for_write(
         return None;
     }
     crate::native_tools::build_delivery_artifact_for_path(&resolved).ok()
-}
-
-pub fn read_file_tool_result(result: ReadFileResult) -> Result<McpToolCallResult, String> {
-    // structured_content 保留完整 ReadFileResult 给前端 ToolCallBlock 渲染（不变）。
-    let structured = serde_json::to_value(&result)
-        .map_err(|err| format!("Serialize read_file result failed: {err}"))?;
-    // 模型看到的 content 改成 cat -n 风格（`行号\t内容` + 精简头），行号便于模型引用并构造
-    // 后续 edit_file。行号仅供参考、不属于文件内容；read_file/edit_file 描述里已说明
-    // old_string 不要带行号前缀。
-    let content = format_read_file_for_model(&result);
-    Ok(McpToolCallResult {
-        content,
-        is_error: false,
-        raw: structured.clone(),
-        artifacts: Vec::new(),
-        structured_content: Some(structured),
-        follow_up_user_messages: Vec::new(),
-    })
-}
-
-/// 把 ReadFileResult 渲染成模型友好的 `cat -n` 文本：一行精简元数据头 + `右对齐行号\t原文`，
-/// 续读通知贴在**末尾**（对齐 pi）：模型读完一页，最后一眼看到的就是「用 offset=N 继续」，
-/// 不会被两千行正文冲掉。没截断就没有尾注。
-fn format_read_file_for_model(result: &ReadFileResult) -> String {
-    let mut out = format!(
-        "{} — lines {}-{} of {}",
-        result.path, result.start_line, result.end_line, result.total_lines
-    );
-    if !result.content.is_empty() {
-        let start = result.start_line.max(1);
-        out.push('\n');
-        let numbered: Vec<String> = result
-            .content
-            .lines()
-            .enumerate()
-            .map(|(i, line)| format!("{:>6}\t{}", start + i, line))
-            .collect();
-        out.push_str(&numbered.join("\n"));
-    }
-    let footer = read_continuation_footer(result);
-    if !footer.is_empty() {
-        out.push_str("\n\n");
-        out.push_str(&footer);
-    }
-    out
-}
-
-/// 尾注正文：优先用 `read_file` 产出的通知（已含触顶原因）；截断了却没通知时兜底给一句
-/// 最简的「用 offset=N 继续」，保证「截断必有下一步」这条契约不依赖上游。
-fn read_continuation_footer(result: &ReadFileResult) -> String {
-    if !result.warnings.is_empty() {
-        return result.warnings.join("\n");
-    }
-    match (result.truncated, result.next_offset) {
-        (true, Some(next)) => format!("[More lines in file. Use offset={next} to continue.]"),
-        (true, None) => "[Output truncated.]".to_string(),
-        (false, _) => String::new(),
-    }
 }
 
 async fn resolve_native_workspace(
@@ -2010,3 +1773,5 @@ FOO = "bar"
         fs::remove_dir_all(&home).ok();
     }
 }
+
+pub use super::native_results::{file_mutation_tool_result, read_file_tool_result};

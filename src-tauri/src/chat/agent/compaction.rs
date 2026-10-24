@@ -10,7 +10,6 @@ use crate::chat::types::{
     ConversationContextSummary,
 };
 use crate::settings::Settings;
-use crate::state::AppState;
 use serde_json::{json, Value};
 
 pub(crate) const PERSISTED_SUMMARY_PREFIX: &str = "Previous conversation summary:";
@@ -49,7 +48,7 @@ fn estimate_request_tokens(
         messages
             .iter()
             .map(|message| {
-                crate::chat::commands::context::request_image_tokens(message, Some(provider), model)
+                super::context_projection::request_image_tokens(message, Some(provider), model)
             })
             .sum::<usize>(),
     )
@@ -271,7 +270,7 @@ fn is_file_read_result(content: &str) -> bool {
         .is_some_and(|(_, range)| range.contains(" of "))
 }
 
-pub(crate) enum CompactOutcome {
+pub enum CompactOutcome {
     Compacted(Vec<Value>, String),
     /// Too little history to summarize. Like ZCode this is a healthy no-op, not a failure.
     Skipped,
@@ -733,10 +732,10 @@ pub(crate) fn decay_warning_for(count: usize) -> Option<String> {
 /// history to summarize. The summary and exact remaining body are persisted together by
 /// the conversation CAS.
 pub(crate) async fn compact_conversation(
-    app: &tauri::AppHandle,
-    state: &AppState,
+    state: &dyn crate::chat::model::host::ModelHost,
     settings: &Settings,
     conversation: &mut Conversation,
+    messages: &[Value],
 ) -> Result<bool, String> {
     let (provider_id, model) =
         settings.effective_compression_model_for_session(Some(crate::settings::SessionModel {
@@ -746,17 +745,6 @@ pub(crate) async fn compact_conversation(
     let provider = settings
         .get_provider(&provider_id)
         .ok_or("Compression provider not found")?;
-    // Do not reopen historical videos for a summary. Image projection happens
-    // only on the summary request copy, leaving retained recent images intact.
-    let messages = crate::chat::commands::context::build_chat_api_messages_with_video(
-        Some(app),
-        "",
-        conversation,
-        None,
-        None,
-        &[],
-        false,
-    )?;
     let until = conversation
         .messages
         .last()
@@ -1061,11 +1049,11 @@ pub(crate) fn estimate_chat_message_tokens(message: &ChatMessage) -> usize {
 }
 
 pub(crate) fn accumulate_source_ids(conversation: &Conversation, until_id: &str) -> Vec<String> {
-    let prev = crate::chat::commands::context::active_summary(conversation);
+    let prev = super::context_projection::active_summary(conversation);
     let mut ids = prev
         .map(|s| s.source_message_ids.clone())
         .unwrap_or_default();
-    let summary_start = crate::chat::commands::context::context_replay_start_index(conversation);
+    let summary_start = super::context_projection::context_replay_start_index(conversation);
     let Some(until_idx) = conversation.messages.iter().position(|m| m.id == until_id) else {
         return ids;
     };

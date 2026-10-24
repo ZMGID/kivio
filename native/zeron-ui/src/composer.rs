@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gpui_kit::base::Disableable;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::{
     AnyTooltip, App, BorderStyle, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle,
     DispatchPhase, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
@@ -6070,6 +6072,9 @@ pub struct Composer {
     popup_bar: crate::popover::MenuScrollbarState,
     pub(crate) current_key: String,
     sending: bool,
+    native_cli: bool,
+    kivio_thinking: Option<String>,
+    kivio_chat_mode: bool,
     /// Armed immediately before a blank-canvas send selects its minted chat.
     /// The state observer consumes it to distinguish that handoff from normal
     /// session navigation, which must continue to snap.
@@ -6223,6 +6228,37 @@ impl Composer {
     }
 
     /// The picker entity, for the shell's canvas target selectors.
+    pub fn native_cli(&self) -> bool {
+        self.native_cli
+    }
+
+    pub fn set_native_cli(&mut self, cli: bool, cx: &mut Context<Self>) {
+        if self.native_cli != cli {
+            self.native_cli = cli;
+            cx.notify();
+        }
+    }
+
+    pub fn kivio_chat_mode(&self) -> bool {
+        self.kivio_chat_mode
+    }
+
+    pub fn set_kivio_chat_mode(&mut self, chat: bool, cx: &mut Context<Self>) {
+        if self.kivio_chat_mode != chat {
+            self.kivio_chat_mode = chat;
+            cx.notify();
+        }
+    }
+
+    pub fn kivio_thinking(&self) -> Option<&str> {
+        self.kivio_thinking.as_deref()
+    }
+
+    pub fn set_kivio_thinking(&mut self, level: Option<String>, cx: &mut Context<Self>) {
+        self.kivio_thinking = level;
+        cx.notify();
+    }
+
     pub fn pickers(&self) -> &Entity<Pickers> {
         &self.pickers
     }
@@ -6378,6 +6414,9 @@ impl Composer {
             popup_bar: crate::popover::MenuScrollbarState::default(),
             current_key,
             sending: false,
+            native_cli: false,
+            kivio_thinking: None,
+            kivio_chat_mode: false,
             launching_new_chat: false,
             failure: None,
             wizard: None,
@@ -8868,6 +8907,12 @@ impl Composer {
         let Some(engine) = self.state.read(cx).engine().cloned() else { return; };
         let chat_id = self.state.read(cx).selected_chat.clone().unwrap_or_else(|| format!("conv_{}", uuid::Uuid::new_v4()));
         let project_id = self.state.read(cx).selected_space_row().map(|s| s.id.clone());
+        let resolved = self.pickers.read(cx).resolved(cx);
+        let cli_config = resolved.chat_config();
+        let runtime = if self.native_cli {
+            resolved.harness.map(|h| if h == HarnessId::ClaudeCode { "claude" } else { h.as_str() }).unwrap_or("codex")
+        } else if self.kivio_chat_mode { "chat" } else { "builtin" };
+        let thinking_level = if self.state.read(cx).selected_chat.is_none() { self.kivio_thinking.clone() } else { None };
         let key = self.current_key.clone();
         let staged = self.staged().to_vec();
         let attachment_ids: Vec<_> = staged.iter().map(|a| a.id.clone()).collect();
@@ -8878,7 +8923,7 @@ impl Composer {
                 staged.iter().map(|a| serde_json::json!({"name":a.name,"data":base64::engine::general_purpose::STANDARD.encode(a.bytes())})).collect::<Vec<_>>()
             }).await;
             let result = engine.client().call("KivioSend", serde_json::json!({
-                "chatId":chat_id,"text":text,"projectId":project_id,"attachments":payload
+                "chatId":chat_id,"text":text,"projectId":project_id,"attachments":payload,"runtime":runtime,"cliConfig":cli_config,"thinkingLevel":thinking_level
             })).await;
             let _ = this.update(cx, |this, cx| {
                 this.sending = false;
@@ -11508,17 +11553,19 @@ impl Render for Composer {
             },
             |width| (width - 2.0 * Theme::SPACE_LG).max(0.0),
         );
+        let cli_selected = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .map_or(self.native_cli, |chat| chat.config.is_some());
         let model_picker = div()
+            .flex()
+            .items_center()
+            .gap_2()
             .min_w_0()
             .max_w(px(surface_width * 0.45))
             .relative()
-            .child(gpui_kit::component::button::Button::new("kivio-provider-settings")
-                .label("模型 / 供应商")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if let Some(directory) = this.state.read(cx).data_dir.clone() {
-                        crate::kivio::open_provider_settings(directory, cx);
-                    }
-                })));
+            .when(cli_selected, |el| el.child(self.pickers.clone()));
         #[cfg(test)]
         let model_picker = {
             let measured_model_bounds = self.model_bounds.clone();
@@ -11935,7 +11982,7 @@ mod tests {
             let state = cx.new(|_| AppState::new());
             Composer::new(state, cx)
         });
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         (dir, window)
     }
@@ -11974,7 +12021,7 @@ mod tests {
                 window.focus(&input.focus_handle, cx);
                 input
             });
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             cx.simulate_keystrokes(handle.into(), "shift-backspace");
             handle
@@ -12047,7 +12094,7 @@ mod tests {
                             .unwrap();
                         cx.update_window(handle.into(), |_, window, cx| {
                             window.refresh();
-                            window.draw(cx).clear();
+                            window.draw(cx).clear(cx);
                         })
                         .unwrap();
                         // Inspect the first painted frame before TestAppContext
@@ -12121,7 +12168,7 @@ mod tests {
                 .unwrap();
             cx.update_window(handle.into(), |_, window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             handle
@@ -12190,7 +12237,7 @@ mod tests {
                 .unwrap();
             cx.update_window(handle.into(), |_, window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             handle
@@ -12234,7 +12281,7 @@ mod tests {
             .unwrap();
         let draw = |cx: &mut gpui_kit::TestAppContext| {
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
         };
@@ -12348,7 +12395,7 @@ mod tests {
             .unwrap();
         cx.update_window(handle.into(), |_, window, cx| {
             window.blur(cx);
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             let bounds = input.read(cx).last_bounds.unwrap();
             // Click padding immediately left of the actual editor.
             let position = point(bounds.left() - px(4.0), bounds.center().y);
@@ -12387,7 +12434,7 @@ mod tests {
             cx.simulate_path_prompt_response(move |_| accepted.then(|| vec![path]));
             cx.run_until_parked();
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert!(input.read(cx).focus_handle.is_focused(window));
                 // An attached image is mentioned at the caret.
                 assert_eq!(
@@ -12416,7 +12463,7 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             assert!(input.read(cx).focus_handle.is_focused(window));
         })
         .unwrap();
@@ -12467,7 +12514,7 @@ mod tests {
                 })
                 .unwrap();
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert!(!input.read(cx).focus_handle.is_focused(window));
             })
             .unwrap();
@@ -12488,7 +12535,7 @@ mod tests {
                 .unwrap();
             }
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert_eq!(input.read(cx).focus_handle.is_focused(window), escape);
             })
             .unwrap();
@@ -12515,7 +12562,7 @@ mod tests {
             ])
         });
         cx.run_until_parked();
-        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         let inputs = host.read_with(cx, |host, _| host.0.clone()).unwrap();
         // Visit both fields and return to the first: click-away capture must
@@ -12975,7 +13022,7 @@ mod tests {
             .read_with(cx, |composer, _| composer.input.clone())
             .unwrap();
         input.update(cx, |input, cx| input.set_text(&raw, cx));
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         input.update(cx, |input, _| {
             assert_eq!(input.projection.mentions.len(), 3);
@@ -14055,7 +14102,7 @@ mod tests {
             .unwrap();
         input.update(cx, |input, cx| input.set_text("hello café world", cx));
         cx.update_window(handle.into(), |_, window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             let position = {
                 let editor = input.read(cx);
                 let local = editor.point_for_index(8).unwrap();

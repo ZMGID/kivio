@@ -46,7 +46,7 @@ pub fn init(cx: &mut App) {
     cx.on_action(|_: &About, _| about_panel::show());
     // Global, not per-window: it must work with every window closed, and the
     // update lifecycle is app-wide (see `app_update`).
-    cx.on_action(|_: &CheckForUpdates, cx| crate::app_update::check_for_updates(cx));
+    cx.on_action(|_: &CheckForUpdates, cx| cx.open_url("https://github.com/ZMGID/kivio/releases"));
     // Application-menu verbs — gpui wraps NSApp `hide` / `hideOtherApplications`
     // / `unhideAllApplications` (zed registers the same trio in
     // crates/zed/src/zed.rs `init`).
@@ -68,6 +68,7 @@ pub fn init(cx: &mut App) {
 
 fn with_active_window(cx: &mut App, f: impl FnOnce(&mut Window)) {
     if let Some(window) = cx.active_window() {
+        if crate::native_lens::close_active(window, cx) { return; }
         window.update(cx, |_, window, _| f(window)).ok();
     }
 }
@@ -80,10 +81,14 @@ fn quit(_: &Quit, cx: &mut App) {
 pub(crate) fn request_quit(cx: &mut App) {
     // Actions may arrive while GPUI has the active window borrowed. Inspect
     // roots only after that dispatch completes.
-    cx.defer(prepare_quit);
+    cx.defer(|cx| {
+        reset_exit_attempt(cx);
+        prepare_quit(cx);
+    });
 }
 
 fn prepare_quit(cx: &mut App) {
+    if crate::native_lens::blocks_exit(cx) { return; }
     let mut ready = true;
     for (_, shell) in crate::shell_windows(cx) {
         ready &= shell.update(cx, |shell, cx| shell.prepare_quit(cx));
@@ -93,7 +98,47 @@ fn prepare_quit(cx: &mut App) {
     }
 }
 
+/// Resume an already confirmed exit without granting future exit attempts consent.
+pub(crate) fn continue_quit(cx: &mut App) {
+    cx.defer(prepare_quit);
+}
+
+pub(crate) fn cancel_exit_attempt(cx: &mut App) {
+    // Callers may currently hold a Shell borrow (file-editor cancellation).
+    cx.defer(reset_exit_attempt);
+}
+
+fn reset_exit_attempt(cx: &mut App) {
+    for (_, shell) in crate::shell_windows(cx) {
+        shell.update(cx, |shell, cx| shell.reset_exit_attempt(cx));
+    }
+}
+
+pub(crate) fn request_restart(cx: &mut App) {
+    cx.defer(|cx| {
+        reset_exit_attempt(cx);
+        prepare_restart(cx);
+    });
+}
+
+pub(crate) fn continue_restart(cx: &mut App) {
+    cx.defer(prepare_restart);
+}
+
+fn prepare_restart(cx: &mut App) {
+    let mut ready = true;
+    for (_, shell) in crate::shell_windows(cx) {
+        ready &= shell.update(cx, |shell, cx| shell.prepare_restart(cx));
+    }
+    if ready {
+        #[cfg(target_os = "macos")]
+        native_quit::allow();
+        cx.restart();
+    }
+}
+
 pub(crate) fn quit_after_save(cx: &mut App) {
+    if crate::native_lens::blocks_exit(cx) { return; }
     #[cfg(target_os = "macos")]
     native_quit::allow();
     cx.quit();
@@ -105,19 +150,19 @@ fn close_window(_: &CloseWindow, cx: &mut App) {
 
 fn close_active_window(cx: &mut App) {
     if let Some(window) = cx.active_window() {
-        if let Some((handle, shell)) = crate::shell_windows(cx).into_iter().find(|(handle, _)| handle.window_id() == window.window_id()) {
+        if let Some((handle, shell)) = crate::shell_windows(cx)
+            .into_iter()
+            .find(|(handle, _)| handle.window_id() == window.window_id())
+        {
             handle
-                .update(cx, |_, window, cx| shell.update(cx, |shell, cx| {
-                    // ⌘W closes the right pane's active surface first (the tab
-                    // the user just opened); an empty or closed pane falls
-                    // through to the window close, unsaved-file gate and all.
-                    if shell.close_active_surface(window, cx) {
+                .update(cx, |_, window, cx| {
+                    if shell.update(cx, |shell, cx| shell.close_active_surface(window, cx)) {
                         return;
                     }
-                    if shell.prepare_window_close(cx) {
+                    if crate::main_window_should_close(window, Some(shell.clone()), cx) {
                         window.remove_window();
                     }
-                }))
+                })
                 .ok();
         } else {
             window
@@ -158,6 +203,10 @@ fn app_key_bindings(macos: bool) -> Vec<KeyBinding> {
 
 /// The zeron menu bar. macOS renders this natively; mac-only entries are gated
 /// at runtime (`cfg!`) so the whole module compiles and tests on Linux.
+fn menu_text(zh: &'static str, en: &'static str) -> &'static str {
+    if crate::i18n::is_english() { en } else { zh }
+}
+
 pub fn app_menus() -> Vec<Menu> {
     let macos = cfg!(target_os = "macos");
 
@@ -165,60 +214,60 @@ pub fn app_menus() -> Vec<Menu> {
     // what we pass, but gpui still wants a name.
     let mut app_items = vec![
         // The native AppKit about panel; no equivalent elsewhere yet.
-        MenuItem::action("About Zeron", About).disabled(!macos),
+        MenuItem::action(menu_text("关于 Kivio Native", "About Kivio Native"), About).disabled(!macos),
         // Sparkle's placement: directly under About. Other platforms reach
         // the same check from the account menu.
-        MenuItem::action("Check for Updates…", CheckForUpdates),
+        MenuItem::action(menu_text("版本发布…", "Releases…"), CheckForUpdates),
         MenuItem::separator(),
-        MenuItem::action("Settings", shell::OpenSettings),
+        MenuItem::action(menu_text("设置", "Settings"), shell::OpenSettings),
         MenuItem::separator(),
     ];
     if macos {
         app_items.extend([
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::os_submenu(menu_text("服务", "Services"), SystemMenuType::Services),
             MenuItem::separator(),
-            MenuItem::action("Hide Zeron", Hide),
-            MenuItem::action("Hide Others", HideOthers),
-            MenuItem::action("Show All", ShowAll),
+            MenuItem::action(menu_text("隐藏 Kivio Native", "Hide Kivio Native"), Hide),
+            MenuItem::action(menu_text("隐藏其他", "Hide Others"), HideOthers),
+            MenuItem::action(menu_text("显示全部", "Show All"), ShowAll),
             MenuItem::separator(),
         ]);
     }
-    app_items.push(MenuItem::action("Quit Zeron", Quit));
+    app_items.push(MenuItem::action(menu_text("退出 Kivio Native", "Quit Kivio Native"), Quit));
 
     let mut menus = vec![
-        Menu::new("Zeron").items(app_items),
+        Menu::new("Kivio Native").items(app_items),
         // Standard clipboard verbs tied to the composer's existing actions via
         // their native selectors (`OsAction` → cut:/copy:/paste:/selectAll:),
         // so the OS Edit menu routes through the responder chain to the focused
         // input — zed wires its editor actions identically
         // (crates/zed/src/zed/app_menus.rs, Edit/Selection menus).
-        Menu::new("Edit").items([
+        Menu::new(menu_text("编辑", "Edit")).items([
             // Undo/Redo have no `OsAction` counterpart — they dispatch as plain
             // actions to the focused input, same as the composer keymap.
-            MenuItem::action("Undo", composer::Undo),
-            MenuItem::action("Redo", composer::Redo),
+            MenuItem::action(menu_text("撤销", "Undo"), composer::Undo),
+            MenuItem::action(menu_text("重做", "Redo"), composer::Redo),
             MenuItem::separator(),
-            MenuItem::os_action("Cut", composer::Cut, OsAction::Cut),
-            MenuItem::os_action("Copy", composer::Copy, OsAction::Copy),
-            MenuItem::os_action("Paste", composer::Paste, OsAction::Paste),
+            MenuItem::os_action(menu_text("剪切", "Cut"), composer::Cut, OsAction::Cut),
+            MenuItem::os_action(menu_text("复制", "Copy"), composer::Copy, OsAction::Copy),
+            MenuItem::os_action(menu_text("粘贴", "Paste"), composer::Paste, OsAction::Paste),
             MenuItem::separator(),
-            MenuItem::os_action("Select All", composer::SelectAll, OsAction::SelectAll),
+            MenuItem::os_action(menu_text("全选", "Select All"), composer::SelectAll, OsAction::SelectAll),
         ]),
     ];
     // Appearance lives under View on every platform — it is the only View verb
     // today, but "Appearance" as a top-level menu would read oddly next to Edit.
-    menus.push(Menu::new("View").items([
-        MenuItem::action("Appearance: System", AppearanceSystem),
-        MenuItem::action("Appearance: Light", AppearanceLight),
-        MenuItem::action("Appearance: Dark", AppearanceDark),
+    menus.push(Menu::new(menu_text("显示", "View")).items([
+        MenuItem::action(menu_text("外观：跟随系统", "Appearance: System"), AppearanceSystem),
+        MenuItem::action(menu_text("外观：浅色", "Appearance: Light"), AppearanceLight),
+        MenuItem::action(menu_text("外观：深色", "Appearance: Dark"), AppearanceDark),
     ]));
     if macos {
         // Standard Window menu; macOS appends the open-window list itself.
-        menus.push(Menu::new("Window").items([
-            MenuItem::action("Minimize", Minimize),
-            MenuItem::action("Zoom", Zoom),
+        menus.push(Menu::new(menu_text("窗口", "Window")).items([
+            MenuItem::action(menu_text("最小化", "Minimize"), Minimize),
+            MenuItem::action(menu_text("缩放", "Zoom"), Zoom),
             MenuItem::separator(),
-            MenuItem::action("Close Window", CloseWindow),
+            MenuItem::action(menu_text("关闭窗口", "Close Window"), CloseWindow),
         ]));
     }
     menus
@@ -242,11 +291,11 @@ mod tests {
     #[test]
     fn app_menu_ends_with_quit() {
         let menus = app_menus();
-        assert_eq!(menus[0].name.as_ref(), "Zeron");
+        assert_eq!(menus[0].name.as_ref(), "Kivio Native");
         let Some(MenuItem::Action { name, action, .. }) = menus[0].items.last() else {
             panic!("last app-menu item must be an action");
         };
-        assert_eq!(name.as_ref(), "Quit Zeron");
+        assert_eq!(name.as_ref(), "退出 Kivio Native");
         assert_eq!(action.name(), Quit.name());
     }
 
@@ -285,7 +334,7 @@ mod tests {
         else {
             panic!("second app-menu item must be an action");
         };
-        assert_eq!(name.as_ref(), "Check for Updates…");
+        assert_eq!(name.as_ref(), "版本发布…");
         assert_eq!(action.name(), CheckForUpdates.name());
         assert!(!disabled);
     }
@@ -378,7 +427,7 @@ mod tests {
 
 // Standard AppKit about panel. Icon and copyright still come from the bundle's
 // Info.plist; name and version are passed explicitly so unbundled dev builds
-// (`cargo run`) show "Zeron" and the crate version instead of the process name.
+// (`cargo run`) show "Kivio Native" and the crate version instead of the process name.
 #[cfg(target_os = "macos")]
 mod about_panel {
     use objc2::MainThreadMarker;
@@ -393,8 +442,8 @@ mod about_panel {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let name = NSString::from_str("Zeron");
-        let version = NSString::from_str(env!("CARGO_PKG_VERSION"));
+        let name = NSString::from_str("Kivio Native");
+        let version = NSString::from_str("0.1.0 · GPUI Preview");
         // Empty build version: CFBundleVersion equals the marketing version, and
         // AppKit would otherwise render "Version 0.2.61 (0.2.61)".
         let build = NSString::from_str("");

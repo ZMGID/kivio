@@ -1847,7 +1847,7 @@ mod tests {
             }
             panel
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let geometry = panel.read_with(cx, |panel, _| panel.geometry.unwrap());
         let mut scroll = |delta, phase| {
             cx.simulate_event(ScrollWheelEvent {
@@ -1899,7 +1899,7 @@ mod tests {
             assert_eq!(panel.active_tab(cx).unwrap().scroll_remainder, 0.25);
             panel.select_tab_by_key(1, cx);
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_event(ScrollWheelEvent {
             position: geometry.bounds.center(),
             delta: ScrollDelta::Lines(point(0.0, 0.75)),

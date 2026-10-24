@@ -9,13 +9,20 @@ use kivio_model_runtime::{
 };
 use std::sync::OnceLock;
 
+#[path = "chat_runtime/agent_host.rs"]
+pub mod agent_host;
+#[path = "chat_runtime/agent_run.rs"]
+mod agent_run;
+
 pub enum ChatEvent {
+    Agent(agent_host::AgentEvent),
     Delta(String),
     Reasoning(String),
     Finished(ChatCompletion),
     Failed(String),
 }
 pub struct ChatCompletion {
+    pub agent_result: Option<kivio_model_runtime::agent::types::AgentRunResult>,
     pub text: String,
     pub reasoning: Option<String>,
     pub provider_messages: Vec<ModelMessage>,
@@ -23,6 +30,7 @@ pub struct ChatCompletion {
     pub finish_reason: Option<String>,
 }
 pub struct ChatRun {
+    pub assistant_id: String,
     pub events: async_channel::Receiver<ChatEvent>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
 }
@@ -56,6 +64,21 @@ pub fn start(
     history: Vec<ChatMessage>,
     conversation_id: String,
     data_root: std::path::PathBuf,
+    thinking_level: Option<String>,
+    chat_mode: bool,
+) -> Result<ChatRun, String> {
+    start_with_tools(provider, model, history, conversation_id, data_root, thinking_level, chat_mode, None)
+}
+
+pub fn start_with_tools(
+    provider: ModelProvider,
+    model: String,
+    history: Vec<ChatMessage>,
+    conversation_id: String,
+    data_root: std::path::PathBuf,
+    thinking_level: Option<String>,
+    chat_mode: bool,
+    tools: Option<std::sync::Arc<kivio_model_runtime::native_tool_runtime::NativeToolExecutor>>,
 ) -> Result<ChatRun, String> {
     if !provider.enabled {
         return Err("请先启用所选供应商。".into());
@@ -65,6 +88,8 @@ pub fn start(
     }
     let (events_tx, events) = async_channel::unbounded();
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    let assistant_id = uuid::Uuid::new_v4().to_string();
+    let reply_id = assistant_id.clone();
     runtime()?.spawn(async move {
         let mut sink = |part| {
             let event = match part {
@@ -85,63 +110,152 @@ pub fn start(
                 .ok_or_else(|| ModelError::new("缺少对话数据目录"))?
                 .to_path_buf();
             let prepare_provider = provider.clone();
-            let (request, attempts) = tokio::task::spawn_blocking(move || {
-                let root = catalog_dir.parent().ok_or("缺少设置目录")?;
-                let settings = kivio_model_runtime::native_preferences::load(root)?;
-                let attempts = if settings.retry_enabled {
-                    settings.retry_attempts.clamp(1, 11) as usize
-                } else {
-                    1
-                };
-                let mut request = prepare_request(
-                    prepare_provider,
-                    model,
-                    history,
-                    conversation_id,
-                    catalog_dir,
-                )?;
-                request.options.thinking_enabled = settings.chat.thinking_enabled;
-                request.system = settings.chat.system_prompt;
-                Ok::<_, String>((request, attempts))
-            })
-            .await
-            .map_err(|error| ModelError::new(error.to_string()))?
-            .map_err(ModelError::new)?;
-            let provider = kivio_model_runtime::provider_oauth::resolve_provider(&provider)
+            let (request, attempts, debug_enabled, stream_enabled, hooks, hook_root, hook_cwd, settings) =
+                tokio::task::spawn_blocking(move || {
+                    let root = catalog_dir.parent().ok_or("缺少设置目录")?.to_path_buf();
+                    let settings = kivio_model_runtime::native_preferences::load_runtime(&root)?;
+                    let attempts = if settings.retry_enabled {
+                        settings.retry_attempts.clamp(1, 11) as usize
+                    } else {
+                        1
+                    };
+                    let resolved = match thinking_level.as_deref() {
+                        Some(level) => Some(resolve_thinking(level, &prepare_provider, &model)?),
+                        None => None,
+                    };
+                    let hook_cwd = if kivio_model_runtime::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks) {
+                        let conversation = kivio_model_runtime::conversation_files::ConversationStore::new(catalog_dir.clone())
+                            .load(&conversation_id).map_err(|error| error.to_string())?;
+                        kivio_model_runtime::workspace::resolve_working_directory(&catalog_dir, &conversation, &settings.chat_tools.native_tools.working_directory)?
+                    } else {
+                        std::path::PathBuf::new()
+                    };
+                    let max_output = kivio_model_runtime::request_max_tokens_with_limit(&prepare_provider, &model, settings.chat.max_output_tokens);
+                    let mut request = prepare_request(
+                        prepare_provider,
+                        model,
+                        history,
+                        conversation_id,
+                        catalog_dir,
+                    )?;
+                    request.options.max_tokens = max_output;
+                    request.options.thinking_enabled = settings.chat.thinking_enabled;
+                    if let Some((enabled, level)) = resolved {
+                        request.options.thinking_enabled = enabled;
+                        request.options.thinking_level = level;
+                    }
+                    request.system = if chat_mode {
+                        settings.chat.chat_mode.system_prompt.clone()
+                    } else {
+                        settings.chat.system_prompt.clone()
+                    };
+                    if settings.chat_memory.enabled {
+                        let memory = kivio_model_runtime::memory_files::memory_dir_at(&root)?;
+                        if let Some(block) = kivio_model_runtime::memory_files::l1_prompt_block_at(&memory)? {
+                            if !request.system.is_empty() {
+                                request.system.push_str("\n\n");
+                            }
+                            request.system.push_str(&block);
+                        }
+                    }
+                    Ok::<_, String>((
+                        request,
+                        attempts,
+                        settings.chat_tools.request_debug_enabled,
+                        settings.chat.stream_enabled,
+                        settings.chat_tools.hooks.clone(),
+                        root,
+                        hook_cwd,
+                        settings,
+                    ))
+                })
                 .await
+                .map_err(|error| ModelError::new(error.to_string()))?
                 .map_err(ModelError::new)?;
+            let mut request = request;
+            request.metadata.message_id = Some(reply_id);
+            if tools.is_some() {
+                let executor = tools.unwrap_or_else(|| std::sync::Arc::new(kivio_model_runtime::native_tool_runtime::NativeToolExecutor::new(hook_root.clone())));
+                return agent_run::run(provider.clone(), request, settings, hook_root, data_root.clone(), attempts, events_tx.clone(), executor, chat_mode).await.map_err(ModelError::new);
+            }
+            let mut lifecycle = kivio_model_runtime::native_hooks::Lifecycle::begin(hook_root, &hooks, kivio_model_runtime::hooks::RunContext {
+                conversation_id: request.metadata.conversation_id.clone().unwrap_or_default(),
+                run_id: uuid::Uuid::new_v4().to_string(),
+                message_id: request.metadata.message_id.clone().unwrap_or_default(),
+                cwd: hook_cwd,
+                model: request.model.clone(),
+            });
+            let provider = match kivio_model_runtime::provider_oauth::resolve_provider(&provider).await {
+                Ok(provider) => provider,
+                Err(error) => { lifecycle.complete(); return Err(ModelError::new(error)); }
+            };
             let host = kivio_model_runtime::RuntimeHost::shared(&provider, &data_root);
-            kivio_model_runtime::dispatch::stream_resolved(
-                &*host, &provider, attempts, request, &mut sink,
-            )
-            .await
+            host.set_request_debug_enabled(debug_enabled);
+            let output = if stream_enabled {
+                kivio_model_runtime::dispatch::stream_resolved(
+                    &*host, &provider, attempts, request, &mut sink,
+                )
+                .await
+            } else {
+                kivio_model_runtime::dispatch::generate_resolved(
+                    &*host, &provider, attempts, request,
+                )
+                .await
+            };
+            lifecycle.complete();
+            output.map(completion)
         };
         let result = tokio::select! { _=cancel_rx => return, result=call=>result };
         let event = match result {
-            Ok(output) => {
-                let provider_messages = if let Some(canonical) = output.canonical_message.clone() {
-                    vec![canonical]
-                } else {
-                    kivio_model_runtime::model_messages_from_openai_messages(vec![
-                        output.to_openai_compatible_message(),
-                    ])
-                };
-                ChatEvent::Finished(ChatCompletion {
-                    text: output.text,
-                    reasoning: output.reasoning,
-                    provider_messages,
-                    usage: output.usage,
-                    finish_reason: output.finish_reason,
-                })
-            }
+            Ok(output) => ChatEvent::Finished(output),
             Err(error) => ChatEvent::Failed(error.message),
         };
         let _ = events_tx.send(event).await;
     });
     Ok(ChatRun {
+        assistant_id,
         events,
         cancel: Some(cancel_tx),
     })
+}
+
+
+fn completion(output: kivio_model_runtime::GenerateOutput) -> ChatCompletion {
+    let provider_messages = if let Some(canonical) = output.canonical_message.clone() {
+        vec![canonical]
+    } else {
+        kivio_model_runtime::model_messages_from_openai_messages(vec![output.to_openai_compatible_message()])
+    };
+    ChatCompletion { agent_result: None, text: output.text, reasoning: output.reasoning, provider_messages, usage: output.usage, finish_reason: output.finish_reason }
+}
+
+/// An explicit per-chat choice; Off is refused for models that cannot turn thinking off.
+fn resolve_thinking(
+    level: &str,
+    provider: &ModelProvider,
+    model: &str,
+) -> Result<(bool, Option<String>), String> {
+    use kivio_model_runtime::model_metadata::{ThinkingOffMode, thinking_capabilities_for_model};
+    let capabilities = thinking_capabilities_for_model(Some(provider), model);
+    if capabilities.off_mode == ThinkingOffMode::NotApplicable {
+        return Ok((true, None));
+    }
+    if level == "off" {
+        if capabilities.off_mode == ThinkingOffMode::Unsupported {
+            return Err(format!("{model} 不支持关闭思考，请选择该模型支持的思考强度。"));
+        }
+        return Ok((false, None));
+    }
+    if capabilities.levels.is_empty() {
+        return Ok((true, None));
+    }
+    if !capabilities.levels.iter().any(|allowed| allowed == level) {
+        return Err(format!(
+            "{model} 不支持思考强度 {level}，支持：{}",
+            capabilities.levels.join(", ")
+        ));
+    }
+    Ok((true, Some(level.to_owned())))
 }
 
 fn prepare_request(
@@ -153,9 +267,15 @@ fn prepare_request(
 ) -> Result<GenerateRequest, String> {
     let message_id = history.last().map(|m| m.id.clone());
     let directory = catalog_dir.join(format!("{conversation_id}_attachments"));
+    let send_video = kivio_model_runtime::model_metadata::model_supports_video(&provider, &model) == Some(true);
     let mut video_budget = 14 * 1024 * 1024;
-    let mut messages = Vec::new();
-    for message in history {
+    let (start, prefix) = if catalog_dir.join(format!("{conversation_id}.json")).is_file() {
+        let mut conversation = kivio_model_runtime::conversation_files::ConversationStore::new(catalog_dir.clone()).load(&conversation_id).map_err(|error| error.to_string())?;
+        conversation.messages = history.clone();
+        kivio_model_runtime::agent::completion::replay_prefix(&conversation)
+    } else { (0, Vec::new()) };
+    let mut messages = kivio_model_runtime::model_messages_from_openai_messages(prefix);
+    for message in history.into_iter().skip(start) {
         if message.role == "assistant" && !message.model_messages.is_empty() {
             messages.extend(message.model_messages);
         } else if message.role == "assistant" && !message.api_messages.is_empty() {
@@ -163,11 +283,12 @@ fn prepare_request(
                 message.api_messages,
             ));
         } else if message.role == "user" && !message.attachments.is_empty() {
-            let parts = kivio_model_runtime::attachment_files::user_message_parts(
+            let parts = kivio_model_runtime::attachment_files::user_message_parts_with_video(
                 &message.content,
                 &message.attachments,
                 &directory,
                 &mut video_budget,
+                send_video,
             )?;
             messages.extend(kivio_model_runtime::model_messages_from_openai_messages(
                 vec![serde_json::json!({"role":"user","content":parts})],
@@ -300,6 +421,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::test_support::*;
+    use super::test_support::completion;
     use super::*;
     use std::time::Duration;
 
@@ -308,15 +430,18 @@ mod tests {
         let data_root = tempfile::tempdir().unwrap();
         let (mut provider, server) = serve(vec![response("第一答"), response("第二答")], false);
         provider.api_keys = vec!["native-secret-never-persist".into()];
-        let host =
-            kivio_model_runtime::RuntimeHost::for_directory(&data_root.path().join("runtime"));
+        let host = kivio_model_runtime::RuntimeHost::for_directory(
+            &data_root.path().join("conversations/runtime"),
+        );
         let user = message("user", "first question");
         let run = start(
             provider.clone(),
             "test-model".into(),
             vec![user.clone()],
             "conv_native".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         let first = completion(&run).await;
@@ -326,10 +451,20 @@ mod tests {
         assert!(
             !data_root
                 .path()
-                .join("runtime/request_debug/records.jsonl")
+                .join("conversations/runtime/request_debug/records.jsonl")
                 .exists()
         );
-        host.set_request_debug_enabled(true);
+        kivio_model_runtime::native_preferences::save(
+            data_root.path(),
+            kivio_model_runtime::native_preferences::Change::Fields(vec![
+                kivio_model_runtime::native_preferences::FieldEdit {
+                    path: "/chatTools/requestDebugEnabled".into(),
+                    before: serde_json::json!(false),
+                    after: serde_json::json!(true),
+                },
+            ]),
+        )
+        .unwrap();
         let mut assistant = message("assistant", &first.text);
         assistant.model_messages = first.provider_messages;
         let saved =
@@ -340,7 +475,9 @@ mod tests {
             "test-model".into(),
             restored,
             "conv_native".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         assert_eq!(completion(&second).await.text, "第二答");
@@ -365,9 +502,12 @@ mod tests {
         assert_eq!(stats.logs.len(), 2);
         let records = host.debug_snapshot();
         assert_eq!(records.len(), 1);
-        let mirror =
-            std::fs::read_to_string(data_root.path().join("runtime/request_debug/records.jsonl"))
-                .unwrap();
+        let mirror = std::fs::read_to_string(
+            data_root
+                .path()
+                .join("conversations/runtime/request_debug/records.jsonl"),
+        )
+        .unwrap();
         assert_eq!(mirror.lines().count(), 1);
         assert!(!mirror.contains("native-secret-never-persist"));
         let persisted: kivio_model_runtime::request_debug::RequestDebugRecord =
@@ -385,7 +525,7 @@ mod tests {
         assert!(
             !data_root
                 .path()
-                .join("runtime/request_debug/records.jsonl")
+                .join("conversations/runtime/request_debug/records.jsonl")
                 .exists()
         );
     }
@@ -400,7 +540,9 @@ mod tests {
             "test-model".into(),
             vec![message("user", "wait")],
             "cancel".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         assert!(matches!(
@@ -435,7 +577,9 @@ mod tests {
             "test-model".into(),
             vec![message("user", "test")],
             "broken".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         let mut partial = false;
@@ -487,7 +631,9 @@ mod tests {
             "deepseek-flash".into(),
             vec![first_user.clone()],
             "native-authorized-smoke".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         async fn live_result(run: &ChatRun) -> ChatCompletion {
@@ -527,7 +673,9 @@ mod tests {
             "deepseek-flash".into(),
             restored,
             "native-authorized-smoke".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         let second = live_result(&second_run).await;
@@ -540,7 +688,9 @@ mod tests {
             "deepseek-flash".into(),
             vec![message("user", "从1开始逐项列出1000个数字。")],
             "native-authorized-cancel".into(),
-            data_root.path().join("runtime"),
+            data_root.path().join("conversations/runtime"),
+            None,
+            true,
         )
         .unwrap();
         tokio::time::timeout(Duration::from_secs(120), cancel_run.events.recv())

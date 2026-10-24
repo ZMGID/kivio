@@ -236,3 +236,48 @@ mod tests {
         assert_eq!(out, "first=$ARG_B second=payload");
     }
 }
+
+pub async fn execute_skill_tool(
+    settings: &crate::settings::Settings,
+    registry: &SkillRegistry,
+    tool: &crate::mcp::ChatToolDefinition,
+    skill_name: &str,
+    skill_context: Option<&SkillRunContext>,
+) -> Result<crate::mcp::types::McpToolCallResult,String> {
+    let record = crate::skills::lookup_skill(&registry, &skill_name)
+        .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
+    if let Some(err) = crate::settings::skill_global_unavailable_error(
+        &settings.chat_tools,
+        &record.meta.id,
+        &skill_name,
+    ) {
+        return Err(err);
+    }
+    // 助手技能白名单硬 gate(防绕过):模型报个不在目录里的技能名也会被这里拦下。
+    if let Some(cache) = skill_context.as_deref() {
+        if !cache.skill_id_allowed(&record.meta.id) {
+            return Err(format!(
+                "Skill is not allowed for the active assistant: {skill_name}"
+            ));
+        }
+    }
+
+    let record = record.clone();
+    let record =
+        tokio::task::spawn_blocking(move || crate::skills::read_skill_record(&record))
+            .await
+            .map_err(|e| e.to_string())??;
+    let content = match tool.name.as_str() {
+        "skill" => crate::skills::activate_skill(&record),
+        other => return Err(format!("Unknown skill tool: {other}")),
+    };
+
+    Ok(crate::mcp::types::McpToolCallResult {
+        content,
+        is_error: false,
+        raw: Value::Null,
+        artifacts: Vec::new(),
+        structured_content: None,
+        follow_up_user_messages: Vec::new(),
+    })
+}

@@ -7,7 +7,7 @@ use tokio::process::Command;
 
 use super::{resolve_tool_existing_dir, NativeToolWorkspace};
 use crate::settings::{CHAT_TOOL_MAX_TIMEOUT_MS, CHAT_TOOL_MIN_TIMEOUT_MS};
-use crate::state::AppState;
+use super::ShellHost;
 
 const COMMAND_DENYLIST: &[&str] = &[
     "sudo ",
@@ -49,7 +49,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(target_os = "windows")]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 
-fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
+fn apply_shell_tool_env(cmd: &mut Command, state: Option<&dyn ShellHost>) {
     // 环境净化（对齐 codex 等）：关掉彩色输出与交互式分页，让给模型读的命令输出更干净。
     // 只设"降噪"类，刻意不设 CI=1 —— 那会改变部分工具行为（如 CRA 把 warning 当 error、
     // 某些 dev server 行为变样），本次目标仅是可读性，不改行为。无 AppState（headless
@@ -69,8 +69,7 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
         arg.contains("playwright-cli") || arg.contains("@playwright/cli")
     });
     if uses_playwright {
-        let settings = state.settings_read();
-        let token = &settings.chat_tools.playwright_extension_token;
+        let token = state.playwright_extension_token();
         if !token.is_empty() {
             cmd.env("PLAYWRIGHT_MCP_EXTENSION_TOKEN", token);
         }
@@ -107,14 +106,13 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
 
 /// Playwright lists its extension connection URL, including the token, in CLI output.
 /// Redact before output reaches the model or is offloaded to a tool-output file.
-fn redact_shell_output(text: String, state: Option<&AppState>) -> String {
+fn redact_shell_output(text: String, state: Option<&dyn ShellHost>) -> String {
     let Some(state) = state else { return text };
-    let settings = state.settings_read();
-    let token = &settings.chat_tools.playwright_extension_token;
+    let token = state.playwright_extension_token();
     if token.is_empty() {
         text
     } else {
-        text.replace(token, "[redacted]")
+        text.replace(&token, "[redacted]")
     }
 }
 
@@ -170,7 +168,7 @@ pub async fn run_captured_command(
     command: &str,
     cwd: PathBuf,
     timeout_ms: u64,
-    state: Option<&AppState>,
+    state: Option<&dyn ShellHost>,
 ) -> Result<CapturedCommand, String> {
     let command = command.trim();
     if command.is_empty() {
@@ -205,7 +203,7 @@ pub fn bash_foreground_timeout_ms(arguments: &Value) -> Option<u64> {
 pub async fn run_command(
     workspace: &NativeToolWorkspace,
     arguments: &Value,
-    state: Option<&AppState>,
+    state: Option<&dyn ShellHost>,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
     let command = arguments
@@ -528,7 +526,7 @@ impl Drop for KillProcessGroupOnDrop {
 async fn run_shell_command_background(
     command: &str,
     cwd: PathBuf,
-    state: Option<&AppState>,
+    state: Option<&dyn ShellHost>,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
     let job_id = uuid::Uuid::new_v4().to_string();
@@ -620,7 +618,7 @@ async fn run_shell_command_background(
     // the log until the process exits.
     let waiter_state = state.background_commands_handle();
     let waiter_job = job_id.clone();
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let status = tokio::select! {
             reaped = child.wait() => match reaped {
                 Ok(exit) => BackgroundCommandStatus::Exited { code: exit.code() },
@@ -650,7 +648,7 @@ async fn run_shell_command_background(
 /// `bash_output` 带 `job_id` 时默认阻塞这么久，等进程结束或到期。
 /// 给永不退出的 server 看日志用，不是有限长任务的等待原语。
 /// `wait_ms: 0` 仍是即时快照。
-pub const DEFAULT_BASH_OUTPUT_WAIT_MS: u64 = 30_000;
+pub use crate::tool_limits::DEFAULT_BASH_OUTPUT_WAIT_MS;
 const BASH_OUTPUT_POLL_INTERVAL_MS: u64 = 200;
 
 /// 该作业是否属于调用方会话。调用方无会话上下文（`None`）时不设限（headless /
@@ -664,7 +662,7 @@ fn bash_output_wait_ms(arguments: &Value) -> u64 {
 }
 
 fn snapshot_bash_output(
-    state: &AppState,
+    state: &dyn ShellHost,
     job_id: &str,
     since_offset: u64,
     conversation_id: Option<&str>,
@@ -683,9 +681,7 @@ fn snapshot_bash_output(
 
     use std::io::{Read, Seek, SeekFrom};
     let secret = state
-        .settings_read()
-        .chat_tools
-        .playwright_extension_token
+        .playwright_extension_token()
         .as_bytes()
         .to_vec();
     let overlap = secret.len().saturating_sub(1) as u64;
@@ -779,7 +775,7 @@ fn format_bash_output(
 /// 日志增长不结束等待。取消由外层 `execute` 的 generation select 负责。
 /// 有限长任务应走前台 bash（等到退出），不要用本工具当等待原语。
 pub async fn bash_output(
-    state: &AppState,
+    state: &dyn ShellHost,
     arguments: &Value,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
@@ -820,7 +816,7 @@ pub async fn bash_output(
 
 /// `list_background` tool: list this conversation's tracked background jobs.
 pub fn list_background(
-    state: &AppState,
+    state: &dyn ShellHost,
     _arguments: &Value,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
@@ -854,7 +850,7 @@ pub fn list_background(
 /// `kill_background` tool: kill a tracked job's process group and mark it Killed.
 /// Only the owning conversation's jobs are addressable.
 pub fn kill_background(
-    state: &AppState,
+    state: &dyn ShellHost,
     arguments: &Value,
     conversation_id: Option<&str>,
 ) -> Result<String, String> {
@@ -1012,7 +1008,7 @@ async fn run_shell_command(
     command: &str,
     cwd: PathBuf,
     timeout_ms: Option<u64>,
-    state: Option<&AppState>,
+    state: Option<&dyn ShellHost>,
 ) -> Result<CommandOutput, String> {
     exec_shell_command(build_shell_command(command), cwd, timeout_ms, state).await
 }
@@ -1026,7 +1022,7 @@ async fn exec_shell_command(
     mut cmd: Command,
     cwd: PathBuf,
     timeout_ms: Option<u64>,
-    state: Option<&AppState>,
+    state: Option<&dyn ShellHost>,
 ) -> Result<CommandOutput, String> {
     cmd.current_dir(cwd)
         // stdin 必须为 null:coding-agent 的 shell 命令绝不能读交互终端的 stdin。
@@ -1065,9 +1061,7 @@ async fn exec_shell_command(
     let secret = state
         .map(|state| {
             state
-                .settings_read()
-                .chat_tools
-                .playwright_extension_token
+                .playwright_extension_token()
                 .as_bytes()
                 .to_vec()
         })
@@ -1187,6 +1181,7 @@ fn format_command_output(output: &CommandOutput) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::state::AppState;
     use super::*;
     use crate::native_tools::user_home_dir;
 

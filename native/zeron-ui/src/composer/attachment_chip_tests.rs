@@ -727,7 +727,7 @@ fn click_first_chip(
     cx: &mut gpui_kit::TestAppContext,
     drag: Point<Pixels>,
 ) {
-    cx.update_window((*handle).into(), |_, window, cx| window.draw(cx).clear())
+    cx.update_window((*handle).into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
     handle
         .update(cx, |composer, window, cx| {
@@ -764,7 +764,7 @@ fn clicking_an_image_chip_opens_the_picture_full_size(cx: &mut gpui_kit::TestApp
     let (_dir, handle) = composer_focus_window(cx);
     paste_images(&handle, cx, 1);
     // Hovering shows no card: the click is how the picture is seen.
-    cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+    cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
         .unwrap();
     handle
         .update(cx, |composer, _, cx| {

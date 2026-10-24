@@ -2486,7 +2486,7 @@ mod tests {
         cx.simulate_resize(gpui_kit::size(px(900.0), px(1400.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let prefix = page.read_with(cx, |page, _| page.selection_prefix.clone());
         let key = format!("{prefix}description-block-0:0");
@@ -2497,7 +2497,7 @@ mod tests {
         for _ in 0..3 {
             cx.update(|window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
         }
         assert_eq!(render::selection_test_entry_count(&prefix), 2);
@@ -3877,7 +3877,7 @@ mod tests {
             // The page reads its width a frame late.
             for _ in 0..2 {
                 cx.run_until_parked();
-                cx.update(|window, cx| window.draw(cx).clear());
+                cx.update(|window, cx| window.draw(cx).clear(cx));
             }
             let column = cx.debug_bounds("pr-content-column").unwrap();
             let card = cx.debug_bounds("pr-detail-title").unwrap();

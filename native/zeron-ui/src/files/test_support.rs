@@ -52,7 +52,7 @@ pub(super) fn setup(cx: &mut TestAppContext) -> (Entity<FilesSurface>, &mut Visu
     });
     cx.update(|window, cx| {
         window.activate_window();
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     (files, cx)
 }

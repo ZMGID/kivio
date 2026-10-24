@@ -1,3 +1,4 @@
+pub(crate) use crate::chat::agent::context_projection::{active_summary, context_replay_start_index, request_image_tokens, estimate_image_tokens};
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -290,76 +291,6 @@ pub(super) fn apply_context_clear(conversation: &mut Conversation) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn active_summary(conversation: &Conversation) -> Option<&ConversationContextSummary> {
-    let summary = conversation
-        .context_state
-        .summary
-        .as_ref()
-        .filter(|summary| !summary.stale)
-        .filter(|summary| !summary.content.trim().is_empty())?;
-    let through = summary
-        .replay
-        .as_ref()
-        .map(|r| r.through_message_id.as_str())
-        .unwrap_or(&summary.source_until_message_id);
-    let until_idx = conversation
-        .messages
-        .iter()
-        .position(|message| message.id == through)?;
-    if let Some(clear_idx) = conversation.context_clear_until_index() {
-        if until_idx <= clear_idx {
-            return None;
-        }
-    }
-    Some(summary)
-}
-
-fn summary_boundary_index(conversation: &Conversation) -> Option<usize> {
-    let summary = active_summary(conversation)?;
-    conversation.messages.iter().position(|message| {
-        message.id
-            == summary
-                .replay
-                .as_ref()
-                .map(|r| r.through_message_id.as_str())
-                .unwrap_or(&summary.source_until_message_id)
-    })
-}
-
-/// First UI-message index that still belongs in the live model context.
-/// Messages before this are either discarded by a context clear or covered by
-/// an active compaction summary.
-pub(crate) fn context_replay_start_index(conversation: &Conversation) -> usize {
-    let clear_start = conversation.context_clear_start_index();
-    let summary_start = summary_boundary_index(conversation)
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
-    clear_start.max(summary_start)
-}
-
-fn summary_message(summary: &ConversationContextSummary) -> Value {
-    let mut content = format!(
-        "{}\n{}",
-        crate::chat::agent::compaction::PERSISTED_SUMMARY_PREFIX,
-        summary.content.trim()
-    );
-    // Deterministic files-touched ledger, rendered under the LLM summary as a
-    // factual floor (budget-isolated; never fed to the summarizer).
-    if let Some(ledger) = &summary.file_ledger {
-        let block = crate::chat::agent::file_ledger::render_block(ledger);
-        if !block.is_empty() {
-            content.push_str("\n\n");
-            content.push_str(&block);
-        }
-    }
-    // User role, as in the run that produced it (ZCode keeps the same shape): a
-    // system message would be hoisted into the system prompt, leaving a retained
-    // tail that starts with an assistant tool call as the first provider message.
-    serde_json::json!({
-        "role": "user",
-        "content": content,
-    })
-}
 
 pub(super) use crate::chat::conversation_mutations::mark_summary_stale_if_needed;
 
@@ -367,92 +298,6 @@ pub(super) fn count_tokens_in_value(value: &Value) -> usize {
     // 口径统一：委托压缩侧共用的 estimate_value_tokens（图片部件记 0，文本按文本，
     // 对象递归）。曾经两处各写一份，压缩侧漏了图片归零导致 base64 打爆估算。
     agent_prepare::estimate_value_tokens(value)
-}
-
-fn ceil_div_u32(value: u32, divisor: u32) -> usize {
-    value.div_ceil(divisor) as usize
-}
-
-fn estimate_openai_tile_image_tokens(
-    width: u32,
-    height: u32,
-    base_tokens: usize,
-    tile_tokens: usize,
-) -> usize {
-    let mut scaled_width = width.max(1) as f64;
-    let mut scaled_height = height.max(1) as f64;
-    let longest = scaled_width.max(scaled_height);
-    if longest > 2048.0 {
-        let scale = 2048.0 / longest;
-        scaled_width *= scale;
-        scaled_height *= scale;
-    }
-    let shortest = scaled_width.min(scaled_height);
-    if shortest > 768.0 {
-        let scale = 768.0 / shortest;
-        scaled_width *= scale;
-        scaled_height *= scale;
-    }
-    let tiles = (scaled_width / 512.0).ceil().max(1.0) as usize
-        * (scaled_height / 512.0).ceil().max(1.0) as usize;
-    base_tokens + tiles * tile_tokens
-}
-
-fn estimate_openai_patch_image_tokens(
-    width: u32,
-    height: u32,
-    patch_budget: Option<usize>,
-    multiplier: f64,
-    max_dimension: u32,
-) -> usize {
-    // Match OMP's order: fit pixel dimensions first, then the patch budget.
-    let mut width = width.max(1) as f64;
-    let mut height = height.max(1) as f64;
-    let longest = width.max(height);
-    if longest > max_dimension as f64 {
-        let scale = max_dimension as f64 / longest;
-        width = (width * scale).round().max(1.0);
-        height = (height * scale).round().max(1.0);
-    }
-    let mut patches = (width / 32.0).ceil() as usize * (height / 32.0).ceil() as usize;
-    if let Some(budget) = patch_budget.filter(|budget| patches > *budget) {
-        let shrink = (budget as f64 * 32.0 * 32.0 / (width * height)).sqrt();
-        let scaled_width = width * shrink / 32.0;
-        let scaled_height = height * shrink / 32.0;
-        let adjusted = shrink
-            * (scaled_width.floor() / scaled_width).min(scaled_height.floor() / scaled_height);
-        let resized_width = (width * adjusted).floor() as u32;
-        let resized_height = (height * adjusted).floor() as u32;
-        // Extreme aspect ratios can round one side to zero; use the budget,
-        // not a zero-token image or an iterative one-percent shrink loop.
-        patches = if resized_width == 0 || resized_height == 0 {
-            budget
-        } else {
-            (ceil_div_u32(resized_width, 32) * ceil_div_u32(resized_height, 32)).min(budget)
-        };
-    }
-    (patches as f64 * multiplier).ceil() as usize
-}
-
-fn estimate_anthropic_image_tokens(model: &str, width: u32, height: u32) -> usize {
-    let lower = model.to_ascii_lowercase();
-    let high_resolution_opus = lower.contains("opus")
-        && (lower.contains("4.7")
-            || lower.contains("4-7")
-            || lower.contains("4.8")
-            || lower.contains("4-8"));
-    let cap = if high_resolution_opus { 4_784 } else { 1_600 };
-    ((width.max(1) as f64 * height.max(1) as f64) / 750.0)
-        .ceil()
-        .min(cap as f64) as usize
-}
-
-fn estimate_gemini_image_tokens(width: u32, height: u32) -> usize {
-    if width <= 384 && height <= 384 {
-        return 258;
-    }
-    let tiles = ceil_div_u32(width.max(1), 768) * ceil_div_u32(height.max(1), 768);
-    tiles.max(1) * 258
 }
 
 /// Display measurement of the exact request, including model-specific image costs.
@@ -485,173 +330,6 @@ pub(super) fn measure_request_segments(
         }
     }
     segments
-}
-
-/// Decode only the image header, following OMP's bounded metadata probe.
-fn image_header_dimensions(data: &str) -> Option<(u32, u32)> {
-    use base64::Engine as _;
-    const HEADER_BASE64_CHARS: usize = 65_536_usize.div_ceil(3) * 4;
-    let count = data.len().min(HEADER_BASE64_CHARS) / 4 * 4;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&data.as_bytes()[..count])
-        .ok()?;
-    let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()?;
-    (width > 0 && height > 0).then_some((width, height))
-}
-
-fn image_url_dimensions(url: &str) -> Option<(u32, u32)> {
-    let (metadata, data) = url.strip_prefix("data:")?.split_once(',')?;
-    metadata
-        .ends_with(";base64")
-        .then(|| image_header_dimensions(data))
-        .flatten()
-}
-
-/// Estimate request image parts, never their encoded length or remote contents.
-pub(crate) fn request_image_tokens(
-    value: &Value,
-    provider: Option<&ModelProvider>,
-    model: &str,
-) -> usize {
-    match value {
-        Value::Array(values) => values
-            .iter()
-            .map(|value| request_image_tokens(value, provider, model))
-            .sum(),
-        Value::Object(object)
-            if object
-                .get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|kind| agent_prepare::IMAGE_PART_TYPES.contains(&kind)) =>
-        {
-            let image = object.get("image_url");
-            let source = object.get("source");
-            let detail = image
-                .and_then(|image| image.get("detail"))
-                .or_else(|| object.get("detail"))
-                .and_then(Value::as_str);
-            let url = image
-                .and_then(|image| image.as_str().or_else(|| image.get("url")?.as_str()))
-                .or_else(|| object.get("dataUrl")?.as_str())
-                .or_else(|| source?.get("url")?.as_str());
-            let dimensions = if let Some(url) = url {
-                image_url_dimensions(url)
-            } else {
-                source
-                    .and_then(|source| source.get("data"))
-                    .or_else(|| object.get("data"))
-                    .and_then(Value::as_str)
-                    .and_then(image_header_dimensions)
-            };
-            estimate_image_tokens(provider, model, dimensions, detail)
-        }
-        Value::Object(object) => object
-            .values()
-            .map(|value| request_image_tokens(value, provider, model))
-            .sum(),
-        _ => 0,
-    }
-}
-
-/// Model/detail rules apply equally to decoded images and unknown-size budgets.
-/// OMP supplies the sizing approach; model parameters follow OpenAI's vision guide.
-pub(super) fn estimate_image_tokens(
-    provider: Option<&ModelProvider>,
-    model: &str,
-    dimensions: Option<(u32, u32)>,
-    detail: Option<&str>,
-) -> usize {
-    // Avoid allocating a lowercased provider/model descriptor for every image.
-    let identifies = |name: &str| {
-        let contains = |value: &str| {
-            value
-                .as_bytes()
-                .windows(name.len())
-                .any(|part| part.eq_ignore_ascii_case(name.as_bytes()))
-        };
-        contains(model)
-            || provider.is_some_and(|provider| {
-                contains(&provider.name)
-                    || contains(&provider.base_url)
-                    || contains(&provider.api_format)
-            })
-    };
-    if identifies("anthropic") || identifies("claude") {
-        return dimensions.map_or_else(
-            || estimate_anthropic_image_tokens(model, u32::MAX, u32::MAX),
-            |(width, height)| estimate_anthropic_image_tokens(model, width, height),
-        );
-    }
-    if identifies("gemini") || identifies("google") {
-        return dimensions.map_or(1_600, |(width, height)| {
-            estimate_gemini_image_tokens(width, height)
-        });
-    }
-
-    let patch = |budget: Option<usize>, multiplier: f64, max_dimension: u32| {
-        dimensions.map_or_else(
-            // Original detail on newer models has a rejection limit, not a
-            // resizing budget. Unknown inputs use the largest accepted count.
-            || (budget.unwrap_or(30_000) as f64 * multiplier).ceil() as usize,
-            |(width, height)| {
-                estimate_openai_patch_image_tokens(width, height, budget, multiplier, max_dimension)
-            },
-        )
-    };
-    let astra = identifies("gpt-6-astra");
-    let extended_original = astra || identifies("gpt-5.6") || identifies("gpt-5-6");
-    let v55 = identifies("gpt-5.5") || identifies("gpt-5-5");
-    let v54 = identifies("gpt-5.4") || identifies("gpt-5-4");
-    if extended_original || v55 || v54 {
-        return match detail.unwrap_or("auto") {
-            "low" if v54 => patch(Some(6_144), 1.2, 2_048),
-            "low" => patch(Some(256), 1.2, 512),
-            "high" => patch(Some(2_500), 1.2, if astra { 65_535 } else { 2_048 }),
-            "auto" if v54 => patch(Some(2_500), 1.2, 2_048),
-            _ if extended_original => patch(None, 1.2, 65_535),
-            _ => patch(Some(10_000), 1.2, 6_000),
-        };
-    }
-    if identifies("gpt-5.2") || identifies("gpt-5-2") {
-        return patch(Some(6_144), 1.2, 2_048);
-    }
-    if identifies("gpt-4.1-mini") || identifies("gpt-4-1-mini") {
-        return patch(Some(6_144), 1.62, 2_048);
-    }
-    if identifies("gpt-4.1-nano") || identifies("gpt-4-1-nano") {
-        return patch(Some(1_536), 2.46, 2_048);
-    }
-    if identifies("gpt-5-mini") {
-        return patch(Some(1_536), 1.2, 2_048);
-    }
-    if identifies("gpt-5-nano") {
-        return patch(Some(1_536), 1.5, 2_048);
-    }
-    if identifies("o4-mini") {
-        return patch(Some(1_536), 1.72, 2_048);
-    }
-    let (base, tile) = if identifies("gpt-4o-mini") {
-        (2_833, 5_667)
-    } else if identifies("gpt-5") {
-        (70, 140)
-    } else if identifies("o1") || identifies("o3") {
-        (75, 150)
-    } else if identifies("computer-use") {
-        (65, 129)
-    } else {
-        (85, 170)
-    };
-    if detail == Some("low") {
-        return base;
-    }
-    // A 2048px long side and at most 768px short side cover at most eight tiles.
-    dimensions.map_or(base + 8 * tile, |(width, height)| {
-        estimate_openai_tile_image_tokens(width, height, base, tile)
-    })
 }
 
 /// 解析会话的真实用量锚点：从尾部找最近一条带 `anchor_usage` 且 provider 与当前一致的 assistant。
@@ -913,11 +591,15 @@ pub(super) async fn compress_conversation_context(
     conversation: &mut Conversation,
 ) -> Result<bool, String> {
     let settings = state.settings_read().clone();
+    // Manual summaries project the retained history without reopening historical videos.
+    let messages = build_chat_api_messages_with_video(
+        Some(app), "", conversation, None, None, &[], false,
+    )?;
     crate::chat::agent::compaction::compact_conversation(
-        app,
         state.inner(),
         &settings,
         conversation,
+        &messages,
     )
     .await
 }
@@ -1039,35 +721,7 @@ fn context_status(
 /// - 无记录则取该组在 `messages` 中**顺序第一条** assistant。
 /// 其余答案仅保留展示、排除出发给模型的历史（R6）。非多答消息（无 group_id）一律保留。
 /// `pub(crate)`：落盘压缩（compaction.rs）复用同一谓词，保证摘要输入与 replay 视图口径一致。
-pub(crate) fn group_answer_excluded_from_context(
-    conversation: &Conversation,
-    message: &ChatMessage,
-) -> bool {
-    let Some(group_id) = message.group_id.as_deref() else {
-        return false;
-    };
-    if message.role != "assistant" {
-        return false;
-    }
-    let selected = conversation
-        .group_selections
-        .get(group_id)
-        .map(String::as_str)
-        .or_else(|| {
-            // 无显式选择时，优先保留该组第一条「非错误」assistant 进上下文，跳过
-            // stream_outcome == "error" 的失败臂——否则失败臂的错误文案会作为上一轮
-            // 答案回灌给模型。全组皆 error（罕见）时才退回顺序第一条。
-            let in_group =
-                |m: &&ChatMessage| m.role == "assistant" && m.group_id.as_deref() == Some(group_id);
-            conversation
-                .messages
-                .iter()
-                .find(|m| in_group(m) && m.stream_outcome.as_deref() != Some("error"))
-                .or_else(|| conversation.messages.iter().find(in_group))
-                .map(|m| m.id.as_str())
-        });
-    selected != Some(message.id.as_str())
-}
+pub(crate) use crate::chat::agent::context_projection::group_answer_excluded_from_context;
 
 /// 给一条 runtime 消息标注来源 UI 消息 id（`_ui_message_id`）。
 /// 该字段只存在于运行期视图：发给 provider 前会经 `model_message_from_openai_message`
@@ -1124,32 +778,12 @@ pub(crate) fn build_chat_api_messages_with_video(
     // A context clear invalidates snapshots at or before its boundary.
     let start_idx = context_replay_start_index(conversation);
     let mut snapshot_reports = std::collections::HashSet::new();
-    if let Some(summary) = active_summary(conversation) {
-        messages.push(summary_message(summary));
-        if let Some(replay) = &summary.replay {
-            let mut tail: Vec<Value> = replay
-                .messages
-                .iter()
-                .filter(|m| crate::chat::agent::compaction::is_replayable(m))
-                .cloned()
-                .collect();
-            snapshot_reports.extend(
-                tail.iter()
-                    .filter_map(|m| {
-                        m[crate::chat::sub_agent::control::REPORT_MESSAGE_ID_KEY].as_str()
-                    })
-                    .map(str::to_string),
-            );
-            if let Some(app) = app {
-                crate::chat::attachments::rehydrate_api_message_images(
-                    app,
-                    &conversation.id,
-                    &mut tail,
-                );
-            }
-            messages.extend(tail);
-        }
+    let (_, mut tail) = crate::chat::agent::completion::replay_prefix(conversation);
+    snapshot_reports.extend(tail.iter().filter_map(|m| m[crate::chat::sub_agent::control::REPORT_MESSAGE_ID_KEY].as_str()).map(str::to_string));
+    if let Some(app) = app {
+        crate::chat::attachments::rehydrate_api_message_images(app, &conversation.id, &mut tail);
     }
+    messages.extend(tail);
 
     let mut remaining_video_bytes = crate::chat::video::MAX_VIDEO_BYTES;
     for (idx, message) in conversation.messages.iter().enumerate() {

@@ -15,7 +15,7 @@ use std::sync::{OnceLock, RwLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-pub use builtins::builtin_registry;
+pub use builtins::{builtin_registry, kivio_family};
 pub use library::{
     CustomThemeEntry, CustomThemeLibrary, CustomThemeSource, CustomThemeStatus, InstallMode,
 };

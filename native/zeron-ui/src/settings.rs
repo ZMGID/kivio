@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use zeron_proto::{AuthState, WorkspaceScope};
 
 pub mod accounts;
+pub mod backup;
+mod backup_webdav;
+pub mod cli;
+pub mod computer;
 pub mod appearance;
 pub mod archived;
 pub mod library;
@@ -2937,6 +2941,7 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
+            tasks_tab: Default::default(),
             dictation_enabled: false,
             dictation_input: Some("coreaudio:usb-mic".into()),
             window_geometry: None,
@@ -4283,3 +4288,11 @@ mod tests {
         );
     }
 }
+
+pub mod custom_themes;
+
+pub mod offline;
+
+pub mod model_database;
+
+pub mod ego;

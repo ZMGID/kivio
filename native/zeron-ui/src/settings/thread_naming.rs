@@ -153,7 +153,7 @@ impl Render for ThreadNamingCard {
                             .child(widgets::row_title(&theme, "Thread naming"))
                             .child(widgets::meta_line(
                                 &theme,
-                                vec![div().child(description).into_any_element()],
+                                vec![div().child(crate::i18n::display(description)).into_any_element()],
                             )),
                     )
                     .child(control),

@@ -76,7 +76,10 @@ mod command_palette;
 mod file_mutations;
 mod files_panel;
 mod harness_updates;
+mod kivio_controls;
 mod kivio_nav;
+mod settings_exit;
+mod native_setup;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
@@ -160,6 +163,14 @@ pub(crate) fn restore_mounted_focus(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // Kit overlays are siblings of Shell under Root. Their focus is valid
+    // even though it is outside the shell dispatch subtree.
+    if window.root::<gpui_kit::base::Root>().flatten().is_some()
+        && (gpui_kit::component::WindowExt::has_active_dialog(window, cx)
+            || gpui_kit::component::WindowExt::has_active_sheet(window, cx))
+    {
+        return;
+    }
     let preferred_mounted = root.contains(preferred, window);
     if !root.contains_focused(window, cx) || (root.is_focused(window) && preferred_mounted) {
         // Explicit blur keeps shortcuts active without returning the caret to
@@ -435,6 +446,9 @@ pub fn apply_keymap(
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
     crate::app_menus::bind_keys(cx);
+    crate::input_translation::bind_keys(cx);
+    crate::native_capture::bind_keys(cx);
+    crate::native_lens::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
             &valid_or_default(&keymap.random_wallpaper, "mod-u"),
@@ -667,7 +681,7 @@ impl SettingsSection {
     /// Nav groups are separated by spacing alone: preferences, providers and
     /// devices, then workspace data.
     fn starts_nav_group(self) -> bool {
-        false
+        matches!(self, Self::Kivio(crate::kivio_settings::Section::Translate | crate::kivio_settings::Section::Cli | crate::kivio_settings::Section::Usage))
     }
 
     /// Sidebar + header label (zeron settings-sidebar.tsx SECTIONS / __root.tsx
@@ -1999,6 +2013,7 @@ enum UpdatePromptButton {
 
 #[derive(Debug, Clone)]
 enum PendingExit {
+    Restart,
     CloseWindow,
     Quit,
     RuntimeChange,
@@ -2091,6 +2106,8 @@ pub struct Shell {
     file_surface_seq: u64,
     pending_file_closes: std::collections::HashSet<RightSurface>,
     pending_exit: Option<PendingExit>,
+    settings_exit_dialog: bool,
+    discard_settings_on_exit: bool,
     /// Event hookups for [`Self::diffs`] (History rows opening commit tabs).
     diff_subs: std::collections::HashMap<u64, Subscription>,
     diff_seq: u64,
@@ -2159,6 +2176,12 @@ pub struct Shell {
     harnesses_page: Option<Entity<HarnessesPage>>,
     provider_page: Option<Entity<crate::providers::ProviderSettings>>,
     kivio_settings_page: Option<Entity<crate::kivio_settings::SettingsPage>>,
+    kivio_provider_sub: Option<Subscription>,
+    kivio_agent_menu: popover::Popup<()>,
+    kivio_choice_cache: kivio_controls::ChoiceCache,
+    kivio_approval: (Option<std::time::SystemTime>, String),
+    backup_page: Option<Entity<settings::backup::BackupPage>>,
+    cli_page: Option<Entity<settings::cli::CliPage>>,
     shortcuts_sub: Option<Subscription>,
     notifications_sub: Option<Subscription>,
     files_settings_sub: Option<Subscription>,
@@ -2269,6 +2292,7 @@ pub struct Shell {
     /// render from `onboarding_pending` (a fresh install, or
     /// `ZERON_ONBOARDING=<step>`).
     onboarding: Option<Entity<crate::onboarding::Onboarding>>,
+    native_setup: Option<native_setup::NativeSetup>,
     /// Chats whose explorer showed their Cloud machine asleep: once it is
     /// up, what failed while it slept is listed again.
     files_machine_down: std::collections::HashSet<String>,
@@ -2668,6 +2692,8 @@ impl Shell {
             file_surface_seq: 0,
             pending_file_closes: std::collections::HashSet::new(),
             pending_exit: None,
+            settings_exit_dialog: false,
+            discard_settings_on_exit: false,
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
@@ -2722,6 +2748,12 @@ impl Shell {
             harnesses_page: None,
             provider_page: None,
             kivio_settings_page: None,
+            kivio_provider_sub: None,
+            kivio_agent_menu: popover::Popup::default(),
+            kivio_choice_cache: Default::default(),
+            kivio_approval: (None, String::new()),
+            backup_page: None,
+            cli_page: None,
             shortcuts_sub: None,
             notifications_sub: None,
             files_settings_sub: None,
@@ -2786,6 +2818,7 @@ impl Shell {
             org: None,
             sync_flow: SyncFlow::Idle,
             onboarding: None,
+            native_setup: None,
             files_machine_down: Default::default(),
             onboarding_pending,
             _onboarding_subscriptions: Vec::new(),
@@ -4793,6 +4826,8 @@ impl Shell {
     fn cancel_file_close(&mut self, surface: RightSurface, cx: &mut Context<Self>) {
         self.pending_file_closes.remove(&surface);
         self.pending_exit = None;
+        self.discard_settings_on_exit = false;
+        crate::app_menus::cancel_exit_attempt(cx);
         cx.notify();
     }
 
@@ -4834,11 +4869,16 @@ impl Shell {
         }
     }
 
+    pub fn prepare_restart(&mut self, cx: &mut Context<Self>) -> bool {
+        self.prepare_exit(PendingExit::Restart, cx)
+    }
+
     pub fn prepare_quit(&mut self, cx: &mut Context<Self>) -> bool {
         self.prepare_exit(PendingExit::Quit, cx)
     }
 
     fn prepare_exit(&mut self, action: PendingExit, cx: &mut Context<Self>) -> bool {
+        if !self.protect_settings_exit(action.clone(), cx) { return false; }
         let surfaces = self.file_surfaces.values().cloned().collect::<Vec<_>>();
         if surfaces
             .iter()
@@ -5761,6 +5801,16 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Cli) {
+            if self.cli_page.is_none() { self.cli_page = Some(cx.new(|cx| settings::cli::CliPage::new(self.data_dir.clone(), window, cx))); }
+            return self.cli_page.as_ref().unwrap().clone().into_any_element();
+        }
+        if section == SettingsSection::Kivio(crate::kivio_settings::Section::Backup) {
+            if self.backup_page.is_none() {
+                self.backup_page = Some(cx.new(|cx| settings::backup::BackupPage::new(self.data_dir.clone(), window, cx)));
+            }
+            return self.backup_page.as_ref().unwrap().clone().into_any_element();
+        }
         if section == SettingsSection::Kivio(crate::kivio_settings::Section::Search) {
             if self.search_page.is_none() {
                 self.search_page = Some(cx.new(|cx| settings::search::SearchPage::new(self.data_dir.clone(), window, cx)));
@@ -5775,7 +5825,7 @@ impl Shell {
         }
         if section == SettingsSection::Kivio(crate::kivio_settings::Section::Usage) {
             if self.usage_page.is_none() {
-                self.usage_page = Some(cx.new(|cx| settings::usage::UsagePage::new(self.data_dir.clone(), cx)));
+                self.usage_page = Some(cx.new(|cx| settings::usage::UsagePage::new(self.data_dir.clone(), window, cx)));
             }
             return self.usage_page.as_ref().unwrap().clone().into_any_element();
         }
@@ -5785,7 +5835,7 @@ impl Shell {
             }
             return self.memory_page.as_ref().unwrap().clone().into_any_element();
         }
-        if matches!(section, SettingsSection::Harnesses | SettingsSection::Kivio(crate::kivio_settings::Section::Mixer)) {
+        if section == SettingsSection::Harnesses {
             if self.provider_page.is_none() {
                 let path = self.data_dir.join("conversations/providers.json");
                 self.provider_page = Some(cx.new(|cx| crate::providers::ProviderSettings::new(path, window, cx)));
@@ -5801,7 +5851,15 @@ impl Shell {
         }
         if section != SettingsSection::Archived {
             if self.kivio_settings_page.is_none() {
-                self.kivio_settings_page = Some(cx.new(|cx| crate::kivio_settings::SettingsPage::new(self.data_dir.clone(), window, cx)));
+                if self.provider_page.is_none() {
+                    let path = self.data_dir.join("conversations/providers.json");
+                    self.provider_page = Some(cx.new(|cx| crate::providers::ProviderSettings::new(path, window, cx)));
+                }
+                let providers = self.provider_page.as_ref().unwrap().clone();
+                self.kivio_settings_page = Some(cx.new(|cx| crate::kivio_settings::SettingsPage::new(self.data_dir.clone(), providers, window, cx)));
+            }
+            if let Some(providers) = &self.provider_page {
+                providers.update(cx, |page, _| page.set_mixer_only(section == SettingsSection::Kivio(crate::kivio_settings::Section::Mixer)));
             }
             let page = self.kivio_settings_page.as_ref().unwrap().clone();
             page.update(cx, |page, _| page.section = section);
@@ -6748,6 +6806,7 @@ impl Shell {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
+            crate::app_menus::cancel_exit_attempt(cx);
             self.runtime_change_error = Some("Engine not connected".into());
             cx.notify();
             return;
@@ -6786,6 +6845,7 @@ impl Shell {
                         }
                     },
                     Err(err) => {
+                        crate::app_menus::cancel_exit_attempt(cx);
                         shell.runtime_change_error = Some(format!(
                             "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
                         ).into());
@@ -8196,6 +8256,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.native_setup.is_some() { return self.render_native_setup(window, cx); }
         let section = section.canonical();
         let theme = Theme::of(cx).for_settings_surface();
         if self.settings_focus_pending {
@@ -8251,7 +8312,7 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .pt(px(Theme::TITLEBAR_HEIGHT))
-                    .child(div().px(px(20.)).py(px(12.)).text_size(px(20.)).font_weight(gpui_kit::FontWeight::MEDIUM).child("设置"))
+                    .child(div().px(px(20.)).py(px(12.)).text_size(px(20.)).font_weight(gpui_kit::FontWeight::MEDIUM).child(crate::i18n::text("设置")))
                     .child(div().flex_1().min_h_0().child(nav))
                     .child(
                         div().flex_none().px(px(Theme::SPACE_SM)).child(
@@ -8275,7 +8336,7 @@ impl Shell {
                                     theme.text,
                                 ),
                             ))
-                            .child("返回对话"),
+                            .child(crate::i18n::text("返回对话")),
                         ),
                     ),
             )
@@ -8370,7 +8431,7 @@ impl Shell {
                                         .position(|s| *s == item)
                                         .unwrap();
                                     let selected = item == section;
-                                    let key = format!("settings-nav-{}", item.label());
+                                    let key = format!("settings-nav-{}", item.slug());
                                     let hover_key = format!("{key}-hover");
                                     let selection_t = settings::widgets::tab_selection_t(
                                         window,
@@ -8392,7 +8453,7 @@ impl Shell {
                                     )
                                     .when(item.starts_nav_group(), |el| el.mt(px(Theme::SPACE_LG)))
                                     .role(gpui_kit::Role::Tab)
-                                    .aria_label(item.label())
+                                    .aria_label(crate::i18n::text(item.label()))
                                     .aria_selected(selected)
                                     .track_focus(
                                         &self.settings_nav_focus[index].clone().tab_stop(selected),
@@ -10098,6 +10159,7 @@ impl Shell {
             return;
         }
         let Some(update) = crate::app_update::AppUpdate::global(cx) else {
+            crate::app_menus::cancel_exit_attempt(cx);
             return;
         };
         if update
@@ -10105,6 +10167,8 @@ impl Shell {
             .is_ok()
         {
             crate::app_menus::quit_after_save(cx);
+        } else {
+            crate::app_menus::cancel_exit_attempt(cx);
         }
     }
 
@@ -10296,53 +10360,6 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_pull_requests_button(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("open-pull-requests")
-            .role(gpui_kit::Role::Button)
-            .aria_label("Pull requests")
-            .tab_index(0)
-            .debug_selector(|| "open-pull-requests".into())
-            .focus_visible(|style| style.border_2().border_color(theme.accent))
-            .size(px(SIDEBAR_FOOTER_ACTION_SIZE))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(8.0))
-            .text_color(if matches!(self.route, Route::PullRequests) {
-                theme.text
-            } else {
-                theme.text_muted
-            })
-            .bg(if matches!(self.route, Route::PullRequests) {
-                theme.glass_hover()
-            } else {
-                motion::hover_blend(
-                    "open-pull-requests",
-                    theme.glass_hover().opacity(0.0),
-                    theme.glass_hover(),
-                )
-            })
-            .on_hover(motion::hover_listener("open-pull-requests"))
-            .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| {
-                // Leaving Settings through its own footer is a plain route
-                // change; nothing there should grab focus on the way out.
-                this.settings_focus_pending = false;
-                this.open_pull_requests(cx);
-            }))
-            .tooltip(crate::settings::widgets::text_tooltip("Pull requests"))
-            .child(icon(icons::PULL_REQUEST).size(px(15.0)).text_color(
-                if matches!(self.route, Route::PullRequests) {
-                    theme.text
-                } else {
-                    motion::hover_blend("open-pull-requests", theme.text_muted, theme.text)
-                },
-            ))
-            .into_any_element()
-    }
-
     fn render_sidebar_footer(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let (user_line, menu_identity) = {
             let state = self.state.read(cx);
@@ -10358,8 +10375,6 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Pull requests sits just left of Settings, in the same action group.
-        let pull_requests = self.render_pull_requests_button(theme, cx);
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
@@ -10561,7 +10576,6 @@ impl Shell {
             (true, true) => "Close settings · ⌘,".into(),
             (true, false) => "Close settings · Ctrl+,".into(),
         };
-        let voice_trigger = self.render_voice_trigger(theme, cx);
         div()
             .w_full()
             .flex()
@@ -10575,8 +10589,6 @@ impl Shell {
                     .flex_none()
                     .items_center()
                     .gap(px(2.0))
-                    .children(voice_trigger)
-                    .child(pull_requests)
                     .child(
                         div()
                             .id("settings-trigger")
@@ -10751,6 +10763,13 @@ impl Shell {
             return true;
         }
         if self.spaces_menu.get().is_some() {
+            return true;
+        }
+        if self.kivio_agent_menu.is_open() {
+            self.close_kivio_agent_menu(cx);
+            return true;
+        }
+        if self.kivio_agent_menu.get().is_some() {
             return true;
         }
 
@@ -13322,6 +13341,7 @@ fn header_icon_button_with(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ensure_provider_page(window, cx);
         // Every repaint (state frame, input, or the clock firing) reschedules
         // the next clock-driven one; the sidebar and transcript follow this
         // view's notifications.
@@ -13389,8 +13409,10 @@ impl Render for Shell {
         {
             let shell = cx.weak_entity();
             window.defer(cx, move |window, cx| {
-                if matches!(action, PendingExit::Quit) {
-                    crate::app_menus::request_quit(cx);
+                if matches!(action, PendingExit::Restart) {
+                    crate::app_menus::continue_restart(cx);
+                } else if matches!(action, PendingExit::Quit) {
+                    crate::app_menus::continue_quit(cx);
                 } else {
                     shell
                         .update(cx, |shell, cx| match action {
@@ -13403,7 +13425,7 @@ impl Render for Shell {
                             PendingExit::InstallUpdate(staged) => {
                                 shell.apply_staged_update(staged, cx)
                             }
-                            PendingExit::Quit => unreachable!(),
+                            PendingExit::Quit | PendingExit::Restart => unreachable!(),
                         })
                         .ok();
                 }
@@ -16280,7 +16302,7 @@ mod exit_regressions {
             // Render through the window's arena, as production does. Calling
             // Shell::render directly allocates modal children in the fallback
             // arena, which does not belong to this test App's lifecycle.
-            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             window
                 .update(cx, |shell, _, cx| {
@@ -16471,7 +16493,7 @@ mod exit_regressions {
         });
         let shell = host.read_with(cx, |host, _| host.0.clone());
         for expect_open in [true, false] {
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             assert!(cx.debug_bounds("user-menu-label").is_some());
             let trigger = cx.debug_bounds("settings-trigger").unwrap().center();
             cx.simulate_click(trigger, gpui_kit::Modifiers::default());
@@ -16532,7 +16554,7 @@ mod exit_regressions {
         shell.update(cx, |shell, cx| {
             shell.open_settings(SettingsSection::General, cx)
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let row = cx.debug_bounds("sidebar-footer-row").unwrap();
         let entry = cx
             .debug_bounds("open-pull-requests")
@@ -16621,9 +16643,9 @@ mod exit_regressions {
             open_pull_request(cx, number);
         }
         let redraw = |cx: &mut gpui_kit::VisualTestContext| {
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.run_until_parked();
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         };
         let pane = |cx: &mut gpui_kit::VisualTestContext| {
             shell.read_with(cx, |shell, _| {
@@ -16726,7 +16748,7 @@ mod exit_regressions {
         cx.run_until_parked();
         open_pull_request(cx, 1);
         open_pull_request(cx, 2);
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         // Focus a descendant that is unmounted when its PR tab is hidden,
         // rather than the pane's stable focus handle used by the other test.
@@ -16745,7 +16767,7 @@ mod exit_regressions {
         for (key, expected) in [("ctrl-tab", 0), ("ctrl-tab", 1), ("ctrl-shift-tab", 0)] {
             cx.simulate_keystrokes(key);
             cx.run_until_parked();
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.update(|window, cx| {
                 let shell = shell.read(cx);
                 assert!(matches!(shell.route, Route::PullRequests));
@@ -16766,7 +16788,7 @@ mod exit_regressions {
         );
         shell.update(cx, |shell, cx| shell.navigate_back(cx));
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.update(|window, cx| {
             let shell = shell.read(cx);
             assert_eq!(shell.pull_request_pane.active_index(), Some(1));
@@ -16789,7 +16811,7 @@ mod exit_regressions {
         cx.run_until_parked();
         open_pull_request(cx, 1);
         open_pull_request(cx, 2);
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let from = cx.debug_bounds("pull-request-tab-0").unwrap().center();
         let to = cx.debug_bounds("pull-request-tab-1").unwrap().center();
         cx.simulate_mouse_down(from, MouseButton::Left, gpui_kit::Modifiers::default());
@@ -16915,7 +16937,7 @@ mod exit_regressions {
             assert_eq!(shell.pull_request_pane.active_index(), Some(0));
             assert!(shell.pull_request_pane_open());
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let pane = cx.debug_bounds("pull-request-pane").unwrap();
         let board = cx.debug_bounds("pull-requests-column").unwrap();
         assert!(
@@ -16927,7 +16949,7 @@ mod exit_regressions {
         let click = |cx: &mut gpui_kit::VisualTestContext, selector: &'static str| {
             let bounds = cx.debug_bounds(selector).unwrap();
             cx.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         };
         click(cx, "expand-pull-request-pane");
         let covering = cx.debug_bounds("pull-request-pane").unwrap();
@@ -16954,7 +16976,7 @@ mod exit_regressions {
             assert!(shell.pull_request_pane.tabs.is_empty());
             assert!(!shell.pull_request_pane_open());
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("pull-request-pane").is_none());
 
         // The pane's tabs and the persistent controls share the titlebar even
@@ -16982,7 +17004,7 @@ mod exit_regressions {
                         if window.is_fullscreen() != fullscreen {
                             window.toggle_fullscreen();
                         }
-                        window.draw(cx).clear();
+                        window.draw(cx).clear(cx);
                     });
                     cx.run_until_parked();
                     let new_session = cx.debug_bounds("titlebar-new-session").unwrap();
@@ -17170,7 +17192,7 @@ mod exit_regressions {
                 handle
             };
             cx.update_window(terminal_window.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert!(
                     panel.read(cx).focus_handle().is_focused(window),
                     "embedded: {embedded}"
@@ -17178,7 +17200,7 @@ mod exit_regressions {
                 // Ordinary redraws must not steal focus from another control.
                 let other_input = cx.focus_handle();
                 window.focus(&other_input, cx);
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert!(other_input.is_focused(window));
             })
             .unwrap();
@@ -17246,7 +17268,7 @@ mod exit_regressions {
                 })
                 .unwrap();
             cx.update_window(composer_window.into(), |composer, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 // Closing a floating settings dialog restores its origin in
                 // the shell; it must not request focus in the composer.
                 assert_eq!(
@@ -17260,7 +17282,7 @@ mod exit_regressions {
                 );
                 // Subsequent renders after a click-away must not reclaim it.
                 window.blur(cx);
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 assert!(window.focused(cx).is_none(), "{destination}");
             })
             .unwrap();
@@ -18337,7 +18359,7 @@ mod right_tab_mouse_regressions {
             }
         });
         let shell = host.read_with(cx, |host, _| host.shell.clone());
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         (shell, cx)
     }
 
@@ -18443,7 +18465,7 @@ mod right_tab_mouse_regressions {
                 shell.add_subagent_surface("parent".into(), id.into(), id.into(), false, cx);
             }
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let start = cx.debug_bounds("right-surface-tab-0").unwrap().center();
         cx.update(|window, cx| {
             window.dispatch_event(
@@ -18604,7 +18626,7 @@ mod shortcut_focus_regressions {
             jumps: 0,
         });
         cx.run_until_parked();
-        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         host.update(cx, |host, window, cx| {
             window.focus(&host.editor, cx);
@@ -18643,7 +18665,7 @@ mod shortcut_focus_regressions {
             })
             .unwrap();
             cx.run_until_parked();
-            cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             host.update(cx, |host, window, cx| {
                 restore_mounted_focus(&host.root, &host.editor, &host.unfocused, window, cx);
@@ -18683,7 +18705,7 @@ mod shortcut_focus_regressions {
             .enumerate()
         {
             cx.update_window(host.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 window.dispatch_event(
                     gpui_kit::PlatformInput::MouseDown(MouseDownEvent {
                         position: gpui_kit::point(px(x), px(20.0)),
@@ -18788,7 +18810,7 @@ mod settings_modal_regressions {
             last: cx.focus_handle().tab_stop(true),
             end: cx.focus_handle(),
         });
-        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(host.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         host.update(cx, |host, window, cx| {
             window.focus(&host.start, cx);
@@ -19147,7 +19169,7 @@ mod settings_modal_regressions {
             shell.active_chat = "newer".into();
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let row = cx.debug_bounds("chat-older").expect("sidebar row");
         let from = row.center();
         cx.simulate_mouse_down(from, MouseButton::Left, gpui_kit::Modifiers::default());
@@ -19159,7 +19181,7 @@ mod settings_modal_regressions {
                 Some(MouseButton::Left),
                 gpui_kit::Modifiers::default(),
             );
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         }
         // The sidebar is a cached view, whose contents tests can't query by
         // selector; the lifted row's own window position is the check.
@@ -19174,7 +19196,7 @@ mod settings_modal_regressions {
         let drop = gpui_kit::point(from.x + px(724.0), from.y + px(40.0));
         cx.simulate_mouse_up(drop, MouseButton::Left, gpui_kit::Modifiers::default());
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         shell.read_with(cx, |shell, cx| {
             let text = shell.composer.read(cx).input.read(cx).text().to_owned();
             assert!(
@@ -19196,7 +19218,7 @@ mod settings_modal_regressions {
             shell.open_settings(SettingsSection::Voice, cx);
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("voice-stage").is_none());
 
         shell.update(cx, |shell, cx| {
@@ -19205,7 +19227,7 @@ mod settings_modal_regressions {
             });
             shell.set_voice_stage_open(true, cx);
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let stage = cx
             .debug_bounds("voice-stage")
             .expect("stage renders in Settings");
@@ -19249,7 +19271,7 @@ mod settings_modal_regressions {
             shell.open_settings(SettingsSection::Cloud, cx)
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let first = shell.read_with(cx, |shell, _| {
             assert_eq!(shell.route, Route::Settings(SettingsSection::Cloud));
             shell.cloud_page.clone().expect("Cloud page mounts")
@@ -19258,13 +19280,13 @@ mod settings_modal_regressions {
             shell.open_settings(SettingsSection::Devices, cx)
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         shell.read_with(cx, |shell, _| assert!(shell.cloud_page.is_none()));
         shell.update(cx, |shell, cx| {
             shell.open_settings(SettingsSection::Cloud, cx)
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let second = shell.read_with(cx, |shell, _| {
             let second = shell.cloud_page.clone().expect("Cloud page remounts");
             assert_ne!(first.entity_id(), second.entity_id());
@@ -19284,7 +19306,7 @@ mod settings_modal_regressions {
         drop((first, second));
         shell.update(cx, |shell, cx| shell.close_settings(cx));
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         shell.read_with(cx, |shell, _| assert!(shell.cloud_page.is_none()));
     }
 
@@ -19299,7 +19321,7 @@ mod settings_modal_regressions {
             shell.open_settings(SettingsSection::Devices, cx)
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         // A dialog that does not hold focus (the rename input was never
         // clicked) still closes before Settings does.
@@ -19308,7 +19330,7 @@ mod settings_modal_regressions {
             page.open_rename("device-1".into(), "Studio".into(), cx)
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_keystrokes("escape");
         assert!(!devices.update(cx, |page, cx| page.dismiss_on_escape(cx)));
         shell.read_with(cx, |shell, _| {
@@ -19321,7 +19343,7 @@ mod settings_modal_regressions {
             cx.notify();
         });
         cx.run_until_parked();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.simulate_keystrokes("escape");
         shell.read_with(cx, |shell, _| {
             assert!(!shell.user_menu.is_open());
@@ -19332,7 +19354,7 @@ mod settings_modal_regressions {
             shell.user_menu = popover::Popup::default();
             cx.notify();
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
 
         // With nothing left open, Escape leaves Settings.
         cx.simulate_keystrokes("escape");

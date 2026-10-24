@@ -2728,7 +2728,7 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
     }
 
@@ -2787,7 +2787,7 @@ mod tests {
                 page.login = Some(waiting(HarnessId::ClaudeCode, 1));
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         window
             .update(cx, |page, _, cx| {
@@ -2829,7 +2829,7 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
     }
 

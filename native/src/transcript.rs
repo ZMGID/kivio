@@ -432,6 +432,9 @@ impl Transcript {
                         let ix = this.messages.len() - 1;
                         let message = &mut this.messages[ix];
                         match event {
+                            crate::chat_runtime::ChatEvent::Agent(_) => {
+                                // This legacy renderer is not the active native Shell.
+                            }
                             crate::chat_runtime::ChatEvent::Delta(chunk) => {
                                 let markdown =
                                     this.markdown.as_mut().expect("active request owns parser");

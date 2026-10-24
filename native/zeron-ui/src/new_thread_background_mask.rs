@@ -531,7 +531,7 @@ mod tests {
                 })
                 .unwrap();
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             let actual = painted.get().expect("no cold first-frame geometry");

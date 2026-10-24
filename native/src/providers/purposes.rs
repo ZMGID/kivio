@@ -3,7 +3,7 @@ use crate::provider_settings::{
     DefaultModelSelection, DefaultModelsConfig, ModelProvider, sanitize_default_model_selection,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt,
     button::Button,
     menu::{DropdownMenu, PopupMenuItem},
 };
@@ -125,26 +125,36 @@ impl ProviderSettings {
             }
         }
         let mut next = self.confirmed.clone();
-        *purpose.selection_mut(&mut next.defaults) = DefaultModelSelection { provider_id, model };
+        next.select_purpose(purpose, DefaultModelSelection { provider_id, model });
+        self.persist(next, window, cx);
+    }
+
+    fn disable_video(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.dirty || !self.ready { return; }
+        let mut next = self.confirmed.clone();
+        next.video_enabled = false;
         self.persist(next, window, cx);
     }
 
     pub(super) fn render_purposes(&self, cx: &Context<Self>) -> AnyElement {
         let mut content = div()
             .v_flex()
-            .gap_3()
-            .mt_6()
+            .gap_0()
+            .rounded(px(12.))
+            .bg(cx.theme().group_box)
+            .px_4()
+            .py_3()
             .child(
                 div()
-                    .text_base()
+                    .text_size(px(13.))
                     .font_weight(FontWeight::MEDIUM)
-                    .child("模型分工"),
+                    .child(crate::i18n::text("模型分工")),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("按原设置保存各用途；未单独配置的用途沿用现有继承规则。"),
+                    .child(crate::i18n::text("按原设置保存各用途；未单独配置的用途沿用现有继承规则。")),
             );
         for purpose in Purpose::ALL
             .into_iter()
@@ -163,6 +173,7 @@ impl ProviderSettings {
                         .is_some_and(|provider| purpose.accepts(provider, &choice.model))
                 })
                 .collect();
+            let enabled = purpose != Purpose::Video || self.confirmed.video_enabled;
             let label = choices
                 .iter()
                 .find(|choice| choice.value == selected)
@@ -174,6 +185,7 @@ impl ProviderSettings {
                         format!("{} · {}", current.provider_id, current.model).into()
                     }
                 });
+            let label = if enabled { label } else { "关闭".into() };
             let owner = cx.weak_entity();
             content = content.child(
                 div()
@@ -182,17 +194,26 @@ impl ProviderSettings {
                     .items_center()
                     .justify_between()
                     .gap_3()
-                    .child(div().text_sm().child(purpose.label()))
+                    .min_h(px(60.))
+                    .border_b_1()
+                    .border_color(cx.theme().border.opacity(0.6))
+                    .child(div().text_size(px(13.)).child(purpose.label()))
                     .child(
                         Button::new(SharedString::from(format!("purpose-{}", purpose.label())))
-                            .label(label)
+                            .small()
+                            .label(crate::i18n::display(label))
                             .dropdown_caret(true)
                             .disabled(self.busy || self.dirty)
                             .dropdown_menu(move |mut menu, _, _| {
+                                if purpose == Purpose::Video {
+                                    let disable_owner = owner.clone();
+                                    menu = menu.item(PopupMenuItem::new(crate::i18n::text("关闭视频分析")).checked(!enabled)
+                                        .on_click(move |_, window, cx| { let _ = disable_owner.update(cx, |this, cx| this.disable_video(window, cx)); }));
+                                }
                                 let clear_owner = owner.clone();
                                 menu = menu.item(
                                     PopupMenuItem::new(purpose.fallback())
-                                        .checked(selected.0.is_empty())
+                                        .checked(enabled && selected.0.is_empty())
                                         .on_click(move |_, window, cx| {
                                             let _ = clear_owner.update(cx, |this, cx| {
                                                 this.select_purpose(
@@ -210,7 +231,7 @@ impl ProviderSettings {
                                     let owner = owner.clone();
                                     menu = menu.item(
                                         PopupMenuItem::new(choice.label.clone())
-                                            .checked(choice.value == selected)
+                                            .checked(enabled && choice.value == selected)
                                             .on_click(move |_, window, cx| {
                                                 let _ = owner.update(cx, |this, cx| {
                                                     this.select_purpose(
@@ -230,5 +251,12 @@ impl ProviderSettings {
             );
         }
         content.into_any_element()
+    }
+}
+
+impl super::ProviderDocument {
+    pub(super) fn select_purpose(&mut self, purpose: Purpose, selection: DefaultModelSelection) {
+        if purpose == Purpose::Video { self.video_enabled = true; }
+        *purpose.selection_mut(&mut self.defaults) = selection;
     }
 }

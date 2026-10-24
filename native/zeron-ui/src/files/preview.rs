@@ -3467,7 +3467,7 @@ mod tests {
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             window.dispatch_action(Box::new(gpui_kit::base::input::Undo), cx);
         });
         cx.run_until_parked();

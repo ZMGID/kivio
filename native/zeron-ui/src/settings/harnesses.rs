@@ -1125,7 +1125,7 @@ impl HarnessesPage {
                         None => None,
                     };
                     if let Some((color, label)) = label {
-                        meta.push(div().text_color(color).child(label).into_any_element());
+                        meta.push(div().text_color(color).child(crate::i18n::display(label)).into_any_element());
                     }
                 }
                 // widgets::row_tile with the brand tint honored (the Claude
@@ -1193,7 +1193,7 @@ impl HarnessesPage {
                                     this.cancel_harness_update(harness, cx)
                                 }
                             }))
-                            .child(label),
+                            .child(crate::i18n::display(label)),
                     )
                 });
                 let header = widgets::card_row(&theme, ix == 0)
@@ -1606,7 +1606,7 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         window
             .update(cx, |page, _, cx| {
@@ -1622,7 +1622,7 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         // Antigravity signs in through the very same Accounts section.
         window
@@ -1642,7 +1642,7 @@ mod tests {
                 );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
     }
 
@@ -1711,7 +1711,7 @@ mod tests {
                     );
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         window
             .update(cx, |page, _, cx| {

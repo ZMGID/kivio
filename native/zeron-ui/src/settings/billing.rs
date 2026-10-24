@@ -1007,7 +1007,7 @@ mod tests {
         });
         let state = cx.new(|_| AppState::new());
         let (page, cx) = cx.add_window_view(|_, cx| BillingPage::new(state.clone(), cx));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let variants = [
             BillingStatus {
                 available: false,
@@ -1033,12 +1033,12 @@ mod tests {
                 }
                 cx.notify();
             });
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         }
         page.update(cx, |page, cx| {
             page.status = Loadable::Error("edge unreachable".into());
             cx.notify();
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 }

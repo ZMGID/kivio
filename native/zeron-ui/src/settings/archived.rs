@@ -469,7 +469,7 @@ impl Render for ArchivedPage {
                             this.scroll.reset();
                             cx.notify();
                         }))
-                        .child("上一页"),
+                        .child(crate::i18n::text("上一页")),
                 )
                 .child(format!(
                     "{}–{} of {}",
@@ -494,7 +494,7 @@ impl Render for ArchivedPage {
                             this.scroll.reset();
                             cx.notify();
                         }))
-                        .child("下一页"),
+                        .child(crate::i18n::text("下一页")),
                 )
         });
         let deleting = self.delete_all_task.is_some();

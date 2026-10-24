@@ -39,8 +39,17 @@ pub mod native_preferences;
 pub mod scheduled_tasks;
 pub mod automation_catalog;
 pub mod settings {
+    pub use crate::settings_config::*;
     pub use crate::provider_settings::*;
     pub use crate::tool_settings::*;
+    pub use crate::settings_config as config;
+    use crate::tool_settings as tools;
+    use crate::provider_settings as provider;
+    use config::*;
+    use tools::*;
+    const LEGACY_APPLE_INTELLIGENCE_BASE_URL: &str = "applefoundation://local";
+    include!("../../../src-tauri/src/settings_skill_policy.rs");
+    include!("../../../src-tauri/src/settings_normalize.rs");
 }
 #[path = "../../../src-tauri/src/chat/model/sse.rs"]
 pub mod sse;
@@ -56,6 +65,8 @@ pub mod usage;
 pub mod utils;
 #[path = "../../../src-tauri/src/chat/video.rs"]
 pub mod video;
+#[path = "../../../src-tauri/src/chat/video_analysis_core.rs"]
+pub mod video_analysis;
 
 #[path = "../../../src-tauri/src/chat/model/anthropic.rs"]
 pub mod anthropic;
@@ -71,16 +82,21 @@ pub use openai::OpenAiChatProvider;
 pub use responses::OpenAiResponsesProvider;
 pub use types::*;
 pub mod api {
+    pub(crate) use crate::runtime::{with_retry_budget, RetryBudget, RETRY_PROGRESS};
+    pub use crate::runtime::send_with_retry;
     pub use crate::transport::*;
     pub use crate::{runtime, transport};
 }
-pub mod mcp {
-    pub use crate::tool_contract::ChatToolDefinition;
-    pub mod types {
-        pub use crate::tool_contract::*;
-    }
-}
 pub mod chat {
+    pub use crate::attachment_files as attachments;
+    pub use crate::{memory_files, memory_tools};
+    pub(crate) use crate::resource_sessions as resources;
+    pub use crate::{agent, ask_user, workflow_hooks, dsml_tools, plan};
+    pub mod sub_agent {
+        pub use crate::mcp::native_policy::is_sub_agent_tool_name;
+    }
+    pub use crate::group_catalog;
+    pub use crate::slash_commands;
     pub use crate::conversation_data as types;
     pub use crate::file_io as storage;
     pub use crate::{
@@ -231,6 +247,10 @@ impl host::ModelHost for RuntimeHost {
     }
 }
 
+pub fn request_max_tokens_with_limit(provider: &settings::ModelProvider, model: &str, limit: u32) -> u32 {
+    model_metadata::chat_max_output_tokens_on_wire(Some(provider), model, limit)
+}
+
 pub fn request_max_tokens(provider: &settings::ModelProvider, model: &str) -> u32 {
     model_metadata::chat_max_output_tokens_on_wire(Some(provider), model, 16384)
 }
@@ -255,13 +275,8 @@ pub mod todo;
 pub mod hooks;
 #[path = "../../../src-tauri/src/proc.rs"]
 pub mod proc;
-pub mod native_tools {
-    use std::path::{Path, PathBuf};
-    use tokio::process::Command;
-    #[cfg(target_os = "windows")]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    include!("../../../src-tauri/src/native_tools/shell_process.rs");
-}
+#[path = "../../../src-tauri/src/native_tools/mod.rs"]
+pub mod native_tools;
 
 #[path = "../../../src-tauri/src/dock/terminal_runtime.rs"]
 pub mod terminal;
@@ -283,3 +298,109 @@ pub mod memory_files;
 
 #[path = "../../../src-tauri/src/prompts.rs"]
 pub mod prompts;
+
+pub mod external_agents;
+#[path = "../../../src-tauri/src/chat/slash_commands.rs"]
+pub mod slash_commands;
+
+#[path = "../../../src-tauri/src/backup/core.rs"]
+pub mod backup;
+pub mod webdav;
+
+#[path = "../../../src-tauri/src/backup/configuration.rs"]
+pub mod backup_configuration;
+pub mod native_backup;
+pub mod set_backup;
+
+#[path = "../../../src-tauri/src/provider_probe.rs"]
+pub mod provider_probe;
+pub mod native_provider_probe;
+
+#[path = "../../../src-tauri/src/path_snapshot.rs"]
+pub mod path_env;
+#[path = "../../../src-tauri/src/computer_control_runtime.rs"]
+pub mod computer_control;
+
+pub mod native_hooks;
+
+pub mod startup;
+
+pub mod native_themes;
+
+#[path = "../../../src-tauri/src/platform_permissions.rs"]
+pub mod platform_permissions;
+
+#[path = "../../../src-tauri/src/offline_models/core.rs"]
+pub mod offline_models;
+pub mod rapidocr;
+
+#[path = "../../../src-tauri/src/input_translation.rs"]
+pub mod input_translation;
+pub mod native_translation;
+pub mod native_lens;
+
+#[path = "../../../src-tauri/src/chat/conversation_export.rs"]
+pub mod conversation_export;
+
+pub mod connectors;
+pub mod mcp;
+
+#[path = "../../../src-tauri/src/web_search.rs"]
+pub mod web_search;
+pub mod web_search_host;
+
+#[path = "../../../src-tauri/src/selection_capture.rs"]
+pub mod selection_capture;
+
+#[path = "../../../src-tauri/src/native_tools/working_directory.rs"]
+pub mod working_directory;
+#[path = "../../../src-tauri/src/chat/workspace.rs"]
+pub mod workspace;
+
+#[path = "../../../src-tauri/src/chat/agent/mod.rs"]
+pub mod agent;
+#[path = "../../../src-tauri/src/chat/ask_user.rs"]
+pub mod ask_user;
+#[path = "../../../src-tauri/src/chat/workflow_hooks.rs"]
+pub mod workflow_hooks;
+#[path = "../../../src-tauri/src/chat/dsml_tools.rs"]
+pub mod dsml_tools;
+#[path = "../../../src-tauri/src/chat/plan.rs"]
+pub mod plan;
+#[path = "../../../src-tauri/src/tool_limits.rs"]
+pub mod tool_limits;
+
+pub mod agents;
+pub mod skills;
+pub mod plugins;
+
+#[path = "../../../src-tauri/src/lens_runtime.rs"]
+pub mod lens_runtime;
+#[path = "../../../src-tauri/src/lens.rs"]
+pub mod lens;
+#[path = "../../../src-tauri/src/capture_geometry.rs"]
+pub mod capture_geometry;
+#[path = "../../../src-tauri/src/capture_runtime.rs"]
+pub mod capture_runtime;
+#[cfg(target_os = "macos")]
+#[path = "../../../src-tauri/src/sck.rs"]
+pub mod sck;
+pub mod native_capture;
+#[cfg(target_os = "macos")]
+#[path = "../../../src-tauri/src/macos_ocr_runtime.rs"]
+pub mod macos_ocr;
+
+#[path = "../../../src-tauri/src/chat/memory_tools.rs"]
+pub mod memory_tools;
+#[path = "../../../src-tauri/src/chat/resources.rs"]
+pub(crate) mod resource_sessions;
+
+pub mod native_tool_runtime;
+
+#[path = "../../../src-tauri/src/translation_stream.rs"]
+pub mod translation_stream;
+
+#[path = "../../../src-tauri/src/replace_translation/mod.rs"]
+pub mod replace_translation;
+pub mod native_replacement;
+mod replacement_render;

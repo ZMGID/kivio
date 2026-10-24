@@ -19,7 +19,7 @@ const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 const MAX_INPUT_IMAGES: usize = 4;
 /// xAI `/images/edits` 的 `images` 数组上限是 3。
 const XAI_MAX_EDIT_IMAGES: usize = 3;
-pub const IMAGE_GENERATION_TIMEOUT_MS: u64 = 300_000;
+pub use crate::tool_limits::IMAGE_GENERATION_TIMEOUT_MS;
 const IMAGE_GENERATION_HTTP_TIMEOUT: Duration = Duration::from_millis(IMAGE_GENERATION_TIMEOUT_MS);
 
 /// 出图**端点选择**的唯一运行时枚举（不持久化，不进配置）。`resolve_image_route` 是端点
@@ -1067,30 +1067,7 @@ fn validate_base64_image(value: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn decoded_base64_len(value: &str) -> Option<u64> {
-    let compact_len = value.chars().filter(|ch| !ch.is_whitespace()).count();
-    if compact_len == 0 {
-        return Some(0);
-    }
-    let padding = value
-        .chars()
-        .rev()
-        .take_while(|ch| ch.is_whitespace() || *ch == '=')
-        .filter(|ch| *ch == '=')
-        .count()
-        .min(2);
-    Some(((compact_len * 3) / 4).saturating_sub(padding) as u64)
-}
-
-pub(crate) fn extension_for_mime(mime_type: &str) -> &'static str {
-    match mime_type {
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-        _ => "png",
-    }
-}
+pub(crate) use crate::chat::agent::completion::{decoded_base64_len, extension_for_mime};
 
 fn is_openrouter_base_url(base_url: &str) -> bool {
     base_url

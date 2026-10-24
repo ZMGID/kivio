@@ -215,11 +215,19 @@ fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>
     }
     let mut found = BTreeMap::new();
     let mut remaining = MAX_DISCOVERY_ENTRIES;
-    for (root, namespace) in roots {
+    // Spend the bounded traversal budget on the closest workspace first.
+    // A large global skill installation must not hide project-local skills.
+    // Roots were assembled from low to high precedence; keep the first value
+    // while walking backwards to preserve the existing override rules.
+    for (root, namespace) in roots.into_iter().rev() {
         if remaining == 0 {
             break;
         }
-        scan_root(&root, &namespace, harness, &mut found, &mut remaining)?;
+        let mut scoped = BTreeMap::new();
+        scan_root(&root, &namespace, harness, &mut scoped, &mut remaining)?;
+        for (name, skill) in scoped {
+            found.entry(name).or_insert(skill);
+        }
     }
     Ok(found.into_values().collect())
 }
@@ -456,13 +464,13 @@ mod tests {
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        write(&home, ".agents/skills/global.md", "Global");
+        write(&repo, ".pi/skills/project.md", "Project");
         for index in 0..4200 {
-            write(&repo, &format!(".pi/skills/skill-{index}.md"), "Body");
+            write(&home, &format!(".agents/skills/skill-{index}.md"), "Body");
         }
         let skills = discover_at(HarnessId::Pi, &repo, &home).unwrap();
         assert_eq!(skills.len(), MAX_DISCOVERY_ENTRIES);
-        assert!(skills.iter().any(|skill| skill.name == "global"));
+        assert!(skills.iter().any(|skill| skill.name == "project"));
 
         // Directories count too; pending nested work cannot restart the budget.
         let mut found = BTreeMap::new();

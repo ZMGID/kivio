@@ -398,3 +398,7 @@ pub fn sanitize_hooks(hooks: &mut Vec<HookDef>) {
         true
     });
 }
+
+pub(crate) fn is_cua_mcp_server_id(id: &str) -> bool {
+    matches!(id, "computer-control-cua-driver" | "plugin-cua-driver")
+}

@@ -165,44 +165,15 @@ async fn resumes_the_same_session_after_process_shutdown() {
 }
 
 #[tokio::test]
-async fn unrestorable_session_starts_fresh_with_a_visible_notice() {
-    // The engine resumes a chat's stored id on every dispatch, so a hard error
-    // here would leave the chat unusable for good.
+async fn unrestorable_session_fails_before_launching_another_session() {
     let dir = tempfile::tempdir().unwrap();
     let (c, tx, _) = controls();
     drop(tx);
     let mut req = request(dir.path(), "hello");
     req.resume = Some("missing-session".into());
-    let events: Vec<_> = tokio::time::timeout(
-        Duration::from_secs(5),
-        harness()
-            .with_session_store(dir.path().join("index"))
-            .run(req, c)
-            .await
-            .unwrap()
-            .map(Result::unwrap)
-            .collect(),
-    )
-    .await
-    .unwrap();
-    assert!(
-        events.iter().any(|e| matches!(e, AgentEvent::Error { message }
-            if message.contains("missing-session") && message.contains("without the previous context"))),
-        "{events:?}"
-    );
-    let done: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::Done {
-                status, session_id, ..
-            } => Some((*status, session_id.clone())),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        done,
-        vec![(DoneStatus::Completed, Some("pi-fixture-session".into()))]
-    );
+    let result = harness().with_session_store(dir.path().join("index")).run(req, c).await;
+    assert!(result.is_err());
+    assert!(!dir.path().join("pi.pid").exists(), "failed resume must not launch a fresh process");
 }
 
 #[tokio::test]

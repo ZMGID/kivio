@@ -99,7 +99,7 @@ fn fixture(
 fn draw(cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         window.refresh();
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 

@@ -980,7 +980,7 @@ fn effective_tool_timeout_ms(
         return default_timeout_ms.max(300_000);
     }
     if tool.source == "mixer" && tool.name == "mixer_generate_image" {
-        return default_timeout_ms.max(crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS);
+        return default_timeout_ms.max(crate::tool_limits::IMAGE_GENERATION_TIMEOUT_MS);
     }
     // 前台 bash 自己等到退出；显式 timeout_ms 由 shell 杀掉进程。外层 60s
     // 工具超时不能再套一层，否则有限长任务会被误杀、逼进 background。
@@ -991,12 +991,12 @@ fn effective_tool_timeout_ms(
         let wait_ms = arguments
             .get("wait_ms")
             .and_then(|value| value.as_u64())
-            .unwrap_or(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
+            .unwrap_or(crate::tool_limits::DEFAULT_BASH_OUTPUT_WAIT_MS)
             .min(CHAT_TOOL_MAX_TIMEOUT_MS);
         return default_timeout_ms.max(wait_ms);
     }
     if tool.source == "native" && tool.name == "automation_run" {
-        return crate::automation::tools::run_timeout_ms(arguments).max(default_timeout_ms);
+        return crate::tool_limits::run_timeout_ms(arguments).max(default_timeout_ms);
     }
     // MCP 与其它工具一样走设置里的「工具超时」，不单独封顶。
     default_timeout_ms
@@ -1979,7 +1979,7 @@ mod tests {
 
         assert_eq!(
             effective_tool_timeout_ms(&settings, &tool, &arguments),
-            crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS
+            crate::tool_limits::IMAGE_GENERATION_TIMEOUT_MS
         );
     }
 

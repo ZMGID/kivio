@@ -441,6 +441,7 @@ mod tests {
             external_model: Some(model.to_string()),
             external_reasoning: None,
             external_service_tier: None,
+            external_model_options: Default::default(),
             external_sandbox: None,
             external_agent_preset: None,
         }

@@ -19,6 +19,8 @@ pub mod external_agents;
 pub mod fonts;
 mod html_preview;
 pub mod lens;
+pub mod lens_runtime;
+pub mod capture_runtime;
 pub mod lens_commands;
 #[cfg(any(target_os = "macos", test))]
 mod macos_hang_watchdog;
@@ -31,6 +33,8 @@ pub mod notes;
 pub mod offline_models;
 mod opencode_free;
 pub mod path_env;
+pub mod platform_permissions;
+pub mod input_translation;
 mod utf8_locale;
 pub mod plugins;
 pub mod proc;
@@ -54,6 +58,7 @@ pub mod updates;
 pub mod usage;
 pub mod utils;
 pub mod web_search;
+mod web_search_host;
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) mod window_focus;
 pub mod windows;
@@ -1035,3 +1040,14 @@ pub fn run() {
             _ => {}
         });
 }
+
+pub mod provider_probe;
+
+mod selection_capture;
+
+#[path = "native_tools/working_directory.rs"]
+mod working_directory;
+
+mod tool_limits;
+
+mod translation_stream;

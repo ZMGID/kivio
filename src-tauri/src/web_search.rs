@@ -1,14 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+#[path = "web_search/fetch.rs"]
 mod fetch;
 
 #[cfg(test)]
+#[path = "web_search/deepseek_tests.rs"]
 mod deepseek_tests;
 
 use crate::{
     api::{send_with_retry, with_standard_request_timeout},
     settings::{ChatMcpServer, ConnectorAuth, LensWebSearchConfig, WebSearchProvider},
-    state::AppState,
+    web_search_host::{SearchState as AppState, AppContext},
 };
 
 pub use fetch::{
@@ -307,7 +309,7 @@ pub async fn search_web(
     config: &LensWebSearchConfig,
     query: &str,
     retry_attempts: usize,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&AppContext>,
 ) -> Result<Vec<WebSearchResult>, String> {
     let query = query.trim();
     if query.is_empty() {
@@ -659,7 +661,7 @@ async fn search_tinyfish_mcp(
     state: &AppState,
     config: &LensWebSearchConfig,
     query: &str,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&AppContext>,
 ) -> Result<Vec<WebSearchResult>, String> {
     let base = normalized_base_url(&config.tinyfish_mcp_url, "https://agent.tinyfish.ai/mcp");
     if base.is_empty() {

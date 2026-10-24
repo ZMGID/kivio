@@ -3045,7 +3045,7 @@ mod tests {
         cx.simulate_resize(size(px(560.0), px(800.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
 
         let target = "Linux jobs, ten minutes or less. This long target wraps across several visual lines in its cell.";
@@ -3120,7 +3120,7 @@ mod tests {
         cx.simulate_resize(size(px(560.0), px(800.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         // Selection reads each element's source: formulas with delimiters,
         // the unrenderable one as the inline code it shows.
@@ -3162,7 +3162,7 @@ mod tests {
         let heights = |cx: &mut gpui_kit::VisualTestContext| {
             cx.update(|window, cx| {
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             [
                 r"Before $x = \frac{a}{b}$ after.",
@@ -3193,7 +3193,7 @@ mod tests {
         cx.simulate_resize(size(px(560.0), px(800.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         // Inline math is inline code on an ordinary line; display math is
         // the `math` code block, which reads back as its bare source.
@@ -3222,7 +3222,7 @@ mod tests {
         cx.simulate_resize(size(px(560.0), px(800.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         for text in [
             "linux",
@@ -3293,7 +3293,7 @@ mod tests {
         cx.simulate_resize(size(px(560.0), px(800.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let branch_key = selection_key_for_text("lab-linux");
         let target = "Linux jobs, ten minutes or less. This long target wraps across several visual lines in its cell.";
@@ -3595,7 +3595,7 @@ mod tests {
         cx.simulate_resize(size(px(640.0), px(240.0)));
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         let key = "code-selection-test-code1-line0";
         let position = selection_test_bounds(key).origin + point(px(5.0), px(9.0));
@@ -3622,7 +3622,7 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.refresh();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         cx.simulate_event(gpui_kit::MouseDownEvent {
             button: gpui_kit::MouseButton::Left,

@@ -1216,7 +1216,7 @@ mod corner_render_tests {
                     cx.new(|_| ViewportFixture { theme })
                 })
                 .unwrap();
-            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             let image = cx.capture_screenshot(window.into()).unwrap();
             if let Ok(directory) = std::env::var("ZERON_PR_CORNER_CAPTURE_DIR") {

@@ -160,7 +160,7 @@ mod tests {
             show_input: true,
         });
         cx.update(|window, cx| {
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             let input = host.read(cx).input.focus_handle(cx);
             window.focus(&input, cx);
         });

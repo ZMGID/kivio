@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::{
     api::send_with_retry,
     settings::{LensWebSearchConfig, WebSearchProvider},
-    state::AppState,
+    web_search_host::{SearchState as AppState, AppContext},
 };
 
 use super::{
@@ -36,20 +36,7 @@ pub struct WebFetchPage {
     pub method: &'static str,
 }
 
-pub fn provider_supports_fetch(provider: WebSearchProvider) -> bool {
-    matches!(
-        provider,
-        WebSearchProvider::Tavily
-            | WebSearchProvider::Exa
-            | WebSearchProvider::ExaMcp
-            | WebSearchProvider::Ollama
-            | WebSearchProvider::Deepseek
-            | WebSearchProvider::Serper
-            | WebSearchProvider::Tinyfish
-            | WebSearchProvider::TinyfishMcp
-            | WebSearchProvider::Kimi
-    )
-}
+pub use crate::settings::config::provider_supports_fetch;
 
 /// Effective `web_fetch` provider: explicit `fetch_provider`, else the search
 /// provider when it has an extract API. `None` → caller should use direct fetch.
@@ -63,7 +50,7 @@ pub async fn fetch_web(
     config: &LensWebSearchConfig,
     url: &str,
     retry_attempts: usize,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&AppContext>,
 ) -> Result<WebFetchPage, String> {
     let url = url.trim();
     if url.is_empty() {
@@ -571,7 +558,7 @@ async fn fetch_tinyfish_mcp(
     state: &AppState,
     config: &LensWebSearchConfig,
     url: &str,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&AppContext>,
 ) -> Result<WebFetchPage, String> {
     let base = normalized_base_url(&config.tinyfish_mcp_url, "https://agent.tinyfish.ai/mcp");
     if base.is_empty() {

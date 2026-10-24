@@ -211,10 +211,73 @@ impl DatabaseStore {
     }
 }
 
+static STORE: OnceLock<DatabaseStore> = OnceLock::new();
+static DATA_DIRECTORY: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Bind the process-wide model store before its first read (native custom roots).
+pub fn configure_directory(dir: &Path) -> Result<(), String> {
+    if let Some(current) = DATA_DIRECTORY.get() {
+        return if current == dir { Ok(()) } else { Err("Model database directory already configured".into()) };
+    }
+    if STORE.get().is_some() && crate::app_data::app_data_dir().as_deref() != Some(dir) {
+        return Err("Model database was initialized in another directory".into());
+    }
+    match DATA_DIRECTORY.set(dir.to_path_buf()) {
+        Ok(()) => Ok(()),
+        Err(_) if DATA_DIRECTORY.get().is_some_and(|current| current == dir) => Ok(()),
+        Err(_) => Err("Model database directory already configured".into()),
+    }
+}
 pub(super) fn store() -> &'static DatabaseStore {
-    static STORE: OnceLock<DatabaseStore> = OnceLock::new();
-    STORE.get_or_init(|| DatabaseStore::load(BUNDLED, crate::app_data::app_data_dir().as_deref()))
+    STORE.get_or_init(|| {
+        let directory = DATA_DIRECTORY.get().cloned().or_else(crate::app_data::app_data_dir);
+        DatabaseStore::load(BUNDLED, directory.as_deref())
+    })
 }
 pub(crate) fn snapshot() -> Arc<Snapshot> {
     store().snapshot()
+}
+
+/// Shared update lifecycle; hosts only supply their data directory and notifications.
+pub(crate) async fn update_snapshot(dir: std::path::PathBuf) -> Result<Arc<Snapshot>, String> {
+    configure_directory(&dir)?;
+    static UPDATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = UPDATE
+        .try_lock()
+        .map_err(|_| "A model database update is already running")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut response = client
+        .get(URL)
+        .header("Cache-Control", "no-cache")
+        .send()
+        .await
+        .map_err(|e| format!("Download model database: {e}"))?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_BYTES as u64)
+    {
+        return Err("Model database is too large".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() + chunk.len() > MAX_BYTES {
+            return Err("Model database is too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| "Model database is not UTF-8")?;
+    let result = tokio::task::spawn_blocking(move || store().install(&text, &dir))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(result)
+}
+
+pub fn current_version() -> String { snapshot().version.clone() }
+pub async fn update_official(dir: std::path::PathBuf) -> Result<String, String> {
+    Ok(update_snapshot(dir).await?.version.clone())
 }

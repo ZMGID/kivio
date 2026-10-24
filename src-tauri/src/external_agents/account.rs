@@ -65,12 +65,19 @@ async fn exchange(
 }
 
 pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, String> {
-    if !matches!(agent_id, "codex" | "claude") {
+    let def = get_agent_def(agent_id).ok_or("未知 CLI")?;
+    probe_with_command(agent_id, agent_cli_command(def, bin), cwd).await
+}
+
+/// A host may supply the configured environment without changing the read-only protocol.
+pub async fn probe_with_command(agent_id: &str, mut command: tokio::process::Command, cwd: &Path) -> Result<Value, String> {
+    if agent_id == "antigravity" {
+        return probe_antigravity(command, cwd).await;
+    }
+    if !matches!(agent_id, "codex" | "claude" | "grok") {
         return Err("此 CLI 未提供账号额度查询".into());
     }
-    let def = get_agent_def(agent_id).ok_or("未知 CLI")?;
     let claude = agent_id == "claude";
-    let mut command = agent_cli_command(def, bin);
     if claude {
         command.args([
             "-p",
@@ -81,6 +88,8 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
             "--verbose",
             "--replay-user-messages",
         ]);
+    } else if agent_id == "grok" {
+        command.args(["--no-auto-update", "agent", "--no-leader", "stdio"]);
     } else {
         command.arg("app-server");
     }
@@ -101,10 +110,16 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
         let mut output = BufReader::new(child.stdout.take().ok_or("CLI stdout unavailable")?).lines();
         let init = if claude {
             json!({"type":"control_request","request_id":"account-init","request":{"subtype":"initialize"}})
+        } else if agent_id == "grok" {
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"kivio","version":env!("CARGO_PKG_VERSION")}}})
         } else {
             json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kivio","version":env!("CARGO_PKG_VERSION")}}})
         };
         let init = exchange(&mut input, &mut output, init, claude).await?;
+        if agent_id == "grok" {
+            let billing = exchange(&mut input, &mut output, json!({"jsonrpc":"2.0","id":2,"method":"_x.ai/billing","params":{}}), false).await?;
+            return Ok(normalize_grok(&billing));
+        }
         let account = if claude { init["account"].clone() } else {
             input.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n").await.map_err(|e| e.to_string())?;
             exchange(&mut input, &mut output, json!({"id":2,"method":"account/read","params":{"refreshToken":false}}), false).await?["account"].clone()
@@ -124,6 +139,97 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
     let _ = join_stderr_tail(&mut child, tail).await;
     let _ = child.wait().await;
     result
+}
+
+fn normalize_grok(billing: &Value) -> Value {
+    let config = &billing["config"];
+    let used = config["creditUsagePercent"]
+        .as_f64()
+        .or_else(|| {
+            let limit = config["monthlyLimit"]["val"].as_f64()?;
+            (limit > 0.0).then(|| config["used"]["val"].as_f64().unwrap_or(0.0) / limit * 100.0)
+        })
+        .filter(|v| v.is_finite());
+    let mut windows = Vec::new();
+    if let Some(used) = used {
+        let period = &config["currentPeriod"];
+        let weekly = period["type"].as_str() == Some("USAGE_PERIOD_TYPE_WEEKLY");
+        windows.push(json!({"name":if weekly { "Grok · 7 天" } else { "Grok" },
+            "usedPercent":used.clamp(0.0,100.0),
+            "resetsAt":period["end"].as_str().or_else(|| config["billingPeriodEnd"].as_str()),
+            "windowDurationMins":if weekly { Some(10080) } else { None }}));
+    }
+    let credits = config.get("prepaidBalance").filter(|v| v.is_object()).map(|v| {
+        json!({"label":"预付余额 (USD)","balance":format!("{:.2}", v["val"].as_f64().unwrap_or(0.0) / 100.0)})
+    });
+    json!({"agentId":"grok", "account":{"type":"Grok", "email":null,"plan":billing["subscription_tier"].as_str()},
+        "windows":windows,"credits":credits,
+        "unavailable":if windows.is_empty() { Some("当前 Grok 账号未提供额度窗口，团队账号可能由管理员统一管理") } else { None },
+        "checkedAt":chrono::Utc::now().timestamp()})
+}
+
+async fn probe_antigravity(mut command: tokio::process::Command, cwd: &Path) -> Result<Value, String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(35),
+        command
+            .args([
+                "-p",
+                "/usage",
+                "--output-format",
+                "json",
+                "--print-timeout",
+                "30s",
+            ])
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .no_console_window()
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "反重力额度查询超时，请先在终端运行 agy 完成登录".to_string())?
+    .map_err(|e| e.to_string())?;
+    let payload: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "反重力未返回额度信息，请先在终端运行 agy 完成登录".to_string())?;
+    if !output.status.success() || payload["status"] != "SUCCESS" {
+        return Err("反重力额度查询失败，请确认 CLI 已登录后重试".into());
+    }
+    normalize_antigravity(&payload)
+}
+
+fn normalize_antigravity(payload: &Value) -> Result<Value, String> {
+    // Validate the native report envelope: never interpret an agent response as quota.
+    if payload["command"]["name"] != "usage" || payload["num_turns"] != 0 {
+        return Err("反重力未返回原生额度报告".into());
+    }
+    let groups = payload["command"]["data"]["groups"]
+        .as_array()
+        .ok_or("反重力额度报告格式不受支持")?;
+    let mut windows = Vec::new();
+    for group in groups {
+        if let Some(buckets) = group["buckets"].as_array() {
+            for bucket in buckets {
+                if let Some(remaining) = bucket["remaining_fraction"]
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                {
+                    let duration = match bucket["window"].as_str() {
+                        Some("weekly") => Some(10080),
+                        Some("5h") => Some(300),
+                        _ => None,
+                    };
+                    windows.push(json!({"name":format!("{} · {}", group["name"].as_str().unwrap_or("Antigravity"), bucket["name"].as_str().unwrap_or("Quota")),
+                        "usedPercent":(1.0 - remaining.clamp(0.0, 1.0)) * 100.0,
+                        "resetsAt":bucket["reset_time"].as_str(), "windowDurationMins":duration}));
+                }
+            }
+        }
+    }
+    Ok(
+        json!({"agentId":"antigravity", "account":null, "windows":windows, "credits":null,
+        "unavailable":if windows.is_empty() { Some("CLI 未提供额度窗口") } else { None },
+        "checkedAt":chrono::Utc::now().timestamp()}),
+    )
 }
 
 fn normalize(
@@ -190,6 +296,34 @@ fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn antigravity_native_quota_report_preserves_groups_and_rejects_model_turns() {
+        let mut report = json!({"command":{"name":"usage","data":{"groups":[
+            {"name":"Gemini Models","buckets":[{"name":"Weekly","window":"weekly","remaining_fraction":0.75,"reset_time":"2026-10-30T00:00:00Z"}]},
+            {"name":"Claude and GPT models","buckets":[{"name":"Five Hour","window":"5h","remaining_fraction":0.5}]}]}}, "num_turns":0});
+        let status = normalize_antigravity(&report).unwrap();
+        assert_eq!(status["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(status["windows"][0]["usedPercent"], 25.0);
+        assert_eq!(status["windows"][0]["resetsAt"], "2026-10-30T00:00:00Z");
+        assert_eq!(status["windows"][1]["windowDurationMins"], 300);
+        report["num_turns"] = json!(1);
+        assert!(normalize_antigravity(&report).is_err());
+    }
+
+    #[test]
+    fn grok_billing_prefers_native_percent_and_converts_prepaid_cents() {
+        let status = normalize_grok(&json!({"subscription_tier":"SuperGrok", "config":{
+            "creditUsagePercent":12.5, "monthlyLimit":{"val":100}, "used":{"val":99},
+            "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-10-30T00:00:00Z"},
+            "prepaidBalance":{"val":1250}}}));
+        assert_eq!(status["windows"][0]["usedPercent"], 12.5);
+        assert_eq!(status["credits"]["balance"], "12.50");
+        assert_eq!(status["account"]["plan"], "SuperGrok");
+        let status = normalize_grok(&json!({"config":null}));
+        assert!(status["windows"].as_array().unwrap().is_empty());
+        assert!(status["unavailable"].is_string());
+    }
+
     #[test]
     fn native_account_payloads_keep_all_windows_without_exposing_credentials() {
         let account = json!({"type":"chatgpt","email":"a@example.test","planType":"pro","accessToken":"SECRET"});

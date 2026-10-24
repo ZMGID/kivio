@@ -237,6 +237,13 @@ impl ConversationStore {
         }
     }
 
+    /// Run a multi-file catalog import/export while excluding conversation writes.
+    /// The callback accesses files directly and must not re-enter this store.
+    pub(crate) fn with_exclusive<T>(&self, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        let _guard = self.mutation.lock().unwrap_or_else(|p| p.into_inner());
+        operation()
+    }
+
     fn prepare(&self) -> RepositoryResult<()> {
         fs::create_dir_all(&self.directory)
             .map_err(|e| format!("create conversations directory: {e}"))?;
@@ -254,6 +261,18 @@ impl ConversationStore {
             return Err(format!("conversation file identity mismatch: {id}").into());
         }
         Ok(conversation)
+    }
+
+    /// Only an absent file means a new conversation; corrupt or unreadable data is an error.
+    pub fn load_optional(&self, id: &str) -> RepositoryResult<Option<Conversation>> {
+        let content = match fs::read_to_string(self.path(id)?) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("读取对话文件失败（{id}）：{error}").into()),
+        };
+        let conversation: Conversation = serde_json::from_str(&content).map_err(|error| format!("对话文件已损坏，无法加载（{id}）：{error}"))?;
+        if conversation.id != id { return Err(format!("conversation file identity mismatch: {id}").into()); }
+        Ok(Some(conversation))
     }
 
     pub fn load_all(&self) -> RepositoryResult<Vec<Conversation>> {

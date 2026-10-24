@@ -13,8 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
+use super::oauth_host::{Browser, open_browser};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -563,7 +562,7 @@ pub(super) fn now_unix() -> i64 {
 
 /// 跑完整 OAuth 流程，返回物化好的 ChatMcpServer（不写 settings，由前端保存）。
 pub async fn run_oauth_connect(
-    app: &AppHandle,
+    app: &Browser,
     http: &reqwest::Client,
     connector_id: &str,
     name: &str,
@@ -609,10 +608,7 @@ pub async fn run_oauth_connect(
     )?;
 
     // 5. 开浏览器，等 loopback 回调拿 code（校验 state，带整体超时）。
-    #[allow(deprecated)]
-    app.shell()
-        .open(authorize_url, None)
-        .map_err(|err| format!("Failed to open browser for authorization: {err}"))?;
+    open_browser(app, &authorize_url)?;
     let code = wait_for_callback(listener, &state).await?;
 
     // 6. 换 token。

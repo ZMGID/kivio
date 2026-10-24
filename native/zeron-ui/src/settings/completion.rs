@@ -83,7 +83,7 @@ impl HarnessesPage {
                         .child(widgets::row_title(theme, label))
                         .child(widgets::meta_line(
                             theme,
-                            vec![div().child(description).into_any_element()],
+                            vec![div().child(crate::i18n::display(description)).into_any_element()],
                         )),
                 )
                 .child(widgets::toggle_switch(

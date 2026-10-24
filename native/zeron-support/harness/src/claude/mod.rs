@@ -1327,13 +1327,8 @@ type RequestInputFn = Box<
         + Sync,
 >;
 
-/// Serve one `can_use_tool` control request. Every tool is auto-approved
-/// (unattended parity — the CLI still blocks until SOME response arrives, so
-/// every request must be answered); `AskUserQuestion` is intercepted —
-/// surface the questions through the engine's input bridge (which owns the
-/// `InputRequested`/`InputResolved` lifecycle), wait for the user's answers
-/// (in a subtask so the frame loop keeps flowing), and hand them back keyed
-/// by question text, as the tool expects.
+/// Route tool permissions and AskUserQuestion through the host input bridge.
+/// The reader continues while a separate task awaits the user's answer.
 fn handle_control_request(
     req: ControlRequestFrame,
     request_input: &Arc<RequestInputFn>,
@@ -1347,8 +1342,18 @@ fn handle_control_request(
         return;
     }
     if req.request.tool_name != "AskUserQuestion" {
-        let line = control_response_line(&req.request_id, allow_response(req.request.input));
-        let _ = stdin_tx.send(StdinMsg::Line(line));
+        let request_input = Arc::clone(request_input);
+        let stdin_tx = stdin_tx.clone();
+        tokio::spawn(async move {
+            let answers = (request_input)(vec![UserInputQuestion {
+                id:"permission".into(), header:req.request.tool_name.clone(),
+                question:format!("允许本次操作？\n{}", serde_json::to_string_pretty(&req.request.input).unwrap_or_default()),
+                options:vec!["拒绝".into(), "允许本次".into()],multi_select:false,prefill:None,multiline:false,
+            }]).await.unwrap_or_default();
+            let allowed = answers.iter().any(|a| a.question_id == "permission" && a.labels == ["允许本次"]);
+            let response = if allowed { allow_response(req.request.input) } else { serde_json::json!({"behavior":"deny","message":"User declined"}) };
+            let _ = stdin_tx.send(StdinMsg::Line(control_response_line(&req.request_id, response)));
+        });
         return;
     }
     let request_input = Arc::clone(request_input);

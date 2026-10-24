@@ -1520,7 +1520,7 @@ impl Theme {
             .with_font_terminal(crate::typography::terminal_effective_family_name(cx))
             .with_code_font_size(crate::typography::code_font_size(cx))
             .with_terminal_font_size(crate::typography::terminal_font_size(cx));
-        sync_gpui_base_scrollbar(&next, cx);
+        sync_gpui_components(&next, cx);
         cx.set_global(next);
         // An accent-only swap leaves CURRENT_APPEARANCE unchanged, but cached
         // resolved colors still need to be discarded for the next frame.
@@ -1595,7 +1595,7 @@ impl Theme {
                 || theme.wallpaper_color != next.wallpaper_color
         });
         set_current_appearance(appearance);
-        sync_gpui_base_scrollbar(&next, cx);
+        sync_gpui_components(&next, cx);
         cx.set_global(next);
         if changed || force_generation {
             bump_style_generation();
@@ -1621,6 +1621,54 @@ impl Theme {
     pub fn wash(&self, alpha: f32) -> Hsla {
         wash_for(self.appearance, alpha)
     }
+}
+
+/// Keep semantic Kit controls on the same palette as the native shell.
+pub(crate) fn sync_gpui_components(theme: &Theme, cx: &mut App) {
+    use gpui_kit::component::{Theme as ComponentTheme, ThemeMode};
+    let mode = if theme.appearance == Appearance::Dark { ThemeMode::Dark } else { ThemeMode::Light };
+    ComponentTheme::update(cx, |kit| kit.mode = mode);
+    let surface = theme.for_settings_surface();
+    ComponentTheme::update(cx, |kit| {
+        kit.font_family = theme.font_sans.clone();
+        kit.mono_font_family = theme.font_mono.clone();
+        kit.font_size = gpui_kit::px(13.);
+        kit.radius = gpui_kit::px(8.);
+        kit.radius_lg = gpui_kit::px(12.);
+        let c = &mut kit.colors;
+        c.background = surface.bg; c.foreground = theme.text;
+        c.border = theme.border; c.input = theme.border;
+        c.muted = theme.wash(0.045); c.muted_foreground = theme.text_muted;
+        c.button = theme.wash(0.055); c.button_foreground = theme.text;
+        c.button_hover = theme.element_hover; c.button_active = theme.element_active;
+        c.primary = theme.solid; c.primary_foreground = theme.on_solid;
+        c.primary_hover = theme.solid.opacity(0.9); c.primary_active = theme.solid.opacity(0.8);
+        c.button_primary = c.primary; c.button_primary_foreground = c.primary_foreground;
+        c.button_primary_hover = c.primary_hover; c.button_primary_active = c.primary_active;
+        c.secondary = c.button; c.secondary_foreground = theme.text;
+        c.secondary_hover = c.button_hover; c.secondary_active = c.button_active;
+        c.button_secondary = c.button; c.button_secondary_foreground = theme.text;
+        c.button_secondary_hover = c.button_hover; c.button_secondary_active = c.button_active;
+        c.accent = theme.accent_wash; c.accent_foreground = theme.text;
+        c.ring = theme.accent; c.caret = theme.text;
+        c.group_box = theme.wash(0.045); c.group_box_foreground = theme.text;
+        c.list = surface.bg; c.list_hover = theme.element_hover;
+        c.list_active = theme.element_active; c.list_active_border = theme.border;
+        c.list_even = theme.wash(0.025); c.list_head = theme.wash(0.045);
+        c.popover = theme.surface_overlay; c.popover_foreground = theme.text;
+        c.danger = theme.danger; c.danger_hover = theme.danger_strong;
+        c.danger_active = theme.danger_strong;
+        c.link = theme.accent; c.link_hover = theme.accent_strong; c.link_active = theme.accent_strong;
+        c.chart_grid = theme.border;
+        c.selection = theme.accent_wash;
+        c.switch = theme.wash(0.12);
+        c.switch_thumb = gpui_kit::white();
+        c.tab = surface.bg; c.tab_bar = surface.bg;
+        c.tab_bar_segmented = theme.wash(0.045);
+        c.tab_active = theme.element_active; c.tab_active_foreground = theme.text;
+        c.tab_foreground = theme.text_muted;
+    });
+    sync_gpui_base_scrollbar(theme, cx);
 }
 
 fn scrollbar_thumb_colors(theme: &Theme) -> (Hsla, Hsla, Hsla) {

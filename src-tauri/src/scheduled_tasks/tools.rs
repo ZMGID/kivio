@@ -14,10 +14,10 @@ use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use super::types::{ScheduleRule, ScheduledTask, ScheduledTaskInput, TaskSource, TaskTarget};
 use super::{emit_changed, now_secs, service};
 
-pub const CREATE_TOOL: &str = "schedule_create";
-pub const LIST_TOOL: &str = "schedule_list";
-pub const UPDATE_TOOL: &str = "schedule_update";
-pub const DELETE_TOOL: &str = "schedule_delete";
+pub const CREATE_TOOL: &str = crate::mcp::native_policy::CREATE_TOOL.name;
+pub const LIST_TOOL: &str = crate::mcp::native_policy::LIST_TOOL.name;
+pub const UPDATE_TOOL: &str = crate::mcp::native_policy::UPDATE_TOOL.name;
+pub const DELETE_TOOL: &str = crate::mcp::native_policy::DELETE_TOOL.name;
 
 /// Appends the tools unless this conversation is itself running a scheduled
 /// prompt (a scheduled turn must not reschedule itself).

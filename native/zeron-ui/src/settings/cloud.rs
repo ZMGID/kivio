@@ -1539,7 +1539,7 @@ mod tests {
                     };
                     cx.notify();
                 });
-                cx.update(|window, cx| window.draw(cx).clear());
+                cx.update(|window, cx| window.draw(cx).clear(cx));
             }
         }
         // A delete is followed while Deleting and stops once it lands.
@@ -1576,7 +1576,7 @@ mod tests {
             page.apply_status(failed, cx);
             assert!(page.recheck_task.is_none());
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         // Loading and failure before any status.
         for status in [
             Loadable::Loading,
@@ -1587,7 +1587,7 @@ mod tests {
                 page.status = status;
                 cx.notify();
             });
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         }
     }
 }

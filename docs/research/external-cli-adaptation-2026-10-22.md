@@ -121,3 +121,29 @@ T3 Code 的服务等级选择、多账号管理、额度展示、目标持续执
 本轮没有改动 CLI 路径或全局安装。Claude 优先引导的真实上游验收和 Windows/WSL 实机验收仍不能用协议替身结果替代。
 
 审查修复版已完成 `npx tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json`，退出旧 Dev 并从 bundle 路径重启。原生窗口真实 Codex 会话 `conv_523cad1d-df7d-47b5-9abf-e6f84fc4827d` 显示 `CLI_REVIEW_OK` 并恢复输入状态；账户面板读取到真实额度窗口及更新时间，查询结束，无需临时替换 CLI。账号个人值未写入报告。构建日志 `/tmp/kivio-cli-review/native-build.log`。修复仍未提交、未推送。
+
+## 2026-10-23：Grok / Antigravity 原生 CLI 对照
+
+对照 T3 Code 主线 `18e27425195686a5215fdc2cfa2bca088cdb8972`，重点阅读 `packages/provider-grok/src/server/acpSupport.ts`、`apps/server/src/provider/acp/AntigravityAcpSupport.ts`、`AntigravityProtocol.ts` 和 `docs/user/providers-antigravity.md`。本机 Grok 为 `1.0.52`，agy 为 `1.4.5`；官方 Grok 更新页在本次读取时列到 `1.0.62`，Antigravity CLI 页列到 `1.4.0`，因此文档版本不等于本机或发行渠道的最高版本。
+
+本轮保留现有协议负责人：Grok 仍由 `session/acp.rs` 处理，agy 仍由 `session/antigravity.rs` 处理；会话绑定和历史所有权不变。
+
+- Grok：实时握手补充 `_meta.clientType=extension`，让支持审批的客户端身份正确传给 CLI。查询进程仍不声明交互宿主。
+- Grok：正常执行及等待审批中的取消共用 ACP 通知发送，移除错误的请求 ID，并附带 `_meta.cancelTrigger=ctrl_c`，与 T3 的停止语义一致；其他 ACP 代理不带 Grok 专属元数据。
+- Antigravity：补充原生 `--mode auto`，维持默认权限不变。当前账号实测会提示该模式未开放并回退默认；不能把参数识别成功当成账号支持。
+- 账号额度沿用 `account.rs` 唯一负责人：Grok 使用原生 ACP `_x.ai/billing`，优先读取百分比与当前周期，兼容旧账单；agy 使用零模型轮次的 `/usage` JSON 报告，并校验命令名、轮次数，再按模型组读取窗口。
+
+T3 当前的 Antigravity 使用 Google 独立 ACP agent（`agy_acp_server` 与配套 harness），不是 `agy` CLI；两者登录、安装、能力和会话格式不同。本轮不把其托管运行时、数据库读取或 ACP 认证流程移植到现有 CLI，会话消息依然走官方 NDJSON。图片路径、权限拒绝提示、工具事件、请求上下文统计、取消后原生 ID 续聊沿用已有适配与验收。Grok 的 T3 后台任务编排与并发 steering 并未在本轮移植，不宣称功能完全对齐。
+
+来源：
+- [T3 Grok ACP support](https://github.com/pingdotgg/t3code/blob/18e27425195686a5215fdc2cfa2bca088cdb8972/packages/provider-grok/src/server/acpSupport.ts)
+- [T3 Antigravity 使用说明](https://github.com/pingdotgg/t3code/blob/18e27425195686a5215fdc2cfa2bca088cdb8972/docs/user/providers-antigravity.md)
+- [Grok 官方更新](https://x.ai/changelog/build)
+- [Antigravity 官方更新](https://www.agy.dev/docs/changelog?tab=cli)
+
+验收记录（2026-10-23）：
+- Auto 参数回归先在旧实现失败（`/tmp/kivio-auto-before.log`），修复后随外部 CLI 集合通过。该用例验证实际参数拼装，未新增测试专用生产入口。
+- 外部 CLI 测试首轮：820 通过、47 个有意忽略；架构检查通过。
+- 原生 agy `live_antigravity_multiturn_tools_cancel_and_resume`：通过，88.28 秒。覆盖同进程多轮记忆、命令查询、文件工具与上下文用量、主动取消、原 ID 新进程续聊。
+- Grok 1.0.52：带 `clientType=extension` 的 `initialize`、`session/new` 成功；简单无工具模型请求等待 40 秒超时，不能据此宣称真实回答与后台任务均已验收。账单服务此前连接失败仍是已知实机限制。
+- 原生桌面 UI 未另做视觉验收；本轮新增的是协议行为与权限能力选项。

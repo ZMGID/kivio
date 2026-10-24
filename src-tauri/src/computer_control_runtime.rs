@@ -1,0 +1,337 @@
+//! Setup only: agents use the installed CLIs through the existing shell + skills.
+use std::{path::Path, process::Stdio, time::Duration};
+
+use serde::{Deserialize, Serialize};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    sync::Mutex,
+};
+
+use crate::proc::NoConsoleWindow;
+
+static INSTALL_LOCK: Mutex<()> = Mutex::const_new(());
+
+pub(crate) const CUA_MCP_SERVER_ID: &str = "computer-control-cua-driver";
+pub(crate) const LEGACY_CUA_MCP_SERVER_ID: &str = "plugin-cua-driver";
+
+pub(crate) use crate::settings::is_cua_mcp_server_id;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlTool {
+    Cua,
+    Playwright,
+}
+
+impl ControlTool {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Cua => "cua-driver",
+            Self::Playwright => "playwright-cli",
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlToolStatus {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+}
+
+#[derive(Deserialize)]
+struct CuaUpdateStatus {
+    current_version: Option<String>,
+    latest_version: Option<String>,
+    update_available: bool,
+}
+
+fn extract_version(output: &str) -> String {
+    output
+        .split_whitespace()
+        .find_map(|part| {
+            let candidate = part.trim_start_matches('v').trim_matches(|c: char| {
+                !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+            });
+            let mut numbers = candidate.split('.');
+            let valid = numbers
+                .by_ref()
+                .take(3)
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+            (valid && candidate.matches('.').count() >= 1).then(|| candidate.to_string())
+        })
+        .unwrap_or_else(|| output.trim().to_string())
+}
+
+fn numeric_version(version: &str) -> Vec<u64> {
+    version
+        .trim_start_matches('v')
+        .split(['.', '-', '+'])
+        .take(3)
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    numeric_version(latest) > numeric_version(current)
+}
+
+fn validate_self_update_result(
+    result: Result<String, String>,
+    previous_version: &str,
+    observed_version: &str,
+) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(_) if is_newer_version(observed_version, previous_version) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn read_output(mut stream: impl AsyncRead + Unpin) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut buffer).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        // Drain pipes even after reaching the display limit, so installs cannot block.
+        let keep = n.min((128 * 1024usize).saturating_sub(bytes.len()));
+        bytes.extend_from_slice(&buffer[..keep]);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn run(
+    command: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    seconds: u64,
+) -> Result<String, String> {
+    let path = crate::path_env::command_path();
+    let executable = which::which_in(command, Some(&path), cwd.unwrap_or_else(|| Path::new(".")))
+        .map_err(|e| format!("Cannot find {command}: {e}"))?;
+    let mut process = tokio::process::Command::new(executable);
+    process.env("PATH", path);
+    process
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    process.kill_on_drop(true).no_console_window();
+    if let Some(cwd) = cwd {
+        process.current_dir(cwd);
+    }
+    let mut child = process
+        .spawn()
+        .map_err(|e| format!("Cannot start {command}: {e}"))?;
+    let stdout = child.stdout.take().ok_or("Missing stdout")?;
+    let stderr = child.stderr.take().ok_or("Missing stderr")?;
+    let execution = async {
+        tokio::try_join!(
+            async { child.wait().await.map_err(|e| e.to_string()) },
+            read_output(stdout),
+            read_output(stderr),
+        )
+    };
+    let (status, out, err) = tokio::time::timeout(Duration::from_secs(seconds), execution)
+        .await
+        .map_err(|_| {
+            format!("{command} timed out. Check installation status before retrying.")
+        })??;
+    if !status.success() {
+        return Err(format!("{command}: {status}\n{out}\n{err}"));
+    }
+    Ok(out.trim().to_string())
+}
+
+pub async fn computer_control_check(tool: ControlTool) -> Result<String, String> {
+    run(tool.command(), &["--version"], None, 15).await
+}
+
+pub async fn computer_control_status(
+    tool: ControlTool,
+    check_updates: Option<bool>,
+) -> Result<ControlToolStatus, String> {
+    let current_version = extract_version(&computer_control_check(tool).await?);
+    if check_updates == Some(false) {
+        return Ok(ControlToolStatus {
+            current_version,
+            latest_version: None,
+            update_available: false,
+        });
+    }
+    let mut latest_version = None;
+    let mut update_available = false;
+
+    match tool {
+        ControlTool::Cua => {
+            if let Ok(output) = run("cua-driver", &["check-update", "--json"], None, 30).await {
+                if let Ok(status) = serde_json::from_str::<CuaUpdateStatus>(&output) {
+                    latest_version = status.latest_version;
+                    update_available = status.update_available;
+                    if latest_version.is_none() {
+                        latest_version = status.current_version;
+                    }
+                }
+            }
+        }
+        ControlTool::Playwright => {
+            if let Ok(output) = run("npm", &["view", "@playwright/cli", "version"], None, 30).await
+            {
+                let latest = extract_version(&output);
+                update_available = is_newer_version(&latest, &current_version);
+                latest_version = Some(latest);
+            }
+        }
+    }
+
+    Ok(ControlToolStatus {
+        current_version,
+        latest_version,
+        update_available,
+    })
+}
+
+pub async fn computer_control_install(
+    tool: ControlTool,
+) -> Result<std::path::PathBuf, String> {
+    let _guard = INSTALL_LOCK
+        .try_lock()
+        .map_err(|_| "Another computer-control installation is running")?;
+    if computer_control_check(tool).await.is_err() {
+        match tool {
+            ControlTool::Playwright => {
+                run(
+                    "npm",
+                    &["install", "-g", "@playwright/cli@latest"],
+                    None,
+                    300,
+                )
+                .await?;
+            }
+            ControlTool::Cua => {
+                #[cfg(windows)]
+                run("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; irm https://cua.ai/driver/install.ps1 | iex"], None, 300).await?;
+                #[cfg(not(windows))]
+                run(
+                    "bash",
+                    &[
+                        "-c",
+                        "set -o pipefail; curl -fsSL https://cua.ai/driver/install.sh | bash",
+                    ],
+                    None,
+                    300,
+                )
+                .await?;
+            }
+        }
+    }
+    computer_control_check(tool).await?;
+    let home = directories::BaseDirs::new()
+        .ok_or("Home directory unavailable")?
+        .home_dir()
+        .to_path_buf();
+    let source = match tool {
+        ControlTool::Cua => {
+            run("cua-driver", &["skills", "install"], None, 120).await?;
+            home.join(".cua-driver/skills/cua-driver")
+        }
+        ControlTool::Playwright => {
+            let staging = home
+                .join(crate::app_data::user_home_name())
+                .join("tool-setup/playwright");
+            std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+            run(
+                "playwright-cli",
+                &["install", "--skills"],
+                Some(&staging),
+                120,
+            )
+            .await?;
+            staging.join(".claude/skills/playwright-cli")
+        }
+    };
+    // Reuse the normal importer: retain upstream references and expose the skill
+    // in ~/.kivio/skills, where existing discovery and enable/disable already work.
+    Ok(source)
+}
+
+pub async fn computer_control_update(
+    tool: ControlTool,
+) -> Result<std::path::PathBuf, String> {
+    let _guard = INSTALL_LOCK
+        .try_lock()
+        .map_err(|_| "Another computer-control installation is running")?;
+    let previous_version = extract_version(&computer_control_check(tool).await?);
+
+    let home = directories::BaseDirs::new()
+        .ok_or("Home directory unavailable")?
+        .home_dir()
+        .to_path_buf();
+    let source = match tool {
+        ControlTool::Cua => {
+            // Update the CLI and its separately versioned official Skill pack.
+            let update_result =
+                run("cua-driver", &["update", "--apply", "--json"], None, 300).await;
+                    let observed_version = extract_version(&computer_control_check(tool).await?);
+            validate_self_update_result(update_result, &previous_version, &observed_version)?;
+            run("cua-driver", &["skills", "update"], None, 180).await?;
+            home.join(".cua-driver/skills/cua-driver")
+        }
+        ControlTool::Playwright => {
+            run(
+                "npm",
+                &["install", "-g", "@playwright/cli@latest"],
+                None,
+                300,
+            )
+            .await?;
+                    let staging = home
+                .join(crate::app_data::user_home_name())
+                .join("tool-setup/playwright");
+            std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+            run(
+                "playwright-cli",
+                &["install", "--skills"],
+                Some(&staging),
+                120,
+            )
+            .await?;
+            staging.join(".claude/skills/playwright-cli")
+        }
+    };
+
+    computer_control_check(tool).await?;
+    Ok(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_cli_versions() {
+        assert_eq!(extract_version("cua-driver 0.28.2"), "0.28.2");
+        assert_eq!(extract_version("0.1.20"), "0.1.20");
+    }
+
+    #[test]
+    fn compares_numeric_versions() {
+        assert!(is_newer_version("0.28.2", "0.28.1"));
+        assert!(!is_newer_version("0.28.1", "0.28.2"));
+        assert!(!is_newer_version("0.28.2", "0.28.2"));
+    }
+
+    #[test]
+    fn accepts_self_update_when_the_binary_was_replaced_despite_process_error() {
+        assert!(validate_self_update_result(
+            Err("installer process exited unsuccessfully".to_string()),
+            "0.28.1",
+            "0.28.2",
+        )
+        .is_ok());
+    }
+}

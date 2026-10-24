@@ -110,11 +110,11 @@ pub fn build_dsh_args(
 }
 
 pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
-    id: "dsh",
-    name: "DeepSeek Harness",
-    bin: "dsh",
-    fallback_bins: &[],
-    version_args: &["--version"],
+    id: crate::external_agents::management_catalog::DSH.id,
+    name: crate::external_agents::management_catalog::DSH.name,
+    bin: crate::external_agents::management_catalog::DSH.bin,
+    fallback_bins: crate::external_agents::management_catalog::DSH.fallback_bins,
+    version_args: crate::external_agents::management_catalog::DSH.version_args,
     // `dsh` 没有登录态概念：凭据是 `~/.dsh/.credentials.yaml` / `.env` / 环境变量里的
     // `DEEPSEEK_API_KEY`，没有任何「查询登录状态」的子命令。探测认证只会白起一个进程。
     auth_probe_args: None,
@@ -140,30 +140,14 @@ pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     launch: super::super::types::AgentLaunchPolicy::DEFAULT,
     instructions_via_launch_flag: false,
     compact_prompt: Some("/compact"),
-    install: super::super::types::AgentInstallSpec {
-        npm_package: Some("@deepseek-ai/dsh"),
-        npm_install_args: &[],
-        pypi_package: None,
-        script_unix: None,
-        script_windows: None,
-        update: super::super::types::UpdateStrategy::ManagedPackage {
-            package: "@deepseek-ai/dsh",
-            brew_formula: "dsh",
-        },
-        latest_version: super::super::types::LatestVersionStrategy::Registry,
-        docs: "https://github.com/deepseek-ai/deepseek-harness",
-        config_dir: Some(".dsh"),
-        config_dir_env: Some("DSH_HOME"),
-        requires_pnpm: true,
-        post_install: super::super::types::PostInstallStrategy::DshProfile,
-    },
+    install: crate::external_agents::management_catalog::DSH.install,
     import: super::super::types::AgentImportPolicy::NONE,
     run: super::super::types::AgentRunPolicy::STANDARD,
     // 斜杠菜单：先走内建兜底，连上后 `session/commands` 覆盖缓存。
     slash_strategy: SlashStrategy::Dsh,
     // 遥测默认关：任何非空值都算关（上游的隐私开关刻意「误关优于误开」）。用户想开就
     // 在 `~/.dsh/.env` 里自己设 —— 那份 env 由 dsh 自己加载，覆盖不到这里。
-    env: &[("DSH_TELEMETRY_DISABLED", "1")],
+    env: crate::external_agents::management_catalog::DSH.env,
     max_prompt_arg_bytes: None,
     // prompt 走 JSON-RPC 的 `contentBlocks`，既不进 argv 也不进裸 stdin。
     prompt_via_stdin: false,

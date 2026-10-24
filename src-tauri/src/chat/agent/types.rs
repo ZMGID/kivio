@@ -29,7 +29,7 @@ pub enum AgentStreamPolicy {
 
 #[derive(Clone)]
 pub struct AgentRunConfig<'a> {
-    pub(crate) provider_runtime: &'a dyn ProviderRuntime,
+    pub provider_runtime: &'a dyn ProviderRuntime,
     pub conversation_id: String,
     /// Conversation that conversation-scoped tools (todo / native workspace)
     /// target. Equals `conversation_id` for a normal chat run; for a sub-agent

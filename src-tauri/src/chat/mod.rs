@@ -65,14 +65,7 @@ pub use types::*;
 // 结果」的调用统一用 `chat::agent::planning::call_chat_completion_message_streamed`
 // （或要 usage/引用时用 `call_chat_completion_output_with_usage`，它内部也已走流式）。
 
-pub(crate) fn format_chat_login_required_error(provider_name: &str) -> String {
-    let provider = provider_name.trim();
-    if provider.is_empty() {
-        "Chat 模型供应商需要账号登录，请到设置 > 模型中登录后再发送。".to_string()
-    } else {
-        format!("Chat 模型供应商「{provider}」需要账号登录，请到设置 > 模型中登录后再发送。")
-    }
-}
+pub(crate) use crate::settings::format_chat_login_required_error;
 
 pub(crate) fn chat_missing_model_error() -> String {
     "请先为当前 Chat 对话选择模型，或到设置 > AI 客户端配置默认模型。".to_string()
@@ -91,3 +84,9 @@ pub(crate) fn session_model_for_conversation(
 
 pub(crate) mod conversation_library;
 pub(crate) mod memory_files;
+
+pub(crate) mod workspace;
+
+pub mod memory_tools;
+
+mod resources_host;

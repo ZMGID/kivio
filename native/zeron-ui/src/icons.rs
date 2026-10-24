@@ -52,6 +52,10 @@ macro_rules! icon_assets {
 
 icon_assets![
     (PROJECT_DEFAULT, "project-default"),
+    (SHIELD_CHECK, "shield-check"),
+    (KIVIO_MARK, "kivio-mark"),
+    (KIMI_MARK, "kimi-mark"),
+    (DSH_MARK, "dsh-mark"),
     (REMOTE_SERVER, "remote-server"),
     // Service-tier bolt, drawn in the toolbar family's linear weight; the
     // filled twin marks fast mode on.

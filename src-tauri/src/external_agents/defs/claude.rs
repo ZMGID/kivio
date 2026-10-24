@@ -389,11 +389,11 @@ pub fn claude_model_from_args(args: &[String]) -> Option<String> {
 }
 
 pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
-    id: "claude",
-    name: "Claude Code",
-    bin: "claude",
-    fallback_bins: &["openclaude"],
-    version_args: &["--version"],
+    id: crate::external_agents::management_catalog::CLAUDE.id,
+    name: crate::external_agents::management_catalog::CLAUDE.name,
+    bin: crate::external_agents::management_catalog::CLAUDE.bin,
+    fallback_bins: crate::external_agents::management_catalog::CLAUDE.fallback_bins,
+    version_args: crate::external_agents::management_catalog::CLAUDE.version_args,
     auth_probe_args: Some(&["auth", "status"]),
     fallback_models: FALLBACK_MODELS,
     reasoning_options: REASONING,
@@ -421,20 +421,7 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     launch: super::super::types::AgentLaunchPolicy::DEFAULT,
     instructions_via_launch_flag: true,
     compact_prompt: Some("/compact"),
-    install: super::super::types::AgentInstallSpec {
-        npm_package: Some("@anthropic-ai/claude-code"),
-        npm_install_args: &[],
-        pypi_package: None,
-        script_unix: Some("curl -fsSL https://claude.ai/install.sh | bash"),
-        script_windows: Some("irm https://claude.ai/install.ps1 | iex"),
-        update: super::super::types::UpdateStrategy::Command(&["update"]),
-        latest_version: super::super::types::LatestVersionStrategy::Registry,
-        docs: "https://code.claude.com/docs/en/setup",
-        config_dir: Some(".claude"),
-        config_dir_env: None,
-        requires_pnpm: false,
-        post_install: super::super::types::PostInstallStrategy::None,
-    },
+    install: crate::external_agents::management_catalog::CLAUDE.install,
     import: super::super::types::AgentImportPolicy {
         discovery: super::super::types::ImportDiscoveryStrategy::FileHistory,
         history_source: super::super::types::HistorySourceStrategy::ClaudeJsonl,
@@ -448,7 +435,7 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     // 2.1.233：Sonnet 5 / Fable 5 / Mythos 5 / Opus 4.8 及更新模型默认拆掉
     // TaskCreate/Get/Update/List 和 TodoWrite。Kivio 对话 Todo 条靠这些工具
     // 驱动，必须显式要回来。用户覆盖 `env_for("claude")` 可以关掉。
-    env: &[("CLAUDE_CODE_ENABLE_TODO_TOOLS", "1")],
+    env: crate::external_agents::management_catalog::CLAUDE.env,
     max_prompt_arg_bytes: None,
     prompt_via_stdin: true,
     prompt_input_format: PromptInputFormat::StreamJson,

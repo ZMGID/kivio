@@ -36,6 +36,7 @@ serde_json = "1"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+which = "8"
 # Tauri 核心及插件
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }

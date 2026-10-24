@@ -1486,6 +1486,7 @@ mod tests {
                     "default",
                     "plan",
                     "accept-edits",
+                    "auto",
                     "sandbox",
                     "always-proceed",
                 ],

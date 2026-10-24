@@ -428,7 +428,7 @@ mod tests {
             cx.update(|window, cx| {
                 cx.set_global(theme);
                 window.refresh();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             });
             input.read_with(cx, |input, _| {
                 let (caret, _) = input.cursor_layout().expect("rename must lay out a caret");

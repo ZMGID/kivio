@@ -139,7 +139,7 @@ fn setup_with_shell(
         }
     });
     let shell = host.read_with(cx, |host, _| host.shell.clone());
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
             shell.add_file_surface("src/tab.rs".into(), window, cx);
@@ -161,7 +161,7 @@ fn setup_with_shell(
             shell.right_tween = None;
         });
     });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     (shell, cx)
 }
 
@@ -175,7 +175,7 @@ fn full_shell_file_tab_drops_reach_side_chat_body(cx: &mut TestAppContext) {
                 shell.right_tween = None;
                 cx.notify();
             });
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
         });
         for over_input in [false, true] {
             let to = cx.update(|_, cx| {
@@ -212,12 +212,12 @@ fn drag(cx: &mut VisualTestContext, source: &'static str, to: Point<Pixels>) {
     cx.simulate_mouse_move(to, Some(MouseButton::Left), gpui_kit::Modifiers::default());
     cx.update(|window, cx| {
         assert!(cx.has_active_drag());
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.simulate_mouse_move(to, Some(MouseButton::Left), gpui_kit::Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_mouse_up(to, MouseButton::Left, gpui_kit::Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
 }
 
 fn text(composer: &Entity<Composer>, cx: &App) -> String {
@@ -236,7 +236,7 @@ fn workspace_drops_target_saved_and_unsaved_side_chat_composers(cx: &mut TestApp
                 shell.activate_right_surface(RightSurface::SideChat(id), window, cx);
                 window.focus(&shell.composer.focus_handle(cx), cx);
             });
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
             shell.read(cx).side_chats[&id]
                 .composer
                 .read(cx)
@@ -359,15 +359,15 @@ fn drop_external(cx: &mut VisualTestContext, paths: gpui_kit::ExternalPaths, to:
     });
     cx.update(|window, cx| {
         assert!(cx.has_active_drag());
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
     cx.simulate_event(gpui_kit::FileDropEvent::Pending { position: to });
-    cx.update(|window, cx| window.draw(cx).clear());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.simulate_event(gpui_kit::FileDropEvent::Submit { position: to });
     cx.run_until_parked();
     cx.update(|window, cx| {
         assert!(!cx.has_active_drag());
-        window.draw(cx).clear();
+        window.draw(cx).clear(cx);
     });
 }
 
@@ -402,7 +402,7 @@ fn external_file_drops_stage_files_and_refuse_folders_and_oversize_files(cx: &mu
                     shell.activate_right_surface(RightSurface::SideChat(id), window, cx);
                     shell.right_tween = None;
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 let bounds = shell.read(cx).side_chats[&id]
                     .composer
                     .read(cx)

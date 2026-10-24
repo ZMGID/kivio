@@ -516,6 +516,8 @@ pub struct AgentRuntimeConfig {
     pub external_reasoning: Option<String>,
     #[serde(default)]
     pub external_service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub external_model_options: serde_json::Map<String, Value>,
     /// External-CLI sandbox/permission level (claude --permission-mode / codex --sandbox).
     #[serde(default)]
     pub external_sandbox: Option<String>,
@@ -532,6 +534,7 @@ impl Default for AgentRuntimeConfig {
             external_model: None,
             external_reasoning: None,
             external_service_tier: None,
+            external_model_options: Default::default(),
             external_sandbox: None,
             external_agent_preset: None,
         }

@@ -5,6 +5,7 @@
 
 mod github_device;
 pub mod oauth;
+pub mod oauth_host;
 
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{AppHandle, State};

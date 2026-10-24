@@ -8,11 +8,15 @@
 
 mod catalog;
 mod install;
+mod install_core;
 mod lifecycle;
 pub mod marketplaces;
 pub mod packages;
 mod preview;
 mod state;
+mod package_content;
+mod package_catalog;
+mod skill_files;
 
 pub use catalog::{catalog_plugin, CatalogPlugin, PLUGIN_CATALOG};
 pub use install::{
@@ -26,8 +30,8 @@ pub use lifecycle::{
 };
 pub use preview::{note_after_officecli_tool, stop_all_previews};
 pub use state::{
-    enabled_bin_dirs, enabled_path_env, enabled_skill_roots, enabled_system_prompt, is_enabled,
-    is_installed, plugins_root, resolve_binary, resolve_binary_for_status,
+    enabled_bin_dirs, enabled_path_env, enabled_system_prompt, is_enabled,
+    is_installed, plugins_root, resolve_binary,
 };
 
 use tauri::{AppHandle, Manager, State};
@@ -78,4 +82,25 @@ pub async fn plugins_uninstall(
     id: String,
 ) -> Result<PluginActionResult, String> {
     uninstall_plugin(&app, &state, &id).await
+}
+
+pub use skill_files::enabled_skill_roots;
+
+/// 列表/检测前刷新进程 PATH（Windows 注册表用户 Path 可能在 AI 安装后才更新，
+/// GUI 进程启动时的快照不含新目录）。
+pub fn refresh_process_path_for_detection() {
+    #[cfg(target_os = "windows")]
+    {
+        crate::path_env::enrich_path_windows();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::path_env::enrich_path_macos();
+    }
+}
+
+/// 列表检测用：先刷新 PATH 再 resolve。
+pub fn resolve_binary_for_status(id: &str) -> Option<std::path::PathBuf> {
+    refresh_process_path_for_detection();
+    resolve_binary(id)
 }

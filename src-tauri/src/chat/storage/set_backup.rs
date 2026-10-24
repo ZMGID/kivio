@@ -1,39 +1,12 @@
 //! Portable set snapshots. Called under the conversation repository's exclusive barrier.
 use super::*;
-use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::{de::DeserializeOwned, Serialize};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 const MAX_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 
-/// The set catalog travels with settings so restoring preferences also restores
-/// their named personas and all assistant definitions.
-#[derive(Serialize, Deserialize)]
-pub(crate) struct SetCatalogBackup {
-    sets: Vec<ChatSet>,
-    assistants: Vec<ChatAssistant>,
-}
-
-impl SetCatalogBackup {
-    pub(crate) fn validate(&mut self) -> Result<(), String> {
-        let mut ids = HashSet::new();
-        for set in &mut self.sets {
-            sets::validate_set_id(&set.id)?;
-            set.name = sets::normalize_set_name(&set.name)?;
-            if !ids.insert(set.id.clone()) {
-                return Err("备份包含重复集".into());
-            }
-        }
-        ids.clear();
-        for assistant in &self.assistants {
-            validate_assistant_id(&assistant.id)?;
-            if !ids.insert(assistant.id.clone()) {
-                return Err("备份包含重复助手".into());
-            }
-        }
-        Ok(())
-    }
-}
+pub(crate) use super::SetCatalogBackup;
 
 pub(crate) fn export_catalog_in(root: &Path) -> Result<SetCatalogBackup, String> {
     let _catalog = catalog_mutation_lock();
@@ -578,8 +551,11 @@ pub(crate) fn import_in(root: &Path, path: &Path) -> Result<ChatSet, String> {
             }
         }
         if let Some(goal) = &mut conversation.goal_state {
-            if crate::chat::goal::is_running(goal.status) {
-                goal.status = crate::chat::GoalStatus::Paused;
+            if matches!(
+                goal.status,
+                crate::chat::types::GoalStatus::Active | crate::chat::types::GoalStatus::Verifying
+            ) {
+                goal.status = crate::chat::types::GoalStatus::Paused;
                 goal.active_run_id = None;
             }
         }
@@ -1013,9 +989,11 @@ mod binding_tests {
         .unwrap();
         let backup = source.path().join("backup.json");
         export_in(source.path(), "set_cli", &backup).unwrap();
-        assert!(import_in(source.path(), &backup)
-            .unwrap_err()
-            .contains("不能复制"));
+        assert!(
+            import_in(source.path(), &backup)
+                .unwrap_err()
+                .contains("不能复制")
+        );
         let target = tempfile::tempdir().unwrap();
         let set = import_in(target.path(), &backup).unwrap();
         let restored = read_conversation_file(
@@ -1037,9 +1015,11 @@ mod binding_tests {
         let mut raw: Value = serde_json::from_slice(&fs::read(&backup).unwrap()).unwrap();
         raw["bindings"]["conv_cli"]["live-"]["cwd"] = json!(source.path().join("missing"));
         fs::write(&backup, raw.to_string()).unwrap();
-        assert!(import_in(target2.path(), &backup)
-            .unwrap_err()
-            .contains("原工作目录不存在"));
+        assert!(
+            import_in(target2.path(), &backup)
+                .unwrap_err()
+                .contains("原工作目录不存在")
+        );
         assert!(!target2.path().join("conversations/sets.json").exists());
     }
 }

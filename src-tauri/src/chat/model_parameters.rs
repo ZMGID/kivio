@@ -531,7 +531,7 @@ fn profile_for_claude_version(
     }
 }
 
-pub(crate) fn model_supports_video(provider: &ModelProvider, model: &str) -> Option<bool> {
+pub fn model_supports_video(provider: &ModelProvider, model: &str) -> Option<bool> {
     provider
         .model_overrides
         .get(model)
@@ -608,4 +608,263 @@ pub(crate) fn pricing_for_model(
     }
     model_database_pricing(provider_model_database_id(provider, model))
         .map(|pricing| (pricing, "model_pricing".to_string()))
+}
+
+pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str) -> Vec<String> {
+    // Antigravity OAuth catalog variants already select the effort through the model ID.
+    if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
+        && crate::provider_oauth::antigravity::model_includes_effort(model)
+    {
+        return vec![];
+    }
+    if let Some(list) = provider
+        .and_then(|provider| override_model_info(provider, model))
+        .and_then(|info| info.reasoning_efforts.as_deref())
+    {
+        return sanitize_efforts(list.iter().map(String::as_str));
+    }
+    if let Some(list) = model_database_entry(provider_model_database_id(provider, model))
+        .as_ref()
+        .and_then(|entry| entry.get("reasoningEfforts"))
+        .and_then(Value::as_array)
+    {
+        return sanitize_efforts(list.iter().filter_map(Value::as_str));
+    }
+    let id = normalize_model_name(provider_model_database_id(provider, model));
+    if id.contains("gemini-3.1-flash-lite-image") {
+        return vec!["high".into()];
+    }
+    if id.contains("gemini-3-pro") {
+        return vec!["low".into(), "high".into()];
+    }
+    if provider.map(ModelProvider::api_format_kind)
+        == Some(crate::settings::ProviderApiFormat::AnthropicMessages)
+    {
+        if let Some(profile) = claude_thinking_profile(model) {
+            return profile.ui_effort_levels();
+        }
+    }
+    vec!["low".into(), "medium".into(), "high".into()]
+}
+
+const REASONING_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+fn sanitize_efforts<'a>(items: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for item in items {
+        if REASONING_EFFORT_LEVELS.contains(&item) && !out.iter().any(|kept| kept == item) {
+            out.push(item.to_string());
+        }
+    }
+    out
+}
+
+/// Model editor defaults use the same provider-aware lookup as requests.
+pub fn database_model_info(provider: &ModelProvider, model: &str) -> ModelInfo {
+    model_database_entry(provider_model_database_id(Some(provider), model))
+        .and_then(|entry| serde_json::from_value(entry).ok()).unwrap_or_default()
+}
+
+/// Whether an Off choice can actually be honored, independently of effort levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingOffMode {
+    Supported,
+    UpfrontOnly,
+    NotApplicable,
+    Unsupported,
+    Unknown,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThinkingCapabilities {
+    pub levels: Vec<String>,
+    pub off_mode: ThinkingOffMode,
+}
+
+pub fn thinking_capabilities_for_model(
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> ThinkingCapabilities {
+    let reasoning = provider
+        .and_then(|p| override_model_info(p, model))
+        .and_then(|info| info.capabilities.as_ref())
+        .and_then(|caps| caps.reasoning)
+        .or_else(|| {
+            model_database_entry(provider_model_database_id(provider, model))
+                .as_ref()
+                .and_then(|entry| entry.get("capabilities"))
+                .and_then(|caps| caps.get("reasoning"))
+                .and_then(Value::as_bool)
+        });
+    if reasoning == Some(false) {
+        return ThinkingCapabilities {
+            levels: vec![],
+            off_mode: ThinkingOffMode::NotApplicable,
+        };
+    }
+    let levels = reasoning_efforts_for_model(provider, model);
+    let id = normalize_model_name(provider_model_database_id(provider, model));
+    let kimi_code = id.starts_with("kimi-code/");
+    let id = id.rsplit('/').next().unwrap_or(&id);
+    let off_mode = if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
+        && crate::provider_oauth::antigravity::model_includes_effort(model)
+    {
+        ThinkingOffMode::Unsupported
+    } else if let Some(mode) = model_database_entry(id)
+        .as_ref()
+        .and_then(|entry| entry.get("thinkingOff"))
+        .and_then(Value::as_bool)
+    {
+        if mode {
+            ThinkingOffMode::Supported
+        } else {
+            ThinkingOffMode::Unsupported
+        }
+    } else if let Some(profile) = claude_thinking_profile(id) {
+        if profile.off_thinking_type == Some("between_tools") {
+            ThinkingOffMode::UpfrontOnly
+        } else if profile.kind == ClaudeThinkingKind::Unsupported
+            || id.contains("fable")
+            || id.contains("mythos")
+            || normalize_model_sep(id).contains("opus-5-5")
+        {
+            ThinkingOffMode::Unsupported
+        } else {
+            ThinkingOffMode::Supported
+        }
+    } else if let Some(profile) = gemini_thinking_profile(id) {
+        if profile.supports_off {
+            ThinkingOffMode::Supported
+        } else {
+            ThinkingOffMode::Unsupported
+        }
+    } else if kimi_code
+        || id.starts_with("kimi-k3")
+        || id.starts_with("kimi-k2.7")
+        || id.starts_with("kimi-k2-thinking")
+        || id.starts_with("deepseek-r1")
+        || id.starts_with("grok-")
+        || id == "gpt-5"
+        || id.starts_with("gpt-5-")
+        || id.starts_with("gpt-5.4-pro")
+        || id.starts_with("gpt-5.5-pro")
+        || id.starts_with("gpt-6-astra")
+        || id.starts_with("gpt-6.1-sol")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+    {
+        ThinkingOffMode::Unsupported
+    } else if id.starts_with("deepseek-")
+        || id.starts_with("kimi-k2.5")
+        || id.starts_with("kimi-k2.6")
+        || id.starts_with("gpt-5.")
+        || id.starts_with("gpt-6-")
+    {
+        ThinkingOffMode::Supported
+    } else {
+        ThinkingOffMode::Unknown
+    };
+    ThinkingCapabilities { levels, off_mode }
+}
+
+pub(super) const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 200_000;
+pub(super) fn context_window_from_model_info(info: Option<&ModelInfo>) -> Option<usize> {
+    info.and_then(|info| info.context_window)
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+pub(super) fn model_vision_from_model_info(info: Option<&ModelInfo>) -> Option<bool> {
+    info.and_then(|info| info.capabilities.as_ref())
+        .and_then(|capabilities| capabilities.vision)
+}
+
+pub(super) fn model_database_context_window(model: &str) -> Option<usize> {
+    context_window_from_database_entry(model_database_entry(model).as_ref())
+}
+
+pub(super) fn context_window_from_database_entry(entry: Option<&Value>) -> Option<usize> {
+    entry?
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .and_then(|tokens| usize::try_from(tokens).ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+pub(super) fn model_database_vision(model: &str) -> Option<bool> {
+    model_database_entry(model)?
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("vision"))
+        .and_then(Value::as_bool)
+}
+
+pub(crate) fn model_supports_vision(provider: Option<&ModelProvider>, model: &str) -> Option<bool> {
+    let provider = provider?;
+    model_vision_from_model_info(provider.model_overrides.get(model))
+        .or_else(|| model_database_vision(provider_model_database_id(Some(provider), model)))
+}
+
+pub(crate) fn builtin_web_search_supported(provider: &ModelProvider) -> bool {
+    if crate::provider_oauth::antigravity::is_provider(provider) {
+        return false;
+    }
+    use crate::settings::ProviderApiFormat::{
+        AnthropicMessages, Gemini, OpenAiChat, OpenAiResponses, XaiResponses,
+    };
+    // xAI 的 Responses 同样有服务端 web_search（还多 x_search），与 OpenAI Responses 同形。
+    match provider.api_format_kind() {
+        OpenAiResponses | XaiResponses | Gemini | AnthropicMessages => true,
+        OpenAiChat => crate::utils::is_official_deepseek_api(&provider.base_url),
+    }
+}
+
+pub(crate) fn context_window_for_model(
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> (usize, bool) {
+    if let Some(tokens) = context_window_from_model_info(
+        provider.and_then(|provider| provider.model_overrides.get(model)),
+    ) {
+        return (tokens, false);
+    }
+    if let Some(tokens) = model_database_context_window(provider_model_database_id(provider, model))
+    {
+        return (tokens, false);
+    }
+
+    let lower = model.to_ascii_lowercase();
+    let known = [
+        ("1m", 1_000_000usize),
+        // 256k：`kimi-code/k3-256k` 这类名字里明写窗口的模型，缺这一项会一路掉到
+        // FALLBACK_CONTEXT_WINDOW_TOKENS(200K)。值取 2^18（对齐 modelDatabase 里 kimi 系列）。
+        ("256k", 262_144usize),
+        ("200k", 200_000usize),
+        ("128k", 128_000usize),
+        ("100k", 100_000usize),
+        ("64k", 64_000usize),
+        ("32k", 32_000usize),
+        ("16k", 16_000usize),
+        ("8k", 8_000usize),
+    ];
+    for (needle, tokens) in known {
+        if lower.contains(needle) {
+            return (tokens, false);
+        }
+    }
+    if lower.contains("claude") {
+        return (200_000, false);
+    }
+    if lower.contains("gpt-4o")
+        || lower.contains("gpt-4.1")
+        || lower.contains("gpt-5")
+        || lower.contains("deepseek")
+        || lower.contains("qwen")
+        || lower.contains("gemini")
+    {
+        return (128_000, true);
+    }
+    (FALLBACK_CONTEXT_WINDOW_TOKENS, true)
 }

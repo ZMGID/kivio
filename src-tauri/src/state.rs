@@ -1159,3 +1159,12 @@ impl crate::chat::model::host::ModelHost for AppState {
         crate::chat::request_debug::record(self, record);
     }
 }
+
+impl crate::native_tools::ShellHost for AppState {
+    fn playwright_extension_token(&self) -> String {
+        self.settings_read().chat_tools.playwright_extension_token.clone()
+    }
+    fn background_commands_handle(&self) -> Arc<crate::native_tools::background_registry::BackgroundCommandRegistry> {
+        AppState::background_commands_handle(self)
+    }
+}

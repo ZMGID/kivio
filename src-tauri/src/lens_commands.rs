@@ -31,13 +31,12 @@ use crate::lens;
 use crate::prompts::{
     build_combined_translate_prompt, build_ocr_direct_translation_prompt,
     build_replace_translation_batch_prompt, build_screenshot_translation_prompt,
-    build_selected_text_translation_prompt, compact_ocr_text, parse_replace_translation_json,
+    build_selected_text_translation_prompt, compact_ocr_text,
     ReplaceTranslationRequestRegion, COMBINED_TRANSLATE_SEPARATOR,
 };
 use crate::replace_translation::layout::{
-    build_replace_geometry, filter_replaceable_spans, RenderSlot, TranslationGroup,
+    RenderSlot, TranslationGroup,
 };
-use crate::replace_translation::mask::{blocks_from_groups, plate_fill};
 use crate::screenshot::cleanup_temp_file;
 use crate::settings::{self, default_question_prompt, ExplainMessage, OcrMode};
 use crate::shortcuts::{capture_active_selection, get_mouse_position, open_chat_window};
@@ -60,13 +59,7 @@ struct LensFrame {
     monitor: CaptureMonitor,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ImageCropRect {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
+use crate::capture_runtime::{crop_freeze_frame_image, freeze_frame_crop_rect, ImageCropRect};
 
 pub(crate) fn request_lens_close(app: &AppHandle) -> Result<(), String> {
     if let Some(window) = active_overlay_window(app) {
@@ -2114,129 +2107,20 @@ pub(crate) async fn lens_replace_translate(
         return fail("OCR 未识别到文字");
     }
 
-    // 解码与布局聚合都是纯 CPU 工作，整体挪进阻塞线程池。
-    let prepared = tokio::task::spawn_blocking(move || {
-        let source_image = image::open(&temp_path)
-            .map_err(|error| format!("load replace translation image: {error}"))?
-            .to_rgb8();
-        let ocr_lines = filter_replaceable_spans(source_image.width(), &ocr_lines);
-        if ocr_lines.is_empty() {
-            return Err("OCR 未识别到可替换文字".to_string());
-        }
-        let geometry = build_replace_geometry(&source_image, &ocr_lines);
-        if geometry.groups.is_empty() || geometry.slots.is_empty() {
-            return Err("layout_no_regions".to_string());
-        }
-        Ok((source_image, geometry, ocr_lines))
-    })
-    .await
-    .map_err(|error| format!("replace prepare worker failed: {error}"))?;
-    let (source_image, mut geometry, replace_spans) = match prepared {
-        Ok(prepared) => prepared,
-        Err(msg) => return fail(&msg),
-    };
-    // 中间阶段只驱动状态提示；groups/slots 只在最终事件发送一次，避免重复序列化大载荷。
     emit_replace_stream(&app, &image_id, "ocr", &[], &[], None, None, None);
     emit_replace_stream(&app, &image_id, "processing", &[], &[], None, None, None);
-
-    let lang_name = language_name(&settings.reading_target_lang).to_string();
-    let request_regions: Vec<ReplaceTranslationRequestRegion<'_>> = geometry
-        .groups
-        .iter()
-        .map(|group| ReplaceTranslationRequestRegion {
-            id: group.id.as_str(),
-            text: group.source_text.as_str(),
-        })
-        .collect();
-    let prompt = build_replace_translation_batch_prompt(
-        &request_regions,
-        &lang_name,
-        settings.screenshot_translation.replace_prompt.as_deref(),
-    );
-    let retry_attempts = effective_retry_attempts(&settings);
-    let st_thinking = settings.screenshot_translation.thinking_enabled;
-
-    let source_image = std::sync::Arc::new(source_image);
-    let source_for_cleaning = source_image.clone();
-    let translation_future = call_openai_text(
-        &state,
-        &provider,
-        &settings.screenshot_translation.model,
-        prompt,
-        retry_attempts,
-        st_thinking,
-        "screenshot_translation",
-        "replace_translate",
-    );
-    // 盖板按翻译组聚块（同组多行一块连续面），与生产渲染同一份分组。
-    let plate_blocks = blocks_from_groups(&geometry.groups, &replace_spans);
-    // 盖板填充 + PNG 编码是 CPU 密集路径，必须 spawn_blocking，
-    // 否则 tokio::join! 无法真正让本地擦除与云端翻译并行。
-    let cleaning_future = async move {
-        tokio::task::spawn_blocking(move || plate_fill(&source_for_cleaning, &plate_blocks))
-            .await
-            .map_err(|error| format!("plate fill worker failed: {error}"))
-    };
-    let (translation_result, cleaned_result) = tokio::join!(translation_future, cleaning_future);
-
-    // 翻译整体失败（调用失败 / JSON 不可解析 / 没有任何 ID 命中）是硬失败：
-    // 不能带着清理后的背景假装成功，否则前端会擦掉原文再画回未翻译的原文。
-    let expected_ids: Vec<&str> = geometry
-        .groups
-        .iter()
-        .map(|group| group.id.as_str())
-        .collect();
-    let translations = match translation_result
-        .and_then(|raw| parse_replace_translation_json(&raw, &expected_ids))
-    {
-        Ok(values) if values.is_empty() => {
-            return fail("翻译结果为空：没有任何区域被翻译");
-        }
-        Ok(values) => values,
-        Err(error) => return fail(&error),
-    };
-    let mut warnings = Vec::new();
-    let missing = geometry
-        .groups
-        .iter()
-        .filter(|group| !translations.contains_key(&group.id))
-        .count();
-    if missing > 0 {
-        warnings.push(format!(
-            "{missing}/{} 个区域缺少译文，已回退显示原文",
-            geometry.groups.len()
-        ));
-    }
-    for group in &mut geometry.groups {
-        if let Some(translated) = translations.get(&group.id) {
-            group.translated = translated.clone();
-        }
-    }
-    let mut cleaned = match cleaned_result {
-        Ok(image) => image,
-        Err(error) => return fail(&error),
-    };
-    let groups_for_restore = geometry.groups.clone();
-    let cleaned_png = match tokio::task::spawn_blocking(move || {
-        crate::replace_translation::mask::restore_unchanged_groups(
-            &source_image,
-            &mut cleaned,
-            &groups_for_restore,
-            &replace_spans,
-        );
-        crate::replace_translation::encode_rgb_png(cleaned)
-    })
-    .await
-    {
-        Ok(Ok(png)) => png,
-        Ok(Err(error)) => return fail(&error),
-        Err(error) => return fail(&format!("plate encode worker failed: {error}")),
-    };
-    let cleaned_image = format!(
-        "data:image/png;base64,{}",
-        general_purpose::STANDARD.encode(cleaned_png)
-    );
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
+    let language = language_name(&settings.reading_target_lang).to_string();
+    let translated = crate::replace_translation::pipeline::prepare(temp_path, ocr_lines, |groups| async move {
+        let regions = groups.iter().map(|group| ReplaceTranslationRequestRegion { id: &group.id, text: &group.source_text }).collect::<Vec<_>>();
+        let prompt = build_replace_translation_batch_prompt(&regions, &language, settings.screenshot_translation.replace_prompt.as_deref());
+        call_openai_text(&state, &provider, &settings.screenshot_translation.model, prompt,
+            effective_retry_attempts(&settings), settings.screenshot_translation.thinking_enabled,
+            "screenshot_translation", "replace_translate").await
+    }).await;
+    let translated = match translated { Ok(value) => value, Err(error) => return fail(&error) };
+    let cleaned_image = format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(&translated.cleaned_png));
+    let geometry = translated;
+    let warning = geometry.warning.clone();
     emit_replace_stream(
         &app,
         &image_id,
@@ -2390,76 +2274,6 @@ fn capture_region_from_freeze_frame(
     ))
 }
 
-fn crop_freeze_frame_image(
-    path: &Path,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-) -> Result<PathBuf, String> {
-    let image = image::open(path).map_err(|e| e.to_string())?;
-    let rect = freeze_frame_crop_rect(
-        x,
-        y,
-        width,
-        height,
-        scale_factor,
-        image.width(),
-        image.height(),
-    )
-    .ok_or_else(|| "Invalid freeze-frame capture region".to_string())?;
-    let cropped = image.crop_imm(rect.x, rect.y, rect.width, rect.height);
-    let temp_path = std::env::temp_dir().join(format!("screenshot-{}.png", Uuid::new_v4()));
-    #[cfg(target_os = "windows")]
-    {
-        let rgba = cropped.into_rgba8();
-        write_png_fast(&temp_path, rgba.as_raw(), rgba.width(), rgba.height())?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    cropped.save(&temp_path).map_err(|e| e.to_string())?;
-    Ok(temp_path)
-}
-
-fn freeze_frame_crop_rect(
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    scale_factor: f64,
-    image_width: u32,
-    image_height: u32,
-) -> Option<ImageCropRect> {
-    if width == 0 || height == 0 || image_width == 0 || image_height == 0 {
-        return None;
-    }
-    let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    };
-    // Round shared edges, not origin and extent independently: adjacent logical
-    // rectangles must meet at the same physical pixel at fractional DPI.
-    let left = (x as f64 * scale).round().clamp(0.0, image_width as f64) as u32;
-    let top = (y as f64 * scale).round().clamp(0.0, image_height as f64) as u32;
-    let right = ((x as f64 + width as f64) * scale)
-        .round()
-        .clamp(0.0, image_width as f64) as u32;
-    let bottom = ((y as f64 + height as f64) * scale)
-        .round()
-        .clamp(0.0, image_height as f64) as u32;
-
-    if right <= left || bottom <= top {
-        return None;
-    }
-
-    Some(ImageCropRect {
-        x: left,
-        y: top,
-        width: right - left,
-        height: bottom - top,
-    })
-}
 
 fn cleanup_lens_freeze_frame(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -2755,20 +2569,8 @@ fn capture_region_image(
     Ok(temp_path)
 }
 
-/// 快速无损 PNG 编码：`image` 默认编码器对全屏 4MP 图做自适应滤波 + 默认 zlib 压缩，
-/// 单帧编码约 350ms，是冻结帧/截图首帧出现的主要延迟。冻结帧只需「无损 + 快」，
-/// Fast + Sub 保留无损像素，并利用屏幕相邻像素的相似性降低压缩工作量。
-/// 实测 2560×1600 桌面：NoFilter 约 270ms/13MB，Sub 约 105ms/2.5MB。
 #[cfg(target_os = "windows")]
-fn write_png_fast(path: &Path, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
-    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
-    use image::{ExtendedColorType, ImageEncoder};
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let writer = std::io::BufWriter::new(file);
-    PngEncoder::new_with_quality(writer, CompressionType::Fast, FilterType::Sub)
-        .write_image(rgba, width, height, ExtendedColorType::Rgba8)
-        .map_err(|e| e.to_string())
-}
+use crate::capture_runtime::write_png_fast;
 
 /// macOS 平台：区域截图，走 ScreenCaptureKit。
 /// `exclude_self_pid` 传 `Some(pid)` 让 SCK 在 GPU compositor 阶段排除该 PID 的所有窗口
@@ -2915,43 +2717,8 @@ pub(crate) async fn lens_save_annotated_png(
 /// 把截图自动归档到用户指定目录（best-effort，失败不阻塞主流程）
 fn archive_captured_image(app: &AppHandle, temp_path: &std::path::Path, image_id: &str) {
     let settings = app.state::<AppState>().settings_read().clone();
-    if !settings.image_archive_enabled || settings.image_archive_path.is_empty() {
-        return;
-    }
-
-    let archive_dir = std::path::Path::new(&settings.image_archive_path);
-    if !archive_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(archive_dir) {
-            eprintln!(
-                "[image-archive] failed to create dir {}: {}",
-                archive_dir.display(),
-                e
-            );
-            return;
-        }
-    }
-    if !archive_dir.is_dir() {
-        eprintln!(
-            "[image-archive] archive path is not a directory: {}",
-            archive_dir.display()
-        );
-        return;
-    }
-
-    let now = chrono::Local::now();
-    let short_uuid = &image_id[..image_id.len().min(8)];
-    let filename = format!("kivio-{}-{}.png", now.format("%Y-%m-%d-%H%M%S"), short_uuid);
-    let dest = archive_dir.join(&filename);
-
-    if let Err(e) = std::fs::copy(temp_path, &dest) {
-        eprintln!(
-            "[image-archive] failed to copy {} -> {}: {}",
-            temp_path.display(),
-            dest.display(),
-            e
-        );
-    } else {
-        eprintln!("[image-archive] archived to {}", dest.display());
+    if let Err(error) = crate::capture_runtime::archive_captured_image(&settings, temp_path, image_id) {
+        eprintln!("[image-archive] {error}");
     }
 }
 

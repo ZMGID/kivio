@@ -18,16 +18,9 @@ pub(crate) fn automations_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-pub(crate) fn validate_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
-        return Err("invalid automation id".to_string());
-    }
-    Ok(())
-}
-
-fn now_iso() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
-}
+pub(crate) use super::document::validate_id;
+#[cfg(test)]
+use super::document::validate_graph;
 
 fn file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     validate_id(id)?;
@@ -35,32 +28,6 @@ fn file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
 }
 
 use super::catalog::read_one;
-
-fn validate_graph(automation: &Automation) -> Result<(), String> {
-    for node in &automation.nodes {
-        validate_id(&node.id)?;
-        if !is_allowed_node_type(&node.node_type) {
-            return Err(format!("unknown node type: {}", node.node_type));
-        }
-    }
-    for edge in &automation.edges {
-        validate_id(&edge.id)?;
-        validate_id(&edge.source)?;
-        validate_id(&edge.target)?;
-    }
-    if automation.enabled {
-        super::validate::ensure_runnable(automation)?;
-    }
-    Ok(())
-}
-
-fn write_atomic(path: &PathBuf, automation: &Automation) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(automation).map_err(|err| err.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json).map_err(|err| format!("write automation failed: {err}"))?;
-    fs::rename(&tmp, path).map_err(|err| format!("commit automation failed: {err}"))?;
-    Ok(())
-}
 
 /// 单次目录遍历读全量图。调度器用它避免「list 拿 meta、再逐条 get」的双倍读盘。
 pub(crate) fn list_full(app: &AppHandle) -> Result<Vec<Automation>, String> {
@@ -83,33 +50,19 @@ pub(crate) fn get(app: &AppHandle, id: &str) -> Result<Automation, String> {
     read_one(&file_path(app, id)?)
 }
 
-pub(crate) fn save(app: &AppHandle, mut automation: Automation) -> Result<Automation, String> {
-    if automation.id.trim().is_empty() {
-        automation.id = Uuid::new_v4().to_string();
-    }
-    validate_id(&automation.id)?;
-    automation.schema_version = SCHEMA_VERSION;
-    if automation.created_at.trim().is_empty() {
-        automation.created_at = now_iso();
-    }
-    automation.updated_at = now_iso();
-    validate_graph(&automation)?;
-    write_atomic(&file_path(app, &automation.id)?, &automation)?;
-    events::changed(
-        app,
-        "saved",
-        &automation.id,
-        Some(automation.updated_at.clone()),
-    );
-    super::schedule::poke();
+pub(crate) fn save(app: &AppHandle, automation: Automation) -> Result<Automation, String> {
+    let automation = super::document::save(&automations_dir(app)?, automation)?;
+    publish_saved(app, &automation);
     Ok(automation)
 }
 
+fn publish_saved(app: &AppHandle, automation: &Automation) {
+    events::changed(app, "saved", &automation.id, Some(automation.updated_at.clone()));
+    super::schedule::poke();
+}
+
 pub(crate) fn delete(app: &AppHandle, id: &str) -> Result<(), String> {
-    let path = file_path(app, id)?;
-    if path.exists() {
-        fs::remove_file(&path).map_err(|err| format!("delete automation failed: {err}"))?;
-    }
+    super::document::delete(&automations_dir(app)?, id)?;
     let _ = super::history::delete_all(app, id);
     super::schedule::forget(app, id);
     events::changed(app, "deleted", id, None);
@@ -124,28 +77,15 @@ pub(crate) fn set_enabled(app: &AppHandle, id: &str, enabled: bool) -> Result<Au
 }
 
 pub(crate) fn export_to_file(app: &AppHandle, id: &str, dest: &str) -> Result<(), String> {
-    let automation = get(app, id)?;
-    let json = serde_json::to_string_pretty(&automation).map_err(|err| err.to_string())?;
-    fs::write(dest, json).map_err(|err| format!("write export failed: {err}"))?;
-    Ok(())
+    super::document::export(&automations_dir(app)?, id, std::path::Path::new(dest))
 }
 
 /// 导入永远生成新 id 并强制未启用：既避免 id 撞车覆盖已有图，
 /// 也避免「导入即注册」别人文件里的热键/定时触发器。
 pub(crate) fn import_from_file(app: &AppHandle, src: &str) -> Result<Automation, String> {
-    let raw = fs::read_to_string(src).map_err(|err| format!("read import failed: {err}"))?;
-    let mut automation: Automation =
-        serde_json::from_str(&raw).map_err(|err| format!("parse import failed: {err}"))?;
-    if automation.schema_version != SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported automation schemaVersion {}",
-            automation.schema_version
-        ));
-    }
-    automation.id = Uuid::new_v4().to_string();
-    automation.enabled = false;
-    automation.created_at = String::new();
-    save(app, automation)
+    let automation = super::document::import(&automations_dir(app)?, std::path::Path::new(src))?;
+    publish_saved(app, &automation);
+    Ok(automation)
 }
 
 #[cfg(test)]

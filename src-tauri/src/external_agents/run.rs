@@ -595,17 +595,16 @@ pub(crate) async fn run_external_cli_reply_in(
     };
     let mut args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
     if agent_id == "codex" {
-        if let Some(tier) = conversation
+        let tier = conversation
             .agent_runtime
             .external_service_tier
             .as_deref()
             .filter(|tier| !tier.is_empty())
-        {
-            args.extend([
-                "-c".to_string(),
-                format!("service_tier={}", serde_json::to_string(tier).unwrap()),
-            ]);
-        }
+            .unwrap_or("default");
+        args.extend([
+            "-c".to_string(),
+            format!("service_tier={}", serde_json::to_string(tier).unwrap()),
+        ]);
     }
     // A1：系统指令以 flag 追加（不改 `build_args` 的形状，也不动 `RuntimeContext` ——
     // 那两处是所有 CLI 共用的，为一个 claude 专属 flag 加字段要牵动全部 def 与其单测）。

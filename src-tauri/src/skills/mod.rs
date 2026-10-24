@@ -1,18 +1,26 @@
+#[cfg(test)]
+use std::io::Cursor;
+mod package_install;
+pub use package_install::{download_skill_zip_into, download_skill_zip_into_checked, install_skill_zip_bytes};
+#[cfg(test)]
+use package_install::normalize_skill_download_url;
 mod catalog;
 mod discover;
+mod discover_host;
 pub mod parse;
 mod runtime;
+mod reader;
 mod types;
 
 pub use catalog::format_catalog;
-pub(crate) use discover::build_registry_with_plugins;
+pub(crate) use discover_host::build_registry_with_plugins;
 pub use discover::{
-    build_registry, build_registry_in, home_agents_skills_dir, kivio_skills_dir,
-    legacy_app_data_skills_dir, read_skill_record, user_skills_dir,
+    home_agents_skills_dir, kivio_skills_dir,
+    legacy_app_data_skills_dir, read_skill_record,
 };
 pub use parse::parse_skill_markdown;
 pub use runtime::{
-    activate_skill, extract_skill_name, lookup_skill, substitute_arguments, SkillRunContext,
+    activate_skill, execute_skill_tool, extract_skill_name, lookup_skill, substitute_arguments, SkillRunContext,
 };
 pub use types::{
     slugify, SkillDetail, SkillImportResult, SkillListResult, SkillMeta, SkillOpenFolderResult,
@@ -21,7 +29,6 @@ pub use types::{
 
 use std::{
     fs,
-    io::{Cursor, Read},
     path::{Path, PathBuf},
 };
 
@@ -233,31 +240,6 @@ pub async fn chat_skills_uninstall(app: AppHandle, id: String) -> Result<(), Str
     .map_err(|error| format!("chat_skills_uninstall failed: {error}"))?
 }
 
-/// 技能包下载大小上限（与本地 zip 导入的隐含约束一致，防止误装超大包）。
-const MAX_SKILL_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
-
-/// 把 GitHub 仓库页面 URL 归一为 codeload zip 直链；直链 zip / clawhub 下载链 / 其它原样返回。
-/// 支持 `github.com/{owner}/{repo}`、`.../tree/{ref}`（子目录忽略，安装首个 SKILL.md）。
-fn normalize_skill_download_url(url: &str) -> String {
-    let trimmed = url.trim();
-    if let Ok(parsed) = reqwest::Url::parse(trimmed) {
-        if parsed.host_str() == Some("github.com") {
-            let segs: Vec<&str> = parsed.path().split('/').filter(|s| !s.is_empty()).collect();
-            if segs.len() >= 2 {
-                let owner = segs[0];
-                let repo = segs[1].trim_end_matches(".git");
-                let git_ref = if segs.len() >= 4 && segs[2] == "tree" {
-                    segs[3]
-                } else {
-                    "HEAD"
-                };
-                return format!("https://codeload.github.com/{owner}/{repo}/zip/{git_ref}");
-            }
-        }
-    }
-    trimmed.to_string()
-}
-
 /// 技能市场安装：从 ClawHub 下载链 / GitHub 仓库 / 直链 zip 下载 zip 并落盘。
 /// 浏览/搜索/owner 消歧在前端完成，这里只负责下载 + 复用 `install_skill_zip_bytes`。
 #[tauri::command]
@@ -279,36 +261,6 @@ pub async fn chat_skills_install_from_url(app: AppHandle, url: String) -> SkillI
 async fn install_skill_from_url(app: &AppHandle, url: &str) -> Result<SkillMeta, String> {
     let skills_dir = user_skills_dir(app)?;
     download_skill_zip_into(url, &skills_dir).await
-}
-
-/// 从 GitHub 仓库 / 直链 zip 下载一个 Skill 到指定 skills 目录（解压 zip 内首个 SKILL.md 所在
-/// 文件夹到 `{skills_dir}/{id}`）。技能市场安装、URL 导入、插件自带 Skill 下载共用。
-pub async fn download_skill_zip_into(url: &str, skills_dir: &Path) -> Result<SkillMeta, String> {
-    let download_url = normalize_skill_download_url(url);
-    let client = crate::api::build_http_client();
-    let response = client
-        .get(&download_url)
-        .header(reqwest::header::USER_AGENT, "kivio-skill-market")
-        .timeout(std::time::Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|err| format!("Download failed: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", response.status()));
-    }
-    if let Some(len) = response.content_length() {
-        if len > MAX_SKILL_DOWNLOAD_BYTES {
-            return Err("Skill package too large (over 50MB)".to_string());
-        }
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("Read download failed: {err}"))?;
-    if bytes.len() as u64 > MAX_SKILL_DOWNLOAD_BYTES {
-        return Err("Skill package too large (over 50MB)".to_string());
-    }
-    install_skill_zip_bytes(bytes.to_vec(), skills_dir)
 }
 
 pub fn read_skill_detail(
@@ -357,80 +309,6 @@ fn import_skill_dir(source: &Path, skills_dir: &Path) -> Result<SkillMeta, Strin
 fn import_skill_zip(source: &Path, skills_dir: &Path) -> Result<SkillMeta, String> {
     let bytes = fs::read(source).map_err(|err| format!("Read zip failed: {err}"))?;
     install_skill_zip_bytes(bytes, skills_dir)
-}
-
-/// 从内存中的 zip 字节解压一个 Skill 到 `{skills_dir}/{id}`。本地导入与技能市场安装共用。
-/// ponytail: 失败时删掉刚建的目标目录以免留半个技能；未做 temp+rename 原子安装（技能包小、
-/// 单用户本地操作，冲突概率低）——若将来并发安装需要，改成解压到临时目录再 rename。
-pub fn install_skill_zip_bytes(bytes: Vec<u8>, skills_dir: &Path) -> Result<SkillMeta, String> {
-    let reader = Cursor::new(bytes);
-    let mut archive =
-        zip::ZipArchive::new(reader).map_err(|err| format!("Open zip failed: {err}"))?;
-    let mut skill_raw = String::new();
-    let mut skill_path = String::new();
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|err| err.to_string())?;
-        let name = file.name().map_err(|err| err.to_string())?.into_owned();
-        if name.ends_with("SKILL.md") {
-            file.read_to_string(&mut skill_raw)
-                .map_err(|err| format!("Read SKILL.md in zip failed: {err}"))?;
-            skill_path = name;
-            break;
-        }
-    }
-    if skill_raw.trim().is_empty() {
-        return Err("Zip does not contain SKILL.md".to_string());
-    }
-    let parsed = parse_skill_markdown(&skill_raw, "user", None, Vec::new())?;
-    let dest = skills_dir.join(&parsed.meta.id);
-    // 更新/重装：先清掉旧目录，保证覆盖而不是残留混合。
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|err| format!("clear old skill dir failed: {err}"))?;
-    }
-    match extract_zip_into(&mut archive, &skill_path, &dest) {
-        Ok(()) => Ok(SkillMeta {
-            path: Some(dest.join("SKILL.md").display().to_string()),
-            ..parsed.meta
-        }),
-        Err(err) => {
-            let _ = fs::remove_dir_all(&dest);
-            Err(err)
-        }
-    }
-}
-
-fn extract_zip_into<R: Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    skill_path: &str,
-    dest: &Path,
-) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|err| format!("create skill dir failed: {err}"))?;
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|err| err.to_string())?;
-        if file.is_dir() {
-            continue;
-        }
-        let name = file.name().map_err(|err| err.to_string())?;
-        let relative = if skill_path.contains('/') {
-            let prefix = skill_path
-                .rsplit_once('/')
-                .map(|(prefix, _)| format!("{prefix}/"))
-                .unwrap_or_default();
-            name.strip_prefix(&prefix).unwrap_or(&name)
-        } else {
-            &name
-        };
-        if relative.contains("..") {
-            continue;
-        }
-        let out = dest.join(relative);
-        if let Some(parent) = out.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        let mut output = fs::File::create(&out).map_err(|err| err.to_string())?;
-        std::io::copy(&mut file, &mut output).map_err(|err| err.to_string())?;
-    }
-    Ok(())
 }
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
@@ -582,3 +460,5 @@ disable-model-invocation: true
         assert!(parsed.meta.disable_model_invocation);
     }
 }
+
+pub use discover_host::{build_registry, build_registry_in, user_skills_dir};

@@ -131,6 +131,18 @@ pub struct ScreenshotTranslationConfig {
     pub openai: Option<OpenAIConfig>,
 }
 
+impl ScreenshotTranslationConfig {
+    /// Resolve legacy engine settings before any image can leave the device.
+    pub fn resolved_ocr_mode(&self) -> OcrMode {
+        match self.ocr_mode {
+            Some(OcrMode::Legacy) => OcrMode::RapidOcr,
+            Some(mode) => mode,
+            None if self.use_system_ocr => OcrMode::System,
+            None => OcrMode::CloudVision,
+        }
+    }
+}
+
 impl Default for ScreenshotTranslationConfig {
     fn default() -> Self {
         Self {
@@ -1581,4 +1593,19 @@ pub fn resolve_reading_language(settings: &Settings) -> String {
         }
         _ => "zh".to_string(),
     }
+}
+
+pub fn provider_supports_fetch(provider: WebSearchProvider) -> bool {
+    matches!(
+        provider,
+        WebSearchProvider::Tavily
+            | WebSearchProvider::Exa
+            | WebSearchProvider::ExaMcp
+            | WebSearchProvider::Ollama
+            | WebSearchProvider::Deepseek
+            | WebSearchProvider::Serper
+            | WebSearchProvider::Tinyfish
+            | WebSearchProvider::TinyfishMcp
+            | WebSearchProvider::Kimi
+    )
 }

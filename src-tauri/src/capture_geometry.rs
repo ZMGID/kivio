@@ -1,45 +1,45 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CaptureRect {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) width: f64,
-    pub(crate) height: f64,
+pub struct CaptureRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct CaptureDisplay {
-    pub(crate) x: f64,
-    pub(crate) y: f64,
-    pub(crate) width: f64,
-    pub(crate) height: f64,
+pub struct CaptureDisplay {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct MappedSourceRect {
-    pub(crate) display_index: usize,
-    pub(crate) source_rect: CaptureRect,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-pub(crate) struct CaptureMonitor {
-    pub(crate) x: i32,
-    pub(crate) y: i32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) scale_factor: f64,
+pub struct MappedSourceRect {
+    pub display_index: usize,
+    pub source_rect: CaptureRect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
-pub(crate) struct CaptureRegionPx {
-    pub(crate) x: u32,
-    pub(crate) y: u32,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
+pub struct CaptureMonitor {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f64,
 }
 
-pub(crate) fn source_rect_for_region(
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub struct CaptureRegionPx {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn source_rect_for_region(
     region: CaptureRect,
     displays: &[CaptureDisplay],
 ) -> Option<MappedSourceRect> {
@@ -74,7 +74,7 @@ pub(crate) fn source_rect_for_region(
 }
 
 #[allow(dead_code)]
-pub(crate) fn monitor_for_region(
+pub fn monitor_for_region(
     region: CaptureRect,
     monitors: &[CaptureMonitor],
 ) -> Option<usize> {
@@ -99,7 +99,7 @@ pub(crate) fn monitor_for_region(
 
 /// Logical rectangles can overlap when each Windows monitor has a different
 /// scale. A frozen desktop must bind to the physical display chosen for Lens.
-pub(crate) fn monitor_for_physical_frame(
+pub fn monitor_for_physical_frame(
     target: CaptureMonitor,
     monitors: &[CaptureMonitor],
 ) -> Option<usize> {
@@ -112,7 +112,7 @@ pub(crate) fn monitor_for_physical_frame(
 }
 
 #[allow(dead_code)]
-pub(crate) fn windows_monitor_region(
+pub fn windows_monitor_region(
     region: CaptureRect,
     monitor: CaptureMonitor,
 ) -> Option<CaptureRegionPx> {
@@ -147,7 +147,7 @@ pub(crate) fn windows_monitor_region(
 
 /// Map WebView client coordinates using the window's physical origin. Do not
 /// guess a monitor from globally divided logical coordinates at mixed DPI.
-pub(crate) fn windows_window_region(
+pub fn windows_window_region(
     local: CaptureRect,
     window_x: i32,
     window_y: i32,

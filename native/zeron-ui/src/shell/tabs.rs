@@ -612,6 +612,7 @@ impl Shell {
                 crate::running_pill::mark_titlebar_button(button, running_lanes, &theme)
             })
         });
+        let kivio_controls = self.render_kivio_controls(&theme, cx);
         let inner = div()
             .size_full()
             .flex()
@@ -624,7 +625,7 @@ impl Shell {
             // title would sit UNDER it (both flex_none, the row overflows and
             // paint order stacks them), so it hides for the duration.
             .when(!takeover, |el| {
-                el.child(
+                el.children(kivio_controls).child(
                     div()
                         .min_w_0()
                         .overflow_hidden()

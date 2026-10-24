@@ -254,6 +254,7 @@ mod tests {
                     ("default", "遵循 CLI 配置"),
                     ("plan", "计划"),
                     ("accept-edits", "接受编辑"),
+                    ("auto", "自动审核（需账号支持）"),
                     ("sandbox", "沙箱"),
                     ("always-proceed", "完全放行"),
                 ],

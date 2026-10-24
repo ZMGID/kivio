@@ -1355,3 +1355,20 @@ async fn dollar_selected_skill_uses_opencode_native_command_with_arguments() {
     idle(&fake, "ses_test");
     drain_to_done(&mut stream).await;
 }
+
+#[tokio::test]
+async fn tool_permission_uses_the_host_answer_instead_of_auto_approval() {
+    let fake = FakeOpencode::start().await;
+    let (controls, _steer, token) = controls();
+    // The host helper chooses the first offered option: reject.
+    let mut stream = harness(&fake).run(request("hi"), controls).await.unwrap();
+    let _ = next_event(&mut stream).await;
+    let _ = next_event(&mut stream).await;
+    fake.emit(json!({"type":"permission.asked","properties":{
+        "id":"permission-deny","sessionID":"ses_test","permission":"bash","patterns":["echo hello"]
+    }}));
+    let replies = wait_posts(&fake, "/permission/permission-deny/reply", 1).await;
+    assert_eq!(replies[0]["reply"], "reject");
+    token.cancel();
+    let _ = drain_to_done(&mut stream).await;
+}

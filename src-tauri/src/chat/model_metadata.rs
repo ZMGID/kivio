@@ -2,6 +2,7 @@
 mod parameters;
 use parameters::*;
 pub(crate) use parameters::{
+    model_supports_vision, builtin_web_search_supported, context_window_for_model,
     chat_max_output_tokens_for_model, chat_max_output_tokens_on_wire, claude_thinking_profile,
     gemini_thinking_budget, gemini_thinking_profile, is_image_output_model, model_supports_video,
     normalize_model_name, pricing_for_model, temperature_for_request, ClaudeThinkingKind,
@@ -11,42 +12,22 @@ use serde_json::Value;
 
 use crate::settings::{ModelInfo, ModelProvider};
 
-const FALLBACK_CONTEXT_WINDOW_TOKENS: usize = 200_000;
 
-fn context_window_from_model_info(info: Option<&ModelInfo>) -> Option<usize> {
-    info.and_then(|info| info.context_window)
-        .and_then(|tokens| usize::try_from(tokens).ok())
-        .filter(|tokens| *tokens > 0)
-}
 
-fn model_vision_from_model_info(info: Option<&ModelInfo>) -> Option<bool> {
-    info.and_then(|info| info.capabilities.as_ref())
-        .and_then(|capabilities| capabilities.vision)
-}
+
+
+
 
 fn model_image_generation_from_model_info(info: Option<&ModelInfo>) -> Option<bool> {
     info.and_then(|info| info.capabilities.as_ref())
         .and_then(|capabilities| capabilities.image_generation)
 }
 
-fn model_database_context_window(model: &str) -> Option<usize> {
-    context_window_from_database_entry(model_database_entry(model).as_ref())
-}
 
-fn context_window_from_database_entry(entry: Option<&Value>) -> Option<usize> {
-    entry?
-        .get("contextWindow")
-        .and_then(Value::as_u64)
-        .and_then(|tokens| usize::try_from(tokens).ok())
-        .filter(|tokens| *tokens > 0)
-}
 
-fn model_database_vision(model: &str) -> Option<bool> {
-    model_database_entry(model)?
-        .get("capabilities")
-        .and_then(|capabilities| capabilities.get("vision"))
-        .and_then(Value::as_bool)
-}
+
+
+
 
 fn model_database_image_generation(model: &str) -> Option<bool> {
     model_database_entry(model)?
@@ -66,159 +47,9 @@ fn model_database_image_generation(model: &str) -> Option<bool> {
 /// 等），上游 `resolve_thinking` 据此不下发任何等级字段。Claude 4 的 UI 档位由 Anthropic
 /// 适配器映射：4.5 及更早 → `budget_tokens`（Opus 4.5 另带 `output_config.effort`），
 /// 4.6+ → adaptive + effort。始终只保留已知合法值并去重，避免脏数据进入请求。
-pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str) -> Vec<String> {
-    // Antigravity OAuth catalog variants already select the effort through the model ID.
-    if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
-        && crate::provider_oauth::antigravity::model_includes_effort(model)
-    {
-        return vec![];
-    }
-    if let Some(list) = provider
-        .and_then(|provider| override_model_info(provider, model))
-        .and_then(|info| info.reasoning_efforts.as_deref())
-    {
-        return sanitize_efforts(list.iter().map(String::as_str));
-    }
-    if let Some(list) = model_database_entry(provider_model_database_id(provider, model))
-        .as_ref()
-        .and_then(|entry| entry.get("reasoningEfforts"))
-        .and_then(Value::as_array)
-    {
-        return sanitize_efforts(list.iter().filter_map(Value::as_str));
-    }
-    let id = normalize_model_name(provider_model_database_id(provider, model));
-    if id.contains("gemini-3.1-flash-lite-image") {
-        return vec!["high".into()];
-    }
-    if id.contains("gemini-3-pro") {
-        return vec!["low".into(), "high".into()];
-    }
-    if provider.map(ModelProvider::api_format_kind)
-        == Some(crate::settings::ProviderApiFormat::AnthropicMessages)
-    {
-        if let Some(profile) = claude_thinking_profile(model) {
-            return profile.ui_effort_levels();
-        }
-    }
-    vec!["low".into(), "medium".into(), "high".into()]
-}
+pub use parameters::reasoning_efforts_for_model;
 
-/// Whether an Off choice can actually be honored, independently of effort levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ThinkingOffMode {
-    Supported,
-    UpfrontOnly,
-    NotApplicable,
-    Unsupported,
-    Unknown,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ThinkingCapabilities {
-    pub levels: Vec<String>,
-    pub off_mode: ThinkingOffMode,
-}
-
-pub(crate) fn thinking_capabilities_for_model(
-    provider: Option<&ModelProvider>,
-    model: &str,
-) -> ThinkingCapabilities {
-    let reasoning = provider
-        .and_then(|p| override_model_info(p, model))
-        .and_then(|info| info.capabilities.as_ref())
-        .and_then(|caps| caps.reasoning)
-        .or_else(|| {
-            model_database_entry(provider_model_database_id(provider, model))
-                .as_ref()
-                .and_then(|entry| entry.get("capabilities"))
-                .and_then(|caps| caps.get("reasoning"))
-                .and_then(Value::as_bool)
-        });
-    if reasoning == Some(false) {
-        return ThinkingCapabilities {
-            levels: vec![],
-            off_mode: ThinkingOffMode::NotApplicable,
-        };
-    }
-    let levels = reasoning_efforts_for_model(provider, model);
-    let id = normalize_model_name(provider_model_database_id(provider, model));
-    let kimi_code = id.starts_with("kimi-code/");
-    let id = id.rsplit('/').next().unwrap_or(&id);
-    let off_mode = if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
-        && crate::provider_oauth::antigravity::model_includes_effort(model)
-    {
-        ThinkingOffMode::Unsupported
-    } else if let Some(mode) = model_database_entry(id)
-        .as_ref()
-        .and_then(|entry| entry.get("thinkingOff"))
-        .and_then(Value::as_bool)
-    {
-        if mode {
-            ThinkingOffMode::Supported
-        } else {
-            ThinkingOffMode::Unsupported
-        }
-    } else if let Some(profile) = claude_thinking_profile(id) {
-        if profile.off_thinking_type == Some("between_tools") {
-            ThinkingOffMode::UpfrontOnly
-        } else if profile.kind == ClaudeThinkingKind::Unsupported
-            || id.contains("fable")
-            || id.contains("mythos")
-            || normalize_model_sep(id).contains("opus-5-5")
-        {
-            ThinkingOffMode::Unsupported
-        } else {
-            ThinkingOffMode::Supported
-        }
-    } else if let Some(profile) = gemini_thinking_profile(id) {
-        if profile.supports_off {
-            ThinkingOffMode::Supported
-        } else {
-            ThinkingOffMode::Unsupported
-        }
-    } else if kimi_code
-        || id.starts_with("kimi-k3")
-        || id.starts_with("kimi-k2.7")
-        || id.starts_with("kimi-k2-thinking")
-        || id.starts_with("deepseek-r1")
-        || id.starts_with("grok-")
-        || id == "gpt-5"
-        || id.starts_with("gpt-5-")
-        || id.starts_with("gpt-5.4-pro")
-        || id.starts_with("gpt-5.5-pro")
-        || id.starts_with("gpt-6-astra")
-        || id.starts_with("gpt-6.1-sol")
-        || id.starts_with("o1")
-        || id.starts_with("o3")
-        || id.starts_with("o4")
-    {
-        ThinkingOffMode::Unsupported
-    } else if id.starts_with("deepseek-")
-        || id.starts_with("kimi-k2.5")
-        || id.starts_with("kimi-k2.6")
-        || id.starts_with("gpt-5.")
-        || id.starts_with("gpt-6-")
-    {
-        ThinkingOffMode::Supported
-    } else {
-        ThinkingOffMode::Unknown
-    };
-    ThinkingCapabilities { levels, off_mode }
-}
-
-const REASONING_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-
-fn sanitize_efforts<'a>(items: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for item in items {
-        if REASONING_EFFORT_LEVELS.contains(&item) && !out.iter().any(|kept| kept == item) {
-            out.push(item.to_string());
-        }
-    }
-    out
-}
+pub use parameters::{ThinkingOffMode, ThinkingCapabilities, thinking_capabilities_for_model};
 
 // 思考等级不再在此做「协议级白名单 → 收敛」的二次映射。哪个模型认哪几档是**逐模型**的
 // （xhigh 在 Chat Completions 和 Responses 两个端点都收，但 gpt-5-codex 传了就 400），
@@ -228,11 +59,7 @@ fn sanitize_efforts<'a>(items: impl Iterator<Item = &'a str>) -> Vec<String> {
 // `resolve_thinking`），到适配器手上必是 `low|medium|high|xhigh|max`。选错档就吃 provider
 // 的 400 —— 那是正确的报错，不是需要兜底的异常。
 
-pub(crate) fn model_supports_vision(provider: Option<&ModelProvider>, model: &str) -> Option<bool> {
-    let provider = provider?;
-    model_vision_from_model_info(provider.model_overrides.get(model))
-        .or_else(|| model_database_vision(provider_model_database_id(Some(provider), model)))
-}
+
 
 pub(crate) fn model_supports_image_generation(
     provider: Option<&ModelProvider>,
@@ -261,19 +88,7 @@ pub(crate) fn model_can_generate_images_directly(provider: &ModelProvider, model
 /// API（`api.deepseek.com`）的 Chat Completions 供应商仍可开内置——请求改走 Responses
 /// 的服务端 `web_search`（官方 Chat Completions 只收 `function` 工具）。
 /// 前端据此把「内置」选项置灰。
-pub(crate) fn builtin_web_search_supported(provider: &ModelProvider) -> bool {
-    if crate::provider_oauth::antigravity::is_provider(provider) {
-        return false;
-    }
-    use crate::settings::ProviderApiFormat::{
-        AnthropicMessages, Gemini, OpenAiChat, OpenAiResponses, XaiResponses,
-    };
-    // xAI 的 Responses 同样有服务端 web_search（还多 x_search），与 OpenAI Responses 同形。
-    match provider.api_format_kind() {
-        OpenAiResponses | XaiResponses | Gemini | AnthropicMessages => true,
-        OpenAiChat => crate::utils::is_official_deepseek_api(&provider.base_url),
-    }
-}
+
 
 pub(crate) fn image_generation_model_for_session(
     settings: &crate::settings::Settings,
@@ -350,53 +165,7 @@ fn image_generation_model_name_heuristic(provider: &ModelProvider, model: &str) 
     }
 }
 
-pub(crate) fn context_window_for_model(
-    provider: Option<&ModelProvider>,
-    model: &str,
-) -> (usize, bool) {
-    if let Some(tokens) = context_window_from_model_info(
-        provider.and_then(|provider| provider.model_overrides.get(model)),
-    ) {
-        return (tokens, false);
-    }
-    if let Some(tokens) = model_database_context_window(provider_model_database_id(provider, model))
-    {
-        return (tokens, false);
-    }
 
-    let lower = model.to_ascii_lowercase();
-    let known = [
-        ("1m", 1_000_000usize),
-        // 256k：`kimi-code/k3-256k` 这类名字里明写窗口的模型，缺这一项会一路掉到
-        // FALLBACK_CONTEXT_WINDOW_TOKENS(200K)。值取 2^18（对齐 modelDatabase 里 kimi 系列）。
-        ("256k", 262_144usize),
-        ("200k", 200_000usize),
-        ("128k", 128_000usize),
-        ("100k", 100_000usize),
-        ("64k", 64_000usize),
-        ("32k", 32_000usize),
-        ("16k", 16_000usize),
-        ("8k", 8_000usize),
-    ];
-    for (needle, tokens) in known {
-        if lower.contains(needle) {
-            return (tokens, false);
-        }
-    }
-    if lower.contains("claude") {
-        return (200_000, false);
-    }
-    if lower.contains("gpt-4o")
-        || lower.contains("gpt-4.1")
-        || lower.contains("gpt-5")
-        || lower.contains("deepseek")
-        || lower.contains("qwen")
-        || lower.contains("gemini")
-    {
-        return (128_000, true);
-    }
-    (FALLBACK_CONTEXT_WINDOW_TOKENS, true)
-}
 
 #[cfg(test)]
 mod tests {

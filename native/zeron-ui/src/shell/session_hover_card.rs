@@ -513,7 +513,7 @@ mod tests {
         // Cached frames omit debug selectors; refresh before inspecting
         // either the row's bounds or the absence of a floating card.
         cx.refresh().unwrap();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         cx.run_until_parked();
     }
 

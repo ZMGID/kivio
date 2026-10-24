@@ -374,7 +374,7 @@ mod tests {
         ] {
             scroll.set_offset(gpui_kit::point(px(0.0), offset));
             observed.borrow_mut().clear();
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
             let seen = observed.borrow();
             assert!(seen.iter().any(|(inside, _)| *inside));
             for (inside, fade) in seen.iter() {
@@ -392,7 +392,7 @@ mod tests {
             cx.notify();
         });
         observed.borrow_mut().clear();
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(scroll.max_offset().y, px(0.0));
         assert_eq!(scroll.offset().y, px(0.0));
         assert!(
@@ -479,7 +479,7 @@ mod tests {
                     .unwrap();
                 observed.borrow_mut().clear();
                 cx.update_window(handle.into(), |_, window, cx| {
-                    window.draw(cx).clear();
+                    window.draw(cx).clear(cx);
                     assert!(active_fade(window, cx).is_none(), "paint scope leaked");
                 })
                 .unwrap();

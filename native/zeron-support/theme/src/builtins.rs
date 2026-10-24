@@ -1342,14 +1342,20 @@ fn andromeda() -> ThemeVariant {
 /// Kivio's authored palettes are shared with the installed web frontend.
 /// Syntax and ANSI colors retain Zeron's complete native defaults.
 fn kivio_families() -> Vec<ThemeFamily> {
-    let definitions: Vec<serde_json::Value> =
-        serde_json::from_str(include_str!("../../../../src/theme/builtins.json"))
-            .expect("bundled Kivio palettes are valid JSON");
-    definitions
-        .into_iter()
-        .map(|definition| {
-            let id = format!("kivio-{}", definition["id"].as_str().unwrap());
-            let name = definition["name"].as_str().unwrap().to_owned();
+    let definitions: Vec<serde_json::Value> = serde_json::from_str(include_str!("../../../../src/theme/builtins.json")).expect("bundled Kivio palettes");
+    definitions.iter().map(|definition| kivio_family(definition).expect("bundled Kivio palette")).collect()
+}
+
+pub fn kivio_family(definition: &serde_json::Value) -> Result<ThemeFamily, String> {
+    for mode in ["light", "dark"] {
+        let palette = definition[mode].as_object().ok_or("缺少明暗色板")?;
+        for key in ["surface","surfaceSoft","surfaceMuted","surfaceHover","surfaceActive","surfaceTitlebar","border","borderStrong","text","textMuted","textFaint","accent","accentHover","accentSoft","onAccent","danger","dangerSoft"] {
+            let value = palette.get(key).and_then(|value| value.as_str()).ok_or_else(|| format!("缺少颜色 {mode}.{key}"))?;
+            value.parse::<Color>().map_err(|_| format!("无效颜色 {mode}.{key}"))?;
+        }
+    }
+            let id = format!("kivio-{}", definition["id"].as_str().ok_or("缺少主题 ID")?);
+            let name = definition["name"].as_str().ok_or("缺少主题名称")?.to_owned();
             let variants = [("light", zeron_light()), ("dark", zeron_dark())]
                 .into_iter()
                 .map(|(mode, mut variant)| {
@@ -1400,7 +1406,5 @@ fn kivio_families() -> Vec<ThemeFamily> {
                     variant
                 })
                 .collect();
-            ThemeFamily { id, name, variants }
-        })
-        .collect()
+            Ok(ThemeFamily { id, name, variants })
 }

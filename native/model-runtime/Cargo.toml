@@ -10,7 +10,17 @@ test = false
 doctest = false
 
 [dependencies]
+cosmic-text = "=0.19.0"
+scraper = "0.23"
+unicode-normalization = "0.1"
+similar = {version = "2.7", default-features = false}
+ignore = "0.4"
+html-escape = "0.2"
+regex = "1"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+wait-timeout = "0.2"
 portable-pty = "0.8"
+arboard = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
@@ -31,3 +41,28 @@ url = "2.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 
 libc = "0.2"
+
+futures = "0.3"
+
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
+tempfile = "3"
+tokio-util = { version = "0.7", features = ["io"] }
+which = "8"
+auto-launch = "0.5"
+tar = { version = "0.4", default-features = false }
+
+rmcp = { version = "=3.5.1", default-features = false, features = ["client", "client-side-sse", "reqwest", "transport-child-process", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "which-command"] }
+process-wrap = { version = "10.0.1", features = ["tokio1"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_Security", "Win32_System_Com", "Win32_UI_Accessibility", "Win32_System_DataExchange", "Win32_UI_Input_KeyboardAndMouse"] }
+
+enigo = "0.1.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+core-graphics = "0.24"
+core-foundation = "0.10"
+
+screencapturekit = { version = "1.5", features = ["macos_14_0"] }

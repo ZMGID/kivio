@@ -1571,13 +1571,9 @@ async fn run_session(session: Session) {
                         }
                         id
                     }
-                    Err(e) => {
-                        tracing::debug!(
-                            target: "zeron_harness::opencode",
-                            "session resume failed (starting fresh): {e}"
-                        );
-                        create_session(&server, dir, agent).await?
-                    }
+                    Err(e) => return Err(HarnessError::Protocol(format!(
+                        "OpenCode could not restore session {resume}: {e}"
+                    ))),
                 }
             }
             None => create_session(&server, dir, agent).await?,
@@ -3196,6 +3192,13 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             } else {
                 "reply"
             };
+            let question_id = id.to_owned();
+            let answer = (request_input)(vec![UserInputQuestion {
+                id: question_id.clone(), header: "工具权限".into(),
+                question: serde_json::to_string_pretty(props).unwrap_or_default(),
+                options: vec!["拒绝".into(), "允许本次".into()],
+                multi_select: false, multiline: false, prefill: None,
+            }]);
             tokio::spawn(async move {
                 let server = Server {
                     child: None,
@@ -3206,11 +3209,12 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     protocol: protocol_cell,
                     version: tokio::sync::OnceCell::new(),
                 };
-                // Like Claude and Codex, normal Zeron sessions run unattended,
-                // regardless of RunRequest.auto_approve. Approve each owned
-                // request without writing durable permission rules via "always".
-                // Genuine agent questions use the separate question.asked path.
-                let reply = "once";
+                let answers = answer.await.unwrap_or_default();
+                let reply = if answers.iter().any(|a| a.question_id == question_id && a.labels == ["允许本次"]) {
+                    "once"
+                } else {
+                    "reject"
+                };
                 if server
                     .post_json(
                         &reply_path,

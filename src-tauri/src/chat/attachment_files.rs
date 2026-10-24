@@ -755,6 +755,16 @@ pub fn user_message_parts(
     directory: &Path,
     remaining_video_bytes: &mut usize,
 ) -> Result<Vec<serde_json::Value>, String> {
+    user_message_parts_with_video(content, attachments, directory, remaining_video_bytes, true)
+}
+
+pub fn user_message_parts_with_video(
+    content: &str,
+    attachments: &[Attachment],
+    directory: &Path,
+    remaining_video_bytes: &mut usize,
+    send_video: bool,
+) -> Result<Vec<serde_json::Value>, String> {
     let text = compose_user_content_for_api(content, attachments, Some(directory));
     let text =
         compose_text_attachments_for_api(&text, &text_attachments_from_attachments(attachments));
@@ -766,7 +776,7 @@ pub fn user_message_parts(
     }
     for attachment in attachments
         .iter()
-        .filter(|attachment| attachment.attachment_type == "video")
+        .filter(|attachment| send_video && attachment.attachment_type == "video")
     {
         let path = resolve_attachment_file_path_in_dir(Some(directory), &attachment.path)?;
         parts.push(super::video::content_part(&path, remaining_video_bytes)?);
@@ -866,4 +876,110 @@ mod tests {
             "disk file bodies remain owned by the existing tools"
         );
     }
+}
+
+/// 外置后写在 `api_messages` 图片部件 url 位置的哨兵 URI：`kivio-attachment://<mime>/<文件名>`。
+///
+/// 为什么要自造一个 scheme 而不是直接塞文件名：`api_messages` 是**原始 wire JSON**
+/// （`Vec<Value>`），没有 `MessagePart` 那样的结构化 `path` 字段可用。哨兵必须
+/// ① 不含 base64、② 能原样还原出 `data:<mime>;base64,<payload>`（mime 不能靠扩展名猜，
+/// `image/jpeg` 与 `.jpg` 不是双射）、③ 一眼能认出不是真 URL（免得漏 rehydrate 时被
+/// 当成远程图发出去）。
+pub(crate) const ATTACHMENT_URI_SCHEME: &str = "kivio-attachment://";
+
+/// `api_messages` 里可能出现的图片部件 `type`（与 `agent::prepare::IMAGE_PART_TYPES` 同口径）。
+pub(crate) const API_IMAGE_PART_TYPES: [&str; 4] = ["image_url", "input_image", "image", "video_url"];
+
+/// Restore portable image/video URI payloads from an explicit attachment directory.
+pub fn rehydrate_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json::Value]) {
+    for message in messages.iter_mut() {
+        for url_slot in api_message_image_url_slots(message) {
+            let Some(url) = url_slot.as_str() else {
+                continue;
+            };
+            let Some((mime, file_name)) = parse_attachment_uri(url) else {
+                continue;
+            };
+            match fs::read(dir.join(file_name)) {
+                Ok(bytes) => {
+                    let encoded = general_purpose::STANDARD.encode(bytes);
+                    *url_slot = serde_json::Value::String(format!("data:{mime};base64,{encoded}"));
+                }
+                // 读不到：留下人类可读的说明。这里只能改 url 字段（拿不到 part 本体），
+                // 而空 url / 残留哨兵都会被 provider 当成非法图片，所以退化成 data URL 形态的
+                // 1x1 透明 PNG 不可行——直接置空串，由 `sanitize_api_message_for_model`
+                // 之后的适配器按空 url 跳过该部件。
+                Err(_) => {
+                    *url_slot = serde_json::Value::String(String::new());
+                }
+            }
+        }
+    }
+}
+
+/// 解析哨兵 URI → `(mime, 文件名)`。
+///
+/// 严格要求 scheme 之后**恰好三段** `image/<subtype>/<文件名>`：`rsplit_once('/')` 那种松散
+/// 切法会把 `image/png/../../etc/passwd` 切成 mime=`image/png/../..` + file=`passwd`
+/// —— 文件名本身是安全的（单段，join 不会逃出目录），但那个 mime 会被原样拼进
+/// `data:<mime>;base64,` 发给 provider。宁可整条拒绝。
+pub(crate) fn parse_attachment_uri(url: &str) -> Option<(String, &str)> {
+    let rest = url.strip_prefix(ATTACHMENT_URI_SCHEME)?;
+    let mut segments = rest.split('/');
+    let top = segments.next()?;
+    let subtype = segments.next()?;
+    let file_name = segments.next()?;
+    if segments.next().is_some() {
+        return None; // 多于三段 ⇒ 脏数据
+    }
+    if !matches!(top, "image" | "video") || subtype.is_empty() || file_name.is_empty() {
+        return None;
+    }
+    // 文件名是外置时我们自己生成的，必须是单段、不含任何路径分量。
+    if Path::new(file_name).components().count() != 1 {
+        return None;
+    }
+    Some((format!("{top}/{subtype}"), file_name))
+}
+
+/// 收集一条 wire 消息里所有「装着图片 URL 的槽位」的可变引用。
+///
+/// 三种 wire 形状共用一个出口，免得每个调用方各写一遍 match：
+/// - OpenAI Chat：`{type:"image_url", image_url:{url:"data:…"}}`
+/// - Responses：`{type:"input_image", image_url:"data:…"}`（url 直接是字符串）
+/// - 少数中转仿写：`{type:"image", image_url:…}`
+///
+/// Anthropic 的 `source.data` 形状**不在**此列：`api_messages` 按定义是 OpenAI 兼容转录
+/// （`model_messages_from_openai_messages` 只认这几种），Anthropic 的块数组从不落到这里。
+pub(crate) fn api_message_image_url_slots(message: &mut serde_json::Value) -> Vec<&mut serde_json::Value> {
+    let mut slots = Vec::new();
+    let Some(parts) = message.get_mut("content").and_then(|c| c.as_array_mut()) else {
+        return slots;
+    };
+    for part in parts.iter_mut() {
+        let is_image = part
+            .get("type")
+            .and_then(|t| t.as_str())
+            .is_some_and(|kind| API_IMAGE_PART_TYPES.contains(&kind));
+        if !is_image {
+            continue;
+        }
+        let key = if part.get("type").and_then(serde_json::Value::as_str) == Some("video_url") {
+            "video_url"
+        } else {
+            "image_url"
+        };
+        let Some(image_url) = part.get_mut(key) else {
+            continue;
+        };
+        // 对象形（`image_url.url`）与字符串形（`image_url` 本身）都要覆盖。
+        if image_url.is_object() {
+            if let Some(url) = image_url.get_mut("url") {
+                slots.push(url);
+            }
+        } else if image_url.is_string() {
+            slots.push(image_url);
+        }
+    }
+    slots
 }

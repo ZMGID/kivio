@@ -4305,7 +4305,7 @@ mod tests {
         assert!(scroll.max_offset().y > px(0.0));
         let input = cx.debug_bounds("pr-repository-load").unwrap();
         scroll.set_offset(gpui_kit::point(px(0.0), -scroll.max_offset().y));
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         assert_eq!(
             cx.debug_bounds("pr-repository-load").unwrap(),
             input,

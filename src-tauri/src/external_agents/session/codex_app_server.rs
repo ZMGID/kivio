@@ -1517,10 +1517,25 @@ impl CodexAppServerSession {
         sandbox: Option<&str>,
         resume_thread: Option<&str>,
     ) -> Result<Self, String> {
+        Self::connect_with_command(
+            codex_cli_command(resolved_bin), resolved_bin, args, cwd, model, sandbox, resume_thread,
+        ).await
+    }
+
+    /// Host supplies launch environment; protocol and process ownership stay shared.
+    pub async fn connect_with_command(
+        mut command: tokio::process::Command,
+        resolved_bin: &Path,
+        args: &[String],
+        cwd: &Path,
+        model: Option<&str>,
+        sandbox: Option<&str>,
+        resume_thread: Option<&str>,
+    ) -> Result<Self, String> {
         let tier = normalize_codex_sandbox(sandbox);
         let sandbox_mode = codex_thread_sandbox(tier);
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
-        let mut child = codex_cli_command(resolved_bin)
+        let mut child = command
             .args(args)
             // Resume must stay narrow, but its config must use the selected capsule rather
             // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
@@ -2076,7 +2091,9 @@ impl CodexAppServerSession {
 
     /// Close stdin and give Codex a moment to flush the rollout before killing.
     pub async fn close(mut self) {
-        let _ = self.stdin.shutdown().await;
+        // ChildStdin::shutdown does not close the pipe. EOF lets app-server flush
+        // the rollout and exit before the process-group owner's bounded fallback.
+        drop(self.stdin);
         match timeout(Duration::from_secs(3), self.child.wait()).await {
             Ok(_) => {}
             Err(_) => {

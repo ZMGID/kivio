@@ -804,7 +804,7 @@ mod tests {
             scroll: scroll.clone(),
             top: top.clone(),
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let mut wheel = |y: f32, phase| {
             cx.simulate_event(ScrollWheelEvent {
                 position: point(px(100.0), px(100.0)),
@@ -812,7 +812,7 @@ mod tests {
                 modifiers: Modifiers::default(),
                 touch_phase: phase,
             });
-            cx.update(|window, cx| window.draw(cx).clear());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
         };
         wheel(0.0, TouchPhase::Started);
         wheel(40.0, TouchPhase::Moved);

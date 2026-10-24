@@ -6,10 +6,11 @@ use tokio::sync::oneshot;
 
 use crate::mcp::ChatToolDefinition;
 
+#[path = "ask_user/value_schema.rs"]
 mod value_schema;
 pub(crate) use value_schema::{answer_value, supports_value_schema};
 
-pub const ASK_USER_TOOL_NAME: &str = "ask_user";
+pub const ASK_USER_TOOL_NAME: &str = crate::mcp::native_policy::ASK_USER_TOOL_NAME.name;
 pub const ASK_USER_PHASE_AWAITING: &str = "awaiting";
 pub const ASK_USER_PHASE_ANSWERED: &str = "answered";
 pub const ASK_USER_PHASE_SKIPPED: &str = "skipped";

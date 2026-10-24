@@ -16088,7 +16088,7 @@ mod tests {
             opener: opener.clone(),
             toggles: toggles.clone(),
         });
-        window.update(|window, cx| window.draw(cx).clear());
+        window.update(|window, cx| window.draw(cx).clear(cx));
         let badge = window
             .debug_bounds("tool-file-badge")
             .expect("a workspace file badge is clickable");
@@ -16120,7 +16120,7 @@ mod tests {
             opener: opener.clone(),
             toggles: unlinkable_toggles.clone(),
         });
-        window.update(|window, cx| window.draw(cx).clear());
+        window.update(|window, cx| window.draw(cx).clear(cx));
         assert!(
             window.debug_bounds("tool-file-badge").is_none(),
             "paths the link handler cannot open keep an inert badge"

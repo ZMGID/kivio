@@ -45,7 +45,7 @@ impl ShortcutsPage {
             widgets::toggle_switch(&theme, enabled, id)
                 .id(id)
                 .role(gpui_kit::Role::Switch)
-                .aria_label(label)
+                .aria_label(crate::i18n::text(label))
                 .aria_toggled(if enabled {
                     gpui_kit::Toggled::True
                 } else {
@@ -123,11 +123,11 @@ impl ShortcutsPage {
             widgets::ghost_action(&theme)
                 .id(id)
                 .role(gpui_kit::Role::Button)
-                .aria_label(label)
+                .aria_label(crate::i18n::text(label))
                 .tab_index(0)
                 .focus_visible(move |style| style.border_2().border_color(accent))
                 .cursor_pointer()
-                .child(label)
+                .child(crate::i18n::display(label))
         };
         let mut window_access = div()
             .flex()

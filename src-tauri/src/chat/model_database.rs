@@ -1,6 +1,5 @@
 //! Platform commands for the shared model database owner.
 include!("model_database_data.rs");
-use std::time::Duration;
 use tauri::Emitter;
 
 #[tauri::command]
@@ -10,40 +9,8 @@ pub(crate) fn get_model_database() -> Snapshot {
 
 #[tauri::command]
 pub(crate) async fn update_model_database(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    static UPDATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _guard = UPDATE
-        .try_lock()
-        .map_err(|_| "A model database update is already running")?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut response = client
-        .get(URL)
-        .header("Cache-Control", "no-cache")
-        .send()
-        .await
-        .map_err(|e| format!("Download model database: {e}"))?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
-    if response
-        .content_length()
-        .is_some_and(|len| len > MAX_BYTES as u64)
-    {
-        return Err("Model database is too large".into());
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        if bytes.len() + chunk.len() > MAX_BYTES {
-            return Err("Model database is too large".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let text = String::from_utf8(bytes).map_err(|_| "Model database is not UTF-8")?;
     let dir = crate::app_data::app_data_dir().ok_or("Application data directory is unavailable")?;
-    let result = tauri::async_runtime::spawn_blocking(move || store().install(&text, &dir))
-        .await
-        .map_err(|e| e.to_string())??;
+    let result = update_snapshot(dir).await?;
     // Readers observe the committed snapshot. An IPC response also refreshes the initiating window.
     if let Err(error) = app.emit("model-database-changed", &*result) {
         eprintln!("[model_database] notification: {error}");

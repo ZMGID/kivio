@@ -225,3 +225,20 @@ fn to_snake_case(value: &str) -> String {
     }
     out
 }
+
+impl ChatToolDefinition {
+    pub fn is_read_only_tool(&self) -> bool {
+        if self.source == "mcp" {
+            return self.read_only_hint() == Some(true)
+                && self.destructive_hint() != Some(true)
+                && self.open_world_hint() != Some(true);
+        }
+        // Native read-only metadata lives in the static registry
+        // (mcp/native_registry.rs). Note: this set includes memory_read and
+        // memory_search, which are read-only but deliberately not parallel-safe.
+        self.source == "native"
+            && crate::mcp::native_policy::find_entry(&self.name).is_some_and(|entry| entry.read_only)
+    }
+}
+
+pub const PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS: usize = 8_192;

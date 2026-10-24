@@ -1,6 +1,7 @@
 //! The original L1/L2 editors with the shared Rust memory file owner.
+use gpui_kit::component::Sizable;
 use gpui_kit::component::{
-    ActiveTheme, Disableable, StyledExt,
+    ActiveTheme, Disableable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     input::{Textarea, TextareaState},
 };
@@ -12,17 +13,30 @@ pub struct MemoryPage {
     editors: [Entity<TextareaState>; 2],
     confirmed: [String; 2],
     busy: bool,
+    preferences: Option<kivio_model_runtime::settings_config::Settings>,
     error: Option<String>,
     task: Option<Task<()>>,
     _editors: Vec<Subscription>,
 }
 impl MemoryPage {
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    pub(crate) fn has_unsaved_changes(&self, cx: &App) -> bool {
+        self.editors
+            .iter()
+            .zip(&self.confirmed)
+            .any(|(editor, confirmed)| editor.read(cx).value().as_ref() != confirmed.as_str())
+    }
+
     pub fn new(directory: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             directory,
             editors: std::array::from_fn(|_| cx.new(|cx| TextareaState::new(window, cx).rows(9))),
             confirmed: Default::default(),
             busy: false,
+            preferences: None,
             error: None,
             task: None,
             _editors: vec![],
@@ -34,6 +48,46 @@ impl MemoryPage {
             .collect();
         this.load(None, window, cx);
         this
+    }
+    fn request_reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let dirty = self.has_unsaved_changes(cx);
+        if !dirty {
+            self.load(None, window, cx);
+            return;
+        }
+        let owner = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
+            dialog
+                .title(crate::i18n::text("放弃记忆修改？"))
+                .child(crate::i18n::text("L1 或 L2 中有未保存的修改。重新读取会用磁盘内容替换两个编辑器。"))
+                .footer(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("cancel-memory-reload")
+                                .small()
+                                .label(crate::i18n::text("取消"))
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("discard-memory-reload")
+                                .small()
+                                .danger()
+                                .label(crate::i18n::text("放弃并重新读取"))
+                                .on_click(move |_, window, cx| {
+                                    let _ =
+                                        owner.update(cx, |this, cx| this.load(None, window, cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
     }
     fn load(&mut self, save: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
@@ -47,6 +101,7 @@ impl MemoryPage {
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let preferences = kivio_model_runtime::native_preferences::load(&directory)?;
                     let dir = memory_files::memory_dir_at(&directory)?;
                     if let Some((index, content)) = content {
                         let saved = memory_files::save_layer_at(
@@ -58,18 +113,21 @@ impl MemoryPage {
                             },
                             &content,
                         )?;
-                        Ok::<_, String>(vec![(index, saved.content)])
+                        Ok::<_, String>((preferences, vec![(index, saved.content)]))
                     } else {
-                        Ok(vec![
-                            (
-                                0,
-                                memory_files::read_layer_at(&dir, MemoryLayer::L1)?.content,
-                            ),
-                            (
-                                1,
-                                memory_files::read_layer_at(&dir, MemoryLayer::L2)?.content,
-                            ),
-                        ])
+                        Ok((
+                            preferences,
+                            vec![
+                                (
+                                    0,
+                                    memory_files::read_layer_at(&dir, MemoryLayer::L1)?.content,
+                                ),
+                                (
+                                    1,
+                                    memory_files::read_layer_at(&dir, MemoryLayer::L2)?.content,
+                                ),
+                            ],
+                        ))
                     }
                 })
                 .await;
@@ -77,7 +135,8 @@ impl MemoryPage {
                 this.update(cx, |this, cx| {
                     this.busy = false;
                     match result {
-                        Ok(layers) => {
+                        Ok((preferences, layers)) => {
+                            this.preferences = Some(preferences);
                             for (index, text) in layers {
                                 this.confirmed[index] = text.clone();
                                 this.editors[index]
@@ -95,15 +154,111 @@ impl MemoryPage {
 }
 impl Render for MemoryPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut body = div().v_flex().gap_4()
-            .child(div().v_flex().gap_2().border_1().border_color(cx.theme().border).rounded_lg().p_4()
-                .child(div().font_weight(FontWeight::MEDIUM).child("记忆运行"))
-                .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                    .child("L1 在线记忆与 L2 长期记忆独立保存。原生 Agent 的自动记忆注入尚未接入。"))
-                .child(div().flex().items_center().justify_between().gap_3()
-                    .child(div().flex_1().min_w_0().text_sm().child(self.directory.join("chat-memory").display().to_string()))
-                    .child(Button::new("memory-reload").label("重载").disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.load(None, window, cx))))));
+        let mut body =
+            div().v_flex().gap_4().child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .bg(cx.theme().group_box)
+                    .rounded(px(12.))
+                    .p_4()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(crate::i18n::text("记忆运行")))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(crate::i18n::text("L1 在线记忆随启用状态注入每次新请求；L2 长期记忆独立保存。")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div().flex_1().min_w_0().text_sm().child(
+                                    self.directory.join("chat-memory").display().to_string(),
+                                ),
+                            )
+                            .child(
+                                Button::new("memory-reload")
+                                    .small()
+                                    .label(crate::i18n::text("重载"))
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.request_reload(window, cx)
+                                    })),
+                            ),
+                    ),
+            );
+        let theme = crate::theme::Theme::of(cx).for_settings_surface();
+        if let Some(settings) = &self.preferences {
+            let mut rows = Vec::new();
+            let enabled = settings.chat_memory.enabled;
+            let confirm = settings.chat_memory.tool_write_confirm;
+            for (path, title, checked) in [
+                ("/chatMemory/enabled", "启用记忆", enabled),
+                ("/chatMemory/toolWriteConfirm", "工具写入前确认", confirm),
+            ] {
+                rows.push(crate::kivio_settings::row(
+                    title,
+                    gpui_kit::component::switch::Switch::new(path)
+                        .accessibility_label(title)
+                        .checked(checked)
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                            let directory = this.directory.clone();
+                            let change =
+                                kivio_model_runtime::native_preferences::Change::Fields(vec![
+                                    kivio_model_runtime::native_preferences::FieldEdit {
+                                        path: path.into(),
+                                        before: serde_json::json!(if path.ends_with("enabled") {
+                                            enabled
+                                        } else {
+                                            confirm
+                                        }),
+                                        after: serde_json::json!(*checked),
+                                    },
+                                ]);
+                            this.busy = true;
+                            this.task = Some(cx.spawn(async move |this, cx| {
+                                let result = cx
+                                    .background_spawn(async move {
+                                        kivio_model_runtime::native_preferences::save(
+                                            &directory, change,
+                                        )
+                                    })
+                                    .await;
+                                let _ = this.update(cx, |this, cx| {
+                                    this.busy = false;
+                                    match result {
+                                        Ok(settings) => {
+                                            this.preferences = Some(settings);
+                                            this.error = None;
+                                        }
+                                        Err(error) => this.error = Some(error),
+                                    }
+                                    cx.notify();
+                                });
+                            }));
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    &theme,
+                ));
+            }
+            body = body.child(crate::kivio_settings::card("行为", rows, &theme));
+        }
+        body = body.child(
+            div().flex().child(
+                Button::new("memory-open-directory")
+                    .small()
+                    .label(crate::i18n::text("打开记忆目录…"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.reveal_path(&this.directory.join("chat-memory"))
+                    })),
+            ),
+        );
         if let Some(error) = &self.error {
             body = body.child(div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -122,9 +277,8 @@ impl Render for MemoryPage {
                 div()
                     .v_flex()
                     .gap_3()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded_lg()
+                    .bg(cx.theme().group_box)
+                    .rounded(px(12.))
                     .p_4()
                     .child(
                         div()
@@ -156,14 +310,15 @@ impl Render for MemoryPage {
                     .child(
                         Textarea::new(&self.editors[index])
                             .aria_label(title)
-                            .h(px(220.))
+                            .h(rems(14.))
                             .disabled(self.busy),
                     )
                     .child(
                         div().flex().justify_end().child(
                             Button::new(SharedString::from(format!("memory-save-{index}")))
+                                .small()
                                 .primary()
-                                .label("保存")
+                                .label(crate::i18n::text("保存"))
                                 .disabled(
                                     self.busy
                                         || over_limit

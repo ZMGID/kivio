@@ -2680,7 +2680,7 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
 
         cx.simulate_keystrokes(window.into(), &platform_combo("mod-2"));
@@ -2702,7 +2702,7 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
 
         cx.simulate_keystrokes(window.into(), &platform_combo("mod-2"));
@@ -2719,7 +2719,7 @@ mod tests {
             })
             .unwrap();
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
 
         for expected in [Tab::Threads, Tab::Commands, Tab::Files, Tab::All] {

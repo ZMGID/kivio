@@ -26,7 +26,7 @@ impl From<&BackgroundCommand> for BackgroundCommandSnapshot {
     }
 }
 #[derive(Default)]
-pub(crate) struct BackgroundCommandRegistry {
+pub struct BackgroundCommandRegistry {
     jobs: Mutex<HashMap<String, BackgroundCommand>>,
 }
 fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool) -> bool {

@@ -528,3 +528,12 @@ pub fn sanitize_default_model_selection(
         selection.model = provider.enabled_models.first().cloned().unwrap_or_default();
     }
 }
+
+pub fn format_chat_login_required_error(provider_name: &str) -> String {
+    let provider = provider_name.trim();
+    if provider.is_empty() {
+        "Chat 模型供应商需要账号登录，请到设置 > 模型中登录后再发送。".to_string()
+    } else {
+        format!("Chat 模型供应商「{provider}」需要账号登录，请到设置 > 模型中登录后再发送。")
+    }
+}

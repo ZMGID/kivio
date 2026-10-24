@@ -16,17 +16,17 @@ use crate::{
 };
 
 use super::{
-    compaction::{summarize_history, CompactOutcome},
+    compaction::summarize_history,
     host::AgentHost,
     planning::{call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner},
     stream::{ChatStreamOutput, ToolCallDraftTracker, WebSearchCardTracker},
     types::AgentStreamPolicy,
 };
 
-pub(crate) type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Clone)]
-pub(crate) struct StreamRequest<'a> {
+pub struct StreamRequest<'a> {
     pub host: &'a dyn AgentHost,
     pub provider: &'a ModelProvider,
     pub model: &'a str,
@@ -49,7 +49,7 @@ pub(crate) struct StreamRequest<'a> {
     pub web_search_tracker: Option<WebSearchCardTracker>,
 }
 
-pub(crate) struct MessageRequest<'a> {
+pub struct MessageRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: Vec<Value>,
@@ -63,7 +63,7 @@ pub(crate) struct MessageRequest<'a> {
     pub label: &'a str,
 }
 
-pub(crate) struct SummaryRequest<'a> {
+pub struct SummaryRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: &'a [Value],
@@ -77,7 +77,7 @@ pub(crate) struct SummaryRequest<'a> {
     pub host: Option<&'a dyn AgentHost>,
 }
 
-pub(crate) trait ProviderRuntime: Send + Sync {
+pub trait ProviderRuntime: Send + Sync {
     fn stream<'a>(
         &'a self,
         request: StreamRequest<'a>,
@@ -158,3 +158,5 @@ impl<T: crate::chat::model::host::ModelHost> ProviderRuntime for T {
         ))
     }
 }
+
+pub use super::compaction::CompactOutcome;

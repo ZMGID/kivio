@@ -2470,7 +2470,7 @@ mod scroll_tests {
             for step in 1..=4 {
                 let to = source + (tray - source) * (step as f32 / 4.0);
                 cx.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), Default::default());
-                cx.update(|window, cx| window.draw(cx).clear());
+                cx.update(|window, cx| window.draw(cx).clear(cx));
             }
             cx.simulate_mouse_up(tray, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::default());
             cx.run_until_parked();

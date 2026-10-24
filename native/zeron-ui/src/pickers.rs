@@ -1188,6 +1188,25 @@ impl Pickers {
         }
     }
 
+    pub fn offered_harness_ids(&self) -> Vec<HarnessId> {
+        self.harnesses
+            .ready()
+            .map(|list| self.offered(list).into_iter().map(|d| d.id).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn current_harness(&self, cx: &App) -> Option<HarnessId> {
+        self.effective_harness(cx)
+    }
+
+    pub fn select_harness(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
+        self.pick_harness(harness, cx);
+    }
+
+    pub fn load_harness_catalog(&mut self, force: bool, cx: &mut Context<Self>) {
+        self.ensure_harnesses(force, cx);
+    }
+
     pub fn draft(&self) -> &DraftConfig {
         &self.config
     }
@@ -2373,7 +2392,11 @@ impl Pickers {
         {
             config.sandbox = existing.sandbox;
         }
+        let previous = config.clone();
         change(&mut config);
+        if !self.state.read(cx).side_chat_unsaved() && config.harness != previous.harness {
+            return; // A durable Kivio conversation belongs to its original CLI session.
+        }
         // Reasoning must stay concrete for whatever model the row now names —
         // same ladder resolution as [`Self::trait_ladder`] (model levels, else
         // the harness's advertised ladder).
@@ -7404,14 +7427,14 @@ mod tests {
             }),
         });
         cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         handle
             .update(cx, |host, window, cx| window.focus(&host.editor, cx))
             .unwrap();
         cx.simulate_keystrokes(handle.into(), "cmd-/");
         cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         handle
             .update(cx, |host, window, cx| {
@@ -7459,7 +7482,7 @@ mod tests {
                 .unwrap();
             cx.simulate_keystrokes(handle.into(), "cmd-/");
             cx.run_until_parked();
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             handle
                 .update(cx, |host, window, cx| {
@@ -7538,7 +7561,7 @@ mod tests {
                     cx.notify();
                 })
                 .unwrap();
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             handle
                 .read_with(cx, |fixture, cx| {
@@ -7651,7 +7674,7 @@ mod tests {
             pickers
         });
         let draw = |cx: &mut gpui_kit::TestAppContext| {
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             handle
                 .read_with(cx, |pickers, _| {
@@ -7780,7 +7803,7 @@ mod tests {
                         cx.notify();
                     })
                     .unwrap();
-                cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+                cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                     .unwrap();
                 assert!(
                     (f32::from(bounds.get().size.height) - available.min(model_menu_height(2)))
@@ -7835,7 +7858,7 @@ mod tests {
                 })
                 .unwrap();
             bounds.borrow_mut().clear();
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             let measured = bounds.borrow();
             let pair = &measured[measured.len() - 3..];
@@ -8472,7 +8495,7 @@ mod tests {
                     pickers.open_setting(SettingScope::Tray, setting, cx);
                 })
                 .unwrap();
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
         }
         handle
@@ -8482,7 +8505,7 @@ mod tests {
                 window.focus(&pickers.search.read(cx).focus_handle(cx), cx);
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         cx.simulate_keystrokes(handle.into(), "down down right");
         handle
@@ -8627,14 +8650,14 @@ mod tests {
                 pickers.open_config(1, cx);
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         handle
             .update(cx, |pickers, _, cx| {
                 pickers.open_setting(SettingScope::Card, ModelSetting::Option("lead".into()), cx);
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         handle
             .read_with(cx, |pickers, _| {
@@ -8737,8 +8760,8 @@ mod tests {
                 }),
                 cx,
             );
-            window.draw(cx).clear();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
         };
         let click = |window: &mut Window, cx: &mut App, position| {
             for input in [
@@ -8757,10 +8780,10 @@ mod tests {
             ] {
                 window.dispatch_event(input, cx);
             }
-            window.draw(cx).clear();
-            window.draw(cx).clear();
+            window.draw(cx).clear(cx);
+            window.draw(cx).clear(cx);
         };
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         let parent = measured.get();
         // Find the Fusion row by hovering down the list.
@@ -8914,7 +8937,7 @@ mod tests {
             let pickers = handle
                 .read_with(cx, |fixture, _| fixture.pickers.clone())
                 .unwrap();
-            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+            cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
                 .unwrap();
             let parent = measured.get();
             let trigger = gpui_kit::point(
@@ -8956,13 +8979,13 @@ mod tests {
                     }),
                     cx,
                 );
-                window.draw(cx).clear();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
             };
             cx.update_window(handle.into(), |_, window, cx| {
                 hover(window, cx, trigger);
-                window.draw(cx).clear();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             let submenu = pickers.read_with(cx, |pickers, _| {
@@ -8980,7 +9003,7 @@ mod tests {
             // Clicking the hovered trigger dismisses its child and keeps it closed.
             cx.update_window(handle.into(), |_, window, cx| {
                 click(window, cx, trigger);
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             pickers.read_with(cx, |pickers, _| {
@@ -9072,7 +9095,7 @@ mod tests {
                 hover(window, cx, trigger);
                 hover(window, cx, diagonal);
                 click(window, cx, diagonal);
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             cx.run_until_parked();
@@ -9121,7 +9144,7 @@ mod tests {
                         }),
                         cx,
                     );
-                    window.draw(cx).clear();
+                    window.draw(cx).clear(cx);
                 })
                 .unwrap();
                 cx.executor().advance_clock(Duration::from_secs(2));
@@ -9140,11 +9163,11 @@ mod tests {
             });
             // Hover switches directly between sibling triggers without clicking.
             cx.update_window(handle.into(), |_, window, cx| {
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 hover(window, cx, trigger);
                 hover(window, cx, trigger + gpui_kit::point(px(0.0), px(32.0)));
-                window.draw(cx).clear();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             pickers.read_with(cx, |pickers, _| {
@@ -9167,10 +9190,10 @@ mod tests {
                     assert!(pickers.is_open());
                     assert!(pickers.search.read(cx).focus_handle(cx).is_focused(window));
                 });
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
                 hover(window, cx, trigger);
-                window.draw(cx).clear();
-                window.draw(cx).clear();
+                window.draw(cx).clear(cx);
+                window.draw(cx).clear(cx);
             })
             .unwrap();
             pickers.read_with(cx, |pickers, _| assert!(pickers.setting_menu.is_some()));
@@ -9358,7 +9381,7 @@ mod tests {
         handle
             .update(cx, |picker, window, cx| picker.open_model_menu(window, cx))
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         // Down opens the list on the model after the selected one; Enter
         // picks it and lands back on the panel.
@@ -9616,7 +9639,7 @@ mod tests {
                 assert_eq!(picker.model_rows_len(cx), 1);
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         // Only the ready model is navigable: no status rows follow it.
         cx.simulate_keystrokes(handle.into(), "down");
@@ -9864,7 +9887,7 @@ mod tests {
                 picker.focus_on_mount = true;
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         handle
             .read_with(cx, |picker, _| assert!(picker.effort_bounds.is_some()))
@@ -9884,7 +9907,7 @@ mod tests {
                 picker.search.update(cx, |input, cx| input.set_text("", cx));
             })
             .unwrap();
-        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear())
+        cx.update_window(handle.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
     }
 

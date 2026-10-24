@@ -16,24 +16,24 @@ use std::{
     future::Future,
     process::Stdio,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::{
+    ClientHandler, ClientLifecycleMode, ClientServiceExt,
     model::{
         CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig,
         ClientRequest, Implementation, PingRequest, ProtocolVersion, ServerResult,
     },
     service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService},
     transport::{
-        streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
-        TokioChildProcess,
+        StreamableHttpClientTransport, TokioChildProcess,
+        streamable_http_client::StreamableHttpClientTransportConfig,
     },
-    ClientHandler, ClientLifecycleMode, ClientServiceExt,
 };
 use serde_json::Value;
 use tokio::process::{ChildStderr, Command};
@@ -434,7 +434,7 @@ fn build_stdio(server: &ChatMcpServer) -> Result<(TokioChildProcess, Option<Chil
         // preserves CREATE_NO_WINDOW while adding temporary CREATE_SUSPENDED.
         // Assign the public u32 to avoid coupling the two windows crate versions.
         let mut flags = process_wrap::tokio::CreationFlags(Default::default());
-        flags.0 .0 = crate::proc::CREATE_NO_WINDOW;
+        flags.0.0 = crate::proc::CREATE_NO_WINDOW;
         wrapped.wrap(flags).wrap(process_wrap::tokio::JobObject);
     }
     wrapped.wrap(process_wrap::tokio::KillOnDrop);
@@ -1016,10 +1016,12 @@ mod tests {
             "Bearer abc"
         );
 
-        assert!(custom_headers(&HashMap::from([(
-            "bad header".to_string(),
-            "v".to_string()
-        )]))
-        .is_err());
+        assert!(
+            custom_headers(&HashMap::from([(
+                "bad header".to_string(),
+                "v".to_string()
+            )]))
+            .is_err()
+        );
     }
 }

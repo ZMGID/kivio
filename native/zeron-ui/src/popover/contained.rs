@@ -285,7 +285,7 @@ mod tests {
         let (_, cx) = cx.add_window_view(|_, _| MenuFixture {
             background: background.clone(),
         });
-        cx.update(|window, cx| window.draw(cx).clear());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let trigger = cx.debug_bounds("test-menu-trigger").unwrap();
         let menu = cx.debug_bounds("contained-menu-scroll").unwrap();
         assert!(menu.size.height <= px(177.0));

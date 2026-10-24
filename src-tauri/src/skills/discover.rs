@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tauri::{AppHandle, Manager};
 
 use super::{
     parse::parse_skill_record,
@@ -48,12 +47,6 @@ pub fn legacy_app_data_skills_dir() -> Option<PathBuf> {
 }
 
 /// 个人 Skill 写入目录（导入 / 打开文件夹）：`~/.kivio/skills`。
-pub fn user_skills_dir(_app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = kivio_skills_dir().ok_or_else(|| "home directory unavailable".to_string())?;
-    fs::create_dir_all(&dir).map_err(|err| format!("create skills dir failed: {err}"))?;
-    Ok(dir)
-}
-
 /// 从 `cwd` 向上收集项目技能目录（近的在前）。碰到 `.git` 或家目录停止。
 /// 每一层先 `.kivio/skills`（Kivio 自己的，对齐 `.claude/skills`），再 `.agents/skills`（共享）。
 /// 跳过全局 `~/.kivio/skills` 与 `~/.agents/skills`，避免把家目录当成项目。
@@ -115,22 +108,14 @@ fn paths_eq(path: &Path, other: Option<&Path>) -> bool {
     left == right
 }
 
-fn bundled_skills_dir(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .resource_dir()
-        .ok()
-        .map(|dir| dir.join("skills"))
-        .filter(|dir| dir.is_dir())
-}
-
 fn scan_root_entries(
-    app: &AppHandle,
+    bundled: Option<&Path>,
     extra_paths: &[String],
     project_cwd: Option<&Path>,
 ) -> Result<Vec<SkillScanRoot>, String> {
     let mut roots = Vec::new();
-    if let Some(path) = bundled_skills_dir(app) {
-        push_root(&mut roots, path, "builtin");
+    if let Some(path) = bundled {
+        push_root(&mut roots, path.to_path_buf(), "builtin");
     }
     // 项目优先于全局（同 id 近处覆盖远处）：`.kivio/skills` 再 `.agents/skills`，cwd → git 根。
     if let Some(cwd) = project_cwd {
@@ -174,30 +159,13 @@ fn append_external_roots(roots: &mut Vec<SkillScanRoot>, extra_paths: &[String])
     }
 }
 
-pub fn build_registry(app: &AppHandle, extra_paths: &[String]) -> Result<SkillRegistry, String> {
-    build_registry_in(app, extra_paths, None)
-}
-
-pub fn build_registry_in(
-    app: &AppHandle,
-    extra_paths: &[String],
-    project_cwd: Option<&Path>,
-) -> Result<SkillRegistry, String> {
-    build_registry_with_plugins(
-        app,
-        extra_paths,
-        project_cwd,
-        &crate::plugins::packages::active(),
-    )
-}
-
-pub(crate) fn build_registry_with_plugins(
-    app: &AppHandle,
+pub fn build_registry_with_plugins_at(
+    bundled: Option<&Path>,
     extra_paths: &[String],
     project_cwd: Option<&Path>,
     plugins: &[crate::plugins::packages::Resolved],
 ) -> Result<SkillRegistry, String> {
-    let roots = scan_root_entries(app, extra_paths, project_cwd)?;
+    let roots = scan_root_entries(bundled, extra_paths, project_cwd)?;
     let mut registry = build_registry_from_roots(roots);
     for plugin in plugins {
         let mut bundled = SkillRegistry::default();
@@ -327,32 +295,8 @@ fn collect_skill_files(
     Ok(())
 }
 
-fn load_skill_at(skill_md_path: &Path, source: &str) -> Result<super::types::SkillRecord, String> {
-    let raw = if source == "plugin" {
-        crate::plugins::packages::component_markdown(skill_md_path)?
-    } else {
-        fs::read_to_string(skill_md_path)
-            .map_err(|err| format!("Read skill {} failed: {err}", skill_md_path.display()))?
-    };
-    let mut warnings = Vec::new();
-    parse_skill_record(skill_md_path, &raw, source, Vec::new(), &mut warnings)
-}
-
-/// Load only the known skill file. The session's identity and metadata stay stable
-/// until /reload; instruction edits take effect on the next explicit use.
-pub fn read_skill_record(record: &SkillRecord) -> Result<SkillRecord, String> {
-    let mut loaded = load_skill_at(&record.location, &record.meta.source)?;
-    loaded.meta = record.meta.clone();
-    loaded.meta.files.clear();
-    if record.meta.source == "plugin" && record.meta.id.starts_with("pkg-") {
-        loaded.body = crate::plugins::packages::expand_skill_body(
-            &record.meta.id,
-            &record.location,
-            &loaded.body,
-        )?;
-    }
-    Ok(loaded)
-}
+pub use super::reader::read_skill_record;
+use super::reader::load_skill_at;
 
 #[cfg(test)]
 mod tests {
