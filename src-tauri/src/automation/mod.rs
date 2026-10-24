@@ -13,6 +13,7 @@
 //! 和聊天生命周期 Hooks 分家：Hooks 是对话旁路观察；自动化是用户意图的主路径。
 
 mod application;
+mod catalog;
 pub(crate) mod commands;
 mod events;
 mod history;

@@ -36,6 +36,8 @@ pub mod tool_settings;
 #[path = "../../../src-tauri/src/settings_config.rs"]
 pub mod settings_config;
 pub mod native_preferences;
+pub mod scheduled_tasks;
+pub mod automation_catalog;
 pub mod settings {
     pub use crate::provider_settings::*;
     pub use crate::tool_settings::*;

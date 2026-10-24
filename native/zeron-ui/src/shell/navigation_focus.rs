@@ -91,7 +91,7 @@ impl Shell {
         let right_open = match self.route {
             Route::Chat => self.right_pane_open(cx),
             Route::PullRequests => self.pull_request_pane_open(),
-            Route::Settings(_) => false,
+            Route::Settings(_) | Route::Tasks => false,
         };
         if matches!(self.route, Route::Settings(_)) {
             (self.settings_focus.clone(), self.unfocused.clone())

@@ -34,18 +34,7 @@ fn file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(automations_dir(app)?.join(format!("{id}.json")))
 }
 
-fn read_one(path: &PathBuf) -> Result<Automation, String> {
-    let raw = fs::read_to_string(path).map_err(|err| format!("read automation failed: {err}"))?;
-    let automation: Automation =
-        serde_json::from_str(&raw).map_err(|err| format!("parse automation failed: {err}"))?;
-    if automation.schema_version != SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported automation schemaVersion {}",
-            automation.schema_version
-        ));
-    }
-    Ok(automation)
-}
+use super::catalog::read_one;
 
 fn validate_graph(automation: &Automation) -> Result<(), String> {
     for node in &automation.nodes {
@@ -76,21 +65,9 @@ fn write_atomic(path: &PathBuf, automation: &Automation) -> Result<(), String> {
 /// 单次目录遍历读全量图。调度器用它避免「list 拿 meta、再逐条 get」的双倍读盘。
 pub(crate) fn list_full(app: &AppHandle) -> Result<Vec<Automation>, String> {
     let dir = automations_dir(app)?;
-    let mut automations = Vec::new();
-    let entries = fs::read_dir(&dir).map_err(|err| format!("list automations failed: {err}"))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        match read_one(&path) {
-            Ok(automation) => automations.push(automation),
-            Err(err) => {
-                eprintln!("skip automation {}: {err}", path.display());
-            }
-        }
-    }
-    Ok(automations)
+    let (items, warnings) = super::catalog::list_in(&dir)?;
+    for warning in warnings { eprintln!("skip automation {warning}"); }
+    Ok(items)
 }
 
 pub(crate) fn list(app: &AppHandle) -> Result<Vec<AutomationMeta>, String> {

@@ -725,6 +725,7 @@ fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<Setti
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Chat,
+    Tasks,
     PullRequests,
     Settings(SettingsSection),
 }
@@ -881,6 +882,7 @@ impl SessionPanels {
 pub enum NavEntry {
     /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
+    Tasks,
     PullRequests,
     /// One pull request's detail view over the board, and the device whose
     /// `gh` reads it (`None` = this device).
@@ -2137,6 +2139,8 @@ pub struct Shell {
     billing_page: Option<Entity<BillingPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     library_page: Option<Entity<settings::library::LibraryPage>>,
+    task_center: Option<Entity<crate::task_center::TaskCenter>>,
+    task_events: Option<Subscription>,
     library_events: Option<Subscription>,
     search_page: Option<Entity<settings::search::SearchPage>>,
     hooks_page: Option<Entity<settings::hooks::HooksPage>>,
@@ -2546,6 +2550,7 @@ impl Shell {
         let open_route = std::env::var("ZERON_OPEN_ROUTE").ok();
         let route = match open_route.as_deref() {
             Some("pull-requests") => Route::PullRequests,
+            Some("tasks") => Route::Tasks,
             Some(route) if route == "settings" || route.starts_with("settings/") => {
                 match settings_open_route(route, settings.settings_section) {
                     Some(section) => {
@@ -2595,6 +2600,7 @@ impl Shell {
         };
         let nav = NavHistory::new(match route {
             Route::Chat => NavEntry::Chat(String::new()),
+            Route::Tasks => NavEntry::Tasks,
             Route::PullRequests => NavEntry::PullRequests,
             Route::Settings(section) => NavEntry::Settings(section),
         });
@@ -2691,6 +2697,8 @@ impl Shell {
             billing_page: None,
             archived_page: None,
             library_page: None,
+            task_center: None,
+            task_events: None,
             library_events: None,
             search_page: None,
             hooks_page: None,
@@ -5145,6 +5153,11 @@ impl Shell {
 
     fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.command_palette = None;
+        if route == Route::Tasks && self.route != Route::Tasks {
+            if let Some(page) = self.task_center.as_ref() {
+                page.update(cx, |page, cx| page.on_visible(cx));
+            }
+        }
         let was_pull_requests = matches!(self.route, Route::PullRequests);
         let will_show_pull_requests = matches!(route, Route::PullRequests);
         if was_pull_requests && !will_show_pull_requests {
@@ -5706,6 +5719,7 @@ impl Shell {
                     self.state.update(cx, |s, cx| s.select_chat(target, cx));
                 }
             }
+            NavEntry::Tasks => { self.set_route(Route::Tasks, cx); }
             NavEntry::PullRequests => {
                 self.enter_pull_requests_route(cx);
                 self.dismiss_pull_request_detail(cx);
@@ -7533,6 +7547,9 @@ impl Shell {
     /// The session titlebar, or on the Pull requests route the bar carrying
     /// the pull request pane's tabs.
     fn render_title_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.route == Route::Tasks {
+            return self.titlebar_drag_region("tasks-titlebar-drag", div().w_full().h(px(Theme::TITLEBAR_HEIGHT)), cx).into_any_element();
+        }
         if !matches!(self.route, Route::PullRequests) {
             return self.render_session_title_bar(cx);
         }
@@ -11216,6 +11233,21 @@ impl Shell {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
         let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+
+        if self.route == Route::Tasks {
+            if self.task_center.is_none() {
+                let page = cx.new(|cx| crate::task_center::TaskCenter::new(self.data_dir.clone(), self.state.clone(), window, cx));
+                self.task_events = Some(cx.subscribe(&page, |this, _, event: &crate::task_center::OpenTaskConversation, cx| {
+                    this.open_chat(event.0.clone(), cx);
+                }));
+                self.task_center = Some(page);
+            }
+            // The shell titlebar overlays the full-height outlet. Task content
+            // is not a transcript and must remain below that platform boundary.
+            return div().size_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT))
+                .child(div().flex_1().min_h_0().child(self.task_center.as_ref().unwrap().clone()))
+                .into_any_element();
+        }
 
         if matches!(self.route, Route::PullRequests) {
             if self.pull_requests_page.is_none() {

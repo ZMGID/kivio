@@ -5,8 +5,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use super::types::{ScheduledTask, TaskRun};
 
@@ -144,8 +144,43 @@ fn write_unique_backup(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
 }
 
 fn write_json<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
+    // Definitions and run files may have fields written by a newer host. Merge
+    // retained IDs from the fresh document, not the page's editing snapshot.
+    let previous: serde_json::Value = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|err| err.to_string())?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => serde_json::json!([]),
+        Err(err) => return Err(err.to_string()),
+    };
+    let mut next = serde_json::to_value(value).map_err(|err| err.to_string())?;
+    let old = previous
+        .as_array()
+        .ok_or("Invalid scheduled tasks document")?;
+    for item in next
+        .as_array_mut()
+        .ok_or("Invalid scheduled tasks document")?
+    {
+        if let Some(saved) = old.iter().find(|saved| saved.get("id") == item.get("id")) {
+            let mut merged = saved.clone();
+            merge_fields(&mut merged, item);
+            *item = merged;
+        }
+    }
+    let text = serde_json::to_string_pretty(&next).map_err(|err| err.to_string())?;
     crate::chat::storage::atomic_write(path, &text, "scheduled tasks")
+}
+
+fn merge_fields(saved: &mut serde_json::Value, next: &serde_json::Value) {
+    if let (Some(saved), Some(next)) = (saved.as_object_mut(), next.as_object()) {
+        for (key, value) in next {
+            if let Some(existing) = saved.get_mut(key) {
+                merge_fields(existing, value);
+            } else {
+                saved.insert(key.clone(), value.clone());
+            }
+        }
+    } else {
+        *saved = next.clone();
+    }
 }
 
 #[cfg(test)]

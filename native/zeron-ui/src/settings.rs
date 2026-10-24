@@ -1165,6 +1165,8 @@ pub struct UiSettings {
     /// Last explicitly selected PR scope, restored when no project is selected.
     pub last_pull_request_repository: Option<String>,
     pub last_pull_request_device: Option<String>,
+    /// Last task-center tab; unknown values fall back to scheduled tasks.
+    pub tasks_tab: String,
     /// Device-local bookmarks, keyed by provider/repository/PR, never GitHub mutations.
     pub pull_request_stars: Vec<String>,
     /// Save edited workspace files automatically after the configured delay.
@@ -1286,6 +1288,7 @@ impl Default for UiSettings {
             pull_request_destination: PullRequestDestination::Native,
             last_pull_request_repository: None,
             last_pull_request_device: None,
+            tasks_tab: "schedules".into(),
             pull_request_stars: Vec::new(),
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
@@ -1958,6 +1961,7 @@ impl UiSettings {
             pull_request_destination,
             last_pull_request_repository,
             last_pull_request_device,
+            tasks_tab,
             pull_request_stars,
         );
         current

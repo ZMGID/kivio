@@ -16,7 +16,19 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| this.kivio_not_ported(label, cx)))
         };
         let plugins = pending("kivio-nav-plugins", icons::WIDGET, "插件", cx);
-        let tasks = pending("kivio-nav-tasks", icons::CHECKLIST, "任务", cx);
+        use gpui_kit::component::{button::{Button, ButtonVariants}, Icon, Selectable, Sizable};
+        let tasks = Button::new("kivio-nav-tasks").ghost().small().w_full().justify_start()
+            .accessibility_label("任务")
+            .child(div().w_full().flex().items_center().gap_2()
+                .child(Icon::default().path(icons::CHECKLIST).small())
+                .child("任务"))
+            .selected(self.route == Route::Tasks)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.suspend_file_images(cx);
+                this.nav.push(NavEntry::Tasks);
+                this.set_route(Route::Tasks, cx);
+                cx.notify();
+            }));
         let extensions = pending("kivio-nav-extensions", icons::MAGIC_STICK_3, "扩展", cx);
 
         let by_project = self.settings.sidebar_organization == SidebarOrganization::ByProject;

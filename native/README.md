@@ -39,6 +39,15 @@ Zeron fork 独有的场景模糊、边缘渐隐、圆角子树裁切、背景 al
 
 上游 tests/examples 随源码完整保留，尚未全部移植到 Kit 与 Kivio 服务契约；不能将全工作区测试视为已通过。当前边界检查为 `tests/kivio_port.rs`：无供应商时不创建对话、真实本地 HTTP 流式响应、落盘和重开、并发发送拒绝、运行中改名、取消保留部分内容、附件持久化/媒体校验/图片请求/读取范围、历史工具卡，以及真实 PTY 的早期输出回放、调整大小与关闭。原生窗口另行检查启动、历史渲染、17 类设置导航、基础/模型表单布局、混音器路由和明暗主题切换。设置回归检查覆盖未知字段保留、无效重试次数不落盘、自定义提示词进入真实本地 HTTP 请求、记忆配额、Hooks 并发修改拒绝及搜索字段合并/取消独立抓取源。2026-10-24：边界测试 5 项通过；新增抓取源清除用例先失败后通过。原有主题测试 44 项通过。原生窗口已检查主题应用及 Hooks 新建/空值错误；最新搜索页面通过编译，尚未完成实机交互检查。
 
+### 侧栏页面迁移验证（2026-10-24）
+
+- 作品页取消迁移并删除旧 React 页面；附件、聊天工具产物和用户文件保留。旧路由不可恢复，也不会误载为对话。前端路由/持久化/附件回归 125 项、Rust 路由回归 3 项通过。
+- 定时任务：`scheduled_tasks/core.rs` 是两端共用的定义、计划、排队取消和运行记录负责人，原 Tauri 宿主保留平台接线。原生 `kivio/schedules.rs` 通过聊天发送准入锁协调普通发送和定时发送，不新增 IPC；沿用 `scheduled_tasks/` 数据目录，`tasks.json` 与运行记录保留未知字段；Cron 依赖锁定为旧端使用的 `croner 4.0.0`。
+- `cargo check/build --manifest-path native/Cargo.toml --locked -p kivio-native` 通过。`scheduled_tasks` 5 项、`scheduled_task_forms` 2 项、`automation_catalog` 2 项及 `scheduled_task_execution` 1 项通过；后者经过真实 KivioService、本地 HTTP、对话/任务仓库，覆盖忙时排队、编辑撤销待发送运行、自动触发、实际发送与删除对话后停用且不重建。
+- 独立 QA 应用使用 `/tmp/kivio-task-qa-home` 的合成对话，不改动正在运行的预览窗口或正式数据。已实际点击验证明暗主题、空列表、名称/提示词输入、空提示词错误、目标菜单、保存落盘、立即运行的缺供应商错误、运行记录、编辑/放弃确认、自动化空列表/正常记录/损坏记录。窄窗口实际受最小尺寸限制为约 902 × 721，列表与编辑界面已查看。
+- 尚未验收：真实模型上游、外部 CLI 定时发送、多窗口发送协调、全部七种计划的 GUI 操作、完整键盘/IME/无障碍、字体缩放、Windows 和 Linux。自动化仅只读目录浏览，不能称为完整任务域迁移；插件与扩展页面尚未迁移，Study 不接入。
+- 使用 `build-gpui-apps`、`gpui-kit`、`gpui-kit-design-guides`、`cua-driver`。参考锁定 Zeron 的 `crates/ui/src/settings/widgets.rs` 及 GPUI Kit 的 `crates/story/src/stories/{tabs_story,menu_story,dialog_story,input_story}.rs`，API 以实际 Kit/Component 0.8.0 源码为准；未找到可直接复用的定时任务业务页，故用 Kit 控件组合原生页面，不复制交互机制。
+
 ## 来源与验证依据
 
 使用 `build-gpui-apps`、`gpui-kit`、`gpui-kit-design-guides` 与 `test-audit`。统一规则见 [工程规范](../docs/engineering-standards.md)。主要源码为 `task-GPUI/references/zeron/crates/ui`，锁定 `c04487045e5f934818ab21bf5b7b7fbed16ef3d6`；相关支持 crate 位于 `zeron-support/`。Kit API 依据锁定的 GPUI Kit/Base/Component 0.8.0、gpui-pre 0.3.9 实际依赖源码核对。

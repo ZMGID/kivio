@@ -123,6 +123,7 @@ pub enum EngineMode {
 trait EngineBackend: Send + Sync {
     fn client(&self) -> &RpcClient;
     fn mode(&self) -> EngineMode;
+    fn kivio_service(&self) -> Option<Arc<crate::kivio::KivioService>> { None }
     async fn media_client(&self) -> Result<RpcClient, RpcError> {
         Err(RpcError::Failed("voice media unavailable".into()))
     }
@@ -140,6 +141,7 @@ struct KivioBackend { client: RpcClient, service: Arc<crate::kivio::KivioService
 impl EngineBackend for KivioBackend {
     fn client(&self) -> &RpcClient { &self.client }
     fn mode(&self) -> EngineMode { EngineMode::InProcess }
+    fn kivio_service(&self) -> Option<Arc<crate::kivio::KivioService>> { Some(self.service.clone()) }
     async fn shutdown(&self) { self.service.shutdown().await; }
 }
 
@@ -276,6 +278,11 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// Native feature pages call their domain owner directly, without an RPC protocol.
+    pub fn kivio_service(&self) -> Option<Arc<crate::kivio::KivioService>> {
+        self.inner.kivio_service()
+    }
+
     pub(crate) fn same_connection(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
@@ -285,6 +292,7 @@ impl EngineHandle {
     /// tokio tasks.
     pub async fn bootstrap(config: EngineBootConfig) -> anyhow::Result<EngineHandle> {
         let service = crate::kivio::KivioService::new(config.data_dir);
+        service.start_scheduler();
         Ok(Self {
             inner: Arc::new(KivioBackend { client: RpcClient::direct(service.clone()), service }),
             engine_info: serde_json::from_value(serde_json::json!({

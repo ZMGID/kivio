@@ -10,12 +10,18 @@ use std::{path::PathBuf, sync::Arc};
 use zeron_rpc::{RpcError, RpcReply, RpcService, methods};
 
 mod attachments;
+mod schedules;
 mod terminal;
 
 pub const DEVICE: &str = "kivio-local";
 #[derive(Clone)]
 pub struct KivioService {
     directory: PathBuf,
+    schedule_owner: Result<Arc<kivio_model_runtime::scheduled_tasks::ScheduledTasks>, String>,
+    schedule_stop: tokio_util::sync::CancellationToken,
+    scheduler: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    schedule_workers: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    send_gate: Arc<tokio::sync::Mutex<()>>,
     terminals: Arc<terminal::Terminals>,
     store: Arc<ConversationStore>,
     changes: tokio::sync::watch::Sender<u64>,
@@ -47,6 +53,11 @@ impl KivioService {
         let (catalog_changes, _) = tokio::sync::watch::channel(0);
         Arc::new(Self {
             store: Arc::new(ConversationStore::new(directory.join("conversations"))),
+            schedule_owner: kivio_model_runtime::scheduled_tasks::shared(directory.join("scheduled_tasks")),
+            schedule_stop: Default::default(),
+            scheduler: Default::default(),
+            schedule_workers: Default::default(),
+            send_gate: Default::default(),
             directory,
             terminals: Arc::new(terminal::Terminals::new()),
             changes,
@@ -57,6 +68,11 @@ impl KivioService {
         })
     }
     async fn send(&self, params: Value) -> Result<RpcReply, RpcError> {
+        let _admission = self.send_gate.lock().await;
+        self.send_admitted(params, false).await
+    }
+
+    async fn send_admitted(&self, params: Value, require_existing: bool) -> Result<RpcReply, RpcError> {
         use crate::chat_runtime::{self, ChatEvent};
         let id = params["chatId"]
             .as_str()
@@ -77,6 +93,9 @@ impl KivioService {
             .map_err(failed)?
             .into_iter()
             .find(|c| c.id == id);
+        if require_existing && existing.is_none() {
+            return Err(failed("绑定对话不存在，定时任务不会重建已删除的对话"));
+        }
         if existing.as_ref().is_some_and(|c| {
             c.agent_runtime.kind
                 == kivio_model_runtime::conversation_data::AgentRuntimeKind::External
@@ -209,6 +228,9 @@ impl KivioService {
         RpcReply::value(&reply)
     }
     pub async fn shutdown(&self) {
+        self.schedule_stop.cancel();
+        let scheduler = self.scheduler.lock().unwrap().take();
+        if let Some(task) = scheduler { let _ = task.await; }
         self.terminals.shutdown();
         for cancel in self.runs.lock().unwrap().values() {
             cancel.cancel();
@@ -216,6 +238,8 @@ impl KivioService {
         for task in self.tasks.lock().await.drain(..) {
             let _ = task.await;
         }
+        let workers = std::mem::take(&mut *self.schedule_workers.lock().unwrap());
+        for worker in workers { let _ = worker.await; }
     }
     fn chat(&self, c: &Conversation) -> Value {
         json!({"id":c.id,"deviceId":DEVICE,"title":c.title,"archived":c.archived,
