@@ -805,6 +805,7 @@ pub(crate) async fn chat_import_external_conversation(
             group_id: None,
             provider_id: None,
             model: None,
+            served_vendor: None,
             timestamp: now,
             degraded: None,
         });

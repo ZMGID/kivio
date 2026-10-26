@@ -32,4 +32,16 @@ describe('AssistantMessageMeta', () => {
     )
     expect(screen.getByRole('button', { name: '换模型回答' })).toBeInTheDocument()
   })
+
+  it('labels the vendor and model that answered', () => {
+    render(
+      <AssistantMessageMeta
+        content="answer"
+        timestamp={Date.now()}
+        servedVendor="OpenRouter"
+        servedModel="google/gemma-4-31b-it:free"
+      />,
+    )
+    expect(screen.getByText('OpenRouter · google/gemma-4-31b-it:free')).toBeInTheDocument()
+  })
 })

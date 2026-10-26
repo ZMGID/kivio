@@ -13,6 +13,7 @@ import type { I18n, Lang } from '../../components/i18n'
 import type {
   Settings as SettingsData,
   ModelProvider,
+  FreeRouteConfig,
 } from '../../api/tauri'
 
 /** 左栏：一个添加按钮打开预设弹层（含自定义），下面是可拖拽的已添加供应商。 */
@@ -81,6 +82,7 @@ interface ProvidersTabProps {
   onOpenModelTest: (id: string) => void
   onOpenModelDrawer: (target: { providerId: string; model: string }) => void
   onRemoveEnabledModel: (providerId: string, model: string) => void
+  onUpdateFreeRoute: (next: FreeRouteConfig) => void
 }
 
 /** 模型（供应商）标签页。纯展示：状态留在 SettingsShell。 */
@@ -104,6 +106,7 @@ export function ProvidersTab({
   onOpenModelTest,
   onOpenModelDrawer,
   onRemoveEnabledModel,
+  onUpdateFreeRoute,
 }: ProvidersTabProps) {
   const configured = selectedProvider && providerAuthenticationReady(selectedProvider)
   const [iconPickerOpen, setIconPickerOpen] = useState(false)
@@ -373,6 +376,8 @@ export function ProvidersTab({
               onOpenModelTest={onOpenModelTest}
               onOpenModelDrawer={onOpenModelDrawer}
               onRemoveEnabledModel={onRemoveEnabledModel}
+              freeRoute={settings.freeRoute}
+              onUpdateFreeRoute={onUpdateFreeRoute}
             />
           ) : null}
         </div>

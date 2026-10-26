@@ -30,6 +30,7 @@ pub mod popout;
 #[cfg(debug_assertions)]
 pub mod probe;
 pub mod protocol;
+pub(crate) mod freeroute;
 pub(crate) mod provider_runtime;
 pub mod repository;
 pub mod request_debug;

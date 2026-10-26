@@ -490,6 +490,9 @@ pub struct ChatMessage {
     /// `Conversation.model`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// FreeRoute: which upstream vendor actually answered. Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_vendor: Option<String>,
     pub timestamp: i64,
 }
 
@@ -1063,6 +1066,7 @@ mod tests {
         assert!(msg.group_id.is_none());
         assert!(msg.provider_id.is_none());
         assert!(msg.model.is_none());
+        assert!(msg.served_vendor.is_none());
     }
 
     // 会话级三态联网搜索（任务 07-23，R1）：老会话 web_search_mode 缺字段反序列化为 None，

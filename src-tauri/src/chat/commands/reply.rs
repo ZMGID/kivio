@@ -960,6 +960,7 @@ pub(super) async fn complete_assistant_reply_inner(
         let mut message = message;
         message.cache_pair_input = result.cache_pairs.map(|pair| pair.0);
         message.cache_pair_read = result.cache_pairs.map(|pair| pair.1);
+        crate::chat::freeroute::apply_served_attribution(state.inner(), &conversation.id, &mut message);
         message.degraded = result.degraded;
         protocol_guard.defer_terminal();
         return Ok(ArmReplyOutcome {

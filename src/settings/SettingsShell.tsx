@@ -667,6 +667,10 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     dispatchProviderIntent({ type: 'update', id, updates })
   }, [dispatchProviderIntent])
 
+  const updateFreeRoute = useCallback((freeRoute: SettingsData['freeRoute']) => {
+    setSettings((prev) => prev ? { ...prev, freeRoute } : prev)
+  }, [setSettings])
+
   const setProviderIcon = useCallback((id: string, iconKey: string) => {
     dispatchProviderIntent({ type: 'icon', id, iconKey })
   }, [dispatchProviderIntent])
@@ -1311,6 +1315,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onOpenModelTest={providerModals.openTest}
                 onOpenModelDrawer={providerModals.openDrawer}
                 onRemoveEnabledModel={removeEnabledModel}
+                onUpdateFreeRoute={updateFreeRoute}
               />
             )}
 

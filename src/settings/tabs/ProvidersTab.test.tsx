@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ProvidersTab } from './ProvidersTab'
 import { makeSettings, makeProvider } from './testFixtures'
 import { i18n } from '../../components/i18n'
+import { FREEROUTE_BASE_URL } from '../../api/tauri'
 
 const t = i18n.zh
 
@@ -42,6 +43,7 @@ function buildProps(overrides: Partial<Props> = {}): Props {
     onOpenModelTest: vi.fn(),
     onOpenModelDrawer: vi.fn(),
     onRemoveEnabledModel: vi.fn(),
+    onUpdateFreeRoute: vi.fn(),
     ...overrides,
   }
   return props
@@ -70,6 +72,27 @@ describe('ProvidersTab', () => {
     expect(manage).toBeEnabled()
     await userEvent.click(manage)
     expect(props.onOpenModelPicker).toHaveBeenCalled()
+  })
+
+  it('FreeRoute shows vendor cards instead of a key pool', () => {
+    const provider = makeProvider({ name: 'FreeRoute', baseUrl: FREEROUTE_BASE_URL, apiKeys: [] })
+    renderTab({
+      selectedProvider: provider,
+      settings: makeSettings({
+        providers: [provider],
+        freeRoute: {
+          vendors: [
+            { id: 'opencode', enabled: true, apiKey: '' },
+            { id: 'openrouter', enabled: true, apiKey: '' },
+            { id: 'sensenova', enabled: true, apiKey: '' },
+            { id: 'groq', enabled: true, apiKey: '' },
+          ],
+        },
+      }),
+    })
+    expect(screen.getByText('OpenRouter')).toBeInTheDocument()
+    expect(screen.getByText(/官方匿名免费档/)).toBeInTheDocument()
+    expect(screen.queryByText(t.baseUrl)).toBeNull()
   })
 
   it('未选中供应商时显示引导文案且不渲染详情', () => {

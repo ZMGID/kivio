@@ -13,9 +13,10 @@ import { ProviderRequestPanel } from '../ProviderRequestPanel'
 import { ProviderOAuthPanel } from '../ProviderOAuthPanel'
 import { ProviderUsageCard } from '../ProviderUsageCard'
 import { resolveModelInfo } from '../../data/modelMatching'
-import { api, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove } from '../../api/tauri'
+import { api, isFreeRoute, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove, type FreeRouteConfig } from '../../api/tauri'
 import type { I18n, Lang } from '../../components/i18n'
 import type { ModelProvider, ProviderApiFormat } from '../../api/tauri'
+import { FreeRoutePanel } from '../FreeRoutePanel'
 
 /** 右栏：选中供应商的端点/协议/gzip/密钥池/模型列表，以及通往「请求配置」二级页的入口。 */
 export function ProviderDetail({
@@ -31,6 +32,8 @@ export function ProviderDetail({
   onOpenModelTest,
   onOpenModelDrawer,
   onRemoveEnabledModel,
+  freeRoute,
+  onUpdateFreeRoute,
 }: {
   provider: ModelProvider
   t: I18n
@@ -44,6 +47,8 @@ export function ProviderDetail({
   onOpenModelTest: (id: string) => void
   onOpenModelDrawer: (target: { providerId: string; model: string }) => void
   onRemoveEnabledModel: (providerId: string, model: string) => void
+  freeRoute?: FreeRouteConfig
+  onUpdateFreeRoute?: (next: FreeRouteConfig) => void
 }) {
   useModelDatabase()
   const [showRequestPage, setShowRequestPage] = useState(false)
@@ -79,9 +84,20 @@ export function ProviderDetail({
   return (
     <>
     <ProviderUsageCard key={provider.id} provider={provider} lang={lang} />
+    {isFreeRoute(provider) && onUpdateFreeRoute && (
+      <FreeRoutePanel
+        config={freeRoute ?? { vendors: [] }}
+        lang={lang}
+        revealedKeys={revealedKeys}
+        onChange={onUpdateFreeRoute}
+        onToggleKeyReveal={onToggleKeyReveal}
+      />
+    )}
     <SettingsGroup title={lang === 'zh' ? '配置' : 'Configuration'}>
-      <ProviderOAuthPanel key={provider.id} provider={provider} lang={lang} onUpdateProvider={onUpdateProvider} />
-      <FieldBlock label={t.baseUrl}>
+      {!isFreeRoute(provider) && (
+        <ProviderOAuthPanel key={provider.id} provider={provider} lang={lang} onUpdateProvider={onUpdateProvider} />
+      )}
+      {!isFreeRoute(provider) && <FieldBlock label={t.baseUrl}>
         <div className="kv-provider-endpoint-row">
           <Input
             className="min-w-0 flex-1"
@@ -105,10 +121,17 @@ export function ProviderDetail({
             ]}
           />
         </div>
-      </FieldBlock>
+      </FieldBlock>}
 
+      {isFreeRoute(provider) && (
+        <p className="text-sm opacity-70">
+          {lang === 'zh'
+            ? '选择 auto 即可按上游自动故障转移。回答会标注实际出字的厂商与模型。'
+            : 'Choose auto to fail over across free upstreams. Replies are labeled with the vendor and model that answered.'}
+        </p>
+      )}
       {isOpenCodeFree(provider) && <p className="text-sm opacity-70">{lang === 'zh' ? '免费模型，无需账号、API Key 或安装 OpenCode。管理模型可刷新当前免费列表。' : 'Free models: no account, API key or OpenCode installation required. Manage models to refresh the free catalog.'}</p>}
-      {!provider.request.oauth && !isOpenCodeFree(provider) && <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
+      {!provider.request.oauth && !isOpenCodeFree(provider) && !isFreeRoute(provider) && <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
         <div className="space-y-1.5">
           {(() => {
             // 命中快速预设 baseUrl 时，给出「获取 API Key」外链引导用户申请。
