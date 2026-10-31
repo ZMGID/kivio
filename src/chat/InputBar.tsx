@@ -2088,7 +2088,7 @@ export const InputBar = memo(function InputBar({
 
         <div
           data-chat-composer="true"
-          className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-xl border px-3 py-2 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
+          className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-2xl border px-3 pb-2 pt-4 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
             dragActive
               ? 'border-accent shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[var(--accent)]/25 dark:shadow-none'
               : agentPlanActive
@@ -2097,7 +2097,7 @@ export const InputBar = memo(function InputBar({
                   ? 'border-violet-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-violet-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(139,92,246,0.22)] dark:border-violet-400 dark:shadow-none dark:focus-within:border-violet-400'
                   : appearance === 'embedded'
                     ? 'border-[var(--theme-surface-border)] shadow-none focus-within:border-[var(--accent)]'
-                    : 'border-neutral-200/80 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-neutral-300 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(0,0,0,0.20)] dark:shadow-none dark:focus-within:border-neutral-600'
+                    : 'border-black/[0.08] shadow-[0_1px_2px_rgba(0,0,0,0.05)] dark:border-white/[0.06] dark:shadow-none'
           }`}
         >
           {dragActive && (
@@ -2151,15 +2151,8 @@ export const InputBar = memo(function InputBar({
               {sendDisabledReason || toolStatusHint}
             </div>
           )}
-          {/* 输入行自成定位上下文。发送键靠 inset-y-0 + my-auto 求垂直居中，而这是按
-              **最近的定位祖先**算的：挂在 shell 上时，上面的附件 / 引用 / 提示条的高度
-              也会被算进去——加一张引用卡片，按钮就往上飘半张卡片，正好落到引用卡右下角。
-              把它和 textarea 圈进同一个 relative 行，居中就只按输入行算。
-              `-mr-3 pr-3`：让本行的 padding box 右缘与 shell 的 padding box 右缘重合，
-              这样下面的 `right-2` 和改动前落在同一像素（shell 的 px-3 不随容器查询变，
-              这 12px 是常量）。垂直方向仍旧不写死数值——shell 的 py 在容器查询里会变。 */}
-          <div className="relative -mr-3 pr-3">
-            <div className="relative w-[calc(100%-1.75rem)]">
+          <div className="relative px-1">
+            <div className="relative w-full">
               <ComposerEditor
                 ref={editorRef}
                 value={input}
@@ -2182,48 +2175,9 @@ export const InputBar = memo(function InputBar({
               />
               {composerContextMenu.menu}
             </div>
-
-            {/* 发送 / 停止：绝对定位在输入行右侧。两按钮共存于同一槽位，做 opacity+scale
-                crossfade。谁占槽位见 `stopOwnsSendSlot`：生成中打了字就归发送键。 */}
-            <div className="chat-composer-send-slot absolute inset-y-0 right-2 my-auto h-7 w-7">
-              <button
-                type="button"
-                onClick={() => void handleSend()}
-                disabled={!canSend}
-                tabIndex={-1}
-                title={sendDisabledReason || (canSend ? t.chatSend : t.chatSendHintEmpty)}
-                aria-label={sendDisabledReason || t.chatSend}
-                aria-hidden={stopOwnsSendSlot}
-                className={`chat-composer-send absolute inset-0 flex items-center justify-center rounded-full transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] ${
-                  stopOwnsSendSlot
-                    ? 'pointer-events-none scale-90 opacity-0'
-                    : 'opacity-100'
-                } ${canSend ? 'is-ready' : ''}`}
-              >
-                <ArrowUp size={16} strokeWidth={2.25} />
-              </button>
-              {onCancel ? (
-                <button
-                  type="button"
-                  onClick={onCancel}
-                  disabled={cancelling}
-                  tabIndex={stopOwnsSendSlot ? undefined : -1}
-                  aria-hidden={!stopOwnsSendSlot}
-                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-neutral-50 transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:text-neutral-500 ${
-                    stopOwnsSendSlot ? 'opacity-100' : 'pointer-events-none scale-90 opacity-0'
-                  }`}
-                  title={cancelling ? t.chatStopping : t.chatStopGenerating}
-                  aria-label={cancelling ? t.chatStopping : t.chatStopGeneratingShort}
-                >
-                  <Square size={12} strokeWidth={2.4} fill="currentColor" />
-                </button>
-              ) : null}
-            </div>
           </div>
-        </div>
 
-        {/* ③ 功能栏：移出输入框，裸露坐在窗口底色上（无背景无边框）。
-            这样输入框高度只由文本决定，能收到单行 —— 原来图标在盒内，盒子被撑到 ~100px。 */}
+        {/* 底部功能栏：在卡片内，左侧操作与状态，右侧上下文和发送。 */}
         <div className="chat-composer-tools" data-tauri-drag-region="false">
             <ComposerAddMenu
               onAddAttachment={() => void openAttachmentPicker()}
@@ -2356,7 +2310,7 @@ export const InputBar = memo(function InputBar({
               />
             )}
 
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-2">
             {usageSlot}
             {presetEntryEnabled && activePresetOption && (
               <div className="relative shrink-0 self-center">
@@ -2515,9 +2469,45 @@ export const InputBar = memo(function InputBar({
                 })
               : contextSlot}
 
-            {/* 发送 / 停止已移进输入框右端（见 textarea 同级的 chat-composer-send-slot）。 */}
+            {/* 发送 / 停止：卡片底部右端的圆钮。两按钮共存于同一槽位，做 opacity+scale
+                crossfade。谁占槽位见 `stopOwnsSendSlot`：生成中打了字就归发送键。 */}
+            <div className="chat-composer-send-slot relative h-8 w-8 shrink-0">
+              <button
+                type="button"
+                onClick={() => void handleSend()}
+                disabled={!canSend}
+                tabIndex={-1}
+                title={sendDisabledReason || (canSend ? t.chatSend : t.chatSendHintEmpty)}
+                aria-label={sendDisabledReason || t.chatSend}
+                aria-hidden={stopOwnsSendSlot}
+                className={`chat-composer-send absolute inset-0 flex items-center justify-center rounded-full transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] ${
+                  stopOwnsSendSlot
+                    ? 'pointer-events-none scale-90 opacity-0'
+                    : 'opacity-100'
+                } ${canSend ? 'is-ready' : ''}`}
+              >
+                <ArrowUp size={14} strokeWidth={1.8} />
+              </button>
+              {onCancel ? (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  disabled={cancelling}
+                  tabIndex={stopOwnsSendSlot ? undefined : -1}
+                  aria-hidden={!stopOwnsSendSlot}
+                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-neutral-50 transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:text-neutral-500 ${
+                    stopOwnsSendSlot ? 'opacity-100' : 'pointer-events-none scale-90 opacity-0'
+                  }`}
+                  title={cancelling ? t.chatStopping : t.chatStopGenerating}
+                  aria-label={cancelling ? t.chatStopping : t.chatStopGeneratingShort}
+                >
+                  <Square size={12} strokeWidth={2.4} fill="currentColor" />
+                </button>
+              ) : null}
+            </div>
             </div>
           </div>
+        </div>
 
           {/* 虚拟文本附件（粘贴长文本生成的 txt）编辑弹窗 */}
           {editingAttachment?.content !== undefined && (

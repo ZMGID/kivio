@@ -397,13 +397,10 @@
 }
 .chat-composer-editor .ProseMirror-separator { display: none; }
 
-/* ===== 输入区三层结构 =====
-   原来是「一个 28px 大圆角盒子，图标全塞在里面」→ 盒子被撑到 ~100px 高。
-   改为三条独立横条（对齐 Claude Code）：
-     ① .chat-composer-status  上下文状态条（项目/集/知识库 + 上下文占用），灰底，仅在有内容时渲染
-     ② .chat-composer-shell   纯输入框，白底描边，高度只由文本决定
-     ③ .chat-composer-tools   功能栏，完全裸露坐在窗口底色上，无背景无边框
-   三层各自决定高度，输入框因此能收到单行。 */
+/* ===== 输入区结构（对齐 T3 Code） =====
+     ① .chat-composer-status  上下文状态条，灰底，仅在有内容时渲染
+     ② .chat-composer-shell   圆角卡片：上方输入区，下方 .chat-composer-tools 功能栏
+     功能栏在卡片内，右端是实心圆发送键。 */
 .chat-composer-status {
   display: flex;
   align-items: center;
@@ -504,12 +501,12 @@ button.chat-composer-status-item:hover {
   color: var(--theme-surface-border-strong);
 }
 
+/* 功能栏在卡片内：左右比卡片边缘内缩 8px（卡片 px-3 再 -4px），与 T3 底栏 px-2 一致。 */
 .chat-composer-tools {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-top: 4px;
-  padding: 0 2px;
+  margin: 8px -4px 0;
 }
 
 /* 裸露工具栏上的图标钮：原来是极浅的细线图标，飘在点阵背景上立不住。
@@ -535,23 +532,24 @@ button.chat-composer-status-item:hover {
   height: 16px;
 }
 
-/* 输入框内的发送键：只有箭头，没有底圆（28px 仍是点击热区，视觉上不占面积）。
-   空输入时是淡灰箭头，有内容时才上强调色 —— 强调只在「真的可以发」这一刻出现。
-   去掉填充后箭头是细描边，颜色比原来的圆底加深一档才够看清。 */
+/* 卡片底部右端的发送键：实心圆。空输入是 12% 淡底，可发送时反色（--text 底 + 纸面色箭头）。 */
 .chat-composer-send {
   color: var(--text-faint);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 .chat-composer-send.is-ready {
-  color: var(--accent);
+  color: var(--theme-surface);
+  background: var(--text);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 24%, transparent), inset 0 1px rgb(255 255 255 / 16%);
 }
 
 .chat-composer-send.is-ready:hover {
-  color: var(--accent-hover);
+  transform: scale(1.05);
 }
 
 .chat-composer-send.is-ready:active {
-  transform: scale(0.9);
+  transform: scale(0.95);
 }
 
 
