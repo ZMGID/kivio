@@ -118,10 +118,10 @@ fn runtime_workspace_roots(cwd: &str, extra: &[String]) -> Vec<String> {
 /// when the model asks for workspace permission — echoing the grant is not enough
 /// if this list is empty.
 ///
-/// `thread/resume` sends **only** `threadId` + `excludeTurns`. Extra cwd / sandbox /
-/// experimental roots made Codex reject a perfectly good rollout (Windows vs WSL path, or a
-/// capsule that did not exist when the thread was created). Model / sandbox for this turn go
-/// on `turn/start`. `excludeTurns` (0.148+) skips full-history hydration — deprecated for
+/// `thread/resume` sends `threadId` + `excludeTurns` + the thread `config` overrides only. Extra
+/// cwd / sandbox / experimental roots made Codex reject a perfectly good rollout (Windows vs WSL
+/// path, or a capsule that did not exist when the thread was created). Model / sandbox for this
+/// turn go on `turn/start`. `excludeTurns` (0.148+) skips full-history hydration — deprecated for
 /// paginated threads since 0.155 — and we only read `thread.id` back anyway.
 fn build_codex_thread_params(
     cwd: &str,
@@ -133,7 +133,7 @@ fn build_codex_thread_params(
     if let Some(tid) = resume_thread.filter(|tid| !tid.is_empty()) {
         return (
             "thread/resume",
-            json!({ "threadId": tid, "excludeTurns": true }),
+            json!({ "threadId": tid, "excludeTurns": true, "config": codex_thread_config() }),
         );
     }
     let cwd_abs = absolute_workspace_path(cwd);
@@ -143,11 +143,19 @@ fn build_codex_thread_params(
         params["runtimeWorkspaceRoots"] = json!([cwd_abs]);
     }
     params["sandbox"] = json!(sandbox_mode);
+    params["config"] = codex_thread_config();
     params["approvalPolicy"] = json!(approval_policy);
     if let Some(model) = model {
         params["model"] = json!(model);
     }
     ("thread/start", params)
+}
+
+/// Per-thread config overrides (T3 Code `CODEX_THREAD_CONFIG`): explicitly enable the
+/// `update_plan` tool that feeds `turn/plan/updated` → todo card, and give cold npx/uvx MCP
+/// servers 10 s instead of the 1 s default before the first model request.
+fn codex_thread_config() -> Value {
+    json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 })
 }
 
 /// JSON-RPC notification (no `id`). Required after `initialize` — newer app-server rejects
@@ -247,38 +255,43 @@ fn is_codex_elicitation(method: &str) -> bool {
     method == "mcpServer/elicitation/request" || method.starts_with("openai/elicitation")
 }
 
-/// Approve payload when the user allows (or the 「完全」档 auto-allows). Each method
-/// maps to a different response shape (see the `*RequestApprovalResponse` schemas).
-fn approval_response(method: &str, params: &Value) -> Option<Value> {
+/// Approve payload. `for_session` widens the grant to Codex's session cache: used for host-side
+/// auto-approval and for 「总是允许」 (T3 Code maps `acceptAlways` → `acceptForSession`). A plain
+/// 「允许」 answers once, so one click never silently becomes a session grant.
+fn approval_response(method: &str, params: &Value, for_session: bool) -> Option<Value> {
     if is_codex_elicitation(method) {
         return Some(json!({ "action": "decline", "content": null }));
     }
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            Some(json!({ "decision": approve_decision(params) }))
+            Some(json!({ "decision": approve_decision(params, for_session) }))
         }
         // Legacy exec/apply-patch approval requests use ReviewDecision.
-        "execCommandApproval" | "applyPatchApproval" => {
-            Some(json!({ "decision": "approved_for_session" }))
-        }
+        "execCommandApproval" | "applyPatchApproval" => Some(json!({
+            "decision": if for_session { "approved_for_session" } else { "approved" }
+        })),
         "item/permissions/requestApproval" => Some(json!({
             "permissions": granted_codex_permissions(params),
-            "scope": "session"
+            "scope": if for_session { "session" } else { "turn" }
         })),
         _ => None,
     }
 }
 
-/// `acceptForSession` unless the server's ordered `availableDecisions` leaves it out —
-/// 0.158 terminal-input approvals (`kind: writeStdin`) only offer `accept` / `cancel`.
-fn approve_decision(params: &Value) -> &'static str {
+/// Honors the server's ordered `availableDecisions` — 0.158 terminal-input approvals
+/// (`kind: writeStdin`) only offer `accept` / `cancel`. Falls back to the other accept form
+/// only when the preferred one is not offered, otherwise the turn would stall.
+fn approve_decision(params: &Value, for_session: bool) -> &'static str {
     let offered = params
         .get("availableDecisions")
         .and_then(|v| v.as_array())
         .filter(|list| !list.is_empty());
-    match offered {
-        Some(list) if !list.iter().any(|d| d.as_str() == Some("acceptForSession")) => "accept",
-        _ => "acceptForSession",
+    let has = |decision: &str| {
+        offered.is_none_or(|list| list.iter().any(|d| d.as_str() == Some(decision)))
+    };
+    match (for_session, has("acceptForSession"), has("accept")) {
+        (true, true, _) | (false, true, false) => "acceptForSession",
+        _ => "accept",
     }
 }
 
@@ -1392,6 +1405,9 @@ fn build_codex_turn_params(
         "cwd": cwd,
         "approvalPolicy": approval_policy,
         "sandboxPolicy": sandbox_policy,
+        // Catalog defaults can be `none`, which leaves the reasoning lane empty (T3 Code
+        // requests summaries on every turn for the same reason).
+        "summary": "detailed",
     });
     if let Some(effort) = normalize_codex_effort(effort) {
         turn_params["effort"] = json!(effort);
@@ -1583,7 +1599,7 @@ impl CodexAppServerSession {
             );
             let thread_rpc_id = next_id;
             next_id += 1;
-            write_rpc(&mut stdin, thread_rpc_id, method, params)
+            write_rpc(&mut stdin, thread_rpc_id, method, params.clone())
                 .await
                 .map_err(|e| format!("thread-start: {e}"))?;
             let thread_timeout = if method == "thread/resume" {
@@ -1591,10 +1607,33 @@ impl CodexAppServerSession {
             } else {
                 CODEX_THREAD_START_TIMEOUT
             };
-            let mut result =
-                read_until_response(&mut reader, &mut stdin, thread_rpc_id, thread_timeout)
-                    .await
-                    .map_err(|e| format!("thread-start: {e}"))?;
+            let first =
+                read_until_response(&mut reader, &mut stdin, thread_rpc_id, thread_timeout).await;
+            let mut result = match first {
+                // An archived rollout (Codex app / `codex archive`) refuses resume until it is
+                // unarchived. Unarchive and retry once (T3 Code同款); any other failure surfaces.
+                Err(err)
+                    if method == "thread/resume"
+                        && crate::external_agents::errors::is_archived_codex_thread_error(&err) =>
+                {
+                    let unarchive_id = next_id;
+                    let retry_id = next_id + 1;
+                    next_id += 2;
+                    let unarchive = json!({ "threadId": params["threadId"] });
+                    write_rpc(&mut stdin, unarchive_id, "thread/unarchive", unarchive)
+                        .await
+                        .map_err(|e| format!("thread-unarchive: {e}"))?;
+                    read_until_response(&mut reader, &mut stdin, unarchive_id, thread_timeout)
+                        .await
+                        .map_err(|e| format!("thread-unarchive: {e}"))?;
+                    write_rpc(&mut stdin, retry_id, method, params)
+                        .await
+                        .map_err(|e| format!("thread-start: {e}"))?;
+                    read_until_response(&mut reader, &mut stdin, retry_id, thread_timeout).await
+                }
+                other => other,
+            }
+            .map_err(|e| format!("thread-start: {e}"))?;
             let thread_id = result
                 .get("thread")
                 .and_then(|t| t.get("id"))
@@ -2108,13 +2147,13 @@ async fn queue_codex_server_request(
     let interaction = method == "item/tool/requestUserInput" || is_codex_elicitation(method);
     let approval = is_codex_tool_approval(method);
     if approval && !asks_for_approval {
-        return write_rpc_result(stdin, id, approval_response(method, params).unwrap()).await;
+        return write_rpc_result(stdin, id, approval_response(method, params, true).unwrap()).await;
     }
     if !interaction && !approval {
         return write_rpc_result(
             stdin,
             id,
-            approval_response(method, params).unwrap_or_else(unknown_server_request_result),
+            approval_response(method, params, true).unwrap_or_else(unknown_server_request_result),
         )
         .await;
     }
@@ -2161,6 +2200,19 @@ async fn queue_codex_server_request(
     }
 }
 
+/// 用户答复 → Codex 审批回执。「总是允许」→ 本会话缓存（T3 `acceptAlways` → `acceptForSession`）；
+/// 单次「允许」只放这一次；没有答复（宿主缺失 / 撤回）一律拒绝。
+fn codex_tool_approval_result(
+    method: &str,
+    params: &Value,
+    decision: Option<&crate::external_agents::session::live::ApprovalDecision>,
+) -> Option<Value> {
+    match decision {
+        Some(decision) if decision.approved => approval_response(method, params, decision.always),
+        _ => approval_deny_response(method, false),
+    }
+}
+
 async fn answer_pending_codex_request(
     stdin: &mut ChildStdin,
     request: &CodexPendingRequest,
@@ -2168,11 +2220,8 @@ async fn answer_pending_codex_request(
 ) -> Result<(), String> {
     let approved = decision.as_ref().is_some_and(|decision| decision.approved);
     if is_codex_tool_approval(&request.method) {
-        let result = if approved {
-            approval_response(&request.method, &request.params)
-        } else {
-            approval_deny_response(&request.method, false)
-        };
+        let result =
+            codex_tool_approval_result(&request.method, &request.params, decision.as_ref());
         return write_rpc_result(stdin, &request.id, result.ok_or("unknown approval method")?)
             .await;
     }
@@ -2279,7 +2328,7 @@ async fn answer_handshake_request(
     id: &Value,
     params: &Value,
 ) -> Result<(), String> {
-    if let Some(result) = approval_response(method, params) {
+    if let Some(result) = approval_response(method, params, true) {
         write_rpc_result(stdin, id, result).await
     } else {
         write_rpc_result(stdin, id, unknown_server_request_result()).await
@@ -3494,6 +3543,7 @@ mod tests {
                                 updated_input: Some(json!({"answers":{}})),
                                 set_permission_mode: None,
                                 updated_permissions: None,
+                                always: false,
                             })
                             .await
                             .unwrap();
@@ -4723,6 +4773,7 @@ mod tests {
         assert_eq!(params["model"], json!("gpt-5.3-codex"));
         assert_eq!(params["effort"], json!("high"));
         assert_eq!(params["approvalPolicy"], json!("on-request"));
+        assert_eq!(params["summary"], json!("detailed"));
     }
 
     #[test]
@@ -4799,10 +4850,11 @@ mod tests {
         assert_eq!(params["model"], json!("gpt-5.6-sol"));
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["/work"]));
         assert!(params.get("threadId").is_none());
+        assert_eq!(params["config"]["tools.update_plan.enabled"], json!(true));
     }
 
     #[test]
-    fn build_codex_thread_params_resume_sends_only_thread_id() {
+    fn build_codex_thread_params_resume_sends_only_thread_id_and_config() {
         let (method, params) = build_codex_thread_params(
             "/work",
             "workspace-write",
@@ -4811,7 +4863,10 @@ mod tests {
             Some("thr_1"),
         );
         assert_eq!(method, "thread/resume");
-        assert_eq!(params, json!({ "threadId": "thr_1", "excludeTurns": true }));
+        assert_eq!(
+            params,
+            json!({ "threadId": "thr_1", "excludeTurns": true, "config": codex_thread_config() })
+        );
     }
 
     #[test]
@@ -4824,18 +4879,28 @@ mod tests {
     #[test]
     fn approval_response_shapes() {
         let empty = json!({});
+        // A clicked 「允许」 answers once; only host auto-approval uses the session grant.
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &empty),
+            approval_response("item/commandExecution/requestApproval", &empty, false),
+            Some(json!({ "decision": "accept" }))
+        );
+        assert_eq!(
+            approval_response("item/fileChange/requestApproval", &empty, true),
             Some(json!({ "decision": "acceptForSession" }))
         );
         assert_eq!(
-            approval_response("item/fileChange/requestApproval", &empty),
-            Some(json!({ "decision": "acceptForSession" }))
+            approval_response("execCommandApproval", &empty, false),
+            Some(json!({ "decision": "approved" }))
+        );
+        assert_eq!(
+            approval_response("applyPatchApproval", &empty, true),
+            Some(json!({ "decision": "approved_for_session" }))
         );
         assert_eq!(
             approval_response(
                 "item/permissions/requestApproval",
                 &json!({ "permissions": { "network": { "enabled": true } } }),
+                true,
             ),
             Some(json!({
                 "permissions": { "network": { "enabled": true } },
@@ -4846,14 +4911,15 @@ mod tests {
             approval_response(
                 "item/permissions/requestApproval",
                 &json!({ "permissions": { "network": true } }),
+                false,
             ),
             Some(json!({
                 "permissions": { "network": { "enabled": true } },
-                "scope": "session"
+                "scope": "turn"
             }))
         );
-        assert!(approval_response("item/started", &empty).is_none());
-        assert!(approval_response("item/tool/requestUserInput", &empty).is_none());
+        assert!(approval_response("item/started", &empty, true).is_none());
+        assert!(approval_response("item/tool/requestUserInput", &empty, true).is_none());
         assert_eq!(
             approval_deny_response("item/commandExecution/requestApproval", false),
             Some(json!({ "decision": "decline" }))
@@ -4867,11 +4933,11 @@ mod tests {
             Some(json!({ "permissions": {}, "scope": "turn" }))
         );
         assert_eq!(
-            approval_response("mcpServer/elicitation/request", &empty),
+            approval_response("mcpServer/elicitation/request", &empty, true),
             Some(json!({ "action": "decline", "content": null }))
         );
         assert_eq!(
-            approval_response("openai/elicitation/create", &empty),
+            approval_response("openai/elicitation/create", &empty, true),
             Some(json!({ "action": "decline", "content": null }))
         );
         assert_eq!(
@@ -4885,6 +4951,45 @@ mod tests {
     }
 
     #[test]
+    fn user_decision_maps_allow_once_and_always_to_codex_scopes() {
+        use crate::external_agents::session::live::ApprovalDecision;
+        let decide = |approved, always| ApprovalDecision {
+            request_id: "1".into(),
+            approved,
+            updated_input: None,
+            set_permission_mode: None,
+            updated_permissions: None,
+            always,
+        };
+        let command = "item/commandExecution/requestApproval";
+        let offered = json!({ "availableDecisions": ["accept", "acceptForSession", "cancel"] });
+        let reply = |decision: Option<&ApprovalDecision>| {
+            codex_tool_approval_result(command, &offered, decision)
+        };
+        assert_eq!(
+            reply(Some(&decide(true, false))),
+            Some(json!({ "decision": "accept" }))
+        );
+        assert_eq!(
+            reply(Some(&decide(true, true))),
+            Some(json!({ "decision": "acceptForSession" }))
+        );
+        assert_eq!(
+            reply(Some(&decide(false, true))),
+            Some(json!({ "decision": "decline" }))
+        );
+        assert_eq!(reply(None), Some(json!({ "decision": "decline" })));
+        assert_eq!(
+            codex_tool_approval_result(
+                "item/permissions/requestApproval",
+                &json!({ "permissions": { "network": true } }),
+                Some(&decide(true, true)),
+            ),
+            Some(json!({ "permissions": { "network": { "enabled": true } }, "scope": "session" }))
+        );
+    }
+
+    #[test]
     fn write_stdin_approval_is_its_own_tool_and_honors_available_decisions() {
         let params = json!({
             "kind": "writeStdin",
@@ -4894,11 +4999,16 @@ mod tests {
         let ask =
             approval_ask_from_params("item/commandExecution/requestApproval", &json!(7), &params);
         assert_eq!(ask.tool_name, "write_stdin");
-        assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &params),
-            Some(json!({ "decision": "accept" }))
-        );
-        // Older servers / ordinary commands keep the session-wide grant.
+        for for_session in [false, true] {
+            assert_eq!(
+                approval_response(
+                    "item/commandExecution/requestApproval",
+                    &params,
+                    for_session
+                ),
+                Some(json!({ "decision": "accept" }))
+            );
+        }
         let command = json!({ "command": "ls", "availableDecisions": ["accept", "acceptForSession", "cancel"] });
         assert_eq!(
             approval_ask_from_params("item/commandExecution/requestApproval", &json!(8), &command)
@@ -4906,11 +5016,20 @@ mod tests {
             "Bash"
         );
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &command),
+            approval_response("item/commandExecution/requestApproval", &command, true),
             Some(json!({ "decision": "acceptForSession" }))
         );
         assert_eq!(
-            approval_response("item/commandExecution/requestApproval", &json!({})),
+            approval_response("item/commandExecution/requestApproval", &command, false),
+            Some(json!({ "decision": "accept" }))
+        );
+        // A server that only offers the session form must still be answered, not stalled.
+        assert_eq!(
+            approval_response(
+                "item/commandExecution/requestApproval",
+                &json!({ "availableDecisions": ["acceptForSession", "cancel"] }),
+                false,
+            ),
             Some(json!({ "decision": "acceptForSession" }))
         );
     }

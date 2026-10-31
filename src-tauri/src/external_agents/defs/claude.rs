@@ -278,18 +278,33 @@ pub fn append_system_prompt_file_args(path: &std::path::Path) -> Vec<String> {
 ///
 /// 版本门控：旧 CLI 不认这个 flag 会直接拒绝启动，所以版本未知或低于 2.1.267 都不加。
 pub fn system_prompt_snapshot_off_args(cli_version: Option<&str>) -> Vec<String> {
-    let supported = cli_version
+    if claude_version_at_least(cli_version, (2, 1, 267)) {
+        vec!["--system-prompt-snapshot".to_string(), "off".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// `--thinking-display summarized`（T3 Code 同款）：`-p` + stream-json 下 CLI 不指定展示方式，
+/// 交给 API 默认 —— 新模型默认 `omitted`，思考块只剩签名，思考栏一片空白。显式要摘要。
+/// 「关闭思考」档不加（与 `--thinking disabled` 矛盾）。隐藏 flag：SDK 0.2.90 尚无、0.2.100 已有，
+/// 旧 CLI 不认会拒绝启动，所以版本未知或低于 2.1.100 都不加。
+pub fn thinking_display_args(reasoning: Option<&str>, cli_version: Option<&str>) -> Vec<String> {
+    let off = reasoning.is_some_and(|r| r.trim().eq_ignore_ascii_case("off"));
+    if off || !claude_version_at_least(cli_version, (2, 1, 100)) {
+        return Vec::new();
+    }
+    vec!["--thinking-display".to_string(), "summarized".to_string()]
+}
+
+fn claude_version_at_least(cli_version: Option<&str>, min: (u64, u64, u64)) -> bool {
+    cli_version
         .and_then(crate::external_agents::installer::extract_semver)
         .and_then(|v| {
             let mut parts = v.split(['.', '-']).map(|p| p.parse::<u64>().ok());
             Some((parts.next()??, parts.next()??, parts.next()??))
         })
-        .is_some_and(|v| v >= (2, 1, 267));
-    if supported {
-        vec!["--system-prompt-snapshot".to_string(), "off".to_string()]
-    } else {
-        Vec::new()
-    }
+        .is_some_and(|v| v >= min)
 }
 
 /// 把 claude 的启动参数改写成「续接 `session_id` 这个原生会话」：先摘掉已有的
@@ -686,6 +701,19 @@ mod tests {
         assert_eq!(system_prompt_snapshot_off_args(Some("2.1.267")), off);
         assert!(system_prompt_snapshot_off_args(Some("2.1.266 (Claude Code)")).is_empty());
         assert!(system_prompt_snapshot_off_args(None).is_empty());
+    }
+
+    #[test]
+    fn thinking_display_summarized_is_version_gated_and_skipped_when_off() {
+        let summarized = vec!["--thinking-display".to_string(), "summarized".to_string()];
+        assert_eq!(
+            thinking_display_args(Some("high"), Some("2.1.316 (Claude Code)")),
+            summarized
+        );
+        assert_eq!(thinking_display_args(None, Some("2.1.100")), summarized);
+        assert!(thinking_display_args(Some(" Off "), Some("2.1.316")).is_empty());
+        assert!(thinking_display_args(None, Some("2.1.99")).is_empty());
+        assert!(thinking_display_args(None, None).is_empty());
     }
 
     /// `--append-system-prompt-file` 必须是「flag 后紧跟路径」的成对形式，

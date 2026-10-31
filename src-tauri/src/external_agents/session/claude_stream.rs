@@ -2982,6 +2982,7 @@ mod live_tests {
                         updated_input,
                         set_permission_mode: None,
                         updated_permissions: None,
+                        always: false,
                     })
                     .await;
                 if sent.is_err() {
@@ -3081,6 +3082,7 @@ text={}",
                         updated_input: None,
                         set_permission_mode,
                         updated_permissions: None,
+                        always: false,
                     })
                     .await;
                 if sent.is_err() {
@@ -3215,6 +3217,7 @@ text={}",
                         updated_input,
                         set_permission_mode: None,
                         updated_permissions: None,
+                        always: false,
                     })
                     .await;
                 if sent.is_err() {
@@ -3669,6 +3672,7 @@ text={}",
                         updated_input: None,
                         set_permission_mode: None,
                         updated_permissions: None,
+                        always: false,
                     })
                     .await;
                 if sent.is_err() {

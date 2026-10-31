@@ -607,6 +607,12 @@ pub(crate) async fn run_external_cli_reply_in(
             ]);
         }
     }
+    if agent_id == "claude" {
+        args.extend(crate::external_agents::defs::claude::thinking_display_args(
+            conversation.agent_runtime.external_reasoning.as_deref(),
+            crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
+        ));
+    }
     // A1：系统指令以 flag 追加（不改 `build_args` 的形状，也不动 `RuntimeContext` ——
     // 那两处是所有 CLI 共用的，为一个 claude 专属 flag 加字段要牵动全部 def 与其单测）。
     let args = match system_prompt_file.as_deref() {
@@ -2510,6 +2516,7 @@ impl ApprovalHost<'_> {
                     updated_input: opened.then(|| serde_json::json!({ "action": "accept" })),
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 };
             }
             if matches!(
@@ -2523,6 +2530,7 @@ impl ApprovalHost<'_> {
                     updated_input: None,
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 };
             }
             // FallbackApproval：退回普通审批卡，别静默吞掉这次询问。
@@ -2567,6 +2575,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: mode,
                 updated_permissions: None,
+                always: false,
             };
         }
         // `EnterPlanMode` = claude 自己要求「先探索、出方案，别急着改」。**放行就够** ——
@@ -2591,6 +2600,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: None,
                 updated_permissions: None,
+                always: false,
             };
         }
         // 「完全」档：通道之所以接上只为了上面那两张卡，普通工具原地放行。
@@ -2608,6 +2618,7 @@ impl ApprovalHost<'_> {
                 updated_input: None,
                 set_permission_mode: None,
                 updated_permissions: None,
+                always: false,
             };
         }
         let outcome = crate::chat::commands::interaction::request_tool_approval_outcome(
@@ -2634,6 +2645,7 @@ impl ApprovalHost<'_> {
             updated_input: None,
             set_permission_mode: None,
             updated_permissions,
+            always: outcome.approved && outcome.always,
         }
     }
 
@@ -2691,6 +2703,7 @@ impl ApprovalHost<'_> {
             updated_input: approved.then(|| encode(&prompt, &answered)),
             set_permission_mode: None,
             updated_permissions: None,
+            always: false,
         }
     }
 

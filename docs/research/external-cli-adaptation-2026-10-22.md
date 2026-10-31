@@ -121,3 +121,22 @@ T3 Code 的服务等级选择、多账号管理、额度展示、目标持续执
 本轮没有改动 CLI 路径或全局安装。Claude 优先引导的真实上游验收和 Windows/WSL 实机验收仍不能用协议替身结果替代。
 
 审查修复版已完成 `npx tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json`，退出旧 Dev 并从 bundle 路径重启。原生窗口真实 Codex 会话 `conv_523cad1d-df7d-47b5-9abf-e6f84fc4827d` 显示 `CLI_REVIEW_OK` 并恢复输入状态；账户面板读取到真实额度窗口及更新时间，查询结束，无需临时替换 CLI。账号个人值未写入报告。构建日志 `/tmp/kivio-cli-review/native-build.log`。修复仍未提交、未推送。
+
+## 2026-10-31 对照 T3 Code `cadf7d5f`
+
+本地参考仓库从 `50c1c5dc` 快进到 `cadf7d5f`（新增 3 个提交，均为 CLI 远程连接与安装器，不涉及 provider 适配）。对照 `CodexAdapterV2.ts`、`ClaudeAdapterV2.ts`，结合本机 Codex 0.164.0 生成的 app-server schema 与 Claude Code 2.1.316 二进制，补齐以下差异：
+
+| 对照点 | Kivio 原行为 | 本轮结果 |
+| --- | --- | --- |
+| Codex 推理摘要 | `turn/start` 不带 `summary`，模型目录默认 `none` 时思考栏为空 | 每轮发 `summary: "detailed"`（schema 字段 `TurnStartParams.summary`）。 |
+| Codex 线程配置 | 无 | `thread/start` / `thread/resume` 带 `config`：`tools.update_plan.enabled=true`（驱动 `turn/plan/updated` → 待办卡），`mcp_optional_startup_grace_ms=10000`（冷启动 npx/uvx MCP 不被首轮排除）。 |
+| Codex 归档会话续聊 | 续接归档 rollout 直接失败 | 识别 `session <id> is archived` 后 `thread/unarchive` 并重试一次；其他错误照常上抛。 |
+| Codex 审批作用域 | 用户点「允许」也回 `acceptForSession` / `approved_for_session` / `scope: session` | 与 T3 一致：「允许」回一次性 `accept` / `approved` / `scope: turn`；「总是允许」（含 Kivio always-allow 表此后的自动放行）回 `acceptForSession` / `approved_for_session` / `scope: session`，经 `ApprovalDecision.always` 传到会话。宿主自动放行（完全档、握手期）仍用会话级授权。服务端只提供其一时退回可用项，不卡轮次。 |
+| Claude 思考展示 | 未指定，`-p` + stream-json 下交给 API 默认，新模型思考块为空 | 追加 `--thinking-display summarized`；「关闭思考」档不加；CLI 版本未知或低于 2.1.100 不加（隐藏 flag，SDK 0.2.90 无、0.2.100 起有）。 |
+
+未采纳：`optOutNotificationMethods: ["turn/diff/updated"]`（Kivio 本就不处理，收益仅少读几行）；T3 的托管 ChatGPT 登录、Codex 安装器、PDF document 块、服务器过载空输入重试、Claude idle 压缩对话框，属于独立产品能力，不在本轮协议对齐范围。
+
+验证：真实 Codex 0.164.0 隔离 `CODEX_HOME` 下，`thread/start` 带 `config` 成功；归档后 `thread/resume` 返回 `session … is archived. Run \`codex unarchive …\``，`thread/unarchive` 后重试成功。Claude 2.1.316 仅核对二进制中 `--thinking-display` 的取值 `summarized|omitted|highlights` 与非交互默认逻辑，未启动真实 Claude 会话。
+
+复查（对照 T3 同名实现逐项核对）：真实 Codex 0.164.0、同一题目、`effort: medium`、临时线程（`ephemeral`）各跑一轮——不带 `summary` 时 `item/reasoning/summaryTextDelta` 为 0，带 `summary: "detailed"` 时出现推理摘要，两轮均 `completed`、无 `error`，线程 `config` 也被接受。官方 [Thinking 文档](https://platform.claude.com/docs/en/build-with-claude/thinking) 确认 Claude 5 及以后模型 `display` 默认 `omitted`；2.1.316 二进制中显式 `--thinking-display` 优先于非交互默认值。
+

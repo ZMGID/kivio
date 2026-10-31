@@ -2578,6 +2578,7 @@ mod tests {
                         updated_input: None,
                         set_permission_mode: None,
                         updated_permissions: None,
+                        always: false,
                     })
                     .await
                     .unwrap();
@@ -2759,6 +2760,7 @@ mod tests {
                     updated_input: None,
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 }
             ),
             json!({ "outcome": { "outcome": "accepted" } })
@@ -2779,6 +2781,7 @@ mod tests {
                     })),
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 }
             ),
             json!({

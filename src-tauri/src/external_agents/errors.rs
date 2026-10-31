@@ -269,6 +269,13 @@ pub fn is_missing_codex_thread_error(raw: &str) -> bool {
         || hay.contains("thread does not exist")
 }
 
+/// `thread/resume` 撞上已归档的 rollout（Codex 桌面版 / `codex archive`）：
+/// 0.164 原文 `session <id> is archived. Run \`codex unarchive <id>\``。可以先 `thread/unarchive` 再续。
+pub fn is_archived_codex_thread_error(raw: &str) -> bool {
+    let hay = raw.to_ascii_lowercase();
+    hay.contains(" is archived") || hay.contains("codex unarchive")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +518,9 @@ mod tests {
         assert!(!is_missing_codex_thread_error(
             "codex app-server exited mid-turn"
         ));
+        assert!(is_archived_codex_thread_error(
+            "session 019a-thr is archived. Run `codex unarchive 019a-thr`"
+        ));
+        assert!(!is_archived_codex_thread_error("thread not found: thr_abc"));
     }
 }

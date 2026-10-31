@@ -647,7 +647,7 @@ pub(crate) async fn request_tool_approval_outcome(
         return crate::chat::interaction_state::ToolApprovalOutcome {
             approved: true,
             permission_mode: None,
-            always: false,
+            always: true,
         };
     }
     let rx =

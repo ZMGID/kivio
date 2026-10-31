@@ -74,6 +74,9 @@ pub struct ApprovalDecision {
     /// 批准时一并回给 CLI 的权限规则（claude `PermissionResult.updatedPermissions`）。
     /// 只在用户点「总是允许」时有值，作用域一律 `session`。
     pub updated_permissions: Option<serde_json::Value>,
+    /// 用户点的是「总是允许」（或此前点过、本次由 Kivio 的 always-allow 表放行）。
+    /// codex 据此回 `acceptForSession`，让 CLI 本会话内不再问（t3code `acceptAlways` 同款）。
+    pub always: bool,
 }
 
 /// 一轮的权限审批通道。宿主持 `requests` 的接收端与 `decisions` 的发送端；会话持另一半。

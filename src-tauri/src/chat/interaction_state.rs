@@ -14,8 +14,9 @@ use super::ask_user::{
 pub(crate) struct ToolApprovalOutcome {
     pub approved: bool,
     pub permission_mode: Option<String>,
-    /// 用户点的是「总是允许」。外部 CLI 据此把同一条规则也告诉 CLI 自己（claude 的
-    /// `updatedPermissions`），否则 CLI 下次照样来问、只是被 Kivio 这侧静默放行。
+    /// 用户点的是「总是允许」（或此前点过、本次由 always-allow 表放行）。外部 CLI 据此把同一
+    /// 规则也告诉 CLI 自己（claude `updatedPermissions`、codex `acceptForSession`），否则 CLI
+    /// 下次照样来问、只是被 Kivio 这侧静默放行。
     pub always: bool,
 }
 

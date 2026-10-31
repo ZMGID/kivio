@@ -2933,6 +2933,7 @@ mod tests {
                     updated_input: Some(json!({ "confirmed": false })),
                     set_permission_mode: None,
                     updated_permissions: None,
+                    always: false,
                 })
                 .await
                 .expect("decision");
