@@ -73,6 +73,10 @@ export default defineConfig({
   build: {
     target: 'esnext',
   },
+  server: {
+    // 参考源码仓库（不提交）文件极多，监视会触发持续整页重载。
+    watch: { ignored: ['**/task-GPUI/**'] },
+  },
   test: {
     // 路由底色回归需要真实 CSS；其余样式仍按默认跳过。
     css: { include: [/chat-01-main\.css/] },
