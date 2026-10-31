@@ -374,6 +374,16 @@ const FIRE_AND_FORGET: &[&str] = &[
 /// 骗用户。`/compact` → `{"type":"compact"}`（见 `run_pi_rpc_session`）。
 const PI_BUILTIN_COMMANDS: &[(&str, &str)] = &[("compact", "压缩对话历史")];
 
+/// `/compact` → `Some(None)`；`/compact <说明>` → `Some(Some(说明))`；其余（含 `/compactx`）→ `None`。
+fn parse_pi_compact(prompt: &str) -> Option<Option<&str>> {
+    let rest = prompt.trim().strip_prefix("/compact")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim();
+    Some((!rest.is_empty()).then_some(rest))
+}
+
 const BTW_COMMANDS: &[&str] = &[
     "btw",
     "btw:tangent",
@@ -739,6 +749,21 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
                 sink(UnifiedAgentEvent::ToolUse { id, name, input });
             }
         }
+        "tool_execution_update" => {
+            let tool_use_id = obj.get("toolCallId").and_then(Value::as_str).unwrap_or("");
+            let output = obj
+                .get("partialResult")
+                .and_then(|result| result.get("content"))
+                .filter(|content| !content.is_null())
+                .map(flatten_pi_tool_content)
+                .unwrap_or_default();
+            if !tool_use_id.is_empty() && !output.is_empty() {
+                sink(UnifiedAgentEvent::ToolPartialOutput {
+                    tool_use_id: tool_use_id.to_string(),
+                    output,
+                });
+            }
+        }
         "tool_execution_end" => {
             let tool_use_id = obj
                 .get("toolCallId")
@@ -802,14 +827,34 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
                 message: message.to_string(),
             });
         }
+        // 结构化重试倒计时（与 claude `api_retry` 同一出口）：Pi 给了 `delayMs`，前端状态行据
+        // `retryAtMs` 倒数，而不是一句静态的 `retry 2/3`。T3 同样展示 attempt / delay / 原因。
         "auto_retry_start" => {
-            let attempt = obj.get("attempt").and_then(|v| v.as_u64()).unwrap_or(1);
+            let attempt = obj
+                .get("attempt")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .max(1);
             let max_attempts = obj
                 .get("maxAttempts")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(attempt);
-            sink(UnifiedAgentEvent::StatusNote {
-                text: format!("retry {attempt}/{max_attempts}"),
+                .unwrap_or(attempt)
+                .max(attempt);
+            let delay = obj.get("delayMs").and_then(Value::as_u64).unwrap_or(0);
+            let reason = obj
+                .get("errorMessage")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Request failed");
+            sink(UnifiedAgentEvent::RetryStatus {
+                retry: crate::chat::protocol::ChatRetryStatusPayload {
+                    attempt: attempt.min(u32::MAX as u64) as u32,
+                    max_retries: max_attempts.min(u32::MAX as u64) as u32,
+                    retry_at_ms: (chrono::Utc::now().timestamp_millis().max(0) as u64)
+                        .saturating_add(delay),
+                    reason: reason.chars().take(120).collect(),
+                },
             });
         }
         "auto_retry_end" if obj.get("success").and_then(|v| v.as_bool()) == Some(false) => {
@@ -821,9 +866,18 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
                 message: message.to_string(),
             });
         }
+        "queue_update" => {}
         _ => {}
     }
     PiRpcOutcome::Continue
+}
+
+/// Pi extension dialog `timeout`（毫秒）：缺省或 0 = 不限时；负数 = 立即过期。
+fn pi_dialog_deadline(timeout_ms: Option<i64>) -> Option<tokio::time::Instant> {
+    match timeout_ms {
+        None | Some(0) => None,
+        Some(ms) => Some(tokio::time::Instant::now() + Duration::from_millis(ms.max(0) as u64)),
+    }
 }
 
 fn extension_ui_tool_name(method: &str) -> Option<&'static str> {
@@ -908,14 +962,11 @@ where
         return reject_extension_ui(stdin, raw).await;
     }
 
-    let requested_timeout = raw
-        .get("timeout")
-        .and_then(Value::as_u64)
-        .unwrap_or(300_000);
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_millis(requested_timeout.clamp(1_000, 300_000));
+    // Pi: missing / 0 = no timeout, negative = already expired (T3 adapter 同款)。之前缺省按
+    // 300s 截断，用户慢一点作答就被静默取消。
+    let deadline = pi_dialog_deadline(raw.get("timeout").and_then(Value::as_i64));
     let result = loop {
-        if cancel_check() || tokio::time::Instant::now() >= deadline {
+        if cancel_check() || deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
             break json!({ "cancelled": true });
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
@@ -936,6 +987,322 @@ where
     write_extension_ui_response(stdin, id, result).await
 }
 
+async fn handle_pi_auxiliary_event<W>(
+    value: &Value,
+    stdin: &SharedPiWriter<W>,
+    sink: &mut impl FnMut(UnifiedAgentEvent),
+    approvals: Option<&mut crate::external_agents::session::live::ApprovalBridge>,
+    pending_controls: Option<&PiControlWaiters>,
+    cancel_check: &impl Fn() -> bool,
+) -> Result<bool, String>
+where
+    W: AsyncWrite + Unpin,
+{
+    if value.get("type").and_then(Value::as_str) == Some("extension_ui_request") {
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if method == "notify" {
+            if let Some(message) = value
+                .get("message")
+                .and_then(Value::as_str)
+                .filter(|message| !message.trim().is_empty())
+            {
+                let level = value
+                    .get("notifyType")
+                    .and_then(Value::as_str)
+                    .filter(|level| *level != "info")
+                    .map(|level| format!("[{level}] "))
+                    .unwrap_or_default();
+                sink(UnifiedAgentEvent::StatusNote {
+                    text: format!("{level}{message}"),
+                });
+            }
+        } else if method == "setStatus" {
+            if let Some(text) = value
+                .get("statusText")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                sink(UnifiedAgentEvent::StatusNote {
+                    text: text.to_string(),
+                });
+            }
+        } else if method == "setWidget" {
+            if let Some(last) = value
+                .get("widgetLines")
+                .and_then(Value::as_array)
+                .and_then(|lines| lines.iter().rev().find_map(Value::as_str))
+            {
+                sink(UnifiedAgentEvent::StatusNote {
+                    text: last.to_string(),
+                });
+            }
+        }
+        bridge_extension_ui(stdin, value, approvals, cancel_check).await?;
+        return Ok(true);
+    }
+    if value.get("type").and_then(Value::as_str) != Some("response") {
+        return Ok(false);
+    }
+    if let (Some(waiters), Some(id)) = (pending_controls, value.get("id").and_then(Value::as_str)) {
+        if let Some(waiter) = waiters.lock().await.remove(id) {
+            let succeeded = value.get("success").and_then(Value::as_bool) == Some(true);
+            if succeeded {
+                if value.get("command").and_then(Value::as_str) == Some("clear_queue") {
+                    let texts = pi_cleared_queue_texts(value);
+                    if !texts.is_empty() {
+                        sink(UnifiedAgentEvent::QueuedTextsRestored { texts });
+                    }
+                }
+                if let Some((kind, id, text)) = waiter.injection {
+                    // A handled input is still accepted and must not be sent a second time.
+                    if value.pointer("/data/disposition").and_then(Value::as_str) == Some("handled")
+                    {
+                        sink(UnifiedAgentEvent::StatusNote {
+                            text: "Pi 扩展已处理这条消息，未加入模型消息队列。".to_string(),
+                        });
+                    }
+                    match kind {
+                        MessageInjectionKind::Steer => {
+                            sink(UnifiedAgentEvent::UserSteer { id, text })
+                        }
+                        MessageInjectionKind::FollowUp => {
+                            sink(UnifiedAgentEvent::UserFollowUp { id, text })
+                        }
+                    }
+                }
+            }
+            let result = if succeeded {
+                Ok(())
+            } else {
+                Err(value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Pi rejected the control command")
+                    .to_string())
+            };
+            let _ = waiter.completion.send(result);
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Default)]
+struct PiSelection {
+    model: Option<String>,
+    reasoning: Option<String>,
+}
+
+// shortcut: default keeps the current selection; restore the baseline if reset is required.
+fn normalize_pi_selection(value: Option<&str>) -> Option<&str> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "default")
+}
+
+fn pi_launch_selection(args: &[String]) -> PiSelection {
+    let flag = |name: &str| {
+        args.windows(2)
+            .rev()
+            .find(|pair| pair[0] == name)
+            .and_then(|pair| normalize_pi_selection(Some(&pair[1])).map(str::to_string))
+    };
+    PiSelection {
+        model: flag("--model"),
+        reasoning: flag("--thinking"),
+    }
+}
+
+fn pi_selection_commands(
+    current: &PiSelection,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+) -> Result<Vec<Value>, String> {
+    let mut commands = Vec::new();
+    if let Some(model) = normalize_pi_selection(model) {
+        if current.model.as_deref() != Some(model) {
+            let (provider, model_id) = model.split_once('/').ok_or("Invalid Pi model id")?;
+            if provider.trim().is_empty() || model_id.trim().is_empty() {
+                return Err("Invalid Pi model id".to_string());
+            }
+            commands.push(json!({"type": "set_model", "provider": provider, "modelId": model_id}));
+        }
+    }
+    if let Some(reasoning) = normalize_pi_selection(reasoning) {
+        if current.reasoning.as_deref() != Some(reasoning) {
+            commands.push(json!({"type": "set_thinking_level", "level": reasoning}));
+        }
+    }
+    Ok(commands)
+}
+
+async fn wait_pi_setting_response<R, W>(
+    reader: &mut tokio::io::Lines<BufReader<R>>,
+    stdin: &SharedPiWriter<W>,
+    payload: &Value,
+    sink: &mut impl FnMut(UnifiedAgentEvent),
+    mut approvals: Option<&mut crate::external_agents::session::live::ApprovalBridge>,
+    pending_controls: &PiControlWaiters,
+    cancel_check: &impl Fn() -> bool,
+) -> Result<(), String>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    use crate::external_agents::session::live::CANCELLED_SESSION_LOST;
+    let reconnect = || crate::external_agents::session::acp::NEEDS_RECONNECT.to_string();
+    if cancel_check() {
+        return Err(CANCELLED_SESSION_LOST.to_string());
+    }
+    let wait = async {
+        write_rpc_value(stdin, payload)
+            .await
+            .map_err(|_| reconnect())?;
+        loop {
+            if cancel_check() {
+                return Err(CANCELLED_SESSION_LOST.to_string());
+            }
+            let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
+                Ok(Ok(Some(line))) => line,
+                Ok(_) => return Err(reconnect()),
+                Err(_) => continue,
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(Value::as_str) == Some("response")
+                && value.get("id") == payload.get("id")
+            {
+                return if value.get("success").and_then(Value::as_bool) == Some(true) {
+                    Ok(())
+                } else {
+                    Err(reconnect())
+                };
+            }
+            if handle_pi_auxiliary_event(
+                &value,
+                stdin,
+                sink,
+                approvals.as_deref_mut(),
+                Some(pending_controls),
+                cancel_check,
+            )
+            .await
+            .map_err(|_| reconnect())?
+            {
+                continue;
+            }
+            if value.get("type").and_then(Value::as_str) != Some("response") {
+                map_pi_rpc_event(&value, sink);
+            }
+        }
+    };
+    match timeout(Duration::from_secs(10), wait).await {
+        Ok(Ok(())) => Ok(()),
+        _ if cancel_check() => Err(CANCELLED_SESSION_LOST.to_string()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(reconnect()),
+    }
+}
+
+fn pi_context_usage_from_stats(response: &Value) -> Option<crate::chat::model::ModelUsage> {
+    if response.get("success").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let context = response.pointer("/data/contextUsage")?;
+    let context_tokens = context.get("tokens").and_then(Value::as_u64);
+    let context_window_tokens = context
+        .get("contextWindow")
+        .and_then(Value::as_u64)
+        .filter(|window| *window > 0);
+    (context_tokens.is_some() || context_window_tokens.is_some()).then_some(
+        crate::chat::model::ModelUsage {
+            context_tokens,
+            context_window_tokens,
+            ..Default::default()
+        },
+    )
+}
+
+async fn collect_pi_context_stats<R, W>(
+    reader: &mut tokio::io::Lines<BufReader<R>>,
+    stdin: &SharedPiWriter<W>,
+    sink: &mut impl FnMut(UnifiedAgentEvent),
+    mut approvals: Option<&mut crate::external_agents::session::live::ApprovalBridge>,
+    pending_controls: &PiControlWaiters,
+    cancel_check: &impl Fn() -> bool,
+) -> bool
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    // Unique ids prevent a timed-out response being mistaken for a later turn's snapshot.
+    let id = format!("kivio-stats-{}", uuid::Uuid::new_v4());
+    let request = json!({"id": id, "type": "get_session_stats"});
+    let wait = async {
+        write_rpc_value(stdin, &request).await.ok()?;
+        loop {
+            if cancel_check() {
+                return None;
+            }
+            let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
+                Ok(Ok(Some(line))) => line,
+                Ok(_) => return None,
+                Err(_) => continue,
+            };
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if value.get("type").and_then(Value::as_str) == Some("response")
+                && value.get("id") == request.get("id")
+            {
+                return Some((pi_context_usage_from_stats(&value), false));
+            }
+            if handle_pi_auxiliary_event(
+                &value,
+                stdin,
+                sink,
+                approvals.as_deref_mut(),
+                Some(pending_controls),
+                cancel_check,
+            )
+            .await
+            .ok()?
+            {
+                continue;
+            }
+            if matches!(
+                value.get("type").and_then(Value::as_str),
+                Some(
+                    "agent_start"
+                        | "turn_start"
+                        | "message_start"
+                        | "auto_retry_start"
+                        | "compaction_start"
+                        | "auto_compaction_start"
+                )
+            ) {
+                map_pi_rpc_event(&value, sink);
+                return Some((None, true));
+            }
+            if value.get("type").and_then(Value::as_str) != Some("response") {
+                map_pi_rpc_event(&value, sink);
+            }
+        }
+    };
+    if let Ok(Some((usage, resumed))) = timeout(Duration::from_secs(3), wait).await {
+        if let Some(usage) = usage {
+            sink(UnifiedAgentEvent::Usage { usage });
+        }
+        resumed
+    } else {
+        false
+    }
+}
+
 async fn run_pi_rpc_io<R, W>(
     reader: &mut tokio::io::Lines<BufReader<R>>,
     stdin: &SharedPiWriter<W>,
@@ -951,8 +1318,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    // 内建 /compact 必须发 type:compact，走 prompt 不会执行。
-    let manual_compact = prompt.trim() == "/compact";
+    // 内建 /compact 必须发 type:compact，走 prompt 不会执行。`/compact <说明>` 带
+    // `customInstructions`（T3 `parsePiCompactCommand` 同款）。
+    let compact = parse_pi_compact(prompt);
+    let manual_compact = compact.is_some();
 
     // pi-btw owns its sub-session and persists completed exchanges as custom session entries.
     // Official RPC says extension commands go out as an ordinary `prompt`; enable the card
@@ -965,8 +1334,12 @@ where
         parse_pi_btw_command(prompt)
     };
 
-    let payload = if manual_compact {
-        json!({ "id": 1, "type": "compact" })
+    let payload = if let Some(instructions) = compact {
+        let mut payload = json!({ "id": 1, "type": "compact" });
+        if let Some(text) = instructions {
+            payload["customInstructions"] = json!(text);
+        }
+        payload
     } else {
         let rpc_images = pi_rpc_images(images);
         let mut payload = json!({ "id": 1, "type": "prompt", "message": prompt });
@@ -1075,6 +1448,7 @@ where
     let mut agent_ended = false;
     let mut btw_entries_requested = false;
     let mut btw_entry_emitted = false;
+    let mut settled_with_pending_entries = false;
     // 本轮是否已从 compaction_end 事件发出 CliCompacted（事件是首选的唯一来源）。
     // 手动 compact 时若 response 先于/代替事件到达，由 response 兜底合成，靠这个
     // 标志保证两个来源不重复发（重复 = 前端两条分隔线 + 边界计数翻倍）。
@@ -1199,104 +1573,23 @@ where
             continue;
         }
 
-        if value.get("type").and_then(|v| v.as_str()) == Some("extension_ui_request") {
-            let method = value
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if method == "notify" {
-                if let Some(message) = value
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .filter(|message| !message.trim().is_empty())
-                {
-                    let level = value
-                        .get("notifyType")
-                        .and_then(Value::as_str)
-                        .filter(|level| *level != "info")
-                        .map(|level| format!("[{level}] "))
-                        .unwrap_or_default();
-                    sink(UnifiedAgentEvent::StatusNote {
-                        text: format!("{level}{message}"),
-                    });
-                }
-            } else if method == "setStatus" {
-                if let Some(text) = value
-                    .get("statusText")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.trim().is_empty())
-                {
-                    sink(UnifiedAgentEvent::StatusNote {
-                        text: text.to_string(),
-                    });
-                }
-            } else if method == "setWidget" {
-                if let Some(last) = value
-                    .get("widgetLines")
-                    .and_then(Value::as_array)
-                    .and_then(|lines| lines.iter().rev().find_map(Value::as_str))
-                {
-                    sink(UnifiedAgentEvent::StatusNote {
-                        text: last.to_string(),
-                    });
-                }
-            }
-            bridge_extension_ui(stdin, &value, approvals.as_deref_mut(), &cancel_check).await?;
+        if handle_pi_auxiliary_event(
+            &value,
+            stdin,
+            sink,
+            approvals.as_deref_mut(),
+            pending_controls,
+            &cancel_check,
+        )
+        .await?
+        {
             continue;
         }
 
-        if value.get("type").and_then(|v| v.as_str()) == Some("response") {
-            if let (Some(waiters), Some(id)) =
-                (pending_controls, value.get("id").and_then(Value::as_str))
-            {
-                if let Some(waiter) = waiters.lock().await.remove(id) {
-                    let succeeded = value.get("success").and_then(Value::as_bool) == Some(true);
-                    if succeeded {
-                        if value.get("command").and_then(Value::as_str) == Some("clear_queue") {
-                            let texts = pi_cleared_queue_texts(&value);
-                            if !texts.is_empty() {
-                                sink(UnifiedAgentEvent::QueuedTextsRestored { texts });
-                            }
-                        }
-                        if let Some((kind, id, text)) = waiter.injection {
-                            // Keep the original queue receipt: returning false would resend an
-                            // input the extension already consumed. Explain its disposition
-                            // separately rather than claiming it was queued for the model.
-                            if value.pointer("/data/disposition").and_then(Value::as_str)
-                                == Some("handled")
-                            {
-                                sink(UnifiedAgentEvent::StatusNote {
-                                    text: "Pi 扩展已处理这条消息，未加入模型消息队列。".to_string(),
-                                });
-                            }
-                            match kind {
-                                MessageInjectionKind::Steer => {
-                                    sink(UnifiedAgentEvent::UserSteer { id, text });
-                                }
-                                MessageInjectionKind::FollowUp => {
-                                    sink(UnifiedAgentEvent::UserFollowUp { id, text });
-                                }
-                            }
-                        }
-                    }
-                    let result = if succeeded {
-                        Ok(())
-                    } else {
-                        Err(value
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Pi rejected the control command")
-                            .to_string())
-                    };
-                    let _ = waiter.completion.send(result);
-                    continue;
-                }
-            }
-            if value
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("kivio-control-"))
-            {
+        if value.get("type").and_then(Value::as_str) == Some("response") {
+            if value.get("id").and_then(Value::as_str).is_some_and(|id| {
+                id.starts_with("kivio-control-") || id.starts_with("kivio-stats-")
+            }) {
                 continue;
             }
             if value.get("id").and_then(Value::as_str) == Some(BTW_ENTRIES_REQUEST_ID) {
@@ -1317,6 +1610,26 @@ where
                     }
                 }
                 btw_entries_requested = false;
+                if settled_with_pending_entries && !run_started && !cancel_check() {
+                    if let Some(waiters) = pending_controls {
+                        if collect_pi_context_stats(
+                            reader,
+                            stdin,
+                            sink,
+                            approvals.as_deref_mut(),
+                            waiters,
+                            &cancel_check,
+                        )
+                        .await
+                        {
+                            settled_with_pending_entries = false;
+                            agent_ended = false;
+                            run_started = true;
+                            continue;
+                        }
+                    }
+                    settled_with_pending_entries = false;
+                }
                 if painted {
                     if persistent {
                         break;
@@ -1411,10 +1724,29 @@ where
                     pending_error = None;
                 }
                 if btw_entries_requested {
+                    settled_with_pending_entries = persistent && !run_aborted;
                     continue;
                 }
                 if let Some(message) = pending_error.take() {
                     sink(UnifiedAgentEvent::Error { message });
+                }
+                if persistent && !run_aborted && !cancel_check() {
+                    if let Some(waiters) = pending_controls {
+                        if collect_pi_context_stats(
+                            reader,
+                            stdin,
+                            sink,
+                            approvals.as_deref_mut(),
+                            waiters,
+                            &cancel_check,
+                        )
+                        .await
+                        {
+                            agent_ended = false;
+                            run_started = true;
+                            continue;
+                        }
+                    }
                 }
                 break;
             }
@@ -1490,9 +1822,34 @@ pub fn is_missing_pi_session_error(err: &str) -> bool {
             || lower.contains("is gone"))
 }
 
+/// Pi 自己的查找顺序（T3 `resolvePiSessionsDir` 同款）：`PI_CODING_AGENT_SESSION_DIR` →
+/// `PI_CODING_AGENT_DIR/sessions` → `~/.pi/agent/sessions`。Kivio 注入给子进程的 env
+/// （供应商 / 手填）优先于宿主进程 env。写死 `~/.pi` 会把真实续接误判成新会话。
 fn pi_sessions_root() -> Option<PathBuf> {
-    directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().join(".pi").join("agent").join("sessions"))
+    let injected = crate::external_agents::overrides::env_for("pi");
+    let env = |key: &str| {
+        injected
+            .get(key)
+            .cloned()
+            .or_else(|| std::env::var(key).ok())
+    };
+    let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
+    Some(resolve_pi_sessions_root(env, &home))
+}
+
+fn resolve_pi_sessions_root(env: impl Fn(&str) -> Option<String>, home: &Path) -> PathBuf {
+    let nonempty = |key: &str| {
+        env(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(dir) = nonempty("PI_CODING_AGENT_SESSION_DIR") {
+        return PathBuf::from(dir);
+    }
+    nonempty("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".pi").join("agent"))
+        .join("sessions")
 }
 
 /// Pi CLI encodes cwd as `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`.
@@ -1853,6 +2210,7 @@ pub struct PiRpcSession {
     reader: Arc<Mutex<tokio::io::Lines<BufReader<ChildStdout>>>>,
     session_id: String,
     resumed: bool,
+    selection: PiSelection,
     stderr_tail: Arc<Mutex<String>>,
     _stderr_task: tokio::task::JoinHandle<()>,
 }
@@ -1918,6 +2276,7 @@ impl PiRpcSession {
             reader: Arc::new(Mutex::new(BufReader::new(stdout).lines())),
             session_id,
             resumed,
+            selection: pi_launch_selection(&effective_args),
             stderr_tail,
             _stderr_task: stderr_task,
         })
@@ -1970,10 +2329,24 @@ pub fn spawn_pi_rpc_session_actor(
                     events,
                     done,
                     approvals,
-                    model: _,
-                    reasoning: _,
+                    model,
+                    reasoning,
                     extra_writable_roots: _,
                 } => {
+                    let commands = pi_selection_commands(
+                        &session.selection,
+                        model.as_deref(),
+                        reasoning.as_deref(),
+                    )
+                    .map_err(|_| crate::external_agents::session::acp::NEEDS_RECONNECT.to_string())
+                    .map(|mut commands| {
+                        for command in &mut commands {
+                            command["id"] = json!(format!("kivio-control-{next_control_id}"));
+                            next_control_id = next_control_id.saturating_add(1);
+                        }
+                        commands
+                    });
+                    let mut selection = std::mem::take(&mut session.selection);
                     let cancelled = Arc::new(AtomicBool::new(false));
                     let turn_cancelled = cancelled.clone();
                     let reader = session.reader.clone();
@@ -1992,22 +2365,59 @@ pub fn spawn_pi_rpc_session_actor(
                     let mut approvals = approvals;
                     let mut turn = tokio::spawn(async move {
                         let mut reader = reader.lock().await;
-                        let result = run_pi_rpc_io(
-                            &mut reader,
-                            &stdin,
-                            &prompt,
-                            &images,
-                            &mut |event| {
-                                let _ = event_tx.send(event);
-                            },
-                            approvals.as_mut(),
-                            Some(&turn_pending_controls),
-                            || turn_cancelled.load(Ordering::Acquire),
-                            true,
-                        )
+                        let mut sink = |event| {
+                            let _ = event_tx.send(event);
+                        };
+                        let result = async {
+                            for command in commands? {
+                                wait_pi_setting_response(
+                                    &mut reader,
+                                    &stdin,
+                                    &command,
+                                    &mut sink,
+                                    approvals.as_mut(),
+                                    &turn_pending_controls,
+                                    &|| turn_cancelled.load(Ordering::Acquire),
+                                )
+                                .await?;
+                                match command.get("type").and_then(Value::as_str) {
+                                    Some("set_model") => {
+                                        selection.model = normalize_pi_selection(model.as_deref())
+                                            .map(str::to_string)
+                                    }
+                                    Some("set_thinking_level") => {
+                                        selection.reasoning =
+                                            normalize_pi_selection(reasoning.as_deref())
+                                                .map(str::to_string)
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // An abort may already be in flight even though no prompt was sent.
+                            if turn_cancelled.load(Ordering::Acquire) {
+                                return Err(
+                                    crate::external_agents::session::live::CANCELLED_SESSION_LOST
+                                        .to_string(),
+                                );
+                            }
+                            run_pi_rpc_io(
+                                &mut reader,
+                                &stdin,
+                                &prompt,
+                                &images,
+                                &mut sink,
+                                approvals.as_mut(),
+                                Some(&turn_pending_controls),
+                                || turn_cancelled.load(Ordering::Acquire),
+                                true,
+                            )
+                            .await
+                        }
                         .await;
                         let result = match result {
-                            Err(error) if error != "cancelled" => {
+                            Err(error) if error != "cancelled"
+                                && error != crate::external_agents::session::live::CANCELLED_SESSION_LOST
+                                && error != crate::external_agents::session::acp::NEEDS_RECONNECT => {
                                 let tail = stderr_tail.lock().await.clone();
                                 if tail.trim().is_empty() {
                                     Err(error)
@@ -2020,14 +2430,17 @@ pub fn spawn_pi_rpc_session_actor(
                         drop(event_tx);
                         let _ = forward.await;
                         let _ = done.send(result.clone());
-                        result
+                        (result, selection)
                     });
 
                     let mut close_after_turn = false;
-                    let turn_result = loop {
+                    let (turn_result, updated_selection) = loop {
                         tokio::select! {
                             joined = &mut turn => {
-                                break joined.unwrap_or_else(|error| Err(format!("Pi session actor task failed: {error}")));
+                                break joined.unwrap_or_else(|error| (
+                                    Err(format!("Pi session actor task failed: {error}")),
+                                    PiSelection::default(),
+                                ));
                             }
                             next = rx.recv() => {
                                 match next {
@@ -2101,6 +2514,7 @@ pub fn spawn_pi_rpc_session_actor(
                             }
                         }
                     };
+                    session.selection = updated_selection;
                     fail_pending_controls(
                         &pending_controls,
                         "Pi turn ended before the control command was acknowledged",
@@ -2136,6 +2550,401 @@ mod tests {
 
     use super::*;
     use tokio::io::{duplex, sink, AsyncReadExt};
+
+    #[test]
+    fn partial_tool_updates_flatten_snapshots_and_ignore_empty_content() {
+        let mut events = Vec::new();
+        map_pi_rpc_event(
+            &json!({
+                "type": "tool_execution_update",
+                "toolCallId": "call-1",
+                "partialResult": {"content": [
+                    {"type": "text", "text": "running"},
+                    {"type": "image", "mimeType": "image/png"}
+                ]}
+            }),
+            &mut |event| events.push(event),
+        );
+        assert!(
+            matches!(&events[..], [UnifiedAgentEvent::ToolPartialOutput {
+            tool_use_id, output
+        }] if tool_use_id == "call-1" && output == "running\n[image: image/png]")
+        );
+        map_pi_rpc_event(
+            &json!({
+                "type": "tool_execution_update", "toolCallId": "call-1",
+                "partialResult": {"content": []}
+            }),
+            &mut |event| events.push(event),
+        );
+        map_pi_rpc_event(
+            &json!({
+                "type": "tool_execution_update", "toolCallId": "call-1",
+                "partialResult": {"content": null}
+            }),
+            &mut |event| events.push(event),
+        );
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn retry_attempts_are_clamped() {
+        for (attempt, max_attempts, expected) in [(0, 0, (1, 1)), (4, 2, (4, 4))] {
+            let mut events = Vec::new();
+            map_pi_rpc_event(
+                &json!({
+                    "type": "auto_retry_start", "attempt": attempt, "maxAttempts": max_attempts
+                }),
+                &mut |event| events.push(event),
+            );
+            assert!(
+                matches!(&events[..], [UnifiedAgentEvent::RetryStatus { retry }]
+                if (retry.attempt, retry.max_retries) == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn queue_updates_do_not_emit_or_end_the_turn() {
+        let mut events = Vec::new();
+        let outcome = map_pi_rpc_event(
+            &json!({
+                "type":"queue_update", "steering":["change direction"], "followUp":[]
+            }),
+            &mut |event| events.push(event),
+        );
+        assert_eq!(outcome, PiRpcOutcome::Continue);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn pi_selection_changes_build_only_changed_frames() {
+        let current = pi_launch_selection(&[
+            "--mode".into(),
+            "rpc".into(),
+            "--model".into(),
+            "old/model".into(),
+            "--thinking".into(),
+            "low".into(),
+        ]);
+        assert_eq!(
+            pi_selection_commands(&current, Some("new/model/variant"), Some("high")).unwrap(),
+            vec![
+                json!({"type":"set_model", "provider":"new", "modelId":"model/variant"}),
+                json!({"type":"set_thinking_level", "level":"high"}),
+            ]
+        );
+        assert!(
+            pi_selection_commands(&current, Some(" old/model "), Some("low"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(pi_selection_commands(&current, Some("default"), Some(" "))
+            .unwrap()
+            .is_empty());
+        for invalid in ["invalid", "/missing", "missing/"] {
+            assert!(pi_selection_commands(&current, Some(invalid), None).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn setting_response_processes_interleaved_control_events() {
+        let (client_stdin, server_stdin) = duplex(4096);
+        let (client_stdout, mut server_stdout) = duplex(4096);
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let accepted = issue_control_command(
+            &stdin,
+            &waiters,
+            "kivio-control-2".into(),
+            Some((
+                MessageInjectionKind::Steer,
+                "steer-id".into(),
+                "hello".into(),
+            )),
+            json!({"type":"steer", "message":"hello"}),
+        )
+        .await
+        .unwrap();
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            let _steer = commands.next_line().await.unwrap().unwrap();
+            let setting: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            for response in [
+                json!({"type":"response","id":"kivio-control-2","command":"steer","success":true}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"notice"}}),
+                json!({"type":"response","id":setting["id"],"success":true}),
+            ] {
+                server_stdout
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut reader = BufReader::new(client_stdout).lines();
+        let mut events = Vec::new();
+        wait_pi_setting_response(
+            &mut reader,
+            &stdin,
+            &json!({"id":"kivio-control-3","type":"set_thinking_level","level":"high"}),
+            &mut |event| events.push(event),
+            None,
+            &waiters,
+            &|| false,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(accepted.await, Ok(Ok(()))));
+        assert!(events.iter().any(
+            |event| matches!(event, UnifiedAgentEvent::UserSteer { id, .. } if id == "steer-id")
+        ));
+        assert!(events.iter().any(
+            |event| matches!(event, UnifiedAgentEvent::TextDelta { delta } if delta == "notice")
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejected_setting_uses_reconnect_sentinel() {
+        let (client_stdin, server_stdin) = duplex(1024);
+        let (client_stdout, mut server_stdout) = duplex(1024);
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            let setting: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            let response = json!({"type":"response","id":setting["id"],"success":false});
+            server_stdout
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let result = wait_pi_setting_response(
+            &mut BufReader::new(client_stdout).lines(),
+            &stdin,
+            &json!({"id":"kivio-control-2","type":"set_model","provider":"p","modelId":"m"}),
+            &mut |_| {},
+            None,
+            &waiters,
+            &|| false,
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err(crate::external_agents::session::acp::NEEDS_RECONNECT.to_string())
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_setting_retires_the_uncertain_session() {
+        let (client_stdin, server_stdin) = duplex(1024);
+        let (client_stdout, server_stdout) = duplex(1024);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server_cancelled = cancelled.clone();
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            commands.next_line().await.unwrap().unwrap();
+            server_cancelled.store(true, Ordering::Release);
+            drop(server_stdout);
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let result = wait_pi_setting_response(
+            &mut BufReader::new(client_stdout).lines(),
+            &stdin,
+            &json!({"id":"kivio-control-2","type":"set_thinking_level","level":"high"}),
+            &mut |_| {},
+            None,
+            &waiters,
+            &|| cancelled.load(Ordering::Acquire),
+        )
+        .await;
+        assert_eq!(
+            result,
+            Err(crate::external_agents::session::live::CANCELLED_SESSION_LOST.to_string())
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn persistent_settlement_requests_context_without_billing_tokens() {
+        let (client_stdin, server_stdin) = duplex(4096);
+        let (client_stdout, mut server_stdout) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            let prompt: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            for event in [
+                json!({"type":"response","id":prompt["id"],"command":"prompt","success":true}),
+                json!({"type":"agent_settled","aborted":false}),
+            ] {
+                server_stdout
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let stats: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(stats["type"], "get_session_stats");
+            assert!(stats["id"].as_str().unwrap().starts_with("kivio-stats-"));
+            let response = json!({
+                "type":"response","id":stats["id"],"success":true,
+                "data":{"contextUsage":{"tokens":321,"contextWindow":1000},
+                        "tokens":{"input":999,"output":888}}
+            });
+            server_stdout
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let mut events = Vec::new();
+        run_pi_rpc_io(
+            &mut BufReader::new(client_stdout).lines(),
+            &stdin,
+            "hi",
+            &[],
+            &mut |event| events.push(event),
+            None,
+            Some(&waiters),
+            || false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(&events[..], [UnifiedAgentEvent::Usage { usage }]
+            if usage.context_tokens == Some(321) && usage.context_window_tokens == Some(1000)
+                && usage.input_tokens.is_none() && usage.output_tokens.is_none()
+                && usage.total_tokens.is_none()));
+        server.await.unwrap();
+        assert!(pi_context_usage_from_stats(&json!({"success":false})).is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_continuation_during_stats_keeps_draining_the_turn() {
+        let (client_stdin, server_stdin) = duplex(4096);
+        let (client_stdout, mut server_stdout) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            let prompt: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            for event in [
+                json!({"type":"response","id":prompt["id"],"command":"prompt","success":true}),
+                json!({"type":"agent_settled","aborted":false}),
+            ] {
+                server_stdout
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let first: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            for event in [
+                json!({"type":"agent_start"}),
+                json!({"type":"response","id":first["id"],"success":false}),
+                json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"continued"}}),
+                json!({"type":"agent_settled","aborted":false}),
+            ] {
+                server_stdout
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let second: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            assert_ne!(first["id"], second["id"]);
+            let response = json!({"type":"response","id":second["id"],"success":true,
+                "data":{"contextUsage":{"tokens":55,"contextWindow":1000}}});
+            server_stdout
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let mut events = Vec::new();
+        run_pi_rpc_io(
+            &mut BufReader::new(client_stdout).lines(),
+            &stdin,
+            "hi",
+            &[],
+            &mut |event| events.push(event),
+            None,
+            Some(&waiters),
+            || false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(events.iter().any(
+            |event| matches!(event, UnifiedAgentEvent::TextDelta { delta } if delta == "continued")
+        ));
+        assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::Usage { usage } if usage.context_tokens == Some(55))));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn settled_btw_waits_for_entries_before_requesting_stats() {
+        let (client_stdin, server_stdin) = duplex(4096);
+        let (client_stdout, mut server_stdout) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            let prompt: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            let response = json!({"type":"response","id":prompt["id"],"command":"prompt",
+                "success":true,"data":{"disposition":"handled"}});
+            server_stdout
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+            let entries: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(entries["type"], "get_entries");
+            for event in [
+                json!({"type":"agent_settled","aborted":false}),
+                json!({"type":"response","id":entries["id"],"success":true,
+                    "data":{"entries":[{"type":"custom","id":"e1","customType":BTW_ENTRY_TYPE,
+                        "data":{"question":"side question","answer":"answer"}}]}}),
+            ] {
+                server_stdout
+                    .write_all(format!("{event}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let stats: Value =
+                serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(stats["type"], "get_session_stats");
+            let response = json!({"type":"response","id":stats["id"],"success":true,
+                "data":{"contextUsage":{"tokens":123,"contextWindow":1000}}});
+            server_stdout
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let mut events = Vec::new();
+        run_pi_rpc_io(
+            &mut BufReader::new(client_stdout).lines(),
+            &stdin,
+            "/btw side question",
+            &[],
+            &mut |event| events.push(event),
+            None,
+            Some(&waiters),
+            || false,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::ToolResult { content, .. } if content == "answer")));
+        assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::Usage { usage } if usage.context_tokens == Some(123))));
+        server.await.unwrap();
+    }
 
     #[test]
     fn model_thinking_map_preserves_holes_and_explicit_extended_levels() {
@@ -2716,19 +3525,79 @@ mod tests {
     }
 
     #[test]
-    fn map_pi_auto_retry_start_as_status() {
+    fn map_pi_auto_retry_start_as_countdown() {
         let value = serde_json::json!({
             "type": "auto_retry_start",
             "attempt": 2,
             "maxAttempts": 3,
-            "delayMs": 4000
+            "delayMs": 4000,
+            "errorMessage": "overloaded_error"
         });
+        let before = chrono::Utc::now().timestamp_millis() as u64;
         let mut events = Vec::new();
         map_pi_rpc_event(&value, &mut |event| events.push(event));
-        assert!(matches!(
-            events.as_slice(),
-            [UnifiedAgentEvent::StatusNote { text }] if text.contains("2/3")
-        ));
+        let [UnifiedAgentEvent::RetryStatus { retry }] = events.as_slice() else {
+            panic!("expected one RetryStatus");
+        };
+        assert_eq!((retry.attempt, retry.max_retries), (2, 3));
+        assert!(retry.retry_at_ms >= before + 4000);
+        assert_eq!(retry.reason, "overloaded_error");
+    }
+
+    #[test]
+    fn pi_compact_parses_optional_instructions() {
+        assert_eq!(parse_pi_compact("/compact"), Some(None));
+        assert_eq!(parse_pi_compact("  /compact  "), Some(None));
+        assert_eq!(
+            parse_pi_compact("/compact keep the API notes"),
+            Some(Some("keep the API notes"))
+        );
+        assert_eq!(parse_pi_compact("/compactx"), None);
+        assert_eq!(parse_pi_compact("please /compact"), None);
+    }
+
+    #[test]
+    fn pi_sessions_root_follows_pi_env_lookup() {
+        let home = Path::new("/home/u");
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(
+            resolve_pi_sessions_root(env(&[]), home),
+            home.join(".pi").join("agent").join("sessions")
+        );
+        assert_eq!(
+            resolve_pi_sessions_root(env(&[("PI_CODING_AGENT_DIR", "/data/pi")]), home),
+            Path::new("/data/pi").join("sessions")
+        );
+        assert_eq!(
+            resolve_pi_sessions_root(
+                env(&[
+                    ("PI_CODING_AGENT_DIR", "/data/pi"),
+                    ("PI_CODING_AGENT_SESSION_DIR", "/sess")
+                ]),
+                home
+            ),
+            PathBuf::from("/sess")
+        );
+        assert_eq!(
+            resolve_pi_sessions_root(env(&[("PI_CODING_AGENT_DIR", "  ")]), home),
+            home.join(".pi").join("agent").join("sessions")
+        );
+    }
+
+    #[test]
+    fn pi_dialog_timeout_zero_or_missing_never_expires() {
+        assert!(pi_dialog_deadline(None).is_none());
+        assert!(pi_dialog_deadline(Some(0)).is_none());
+        let expired = pi_dialog_deadline(Some(-5)).unwrap();
+        assert!(tokio::time::Instant::now() >= expired);
+        assert!(pi_dialog_deadline(Some(60_000)).unwrap() > tokio::time::Instant::now());
     }
 
     fn pi_usage(raw: &str) -> crate::chat::model::ModelUsage {
@@ -2842,7 +3711,7 @@ mod tests {
         assert!(writer.await.unwrap().is_ok());
         assert!(events
             .iter()
-            .any(|event| matches!(event, UnifiedAgentEvent::StatusNote { .. })));
+            .any(|event| matches!(event, UnifiedAgentEvent::RetryStatus { .. })));
         assert!(!events
             .iter()
             .any(|event| matches!(event, UnifiedAgentEvent::Error { .. })));
@@ -2993,6 +3862,7 @@ mod tests {
             )
             .await
             .expect("events");
+        drop(stdout_writer);
         let mut events = Vec::new();
         let result = drain_pi_rpc_lines(
             &mut BufReader::new(stdout_reader).lines(),
@@ -3086,6 +3956,7 @@ mod tests {
             )
             .await
             .expect("events");
+        drop(stdout_writer);
         let mut events = Vec::new();
         let result = drain_pi_rpc_lines(
             &mut BufReader::new(stdout_reader).lines(),
@@ -3206,6 +4077,7 @@ mod tests {
             )
             .await
             .expect("events");
+        drop(stdout_writer);
         let mut events = Vec::new();
         let result = drain_pi_rpc_lines(
             &mut BufReader::new(stdout_reader).lines(),
@@ -3474,6 +4346,7 @@ mod tests {
                     .await
                     .unwrap();
             }
+            drop(stdout_writer);
             let mut events = Vec::new();
             drain_pi_rpc_lines(
                 &mut BufReader::new(stdout_reader).lines(),

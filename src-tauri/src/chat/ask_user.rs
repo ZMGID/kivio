@@ -43,6 +43,8 @@ pub struct AskUserQuestion {
     pub allow_multiple: bool,
     #[serde(default)]
     pub allow_custom: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
     #[serde(default = "default_required")]
     pub required: bool,
     /// Supported MCP form constraints, retained through history and the generated wire contract.

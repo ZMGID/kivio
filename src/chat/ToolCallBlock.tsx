@@ -1,4 +1,4 @@
-import { type ComponentType, type ReactNode, memo, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { SubAgentToolCard } from './SubAgentToolCard'
 import {
@@ -517,6 +517,23 @@ function CardSection({ label, children }: { label: string; children: ReactNode }
     </div>
   )
 }
+function externalPartialOutput(toolCall: ToolCallRecord): string {
+  if (toolCall.source !== 'external_cli' || normalizeToolCallStatus(toolCall.status) !== 'running') return ''
+  return toolCall.result_preview ?? toolCall.resultPreview ?? ''
+}
+
+function StreamingToolOutput({ output }: { output: string }) {
+  const ref = useRef<HTMLPreElement>(null)
+  useLayoutEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [output])
+  return (
+    <pre ref={ref} tabIndex={0} className="custom-scrollbar max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.5] text-neutral-500 dark:text-neutral-400">
+      {output}
+    </pre>
+  )
+}
+
 
 /** Shared boxed "consult card" shell for standalone delegations/consultations
  *  (SUBAGENT / ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
@@ -611,9 +628,10 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
   const steps = view?.steps ?? []
   const preview = view?.preview || ''
+  const partialOutput = externalPartialOutput(toolCall)
   const usageLine = status !== 'running' ? subagentUsageLine(view?.usage) : ''
 
-  const hasBody = Boolean(prompt || steps.length || preview || result || error)
+  const hasBody = Boolean(prompt || steps.length || preview || result || partialOutput || error)
   const displayName = name && name !== agentType ? name : ''
 
   return (
@@ -661,6 +679,11 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
                 </div>
               )}
             </div>
+          )}
+          {partialOutput && (
+            <CardSection label={t.toolCardResult}>
+              <StreamingToolOutput output={partialOutput} />
+            </CardSection>
           )}
           {status !== 'running' && result && (
             <CardSection label="Result">
@@ -1115,6 +1138,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const provider = view?.provider || ''
   const duration = formatDuration(getDuration(toolCall))
   const resultText = getResultPreview(t, toolCall)
+  const partialOutput = externalPartialOutput(toolCall)
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const statusLine =
     status === 'running' ? t.toolCardWebRunning : status === 'error' ? (error || t.toolCardWebFailed) : ''
@@ -1122,6 +1146,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const hasBody = Boolean(
     queries.length ||
       citations.length ||
+      partialOutput ||
       (status !== 'running' && status !== 'pending' && resultText) ||
       error,
   )
@@ -1146,6 +1171,11 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
               <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
                 {compactText(queries.join(' · '), 300)}
               </div>
+            </CardSection>
+          )}
+          {partialOutput && (
+            <CardSection label={t.toolCardResult}>
+              <StreamingToolOutput output={partialOutput} />
             </CardSection>
           )}
           {citations.length > 0 ? (
@@ -1903,7 +1933,8 @@ function DefaultToolCallBlock({
   )
   const knowledgeHits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
   const argumentPreview = useMemo(() => getArgumentPreview(t, toolCall), [t, toolCall])
-  const resultPreview = useMemo(() => getResultPreview(t, toolCall), [t, toolCall])
+  const partialOutput = externalPartialOutput(toolCall)
+  const resultPreview = useMemo(() => partialOutput || getResultPreview(t, toolCall), [partialOutput, t, toolCall])
   // 文件类工具（Read/Write/Edit）的目标路径：折叠行文件名可点，跳到右侧 dock 查看器预览。
   const previewPath = useMemo(() => {
     const raw = toolRawName(toolCall)
@@ -2002,14 +2033,18 @@ function DefaultToolCallBlock({
                 </div>
               </div>
             )}
-            {resultPreview && !knowledgeHits && (
+            {resultPreview && (partialOutput || !knowledgeHits) && (
               <div>
                 <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
                   {t.toolCardResult}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                  {resultPreview}
-                </div>
+                {partialOutput ? (
+                  <StreamingToolOutput output={partialOutput} />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                    {resultPreview}
+                  </div>
+                )}
               </div>
             )}
             {knowledgeHits && <KnowledgeHits hits={knowledgeHits} />}

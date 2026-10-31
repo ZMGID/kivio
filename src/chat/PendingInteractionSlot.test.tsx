@@ -13,7 +13,7 @@ vi.mock('./AskUserBlock', () => ({
   },
 }))
 vi.mock('./ApprovalCard', () => ({
-  ApprovalCard: (props: { title: string; actions: Array<{ label: string; onSelect: () => void }> }) => {
+  ApprovalCard: (props: { title: string; detail?: string; actions: Array<{ label: string; onSelect: () => void }> }) => {
     captured.cards.push(props)
     return (
       <div data-testid="approval-card">
@@ -28,7 +28,7 @@ vi.mock('./ApprovalCard', () => ({
 const captured: {
   toolCalls: unknown[]
   onResolved: (() => void) | null
-  cards: Array<{ title: string; actions: Array<{ label: string; onSelect: () => void }> }>
+  cards: Array<{ title: string; detail?: string; actions: Array<{ label: string; onSelect: () => void }> }>
 } = { toolCalls: [], onResolved: null, cards: [] }
 
 const RUNTIME: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'claude' }
@@ -74,6 +74,14 @@ describe('PendingInteractionSlot', () => {
   it('renders nothing when the inbox is empty', () => {
     const { view } = renderSlot()
     expect(view.container.firstChild).toBeNull()
+  })
+
+  it('passes the ACP approval command preview through to the approval card', () => {
+    renderSlot({ toolConfirm: {
+      conversationId: 'c1', runId: 'r1', toolCallId: 't1', name: 'Run shell command',
+      source: 'external_cli', target: 'npm test', argumentsPreview: 'npm test',
+    } })
+    expect(captured.cards[0].detail).toBe('npm test')
   })
 
   it('session consent: two buttons resolve false / true', async () => {

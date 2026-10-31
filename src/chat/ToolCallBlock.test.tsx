@@ -37,6 +37,46 @@ function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord 
 }
 
 describe('ToolCallBlock', () => {
+  it('streams multiline external tool output at the bottom and keeps terminal rendering unchanged', () => {
+    const first = `${'x'.repeat(230)}\nsecond line`
+    const call = buildToolCall({
+      toolName: 'run_command', source: 'external_cli', status: 'running',
+      arguments: { command: 'npm test' }, result_preview: first,
+    })
+    const { container, rerender } = render(<ToolCallBlock toolCall={call} defaultOpen />)
+    const output = container.querySelector<HTMLPreElement>('pre.custom-scrollbar')
+    expect(output).not.toBeNull()
+    expect(output?.textContent).toBe(first)
+    Object.defineProperty(output!, 'scrollHeight', { configurable: true, value: 900 })
+    output!.scrollTop = 0
+    rerender(<ToolCallBlock toolCall={{ ...call, result_preview: `${first}\nthird line` }} defaultOpen />)
+    expect(output?.textContent).toBe(`${first}\nthird line`)
+    expect(output?.scrollTop).toBe(900)
+    rerender(<ToolCallBlock toolCall={{ ...call, status: 'success', result_preview: 'finished\nok' }} defaultOpen />)
+    expect(screen.getByText('finished ok')).toBeVisible()
+    expect(container.querySelector('pre.custom-scrollbar')).toBeNull()
+  })
+
+  it('keeps a running tool collapsed by default until its disclosure is opened', async () => {
+    render(<ToolCallBlock toolCall={buildToolCall({
+      toolName: 'run_command', source: 'external_cli', status: 'running', result_preview: 'live output',
+    })} />)
+    expect(screen.queryByText('live output')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Run/ }))
+    expect(screen.getByText('live output')).toBeVisible()
+  })
+
+  it.each([
+    ['Agent', /SUBAGENT/],
+    ['web_search', /WEB SEARCH/],
+  ] as const)('shows external %s partial output inside its specialized disclosure', async (toolName, label) => {
+    render(<ToolCallBlock toolCall={buildToolCall({
+      toolName, source: 'external_cli', status: 'running', result_preview: 'partial\noutput',
+    })} />)
+    await userEvent.click(screen.getByRole('button', { name: label }))
+    expect(screen.getByText(/partial/).textContent).toBe('partial\noutput')
+  })
+
   it.each([
     ['skill', { name: 'pdf', arguments: 'extract tables' }],
     ['skill_activate', { name: 'pdf', arguments: 'extract tables' }],

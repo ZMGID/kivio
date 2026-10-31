@@ -140,3 +140,36 @@ T3 Code 的服务等级选择、多账号管理、额度展示、目标持续执
 
 复查（对照 T3 同名实现逐项核对）：真实 Codex 0.164.0、同一题目、`effort: medium`、临时线程（`ephemeral`）各跑一轮——不带 `summary` 时 `item/reasoning/summaryTextDelta` 为 0，带 `summary: "detailed"` 时出现推理摘要，两轮均 `completed`、无 `error`，线程 `config` 也被接受。官方 [Thinking 文档](https://platform.claude.com/docs/en/build-with-claude/thinking) 确认 Claude 5 及以后模型 `display` 默认 `omitted`；2.1.316 二进制中显式 `--thinking-display` 优先于非交互默认值。
 
+## 2026-10-31 OpenCode / Pi 对照 T3 Code `85bd3f2a`
+
+参考仓库再快进到 `85bd3f2a`。T3 的 OpenCode 走 `opencode serve` HTTP/SSE（1.x、2.x 两套协议），Pi 走 `pi --mode rpc` 并注入自带扩展；Kivio 保持 ACP / Pi RPC，不换传输，只补协议层可直接对齐的差异。本机 OpenCode 为 **2.0.32**（`@opencode/cli`），其 ACP `session/new` 实测给出 `configOptions`：`model`（category `model`）与 `mode`（category `mode`，取值 `build` / `plan`），无 `modes` 字段。
+
+| 对照点 | Kivio 原行为 | 本轮结果 |
+| --- | --- | --- |
+| OpenCode 计划 / 构建 | 无模式选择 | 权限胶囊新增「构建 (默认)」「计划 (只读)」，会话建立时发 `session/set_config_option {configId:"mode"}`（ACP v1 只给 `modes` 时退回 `session/set_mode`），只发 CLI 自报过的取值。切换模式重连并续接同一原生会话（与 Codex sandbox 切档同一机制）。 |
+| OpenCode 工具审批 | 宿主不接，会话层自动选 `allow_once`；MCP 表单一律拒绝 | 接入现有审批卡：「允许」→ `allow_once`，「总是允许」→ `allow_always`（T3 ACP `acceptForSession` → `allow_always`），CLI 没给 always 时退回 once；拒绝 → `cancelled`。`elicitation/create` 复用现有 MCP 表单编解码。 |
+| ACP 计划更新 | `sessionUpdate: "plan"` 被忽略 | 映射为待办卡（与 Codex `turn/plan/updated` 同一出口），不作为消息边界。 |
+| ACP 推理档位 | 首次连接只记录所选档位、不下发；`category:"thought_level"` 不认作可写档位 | 有会话内档位配置时首轮即下发；识别 `thought_level`。grok 等启动参数档位不受影响。 |
+| Pi `/compact <说明>` | 只识别精确 `/compact` | `{"type":"compact","customInstructions":…}`（T3 `parsePiCompactCommand` 同款）；`/compactx` 等不误判。 |
+| Pi 会话目录 | 写死 `~/.pi/agent/sessions`，自定义目录下真实续接被误判为新会话 | 按 Pi 查找顺序 `PI_CODING_AGENT_SESSION_DIR` → `PI_CODING_AGENT_DIR/sessions` → 默认；Kivio 注入给 Pi 的 env 优先。 |
+| Pi 扩展对话超时 | 缺省按 300s 截断，0 也被夹到 1s | 缺省 / 0 不限时，负数立即过期（与 Pi 及 T3 一致）。 |
+| Pi 自动重试 | 静态 `retry 2/3` 状态 | 结构化重试倒计时（`attempt` / `maxAttempts` / `delayMs` / `errorMessage`），与 Claude `api_retry` 同一出口。 |
+
+未采纳：OpenCode HTTP/SSE 传输及其 steer、fork/revert、子会话与问卷事件（ACP 下无对应原语，需整套换传输）；OpenCode Go 额度与历史 cost（`ModelUsage` 无成本字段）；Pi 注入扩展（`tool_call` 审批钩子、MCP 桥）、`get_state` 空闲探测、Pi 会话导入、`queue_update` 对账。这些属于独立能力或需要替换现有会话负责人。
+
+验证：真实 OpenCode 2.0.32 在隔离的工作 / 数据目录中 `initialize` → `session/new` → `session/set_config_option {configId:"mode", value:"plan"}` 成功，返回的 mode 当前值变为 `plan`。Pi 本机未安装，仅协议单测覆盖。
+
+### 第二轮：补齐可做项与前端
+
+| 对照点 | 本轮结果 |
+| --- | --- |
+| 工具中间输出 | 新增 `UnifiedAgentEvent::ToolPartialOutput`：Pi `tool_execution_update.partialResult`、ACP 非终态 `tool_call_update` 内容（含终端输出）作为累计快照下发；运行中卡片保留最新 800 字符（尾部，前缀 `…`），终态后忽略。前端运行中卡片实时更新并滚到底部（T3 `V2ItemInspector` 同款）。走既有 `ToolUpdated`，协议不变。 |
+| ACP 计划 | 独立映射：空条目记为 `Step N`，支持 `plan_update`（`type:"items"`）与 `plan_removed`（清空），对齐 T3 `runtimeModel.ts:1387-1424`。模式只认 `type:"select"`（或缺省）的 `category:"mode"` 选项。 |
+| ACP 审批卡 | `format_tool_approval_summary` 读 ACP toolCall：先露 `rawInput.command`，再退到 `filePath` / `path` / `locations[0].path` / 标题，去掉 ANSI 与控制符（T3 `TimelinePendingApprovalRow` 先显示真实命令）。 |
+| Pi 会话内切换模型 / 思考 | `set_model {provider, modelId}`、`set_thinking_level {level}`（T3 adapter.ts 2305-2358），模型 id 按首个 `/` 拆分；失败退回原有重连。Pi 启动指纹不再含模型 / 思考，切换不再重启进程。选「默认」保留当前值（T3 恢复基线，Kivio 简化）。 |
+| Pi 上下文用量 | 轮末 `get_session_stats`（唯一 id `kivio-stats-<uuid>`，防迟到回执串轮），读 `contextUsage.{tokens, contextWindow}` 更新上下文仪表，不重复计费。 |
+| Pi 编辑器预填 | 问答协议新增可选 `defaultValue`；Pi `editor` / `input` 的 `prefill` 作为初始文本，未改动直接提交也会发出；保留原样空白与换行。 |
+| Pi 重试 | `attempt ≥ 1`、`maxAttempts ≥ attempt`（T3 1870-1877）。 |
+
+第二轮验证：Rust 外部 CLI 测试 836 通过、45 忽略（需真实 CLI）；前端 8 个相关测试文件 129 项通过；`npm run protocol:generate` 重新生成协议绑定；`tsc --noEmit` 通过。未在桌面应用实机点测，Pi 无本机实测。
+

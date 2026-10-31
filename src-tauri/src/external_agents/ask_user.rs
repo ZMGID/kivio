@@ -118,6 +118,17 @@ const CODECS: &[AskUserCodec] = &[
         auto_allow_ordinary_tools: false,
         opens_host: true,
     },
+    AskUserCodec {
+        // OpenCode ACP 的工具审批（`session/request_permission`）与 MCP 表单都要到宿主卡片
+        // （T3 同款：允许一次 / 总是允许 / 拒绝），不再由会话层静默 allow_once。
+        agent_id: "opencode",
+        tools: &["elicitation/create"],
+        parse: parse_mcp_elicitation,
+        encode: encode_mcp_elicitation,
+        unknown_shape: UnknownAskShape::Reject,
+        auto_allow_ordinary_tools: false,
+        opens_host: true,
+    },
 ];
 
 pub fn codec_for(agent_id: &str, tool_name: &str) -> Option<&'static AskUserCodec> {
@@ -284,6 +295,7 @@ fn parse_mcp_elicitation(input: &Value) -> Option<AskUserPromptPayload> {
         questions.push(AskUserQuestion {
             required: is_required(id),
             value_schema: Some(property.clone()),
+            default_value: None,
             id: id.clone(),
             prompt,
             allow_multiple: false,
@@ -390,7 +402,18 @@ fn parse_pi_extension_ui(input: &Value) -> Option<AskUserPromptPayload> {
         title,
         questions: vec![AskUserQuestion {
             required: true,
-            value_schema: None,
+            value_schema: matches!(method, "input" | "editor")
+                .then(|| serde_json::json!({ "type": "string" })),
+            default_value: match method {
+                "editor" | "input" => Some(
+                    input
+                        .get("prefill")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                _ => None,
+            },
             id: "0".to_string(),
             prompt,
             options,
@@ -454,6 +477,7 @@ fn parse_claude(input: &Value) -> Option<AskUserPromptPayload> {
                 id: qi.to_string(),
                 required: true,
                 value_schema: None,
+                default_value: None,
                 prompt: text,
                 options,
                 allow_multiple: json_bool(question, &["multiSelect"]),
@@ -564,6 +588,7 @@ fn parse_dsh(input: &Value) -> Option<AskUserPromptPayload> {
                 options: parse_label_options(question),
                 required: true,
                 value_schema: None,
+                default_value: None,
                 allow_multiple: json_bool(question, &["multiSelect", "multi_select"]),
                 allow_custom: true,
             })
@@ -650,6 +675,7 @@ fn parse_codex(input: &Value) -> Option<AskUserPromptPayload> {
                 prompt: text,
                 required: true,
                 value_schema: None,
+                default_value: None,
                 options,
                 allow_multiple: json_bool(question, &["multiSelect", "multi_select"]),
                 allow_custom: json_bool(question, &["isOther", "is_other"])
@@ -732,6 +758,8 @@ mod tests {
         assert!(!needs_host("cursor-agent"));
         assert!(needs_host("pi"));
         assert!(needs_host("codex"));
+        assert!(needs_host("opencode"));
+        assert!(!auto_allow_ordinary_tools("opencode"));
         assert!(auto_allow_ordinary_tools("dsh"));
         assert!(!auto_allow_ordinary_tools("codex"));
         assert!(!auto_allow_ordinary_tools("claude"));
@@ -815,6 +843,56 @@ mod tests {
             encode_pi_extension_ui(&input, &prompt, &answered),
             serde_json::json!({ "value": "feature/pi-rpc" })
         );
+    }
+
+    #[test]
+    fn pi_extension_text_inputs_preserve_prefill() {
+        for method in ["editor", "input"] {
+            let prompt = parse_pi_extension_ui(&serde_json::json!({
+                "method": method, "prefill": "  draft\n"
+            }))
+            .unwrap();
+            assert_eq!(
+                prompt.questions[0].default_value.as_deref(),
+                Some("  draft\n")
+            );
+            let wire = crate::chat::protocol::ChatAskUserPromptPayload::from(&prompt);
+            let json = serde_json::to_value(wire).unwrap();
+            assert_eq!(json["questions"][0]["defaultValue"], "  draft\n");
+        }
+        let prompt = parse_pi_extension_ui(&serde_json::json!({
+            "method": "confirm", "title": "Continue?", "prefill": "ignored"
+        }))
+        .unwrap();
+        assert_eq!(prompt.questions[0].default_value, None);
+        let editor = parse_pi_extension_ui(&serde_json::json!({"method": "editor"})).unwrap();
+        assert_eq!(editor.questions[0].default_value.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn pi_extension_text_answers_preserve_literal_contents() {
+        for method in ["editor", "input"] {
+            let input = serde_json::json!({"method": method, "title": "Edit"});
+            let prompt = parse_pi_extension_ui(&input).unwrap();
+            for text in ["", "  ", "  line one\nline two  "] {
+                let response = AskUserResponseResult {
+                    phase: ASK_USER_PHASE_ANSWERED.to_string(),
+                    answers: HashMap::from([(
+                        "0".to_string(),
+                        AskUserAnswer {
+                            selected_option_ids: vec![],
+                            custom_text: Some(text.to_string()),
+                        },
+                    )]),
+                };
+                let validated =
+                    crate::chat::ask_user::validate_response(&prompt, response).unwrap();
+                assert_eq!(
+                    encode_pi_extension_ui(&input, &prompt, &validated),
+                    serde_json::json!({"value": text})
+                );
+            }
+        }
     }
 
     /// claude 的 `AskUserQuestion` 入参必须能映射成 Kivio 的问用户卡片，否则这个功能
@@ -988,6 +1066,7 @@ mod tests {
                     id: "drink".to_string(),
                     required: true,
                     value_schema: None,
+                    default_value: None,
                     prompt: "喝什么？".to_string(),
                     options: vec![
                         AskUserOption {
@@ -1008,6 +1087,7 @@ mod tests {
                     id: "langs".to_string(),
                     required: true,
                     value_schema: None,
+                    default_value: None,
                     prompt: "会哪些？".to_string(),
                     options: vec![
                         AskUserOption {

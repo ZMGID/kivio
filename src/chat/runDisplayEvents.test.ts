@@ -10,6 +10,19 @@ const tool = (runId: string, status: string, structuredContent?: object): ChatTo
 } as ChatToolProgressPayload)
 
 describe('run display events', () => {
+  it('replaces the running external tool snapshot on each ToolUpdated event', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    const payload = {
+      ...tool('run-a', 'running'), name: 'Bash', source: 'external_cli', resultPreview: 'first\n',
+    }
+    applyRunDisplayEvent(snapshot, { kind: 'tool', payload })
+    applyRunDisplayEvent(snapshot, { kind: 'tool', payload: { ...payload, resultPreview: 'first\nsecond' } })
+    expect(snapshot.toolCalls).toHaveLength(1)
+    expect(snapshot.toolCalls[0]).toMatchObject({
+      status: 'running', result_preview: 'first\nsecond', resultPreview: 'first\nsecond',
+    })
+  })
+
   it('retains a tool card payload when a later result update omits it', () => {
     const snapshot = createEmptyStreamSnapshot()
     applyRunDisplayEvent(snapshot, { kind: 'tool', payload: tool('run-a', 'running', { askUser: { title: 'Question' } }) })

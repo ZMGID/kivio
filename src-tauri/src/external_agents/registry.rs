@@ -258,6 +258,10 @@ mod tests {
                     ("always-proceed", "完全放行"),
                 ],
             ),
+            (
+                "opencode",
+                &[("build", "构建 (默认)"), ("plan", "计划 (只读)")],
+            ),
         ];
 
         for (id, expected) in cases {
@@ -265,7 +269,7 @@ mod tests {
             assert_eq!(def.sandbox_options, *expected, "sandbox options for {id}");
         }
 
-        for id in ["opencode", "gemini", "kimi", "pi", "hermes"] {
+        for id in ["gemini", "kimi", "pi", "hermes"] {
             let def = get_agent_def(id).expect("agent must be registered");
             assert!(
                 def.sandbox_options.is_empty(),

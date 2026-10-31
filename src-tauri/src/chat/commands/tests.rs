@@ -1030,6 +1030,41 @@ fn format_tool_approval_summary_falls_back_to_raw_arguments() {
 }
 
 #[test]
+fn format_tool_approval_summary_reads_acp_tool_call() {
+    let record = |arguments: &str| ToolCallRecord {
+        id: "call_1".to_string(),
+        name: "Run tests".to_string(),
+        source: "external".to_string(),
+        server_id: None,
+        arguments: arguments.to_string(),
+        status: ToolCallStatus::Pending,
+        result_preview: None,
+        error: None,
+        duration_ms: None,
+        started_at: None,
+        completed_at: None,
+        round: 1,
+        sensitive: true,
+        artifacts: Vec::new(),
+        trace_id: None,
+        span_id: None,
+        structured_content: None,
+    };
+    // OpenCode ACP toolCall: the real command comes first, ANSI stripped.
+    let command = format_tool_approval_summary(&record(
+        r#"{"title":"Run tests","kind":"execute","rawInput":{"command":"\u001b[1mnpm test\u001b[0m"}}"#,
+    ));
+    assert_eq!(command.target.as_deref(), Some("npm test"));
+    assert_eq!(command.detail, "npm test\nRun tests");
+    let edit = format_tool_approval_summary(&record(
+        r#"{"title":"edit","kind":"edit","locations":[{"path":"/w/a.rs"}]}"#,
+    ));
+    assert_eq!(edit.target.as_deref(), Some("/w/a.rs"));
+    let title_only = format_tool_approval_summary(&record(r#"{"title":"Fetch docs"}"#));
+    assert_eq!(title_only.target.as_deref(), Some("Fetch docs"));
+}
+
+#[test]
 fn assistant_storage_owns_native_replay_and_edit_discards_signed_final_blocks() {
     let canonical = serde_json::json!([
         {"type":"anthropic_thinking", "thinking":" immutable plan ", "signature":"signed"},

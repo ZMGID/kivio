@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Eye, ShieldCheck } from 'lucide-react'
 import { deriveDshPresetModes, derivePermissionModes } from './permissionModes'
 import type { AgentRuntimeConfig, DetectedExternalAgent } from './types'
 
@@ -9,7 +10,7 @@ function externalRuntime(id: string, sandbox?: string | null): AgentRuntimeConfi
   return { kind: 'external', externalAgentId: id, externalSandbox: sandbox ?? null }
 }
 
-// 后端 detection::sandbox_options_for 的档位表（claude 四档 / codex 三档 / opencode 无档位）。
+// 后端 detection::sandbox_options_for 的档位表（claude 四档 / codex 三档 / opencode 两档）。
 const agents: DetectedExternalAgent[] = [
   {
     id: 'claude',
@@ -34,7 +35,13 @@ const agents: DetectedExternalAgent[] = [
       { id: 'danger-full-access', label: '完全' },
     ],
   },
-  { id: 'opencode', name: 'OpenCode', available: true, models: [], sandboxOptions: [] },
+  {
+    id: 'opencode', name: 'OpenCode', available: true, models: [],
+    sandboxOptions: [
+      { id: 'build', label: '构建 (默认)' },
+      { id: 'plan', label: '计划 (只读)' },
+    ],
+  },
 ]
 
 describe('derivePermissionModes（底栏模式胶囊）', () => {
@@ -57,13 +64,24 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
     expect(options.map((o) => o.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
   })
 
-  it('opencode 没有档位 → 空表（胶囊隐藏）', () => {
-    const { options } = derivePermissionModes({
+  it('opencode uses build by default and the same read-only eye and neutral tone as Claude plan', () => {
+    const { options, current } = derivePermissionModes({
       target: 'composer',
       agentRuntime: externalRuntime('opencode'),
       agents,
     })
-    expect(options).toEqual([])
+    const claude = derivePermissionModes({ target: 'composer', agentRuntime: externalRuntime('claude'), agents })
+    expect(current).toBe('build')
+    expect(options.map(({ value, label }) => ({ value, label }))).toEqual([
+      { value: 'build', label: '构建 (默认)' },
+      { value: 'plan', label: '计划 (只读)' },
+    ])
+    expect(options[0].icon).toBe(ShieldCheck)
+    expect(options[1].icon).toBe(Eye)
+    expect(options[1].tone).toBe(claude.options[0].tone)
+    expect(derivePermissionModes({
+      target: 'composer', agentRuntime: externalRuntime('opencode', 'plan'), agents,
+    }).current).toBe('plan')
   })
 
   it('还没探测到 agent 列表时也是空表，不会退回 Kivio 三档', () => {

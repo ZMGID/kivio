@@ -4,6 +4,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApprovalCard } from './ApprovalCard'
 
 describe('ApprovalCard', () => {
+  it('shows an external CLI command as readable approval detail', () => {
+    render(<ApprovalCard title="允许执行？" detail={'npm test\n-- --run'} actions={[]} />)
+    expect(screen.getByText(/npm test/).textContent).toBe('npm test\n-- --run')
+  })
+
   it('展示提交错误，并阻止禁用动作被鼠标或快捷键重复触发', () => {
     const deny = vi.fn()
     const approve = vi.fn()

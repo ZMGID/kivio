@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AskUserBlock } from './AskUserBlock'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
+import { userPromptEventToRecord } from './streamApply'
 import { api } from '../api/tauri'
 import mcpContract from './fixtures/ask-user-mcp-contract.json'
 import type { ToolCallRecord } from './types'
@@ -33,6 +34,90 @@ const RETRY_QUESTION = {
 
 describe('AskUserBlock', () => {
   afterEach(() => vi.restoreAllMocks())
+  it('submits an unchanged camelCase prefill from the user prompt event verbatim', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const toolCall = userPromptEventToRecord({
+      conversationId: 'conversation-1', runId: 'run-1', toolCallId: 'tool-1',
+      name: 'PiExtensionInput', source: 'external_cli',
+      prompt: { questions: [{
+        id: '0', prompt: 'Branch', options: [], allowCustom: true, defaultValue: '  feature/pi  ',
+      }] },
+    })
+    render(<AskUserBlock variant="docked" toolCall={toolCall} />)
+    expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('  feature/pi  ')
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: [], custom_text: '  feature/pi  ' },
+    }, false))
+  })
+
+  it('preserves multiline Pi editor prefill and lets Enter insert a line instead of submitting', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const toolCall = { ...askUserCall({
+      phase: 'awaiting', questions: [{
+        id: '0', prompt: 'Commit message', options: [], allow_custom: true,
+        default_value: '  subject\n\nbody\n', valueSchema: { type: 'string' },
+      }], answers: {},
+    }), toolName: 'PiExtensionEditor' }
+    render(<AskUserBlock variant="docked" toolCall={toolCall} />)
+    const input = screen.getByPlaceholderText('自己写一个…')
+    expect(input.tagName).toBe('TEXTAREA')
+    expect(input).toHaveValue('  subject\n\nbody\n')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: [], custom_text: '  subject\n\nbody\n' },
+    }, false))
+  })
+
+  it('keeps a cleared user edit when the same prompt is updated', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const question = {
+      id: '0', prompt: 'Message', options: [], allowCustom: true,
+      valueSchema: { type: 'string' }, defaultValue: 'initial',
+    }
+    const { rerender } = render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [question], answers: {},
+    })} />)
+    fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '' } })
+    rerender(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{ ...question, defaultValue: 'updated' }], answers: {},
+    })} />)
+    expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('')
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: [], custom_text: '' },
+    }, false))
+  })
+
+  it('allows submitting an unchanged empty editor prefill', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={{ ...askUserCall({
+      phase: 'awaiting', questions: [{
+        id: '0', prompt: 'Message', options: [], allowCustom: true,
+        valueSchema: { type: 'string' }, defaultValue: '',
+      }], answers: {},
+    }), toolName: 'PiExtensionEditor' }} />)
+    expect(screen.getByText('提交')).toBeEnabled()
+    fireEvent.click(screen.getByText('提交'))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: [], custom_text: '' },
+    }, false))
+  })
+
+  it('replaces a prefilled custom answer when the user picks a single option', async () => {
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+      phase: 'awaiting', questions: [{
+        ...RETRY_QUESTION, valueSchema: { type: 'string' }, defaultValue: 'custom',
+      }], answers: {},
+    })} />)
+    fireEvent.click(screen.getByRole('option', { name: /立即重试/ }))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+      '0': { selected_option_ids: ['1'], custom_text: null },
+    }, false))
+  })
 
   it('round-trips the Rust MCP contract fixture through the form without losing optional or typed values', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)

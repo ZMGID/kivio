@@ -242,26 +242,31 @@ pub const GEMINI_AGENT_DEF: RuntimeAgentDef = acp_def(
     build_gemini_args,
 );
 
-pub const OPENCODE_AGENT_DEF: RuntimeAgentDef = acp_def(
-    "opencode",
-    "OpenCode",
-    "opencode-cli",
-    &["opencode"],
-    None,
-    OPENCODE_MODELS,
-    &["acp"],
-    &[],
-    ModelProbeStrategy::OpenCodeThenAcp,
-    CurrentConfigStrategy::None,
-    ProviderProfileStrategy::OpenCode,
-    ContextWindowStrategy::Generic,
-    UsageFallbackStrategy::None,
-    super::super::types::AgentErrorPolicy::login("opencode auth login"),
-    Some("/compact"),
-    ACP_IMPORT_POLICY,
-    OPENCODE_INSTALL,
-    build_acp_args,
-);
+// OpenCode 自报 `category:"mode"` 的 build / plan（2.0.32 实测）；T3 同样只用这两个原生 agent。
+// 经权限胶囊选，`AcpSession::connect` 发 `session/set_config_option`。
+pub const OPENCODE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
+    sandbox_options: &[("build", "构建 (默认)"), ("plan", "计划 (只读)")],
+    ..acp_def(
+        "opencode",
+        "OpenCode",
+        "opencode-cli",
+        &["opencode"],
+        None,
+        OPENCODE_MODELS,
+        &["acp"],
+        &[],
+        ModelProbeStrategy::OpenCodeThenAcp,
+        CurrentConfigStrategy::None,
+        ProviderProfileStrategy::OpenCode,
+        ContextWindowStrategy::Generic,
+        UsageFallbackStrategy::None,
+        super::super::types::AgentErrorPolicy::login("opencode auth login"),
+        Some("/compact"),
+        ACP_IMPORT_POLICY,
+        OPENCODE_INSTALL,
+        build_acp_args,
+    )
+};
 
 pub const HERMES_AGENT_DEF: RuntimeAgentDef = acp_def(
     "hermes",

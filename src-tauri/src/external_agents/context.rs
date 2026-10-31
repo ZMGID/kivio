@@ -162,7 +162,7 @@ pub struct ExternalSessionUsage {
 /// 调用方是 `chat_get_context_stats`（用户点开用量条）与压缩后的重算，不在回复热路径。
 /// 从一条 CLI 实报的 `usage` 里取出**上下文占用**口径的已用 token。
 ///
-/// 优先独立的 `context_tokens`（Antigravity 最近请求），否则用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
+/// 优先独立的 `context_tokens`（Pi 会话用量 / Antigravity 最近请求），否则用 `total_tokens` 而不是 `input_tokens`：各 CLI 解析层（`stream::usage_from_parts`）
 /// 已按各家的 cache 包含关系把 cache 正确汇总进 `total_tokens`，而 `input_tokens` 在
 /// Anthropic 口径（claude / pi / ACP）下只是**非缓存**部分——只读它等于把前面几层补的
 /// cache 全丢在半路（实测 kimi cache 占 97.6%、pi 62%、opencode 13%）。
@@ -184,17 +184,10 @@ pub(crate) fn cli_reported_context_tokens(usage: &ModelUsage) -> usize {
         .min(usize::MAX as u64) as usize
 }
 
-/// 这条 CLI 上报是否**真的带了分子**（任一 token 数 > 0）。
-///
-/// 判据不能是 `input_tokens.is_some()`：全零上报（未登录 / `/help` / 未知斜杠命令 /
-/// Kivio 自己发的 `/compact` —— 这些轮次没有 LLM 往返）落盘的是 `Some(0)`，
-/// `is_some()` 会命中它并把用量条清零。
+/// Independent context snapshots include authoritative zero; otherwise ignore all-zero billing.
 fn usage_has_token_numbers(usage: &ModelUsage) -> bool {
-    // 必须与 `run.rs::usage_tokens_all_zero` **完全互为反面**（含 `reasoning_tokens`）。
-    // 不一致的后果：只报 reasoning tokens 的那一轮，`merge_cli_usage` 认为它是真数据、
-    // 拿它替换上一条好数据，而这里的分子挑选器认为它是空的、继续往前找更旧的消息 ⇒
-    // 分子与落库用量描述的是**不同轮次**。
-    !crate::external_agents::run::usage_tokens_all_zero(usage)
+    // Context-only snapshots have a numerator but do not represent billing tokens.
+    usage.context_tokens.is_some() || !crate::external_agents::run::usage_tokens_all_zero(usage)
 }
 
 pub fn collect_external_session_usage(
@@ -772,6 +765,29 @@ mod tests {
         assert_eq!(state.status, "unknown");
         // 分子仍然照常显示。
         assert_eq!(state.estimated_input_tokens, 5010);
+    }
+
+    #[test]
+    fn context_only_usage_is_a_valid_context_measurement() {
+        let usage = ModelUsage {
+            context_tokens: Some(42),
+            context_window_tokens: Some(1000),
+            ..Default::default()
+        };
+        assert!(usage_has_token_numbers(&usage));
+        assert_eq!(cli_reported_context_tokens(&usage), 42);
+        let mut conversation = empty_conversation();
+        conversation
+            .messages
+            .push(message("a1", "assistant", "done", Some(usage)));
+        let state =
+            compute_external_context_state(&conversation, "pi", "default", None, None, None);
+        assert_eq!(state.estimated_input_tokens, 42);
+        assert_eq!(state.context_window_tokens, Some(1000));
+        assert!(usage_has_token_numbers(&ModelUsage {
+            context_tokens: Some(0),
+            ..Default::default()
+        }));
     }
 
     #[test]

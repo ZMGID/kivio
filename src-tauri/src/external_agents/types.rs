@@ -536,6 +536,11 @@ pub enum UnifiedAgentEvent {
         name: String,
         input: Value,
     },
+    /// Latest cumulative partial output of a still-running tool (snapshot, replaces previous).
+    ToolPartialOutput {
+        tool_use_id: String,
+        output: String,
+    },
     ToolResult {
         tool_use_id: String,
         content: String,

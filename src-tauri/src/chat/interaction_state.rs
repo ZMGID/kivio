@@ -248,6 +248,7 @@ mod tests {
                 allow_multiple: false,
                 allow_custom: false,
                 required: true,
+                default_value: None,
                 value_schema: None,
             }],
         }

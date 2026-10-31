@@ -1,7 +1,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { codexAsyncReplyEnvelope } from './asyncQuestionReply'
-import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
+import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import {
   ArrowRight,
   Check,
@@ -90,6 +90,9 @@ function normalizeQuestions(value: unknown): AskUserQuestion[] {
     const multiple = question.allow_multiple === true || question.allowMultiple === true
     const custom = question.allow_custom === true || question.allowCustom === true
     const valueSchema = objectValue(question.value_schema ?? question.valueSchema) ?? undefined
+    const defaultValue = typeof question.defaultValue === 'string'
+      ? question.defaultValue
+      : typeof question.default_value === 'string' ? question.default_value : undefined
     // 内置问题仍要求两个选项；schema 枚举允许单一合法值，纯文本允许零选项。
     if (!id || !prompt || (options.length < (valueSchema ? 1 : 2) && !custom)) continue
     questions.push({
@@ -98,6 +101,7 @@ function normalizeQuestions(value: unknown): AskUserQuestion[] {
       required: question.required !== false,
       value_schema: valueSchema,
       valueSchema,
+      defaultValue,
       options,
       allow_multiple: multiple,
       allowMultiple: multiple,
@@ -209,8 +213,8 @@ function stringValue(question: AskUserQuestion): boolean {
 
 function draftCustomText(question: AskUserQuestion, answer: DraftAnswer): string | null {
   if (!allowCustom(question)) return null
-  // Schema strings preserve explicit empty strings and whitespace; legacy prompts retain trimming.
-  if (stringValue(question) && answer.customTextEdited) return answer.customText
+  // Schema and prefilled strings preserve explicit empty values and whitespace.
+  if ((stringValue(question) || question.defaultValue !== undefined) && answer.customTextEdited) return answer.customText
   return answer.customText.trim() || null
 }
 
@@ -225,12 +229,15 @@ function createDraft(parsed: ParsedAskUser | null): Record<string, DraftAnswer> 
   if (!parsed) return {}
   return Object.fromEntries(parsed.questions.map((question) => {
     const answer = parsed.answers[question.id]
+    const initialText = answer ? answerCustomText(answer) : question.defaultValue
     return [
       question.id,
       {
         selectedOptionIds: answerSelectedIds(answer),
-        customText: answerCustomText(answer),
-        customTextEdited: typeof (answer?.custom_text ?? answer?.customText) === 'string',
+        customText: initialText ?? '',
+        customTextEdited: answer
+          ? typeof (answer.custom_text ?? answer.customText) === 'string'
+          : initialText !== undefined,
       },
     ]
   }))
@@ -300,7 +307,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   const signature = promptSignature(parsed)
   const optionsScrollRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
-  const customInputRef = useRef<HTMLInputElement>(null)
+  const customInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const [draft, setDraft] = useState<Record<string, DraftAnswer>>(() => createDraft(parsed))
   /** 草稿的同步镜像。两个用途，都是「不能等下一次渲染」：
    *  ① 单题单选点一下就提交，要**当场**拿到含这次选择的草稿（`draft` 还是旧值）；
@@ -383,6 +390,9 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   const optionCount = currentQuestion?.options.length ?? 0
   /** 键盘光标可停的行数：选项 +（有自定义时）那一行。 */
   const rowCount = optionCount + (currentQuestion && allowCustom(currentQuestion) ? 1 : 0)
+  const multiline = (toolCall.name ?? toolCall.toolName ?? toolCall.tool_name ?? '').toLowerCase() === 'piextensioneditor'
+    || /[\r\n]/.test(currentQuestion?.defaultValue ?? '')
+  const CustomInput = multiline ? 'textarea' : 'input'
 
   /** 纯函数：把「这一题选了这个选项」应用到草稿上。抽出来是因为「选中即提交」要**同步**拿到
    *  新草稿 —— `setDraft` 之后 `draft` 还是旧值，直接提交会把空答案发出去。 */
@@ -398,7 +408,8 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         : [...existing.selectedOptionIds, optionId]
       : [optionId]
     // 单选题的选项与自定义文字互斥：否则「先打了字、又点了选项」会把两个答案一起交上去。
-    const exclusive = !allowMultiple(question) && !(question.value_schema ?? question.valueSchema)
+    const exclusive = !allowMultiple(question)
+      && (!(question.value_schema ?? question.valueSchema) || question.defaultValue !== undefined)
     return {
       ...current,
       [question.id]: exclusive
@@ -453,11 +464,11 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
     const question = parsed.questions.find((item) => item.id === questionId)
     const exclusive = Boolean(question)
       && !allowMultiple(question!)
-      && !(question!.value_schema ?? question!.valueSchema)
+      && (!(question!.value_schema ?? question!.valueSchema) || question!.defaultValue !== undefined)
     const next = {
       ...draftRef.current,
       [questionId]: {
-        selectedOptionIds: exclusive && customText.trim()
+        selectedOptionIds: exclusive && (customText.trim() || question?.defaultValue !== undefined)
           ? []
           : draftRef.current[questionId]?.selectedOptionIds ?? [],
         customText,
@@ -669,21 +680,23 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                   <span className="grid size-6 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-400 dark:text-neutral-500">
                     <Pencil size={12} strokeWidth={2} />
                   </span>
-                  <input
-                    ref={customInputRef}
+                  <CustomInput
+                    ref={(element: HTMLInputElement | HTMLTextAreaElement | null) => { customInputRef.current = element }}
                     value={currentAnswer.customText}
+                    rows={multiline ? 4 : undefined}
                     autoCapitalize="off"
                     autoCorrect="off"
                     autoComplete="off"
                     spellCheck={false}
                     onFocus={() => setActiveIndex(optionCount)}
-                    onChange={(event) => setCustomText(currentQuestion.id, event.target.value)}
-                    onKeyDown={(event) => {
+                    onChange={(event: ReactChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setCustomText(currentQuestion.id, event.target.value)}
+                    onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
                       // 输入框嵌在列表里：不拦住的话 ↑↓ / 数字键会被列表当成选项导航，
                       // 输入「1」就变成直选第 1 项并提交。
                       event.stopPropagation()
                       // 输入法选词的 Enter 不是提交（中文拼音候选会被当成答案发出去）。
                       if (event.nativeEvent.isComposing || event.keyCode === 229) return
+                      if (multiline && event.key === 'Enter' && !event.ctrlKey && !event.metaKey) return
                       if (event.key === 'ArrowUp' && optionCount > 0) {
                         event.preventDefault()
                         setActiveIndex(optionCount - 1)
@@ -698,7 +711,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
                       else if (allAnswered) void submit(false)
                     }}
                     placeholder="自己写一个…"
-                    className="min-w-0 flex-1 bg-transparent text-[13px] leading-5 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
+                    className="custom-scrollbar min-w-0 flex-1 resize-y bg-transparent text-[13px] leading-5 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
                   />
                 </div>
               )}
@@ -707,11 +720,11 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
           <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-1.5">
             <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-              ↑↓ 切换 · Enter 选择{optionCount > 1 ? ` · 数字键 1–${Math.min(optionCount, 9)} 直选` : ''}
+              {multiline ? 'Enter 换行 · Ctrl/⌘+Enter 提交' : `↑↓ 切换 · Enter 选择${optionCount > 1 ? ` · 数字键 1–${Math.min(optionCount, 9)} 直选` : ''}`}
             </span>
             {(!answerOnPick
               || currentQuestion.required === false
-              || (allowCustom(currentQuestion) && currentAnswer.customText.trim() !== '')) && (
+              || (allowCustom(currentQuestion) && draftHasAnswer(currentQuestion, currentAnswer))) && (
               <Button
                 variant="primary"
                 size="sm"

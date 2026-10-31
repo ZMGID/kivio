@@ -961,6 +961,42 @@ pub(super) fn format_tool_approval_summary(record: &ToolCallRecord) -> ToolAppro
         _ => {}
     }
 
+    // ACP `session/request_permission` 的 toolCall（OpenCode 等）：`{title, kind, rawInput,
+    // locations}`，工具名是标题而不是 `bash`。T3 同样先露真实命令、再退到标题；去掉 ANSI/控制符。
+    if lines.is_empty() {
+        let ptr = |path: &str| {
+            parsed
+                .as_ref()
+                .and_then(|value| value.pointer(path))
+                .and_then(Value::as_str)
+                .map(strip_control_chars)
+                .filter(|value| !value.is_empty())
+        };
+        if let Some(command) = ptr("/rawInput/command") {
+            target = Some(truncate_chars(
+                command.lines().next().unwrap_or(&command),
+                120,
+            ));
+            lines.push(command);
+        } else if let Some(path) = [
+            "/rawInput/filePath",
+            "/rawInput/file_path",
+            "/rawInput/path",
+            "/locations/0/path",
+        ]
+        .into_iter()
+        .find_map(|p| ptr(p))
+        {
+            target = Some(path.clone());
+            lines.push(path);
+        }
+        if let Some(title) = ptr("/title").filter(|t| !lines.contains(t)) {
+            if target.is_none() {
+                target = Some(truncate_chars(&title, 120));
+            }
+            lines.push(title);
+        }
+    }
     // ponytail: 只有认不出操作对象时才退回裸 JSON。认出来了还把 `Raw arguments:` 追在后面，
     // 卡片就退化成一坨截断的 JSON（旧版本正是如此），用户看不出自己在批准什么。
     if lines.is_empty() {
@@ -974,4 +1010,22 @@ pub(super) fn format_tool_approval_summary(record: &ToolCallRecord) -> ToolAppro
             detail: lines.join("\n"),
         }
     }
+}
+
+fn strip_control_chars(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI `ESC [ … final-byte`; other escapes drop just the next char.
+            if chars.next_if_eq(&'[').is_some() {
+                while chars.next().is_some_and(|c| !('@'..='~').contains(&c)) {}
+            } else {
+                chars.next();
+            }
+        } else if c == '\n' || c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out.trim().to_string()
 }

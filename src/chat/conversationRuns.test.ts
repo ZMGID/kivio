@@ -24,6 +24,15 @@ describe('stream run ownership', () => {
 })
 
 describe('mergeToolRecord', () => {
+  it('replaces a persisted snake-case preview with a live camel-case snapshot', () => {
+    const merged = mergeToolRecord(
+      { id: 'tc1', result_preview: 'old' },
+      { id: 'tc1', resultPreview: 'new\noutput' },
+    )
+    expect(merged.result_preview).toBe('new\noutput')
+    expect(merged.resultPreview).toBe('new\noutput')
+  })
+
   it('keeps the existing structured content when the update carries none', () => {
     // 问用户答完之后，claude 回的 tool_result 那条更新不带 structured_content。
     // 直接展开会把「问了什么 + 选了什么」抹掉，消息流里只剩一行灰字。

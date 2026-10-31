@@ -181,7 +181,7 @@ function externalSandboxModes(
  * 档位推导的唯一入口。空 options 表示该控件此刻无档位可选 → 调用方不渲染。
  *
  * - 本地 CLI 会话：档位归**底栏胶囊**一处管（顶栏返回空表所以隐藏），避免两个控件
- *   写同一个设置；CLI 本身没有档位（如 opencode）时底栏也返回空表。
+ *   写同一个设置；CLI 本身没有档位时底栏也返回空表。
  * - Kivio Chat 运行时：不是 Agent，底栏不显示 Act/Plan/Orchestrate。
  * - 内置 Agent 会话：底栏是 Act / Plan / Orchestrate，顶栏是工具审批策略。
  */

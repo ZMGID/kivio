@@ -364,11 +364,16 @@ export type AskUserOption = {
 export type AskUserQuestion = {
   id: string
   prompt: string
+  required?: boolean
+  value_schema?: Record<string, unknown>
+  valueSchema?: Record<string, unknown>
   options: AskUserOption[]
   allow_multiple?: boolean
   allowMultiple?: boolean
   allow_custom?: boolean
   allowCustom?: boolean
+  default_value?: string
+  defaultValue?: string
 }
 
 export type AskUserPromptPayload = {

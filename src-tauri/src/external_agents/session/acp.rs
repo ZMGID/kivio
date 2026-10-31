@@ -1052,20 +1052,13 @@ fn acp_is_terminal_failure(status: &str) -> bool {
 fn acp_result_content(
     update: &serde_json::Map<String, Value>,
     terminals: Option<&AcpTerminalHost>,
-) -> String {
-    let Some(value) = update
+) -> Option<String> {
+    let value = update
         .get("content")
         .or_else(|| update.get("output"))
-        .or_else(|| update.get("result"))
-    else {
-        return acp_tool_name(update);
-    };
-    let text = explain_acp_agent_policy_error(&flatten_acp_tool_blocks(value, terminals));
-    if text.is_empty() {
-        acp_tool_name(update)
-    } else {
-        text
-    }
+        .or_else(|| update.get("result"))?;
+    let text = flatten_acp_tool_blocks(value, terminals);
+    (!text.is_empty()).then(|| explain_acp_agent_policy_error(text))
 }
 
 /// Pull readable text out of ACP `tool_call` content (string, text blocks, or a
@@ -1114,14 +1107,17 @@ fn acp_tool_block_text(block: &Value, terminals: Option<&AcpTerminalHost>) -> Op
 
 /// Kimi 0.37 在广告 `terminal` 后把全部 spawn 换成宿主终端，又只放行 `bash -c`。
 /// 原文看起来像 Kivio 没接好，其实是 agent 策略。
-pub(crate) fn explain_acp_agent_policy_error(raw: &str) -> String {
+pub(crate) fn explain_acp_agent_policy_error<'a>(
+    raw: impl Into<std::borrow::Cow<'a, str>>,
+) -> String {
+    let raw = raw.into();
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return raw.to_string();
+        return raw.into_owned();
     }
     if trimmed.contains("Kimi 在 ACP 下") || trimmed.contains("Kimi 需要宿主提供 ACP 终端")
     {
-        return raw.to_string();
+        return raw.into_owned();
     }
     if trimmed.contains("ACP runtime only supports interactive Bash tool processes") {
         return format!(
@@ -1133,7 +1129,7 @@ pub(crate) fn explain_acp_agent_policy_error(raw: &str) -> String {
             "Kimi 需要宿主提供 ACP 终端才能跑命令。当前会话没有广告该能力，Bash 也会失败。\n\n{trimmed}"
         );
     }
-    raw.to_string()
+    raw.into_owned()
 }
 
 fn apply_acp_session_update(
@@ -1172,22 +1168,27 @@ fn apply_acp_session_update_ex(
             let Some(id) = acp_tool_call_id(update) else {
                 return true;
             };
-            if !emitted_tool_ids.contains(&id) {
-                emitted_tool_ids.insert(id.clone());
+            if emitted_tool_ids.insert(id.clone()) {
                 sink(UnifiedAgentEvent::ToolUse {
                     id: id.clone(),
                     name: acp_tool_name(update),
                     input: Value::Object(update.clone()),
                 });
             }
-            if let Some(status) = acp_update_status(update) {
-                if acp_is_terminal_success(&status) || acp_is_terminal_failure(&status) {
-                    sink(UnifiedAgentEvent::ToolResult {
-                        tool_use_id: id,
-                        content: acp_result_content(update, terminals),
-                        is_error: acp_is_terminal_failure(&status),
-                    });
-                }
+            let status = acp_update_status(update);
+            let is_error = status.as_deref().is_some_and(acp_is_terminal_failure);
+            if is_error || status.as_deref().is_some_and(acp_is_terminal_success) {
+                sink(UnifiedAgentEvent::ToolResult {
+                    tool_use_id: id,
+                    content: acp_result_content(update, terminals)
+                        .unwrap_or_else(|| acp_tool_name(update)),
+                    is_error,
+                });
+            } else if let Some(output) = acp_result_content(update, terminals) {
+                sink(UnifiedAgentEvent::ToolPartialOutput {
+                    tool_use_id: id,
+                    output,
+                });
             }
             true
         }
@@ -1260,6 +1261,35 @@ fn acp_update_text(update: &serde_json::Map<String, Value>) -> &str {
         .unwrap_or("")
 }
 
+fn map_acp_plan_entries(raw: Option<&Value>) -> Vec<Value> {
+    raw.and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    let content = entry.get("content")?.as_str()?.trim();
+                    let content = if content.is_empty() {
+                        format!("Step {}", index + 1)
+                    } else {
+                        content.to_string()
+                    };
+                    let status = match entry.get("status").and_then(Value::as_str) {
+                        Some("in_progress") => "in_progress",
+                        Some("completed") | Some("cancelled") => "completed",
+                        _ => "pending",
+                    };
+                    Some(json!({
+                        "id": format!("acp-plan-{}", index + 1),
+                        "content": content,
+                        "status": status,
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// 把一条 ACP `session/update` 映射为事件(text / thought / tool),一次性驱动
 /// (`run_acp_session`)与持久驱动(`AcpSession::run_turn`)共用同一份去重逻辑。
 fn acp_apply_session_update(
@@ -1301,6 +1331,29 @@ fn acp_apply_session_update_ex(
                 }
             }
         }
+        // Plan snapshots do not interrupt the current text or thought stream.
+        "plan" => {
+            let todos = map_acp_plan_entries(update.get("entries"));
+            sink(UnifiedAgentEvent::TodoWrite {
+                todos: json!({ "todos": todos }),
+            });
+        }
+        "plan_update" => {
+            if let Some(entries) = update
+                .get("plan")
+                .filter(|plan| plan.get("type").and_then(Value::as_str) == Some("items"))
+                .and_then(|plan| plan.get("entries"))
+                .filter(|entries| entries.is_array())
+            {
+                let todos = map_acp_plan_entries(Some(entries));
+                sink(UnifiedAgentEvent::TodoWrite {
+                    todos: json!({ "todos": todos }),
+                });
+            }
+        }
+        "plan_removed" => sink(UnifiedAgentEvent::TodoWrite {
+            todos: json!({ "todos": [] }),
+        }),
         "usage_update" => {
             // **必须在 `_` 分支之前单独匹配**：usage 通知不是消息边界。若落进 `_`，
             // `apply_acp_session_update` 返回 true 会触发 text/thought 的 `on_boundary()`，
@@ -1432,7 +1485,8 @@ fn find_config_ids(result: &Value) -> (Option<String>, Option<String>) {
                     || id_l.contains("thinking")
                     || id_l.contains("effort")
                     || category == "reasoning"
-                    || category == "thought")
+                    || category == "thought"
+                    || category == "thought_level")
             {
                 reasoning_id = Some(id.to_string());
             }
@@ -1458,6 +1512,58 @@ fn model_set_rpc(
             json!({ "sessionId": session_id, "modelId": chosen }),
         ),
     }
+}
+
+/// 会话模式（OpenCode 的 build / plan）。T3 `AcpSessionRuntime.setMode` 同款：优先
+/// `category:"mode"` 的 select configOption（也兼容缺失 type），否则 ACP v1 的
+/// `modes` → `session/set_mode`。只发 CLI 自报过的取值：其他 ACP CLI 的 sandbox 档
+/// （grok 的 ask / strict）不会被误当成模式发出去；已是该模式也不发。
+fn mode_set_rpc(
+    session_id: &str,
+    result: &Value,
+    mode: Option<&str>,
+) -> Option<(&'static str, Value)> {
+    let mode = mode.map(str::trim).filter(|m| !m.is_empty())?;
+    let offers = |list: Option<&Value>, key: &str| {
+        list.and_then(Value::as_array).is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get(key).and_then(Value::as_str) == Some(mode))
+        })
+    };
+    let config = result
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("category").and_then(Value::as_str) == Some("mode")
+                    && option
+                        .get("type")
+                        .map_or(true, |kind| kind.as_str() == Some("select"))
+            })
+        });
+    if let Some(option) = config {
+        let id = option.get("id").and_then(Value::as_str)?;
+        if option.get("currentValue").and_then(Value::as_str) == Some(mode)
+            || !offers(option.get("options"), "value")
+        {
+            return None;
+        }
+        return Some((
+            "session/set_config_option",
+            json!({ "sessionId": session_id, "configId": id, "value": mode }),
+        ));
+    }
+    let modes = result.get("modes")?;
+    if modes.get("currentModeId").and_then(Value::as_str) == Some(mode)
+        || !offers(modes.get("availableModes"), "id")
+    {
+        return None;
+    }
+    Some((
+        "session/set_mode",
+        json!({ "sessionId": session_id, "modeId": mode }),
+    ))
 }
 
 /// What a mid-turn reasoning change needs (N3): nothing, an in-session `set_config_option`, or a
@@ -1494,6 +1600,8 @@ impl AcpSession {
         cwd: &Path,
         model: Option<&str>,
         reasoning: Option<&str>,
+        // 会话模式（OpenCode build / plan），取自权限胶囊；CLI 没自报该值时忽略。
+        mode: Option<&str>,
         mcp_servers: &[AcpMcpServer],
         resume_session: Option<&str>,
         additional_directories: &[String],
@@ -1648,6 +1756,21 @@ impl AcpSession {
                 .await;
                 next_id += 1;
             }
+            if let Some((set_method, set_params)) = mode_set_rpc(&session_id, &result, mode) {
+                write_rpc(&mut stdin, next_id, set_method, set_params)
+                    .await
+                    .map_err(|e| format!("session-new: {e}"))?;
+                // Best-effort like the model switch: an ignored mode keeps the CLI default.
+                let _ = acp_read_until_id(
+                    &mut reader,
+                    &mut stdin,
+                    &mut terminals,
+                    next_id,
+                    Duration::from_secs(10),
+                )
+                .await;
+                next_id += 1;
+            }
 
             Ok::<_, String>((
                 session_id,
@@ -1661,6 +1784,14 @@ impl AcpSession {
 
         match handshake {
             Ok((session_id, next_id, model_config_id, reasoning_config_id, current_model)) => {
+                // In-session effort config (OpenCode / kimi): start as "not yet applied" so the
+                // first `run_turn` sends the chosen level. Launch-flag effort (grok) is already
+                // in argv, so it counts as applied.
+                let current_reasoning = if reasoning_config_id.is_some() {
+                    None
+                } else {
+                    normalize_opt(reasoning)
+                };
                 Ok(Self {
                     child,
                     stdin,
@@ -1671,7 +1802,7 @@ impl AcpSession {
                     model_config_id,
                     reasoning_config_id,
                     current_model,
-                    current_reasoning: normalize_opt(reasoning),
+                    current_reasoning,
                     terminals,
                 })
             }
@@ -2190,17 +2321,23 @@ fn cursor_decision_result(method: &str, decision: &ApprovalDecision) -> Value {
     }
 }
 
-fn acp_permission_result(params: &Value, approved: bool) -> Value {
-    // A host approval authorizes this call only, never a persistent upstream grant.
-    let option = approved
-        .then(|| params.get("options").and_then(Value::as_array))
-        .flatten()
-        .and_then(|options| {
-            options
-                .iter()
-                .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
-        })
-        .and_then(|option| option.get("optionId").and_then(Value::as_str));
+/// 用户批准 → ACP 选项。「允许」→ `allow_once`；「总是允许」→ `allow_always`（T3
+/// `acceptForSession` → `allow_always` 同款），CLI 没给 always 时退回 once。绝不把一次
+/// 「允许」升级成持久授权：没有 once 选项就取消。
+fn acp_permission_result(params: &Value, approved: bool, always: bool) -> Value {
+    let options = params.get("options").and_then(Value::as_array);
+    let pick = |kind: &str| {
+        options?
+            .iter()
+            .find(|option| option.get("kind").and_then(Value::as_str) == Some(kind))?
+            .get("optionId")
+            .and_then(Value::as_str)
+    };
+    let option = match (approved, always) {
+        (false, _) => None,
+        (true, true) => pick("allow_always").or_else(|| pick("allow_once")),
+        (true, false) => pick("allow_once"),
+    };
     match option {
         Some(id) => json!({ "outcome": { "outcome": "selected", "optionId": id } }),
         None => cursor_cancelled_result(),
@@ -2300,7 +2437,7 @@ async fn handle_cursor_extension(
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
             Ok(Some(decision)) if decision.request_id == request_id => {
                 let result = if permission {
-                    acp_permission_result(&params, decision.approved)
+                    acp_permission_result(&params, decision.approved, decision.always)
                 } else {
                     cursor_decision_result(method, &decision)
                 };
@@ -2658,26 +2795,184 @@ mod tests {
             {"optionId": "once", "kind": "allow_once"}
         ]});
         assert_eq!(
-            acp_permission_result(&params, true)["outcome"]["optionId"],
+            acp_permission_result(&params, true, false)["outcome"]["optionId"],
             "once"
         );
         assert_eq!(
-            acp_permission_result(&params, false),
-            cursor_cancelled_result()
+            acp_permission_result(&params, true, true)["outcome"]["optionId"],
+            "forever"
         );
         assert_eq!(
-            acp_permission_result(
-                &json!({"options": [
-                    {"optionId": "forever", "kind": "allow_always"}
-                ]}),
-                true
-            ),
+            acp_permission_result(&params, false, true),
             cursor_cancelled_result()
+        );
+        let always_only = json!({"options": [{"optionId": "forever", "kind": "allow_always"}]});
+        assert_eq!(
+            acp_permission_result(&always_only, true, false),
+            cursor_cancelled_result()
+        );
+        let once_only = json!({"options": [{"optionId": "once", "kind": "allow_once"}]});
+        assert_eq!(
+            acp_permission_result(&once_only, true, true)["outcome"]["optionId"],
+            "once"
         );
         assert_eq!(
-            acp_permission_result(&Value::Null, true),
+            acp_permission_result(&Value::Null, true, true),
             cursor_cancelled_result()
         );
+    }
+
+    #[test]
+    fn mode_is_set_only_to_values_the_cli_offers() {
+        // OpenCode 2.0.32 `session/new` 实测形状（截取）。
+        let opencode = json!({"configOptions": [
+            {"id": "model", "category": "model", "currentValue": "opencode/big-pickle", "options": []},
+            {"id": "mode", "category": "mode", "currentValue": "build",
+             "options": [{"value": "build", "name": "build"}, {"value": "plan", "name": "plan"}]}
+        ]});
+        assert_eq!(
+            mode_set_rpc("s", &opencode, Some("plan")),
+            Some((
+                "session/set_config_option",
+                json!({"sessionId": "s", "configId": "mode", "value": "plan"})
+            ))
+        );
+        assert_eq!(mode_set_rpc("s", &opencode, Some("build")), None);
+        assert_eq!(mode_set_rpc("s", &opencode, Some("ask")), None);
+        assert_eq!(mode_set_rpc("s", &opencode, None), None);
+        let v1 = json!({"modes": {"currentModeId": "default",
+            "availableModes": [{"id": "default"}, {"id": "plan"}]}});
+        assert_eq!(
+            mode_set_rpc("s", &v1, Some("plan")),
+            Some((
+                "session/set_mode",
+                json!({"sessionId": "s", "modeId": "plan"})
+            ))
+        );
+        assert_eq!(mode_set_rpc("s", &json!({}), Some("plan")), None);
+    }
+
+    #[test]
+    fn mode_config_requires_select_or_missing_type() {
+        let mut result = json!({"configOptions": [{
+            "id": "wrong", "category": "mode", "type": "boolean",
+            "currentValue": "build", "options": [{"value": "plan"}]
+        }]});
+        assert_eq!(mode_set_rpc("s", &result, Some("plan")), None);
+        result["configOptions"][0]["type"] = Value::Null;
+        assert_eq!(mode_set_rpc("s", &result, Some("plan")), None);
+        result["configOptions"].as_array_mut().unwrap().push(json!({
+            "id": "mode", "category": "mode", "type": "select",
+            "currentValue": "build", "options": [{"value": "plan"}]
+        }));
+        assert_eq!(
+            mode_set_rpc("s", &result, Some("plan")),
+            Some((
+                "session/set_config_option",
+                json!({"sessionId": "s", "configId": "mode", "value": "plan"})
+            ))
+        );
+        result["configOptions"].as_array_mut().unwrap().pop();
+        result["modes"] = json!({
+            "currentModeId": "build", "availableModes": [{"id": "plan"}]
+        });
+        assert_eq!(
+            mode_set_rpc("s", &result, Some("plan")),
+            Some((
+                "session/set_mode",
+                json!({"sessionId": "s", "modeId": "plan"})
+            ))
+        );
+    }
+
+    #[test]
+    fn acp_plan_update_becomes_todo_card() {
+        let update = json!({"sessionUpdate": "plan", "entries": [
+            {"content": " 读文件 ", "priority": "high", "status": "in_progress"},
+            {"content": " \n ", "status": "completed"},
+            {"content": "改代码", "status": "cancelled"},
+            {"content": "改代码", "status": "unexpected"}
+        ]});
+        let mut events = Vec::new();
+        acp_apply_session_update(
+            update.as_object().unwrap(),
+            &mut AcpUpdateState::default(),
+            &mut |e| events.push(e),
+        );
+        let [UnifiedAgentEvent::TodoWrite { todos }] = events.as_slice() else {
+            panic!("expected one TodoWrite, got {}", events.len());
+        };
+        assert_eq!(
+            todos["todos"],
+            json!([
+                {"id": "acp-plan-1", "content": "读文件", "status": "in_progress"},
+                {"id": "acp-plan-2", "content": "Step 2", "status": "completed"},
+                {"id": "acp-plan-3", "content": "改代码", "status": "completed"},
+                {"id": "acp-plan-4", "content": "改代码", "status": "pending"}
+            ])
+        );
+        let state = crate::external_agents::session::dsh_jsonrpc::todo_state_from_write(todos)
+            .expect("ACP plan must produce todo state");
+        assert_eq!(state.items.len(), 4);
+    }
+
+    #[test]
+    fn acp_v2_items_plan_maps_entries_and_ignores_other_types() {
+        let items = json!({"sessionUpdate": "plan_update", "plan": {
+            "type": "items", "planId": "plan-1", "entries": [
+                {"content": " Inspect schema ", "status": "completed"},
+                {"content": "", "status": "in_progress"},
+                {"content": " Ship "},
+                null,
+                {"content": true, "status": "pending"}
+            ]
+        }});
+        let markdown = json!({"sessionUpdate": "plan_update", "plan": {
+            "type": "markdown", "planId": "plan-1", "content": "# Plan"
+        }});
+        let missing_entries = json!({"sessionUpdate": "plan_update", "plan": {
+            "type": "items", "planId": "plan-1"
+        }});
+        let (_, events) = run_updates(&[
+            items.as_object().unwrap().clone(),
+            markdown.as_object().unwrap().clone(),
+            missing_entries.as_object().unwrap().clone(),
+        ]);
+        let [UnifiedAgentEvent::TodoWrite { todos }] = events.as_slice() else {
+            panic!("expected one TodoWrite, got {}", events.len());
+        };
+        assert_eq!(
+            todos["todos"],
+            json!([
+                {"id": "acp-plan-1", "content": "Inspect schema", "status": "completed"},
+                {"id": "acp-plan-2", "content": "Step 2", "status": "in_progress"},
+                {"id": "acp-plan-3", "content": "Ship", "status": "pending"}
+            ])
+        );
+    }
+
+    #[test]
+    fn acp_plan_removed_clears_todo_state() {
+        let plan = json!({"sessionUpdate": "plan_update", "plan": {
+            "type": "items", "planId": "plan-1", "entries": [
+                {"content": "Ship", "status": "in_progress"}
+            ]
+        }});
+        let removed = json!({"sessionUpdate": "plan_removed", "planId": "plan-1"});
+        let (_, events) = run_updates(&[
+            plan.as_object().unwrap().clone(),
+            removed.as_object().unwrap().clone(),
+        ]);
+        let [UnifiedAgentEvent::TodoWrite { todos: before }, UnifiedAgentEvent::TodoWrite { todos }] =
+            events.as_slice()
+        else {
+            panic!("expected plan and removal, got {}", events.len());
+        };
+        assert_eq!(before["todos"].as_array().unwrap().len(), 1);
+        assert_eq!(todos, &json!({"todos": []}));
+        let state = crate::external_agents::session::dsh_jsonrpc::todo_state_from_write(todos)
+            .expect("empty plan must clear todo state");
+        assert!(state.items.is_empty());
     }
 
     /// grok 上游 503 时的静默重试必须变成一行可见状态。样本取自本机 grok 1.0.3
@@ -3036,10 +3331,19 @@ mod tests {
 
         let bin = which_bin("cursor-agent").expect("cursor-agent on PATH");
         let cwd = std::env::temp_dir();
-        let session =
-            AcpSession::connect(&bin, &["acp".to_string()], &cwd, None, None, &[], None, &[])
-                .await
-                .expect("connect cursor-agent acp");
+        let session = AcpSession::connect(
+            &bin,
+            &["acp".to_string()],
+            &cwd,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            &[],
+        )
+        .await
+        .expect("connect cursor-agent acp");
         let sid = session.session_id().to_string();
         assert!(!sid.is_empty());
         let control = spawn_acp_session_actor(session);
@@ -3152,6 +3456,97 @@ mod tests {
     }
 
     #[test]
+    fn acp_in_progress_tool_updates_emit_snapshots_without_completing() {
+        let mut emitted = HashSet::new();
+        let mut events = Vec::new();
+        for update in [
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+                "title": "Bash", "status": "in_progress",
+                "content": [{"type": "content", "content": {"type": "text", "text": "first"}}]
+            }),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+                "status": "in_progress", "output": "first\nsecond"
+            }),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+                "result": "first\nsecond\nthird"
+            }),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+                "status": "in_progress", "content": ""
+            }),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+                "content": [{"type": "diff", "path": "file", "newText": "ignore"}]
+            }),
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "acp-1"
+            }),
+        ] {
+            assert!(apply_acp_session_update(
+                update.as_object().unwrap(),
+                &mut emitted,
+                &mut |event| events.push(event),
+            ));
+        }
+        assert!(matches!(
+            events.as_slice(),
+            [
+                UnifiedAgentEvent::ToolUse { id, name, .. },
+                UnifiedAgentEvent::ToolPartialOutput { tool_use_id: id1, output: first },
+                UnifiedAgentEvent::ToolPartialOutput { tool_use_id: id2, output: second },
+                UnifiedAgentEvent::ToolPartialOutput { tool_use_id: id3, output: third }
+            ] if id == "acp-1" && name == "Bash"
+                && id1 == "acp-1" && first == "first"
+                && id2 == "acp-1" && second == "first\nsecond"
+                && id3 == "acp-1" && third == "first\nsecond\nthird"
+        ));
+        let finished = json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "acp-1",
+            "status": "completed", "result": "done"
+        });
+        assert!(apply_acp_session_update(
+            finished.as_object().unwrap(),
+            &mut emitted,
+            &mut |event| events.push(event),
+        ));
+        assert!(matches!(
+            events.last(),
+            Some(UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error })
+                if tool_use_id == "acp-1" && content == "done" && !*is_error
+        ));
+    }
+
+    #[test]
+    fn acp_in_progress_tool_update_resolves_terminal_output() {
+        let mut host = AcpTerminalHost::new(std::env::temp_dir());
+        host.seed_output("term_1", "current output");
+        let update = json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "bash-1",
+            "status": "in_progress", "content": [
+                {"type": "terminal", "terminalId": "term_1"},
+                {"type": "diff", "path": "file", "newText": "ignore"}
+            ]
+        });
+        let mut events = Vec::new();
+        assert!(apply_acp_session_update_ex(
+            update.as_object().unwrap(),
+            &mut HashSet::new(),
+            Some(&host),
+            &mut |event| events.push(event),
+        ));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                UnifiedAgentEvent::ToolUse { id, .. },
+                UnifiedAgentEvent::ToolPartialOutput { tool_use_id, output }
+            ] if id == "bash-1" && tool_use_id == "bash-1" && output == "current output"
+        ));
+    }
+
+    #[test]
     fn flatten_acp_tool_content_prefers_text_blocks_over_json() {
         assert_eq!(
             flatten_acp_tool_content(&json!([{
@@ -3247,6 +3642,10 @@ mod tests {
             "ACP runtime only supports interactive Bash tool processes",
         );
         assert_eq!(explain_acp_agent_policy_error(&once), once);
+        assert_eq!(
+            explain_acp_agent_policy_error("normal output".to_string()),
+            "normal output"
+        );
     }
 
     // ---- AcpTextAssembler / shared update-dedup (Step 2) ----
@@ -3287,6 +3686,39 @@ mod tests {
             })
             .collect();
         (text, events)
+    }
+
+    #[test]
+    fn acp_plan_updates_are_not_text_or_thought_boundaries() {
+        for update in [
+            json!({"sessionUpdate": "plan", "entries": []}),
+            json!({"sessionUpdate": "plan_update", "plan": {"type": "items", "entries": []}}),
+            json!({"sessionUpdate": "plan_update", "plan": {"type": "markdown", "content": "plan"}}),
+            json!({"sessionUpdate": "plan_removed", "planId": "plan-1"}),
+        ] {
+            let update = update.as_object().unwrap().clone();
+            let (text, _) = run_updates(&[
+                msg_chunk("abc"),
+                update.clone(),
+                msg_chunk("xyz"),
+                msg_chunk("abcxyzEND"),
+            ]);
+            assert_eq!(text, "abcxyzEND");
+            let (_, events) = run_updates(&[
+                thought_chunk("abc"),
+                update,
+                thought_chunk("xyz"),
+                thought_chunk("abcxyzEND"),
+            ]);
+            let thought: String = events
+                .iter()
+                .filter_map(|event| match event {
+                    UnifiedAgentEvent::ThinkingDelta { delta } => Some(delta.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(thought, "abcxyzEND");
+        }
     }
 
     #[test]
@@ -3836,6 +4268,7 @@ mod tests {
             UnifiedAgentEvent::ThinkingDelta { .. } => "ThinkingDelta",
             UnifiedAgentEvent::ToolUse { .. } => "ToolUse",
             UnifiedAgentEvent::ToolResult { .. } => "ToolResult",
+            UnifiedAgentEvent::ToolPartialOutput { .. } => "ToolPartialOutput",
             UnifiedAgentEvent::Usage { .. } => "Usage",
             UnifiedAgentEvent::Error { .. } => "Error",
             UnifiedAgentEvent::Raw { .. } => "Raw",
@@ -3865,16 +4298,25 @@ mod tests {
             return;
         };
         let cwd = std::env::temp_dir();
-        let session =
-            match AcpSession::connect(&bin, &["acp".to_string()], &cwd, None, None, &[], None, &[])
-                .await
-            {
-                Ok(session) => session,
-                Err(err) => {
-                    eprintln!("SKIP: 连接失败（未登录 / 网络？）：{err}");
-                    return;
-                }
-            };
+        let session = match AcpSession::connect(
+            &bin,
+            &["acp".to_string()],
+            &cwd,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            &[],
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(err) => {
+                eprintln!("SKIP: 连接失败（未登录 / 网络？）：{err}");
+                return;
+            }
+        };
         let control = spawn_acp_session_actor(session);
         let captured = run_one_live_turn(
             &control,
@@ -3996,16 +4438,25 @@ mod tests {
         };
         let cwd = std::env::temp_dir();
         // 走生产用的常驻 actor（此前驱动的是只被真机测试吊着命的一次性 `run_acp_session`）。
-        let session =
-            match AcpSession::connect(&bin, &["acp".to_string()], &cwd, None, None, &[], None, &[])
-                .await
-            {
-                Ok(session) => session,
-                Err(err) => {
-                    eprintln!("SKIP: 连接失败（未登录 / 网络？）：{err}");
-                    return;
-                }
-            };
+        let session = match AcpSession::connect(
+            &bin,
+            &["acp".to_string()],
+            &cwd,
+            None,
+            None,
+            None,
+            &[],
+            None,
+            &[],
+        )
+        .await
+        {
+            Ok(session) => session,
+            Err(err) => {
+                eprintln!("SKIP: 连接失败（未登录 / 网络？）：{err}");
+                return;
+            }
+        };
         let control = spawn_acp_session_actor(session);
         // 这里不用 `run_one_live_turn`：它的墙钟超时是 panic，而 opencode 密钥失效导致的
         // 挂起是**环境**问题不是本层回归，必须按 SKIP 处理。

@@ -1933,7 +1933,7 @@ fn launch_config_for_turn(
         };
     }
     if matches!(protocol, StreamFormat::PiRpc) {
-        return LaunchConfig::for_pi(model, reasoning);
+        return LaunchConfig::default();
     }
     if matches!(protocol, StreamFormat::CodexAppServer) {
         // sandbox 进入进程配置，握手解析出的 sandboxPolicy 每轮显式发送。
@@ -1949,12 +1949,12 @@ fn launch_config_for_turn(
     }
     if matches!(protocol, StreamFormat::AcpJsonRpc) {
         return LaunchConfig {
-            // Grok's ask mode removes the process-bound --always-approve flag.
-            // A live full-access process must be relaunched before this choice can apply.
-            flags: if sandbox == Some("ask") {
-                serde_json::json!(["ask", additional_dirs_key]).to_string()
-            } else {
-                additional_dirs_key.to_string()
+            // Process-bound ACP choices: grok's ask / strict change argv, OpenCode's build /
+            // plan is applied once at session setup. Switching relaunches and resumes the same
+            // native session. `full` is grok's default argv, so it fingerprints like unset.
+            flags: match sandbox.filter(|s| !s.is_empty() && *s != "full") {
+                Some(mode) => serde_json::json!([mode, additional_dirs_key]).to_string(),
+                None => additional_dirs_key.to_string(),
             },
             instructions: None,
         };
@@ -3308,6 +3308,7 @@ async fn connect_persistent_session(
                     cwd,
                     model,
                     reasoning,
+                    sandbox,
                     mcp_servers,
                     Some(sid),
                     additional_directories,
@@ -3332,6 +3333,7 @@ async fn connect_persistent_session(
                 cwd,
                 model,
                 reasoning,
+                sandbox,
                 mcp_servers,
                 None,
                 additional_directories,
@@ -3705,6 +3707,19 @@ fn apply_unified_event(
             tool_calls.push(record.clone());
             emit_chat_tool_record(app, run_id, &record);
         }
+        UnifiedAgentEvent::ToolPartialOutput {
+            tool_use_id,
+            output,
+        } => {
+            if let Some(record) = tool_map
+                .get(&tool_use_id)
+                .and_then(|idx| tool_calls.get_mut(*idx))
+            {
+                if apply_external_tool_partial_output(record, &output) {
+                    emit_chat_tool_record(app, run_id, record);
+                }
+            }
+        }
         UnifiedAgentEvent::ToolResult {
             tool_use_id,
             content: result_content,
@@ -3984,6 +3999,27 @@ fn apply_unified_event(
     }
 }
 
+fn apply_external_tool_partial_output(record: &mut ToolCallRecord, output: &str) -> bool {
+    if !matches!(
+        record.status,
+        ToolCallStatus::Pending | ToolCallStatus::Running
+    ) {
+        return false;
+    }
+    record.status = ToolCallStatus::Running;
+    let start = output
+        .char_indices()
+        .rev()
+        .nth(799)
+        .map_or(0, |(index, _)| index);
+    record.result_preview = Some(if start > 0 {
+        format!("…{}", &output[start..])
+    } else {
+        output.to_string()
+    });
+    true
+}
+
 fn apply_external_tool_result(
     record: &mut ToolCallRecord,
     result_content: &str,
@@ -4243,16 +4279,16 @@ fn merge_cli_usage(previous: Option<&ModelUsage>, mut incoming: ModelUsage) -> M
     if let Some(prev) = previous {
         if usage_tokens_all_zero(&incoming) && !usage_tokens_all_zero(prev) {
             let window = incoming.context_window_tokens;
+            let context = incoming.context_tokens;
             incoming = prev.clone();
             incoming.context_window_tokens = window;
+            incoming.context_tokens = context.or(incoming.context_tokens);
         }
     }
     incoming
 }
 
-/// 一次上报里所有 token 数是否都是 0 / 缺失（= 这条上报没有任何分子信息）。
-/// 这条用量上报有没有任何非零 token。`context.rs::usage_has_token_numbers` 是它的反面，
-/// 两处必须共用同一个判据（此前 `reasoning_tokens` 只有这边算，见那里的注释）。
+/// 计费用量是否全零；独立的 context_tokens 快照不参与计费字段合并。
 pub(crate) fn usage_tokens_all_zero(usage: &ModelUsage) -> bool {
     usage.input_tokens.unwrap_or(0) == 0
         && usage.output_tokens.unwrap_or(0) == 0
@@ -4439,6 +4475,15 @@ mod tests {
             span_id: None,
             structured_content: Some(serde_json::json!({ "description": "搜资讯" })),
         };
+        let latest = "新".repeat(800);
+        assert!(apply_external_tool_partial_output(
+            &mut record,
+            &format!("old{latest}")
+        ));
+        assert_eq!(
+            record.result_preview.as_deref(),
+            Some(format!("…{latest}").as_str())
+        );
         apply_external_tool_result(
             &mut record,
             "started subagent 018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50",
@@ -4452,6 +4497,9 @@ mod tests {
             background_task_id(&record).as_deref(),
             Some("018b08fc-ee7f-4ea5-b77c-9c5d1c6ecf50")
         );
+        record.status = ToolCallStatus::Success;
+        assert!(!apply_external_tool_partial_output(&mut record, "too late"));
+        assert_eq!(record.result_preview, None);
     }
 
     #[test]
@@ -4700,6 +4748,29 @@ mod tests {
             },
         );
         assert_eq!(merged.context_window_tokens, Some(1_048_576));
+    }
+
+    #[test]
+    fn cli_usage_merge_preserves_billing_when_context_only_stats_arrive() {
+        let previous = ModelUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            total_tokens: Some(120),
+            context_tokens: Some(80),
+            ..Default::default()
+        };
+        let merged = merge_cli_usage(
+            Some(&previous),
+            ModelUsage {
+                context_tokens: Some(90),
+                context_window_tokens: Some(1000),
+                ..Default::default()
+            },
+        );
+        assert_eq!(merged.input_tokens, Some(100));
+        assert_eq!(merged.output_tokens, Some(20));
+        assert_eq!(merged.context_tokens, Some(90));
+        assert_eq!(merged.context_window_tokens, Some(1000));
     }
 
     #[test]
@@ -5467,6 +5538,9 @@ mod tests {
         assert_eq!(grok(None), grok(Some("full")));
         assert!(!grok(None).accepts(&grok(Some("ask"))));
         assert!(!grok(Some("ask")).accepts(&grok(Some("full"))));
+        assert!(!grok(None).accepts(&grok(Some("strict"))));
+        // OpenCode build ⇄ plan is set at session setup, so it must relaunch + resume.
+        assert!(!grok(Some("build")).accepts(&grok(Some("plan"))));
         let claude = launch_config_for_turn(
             StreamFormat::ClaudeStreamJson,
             Some("opus"),
@@ -5571,7 +5645,7 @@ mod tests {
                 StreamFormat::AcpJsonRpc,
                 Some("opus"),
                 Some("high"),
-                Some("plan"),
+                None,
                 None,
                 Some("h"),
                 ""
@@ -5584,7 +5658,7 @@ mod tests {
                 StreamFormat::AcpJsonRpc,
                 Some("opus"),
                 Some("high"),
-                Some("plan"),
+                None,
                 None,
                 Some("h"),
                 "/home/me/biz-a",
@@ -5599,13 +5673,9 @@ mod tests {
             pi(Some("opus"), Some("high")),
             pi(Some("opus"), Some("high"))
         );
-        assert_ne!(
+        assert_eq!(
             pi(Some("opus"), Some("high")),
-            pi(Some("sonnet"), Some("high"))
-        );
-        assert_ne!(
-            pi(Some("opus"), Some("high")),
-            pi(Some("opus"), Some("low"))
+            pi(Some("sonnet"), Some("low"))
         );
     }
 

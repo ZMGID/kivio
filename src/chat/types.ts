@@ -105,6 +105,8 @@ export interface AskUserQuestion {
   required?: boolean
   value_schema?: Record<string, unknown>
   valueSchema?: Record<string, unknown>
+  default_value?: string
+  defaultValue?: string
   options: AskUserOption[]
   allow_multiple?: boolean
   allowMultiple?: boolean

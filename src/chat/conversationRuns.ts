@@ -45,6 +45,9 @@ export function mergeToolRecord(
   next: import('./types').ToolCallRecord,
 ): import('./types').ToolCallRecord {
   const merged = { ...previous, ...next }
+  if ('result_preview' in next || 'resultPreview' in next) {
+    merged.result_preview = merged.resultPreview = next.result_preview ?? next.resultPreview
+  }
   const structured = next.structured_content ?? next.structuredContent
     ?? previous.structured_content ?? previous.structuredContent
   if (structured !== undefined) {

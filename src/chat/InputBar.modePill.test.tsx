@@ -145,6 +145,22 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(onModeChange).toHaveBeenCalledWith('acceptEdits')
   })
 
+  it('renders the OpenCode plan capsule with the read-only eye and sends the selected mode', () => {
+    const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode', externalSandbox: 'plan' }
+    const agents: DetectedExternalAgent[] = [{
+      id: 'opencode', name: 'OpenCode', available: true, models: [],
+      sandboxOptions: [{ id: 'build', label: '构建 (默认)' }, { id: 'plan', label: '计划 (只读)' }],
+    }]
+    const onModeChange = renderComposer(derivePermissionModes({ target: 'composer', agentRuntime: runtime, agents }))
+    expect(screen.getByTitle('切换模式').querySelector('.lucide-eye')).toBeInTheDocument()
+    openModeMenu('计划 (只读)')
+    const plan = screen.getByRole('menuitemradio', { name: /计划 \(只读\)/ })
+    expect(plan).toHaveAttribute('aria-checked', 'true')
+    expect(plan.querySelector('.lucide-eye')).toBeInTheDocument()
+    act(() => { fireEvent.click(screen.getByRole('menuitemradio', { name: /构建 \(默认\)/ })) })
+    expect(onModeChange).toHaveBeenCalledWith('build')
+  })
+
   it('该 CLI 没有档位时胶囊整个不渲染', () => {
     const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode' }
     renderComposer(derivePermissionModes({

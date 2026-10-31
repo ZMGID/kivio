@@ -657,6 +657,9 @@ pub struct ChatAskUserQuestionPayload {
     pub allow_custom: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub default_value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub required: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, unknown>")]
@@ -692,6 +695,7 @@ impl From<&crate::chat::ask_user::AskUserPromptPayload> for ChatAskUserPromptPay
                         .collect(),
                     allow_multiple: question.allow_multiple,
                     allow_custom: question.allow_custom,
+                    default_value: question.default_value.clone(),
                     required: Some(question.required),
                     value_schema: question.value_schema.clone(),
                 })

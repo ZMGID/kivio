@@ -25,10 +25,7 @@ pub fn build_pi_args(
     _prompt: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--mode".to_string(), "rpc".to_string()];
-    // pi 原生会话：`--session-id <id>` 语义天然幂等——不存在则创建、存在则续接。首轮
-    // resolve_agent_resume_context 给出 new_session_id（新 uuid，落盘 external-agent-sessions），
-    // 后续轮给出 resume_session_id（同一 id），两种情况都用这同一个 flag。pi 每轮 spawn，
-    // 靠这个 id 让 CLI 自己从原生会话文件恢复历史，Kivio 不再重放 transcript。
+    // Pi --session-id creates or resumes the same native session on a process launch.
     if let Some(session_id) = ctx
         .resume_session_id
         .as_ref()
@@ -40,19 +37,21 @@ pub fn build_pi_args(
     }
     if let Some(model) = options
         .model
-        .as_ref()
+        .as_deref()
+        .map(str::trim)
         .filter(|m| *m != "default" && !m.is_empty())
     {
         args.push("--model".to_string());
-        args.push(model.clone());
+        args.push(model.to_string());
     }
     if let Some(reasoning) = options
         .reasoning
-        .as_ref()
+        .as_deref()
+        .map(str::trim)
         .filter(|r| *r != "default" && !r.is_empty())
     {
         args.push("--thinking".to_string());
-        args.push(reasoning.clone());
+        args.push(reasoning.to_string());
     }
     // 注意：pi 无「授权目录」flag（`--help` 无 --add-dir/allowed-dir 等价项，只有 --approve 信任
     // 项目本地文件）。此前把 extra_allowed_dirs 塞进 `--append-system-prompt` 是误用——该 flag
@@ -152,14 +151,18 @@ mod tests {
                 include_partial_messages: false,
             },
             &RuntimeBuildOptions {
-                model: Some("anthropic/claude-sonnet-4-5".to_string()),
-                reasoning: Some("high".to_string()),
+                model: Some("  anthropic/claude-sonnet-4-5 ".to_string()),
+                reasoning: Some(" high ".to_string()),
                 sandbox: None,
             },
             None,
         );
         assert!(args.contains(&"rpc".to_string()));
         assert!(args.contains(&"--thinking".to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "anthropic/claude-sonnet-4-5"]));
+        assert!(args.windows(2).any(|pair| pair == ["--thinking", "high"]));
         // extra_allowed_dirs 不再被塞进 --append-system-prompt（pi 无授权目录 flag）。
         assert!(!args.contains(&"--append-system-prompt".to_string()));
         assert!(!args.contains(&"/skills".to_string()));
@@ -177,13 +180,16 @@ mod tests {
                 include_partial_messages: false,
             },
             &RuntimeBuildOptions {
-                model: None,
-                reasoning: None,
+                model: Some(" default ".to_string()),
+                reasoning: Some(" ".to_string()),
                 sandbox: None,
             },
             None,
         );
         assert!(args.windows(2).any(|w| w == ["--session-id", "sess-new"]));
+        assert!(!args
+            .iter()
+            .any(|arg| arg == "--model" || arg == "--thinking"));
     }
 
     #[test]

@@ -161,8 +161,7 @@ pub const CANCELLED_SESSION_LOST: &str = "__cancelled_session_lost__";
 /// 是功能退步而不是缺功能。指纹变了就换个进程。
 ///
 /// 只有启动时锁死、会话内改不了的配置才进指纹（claude：`--effort` / `--permission-mode`；
-/// Pi：`--model` / `--thinking`；codex：sandbox / approvalPolicy，只在 `thread/start`）。
-/// ACP 能在会话内改相关项，指纹恒为 `default()`。
+/// codex：sandbox / approvalPolicy，只在 `thread/start`）。Pi 和 ACP 可在会话内切换配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaunchConfig {
     /// `model|reasoning|sandbox`，恒可知。
@@ -174,20 +173,6 @@ pub struct LaunchConfig {
 }
 
 impl LaunchConfig {
-    /// Pi receives model/thinking as process launch flags. Empty selection still
-    /// fingerprints as `"|"` so it matches chat-turn fingerprints,
-    /// not `Default` (`flags == ""`).
-    pub fn for_pi(model: Option<&str>, reasoning: Option<&str>) -> Self {
-        Self {
-            flags: format!(
-                "{}|{}",
-                model.unwrap_or_default(),
-                reasoning.unwrap_or_default()
-            ),
-            instructions: None,
-        }
-    }
-
     /// 已建立的会话（`self`，注册时的配置）能否服务配置为 `incoming` 的这一轮。
     pub fn accepts(&self, incoming: &LaunchConfig) -> bool {
         if self.flags != incoming.flags {
@@ -574,19 +559,6 @@ mod tests {
     #[test]
     fn default_launch_config_always_accepts() {
         assert!(LaunchConfig::default().accepts(&LaunchConfig::default()));
-    }
-
-    #[test]
-    fn pi_launch_config_matches_chat_turns_even_with_empty_selection() {
-        let idle = LaunchConfig::for_pi(None, None);
-        assert_eq!(idle.flags, "|");
-        assert_ne!(idle, LaunchConfig::default());
-        assert!(idle.accepts(&LaunchConfig::for_pi(None, None)));
-        assert!(!LaunchConfig::default().accepts(&idle));
-        assert!(LaunchConfig::for_pi(Some("opus"), Some("high"))
-            .accepts(&LaunchConfig::for_pi(Some("opus"), Some("high"))));
-        assert!(!LaunchConfig::for_pi(Some("opus"), Some("high"))
-            .accepts(&LaunchConfig::for_pi(Some("opus"), Some("low"))));
     }
 
     /// 轮内重连之后，guard 必须重新挂到**新**会话上。

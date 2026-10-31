@@ -63,7 +63,7 @@ export type ChatContextStatePayload = { autoCompactThresholdTokens: number | nul
 
 export type ChatAskUserOptionPayload = { id: string, label: string, description: string | null, };
 
-export type ChatAskUserQuestionPayload = { id: string, prompt: string, options: Array<ChatAskUserOptionPayload>, allowMultiple: boolean, allowCustom: boolean, required?: boolean, valueSchema?: Record<string, unknown>, };
+export type ChatAskUserQuestionPayload = { id: string, prompt: string, options: Array<ChatAskUserOptionPayload>, allowMultiple: boolean, allowCustom: boolean, defaultValue?: string, required?: boolean, valueSchema?: Record<string, unknown>, };
 
 export type ChatAskUserPromptPayload = { title: string | null, questions: Array<ChatAskUserQuestionPayload>, };
 

@@ -52,6 +52,12 @@
         "allowMultiple": {
           "type": "boolean"
         },
+        "defaultValue": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "string"
         },
