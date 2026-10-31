@@ -776,14 +776,14 @@ export function FileTreePanel({
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center gap-1 border-b border-neutral-200/70 px-2 py-1.5">
-        <div className="flex min-w-0 flex-1 items-center gap-1 rounded-md bg-neutral-500/10 px-1.5">
+      <div className="flex items-center gap-1 px-3 pb-2 pt-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-neutral-200 bg-transparent px-2.5 transition-colors focus-within:border-neutral-400">
           <Search size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
           <input
             value={tree.searchQuery}
             onChange={(e) => tree.setSearchQuery(e.target.value)}
             placeholder={t.dockSearchPlaceholder}
-            className="h-6 min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-neutral-400"
+            className="h-7 min-w-0 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-neutral-400"
             onKeyDown={(e) => {
               if (e.key === 'Escape' && tree.searchQuery) tree.setSearchQuery('')
             }}

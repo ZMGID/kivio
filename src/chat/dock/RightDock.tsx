@@ -1,7 +1,7 @@
 // Right Dock 容器：tab 条（文件树 / Git / 终端 / 任务）+ 常驻面板 + 左缘拖拽调宽 + 折叠滑出。
 // 宽度通过 CSS 变量 --chat-dock-width 直写（拖拽过程不触发 React 重渲），松手才持久化。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { Activity, FolderTree, GitBranch, Terminal, X } from 'lucide-react'
+import { Activity, FolderTree, GitBranch, Plus, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { FileTreePanel } from './FileTreePanel'
@@ -11,6 +11,14 @@ import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SubAgentPanel } from '../SubAgentPanel'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
+
+// 启动页入口：单键直达（仅启动页可见时生效，输入框内不拦截）。
+const DOCK_ENTRIES = [
+  { tab: 'files', key: 'f', icon: FolderTree, label: 'dockTabFiles' },
+  { tab: 'git', key: 'g', icon: GitBranch, label: 'dockTabGit' },
+  { tab: 'terminal', key: 't', icon: Terminal, label: 'dockTabTerminal' },
+  { tab: 'tasks', key: 'k', icon: Activity, label: 'dockTabTasks' },
+] as const
 
 export const DOCK_MIN_WIDTH = 320
 export const DOCK_MAX_WIDTH = 560
@@ -111,9 +119,14 @@ export const RightDock = memo(function RightDock({
     [width, onWidthChange],
   )
 
-  const filesActive = open && activeTab === 'files'
-  const gitActive = open && activeTab === 'git'
-  const terminalActive = open && activeTab === 'terminal'
+  // 启动页：没有已打开面板，或点了 + 时显示；此时所有面板都不算活动。
+  const [openTabs, setOpenTabs] = useState<DockTab[]>([])
+  const [launcher, setLauncher] = useState(false)
+  const showLauncher = launcher || openTabs.length === 0
+  const shown = showLauncher ? null : activeTab
+  const filesActive = open && shown === 'files'
+  const gitActive = open && shown === 'git'
+  const terminalActive = open && shown === 'terminal'
   // 代码提前加载，PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
   // Dock 折叠时即使记住了终端标签，也不能提前启动 shell。
   const [terminalMounted, setTerminalMounted] = useState(() => terminalActive)
@@ -126,6 +139,41 @@ export const RightDock = memo(function RightDock({
     const el = shellRef.current
     if (el) el.inert = !open
   }, [open])
+  const chooseEntry = useCallback(
+    (tab: DockTab) => {
+      setOpenTabs((prev) => (prev.includes(tab) ? prev : [...prev, tab]))
+      setLauncher(false)
+      onToggleTab(tab)
+    },
+    [onToggleTab],
+  )
+  const closeTab = (tab: DockTab) => {
+    const next = openTabs.filter((x) => x !== tab)
+    setOpenTabs(next)
+    if (activeTab === tab && next.length) onToggleTab(next[next.length - 1])
+  }
+  // 外部（工具卡片预览、定位文件等）切换 tab 时自动成为已打开 tab；首次渲染不算。
+  const prevTab = useRef(activeTab)
+  useEffect(() => {
+    if (prevTab.current === activeTab) return
+    prevTab.current = activeTab
+    if (!open) return
+    setOpenTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]))
+    setLauncher(false)
+  }, [activeTab, open])
+  useEffect(() => {
+    if (!open || !showLauncher) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if ((e.target as HTMLElement | null)?.closest('input,textarea,[contenteditable]')) return
+      const hit = DOCK_ENTRIES.find((entry) => entry.key === e.key.toLowerCase())
+      if (!hit) return
+      e.preventDefault()
+      chooseEntry(hit.tab)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, showLauncher, chooseEntry])
   return (
     <aside
       ref={shellRef}
@@ -139,38 +187,68 @@ export const RightDock = memo(function RightDock({
         onPointerDown={handleResizeStart}
       />
 
-      {/* tab 条 */}
-      <div className="flex shrink-0 items-center gap-0.5 border-b border-neutral-200/70 py-1.5 pl-3 pr-1.5">
-        {(
-          [
-            { tab: 'files' as DockTab, label: t.dockTabFiles, icon: FolderTree },
-            { tab: 'git' as DockTab, label: t.dockTabGit, icon: GitBranch },
-            { tab: 'terminal' as DockTab, label: t.dockTabTerminal, icon: Terminal },
-            { tab: 'tasks' as DockTab, label: t.dockTabTasks, icon: Activity },
-          ]
-        ).map(({ tab, label, icon: Icon }) => (
-          <button
-            key={tab}
-            type="button"
-            className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] transition-colors ${
-              activeTab === tab
-                ? 'bg-neutral-500/10 font-medium text-neutral-800 dark:bg-neutral-400/10'
-                : 'text-neutral-500 hover:bg-neutral-500/5 hover:text-neutral-700 dark:text-neutral-400'
-            }`}
-            onClick={() => onToggleTab(tab)}
-          >
-            <Icon size={13} strokeWidth={1.75} />
-            {label}
-          </button>
-        ))}
+      {/* 顶栏：+ 打开启动页；只显示已打开的面板 tab */}
+      <div className="flex shrink-0 items-center gap-1 px-3 pb-1 pt-2.5">
+        <IconButton label={t.dockNewTab} size="sm" variant="ghost" onClick={() => setLauncher(true)}>
+          <Plus size={14} />
+        </IconButton>
+        {openTabs.map((tab) => {
+          const entry = DOCK_ENTRIES.find((x) => x.tab === tab)!
+          const Icon = entry.icon
+          return (
+            <div
+              key={tab}
+              className={`flex items-center gap-1 rounded-lg pl-2.5 pr-1 text-[12.5px] transition-colors ${
+                shown === tab
+                  ? 'bg-[var(--accent-soft)] font-medium text-neutral-900 dark:text-neutral-100'
+                  : 'text-neutral-500 hover:bg-neutral-500/8 hover:text-neutral-700 dark:text-neutral-400'
+              }`}
+            >
+              <button type="button" className="flex items-center gap-1.5 py-1.5" onClick={() => chooseEntry(tab)}>
+                <Icon size={13} strokeWidth={1.75} />
+                {t[entry.label]}
+              </button>
+              <button
+                type="button"
+                aria-label={t.dockClose}
+                className="rounded p-1 opacity-60 hover:opacity-100"
+                onClick={() => closeTab(tab)}
+              >
+                <X size={11} />
+              </button>
+            </div>
+          )
+        })}
         <div className="flex-1" />
         <IconButton label={t.dockClose} size="sm" variant="ghost" onClick={onClose}>
           <X size={13} />
         </IconButton>
       </div>
 
+      {showLauncher && (
+        <div className="flex min-h-0 flex-1 flex-col justify-center px-8 pb-16">
+          <div className="mb-4 text-center text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
+            {t.dockLauncherTitle}
+          </div>
+          {DOCK_ENTRIES.map(({ tab, key, icon: Icon, label }) => (
+            <button
+              key={tab}
+              type="button"
+              className="flex items-center gap-3 rounded-lg px-2 py-2 text-left text-[14px] text-neutral-800 transition-colors hover:bg-neutral-500/8 dark:text-neutral-200"
+              onClick={() => chooseEntry(tab)}
+            >
+              <Icon size={17} strokeWidth={1.75} />
+              <span className="flex-1">{t[label]}</span>
+              <kbd className="rounded-md bg-neutral-500/10 px-2 py-0.5 text-[11.5px] font-medium uppercase text-neutral-500">
+                {key}
+              </kbd>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 文件 / Git / 终端保留面板；子代理详情仅在任务页可见时读取。 */}
-      <div className="flex min-h-0 flex-1 flex-col" hidden={activeTab !== 'files'}>
+      <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'files'}>
         <FileTreePanel
           workdir={workdir}
           active={filesActive}
@@ -183,21 +261,21 @@ export const RightDock = memo(function RightDock({
           onInsertMention={onInsertMention}
         />
       </div>
-      <div className="flex min-h-0 flex-1 flex-col" hidden={activeTab !== 'git'}>
+      <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'git'}>
         <GitPanel workdir={workdir} active={gitActive} lang={lang} onRevealInTree={onRevealInTree} />
       </div>
-      <div className="flex min-h-0 flex-1 flex-col" hidden={activeTab !== 'terminal'}>
+      <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'terminal'}>
         {terminalMounted && (
           <TerminalPanel workdir={workdir} active={terminalActive} lang={lang} />
         )}
       </div>
-      <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={activeTab !== 'tasks'}>
-        {open && activeTab === 'tasks' && conversationId && (
+      <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={shown !== 'tasks'}>
+        {open && shown === 'tasks' && conversationId && (
           <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} revealAgent={subAgentRequest?.conversationId === conversationId ? subAgentRequest : null}
             listFooter={<BackgroundTasksPanel hideEmpty active lang={lang} conversationId={conversationId} />} />
         )}
         {!conversationId && <BackgroundTasksPanel
-          active={open && activeTab === 'tasks'}
+          active={open && shown === 'tasks'}
           lang={lang}
           conversationId={conversationId}
         />}

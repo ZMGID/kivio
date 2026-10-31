@@ -64,6 +64,7 @@ function dockProps(overrides: Partial<ComponentProps<typeof RightDock>> = {}): C
 describe('RightDock tabs', () => {
   it('shows parent commands only in the task list, never inside a child detail', async () => {
     render(<RightDock {...dockProps({ activeTab: 'tasks' })} />)
+    fireEvent.click(screen.getByText('任务'))
     expect(screen.getByText('node server.js')).toBeVisible()
     fireEvent.click(await screen.findByText('Environment'))
     expect(screen.queryByText('node server.js')).toBeNull()
@@ -74,6 +75,7 @@ describe('RightDock tabs', () => {
   it('keeps parent commands out of direct child reveals and restores the list on conversation changes', async () => {
     const props = dockProps({ activeTab: 'tasks', subAgentRequest: { conversationId: 'conv-1', agentId: 'child', nonce: 1 } })
     const view = render(<RightDock {...props} />)
+    fireEvent.click(screen.getByText('任务'))
     await screen.findByRole('button', { name: '返回任务列表' })
     expect(screen.queryByText('node server.js')).toBeNull()
     view.rerender(<RightDock {...props} conversationId="conv-2" />)
@@ -88,6 +90,7 @@ describe('RightDock tabs', () => {
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
 
     rerender(<RightDock {...props} open />)
+    fireEvent.click(screen.getByText('文件'))
     expect(screen.getByTestId('files-panel')).toHaveAttribute('data-active', 'true')
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
 
@@ -114,12 +117,14 @@ describe('RightDock tabs', () => {
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
 
     rerender(<RightDock {...props} open />)
+    fireEvent.click(screen.getByText('终端'))
     expect(await screen.findByTestId('terminal-panel')).toHaveAttribute('data-active', 'true')
   })
 
   it('keeps an opened terminal mounted across tab changes and closing the dock', async () => {
     const props = dockProps({ activeTab: 'terminal' })
     const { rerender } = render(<RightDock {...props} />)
+    fireEvent.click(screen.getByText('终端'))
     const terminal = await screen.findByTestId('terminal-panel')
 
     rerender(<RightDock {...props} activeTab="files" />)
