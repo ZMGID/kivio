@@ -3,7 +3,7 @@ import { PluginCenterHeading } from './market/PluginCenterHeading'
 import { refreshSubAgents } from './useSubAgents'
 import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
-import { type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
+import { SettingsNavFooter, type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { MediaStation } from './MediaStation'
 import { ArtifactsCenter } from './ArtifactsCenter'
@@ -266,6 +266,10 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onSettingsChange,
   onReady,
   renderSessionCenter,
+  lang,
+  onOpenSettings,
+  onSelectLang,
+  onOpenUsage,
   onRender,
 }: {
   settingsRef: Ref<SettingsShellHandle>
@@ -277,6 +281,10 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
   onSettingsChange: () => void
   onReady: () => void
   renderSessionCenter: (lang: Lang) => ReactNode
+  lang: Lang
+  onOpenSettings: (tab?: 'about') => void
+  onSelectLang: (lang: Lang) => void
+  onOpenUsage: () => void
   onRender: ProfilerOnRenderCallback
 }) {
   return (
@@ -296,6 +304,7 @@ const ChatSettingsPane = memo(function ChatSettingsPane({
             onSettingsChange={onSettingsChange}
             onReady={onReady}
             renderSessionCenter={renderSessionCenter}
+            navFooter={<SettingsNavFooter lang={lang} onOpenSettings={onOpenSettings} onSelectLang={onSelectLang} onOpenUsage={onOpenUsage} />}
             renderReleaseNotes={(markdown) => (
               <Suspense fallback={<p>{markdown}</p>}>
                 <ChatMarkdown content={markdown} />
@@ -2987,6 +2996,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                 />
               </Suspense>
             )}
+            lang={uiLang}
+            onOpenSettings={handleSidebarOpenSettings}
+            onSelectLang={handleSidebarSelectLang}
+            onOpenUsage={handleSidebarOpenUsage}
             onRender={onChatPerfProfiler}
           />
         ) : chatView === 'assistants' ? (

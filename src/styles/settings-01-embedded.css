@@ -30,7 +30,7 @@
 
 .settings-embedded-nav {
   width: var(--chat-sidebar-width, 240px);
-  /* 侧栏左右内边距抽成变量：底部「返回对话」要用负边距抵掉它，才能让分隔线通栏。 */
+  /* 侧栏左右内边距抽成变量：底部账号行要用负边距抵掉它，才能让分隔线通栏。 */
   --nav-pad-x: 8px;
   flex-shrink: 0;
   display: flex;
@@ -41,20 +41,15 @@
   overflow: hidden;
 }
 
-/* 设置页自带导航栏顶掉聊天侧栏时，导航栏贴窗口顶 → 也要多留卡片那 8px 才不压到灯 */
+/* 设置页自带导航栏顶掉聊天侧栏时，导航栏贴窗口顶。「返回对话」的行中心要落在聊天侧栏第一行
+   同一条水平线上，所以顶部内边距为红绿灯留出位置。 */
 .settings-embedded--traffic-safe .settings-embedded-nav {
-  padding-top: 60px;
+  padding-top: 49px;
 }
 
-
-.settings-embedded-nav-title {
-  margin: 0 12px 12px;
-  padding-top: 4px;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  user-select: none;
+/* 折叠后标题行顶到窗口顶，同样给红绿灯让位。 */
+.settings-embedded--traffic-safe.settings-embedded--nav-collapsed .settings-embedded-header {
+  padding-top: 49px;
 }
 
 .settings-embedded-nav-list {
@@ -64,20 +59,22 @@
   padding: 0;
 }
 
-/* 窗口变矮时分类列表自己滚，否则它撑满高度 + 外层 overflow:hidden 会把底部「返回对话」裁掉。 */
-.settings-embedded-nav-list:not(.settings-embedded-nav-list--footer) {
+/* 窗口变矮时分类列表自己滚，否则它撑满高度 + 外层 overflow:hidden 会把内容裁掉。 */
+.settings-embedded-nav-list:not(.settings-embedded-nav-list--header) {
   min-height: 0;
   overflow-y: auto;
 }
 
-/* 底部「返回对话」：负边距抵掉 aside 内边距 → 分隔线通栏 */
-.settings-embedded-nav-list--footer {
+/* 顶部「返回对话」：固定不滚，与分类列表隔开一点。 */
+.settings-embedded-nav-list--header {
   flex-shrink: 0;
-  height: 48px;
-  justify-content: center;
-  margin: 0 calc(-1 * var(--nav-pad-x));
-  padding: 6px var(--nav-pad-x);
-  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  margin-bottom: 8px;
+}
+
+/* 底部账号行：贴底，负边距抵掉 aside 内边距 → 分隔线通栏（行内自带 border-t）。 */
+.settings-embedded-nav-footer {
+  flex-shrink: 0;
+  margin: auto calc(-1 * var(--nav-pad-x)) 0;
 }
 
 
@@ -366,10 +363,6 @@
     --nav-pad-x: 6px;
   }
 
-  .settings-embedded-nav-title {
-    display: none;
-  }
-
   .settings-embedded-nav .kv-sidebar-nav-item {
     justify-content: center;
     gap: 0;
@@ -381,16 +374,14 @@
     display: none;
   }
 
-  /* 窄栏（52px 图标轨）里「返回对话」也收成纯图标居中，否则文字被挤成竖排。tooltip 保留标签。 */
-  .settings-embedded-nav-list--footer .kv-sidebar-nav-item {
-    justify-content: center;
-    gap: 0;
-    padding-left: 8px;
-    padding-right: 8px;
+  /* 52px 图标轨里账号行只留头像（点开菜单），隐藏名称和齿轮，否则被挤出栏外。 */
+  .settings-embedded-nav-footer span,
+  .settings-embedded-nav-footer button:not([aria-haspopup]) {
+    display: none;
   }
 
-  .settings-embedded-nav-list--footer .kv-sidebar-nav-item > span:not(.kv-sidebar-nav-icon) {
-    display: none;
+  .settings-embedded-nav-footer button[aria-haspopup] {
+    justify-content: center;
   }
 }
 

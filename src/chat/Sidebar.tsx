@@ -352,6 +352,33 @@ function SidebarUserFooter({
   )
 }
 
+/** 设置页侧栏底部的账号行：与聊天侧栏同一组件，自己读头像资料。 */
+export function SettingsNavFooter({ lang, onOpenSettings, onSelectLang, onOpenUsage }: {
+  lang: Lang
+  onOpenSettings: (tab?: 'about') => void
+  onSelectLang: (lang: Lang) => void
+  onOpenUsage: () => void
+}) {
+  const [profile, setProfile] = useState(() => resolveChatUserProfile())
+  useEffect(() => {
+    let cancelled = false
+    void getSettingsCached().then((settings) => {
+      if (!cancelled) setProfile(resolveChatUserProfile(settings.chat))
+    }).catch((err) => console.error('Failed to load chat user profile:', err))
+    return () => { cancelled = true }
+  }, [])
+  return (
+    <SidebarUserFooter
+      profile={profile}
+      lang={lang}
+      settingsActive
+      onOpenSettings={onOpenSettings}
+      onSelectLang={onSelectLang}
+      onOpenUsage={onOpenUsage}
+    />
+  )
+}
+
 
 function ExtensionsNav({
   entries,

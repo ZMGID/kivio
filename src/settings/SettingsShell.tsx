@@ -4,7 +4,7 @@ import { useModelDatabase } from '../data/useModelDatabase'
 import { forwardRef, useImperativeHandle, useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ReactNode, type SetStateAction } from 'react'
 import {
   X, RefreshCw,
-  ArrowLeft, Palette, CloudUpload,
+  ArrowLeft, Palette, CloudUpload, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
@@ -64,7 +64,7 @@ import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
 import { ModelDetailDrawer } from './ModelDetailDrawer'
 import { ProviderModelTestModal } from './ProviderModelTestModal'
-import { Button } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { confirmDialog } from '../components/dialogQueue'
 import { ThemeTab } from './tabs/ThemeTab'
 import type { ThemeDefinition } from '../theme/types'
@@ -96,6 +96,8 @@ export interface SettingsShellProps {
   initialTab?: SettingsTab
   /** embedded 单页模式：隐藏左侧设置导航，只显示 initialTab 对应页（如从扩展点「知识库」进入） */
   hideNav?: boolean
+  /** embedded 左栏底部槽位（聊天窗口放账号行，与聊天侧栏一致）。 */
+  navFooter?: ReactNode
   /** Chat 宿主提供的领域视图；设置只决定它们出现的位置。 */
   renderSessionCenter?: (lang: Lang) => ReactNode
   renderReleaseNotes: (markdown: string) => ReactNode
@@ -142,7 +144,7 @@ function resolveEffectiveChatMaxOutput(settings: SettingsData, fallbackTokens: n
  * 设置面板主组件（standalone / embedded 双宿主）
  */
 export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>(function SettingsShell(
-  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, renderSessionCenter, renderReleaseNotes },
+  { variant, onClose, onSettingsChange, onReady, reserveTrafficLightSpace = false, initialTab, hideNav = false, navFooter, renderSessionCenter, renderReleaseNotes },
   ref,
 ) {
   const onSettingsChangeRef = useRef(onSettingsChange)
@@ -169,6 +171,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   }, [editorController])
   const [appVersion, setAppVersion] = useState('')
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
+  const [navCollapsed, setNavCollapsed] = useState(false)
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
   // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
   const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
@@ -969,6 +972,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const categoryNav =
     variant === 'embedded' ? (
       <>
+        <nav className="settings-embedded-nav-list settings-embedded-nav-list--header">
+          <SidebarNavItem
+            onClick={() => handleCloseRequest({ waitForSave: false })}
+            icon={<ArrowLeft size={18} strokeWidth={1.75} />}
+            label={lang === 'zh' ? '返回对话' : 'Back to chat'}
+          />
+        </nav>
         <nav className="settings-embedded-nav-list custom-scrollbar">
           {navItems.map((item) => {
             const Icon = item.icon
@@ -982,14 +992,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               />
             )
           })}
-        </nav>
-        <div className="min-h-0 flex-1" />
-        <nav className="settings-embedded-nav-list settings-embedded-nav-list--footer">
-          <SidebarNavItem
-            onClick={() => handleCloseRequest({ waitForSave: false })}
-            icon={<ArrowLeft size={18} strokeWidth={1.75} />}
-            label={lang === 'zh' ? '返回对话' : 'Back to chat'}
-          />
         </nav>
       </>
     ) : (
@@ -1024,6 +1026,17 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           >
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
               <div className="flex items-center gap-3">
+                {variant === 'embedded' && !hideNav && (
+                  <IconButton
+                    label={lang === 'zh' ? (navCollapsed ? '展开侧边栏' : '折叠侧边栏') : (navCollapsed ? 'Expand sidebar' : 'Collapse sidebar')}
+                    variant="ghost"
+                    aria-expanded={!navCollapsed}
+                    data-tauri-drag-region="false"
+                    onClick={() => setNavCollapsed(collapsed => !collapsed)}
+                  >
+                    {navCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
+                  </IconButton>
+                )}
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
                   <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
@@ -1453,14 +1466,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       <div
         className={`settings-embedded kv flex min-h-0 min-w-0 flex-1 ${
           reserveTrafficLightSpace ? 'settings-embedded--traffic-safe' : ''
-        }`}
+        }${navCollapsed ? ' settings-embedded--nav-collapsed' : ''}`}
       >
-        {!hideNav && (
-          <aside className="settings-embedded-nav">
-            <h2 className="settings-embedded-nav-title" onMouseDown={handleSettingsDragMouseDown}>
-              {t.settings}
-            </h2>
+        {!hideNav && !navCollapsed && (
+          <aside className="settings-embedded-nav" onMouseDown={handleSettingsDragMouseDown}>
             {categoryNav}
+            {navFooter ? <div className="settings-embedded-nav-footer">{navFooter}</div> : null}
           </aside>
         )}
         {settingsMain}
