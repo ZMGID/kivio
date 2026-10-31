@@ -2,26 +2,75 @@ import { describe, expect, it } from 'vitest'
 import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
 describe('matchModel', () => {
+  it('uses Codex defaults for recent OpenAI models with every provider and preserves overrides', () => {
+    expect(matchModelExact('gpt-5.4')?.contextWindow).toBe(1000000)
+    expect(matchModelExact('gpt-5.4-mini')?.contextWindow).toBe(400000)
+    expect(matchModelExact('gpt-5.4-nano')?.contextWindow).toBe(400000)
+    expect(matchModelExact('gpt-5.5-pro')?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
+    const codex = { baseUrl: 'https://chatgpt.com/backend-api/codex', request: { oauth: { provider: 'codex' as const } } }
+    for (const [id, context] of [['gpt-6-astra', 272000], ['gpt-6.1-sol', 500000], ['gpt-6.1-terra', 500000], ['gpt-5.6-sol', 272000]] as const) {
+      for (const provider of [undefined, codex, { baseUrl: 'https://api.openai.com/v1' }, { baseUrl: 'https://gateway.example/v1' }]) {
+        expect(resolveModelInfo(id, undefined, provider).contextWindow).toBe(context)
+        expect(resolveModelInfo(`openai/${id}`, undefined, provider).contextWindow).toBe(context)
+        expect(resolveModelInfo(id, { [id]: { contextWindow: 8192 } }, provider).contextWindow).toBe(8192)
+      }
+    }
+  })
+
+  it('keeps qualified OMP route limits when version separators are normalized', () => {
+    expect(matchModelExact('openai/gpt-5-4')?.contextWindow).toBe(1050000)
+    expect(matchModelExact('gpt-5-4')?.contextWindow).toBe(1000000)
+    expect(matchModelExact('anthropic/claude-sonnet-4-6')?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(matchModelExact('claude-sonnet-4-6')?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
+  })
+
+  it.each([
+    [['gpt-6.1-terra', 'openai/gpt-6.1-terra'], 500000, 128000, ['low', 'medium', 'high', 'xhigh', 'max'], 1, 5],
+    [['kimi-k3.1-pro', 'moonshotai/kimi-k3.1-pro'], 1048576, 1048576, ['low', 'high', 'max'], 2, 10],
+    [['kimi-k3.1-pro-highspeed', 'moonshotai/kimi-k3.1-pro-highspeed'], 1048576, 1048576, ['low', 'high', 'max'], 4, 20],
+    [['minimax-m3.1-flash', 'minimax/minimax-m3.1-flash'], 1000000, 524288, ['low', 'medium', 'high', 'xhigh', 'max'], 0.15, 0.6],
+    [['mercury-3'], 1000000, 131072, ['low', 'medium', 'high'], 0.1, 0.35],
+    [['gemini-4-argon'], 1048576, 32768, ['low', 'medium', 'high'], 2, 10],
+    [['claude-haiku-5-5', 'anthropic/claude-haiku-5-5'], 1000000, 128000, ['low', 'medium', 'high', 'xhigh', 'max'], 0.1, 0.5],
+    [['inception/mercury-3'], 1000000, 131072, ['minimal', 'low', 'medium', 'high'], 0.1, 0.35],
+    [['google/gemini-4-argon'], 1048576, 943718, ['low', 'medium', 'high'], 2, 10],
+  ])('resolves the October 31 catalog and route reference price for %s', (ids, contextWindow, maxOutput, reasoningEfforts, input, output) => {
+    for (const id of ids) {
+      expect(matchModelExact(id), id).toMatchObject({
+        contextWindow, maxOutput, reasoningEfforts, pricing: { input, output },
+        capabilities: { functionCalling: true, reasoning: true, streaming: true },
+      })
+      expect(resolveModelInfo(id, { [id]: { contextWindow: 8192, pricing: { input: 9 } } })).toMatchObject({
+        contextWindow: 8192, pricing: { input: 9, output },
+      })
+    }
+  })
+
   it.each([
     ['qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
     ['alibaba/qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
     ['qwen3.8-27b', ['low', 'medium', 'xhigh']],
-    ['qwen/qwen3.8-27b', ['low', 'medium', 'xhigh']],
+    ['qwen/qwen3.8-27b', ['minimal', 'low', 'medium', 'high']],
     ['qwen3.8-max-0902', ['low', 'medium', 'xhigh']],
     ['qwen3.8-omni-flash', ['low', 'medium', 'xhigh']],
     ['deepseek-flash', ['low', 'high', 'max']],
     ['deepseek-v4-pro-0813', ['low', 'high', 'max']],
     ['glm-5.1', []],
-    ['gpt-5.5-pro', ['medium', 'high', 'xhigh']],
-  ])('uses native effort values from the verified API contract for %s', (id, efforts) => {
+    ['gpt-5.5-pro', ['low', 'medium', 'high', 'xhigh']],
+  ])('uses the current catalog effort controls for %s', (id, efforts) => {
     expect(matchModel(id)?.reasoningEfforts).toEqual(efforts)
     expect(resolveModelInfo(id, { [id]: { reasoningEfforts: ['low'] } }).reasoningEfforts).toEqual(['low'])
   })
 
-  it.each(['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol'])(
-    'uses the official API context and output limits for %s', (id) => {
-      expect(matchModel(id)).toMatchObject({ contextWindow: 1_050_000, maxOutput: 128_000 })
-      expect(matchModel(`openai/${id}`)?.contextWindow).toBe(1_050_000)
+  it.each([
+    ['gpt-5.5', 1050000], ['gpt-5.5-pro', 1050000],
+    ['gpt-5.6', 272000], ['gpt-5.6-sol', 272000], ['gpt-5.6-terra', 272000], ['gpt-5.6-luna', 272000],
+    ['gpt-6-sol', 272000], ['gpt-6-luna', 272000], ['gpt-6-astra', 272000],
+    ['gpt-6.1-sol', 500000], ['gpt-6.1-terra', 500000],
+  ])(
+    'uses the reviewed Kivio context and output defaults for %s', (id, contextWindow) => {
+      expect(matchModel(id)).toMatchObject({ contextWindow, maxOutput: 128_000 })
+      expect(matchModel(`openai/${id}`)?.contextWindow).toBe(contextWindow)
     },
   )
 
@@ -36,14 +85,14 @@ describe('matchModel', () => {
   })
 
   it.each([
-    ['openai/gpt-6-sol', 'GPT-6 Sol', 1050000, 2, 10, 0.2],
-    ['openai/gpt-6-luna', 'GPT-6 Luna', 1050000, 0.1, 0.5, 0.01],
+    ['openai/gpt-6-sol', 'GPT-6 Sol', 272000, 2, 10, 0.2],
+    ['openai/gpt-6-luna', 'GPT-6 Luna', 272000, 0.1, 0.5, 0.01],
     ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
-    ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1048576, 0.435, 0.87, 0.0036],
-    ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1048576, 0.14, 0.28, 0.0028],
-    ['z-ai/glm-5.3-flashx', 'GLM-5.3 FlashX', 1000000, 0.37, 1.25, 0.075],
+    ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1050000, 0.435, 0.87, 0.0036],
+    ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1050000, 0.14, 0.28, 0.0028],
+    ['z-ai/glm-5.3-flashx', 'GLM-5.3 FlashX', 1048576, 0.37, 1.25, 0.09],
     ['x-ai/grok-4.7', 'Grok 4.7', 500000, 2, 6, 0.5],
-    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.11901219875, 0.401666170783, 0.0148765248438],
+    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.15, 0.47, 0.016],
   ])('resolves the September 24 catalog entry for %s without inheriting an older variant', (id, name, context, input, output, cachedInput) => {
     expect(matchModelExact(id)).toMatchObject({
       displayName: name, contextWindow: context,
@@ -58,13 +107,13 @@ describe('matchModel', () => {
       expect(matchModel(id)?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
     }
     for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash']) {
-      expect(matchModel(id)?.reasoningEfforts).toEqual([])
+      expect(matchModel(id)?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high'])
     }
     expect(resolveModelInfo('gpt-6-sol', { 'gpt-6-sol': { contextWindow: 1050000 } }).contextWindow).toBe(1050000)
     expect(matchModel('claude-opus-5')?.displayName).toBe('Claude Opus 5')
     expect(matchModel('mimo-v2.5-pro')?.capabilities?.vision).toBe(false)
     expect(matchModel('grok-4.6')?.displayName).toBe('Grok 4.6')
-    expect(matchModel('grok-4.7')?.maxOutput).toBe(0)
+    expect(matchModel('grok-4.7')?.maxOutput).toBe(500000)
     expect(matchModel('qwen3.8-omni-flash')?.maxOutput).toBe(131072)
   })
 
@@ -101,7 +150,7 @@ describe('matchModel', () => {
 
   it('resolves September models through provider and effort aliases without losing variants', () => {
     expect(matchModel('gemini-3.8-flash-high')).toEqual(matchModelExact('gemini-3.8-flash'))
-    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(1050000)
+    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(272000)
     expect(matchModel('anthropic/claude-fable-5-1')?.displayName).toBe('Claude Fable 5.1')
     expect(matchModel('claude-mythos-5-1')?.displayName).toBe('Claude Mythos 5.1')
     expect(matchModel('meta/muse-spark-1.3-contributor')?.pricing?.input).toBe(0.1)
@@ -122,7 +171,7 @@ describe('matchModel', () => {
     expect(matchModel('claude-opus-4-8')?.displayName).toBe('Claude Opus 4.8')
     expect(matchModel('claude-opus-4-7')?.displayName).toBe('Claude Opus 4.7')
     expect(matchModel('claude-opus-4-5')?.displayName).toBe('Claude Opus 4.5')
-    expect(matchModel('claude-opus-4-5')?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
+    expect(matchModel('claude-opus-4-5')?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh'])
     expect(matchModel('claude-haiku-4-5')?.displayName).toBe('Claude Haiku 4.5')
   })
 
@@ -194,7 +243,7 @@ describe('matchModel', () => {
     const k3 = matchModel('kimi-k3')
     expect(k3?.displayName).toBe('Kimi K3')
     expect(k3?.contextWindow).toBe(1_048_576)
-    expect(k3?.maxOutput).toBe(1_048_576)
+    expect(k3?.maxOutput).toBe(131_072)
     expect(k3?.temperature).toBeUndefined()
 
     expect(matchModel('kimi-k2.7-code')?.displayName).toBe('Kimi K2.7 Code')
@@ -229,7 +278,7 @@ describe('matchModel', () => {
     expect(matchModel('gemini-3.7-flash')?.displayName).toBe('Gemini 3.7 Flash')
     expect(matchModel('gemini-3.7-flash')?.contextWindow).toBe(1_048_576)
     expect(matchModel('gemini-3.7-flash')?.maxOutput).toBe(65_536)
-    expect(matchModel('gemini-3.7-flash')?.pricing?.input).toBeUndefined()
+    expect(matchModel('gemini-3.7-flash')?.pricing?.input).toBe(0.75)
     expect(matchModel('gemini-3.6-flash')?.displayName).toBe('Gemini 3.6 Flash')
     expect(matchModel('gemini-3.6-flash')?.pricing?.output).toBe(3.75)
     expect(matchModel('gemini-3.5-flash-lite')?.displayName).toBe('Gemini 3.5 Flash-Lite')
@@ -245,7 +294,7 @@ describe('matchModel', () => {
     const info = matchModel('grok-4.6')
     expect(info?.displayName).toBe('Grok 4.6')
     expect(info?.contextWindow).toBe(500_000)
-    expect(info?.maxOutput).toBe(128_000)
+    expect(info?.maxOutput).toBe(500_000)
     expect(info?.capabilities?.vision).toBe(true)
     expect(info?.capabilities?.functionCalling).toBe(true)
     expect(info?.capabilities?.reasoning).toBe(true)
@@ -304,7 +353,10 @@ describe('matchModel', () => {
     expect(hy4?.pricing?.output).toBeCloseTo(18 / 6.722, 10)
     expect(hy4?.pricing?.cachedInput).toBeCloseTo(0.3 / 6.722, 10)
     expect(matchModel('hy4')?.displayName).toBe('Hy4 Preview')
-    expect(matchModel('tencent/hy4-preview')).toEqual(hy4)
+    expect(matchModel('tencent/hy4-preview')).toMatchObject({
+      displayName: 'Hy4 Preview', contextWindow: 1048576, maxOutput: 64000,
+      pricing: { input: 0.7506, output: 2.2509, cachedInput: 0.0378 },
+    })
 
     const hy3 = matchModel('hy3')
     expect(hy3?.displayName).toBe('Hy3')
@@ -395,7 +447,7 @@ describe('matchModel', () => {
 
     const glm47 = matchModel('glm-4.7')
     expect(glm47?.displayName).toBe('GLM-4.7')
-    expect(glm47?.contextWindow).toBe(200_000)
+    expect(glm47?.contextWindow).toBe(204_800)
     expect(glm47?.maxOutput).toBe(131_072)
     expect(glm47?.capabilities?.vision).toBe(false)
     expect(glm47?.reasoningEfforts).toEqual([])
@@ -417,7 +469,7 @@ describe('matchModel', () => {
     expect(matchModel('glm-5.2')?.maxOutput).toBe(131_072)
     expect(matchModel('glm-5.2')?.capabilities?.vision).toBe(false)
     expect(matchModel('glm-5')?.displayName).toBe('GLM-5')
-    expect(matchModel('glm-5')?.contextWindow).toBe(200_000)
+    expect(matchModel('glm-5')?.contextWindow).toBe(204_800)
     expect(matchModel('glm-5-turbo')?.displayName).toBe('GLM-5 Turbo')
     expect(matchModel('glm-5v-turbo')?.displayName).toBe('GLM-5V Turbo')
     expect(matchModel('glm-5v-turbo')?.capabilities?.vision).toBe(true)
@@ -449,7 +501,7 @@ describe('matchModel', () => {
   it('matches DeepSeek V4.1 Flash and its temporarily routed legacy aliases', () => {
     const current = matchModel('deepseek-flash')
     expect(current?.displayName).toBe('DeepSeek V4.1 Flash')
-    expect(current?.contextWindow).toBe(1_048_576)
+    expect(current?.contextWindow).toBe(1_000_000)
     expect(current?.maxOutput).toBe(384_000)
     expect(current?.capabilities?.vision).toBe(true)
     expect(current?.reasoningEfforts).toEqual(['low', 'high', 'max'])
@@ -458,11 +510,11 @@ describe('matchModel', () => {
     const flash = matchModel('deepseek-v4-flash')
     expect(flash?.displayName).toBe('DeepSeek V4.1 Flash (Legacy Alias)')
     expect(flash?.contextWindow).toBe(1_048_576)
-    expect(flash?.maxOutput).toBe(384_000)
+    expect(flash?.maxOutput).toBe(393_216)
     expect(flash?.capabilities?.vision).toBe(true)
     expect(flash?.capabilities?.reasoning).toBe(true)
     expect(flash?.pricing?.input).toBe(0.3)
-    expect(matchModel('deepseek-v4-pro')?.maxOutput).toBe(384_000)
+    expect(matchModel('deepseek-v4-pro')?.maxOutput).toBe(393_216)
     expect(matchModel('deepseek-v4-flash-vision-exp')?.capabilities?.vision).toBe(true)
     expect(matchModel('deepseek-v4-flash-vision-exp')?.displayName).toContain('Legacy Vision Alias')
   })
@@ -545,7 +597,7 @@ describe('embedding models', () => {
     expect(info?.capabilities?.embedding).toBe(true)
     expect(info?.dimensions).toBe(1024)
     expect(info?.multilingual).toBe(true)
-    expect(info?.contextWindow).toBe(8192)
+    expect(info?.contextWindow).toBe(8194)
   })
 
   it('knows OpenAI embedding dimensions', () => {

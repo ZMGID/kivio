@@ -305,14 +305,15 @@ pub(crate) fn thinking_capabilities_for_model(
         };
     }
     let levels = reasoning_efforts_for_model(provider, model);
-    let id = normalize_model_name(provider_model_database_id(provider, model));
+    let database_id = provider_model_database_id(provider, model);
+    let id = normalize_model_name(database_id);
     let kimi_code = id.starts_with("kimi-code/");
     let id = id.rsplit('/').next().unwrap_or(&id);
     let off_mode = if provider.is_some_and(crate::provider_oauth::antigravity::is_provider)
         && crate::provider_oauth::antigravity::model_includes_effort(model)
     {
         ThinkingOffMode::Unsupported
-    } else if let Some(mode) = model_database_entry(id)
+    } else if let Some(mode) = model_database_entry(database_id)
         .as_ref()
         .and_then(|entry| entry.get("thinkingOff"))
         .and_then(Value::as_bool)
@@ -966,12 +967,65 @@ pub(crate) fn pricing_for_model(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn codex_defaults_apply_to_all_providers_and_preserve_overrides() {
+        let mut provider = test_provider_with_overrides(Default::default());
+        for (model, context) in [
+            ("gpt-6-astra", 272_000),
+            ("gpt-6.1-sol", 500_000),
+            ("gpt-6.1-terra", 500_000),
+            ("gpt-5.6-sol", 272_000),
+        ] {
+            for oauth in [
+                None,
+                Some(serde_json::from_value(serde_json::json!({"provider": "codex"})).unwrap()),
+            ] {
+                provider.request.oauth = oauth;
+                assert_eq!(
+                    context_window_for_model(Some(&provider), model),
+                    (context, false)
+                );
+                assert_eq!(
+                    context_window_for_model(Some(&provider), &format!("openai/{model}")),
+                    (context, false)
+                );
+                assert_eq!(
+                    chat_max_output_tokens_for_model(Some(&provider), model),
+                    Some(128_000)
+                );
+                assert_eq!(
+                    reasoning_efforts_for_model(Some(&provider), model),
+                    vec!["low", "medium", "high", "xhigh", "max"]
+                );
+            }
+            assert_eq!(context_window_for_model(None, model), (context, false));
+        }
+        provider.model_overrides.insert(
+            "gpt-6.1-sol".into(),
+            ModelInfo {
+                context_window: Some(8192),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            context_window_for_model(Some(&provider), "gpt-6.1-sol"),
+            (8192, false)
+        );
+        assert_eq!(
+            provider_model_database_id(Some(&provider), "private-model"),
+            "private-model"
+        );
+    }
+
+    #[test]
     fn thinking_capabilities_separate_toggle_effort_and_upfront_only() {
         use ThinkingOffMode::*;
         for (model, mode) in [
             ("gpt-4o", NotApplicable),
             ("kimi-k2.6", Supported),
             ("kimi-k3", Unsupported),
+            ("kimi-k3.1-pro", Unsupported),
+            ("moonshotai/kimi-k3.1-pro-highspeed", Unsupported),
+            ("minimax-m3.1-flash", Unsupported),
             ("kimi-k2.7-code", Unsupported),
             ("gemini-2.5-flash", Supported),
             ("gemini-2.5-pro", Unsupported),
@@ -982,9 +1036,11 @@ mod tests {
             ("claude-haiku-5.5", Supported),
             ("gpt-6-astra", Unsupported),
             ("gpt-6.1-sol", Unsupported),
+            ("gpt-6.1-terra", Unsupported),
+            ("openai/gpt-6.1-terra", Unsupported),
             ("gpt-5.4-pro", Unsupported),
             ("gpt-5.5-pro", Unsupported),
-            ("gpt-6-sol", Supported),
+            ("gpt-6-sol", Unsupported),
             ("grok-4.6", Unsupported),
         ] {
             assert_eq!(
@@ -993,9 +1049,10 @@ mod tests {
                 "{model}"
             );
         }
-        assert!(thinking_capabilities_for_model(None, "kimi-k2.6")
-            .levels
-            .is_empty());
+        assert_eq!(
+            thinking_capabilities_for_model(None, "kimi-k2.6").levels,
+            vec!["low", "medium", "high"]
+        );
         let mut provider = test_provider_with_overrides(Default::default());
         provider.base_url = "https://api.kimi.com/coding/v1".into();
         assert_eq!(
@@ -1240,14 +1297,14 @@ mod tests {
     /// 连字符 id 必须吃到正确条目的 efforts，不能退化到旧主版本的 `[]`。
     #[test]
     fn dash_versioned_ids_resolve_correct_reasoning_efforts() {
-        // 4.6 有 low..max；`claude-sonnet-4` 走 extended 档位 low/medium/high。
+        // 使用 OMP 档位；minimal 元数据保留，应用选择器仍只暴露现有五档。
         assert_eq!(
             reasoning_efforts_for_model(None, "claude-sonnet-4-6"),
-            vec!["low", "medium", "high", "max"]
+            vec!["low", "medium", "high"]
         );
         assert_eq!(
             reasoning_efforts_for_model(None, "anthropic/claude-sonnet-4-6"),
-            vec!["low", "medium", "high", "max"]
+            vec!["low", "medium", "high"]
         );
         assert_eq!(
             reasoning_efforts_for_model(None, "claude-sonnet-4"),
@@ -1263,7 +1320,7 @@ mod tests {
         );
         assert_eq!(
             reasoning_efforts_for_model(None, "claude-opus-4-5"),
-            vec!["low", "medium", "high"]
+            vec!["low", "medium", "high", "xhigh"]
         );
     }
 
@@ -1709,11 +1766,11 @@ mod tests {
     fn chat_max_output_uses_builtin_model_database_defaults() {
         assert_eq!(
             chat_max_output_tokens_for_model(None, "deepseek-v4-flash"),
-            Some(384_000)
+            Some(393_216)
         );
         assert_eq!(
             chat_max_output_tokens_for_model(None, "kimi-k3"),
-            Some(1_048_576)
+            Some(131_072)
         );
     }
 
