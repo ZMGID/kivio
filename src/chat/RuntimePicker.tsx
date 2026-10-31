@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Check, Brain, RefreshCw } from 'lucide-react'
+import { ChevronDown, Check, Brain, RefreshCw, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
 import { useT, useLang } from '../components/i18n'
 import { chatApi, type DetectedExternalAgent } from './api'
@@ -10,7 +10,6 @@ import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
-import { Select } from '../settings/public/controls'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import './runtimePicker.css'
 
@@ -450,6 +449,8 @@ function ExternalModelSelectorBase({
 
   const selectedModel = models.find(model => model.id === (agentRuntime.externalModel || currentModel || 'default'))
   const serviceTiers = selectedModel?.capabilities?.serviceTiers ?? []
+  const fastTier = serviceTiers.find(tier => tier.id !== 'default')
+  const fastOn = !!fastTier && agentRuntime.externalServiceTier === fastTier.id
 
   const reasoningPillValue = agentRuntime.externalReasoning ?? 'default'
   const currentReasoningLabel = useMemo(() => {
@@ -593,22 +594,6 @@ function ExternalModelSelectorBase({
         )}
       </div>
 
-      <ExternalCliAccount agentId={agentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
-      {agentRuntime.externalAgentId === 'codex' && serviceTiers.length > 0 && (
-        <Select
-          ariaLabel={zh ? '服务等级' : 'Service tier'}
-          title={zh ? '服务等级由当前模型提供，计费与可用性取决于 CLI 账号' : 'Service tiers come from the model catalog; pricing and availability depend on the CLI account'}
-          size="sm"
-          value={agentRuntime.externalServiceTier ?? ''}
-          onChange={value => onModelChange(agentRuntime.externalModel ?? 'default', undefined, value || null)}
-          options={[
-            { value: '', label: zh ? '默认等级' : 'Default tier' },
-            { value: 'default', label: 'Standard' },
-            ...serviceTiers.filter(tier => tier.id !== 'default').map(tier => ({ value: tier.id, label: tier.label })),
-          ]}
-        />
-      )}
-
       {/* Standalone thinking-level pill, mirroring the builtin ThinkingLevelSelector. */}
       {activeReasoningOptions.length > 0 && (
         <div className="relative shrink-0" data-tauri-drag-region="false">
@@ -670,6 +655,21 @@ function ExternalModelSelectorBase({
           )}
         </div>
       )}
+      {fastTier && (
+        <button
+          type="button"
+          aria-pressed={fastOn}
+          aria-label={zh ? '快速模式' : 'Fast mode'}
+          title={zh ? `${fastTier.label}：由当前模型提供，计费与可用性取决于 CLI 账号` : `${fastTier.label}: provided by the model catalog; pricing and availability depend on the CLI account`}
+          onClick={() => onModelChange(agentRuntime.externalModel ?? 'default', undefined, fastOn ? null : fastTier.id)}
+          data-tauri-drag-region="false"
+          className={`grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-neutral-100 ${fastOn ? 'text-[var(--accent)]' : 'text-neutral-500 dark:text-neutral-400'}`}
+        >
+          <Zap size={15} fill={fastOn ? 'currentColor' : 'none'} />
+        </button>
+      )}
+
+      <ExternalCliAccount agentId={agentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
     </div>
   )
 }
