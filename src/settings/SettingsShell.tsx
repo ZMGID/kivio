@@ -776,6 +776,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     })
   }, [setSettings])
 
+  const updateVoice = useCallback((updates: Partial<NonNullable<SettingsData['voice']>>) => {
+    setSettings((prev) => {
+      if (!prev) return prev
+      return { ...prev, voice: { ...prev.voice, ...updates } }
+    })
+  }, [setSettings])
+
   const updateChatMemory = useCallback((updates: Partial<ChatMemoryConfig>) => {
     setSettings((prev) => {
       if (!prev) return prev
@@ -1211,6 +1218,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 skillRuntimeEnabled={skillRuntimeEnabled}
                 nativeBuiltinToolsEnabled={nativeBuiltinToolsEnabled}
                 onUpdateChat={updateChat}
+                onUpdateVoice={updateVoice}
                 onUpdateNativeTools={updateNativeTools}
                 onNavigateTab={setActiveTab}
               />

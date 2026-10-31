@@ -44,6 +44,7 @@ pub mod types;
 pub(crate) mod video;
 mod video_analysis;
 pub(crate) mod video_generation;
+pub(crate) mod voice_orchestrator;
 mod vision;
 pub mod workflow_hooks;
 

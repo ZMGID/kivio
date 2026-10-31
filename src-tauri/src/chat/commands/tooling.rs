@@ -17,6 +17,9 @@ pub(super) fn allowed_mcp_server_ids<'a>(
     {
         return Some(&[]);
     }
+    if crate::chat::voice_orchestrator::is_brain_conversation(conversation) {
+        return None;
+    }
     conversation
         .assistant_snapshot
         .as_ref()

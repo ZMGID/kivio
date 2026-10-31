@@ -1893,6 +1893,16 @@ fn canonicalize_theme_color(raw: &str, themes: &[ThemeDefinition]) -> String {
     default_theme_color()
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct VoiceSettings {
+    /// `codex` | `live`; None = auto (Codex subscription when eligible, else GPT-Live).
+    pub channel: Option<String>,
+    pub live_provider_id: Option<String>,
+    pub orchestrator_provider_id: Option<String>,
+    pub orchestrator_model: Option<String>,
+}
+
 /**
  * 应用完整设置
  */
@@ -1968,6 +1978,8 @@ pub struct Settings {
     pub lens: LensConfig,
     #[serde(default)]
     pub chat: ChatConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceSettings>,
     #[serde(default)]
     pub chat_memory: ChatMemoryConfig,
     #[serde(default)]
@@ -2168,6 +2180,7 @@ impl Default for Settings {
             screenshot_annotate: ScreenshotAnnotateConfig::default(),
             lens: LensConfig::default(),
             chat: ChatConfig::default(),
+            voice: None,
             chat_memory: ChatMemoryConfig::default(),
             chat_tools: ChatToolsConfig::default(),
             document_processing: DocumentProcessingConfig::default(),
@@ -2702,14 +2715,22 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     settings.lens.hotkey = normalize_hotkey(&settings.lens.hotkey);
     settings.screenshot_annotate.hotkey = normalize_hotkey(&settings.screenshot_annotate.hotkey);
 
-    // 规范化提示词（去除首尾空白，空值转为 None）
-    settings.translator_prompt = normalize_optional_prompt(settings.translator_prompt.take());
+    // 去除可选文本的首尾空白，空值转为 None。
+    settings.translator_prompt = normalize_optional_text(settings.translator_prompt.take());
     settings.screenshot_translation.prompt =
-        normalize_optional_prompt(settings.screenshot_translation.prompt.take());
+        normalize_optional_text(settings.screenshot_translation.prompt.take());
     settings.screenshot_translation.text_prompt =
-        normalize_optional_prompt(settings.screenshot_translation.text_prompt.take());
+        normalize_optional_text(settings.screenshot_translation.text_prompt.take());
     settings.screenshot_translation.replace_prompt =
-        normalize_optional_prompt(settings.screenshot_translation.replace_prompt.take());
+        normalize_optional_text(settings.screenshot_translation.replace_prompt.take());
+    if let Some(voice) = &mut settings.voice {
+        voice.channel = normalize_optional_text(voice.channel.take())
+            .filter(|channel| matches!(channel.as_str(), "codex" | "live"));
+        voice.live_provider_id = normalize_optional_text(voice.live_provider_id.take());
+        voice.orchestrator_provider_id =
+            normalize_optional_text(voice.orchestrator_provider_id.take());
+        voice.orchestrator_model = normalize_optional_text(voice.orchestrator_model.take());
+    }
     // 翻译卡宽度单一真源：import / 手改 settings.json 也在此兜底到 360–720，
     // 与 set_translate_card_size 命令、设置页输入框、Lens 缩放 clamp 同域。
     settings.screenshot_translation.card_width =
@@ -3776,16 +3797,20 @@ fn clamp_retry_attempts(value: u8) -> u8 {
 }
 
 /**
- * 规范化可选提示词：去除空白，空字符串转为 None
+ * 规范化可选文本：去除空白，空字符串转为 None
  */
-fn normalize_optional_prompt(value: Option<String>) -> Option<String> {
-    value.and_then(|v| {
-        let trimmed = v.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|mut value| {
+        let start = value.len() - value.trim_start().len();
+        let end = value.trim_end().len();
+        if start >= end {
+            return None;
         }
+        value.truncate(end);
+        if start > 0 {
+            drop(value.drain(..start));
+        }
+        Some(value)
     })
 }
 
@@ -4222,6 +4247,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn voice_settings_accept_legacy_null_and_partial_values_and_round_trip() {
+        for value in [serde_json::json!({}), serde_json::json!({"voice": null})] {
+            let settings: Settings = serde_json::from_value(value).unwrap();
+            assert!(settings.voice.is_none());
+            assert!(serde_json::to_value(settings).unwrap().get("voice").is_none());
+        }
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "voice": {
+                "liveProviderId": " live ",
+                "orchestratorProviderId": " brain ",
+                "orchestratorModel": "  "
+            }
+        })).unwrap();
+        let (canonical, persisted) = settings_for_persistence(&settings);
+        let value = serde_json::to_value(persisted).unwrap();
+        assert_eq!(value["voice"], serde_json::json!({
+            "channel": null,
+            "liveProviderId": "live",
+            "orchestratorProviderId": "brain",
+            "orchestratorModel": null
+        }));
+        let restored = sanitize_settings(serde_json::from_value(value).unwrap());
+        assert_eq!(restored.voice, canonical.voice);
+
+        let partial: Settings = serde_json::from_value(serde_json::json!({
+            "voice": {"orchestratorModel": "\u{2003}model\u{3000}"}
+        })).unwrap();
+        assert_eq!(sanitize_settings(partial).voice.unwrap(), VoiceSettings {
+            channel: None,
+            live_provider_id: None,
+            orchestrator_provider_id: None,
+            orchestrator_model: Some("model".into()),
+        });
+        for (raw, expected) in [("codex", Some("codex")), (" live ", Some("live")), ("auto", None), ("bogus", None)] {
+            let settings: Settings = serde_json::from_value(serde_json::json!({"voice": {"channel": raw}})).unwrap();
+            assert_eq!(sanitize_settings(settings).voice.unwrap().channel.as_deref(), expected, "{raw}");
+        }
+    }
 
     #[test]
     fn legacy_settings_disable_translucent_sidebar_by_default() {

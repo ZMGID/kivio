@@ -42,12 +42,15 @@ use super::types::{
     native_automation_list_tool, native_automation_run_tool, native_automation_runs_tool,
     native_automation_set_enabled_tool, native_automation_upsert_tool, native_bash_output_tool,
     native_edit_file_tool, native_glob_files_tool, native_kill_background_tool,
-    native_knowledge_search_tool, native_list_dir_tool, native_memory_modify_tool,
-    native_memory_read_tool, native_memory_search_tool, native_present_artifacts_tool,
-    native_read_file_tool, native_run_command_tool, native_save_assistant_tool,
-    native_search_files_tool, native_web_fetch_tool, native_web_search_tool,
-    native_write_file_tool, ChatToolArtifact, ChatToolDefinition, McpToolCallResult,
-    PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS,
+    native_kivio_create_conversation_tool, native_kivio_interrupt_tool,
+    native_kivio_list_agents_tool, native_kivio_list_conversations_tool,
+    native_kivio_list_projects_tool, native_kivio_read_conversation_tool,
+    native_kivio_send_message_tool, native_knowledge_search_tool, native_list_dir_tool,
+    native_memory_modify_tool, native_memory_read_tool, native_memory_search_tool,
+    native_present_artifacts_tool, native_read_file_tool, native_run_command_tool,
+    native_save_assistant_tool, native_search_files_tool, native_web_fetch_tool,
+    native_web_search_tool, native_write_file_tool, ChatToolArtifact, ChatToolDefinition,
+    McpToolCallResult, PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -352,6 +355,76 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         read_only: false,
         requires_session_consent: false,
         call: NativeToolCall::Async(call_save_assistant),
+    },
+    NativeToolEntry {
+        name: "kivio_list_agents",
+        def: native_kivio_list_agents_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_agents")),
+    },
+    NativeToolEntry {
+        name: "kivio_list_projects",
+        def: native_kivio_list_projects_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_projects")),
+    },
+    NativeToolEntry {
+        name: "kivio_list_conversations",
+        def: native_kivio_list_conversations_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_conversations")),
+    },
+    NativeToolEntry {
+        name: "kivio_read_conversation",
+        def: native_kivio_read_conversation_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_read_conversation")),
+    },
+    NativeToolEntry {
+        name: "kivio_create_conversation",
+        def: native_kivio_create_conversation_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_create_conversation")),
+    },
+    NativeToolEntry {
+        name: "kivio_send_message",
+        def: native_kivio_send_message_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_send_message")),
+    },
+    NativeToolEntry {
+        name: "kivio_interrupt",
+        def: native_kivio_interrupt_tool,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: false,
+        requires_session_consent: false,
+        call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_interrupt")),
     },
     NativeToolEntry {
         name: "present_artifacts",
@@ -1258,6 +1331,14 @@ fn call_save_assistant(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
+fn call_voice_tool<'a>(ctx: NativeCallCtx<'a>, name: &'static str) -> NativeToolFuture<'a> {
+    Box::pin(async move {
+        crate::chat::voice_orchestrator::call_tool(ctx.app, name, ctx.arguments)
+            .await
+            .map(text_tool_result)
+    })
+}
+
 fn append_skipped_read_notes(content: &mut String, skipped: &[String]) {
     if skipped.is_empty() {
         return;
@@ -1634,6 +1715,13 @@ mod tests {
         "bash_output",
         "kill_background",
         "save_assistant",
+        "kivio_list_agents",
+        "kivio_list_projects",
+        "kivio_list_conversations",
+        "kivio_read_conversation",
+        "kivio_create_conversation",
+        "kivio_send_message",
+        "kivio_interrupt",
         "present_artifacts",
         "kivio_inspect",
         "kivio_configure",
@@ -1751,6 +1839,13 @@ mod tests {
             bypass,
             [
                 "advisor",
+                "kivio_list_agents",
+                "kivio_list_projects",
+                "kivio_list_conversations",
+                "kivio_read_conversation",
+                "kivio_create_conversation",
+                "kivio_send_message",
+                "kivio_interrupt",
                 "present_artifacts",
                 "memory_read",
                 "memory_modify",
@@ -1793,6 +1888,10 @@ mod tests {
                 "grep",
                 "glob",
                 "bash_output",
+                "kivio_list_agents",
+                "kivio_list_projects",
+                "kivio_list_conversations",
+                "kivio_read_conversation",
                 "present_artifacts",
                 "kivio_inspect",
                 "memory_read",
@@ -1833,6 +1932,27 @@ mod tests {
                     entry.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn voice_orchestration_tools_are_brain_only_and_bypass_approval() {
+        let native = ChatNativeToolsConfig::default();
+        for name in [
+            "kivio_list_agents",
+            "kivio_list_projects",
+            "kivio_list_conversations",
+            "kivio_read_conversation",
+            "kivio_create_conversation",
+            "kivio_send_message",
+            "kivio_interrupt",
+        ] {
+            let entry = find_entry(name).unwrap();
+            assert!(!(entry.enabled)(&native, true, true), "{name}");
+            assert!(!(entry.enabled)(&native, false, false), "{name}");
+            assert!(entry.bypasses_approval, "{name}");
+            assert!(!entry.requires_session_consent, "{name}");
+            assert!(matches!(entry.call, NativeToolCall::Async(_)), "{name}");
         }
     }
 

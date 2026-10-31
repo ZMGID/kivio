@@ -10,6 +10,7 @@ interface ModelPairSelectProps {
   inheritLabel?: string
   offOption?: { label: string; selected: boolean; onSelect: () => void }
   className?: string
+  ariaLabel?: string
   /** 可选：只保留满足谓词的模型（如生图模型仅列 imageGeneration=true）。 */
   filterModel?: (provider: ModelProvider, model: string) => boolean
 }
@@ -22,6 +23,7 @@ export function ModelPairSelect({
   inheritLabel,
   offOption,
   className = 'w-52',
+  ariaLabel,
   filterModel,
 }: ModelPairSelectProps) {
   const filtered = buildModelPairOptions(providers, filterModel)
@@ -43,6 +45,7 @@ export function ModelPairSelect({
   return (
     <Select
       className={className}
+      ariaLabel={ariaLabel}
       value={offOption?.selected ? 'off' : currentValue}
       onChange={(value) => {
         if (value === 'off' && offOption) {

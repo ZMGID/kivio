@@ -987,6 +987,12 @@ fn effective_tool_timeout_ms(
     if tool.source == "native" && tool.name == "bash" {
         return NO_OUTER_TOOL_TIMEOUT;
     }
+    // The orchestration tools bound their own wait and detach the target reply on timeout.
+    if tool.source == "native"
+        && matches!(tool.name.as_str(), "kivio_create_conversation" | "kivio_send_message")
+    {
+        return NO_OUTER_TOOL_TIMEOUT;
+    }
     if tool.source == "native" && tool.name == "bash_output" {
         let wait_ms = arguments
             .get("wait_ms")
@@ -1986,6 +1992,16 @@ mod tests {
         assert_eq!(
             effective_tool_timeout_ms(&settings, &tool, &arguments),
             crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn voice_orchestration_wait_owns_its_timeout() {
+        let mut tool = crate::mcp::types::native_save_assistant_tool();
+        tool.name = "kivio_send_message".into();
+        assert_eq!(
+            effective_tool_timeout_ms(&Settings::default(), &tool, &serde_json::json!({"wait": true})),
+            NO_OUTER_TOOL_TIMEOUT
         );
     }
 

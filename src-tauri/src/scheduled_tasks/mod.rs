@@ -742,7 +742,7 @@ pub fn start_run(
         use crate::chat::commands::send::QueuedSendOutcome;
         let outcome = execute(&app, &task, &run.id, receiver).await;
         let (status, error, disable) = match outcome {
-            Ok(QueuedSendOutcome::Sent) => (RunStatus::Succeeded, None, false),
+            Ok(QueuedSendOutcome::Sent { .. }) => (RunStatus::Succeeded, None, false),
             Ok(QueuedSendOutcome::Cancelled) => {
                 (RunStatus::Skipped, Some(CANCELLED_REASON.into()), false)
             }

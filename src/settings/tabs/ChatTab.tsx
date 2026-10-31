@@ -1,7 +1,9 @@
 import { RefreshCw, FolderOpen } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
-import { Select, Input, SettingRow, SettingsGroup, Toggle } from '../components'
+import { Select, Input, Toggle } from '../public/controls'
+import { SettingRow, SettingsGroup } from '../components'
+import { ModelPairSelect } from '../ModelPairSelect'
 import { Button } from '../../components/Button'
 import { PromptField } from '../ScreenshotTranslationSettings'
 import type { I18n, Lang } from '../../components/i18n'
@@ -51,6 +53,7 @@ interface ChatTabProps {
   skillRuntimeEnabled: boolean
   nativeBuiltinToolsEnabled: boolean
   onUpdateChat: (updates: Partial<NonNullable<SettingsData['chat']>>) => void
+  onUpdateVoice: (updates: Partial<NonNullable<SettingsData['voice']>>) => void
   onUpdateNativeTools: (updates: Partial<NonNullable<ChatToolsConfig['nativeTools']>>) => void
   onNavigateTab: (tab: SettingsTab) => void
 }
@@ -71,6 +74,7 @@ export function ChatTab({
   skillRuntimeEnabled,
   nativeBuiltinToolsEnabled,
   onUpdateChat,
+  onUpdateVoice,
   onUpdateNativeTools,
   onNavigateTab,
 }: ChatTabProps) {
@@ -102,6 +106,50 @@ export function ChatTab({
             placeholder={lang === 'zh' ? '用户名（选填）' : 'Display name (optional)'}
           />
         </div>
+      </SettingsGroup>
+
+      <SettingsGroup title={t.voiceTitle}>
+        <SettingRow label={t.voiceChannel}>
+          <Select
+            className="w-72 max-w-full"
+            ariaLabel={t.voiceChannel}
+            value={settings.voice?.channel ?? 'auto'}
+            onChange={(channel) => onUpdateVoice({ channel: channel === 'auto' ? null : channel as 'codex' | 'live' })}
+            options={[
+              { value: 'auto', label: t.voiceChannelAuto },
+              { value: 'codex', label: t.voiceChannelCodex },
+              { value: 'live', label: t.voiceChannelLive },
+            ]}
+          />
+        </SettingRow>
+        <SettingRow label={t.voiceLiveProvider}>
+          <Select
+            className="w-72 max-w-full"
+            ariaLabel={t.voiceLiveProvider}
+            value={settings.voice?.liveProviderId ?? ''}
+            onChange={(liveProviderId) => onUpdateVoice({ liveProviderId: liveProviderId || null })}
+            options={[
+              { value: '', label: t.voiceAutoProvider },
+              ...settings.providers
+                .filter((provider) => provider.id)
+                .map((provider) => ({ value: provider.id, label: provider.name })),
+            ]}
+          />
+        </SettingRow>
+        <SettingRow label={t.voiceOrchestratorModel}>
+          <ModelPairSelect
+            className="w-72 max-w-full"
+            ariaLabel={t.voiceOrchestratorModel}
+            providerId={settings.voice?.orchestratorProviderId ?? ''}
+            model={settings.voice?.orchestratorModel ?? ''}
+            providers={settings.providers}
+            inheritLabel={t.voiceUseCurrentModel}
+            onChange={(providerId, model) => onUpdateVoice({
+              orchestratorProviderId: providerId || null,
+              orchestratorModel: model || null,
+            })}
+          />
+        </SettingRow>
       </SettingsGroup>
 
       {/* ─── Kivio Agent ─── */}

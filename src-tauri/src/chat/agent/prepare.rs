@@ -38,8 +38,7 @@ pub fn apply_assistant_mcp_restrictions(
     });
 }
 
-/// 某技能在当前对话是否可用：全局已启用 **且**（无助手 = 不限；有助手 = 在其 skill_ids 白名单内）。
-/// 空 skill_ids = 该助手不可用任何技能。
+/// 全局启用的技能受助手白名单限制；语音编排哨兵和无助手对话不限。
 pub fn skill_allowed_for_conversation(
     chat_tools: &crate::settings::ChatToolsConfig,
     assistant_snapshot: Option<&ChatAssistantSnapshot>,
@@ -49,6 +48,7 @@ pub fn skill_allowed_for_conversation(
         return false;
     }
     match assistant_snapshot {
+        Some(assistant) if crate::chat::voice_orchestrator::is_brain_snapshot(assistant) => true,
         Some(assistant) => assistant.skill_ids.iter().any(|id| id == skill_id),
         None => true,
     }
@@ -1480,6 +1480,9 @@ mod tests {
         ));
         // 无助手 = 不限(只看全局 enable)。
         assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf"));
+        let mut brain = test_assistant_snapshot(vec![], vec![]);
+        brain.id = "asst_voice_orchestrator".into();
+        assert!(skill_allowed_for_conversation(&chat_tools, Some(&brain), "pdf"));
     }
 
     #[test]

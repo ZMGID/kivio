@@ -16,6 +16,7 @@ import type { ChatImageViewerItem } from './imageViewer'
 import type { ChatHookPayload } from '../api/tauri'
 import type { Lang } from '../components/i18n'
 import { i18n } from '../components/i18n'
+import { VoiceComposerOrb } from './voice/VoiceTrigger'
 
 const MessageList = lazy(() => import('./MessageList').then((module) => ({
   default: module.MessageList,
@@ -263,6 +264,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
               </div>
             )}
 
+            <VoiceComposerOrb lang={lang} conversationId={currentConversationId} />
             <InputBar {...inputBarProps} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
           </>
         )}

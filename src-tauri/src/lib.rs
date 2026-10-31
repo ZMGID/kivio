@@ -52,6 +52,8 @@ pub mod state;
 pub mod updates;
 pub mod usage;
 pub mod utils;
+mod voice_codex;
+mod voice_live;
 pub mod web_search;
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) mod window_focus;
@@ -190,6 +192,13 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(autostart_plugin)
+        .on_page_load(|webview, payload| {
+            if webview.label() == "chat" && payload.event() == tauri::webview::PageLoadEvent::Started {
+                if let Some(voice) = webview.app_handle().try_state::<voice_codex::VoiceCodexService>() {
+                    voice.cancel();
+                }
+            }
+        })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "chat" {
@@ -262,6 +271,7 @@ pub fn run() {
                 if crate::chat::popout::is_popout_label(label) {
                     crate::chat::popout::on_popout_destroyed(window.app_handle(), label);
                 } else if label == "chat" {
+                    window.app_handle().state::<voice_codex::VoiceCodexService>().cancel();
                     crate::chat::protocol::unsubscribe_label(
                         &window.app_handle().state::<AppState>(),
                         "chat",
@@ -419,6 +429,7 @@ pub fn run() {
             )?);
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
+            app.manage(voice_codex::VoiceCodexService::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
             // setup 返回前完成草稿恢复，确保 UI run 不与日志恢复/删除并发。
@@ -571,6 +582,11 @@ pub fn run() {
             chat::media_station::media_station_read,
             chat::media_station::media_station_export,
             chat::media_station::media_station_reference,
+            voice_live::voice_live_start,
+            voice_live::voice_delegate,
+            voice_codex::voice_codex_start,
+            voice_codex::voice_codex_stop,
+            voice_codex::voice_codex_mute,
             commands::get_settings,
             windows::chat_window_apply_mica,
             windows::chat_window_set_material_appearance,
@@ -924,6 +940,12 @@ pub fn run() {
                 } else {
                     // 真正退出：同步排干 MCP 连接池，杀掉所有持久子进程，避免孤儿进程。
                     let state: State<AppState> = app_handle.state();
+                    let voice: State<voice_codex::VoiceCodexService> = app_handle.state();
+                    if tauri::async_runtime::block_on(voice.shutdown()).is_err() {
+                        eprintln!("Voice cleanup has not completed; keeping the application alive.");
+                        api.prevent_exit();
+                        return;
+                    }
                     if let Ok(runtime) = chat::sub_agent::control::runtime(app_handle) {
                         let stopped = tauri::async_runtime::block_on(async {
                             tokio::time::timeout(std::time::Duration::from_secs(5), runtime.shutdown()).await

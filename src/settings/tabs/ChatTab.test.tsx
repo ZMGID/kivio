@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, type Mock } from 'vitest'
 import { ChatTab } from './ChatTab'
 
 vi.mock('@tauri-apps/api/path', () => ({
@@ -15,8 +15,9 @@ const t = i18n.zh
 
 type Props = Parameters<typeof ChatTab>[0]
 /** 回调字段替换成 vi.fn Mock，测试里才能用 mockClear / mock.calls。 */
-type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
+type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
   onUpdateChat: ReturnType<typeof vi.fn>
+  onUpdateVoice: Mock
   onUpdateNativeTools: ReturnType<typeof vi.fn>
   onNavigateTab: ReturnType<typeof vi.fn>
 }
@@ -52,6 +53,7 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
     skillRuntimeEnabled: true,
     nativeBuiltinToolsEnabled: false,
     onUpdateChat: vi.fn(),
+    onUpdateVoice: vi.fn(),
     onUpdateNativeTools: vi.fn(),
     onNavigateTab: vi.fn(),
     ...overrides,

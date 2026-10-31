@@ -48,7 +48,7 @@ pub(super) fn resolve_reply_arms(
 /// per-run 槽位注册之间的 TOCTOU 窗口（防同会话并发发送同时通过 busy 检查）。哨兵槽位只占
 /// `chat_active_replies`、不参与 generation/取消，命令任意退出路径 drop 时释放。
 /// 真实 per-run 槽位（`ChatReplyGuard`）在哨兵存活期间额外注册，二者按不同 run_id 共存。
-pub(super) struct ChatSendReservation<'a> {
+pub(crate) struct ChatSendReservation<'a> {
     state: &'a AppState,
     conversation_id: String,
     run_id: String,
@@ -56,7 +56,7 @@ pub(super) struct ChatSendReservation<'a> {
 
 impl<'a> ChatSendReservation<'a> {
     /// 尝试预留某会话的发送哨兵。返回 None 表示该会话已有 run 在跑（busy）。
-    pub(super) fn try_acquire(state: &'a AppState, conversation_id: &str) -> Option<Self> {
+    pub(crate) fn try_acquire(state: &'a AppState, conversation_id: &str) -> Option<Self> {
         let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
         if !state
             .chat_runtime()

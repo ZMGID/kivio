@@ -129,9 +129,17 @@ pub(crate) async fn chat_cancel_stream(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<(), String> {
-    state.cancel_chat_generation(&conversation_id);
-    if let Ok(conversation) = crate::chat::repository::repository(&app)
-        .mutate(&app, &conversation_id, |conversation| {
+    cancel_stream(&app, state.inner(), &conversation_id).await
+}
+
+pub(crate) async fn cancel_stream(
+    app: &AppHandle,
+    state: &AppState,
+    conversation_id: &str,
+) -> Result<(), String> {
+    state.cancel_chat_generation(conversation_id);
+    if let Ok(conversation) = crate::chat::repository::repository(app)
+        .mutate(app, conversation_id, |conversation| {
             if let Some(goal) = conversation
                 .goal_state
                 .as_mut()
@@ -147,7 +155,7 @@ pub(crate) async fn chat_cancel_stream(
         })
         .await
     {
-        crate::chat::goal::emit_goal_state(&app, &conversation);
+        crate::chat::goal::emit_goal_state(app, &conversation);
     }
     Ok(())
 }

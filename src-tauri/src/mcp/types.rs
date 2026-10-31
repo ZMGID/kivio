@@ -542,6 +542,120 @@ pub fn native_save_assistant_tool() -> ChatToolDefinition {
     }
 }
 
+fn native_orchestration_tool(
+    name: &str,
+    description: &str,
+    input_schema: serde_json::Value,
+) -> ChatToolDefinition {
+    ChatToolDefinition {
+        id: format!("native__{name}"),
+        name: name.to_string(),
+        description: description.to_string(),
+        source: "native".to_string(),
+        server_id: None,
+        server_name: Some("Kivio".to_string()),
+        input_schema,
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
+pub fn native_kivio_list_agents_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_agents",
+        "List available runtimes: the built-in Kivio agent and enabled, available external CLI agents. Returns {agents: [{id, name}]}; use an id as the agent when creating a conversation.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    )
+}
+
+pub fn native_kivio_list_projects_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_projects",
+        "List Kivio projects. Returns {projects: [{id, name, root_path}]}; use an id as project_id when listing or creating conversations.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+    )
+}
+
+pub fn native_kivio_list_conversations_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_list_conversations",
+        "List recent Kivio conversations, optionally within a project. The voice brain conversation is excluded. Returns {conversations: [{id, title, project, runtime, running, updated_at}]}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "string", "description": "Only include conversations in this project." },
+                "limit": { "type": "integer", "default": 20, "description": "Maximum number of conversations (default 20)." }
+            }
+        }),
+    )
+}
+
+pub fn native_kivio_read_conversation_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_read_conversation",
+        "Read recent messages in a Kivio conversation. Returns {conversation_id, running, messages: [{role, text}]}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." },
+                "limit": { "type": "integer", "default": 6, "description": "Maximum number of recent messages (default 6)." }
+            },
+            "required": ["conversation_id"]
+        }),
+    )
+}
+
+pub fn native_kivio_create_conversation_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_create_conversation",
+        "Create a Kivio conversation and send its first prompt. Choose the built-in Kivio runtime or an available external CLI agent using an id from kivio_list_agents. Returns {conversation_id, status, response?}: wait=false queues the reply and returns status queued; wait=true returns status completed with any response, or running after the 10-minute wait times out. This creates a separate conversation, not the voice brain.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "First message to send." },
+                "title": { "type": "string", "description": "Optional conversation title." },
+                "project_id": { "type": "string", "description": "Optional project id." },
+                "agent": { "type": "string", "description": "Runtime id from kivio_list_agents; omit for the built-in Kivio agent." },
+                "provider_id": { "type": "string", "description": "Optional model provider id." },
+                "model": { "type": "string", "description": "Optional model id." },
+                "wait": { "type": "boolean", "default": false, "description": "Wait for a reply instead of returning after it is queued." }
+            },
+            "required": ["prompt"]
+        }),
+    )
+}
+
+pub fn native_kivio_send_message_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_send_message",
+        "Send a message to an existing Kivio conversation using its bound built-in or external CLI runtime; the voice brain cannot be targeted. Returns {conversation_id, status, response?}: wait=false queues the reply and returns status queued; wait=true returns status completed with any response, or running after the 10-minute wait times out.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." },
+                "text": { "type": "string", "description": "Message to send." },
+                "wait": { "type": "boolean", "default": false, "description": "Wait for a reply instead of returning after it is queued." }
+            },
+            "required": ["conversation_id", "text"]
+        }),
+    )
+}
+
+pub fn native_kivio_interrupt_tool() -> ChatToolDefinition {
+    native_orchestration_tool(
+        "kivio_interrupt",
+        "Interrupt the current reply in a built-in or external CLI conversation without deleting it. Returns {conversation_id, interrupted: true}.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "conversation_id": { "type": "string", "description": "Kivio conversation id." }
+            },
+            "required": ["conversation_id"]
+        }),
+    )
+}
+
 /// `present_artifacts` only takes id/path strings. Models sometimes dump
 /// base64 or file contents into the argument stream; abort past this.
 pub const PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS: usize = 8_192;
@@ -1123,6 +1237,76 @@ pub fn looks_sensitive_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_orchestration_tool_schemas_match_their_contract() {
+        use serde_json::json;
+
+        let cases = [
+            (native_kivio_list_agents_tool(), "kivio_list_agents", json!({}), json!([])),
+            (native_kivio_list_projects_tool(), "kivio_list_projects", json!({}), json!([])),
+            (
+                native_kivio_list_conversations_tool(),
+                "kivio_list_conversations",
+                json!({"project_id": "string", "limit": "integer"}),
+                json!([]),
+            ),
+            (
+                native_kivio_read_conversation_tool(),
+                "kivio_read_conversation",
+                json!({"conversation_id": "string", "limit": "integer"}),
+                json!(["conversation_id"]),
+            ),
+            (
+                native_kivio_create_conversation_tool(),
+                "kivio_create_conversation",
+                json!({
+                    "prompt": "string", "title": "string", "project_id": "string",
+                    "agent": "string", "provider_id": "string", "model": "string",
+                    "wait": "boolean"
+                }),
+                json!(["prompt"]),
+            ),
+            (
+                native_kivio_send_message_tool(),
+                "kivio_send_message",
+                json!({"conversation_id": "string", "text": "string", "wait": "boolean"}),
+                json!(["conversation_id", "text"]),
+            ),
+            (
+                native_kivio_interrupt_tool(),
+                "kivio_interrupt",
+                json!({"conversation_id": "string"}),
+                json!(["conversation_id"]),
+            ),
+        ];
+
+        for (tool, name, properties, required) in cases {
+            assert_eq!(tool.name, name);
+            assert_eq!(tool.id, format!("native__{name}"));
+            assert_eq!(tool.openai_tool_name(), name);
+            assert_eq!(tool.input_schema["type"], "object");
+            let actual = tool.input_schema["properties"].as_object().unwrap();
+            let expected = properties.as_object().unwrap();
+            assert_eq!(actual.len(), expected.len(), "{name}");
+            for (property, expected_type) in expected {
+                assert_eq!(&actual.get(property).unwrap()["type"], expected_type, "{name}.{property}");
+            }
+            assert_eq!(
+                tool.input_schema.get("required").cloned().unwrap_or(json!([])),
+                required,
+                "{name}"
+            );
+            match name {
+                "kivio_list_conversations" => assert_eq!(actual.get("limit").unwrap()["default"], 20),
+                "kivio_read_conversation" => assert_eq!(actual.get("limit").unwrap()["default"], 6),
+                "kivio_create_conversation" | "kivio_send_message" => {
+                    assert_eq!(actual.get("wait").unwrap()["default"], false);
+                }
+                _ => {}
+            }
+        }
+    }
 
     #[test]
     fn sensitive_tool_detection_covers_common_write_verbs() {

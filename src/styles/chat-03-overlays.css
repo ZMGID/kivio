@@ -119,3 +119,76 @@
 .chat-conversation-loading {
   background: var(--theme-surface);
 }
+
+/* Voice stage: one large presence, one live caption, one floating call bar. */
+.kv-voice-stage {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 60;
+  container-type: size;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--theme-surface);
+  color: var(--text);
+  outline: none;
+  animation: kv-voice-stage-in var(--kv-dur-slow) var(--kv-ease-standard) both;
+}
+.kv-voice-stage-drag { position: absolute; inset: 0 0 auto; height: 44px; z-index: 1; }
+.kv-voice-stage-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 80px;
+}
+.kv-voice-stage-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  --voice-art-size: min(600px, calc(100cqw - 48px), calc(100cqh - 184px));
+  width: var(--voice-art-size);
+  height: var(--voice-art-size);
+  min-height: 0;
+  flex: none;
+}
+.kv-voice-caption { width: min(680px, calc(100% - 48px)); min-width: 0; margin-top: 16px; color: var(--text-muted); }
+.kv-voice-caption-line { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-align: center; font-size: 18px; line-height: 28px; }
+.kv-voice-caption-text { display: inline-block; animation: kv-voice-stage-in 180ms var(--kv-ease-standard) both; }
+.kv-voice-call-bar-position { position: absolute; inset: auto 12px 32px; display: flex; justify-content: center; }
+.kv-voice-call-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--theme-surface-border) 75%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-surface) 88%, transparent);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--text) 9%, transparent), 0 2px 6px color-mix(in srgb, var(--text) 4%, transparent);
+}
+.kv-voice-call-clock { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 10px; }
+.kv-voice-call-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.kv-voice-call-dot[data-muted="true"] { background: var(--text-faint); }
+.kv-voice-call-time { min-width: 40px; font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.kv-voice-call-channel { font-size: 12px; color: var(--text-muted); }
+.kv-voice-call-divider { width: 1px; height: 24px; margin: 0 4px; background: var(--theme-surface-border); flex: none; }
+.kv-voice-orb { display: block; flex: none; max-width: 100%; max-height: 100%; color: var(--text); }
+.kv-voice-failure-dot { position: absolute; top: 2px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--danger); pointer-events: none; }
+@keyframes kv-voice-stage-in { from { opacity: 0; } to { opacity: 1; } }
+@container (max-width: 420px) {
+  .kv-voice-call-channel { display: none; }
+  .kv-voice-call-bar { gap: 3px; padding: 6px; }
+  .kv-voice-call-clock { padding-inline: 4px; gap: 6px; }
+  .kv-voice-call-divider { margin-inline: 2px; }
+  .kv-voice-caption-line { font-size: 16px; }
+}
+@container (max-height: 560px) {
+  .kv-voice-call-bar-position { bottom: 20px; }
+  .kv-voice-stage-center { padding-bottom: 64px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kv-voice-stage, .kv-voice-caption-text { animation: none; }
+}

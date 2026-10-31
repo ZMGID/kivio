@@ -357,11 +357,23 @@ pub async fn chat_set_agent_runtime(
     conversation_id: String,
     agent_runtime: AgentRuntimeConfig,
 ) -> Result<serde_json::Value, String> {
+    let conversation = set_agent_runtime(&app, &conversation_id, agent_runtime).await?;
+    Ok(serde_json::json!({
+        "success": true,
+        "conversation": conversation,
+    }))
+}
+
+pub(crate) async fn set_agent_runtime(
+    app: &AppHandle,
+    conversation_id: &str,
+    agent_runtime: AgentRuntimeConfig,
+) -> Result<crate::chat::types::Conversation, String> {
     let persist_agent = agent_runtime.external_agent_id.clone();
     let persist_model = agent_runtime.external_model.clone();
     let persist_reasoning = agent_runtime.external_reasoning.clone();
-    let conversation = crate::chat::repository::repository(&app)
-        .mutate(&app, &conversation_id, |conversation| {
+    let conversation = crate::chat::repository::repository(app)
+        .mutate(app, conversation_id, |conversation| {
             check_runtime_switch_allowed(
                 &conversation.agent_runtime,
                 conversation.messages.is_empty(),
@@ -381,10 +393,7 @@ pub async fn chat_set_agent_runtime(
             eprintln!("[external-agent] 模型落盘失败（{agent_id}）：{err}");
         }
     }
-    Ok(serde_json::json!({
-        "success": true,
-        "conversation": conversation,
-    }))
+    Ok(conversation)
 }
 
 /// Pure binding rule for `chat_set_agent_runtime` (extracted so it is unit-testable without a Tauri

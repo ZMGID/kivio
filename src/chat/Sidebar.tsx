@@ -27,6 +27,7 @@ import { CliImportDialog } from './CliImportDialog'
 import { SetContextMenu } from './SetContextMenu'
 import { SetDialog } from './SetDialog'
 import { SidebarAccountMenu } from './SidebarAccountMenu'
+import { VoiceTrigger } from './voice/VoiceTrigger'
 import { getSettingsCached } from '../api/settingsCache'
 import { IconButton } from '../components/Button'
 import { api } from '../api/tauri'
@@ -327,6 +328,7 @@ function SidebarUserFooter({
             <CircleArrowUp strokeWidth={1.75} color="var(--accent)" />
           </IconButton>
         )}
+        <VoiceTrigger lang={lang} />
         <IconButton
           size="xs"
           label={`${t.settings} (${isMac ? '⌘,' : 'Ctrl+,'})`}

@@ -393,6 +393,7 @@ pub async fn run_agent_loop(
         config
             .assistant_snapshot
             .as_ref()
+            .filter(|assistant| !crate::chat::voice_orchestrator::is_brain_snapshot(assistant))
             .map(|assistant| assistant.skill_ids.clone()),
     );
     state

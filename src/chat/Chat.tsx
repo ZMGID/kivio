@@ -156,6 +156,8 @@ import {
 import { onChatPerfProfiler, useChatPerfLongTaskProbe, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import { ChatConversationPane } from './ChatConversationPane'
+import { VoiceCallContext, useVoiceCall } from './voice/useVoiceCall'
+import { VoiceStage } from './voice/VoiceStage'
 import { GoalCard } from './GoalCard'
 import { composerGoal, setGoalDraftMode, useGoalDraft } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
@@ -504,6 +506,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const refreshSidebar = useCallback(() => {
     setSidebarRefreshKey((key) => key + 1)
   }, [])
+
+  useTauriEvent(api.onChatConversationsChanged, refreshSidebar, [refreshSidebar])
 
   const {
     contextState,
@@ -2472,6 +2476,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }, { restoreCurrentRoute: false })
   }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingEditors])
 
+  const voiceCall = useVoiceCall({
+    providerId: activeProviderId || '',
+    model: activeModel || '',
+    lang: uiLang,
+    onDelegationComplete: refreshSidebar,
+  })
+
   const handleSidebarNewConversation = useCallback(() => {
     runAfterLeavingEditors(() => void handleNewConversation())
   }, [handleNewConversation, runAfterLeavingEditors])
@@ -2902,6 +2913,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     <LangContext.Provider value={uiLang}>
     <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
     <Profiler id="ChatShell" onRender={onChatPerfProfiler}>
+    <VoiceCallContext.Provider value={voiceCall}>
       <div
         className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
       >
@@ -3176,7 +3188,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           {popoutNotice}
         </div>
       )}
+      <audio ref={voiceCall.audioRef} autoPlay className="hidden" />
+      <VoiceStage
+        lang={uiLang}
+        sidebarOffset={sidebarCollapsed || settingsPanelActive ? '0px' : 'var(--chat-sidebar-width, 240px)'}
+        onOpenConversation={handleSidebarSelectConversation}
+      />
       </div>
+    </VoiceCallContext.Provider>
     </Profiler>
     </AsyncQuestionsContext.Provider>
     <AppDialogHost />

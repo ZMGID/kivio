@@ -104,7 +104,7 @@ pub(crate) async fn chat_send_message(
 }
 
 pub(crate) enum QueuedSendOutcome {
-    Sent,
+    Sent { user_message_id: String },
     Cancelled,
 }
 
@@ -142,6 +142,7 @@ pub(crate) async fn send_user_message_when_idle(
     }
     // Clear the scheduled-turn guard before releasing Chat's send reservation.
     let _completion = SendCompletion(on_send_finished);
+    let user_message_id = format!("msg_{}", Uuid::new_v4());
     let outcome = send_reserved(
         app.clone(),
         app.state::<AppState>(),
@@ -151,12 +152,12 @@ pub(crate) async fn send_user_message_when_idle(
         None,
         None,
         None,
-        None,
+        Some(user_message_id.clone()),
         Some(on_user_message_saved),
     )
     .await?;
     if outcome.get("success").and_then(|value| value.as_bool()) == Some(true) {
-        Ok(QueuedSendOutcome::Sent)
+        Ok(QueuedSendOutcome::Sent { user_message_id })
     } else {
         Err(outcome
             .get("error")
