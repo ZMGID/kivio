@@ -22,9 +22,10 @@ vi.mock('./attachmentPreview', () => ({
   openAttachment: () => Promise.resolve(),
 }))
 
-import { ImageReadCluster, ToolCallBlock } from './ToolCallBlock'
-import type { ToolCallRecord } from './types'
+import { ImageReadCluster, ToolCallBlock, ToolCallCluster } from './ToolCallBlock'
+import type { ChatMessageSegment, ToolCallRecord } from './types'
 import { LangContext } from '../components/i18n'
+import { ReasoningPreviewContext } from './reasoningPreview'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -35,6 +36,70 @@ function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord 
     ...overrides,
   }
 }
+
+function toolSegments(...ids: string[]): ChatMessageSegment[] {
+  return ids.map((id, order) => ({ id: `segment-${id}`, kind: 'tool', phase: 'tool_loop', order, tool_call_id: id }))
+}
+
+describe('ToolCallCluster', () => {
+  it('prefers an older active tool over a later completed one', () => {
+    const toolCalls = [
+      buildToolCall({ id: 'a', status: 'running', arguments: { path: '/tmp/active.ts' } }),
+      buildToolCall({ id: 'b', toolName: 'run_command', status: 'success', arguments: { command: 'echo done' } }),
+    ]
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} messageStreaming>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('active.ts')
+    expect(row).not.toHaveTextContent('echo done')
+  })
+
+  it('uses a semantic summary when completed and displays outcome counts once', () => {
+    const toolCalls = [
+      buildToolCall({ id: 'a', status: 'error', arguments: { path: 'a.ts' } }),
+      buildToolCall({ id: 'b', status: 'cancelled', arguments: { path: 'b.ts' } }),
+    ]
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('读取 2 个文件')
+    expect(row.textContent?.match(/1 项失败/g)).toHaveLength(1)
+    expect(row.textContent?.match(/1 项已停止/g)).toHaveLength(1)
+  })
+
+  it('mounts children lazily and stays open on append and completion without moving scroll', async () => {
+    const onExpand = vi.fn()
+    const children = vi.fn(() => <div>Details</div>)
+    const first = buildToolCall({ id: 'a', status: 'running' })
+    const { rerender, container } = render(
+      <ToolCallCluster segments={toolSegments('a')} toolCalls={[first]} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>,
+    )
+    expect(children).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button'))
+    expect(onExpand).toHaveBeenCalledOnce()
+    expect(screen.getByText('Details')).toBeVisible()
+    const scroll = container.querySelector<HTMLElement>('.custom-scrollbar')!
+    scroll.scrollTop = 42
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, buildToolCall({ id: 'b' })]} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>)
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[{ ...first, status: 'success' }, buildToolCall({ id: 'b' })]} messageStreaming={false} onExpand={onExpand}>{children}</ToolCallCluster>)
+    expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    expect(container.querySelector('.custom-scrollbar')).toBe(scroll)
+    expect(scroll.scrollTop).toBe(42)
+    expect(onExpand).toHaveBeenCalledOnce()
+  })
+
+  it('respects reasoning preview privacy and uses incumbent thinking labels', () => {
+    const segment: ChatMessageSegment = { id: 'r', kind: 'reasoning', phase: 'tool_loop', order: 0 }
+    const { rerender } = render(
+      <ReasoningPreviewContext.Provider value={false}>
+        <ToolCallCluster segments={[segment]} toolCalls={[]} messageStreaming latestReasoning={{ text: 'private thought', streaming: true }}>{() => null}</ToolCallCluster>
+      </ReasoningPreviewContext.Provider>,
+    )
+    expect(screen.getByRole('button')).toHaveTextContent('Thinking…')
+    expect(screen.getByRole('button')).toHaveAttribute('title', '展开完整思考')
+    expect(screen.queryByText('private thought')).not.toBeInTheDocument()
+    rerender(<ToolCallCluster segments={[segment]} toolCalls={[]} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    expect(screen.getByRole('button')).toHaveTextContent('Thought')
+  })
+})
 
 describe('ToolCallBlock', () => {
   it('streams multiline external tool output at the bottom and keeps terminal rendering unchanged', () => {

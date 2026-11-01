@@ -213,8 +213,8 @@ describe('summarizeToolGroup', () => {
   it('summarizes a single category with file count (done)', () => {
     const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2')]
     const toolCalls = [
-      tool({ id: 'c1', name: 'read_file' }),
-      tool({ id: 'c2', name: 'read' }),
+      tool({ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }),
+      tool({ id: 'c2', name: 'read', arguments: { path: 'b.ts' } }),
     ]
     const summary = summarizeToolGroup(segments, toolCalls)
     expect(summary.text).toBe('读取 2 个文件')
@@ -241,9 +241,9 @@ describe('summarizeToolGroup', () => {
       toolSegment('t4', 4, 'c4'),
     ]
     const toolCalls = [
-      tool({ id: 'c1', name: 'read_file' }),
-      tool({ id: 'c2', name: 'read' }),
-      tool({ id: 'c3', name: 'read_file' }),
+      tool({ id: 'c1', name: 'read_file', arguments: { path: 'a.ts' } }),
+      tool({ id: 'c2', name: 'read', arguments: { path: 'b.ts' } }),
+      tool({ id: 'c3', name: 'read_file', arguments: { path: 'c.ts' } }),
       tool({ id: 'c4', name: 'search_files' }),
     ]
     const summary = summarizeToolGroup(segments, toolCalls)
@@ -254,23 +254,25 @@ describe('summarizeToolGroup', () => {
     expect(summary.categories).toEqual(['read', 'codeSearch'])
   })
 
-  it('falls back to a step count for three or more categories', () => {
+  it('prioritizes writes and commands and counts remaining actions', () => {
     const segments = [
       toolSegment('t1', 1, 'c1'),
       toolSegment('t2', 2, 'c2'),
       toolSegment('t3', 3, 'c3'),
+      toolSegment('t4', 4, 'c4'),
     ]
     const toolCalls = [
       tool({ id: 'c1', name: 'read_file' }),
       tool({ id: 'c2', name: 'search_files' }),
       tool({ id: 'c3', name: 'run_command' }),
+      tool({ id: 'c4', name: 'Edit', arguments: { file_path: 'a.ts' } }),
     ]
     const summary = summarizeToolGroup(segments, toolCalls)
-    expect(summary.text).toBe('调用 3 次工具')
-    expect(summary.categories).toEqual(['read', 'codeSearch', 'runCommand'])
+    expect(summary.text).toBe('编辑 1 个文件和执行 1 条命令和其他 2 项操作')
+    expect(summary.categories).toEqual(['read', 'codeSearch', 'runCommand', 'fileWrite'])
   })
 
-  it('dedupes repeated tools and drops other-category tools from categories', () => {
+  it('retains unknown actions in the summary without adding a category', () => {
     const segments = [
       toolSegment('t1', 1, 'c1'),
       toolSegment('t2', 2, 'c2'),
@@ -282,8 +284,7 @@ describe('summarizeToolGroup', () => {
       tool({ id: 'c3', name: 'read' }),
     ]
     const summary = summarizeToolGroup(segments, toolCalls)
-    // 重复 read 去重，未知工具(other)被剔除；m===1 → 读取片段（count 只数 read）
-    expect(summary.text).toBe('读取 2 个文件')
+    expect(summary.text).toBe('读取 2 次和其他 1 项操作')
     expect(summary.categories).toEqual(['read'])
   })
 
@@ -323,7 +324,7 @@ describe('summarizeToolGroup', () => {
     expect(summarizeToolGroup(
       [toolSegment('t1', 1, 'c1')],
       [tool({ id: 'c1', name: 'read_image' })],
-    ).text).toBe('读取 1 个文件')
+    ).text).toBe('读取 1 次')
   })
 
   it('falls back to a step count when every category is unknown (m===0)', () => {
@@ -343,7 +344,7 @@ describe('summarizeToolGroup', () => {
     const segments = [toolSegment('t1', 1, 'c1')]
     const toolCalls = [tool({ id: 'c1', name: 'read_file', status: 'running' })]
     const summary = summarizeToolGroup(segments, toolCalls)
-    expect(summary.text).toBe('正在读取 1 个文件…')
+    expect(summary.text).toBe('正在读取 1 次…')
     expect(summary.text.endsWith('…')).toBe(true)
     expect(summary.status).toBe('running')
   })
@@ -358,6 +359,74 @@ describe('summarizeToolGroup', () => {
     expect(summary.text).toBe('执行 2 条命令，1 项失败')
     expect(summary.text.endsWith('，1 项失败')).toBe(true)
     expect(summary.status).toBe('error')
+  })
+
+  it('counts distinct file paths, including external CLI argument shapes', () => {
+    const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2'), toolSegment('t3', 3, 'c3')]
+    const summary = summarizeToolGroup(segments, [
+      tool({ id: 'c1', name: 'Read', arguments: JSON.stringify({ file_path: 'a.ts' }) }),
+      tool({ id: 'c2', name: 'read_file', arguments: { path: 'a.ts' } }),
+      tool({ id: 'c3', name: 'read', arguments: { paths: ['a.ts', 'b.ts'] } }),
+    ])
+    expect(summary.text).toBe('读取 2 个文件')
+    const edits = summarizeToolGroup(segments.slice(0, 2), [
+      tool({ id: 'c1', name: 'NotebookEdit', arguments: { notebook_path: 'a.ipynb' } }),
+      tool({ id: 'c2', name: 'Edit', arguments: { file_path: 'a.ipynb' } }),
+    ])
+    expect(edits.text).toBe('编辑 1 个文件')
+    expect(summarizeToolGroup(segments.slice(0, 2), [
+      tool({ id: 'c1', name: 'Read', arguments: { file_path: 'a.ts' } }),
+      tool({ id: 'c2', name: 'Read' }),
+    ]).text).toBe('读取 2 次')
+  })
+
+  it('shows pending activity and preserves failure and stopped counts while running', () => {
+    const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2'), toolSegment('t3', 3, 'c3'), toolSegment('t4', 4, 'c4')]
+    const calls = [
+      tool({ id: 'c1', name: 'bash', status: 'pending' }),
+      tool({ id: 'c2', name: 'bash', status: 'error' }),
+      tool({ id: 'c3', name: 'bash', status: 'cancelled' }),
+      tool({ id: 'c4', name: 'bash', status: 'skipped' }),
+    ]
+    const summary = summarizeToolGroup(segments, calls)
+    expect(summary.status).toBe('running')
+    expect(summary.text).toContain('正在')
+    expect(summary.text).toContain('1 项失败')
+    expect(summary.text).toContain('2 项已停止')
+    expect(summary.failedCount).toBe(1)
+    expect(summary.stoppedCount).toBe(2)
+    const running = summarizeToolGroup(segments, [
+      { ...calls[0], status: 'running' },
+      ...calls.slice(1),
+    ])
+    expect(running.status).toBe('running')
+    expect(running.text).toContain('1 项失败')
+    const inactive = summarizeToolGroup(segments, calls, undefined, false)
+    expect(inactive.status).toBe('error')
+    expect(inactive.text).not.toContain('正在')
+    expect(inactive.failedCount).toBe(1)
+    expect(inactive.stoppedCount).toBe(2)
+  })
+
+  it('does not show stale running as active after streaming ends', () => {
+    const summary = summarizeToolGroup(
+      [toolSegment('t1', 1, 'c1')],
+      [tool({ id: 'c1', name: 'bash', status: 'running' })],
+      undefined,
+      false,
+    )
+    expect(summary.status).toBe('done')
+    expect(summary.text).not.toContain('正在')
+  })
+
+  it('keeps stopped-only outcomes visible', () => {
+    const summary = summarizeToolGroup(
+      [toolSegment('t1', 1, 'c1')],
+      [tool({ id: 'c1', name: 'bash', status: 'cancelled' })],
+    )
+    expect(summary.stoppedCount).toBe(1)
+    expect(summary.failedCount).toBe(0)
+    expect(summary.text).toContain('1 项已停止')
   })
 
   it('categorizes notion mcp tools as Notion retrieval', () => {

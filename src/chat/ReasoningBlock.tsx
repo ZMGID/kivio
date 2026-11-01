@@ -5,6 +5,7 @@ import { ReasoningPreviewContext } from './reasoningPreview'
 
 type ReasoningBlockProps = {
   reasoning: string
+  defaultOpen?: boolean
   /** 思维链正在流式写入 */
   streaming?: boolean
   /** 当前轮仍在生成，重挂时恢复最近思考的预览。 */
@@ -24,10 +25,10 @@ function formatThinkingDuration(durationMs: number | null | undefined): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-export function ReasoningBlock({ reasoning, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+export function ReasoningBlock({ reasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
   const collapsible = reasoning.trim().length > 0
   const previewEnabled = useContext(ReasoningPreviewContext)
-  const [expanded, setExpanded] = useState(false)
+  const [expanded, setExpanded] = useState(defaultOpen)
   const [sawLivePreview, setSawLivePreview] = useState(false)
   const [liveDurationMs, setLiveDurationMs] = useState(0)
   const durationStartedAtRef = useRef<number | null>(null)

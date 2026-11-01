@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { MessageBubble } from './MessageBubble'
 import type { ChatMessage } from './types'
 
+function openActivity(container: HTMLElement) {
+  fireEvent.click(container.querySelector<HTMLButtonElement>('[data-tool-call-cluster] > button')!)
+}
+
 describe('assistant body visibility', () => {
   it('pins revealed live steps when newer steps append and does not expand them on settle', () => {
     const make = (count: number, answer?: string): ChatMessage => ({
@@ -19,7 +23,8 @@ describe('assistant body visibility', () => {
         ...(answer ? [{ id: 'answer', kind: 'text' as const, phase: 'synthesis' as const, order: count, text: answer }] : []),
       ],
     })
-    const { rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    const { container, rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    openActivity(container)
     expect(screen.getByText('live_step_0')).toBeVisible()
     expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
     rerender(<MessageBubble message={make(21)} messageStreaming />)
@@ -38,6 +43,7 @@ describe('assistant body visibility', () => {
     expect(screen.getByText('Settled answer')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    openActivity(container)
     expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
     expect(screen.getByText('live_step_21')).toBeVisible()
     expect(screen.getByText('Settled answer')).toBeVisible()
@@ -53,7 +59,8 @@ describe('assistant body visibility', () => {
         id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
       })),
     })
-    const { rerender } = render(<MessageBubble message={make(21)} messageStreaming />)
+    const { container, rerender } = render(<MessageBubble message={make(21)} messageStreaming />)
+    openActivity(container)
     const inspected = screen.getByText('inspect_1')
     if (interaction === 'pointer') fireEvent.pointerDown(inspected)
     else fireEvent.focus(inspected)
@@ -97,7 +104,7 @@ describe('assistant body visibility', () => {
     render(<MessageBubble message={message} messageStreaming reasoningStreaming />)
     expect(screen.getByText('等待你回答（在下方面板里选）')).toBeVisible()
     expect(screen.getByText('approve_deploy')).toBeVisible()
-    expect(screen.getByLabelText('Thinking')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Thought/ })).toBeVisible()
     expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
     expect(screen.getByText('live_step_23')).toBeVisible()
     expect(screen.getByText('窗口外的最终答复')).toBeVisible()
@@ -118,8 +125,9 @@ describe('assistant body visibility', () => {
         { id: 'answer', kind: 'text', phase: 'synthesis', order: 55, text: 'Final result' },
       ],
     }
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    openActivity(container)
     expect(screen.getByText('Final result')).toBeVisible()
     expect(screen.queryByText('step_0')).not.toBeInTheDocument()
     expect(screen.getByText('step_54')).toBeVisible()
@@ -582,9 +590,10 @@ describe('MessageBubble timeline orphan tools', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
     expect(screen.queryByText('Read')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    openActivity(container)
     expect(screen.getByText('Read')).toBeInTheDocument()
   })
 })
@@ -812,7 +821,7 @@ describe('MessageBubble timeline grouping', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
     const toggle = screen.getByRole('button', { name: /Worked/ })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('planning details')).not.toBeInTheDocument()
@@ -821,6 +830,7 @@ describe('MessageBubble timeline grouping', () => {
     await user.click(toggle)
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    openActivity(container)
     await user.click(screen.getByRole('button', { name: /^Thought/ }))
     expect(screen.getByText('planning details')).toBeInTheDocument()
     // 展开后组内工具块挂载：Cursor 式动词 Read + 目标（文件名）
@@ -872,7 +882,7 @@ describe('MessageBubble timeline grouping', () => {
       timestamp: 1,
     }
 
-    render(<MessageBubble message={message} />)
+    const { container } = render(<MessageBubble message={message} />)
 
     expect(screen.getByRole('button', { name: /Worked/ })).toHaveAttribute(
       'aria-expanded',
@@ -883,6 +893,7 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getByText('final answer')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /Worked/ }))
+    openActivity(container)
 
     expect(screen.getAllByText('Write')).toHaveLength(toolCount)
     expect(screen.getAllByText('file-0.ts').length).toBeGreaterThan(0)

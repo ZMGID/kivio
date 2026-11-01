@@ -89,6 +89,7 @@ describe('MessageList ← streamingStore 集成', () => {
     })
     const { container } = mountList()
     await flush()
+    fireEvent.click(container.querySelector<HTMLButtonElement>('[data-tool-call-cluster] > button')!)
     const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
     Object.defineProperties(viewport, {
       scrollHeight: { configurable: true, value: 3000 },

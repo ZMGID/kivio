@@ -57,6 +57,7 @@ describe('live message Markdown render boundary', () => {
       ...longRun().segments!,
     ] }
     const { rerender } = render(<MessageBubble message={message} messageStreaming reasoningDurationMs={2000} />)
+    fireEvent.click(screen.getByRole('button', { name: /Thought/ }))
     reasoningRender.mockClear()
     const next = { ...message, segments: message.segments!.map(segment => segment.id === 'active'
       ? { ...segment, text: 'Current next' } : segment) }

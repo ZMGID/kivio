@@ -32,16 +32,18 @@ import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ModelIcon } from '../components/ModelIcon'
-import { ToolCallBlock, ImageReadCluster } from './ToolCallBlock'
+import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { asyncReplyDisplayText } from './asyncQuestionReply'
 import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
 import {
+  canonicalToolName,
   clusterToolCallsForDisplay,
   formatWorkDuration,
   groupTimelineSegments,
   groupWorkDurationMs,
+  isExternalSubagentToolCall,
   isImageReadToolCall,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
@@ -557,6 +559,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   reasoningDurationMs,
   reasoningPreviewActive,
   onReasoningExpand,
+  defaultReasoningOpen = false,
 }: {
   segment: ChatMessageSegment
   toolCall?: ToolCallRecord
@@ -567,6 +570,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   reasoningDurationMs?: number | null
   reasoningPreviewActive: boolean
   onReasoningExpand: () => void
+  defaultReasoningOpen?: boolean
 }) {
   if (segment.kind === 'tool') {
     return (
@@ -583,6 +587,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
     if (!reasoning.trim()) return null
     return (
       <ReasoningBlock
+        defaultOpen={defaultReasoningOpen}
         reasoning={reasoning}
         streaming={reasoningStreaming}
         previewActive={reasoningPreviewActive}
@@ -608,6 +613,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
       && previous.reasoningDurationMs === next.reasoningDurationMs
       && previous.reasoningPreviewActive === next.reasoningPreviewActive
       && previous.onReasoningExpand === next.onReasoningExpand
+      && previous.defaultReasoningOpen === next.defaultReasoningOpen
   }
   if (next.segment.kind === 'tool') {
     const tool = next.toolCall
@@ -656,10 +662,12 @@ function workingGroupTitle(generating: boolean, durationMs: number | null): stri
 
 function renderProcessSegments({
   segments,
+  visibleProcessIds,
   toolCallById,
   artifacts,
   citations,
   conversationId,
+  messageStreaming,
   reasoningStreaming,
   reasoningDurationMs,
   reasoningDurationMsBySegmentId,
@@ -668,10 +676,12 @@ function renderProcessSegments({
   onReasoningExpand,
 }: {
   segments: ChatMessageSegment[]
+  visibleProcessIds: ReadonlySet<string>
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
   conversationId?: string | null
+  messageStreaming: boolean
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
   reasoningDurationMsBySegmentId?: Record<string, number>
@@ -680,50 +690,70 @@ function renderProcessSegments({
   onReasoningExpand: () => void
 }) {
   const nodes: ReactNode[] = []
-  const segmentCount = segments.length
+  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => (
+    <TimelineSegmentNode
+      segment={segment}
+      toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
+      artifacts={artifacts}
+      citations={citations}
+      conversationId={conversationId}
+      reasoningStreaming={reasoningStreaming && segment.id === activeReasoningId}
+      reasoningDurationMs={reasoningDurationMsBySegmentId?.[segment.id]
+        ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)}
+      reasoningPreviewActive={segment.id === activeReasoningId}
+      onReasoningExpand={onReasoningExpand}
+      defaultReasoningOpen={defaultReasoningOpen}
+    />
+  )
+  const canGroup = (segment: ChatMessageSegment) => {
+    if (segment.kind === 'reasoning') return true
+    if (segment.kind !== 'tool') return false
+    const tool = toolCallById.get(segmentToolCallId(segment))
+    if (!tool) return false
+    return !isAskUserToolName(toolRecordRawName(tool))
+      && !hasAskUserStructuredContent(tool.structured_content ?? tool.structuredContent)
+      && !tool.requires_confirmation && !tool.requiresConfirmation
+      && !isArtifactPresentationToolCall(tool)
+      && !isExternalSubagentToolCall(tool)
+      && !['agent', 'agent_control'].includes(canonicalToolName(tool))
+  }
   for (let index = 0; index < segments.length; ) {
     const segment = segments[index]
-    if (segment.kind === 'tool') {
-      const toolCall = toolCallById.get(segmentToolCallId(segment))
-      if (toolCall && isImageReadToolCall(toolCall)) {
-        const imageReads = [toolCall]
-        let end = index + 1
-        while (end < segments.length) {
-          const next = segments[end]
-          if (next.kind !== 'tool') break
-          const nextCall = toolCallById.get(segmentToolCallId(next))
-          if (!nextCall || !isImageReadToolCall(nextCall)) break
-          imageReads.push(nextCall)
-          end += 1
-        }
-        nodes.push(
-          <div key={segment.id}>
-            <ToolCallErrorBoundary>
-              <ImageReadCluster toolCalls={imageReads} conversationId={conversationId} />
-            </ToolCallErrorBoundary>
-          </div>,
-        )
-        index = end
-        continue
-      }
+    if (!canGroup(segment)) {
+      if (visibleProcessIds.has(segment.id)) nodes.push(<div key={segment.id}>{renderSegment(segment)}</div>)
+      index += 1
+      continue
     }
-    nodes.push(
-      <div key={segment.id}>
-        <TimelineSegmentNode
-          segment={segment}
-          toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
-          artifacts={artifacts}
-          citations={citations}
-          conversationId={conversationId}
-          reasoningStreaming={reasoningStreaming && index === segmentCount - 1}
-          reasoningDurationMs={reasoningDurationMsBySegmentId?.[segment.id]
-            ?? (reasoningSegmentCount === 1 ? reasoningDurationMs : null)}
-          reasoningPreviewActive={segment.id === activeReasoningId}
-          onReasoningExpand={onReasoningExpand}
-        />
-      </div>,
-    )
-    index += 1
+    let end = index + 1
+    while (end < segments.length && canGroup(segments[end])) end += 1
+    // Page after grouping so hidden boundaries and the first activity's identity remain stable.
+    const activity = segments.slice(index, end)
+    const visible = activity.filter(item => visibleProcessIds.has(item.id))
+    if (visible.length > 0) {
+      const tools = activity.flatMap(item => item.kind === 'tool'
+        ? [toolCallById.get(segmentToolCallId(item))!] : [])
+      const latest = activity[activity.length - 1]
+      nodes.push(
+        <ToolCallCluster
+          key={segment.id}
+          segments={activity}
+          toolCalls={tools}
+          messageStreaming={messageStreaming}
+          onExpand={onReasoningExpand}
+          latestReasoning={latest.kind === 'reasoning' ? {
+            text: segmentText(latest), streaming: reasoningStreaming && latest.id === activeReasoningId,
+          } : undefined}
+        >
+          {() => visible.map(item => <div key={item.id}>
+            {item.kind === 'tool' ? <ToolCallErrorBoundary>
+              <ToolCallBlock toolCall={toolCallById.get(segmentToolCallId(item))!}
+                defaultOpen={activity.length === 1} conversationId={conversationId} />
+            </ToolCallErrorBoundary> : renderSegment(item, activity.length === 1)}
+          </div>)}
+        </ToolCallCluster>,
+      )
+    }
+    index = end
   }
   return nodes
 }
@@ -737,6 +767,7 @@ function renderProcessSegments({
  */
 function TimelineGroupBlock({
   segments,
+  visibleProcessIds,
   allProcessSegments,
   showHeader,
   userOpen,
@@ -757,6 +788,7 @@ function TimelineGroupBlock({
   reasoningSegmentCount,
 }: {
   segments: ChatMessageSegment[]
+  visibleProcessIds: ReadonlySet<string>
   allProcessSegments: ChatMessageSegment[]
   showHeader: boolean
   userOpen: boolean | null
@@ -778,8 +810,8 @@ function TimelineGroupBlock({
 }) {
   const generating = messageStreaming
   const summary = useMemo(
-    () => summarizeToolGroup(allProcessSegments, toolCalls, toolCallById),
-    [allProcessSegments, toolCalls, toolCallById],
+    () => summarizeToolGroup(allProcessSegments, toolCalls, toolCallById, messageStreaming),
+    [allProcessSegments, toolCalls, toolCallById, messageStreaming],
   )
   const durationMs = useMemo(
     () => groupWorkDurationMs(allProcessSegments, toolCalls, toolCallById, reasoningDurationMs),
@@ -825,24 +857,27 @@ function TimelineGroupBlock({
               <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{summary.diffStats.removals}</span>
             </span>
           )}
+          {!renderDetails && summary.failedCount > 0 && (
+            <span className="shrink-0 text-[var(--danger)]">{summary.failedCount} 项失败</span>
+          )}
+          {!renderDetails && summary.stoppedCount > 0 && (
+            <span className="shrink-0 text-[var(--text-muted)]">{summary.stoppedCount} 项已停止或跳过</span>
+          )}
         </div>
       </button>}
       <ChatDisclosureBody open={renderDetails} animate={userOpen !== null}>
         {() => (
           <div className="space-y-1.5">
-            {showHeader && hiddenProcessCount > 0 && (
-              <Button size="sm" variant="ghost" data-chat-disclosure onClick={onShowEarlier}>
-                显示更早的过程（{hiddenProcessCount}）
-              </Button>
-            )}
             {/* A new tool can move existing commentary into this group. Keep
                 those segments visible instead of replaying opacity from zero. */}
             {renderProcessSegments({
               segments,
+              visibleProcessIds,
               toolCallById,
               artifacts,
               citations,
               conversationId,
+              messageStreaming,
               reasoningStreaming: reasoningStreaming,
               reasoningDurationMs,
               reasoningDurationMsBySegmentId,
@@ -850,6 +885,11 @@ function TimelineGroupBlock({
               activeReasoningId: messageStreaming ? allProcessSegments.at(-1)?.id : undefined,
               onReasoningExpand,
             })}
+            {showHeader && hiddenProcessCount > 0 && (
+              <Button size="sm" variant="ghost" data-chat-disclosure onClick={onShowEarlier}>
+                显示更早的过程（{hiddenProcessCount}）
+              </Button>
+            )}
           </div>
         )}
       </ChatDisclosureBody>
@@ -996,7 +1036,8 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)))
+        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)
+          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1095,7 +1136,8 @@ function TimelineSegments({
         return (
           <TimelineGroupBlock
             key={groupKey}
-            segments={item.segments.filter(segment => visibleProcessIds.has(segment.id))}
+            segments={item.segments}
+            visibleProcessIds={visibleProcessIds}
             allProcessSegments={allProcessSegments}
             showHeader={showHeader}
             userOpen={userOpen}

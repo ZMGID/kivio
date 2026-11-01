@@ -1,4 +1,4 @@
-import { type ComponentType, type ReactNode, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { SubAgentToolCard } from './SubAgentToolCard'
 import {
@@ -37,11 +37,11 @@ import {
   XCircle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ToolCallRecord, ToolCallStatus } from './types'
+import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment, ToolCallRecord, ToolCallStatus } from './types'
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, imageReadCount, imageReadItems, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -55,6 +55,7 @@ import { automationHash, setHash } from './chatRoutes'
 import { loadAttachmentDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import type { ImageReadItem } from './segments'
+import { ReasoningPreviewContext } from './reasoningPreview'
 
 export interface ToolCallBlockProps {
   toolCall: ToolCallRecord
@@ -1910,6 +1911,87 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
   )
 }
 
+export function ToolCallCluster({
+  segments,
+  toolCalls,
+  messageStreaming,
+  latestReasoning,
+  activityCount,
+  onExpand,
+  children,
+}: {
+  segments: ChatMessageSegment[]
+  toolCalls: ToolCallRecord[]
+  messageStreaming: boolean
+  latestReasoning?: { text: string; streaming: boolean }
+  activityCount?: number
+  onExpand?: () => void
+  children: () => ReactNode
+}) {
+  const t = useT()
+  const previewEnabled = useContext(ReasoningPreviewContext)
+  const [open, setOpen] = useState(false)
+  const summary = summarizeToolGroup(segments, toolCalls, undefined, messageStreaming)
+  let activeTool: ToolCallRecord | undefined
+  if (messageStreaming) {
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const status = normalizeToolCallStatus(toolCalls[index].status)
+      if (status === 'running' || status === 'pending') {
+        activeTool = toolCalls[index]
+        break
+      }
+    }
+  }
+  const reasoningOnly = toolCalls.length === 0
+  const showReasoning = reasoningOnly || (messageStreaming && !activeTool && Boolean(latestReasoning))
+  const currentTool = activeTool ?? toolCalls[toolCalls.length - 1]
+  const currentStatus = currentTool ? normalizeToolCallStatus(currentTool.status) : undefined
+  const displayStatus = !messageStreaming && (currentStatus === 'running' || currentStatus === 'pending')
+    ? 'completed' : currentStatus
+  const target = currentTool ? getToolTarget(t, currentTool) : ''
+  const imageRead = currentTool && isImageReadToolCall(currentTool)
+  const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.trim()
+
+  return (
+    <div className="not-prose mb-1 min-w-0 text-[12px] leading-5 text-[var(--text-muted)]" data-tool-call-cluster>
+      <button
+        type="button"
+        aria-expanded={open}
+        title={reasoningOnly && (activityCount ?? segments.length) === 1 ? (open ? '收起完整思考' : '展开完整思考') : undefined}
+        data-chat-disclosure
+        data-tauri-drag-region="false"
+        className="flex min-h-6 w-full min-w-0 items-center gap-1.5 rounded-md text-left transition-colors hover:text-[var(--text)]"
+        onClick={() => {
+          if (!open) onExpand?.()
+          setOpen(!open)
+        }}
+      >
+        {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
+          currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
+        <span className={`min-w-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+          {open ? `${activityCount ?? segments.length} 项活动` :
+            showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
+              messageStreaming && currentTool ? (imageRead
+                ? fill(activeTool ? t.chatViewingImages : t.chatViewedImages, 'n', imageReadCount(currentTool))
+                : getToolName(t, currentTool)) : summary.text}
+        </span>
+        {!open && showReasoning && messageStreaming && previewEnabled && reasoningPreview && (
+          <span className="min-w-0 truncate" data-testid="reasoning-preview">{reasoningPreview}</span>
+        )}
+        {!open && !showReasoning && !imageRead && messageStreaming && target && (
+          <span className="min-w-0 truncate">{target}</span>
+        )}
+        {(open || messageStreaming || reasoningOnly) && summary.failedCount > 0 && <span className="shrink-0 text-[var(--danger)]">{summary.failedCount} 项失败</span>}
+        {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{summary.stoppedCount} 项已停止</span>}
+        <ChevronDown size={12} aria-hidden="true" className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      <ChatDisclosureBody open={open}>
+        {() => <div className="custom-scrollbar mt-1 max-h-80 space-y-1 overflow-y-auto">{children()}</div>}
+      </ChatDisclosureBody>
+    </div>
+  )
+}
+
 function DefaultToolCallBlock({
   toolCall,
   defaultOpen = false,
@@ -2160,9 +2242,9 @@ function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; convers
   )
 }
 
-export function ImageReadCluster({ toolCalls, conversationId }: { toolCalls: ToolCallRecord[]; conversationId?: string | null }) {
+export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = false }: { toolCalls: ToolCallRecord[]; conversationId?: string | null; defaultOpen?: boolean }) {
   const t = useT()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const items = useMemo(() => collectImageReadItems(toolCalls), [toolCalls])
   // Count the same deduplicated images as the thumbnails, not read operations.
   // Historical records without identities can only contribute their reported count.
@@ -2222,7 +2304,7 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
     return <AskUserBlock toolCall={props.toolCall} />
   }
   if (isImageReadToolCall(props.toolCall)) {
-    return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} />
+    return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} defaultOpen={props.defaultOpen} />
   }
   if (isSubAgentRecord(props.toolCall)) {
     return <SubAgentCard {...props} />

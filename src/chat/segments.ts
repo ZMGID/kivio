@@ -609,12 +609,12 @@ function meaningfulCategories(categories: ToolGroupCategory[]): ToolGroupCategor
  * n = 该类别下的工具数；部分类别不带数量。
  * Codex 风格：动词 + 数量 + 宾语，由调用方加「已/正在」前缀。
  */
-function categoryFragment(category: ToolGroupCategory, count: number): string {
+function categoryFragment(category: ToolGroupCategory, count: number, fileCountKnown = true): string {
   switch (category) {
     case 'read':
-      return `读取 ${count} 个文件`
+      return fileCountKnown ? `读取 ${count} 个文件` : `读取 ${count} 次`
     case 'fileWrite':
-      return `编辑 ${count} 个文件`
+      return fileCountKnown ? `编辑 ${count} 个文件` : `编辑 ${count} 次`
     case 'runCommand':
       return `执行 ${count} 条命令`
     case 'webFetch':
@@ -658,6 +658,8 @@ function representativeCategory(categories: ToolGroupCategory[]): ToolGroupCateg
 export interface ToolGroupSummary {
   text: string
   status: 'running' | 'error' | 'done'
+  failedCount: number
+  stoppedCount: number
   /** 折叠头图标用的代表类别。 */
   icon: ToolGroupIcon
   /** 组内涉及的「有意义类别」列表（去重、保持首次出现顺序、剔除 `'other'`）。
@@ -667,18 +669,12 @@ export interface ToolGroupSummary {
   diffStats: DiffStats | null
 }
 
-/**
- * 为一个分组生成 Codex 风格的自然语言摘要：动词 + 数量 + 宾语。
- * - 纯 reasoning 组：done → `思考`；running → `正在思考…`。
- * - 有意义类别 1 个：单个动作片段；2 个：用「和」连接；0 个或 ≥3 个：`调用 N 次工具`。
- * - done 时片段直接用原形（不加「已」）；running 时前缀「正在」且整体以「…」结尾。
- * - 失败（仅 done 态）：整体末尾追加 `，N 项失败`。
- * `status` 字段保留供 MessageBubble 做流光/失败判定。
- */
+/** Generate a bounded semantic summary while retaining all source categories and outcomes. */
 export function summarizeToolGroup(
   segments: ChatMessageSegment[],
   toolCalls: ToolCallRecord[],
   toolCallById?: ReadonlyMap<string, ToolCallRecord>,
+  active = true,
 ): ToolGroupSummary {
   const toolSegments = segments.filter((segment) => segment.kind === 'tool')
   // 「步数」按工具步计；纯 reasoning 组（无工具）回退到总段数。
@@ -693,28 +689,25 @@ export function summarizeToolGroup(
     ? representativeCategory(categories)
     : 'reasoning'
 
-  const running = matchedTools.some((tool) => normalizeToolCallStatus(tool.status) === 'running')
-  const failed = matchedTools.filter((tool) => normalizeToolCallStatus(tool.status) === 'error').length
+  const statuses = matchedTools.map((tool) => normalizeToolCallStatus(tool.status))
+  const running = active && statuses.some((status) => status === 'running' || status === 'pending')
+  const failed = statuses.filter((status) => status === 'error').length
+  const stopped = statuses.filter((status) => status === 'cancelled' || status === 'skipped').length
 
   const status: ToolGroupSummary['status'] = running ? 'running' : failed > 0 ? 'error' : 'done'
 
   // 选出本组的「动作片段」数组（不带时态前缀）。
-  const fragments = buildGroupFragments(categories, meaningful, toolSegments.length, stepCount)
+  const fragments = buildGroupFragments(categories, meaningful, matchedTools, toolSegments.length, stepCount)
 
-  // running 时每个片段前缀「正在」且整体以「…」结尾；done 时片段直接用原形（不加「已」）。
-  let text: string
-  if (running) {
-    text = `${fragments.map((fragment) => `正在${fragment}`).join('和')}…`
-  } else {
-    text = fragments.join('和')
-    if (failed > 0) {
-      text = `${text}，${failed} 项失败`
-    }
-  }
+  let text = running ? `正在${fragments.join('和')}…` : fragments.join('和')
+  if (failed > 0) text += `，${failed} 项失败`
+  if (stopped > 0) text += `，${stopped} 项已停止`
 
   return {
     text,
     status,
+    failedCount: failed,
+    stoppedCount: stopped,
     icon,
     categories: meaningful,
     diffStats: matchedTools.reduce<DiffStats | null>((total, tool) => {
@@ -728,28 +721,40 @@ export function summarizeToolGroup(
   }
 }
 
-/**
- * 选出一个分组的「动作片段」数组（不带时态前缀/状态后缀）。
- * - 纯 reasoning 组（无 tool 段）：`['思考']`。
- * - 有意义类别 m===0（全 other/未知）：`['调用 N 次工具']`。
- * - m===1：该类别片段（带其自身工具数）。
- * - m===2：两个片段（各带自身工具数）。
- * - m>=3：`['调用 N 次工具']`（类别太多不逐一列，图标排已展示种类）。
- */
+/** Select up to two categories, counting all remaining tool actions separately. */
 function buildGroupFragments(
   categories: ToolGroupCategory[],
   meaningful: ToolGroupCategory[],
+  tools: ToolCallRecord[],
   toolSegmentCount: number,
   stepCount: number,
 ): string[] {
   if (toolSegmentCount === 0) return ['思考']
-  if (meaningful.length === 0 || meaningful.length >= 3) {
-    return [`调用 ${stepCount} 次工具`]
-  }
-  // 按类别统计工具数。
-  const counts = new Map<ToolGroupCategory, number>()
-  for (const category of categories) {
-    counts.set(category, (counts.get(category) ?? 0) + 1)
-  }
-  return meaningful.map((category) => categoryFragment(category, counts.get(category) ?? 0))
+  if (meaningful.length === 0) return [`调用 ${stepCount} 次工具`]
+  const selected = [
+    ...(['fileWrite', 'runCommand'] as ToolGroupCategory[]).filter((category) => meaningful.includes(category)),
+    ...meaningful.filter((category) => category !== 'fileWrite' && category !== 'runCommand'),
+  ].slice(0, 2)
+  const fragments = selected.map((category) => {
+    const categoryTools = tools.filter((_, index) => categories[index] === category)
+    if (category === 'read' || category === 'fileWrite') {
+      const paths = new Set<string>()
+      let allKnown = true
+      for (const tool of categoryTools) {
+        const args = toolCallArgObject(tool)
+        const toolPaths = toolCallPathList(tool)
+        const extraPath = args?.notebook_path ?? args?.notebookPath ?? args?.relative_path ?? args?.relativePath
+        if (typeof extraPath === 'string' && extraPath.trim()) toolPaths.push(extraPath.trim())
+        if (!toolPaths.length || (Array.isArray(args?.paths) && args.paths.some(
+          (path: unknown) => typeof path !== 'string' || !path.trim(),
+        ))) allKnown = false
+        for (const path of toolPaths) paths.add(path)
+      }
+      return categoryFragment(category, allKnown ? paths.size : categoryTools.length, allKnown)
+    }
+    return categoryFragment(category, categoryTools.length)
+  })
+  const remaining = toolSegmentCount - categories.filter((category) => selected.includes(category)).length
+  if (remaining > 0) fragments.push(`其他 ${remaining} 项操作`)
+  return fragments
 }
