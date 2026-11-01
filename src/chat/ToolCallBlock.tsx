@@ -1568,6 +1568,15 @@ function firstString(...values: unknown[]): string {
   return ''
 }
 
+// 外部 CLI 把命令包成 `"C:\…\pwsh.exe" -Command "git log …"`；行内只显示真正执行的命令（同 Codex/T3 Code）。
+const SHELL_WRAPPER = /^\s*"?(?:[^"]*[\\/])?(?:pwsh|powershell|cmd|bash|zsh|sh)(?:\.exe)?"?(?:\s+-(?:NoProfile|NoLogo|NonInteractive|ExecutionPolicy\s+\S+))*\s+(?:-Command|-c|-lc|\/c)\s+([\s\S]+)$/i
+
+function unwrapShellCommand(command: string): string {
+  const inner = SHELL_WRAPPER.exec(command)?.[1].trim()
+  if (!inner) return command
+  return /^(["'])[\s\S]*\1$/.test(inner) ? inner.slice(1, -1).replace(/\\(["\\])/g, '$1') : inner
+}
+
 /** 只取路径最后一段（Cursor 行内用文件名而非全路径）：`src/a/Lens.tsx` → `Lens.tsx`。 */
 function basename(path: string): string {
   const trimmed = path.trim().replace(/[\\/]+$/, '')
@@ -1658,7 +1667,7 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
       }
       case 'bash':
       case 'run_command':
-        return compactText(firstString(args?.description, args?.command, args?.job_id, args?.jobId), 160)
+        return compactText(firstString(args?.description, unwrapShellCommand(firstString(args?.command)), args?.job_id, args?.jobId), 160)
       case 'grep':
       case 'search_files':
         return compactText(firstString(args?.query, args?.pattern), 140)
@@ -1948,14 +1957,16 @@ export function ToolCallCluster({
   const showReasoning = reasoningOnly || (messageStreaming && !activeTool && Boolean(latestReasoning))
   const currentTool = activeTool ?? toolCalls[toolCalls.length - 1]
   const currentStatus = currentTool ? normalizeToolCallStatus(currentTool.status) : undefined
-  const displayStatus = !messageStreaming && (currentStatus === 'running' || currentStatus === 'pending')
+  // 折叠行不报错：失败的探查命令是常态，行首仍用工具图标（展开后单行保留错误图标）。
+  const displayStatus = currentStatus === 'error'
+    || (!messageStreaming && (currentStatus === 'running' || currentStatus === 'pending'))
     ? 'completed' : currentStatus
   const target = currentTool ? getToolTarget(t, currentTool) : ''
   const imageRead = currentTool && isImageReadToolCall(currentTool)
   const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.trim()
 
   return (
-    <div className="not-prose mb-1 min-w-0 text-[12px] leading-5 text-[var(--text-muted)]" data-tool-call-cluster>
+    <div className="not-prose mb-1 min-w-0 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
       <button
         type="button"
         aria-expanded={open}
@@ -1970,7 +1981,7 @@ export function ToolCallCluster({
       >
         {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
           currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
-        <span className={`min-w-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
+        <span className={`max-w-full shrink-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
           {open ? `${activityCount ?? segments.length} 项活动` :
             showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
               messageStreaming && currentTool ? (imageRead
@@ -1983,7 +1994,6 @@ export function ToolCallCluster({
         {!open && !showReasoning && !imageRead && messageStreaming && target && (
           <span className="min-w-0 truncate">{target}</span>
         )}
-        {(open || messageStreaming || reasoningOnly) && summary.failedCount > 0 && <span className="shrink-0 text-[var(--danger)]">{summary.failedCount} 项失败</span>}
         {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{summary.stoppedCount} 项已停止</span>}
         <ChevronDown size={12} aria-hidden="true" className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -2052,7 +2062,7 @@ function DefaultToolCallBlock({
         }}
         aria-expanded={hasDetails ? open : undefined}
         data-chat-disclosure={hasDetails || undefined}
-        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] transition-colors ${
+        className={`max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 transition-colors ${
           hasDetails
             ? 'hover:text-neutral-700'
             : 'cursor-default'
@@ -2265,7 +2275,7 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-chat-disclosure
-        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[11.5px] text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
+        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
       >
         <Eye
           className="shrink-0 text-neutral-400 dark:text-neutral-500"

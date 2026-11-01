@@ -115,6 +115,16 @@ body {
   background: transparent;
 }
 
+/* 系统默认选区是饱和蓝底+白字，太刺眼；改为主题色的柔和淡底、保留原文字色（Codex/T3 Code 同款）。
+   暗色底上同样比例会发灰，所以提高一点浓度。 */
+::selection {
+  background-color: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: inherit;
+}
+.dark ::selection {
+  background-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
 /* macOS Retina 上灰度抗锯齿比默认亚像素更干净。不要套到 Windows：
    WebView2/DirectWrite 的 antialiased 会关掉 ClearType，Win10 小字发虚。 */
 html.macos,

@@ -40,7 +40,7 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('Done').closest('[aria-label="过程分组"]')).toBeNull()
   })
 
-  it('retains failed and stopped counts after the finished turn folds', () => {
+  it('hides failures but keeps stopped counts after the finished turn folds', () => {
     const pending = message([{ ...read, status: 'error', error: 'Permission denied' }, command])
     const { rerender } = render(<MessageBubble message={pending} messageStreaming />)
     rerender(<MessageBubble message={{ ...pending, content: 'Unable to finish', stream_outcome: 'completed',
@@ -49,7 +49,7 @@ describe('tool activity in the message timeline', () => {
     }} />)
     const work = screen.getByRole('button', { name: /^Worked/ })
     expect(work).toHaveAttribute('aria-expanded', 'false')
-    expect(within(work).getByText('1 项失败')).toBeVisible()
+    expect(within(work).queryByText(/失败/)).toBeNull()
     expect(within(work).getByText('1 项已停止或跳过')).toBeVisible()
     expect(screen.getByText('Unable to finish')).toBeVisible()
   })
@@ -83,10 +83,25 @@ describe('tool activity in the message timeline', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
     const first = activityButton(container)
     const second = activityButton(container, 1)
-    expect(first).toHaveTextContent('读取 8 个文件，1 项失败，1 项已停止')
+    expect(first).toHaveTextContent('读取 8 个文件，1 项已停止')
+    expect(first).not.toHaveTextContent('失败')
     expect(second).toHaveTextContent('执行 1 条命令')
     expect(second).not.toHaveTextContent('失败')
     expect(second).not.toHaveTextContent('已停止')
+  })
+
+  it('does not split a cluster around hidden commentary folded in after the reader pinned the view', () => {
+    const early = [0, 1].map((index): ToolCallRecord => ({ id: `early-${index}`, name: 'bash', status: 'completed', arguments: { command: `echo ${index}` } }))
+    const note: ChatMessageSegment = { id: 'note', kind: 'text', phase: 'synthesis', order: 2, text: 'Progress note' }
+    const first = message(early, [...message(early).segments!, note])
+    const { container, rerender } = render(<MessageBubble message={first} messageStreaming />)
+    fireEvent.pointerDown(screen.getByRole('region', { name: '回答时间线' }))
+    const later = Array.from({ length: 25 }, (_, index): ToolCallRecord => ({ id: `later-${index}`, name: 'bash', status: 'completed', arguments: { command: `echo later ${index}` } }))
+    const segments = [...first.segments!, ...later.map((tool, index): ChatMessageSegment => ({
+      id: `seg-${tool.id}`, kind: 'tool', phase: 'tool_loop', order: 3 + index, tool_call_id: tool.id,
+    }))]
+    rerender(<MessageBubble message={message([...early, ...later], segments)} messageStreaming />)
+    expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(1)
   })
 
   it('keeps unanswered questions and permissions visible when Work is closed', () => {

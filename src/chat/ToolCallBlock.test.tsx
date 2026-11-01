@@ -65,7 +65,7 @@ describe('ToolCallCluster', () => {
     render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} toolCallById={toolIndex(...toolCalls)} messageStreaming={false}>{() => null}</ToolCallCluster>)
     const row = screen.getByRole('button')
     expect(row).toHaveTextContent('读取 2 个文件')
-    expect(row.textContent?.match(/1 项失败/g)).toHaveLength(1)
+    expect(row).not.toHaveTextContent('失败')
     expect(row.textContent?.match(/1 项已停止/g)).toHaveLength(1)
   })
 
@@ -76,7 +76,8 @@ describe('ToolCallCluster', () => {
     const unrelated = buildToolCall({ id: 'outside', status: 'cancelled' })
     render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, stale]} toolCallById={toolIndex(first, latest, unrelated)} messageStreaming={false}>{() => null}</ToolCallCluster>)
     const row = screen.getByRole('button')
-    expect(row).toHaveTextContent('读取 2 个文件，1 项失败')
+    expect(row).toHaveTextContent('读取 2 个文件')
+    expect(row).not.toHaveTextContent('失败')
     expect(row).not.toHaveTextContent('已停止')
   })
 
@@ -851,6 +852,23 @@ describe('ToolCallBlock', () => {
     expect(within(button).getByText('Show sheet structure of three Excel files')).toBeInTheDocument()
     expect(within(button).queryByText(/pwsh/)).not.toBeInTheDocument()
     expect(within(button).queryByText(/"command"/)).not.toBeInTheDocument()
+  })
+
+  it('strips the pwsh.exe -Command wrapper from the inline command', () => {
+    render(
+      <ToolCallBlock
+        toolCall={buildToolCall({
+          toolName: 'pwsh',
+          source: 'external_cli',
+          arguments: JSON.stringify({
+            command: '"C:\\Users\\Z\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe" -Command "git log --oneline -5"',
+          }),
+        })}
+      />,
+    )
+    const button = screen.getByRole('button')
+    expect(within(button).getByText('git log --oneline -5')).toBeInTheDocument()
+    expect(within(button).queryByText(/pwsh\.exe/)).not.toBeInTheDocument()
   })
 
   it('maps claude Bash to Run + the command', () => {

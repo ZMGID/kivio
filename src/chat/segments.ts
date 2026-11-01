@@ -658,6 +658,7 @@ function representativeCategory(categories: ToolGroupCategory[]): ToolGroupCateg
 export interface ToolGroupSummary {
   text: string
   status: 'running' | 'error' | 'done'
+  /** 失败数：折叠摘要刻意不显示（命令失败是探索常态，展开后单行仍可见）。 */
   failedCount: number
   stoppedCount: number
   /** 折叠头图标用的代表类别。 */
@@ -700,7 +701,7 @@ export function summarizeToolGroup(
   const fragments = buildGroupFragments(categories, meaningful, matchedTools, toolSegments.length, stepCount)
 
   let text = running ? `正在${fragments.join('和')}…` : fragments.join('和')
-  if (failed > 0) text += `，${failed} 项失败`
+  // 失败不进摘要：外部 CLI 的探查命令经常非零退出，「N 项失败」只是噪音。
   if (stopped > 0) text += `，${stopped} 项已停止`
 
   return {

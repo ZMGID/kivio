@@ -725,7 +725,14 @@ function renderProcessSegments({
       continue
     }
     let end = index + 1
-    while (end < segments.length && canGroup(segments[end])) end += 1
+    let anyVisible = visibleProcessIds.has(segment.id)
+    while (end < segments.length) {
+      const next = segments[end]
+      // 隐藏的旁白什么都不渲染；在已可见的组后面拿它当边界，会出现两行紧挨的折叠摘要。
+      if (!canGroup(next) && !(anyVisible && next.kind === 'text' && !visibleProcessIds.has(next.id))) break
+      anyVisible ||= visibleProcessIds.has(next.id)
+      end += 1
+    }
     // Page after grouping so hidden boundaries and the first activity's identity remain stable.
     const activity = segments.slice(index, end)
     const visible = activity.filter(item => visibleProcessIds.has(item.id))
@@ -831,7 +838,7 @@ function TimelineGroupBlock({
         aria-expanded={renderDetails}
         data-chat-disclosure
         data-tauri-drag-region="false"
-        className="mb-1 flex w-full items-center gap-1.5 text-left text-[12px] leading-relaxed font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
+        className="mb-1 flex w-full items-center gap-1.5 text-left text-[15px] leading-6 font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
       >
         {generating ? (
           <TimelineSpinner size={16} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
@@ -853,13 +860,10 @@ function TimelineGroupBlock({
             {title}
           </span>
           {summary.diffStats && (
-            <span className="shrink-0 font-mono text-[11px] tabular-nums">
+            <span className="shrink-0 font-mono text-[13px] tabular-nums">
               <span className="text-emerald-600 dark:text-emerald-400">+{summary.diffStats.additions}</span>
               <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{summary.diffStats.removals}</span>
             </span>
-          )}
-          {!renderDetails && summary.failedCount > 0 && (
-            <span className="shrink-0 text-[var(--danger)]">{summary.failedCount} 项失败</span>
           )}
           {!renderDetails && summary.stoppedCount > 0 && (
             <span className="shrink-0 text-[var(--text-muted)]">{summary.stoppedCount} 项已停止或跳过</span>

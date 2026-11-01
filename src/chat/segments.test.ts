@@ -349,15 +349,15 @@ describe('summarizeToolGroup', () => {
     expect(summary.status).toBe('running')
   })
 
-  it('appends a 项失败 suffix on the done path when a tool failed', () => {
+  it('keeps failures out of the summary text but still reports them', () => {
     const segments = [toolSegment('t1', 1, 'c1'), toolSegment('t2', 2, 'c2')]
     const toolCalls = [
       tool({ id: 'c1', name: 'run_command', status: 'error' }),
       tool({ id: 'c2', name: 'run_command', status: 'completed' }),
     ]
     const summary = summarizeToolGroup(segments, toolCalls)
-    expect(summary.text).toBe('执行 2 条命令，1 项失败')
-    expect(summary.text.endsWith('，1 项失败')).toBe(true)
+    expect(summary.text).toBe('执行 2 条命令')
+    expect(summary.failedCount).toBe(1)
     expect(summary.status).toBe('error')
   })
 
@@ -391,7 +391,7 @@ describe('summarizeToolGroup', () => {
     const summary = summarizeToolGroup(segments, calls)
     expect(summary.status).toBe('running')
     expect(summary.text).toContain('正在')
-    expect(summary.text).toContain('1 项失败')
+    expect(summary.text).not.toContain('失败')
     expect(summary.text).toContain('2 项已停止')
     expect(summary.failedCount).toBe(1)
     expect(summary.stoppedCount).toBe(2)
@@ -400,7 +400,7 @@ describe('summarizeToolGroup', () => {
       ...calls.slice(1),
     ])
     expect(running.status).toBe('running')
-    expect(running.text).toContain('1 项失败')
+    expect(running.text).not.toContain('失败')
     const inactive = summarizeToolGroup(segments, calls, undefined, false)
     expect(inactive.status).toBe('error')
     expect(inactive.text).not.toContain('正在')
