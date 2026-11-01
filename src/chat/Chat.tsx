@@ -2360,6 +2360,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const composerContextSlot = useMemo(
     () => (
       <ContextIndicator
+        model={usesExternalRuntime ? activeAgentRuntime.externalModel : activeModel}
+        providerId={usesExternalRuntime ? undefined : activeProviderId}
         contextState={contextState}
         messageCount={displayMessages.length}
         lastMessageId={displayMessages[displayMessages.length - 1]?.id}
@@ -2377,6 +2379,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       />
     ),
     [
+      activeModel,
+      activeProviderId,
+      activeAgentRuntime.externalModel,
       contextCompressing,
       contextError,
       contextLoading,
@@ -2388,32 +2393,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       handleRefreshContext,
       streamCoarse.streaming,
       activeAgentRuntime.externalAgentId,
-      uiLang,
-      usesExternalRuntime,
-    ],
-  )
-  const composerUsageSlot = useMemo(
-    () => (
-      <SessionUsageStrip
-        conversationId={currentConversation?.id}
-        generating={streamCoarse.streaming}
-        messages={displayMessages}
-        lang={uiLang}
-        apiFormats={providerApiFormats}
-        defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={
-          usesExternalRuntime
-            ? activeAgentRuntime.externalAgentId === 'codex'
-            : undefined
-        }
-      />
-    ),
-    [
-      activeAgentRuntime.externalAgentId,
-      currentConversation,
-      displayMessages,
-      providerApiFormats,
-      streamCoarse.streaming,
       uiLang,
       usesExternalRuntime,
     ],
@@ -2755,6 +2734,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     replyModels: activeReplyModels,
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot: composerContextSlot,
+    usageSlot: (
+      <SessionUsageStrip
+        conversationId={currentConversation?.id}
+        generating={streamCoarse.streaming}
+        messages={displayMessages}
+        lang={uiLang}
+        apiFormats={providerApiFormats}
+        defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
+        cacheIncludedInInput={usesExternalRuntime ? activeAgentRuntime.externalAgentId === 'codex' : undefined}
+      />
+    ),
     gitWorkdir: usesChatRuntime ? null : dockWorkdir || null,
     gitLang: uiLang,
     onOpenGitPanel: handleOpenDockGit,
@@ -2766,7 +2756,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onPresetChange: handleExternalPresetChange,
     presetLocked: Boolean(currentConversation) && !currentConversationIsBlank,
     presetLockedReason: i18n[uiLang].chatAgentPresetLocked,
-    usageSlot: composerUsageSlot,
   }), [
     activeAgentRuntime.externalAgentId,
     activeBuiltinWebSearchSupported,
@@ -2779,7 +2768,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     composerForceKnowledgeSearch,
     composerKnowledgeBaseIds,
     composerAdditionalDirectories,
-    composerUsageSlot,
+    displayMessages,
+    providerApiFormats,
     loadInputHistory,
     conversationProject,
     currentConversation,

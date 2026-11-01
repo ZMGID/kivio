@@ -454,21 +454,18 @@
 }
 .chat-composer-editor .ProseMirror-separator { display: none; }
 
-/* ===== 输入区结构（对齐 T3 Code） =====
-     ① .chat-composer-status  上下文状态条，灰底，仅在有内容时渲染
-     ② .chat-composer-shell   圆角卡片：上方输入区，下方 .chat-composer-tools 功能栏
-     功能栏在卡片内，右端是实心圆发送键。 */
+/* ===== 输入区结构 =====
+     ① .chat-composer-status  当前环境与任务，仅在有内容时渲染
+     ② .chat-composer-shell   圆角卡片：上方输入区，下方 .chat-composer-tools 功能栏 */
 .chat-composer-status {
+  position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 0 8px;
   min-height: 28px;
   padding: 0 8px;
   margin-bottom: 6px;
-  border-radius: 7px;
-  /* 底色用 soft（≈2% 亮度差）而非 muted（3.5%）：灰阶差超过 ~4% 就会从
-     「浮在纸面上的一层信息」读成「一块拼上去的灰板」（同 .chat-sidebar-shell 的权衡）。 */
-  background: var(--theme-surface-soft);
   font-size: 12px;
   color: var(--text-faint);
 }
@@ -477,15 +474,62 @@
   display: none;
 }
 
-
-/* 无项目且无改动时状态条内容为空（diff 徽标自隐藏），空条直接不显示。 */
-.chat-composer-status:empty {
-  display: none;
+.chat-composer-environment {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 28px;
 }
 
-/* 排队中的消息（运行中发的那几条，等轮末自动发出）。
-   与 ①状态条同一视觉家族：soft 底、无描边、faint 字 —— 它是「浮在纸面上的一层待办信息」，
-   不是审批卡那种要人当场决定的东西。用描边白卡会把注意力从正在生成的回答上抢走。 */
+.chat-composer-project {
+  max-width: min(18rem, 60cqw);
+}
+
+.chat-composer-git,
+.chat-composer-git > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-composer-environment .chat-composer-status-item {
+  max-width: 100%;
+}
+
+.chat-composer-status > [data-chat-goal-card] {
+  flex-basis: 18rem;
+  min-width: min(18rem, 100%);
+}
+
+.chat-composer-status [data-chat-goal-card] button[aria-controls] {
+  flex-wrap: wrap;
+}
+
+.chat-composer-status [data-chat-goal-card] button[aria-controls] > span:last-child {
+  flex-basis: 8rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@container chat-main (max-width: 640px) {
+  .chat-composer-project,
+  .chat-composer-git > div {
+    position: static;
+  }
+
+  .chat-composer-project > .kv-menu,
+  .chat-composer-git > div > .kv-menu {
+    max-width: 100%;
+  }
+
+  .chat-composer-git > div > .kv-menu {
+    left: auto;
+    right: 0;
+  }
+}
+
+/* 排队中的消息使用 soft 底和 faint 字，不抢走正在生成的回答的注意力。 */
 .chat-composer-queue {
   margin-bottom: 6px;
   border-radius: 7px;
@@ -495,14 +539,6 @@
 }
 
 
-/* 输入框功能栏右侧的用量小字（缓存命中/↑输入/↓输出）：主区容器过窄时直接隐藏，
-   避免和模式胶囊、上下文指示器挤在一行。容器查询挂在 .chat-main-pane 的
-   container-name: chat-main 上，自动扣掉侧栏/Dock 的实际宽度。 */
-@container chat-main (max-width: 640px) {
-  .chat-session-usage {
-    display: none;
-  }
-}
 
 /* 一条排队消息。动作键平时透明（不占注意力也不跳版：仍然挂载、只是不可见），
    指针悬停或键盘聚焦到行内任意控件时才现出来。 */
@@ -562,8 +598,22 @@ button.chat-composer-status-item:hover {
 .chat-composer-tools {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
   margin: 8px -4px 0;
+}
+
+.chat-composer-tool-group,
+.chat-composer-tool-actions {
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.chat-composer-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 /* 裸露工具栏上的图标钮：原来是极浅的细线图标，飘在点阵背景上立不住。

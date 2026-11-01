@@ -630,6 +630,8 @@ export function usePopoutComposer({
   const contextSlot = useMemo(
     () => (
       <ContextIndicator
+        model={usesExternalRuntime ? runtime.externalModel : conversation?.model}
+        providerId={usesExternalRuntime ? undefined : conversation?.provider_id}
         contextState={contextState}
         messageCount={displayMessages.length}
         lastMessageId={displayMessages[displayMessages.length - 1]?.id}
@@ -647,6 +649,9 @@ export function usePopoutComposer({
       />
     ),
     [
+      conversation?.model,
+      conversation?.provider_id,
+      runtime.externalModel,
       contextCompressing,
       contextError,
       contextLoading,
@@ -663,32 +668,6 @@ export function usePopoutComposer({
     ],
   )
 
-  const usageSlot = useMemo(
-    () => (
-      <SessionUsageStrip
-        conversationId={conversation?.id}
-        generating={streaming}
-        messages={displayMessages}
-        lang={lang}
-        apiFormats={providerApiFormats}
-        defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}
-        cacheIncludedInInput={
-          usesExternalRuntime
-            ? runtime.externalAgentId === 'codex'
-            : undefined
-        }
-      />
-    ),
-    [
-      conversation,
-      displayMessages,
-      lang,
-      providerApiFormats,
-      runtime.externalAgentId,
-      streaming,
-      usesExternalRuntime,
-    ],
-  )
 
   return {
     onSend: send,
@@ -741,6 +720,17 @@ export function usePopoutComposer({
     replyModels: conversation?.reply_models ?? conversation?.replyModels ?? [],
     onChangeReplyModels: handleChangeReplyModels,
     contextSlot,
+    usageSlot: (
+      <SessionUsageStrip
+        conversationId={conversation?.id}
+        generating={streaming}
+        messages={displayMessages}
+        lang={lang}
+        apiFormats={providerApiFormats}
+        defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}
+        cacheIncludedInInput={usesExternalRuntime ? runtime.externalAgentId === 'codex' : undefined}
+      />
+    ),
     gitWorkdir: usesChatRuntime ? null : gitWorkdir || null,
     gitLang: lang,
     onOpenGitPanel: () => {},
@@ -752,6 +742,5 @@ export function usePopoutComposer({
     onPresetChange: handleExternalPresetChange,
     presetLocked: Boolean(conversation) && !conversationBlank,
     presetLockedReason: i18n[lang].chatAgentPresetLocked,
-    usageSlot,
   }
 }

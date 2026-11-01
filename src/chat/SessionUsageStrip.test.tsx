@@ -46,6 +46,17 @@ describe('SessionUsageStrip', () => {
     expect(await screen.findByText('0.75$')).toBeTruthy()
   })
 
+  it('shows every metric immediately without a disclosure control', async () => {
+    vi.mocked(api.usageGetConversationCost).mockResolvedValueOnce({ costUsd: 0.25, unpricedRequests: 0, skippedRecords: 0 })
+    const { container } = render(<SessionUsageStrip conversationId="parent" lang="en"
+      messages={[assistant({ input_tokens: 100, cached_input_tokens: 80, output_tokens: 20 })]} />)
+    expect(await screen.findByText('0.25$')).toBeVisible()
+    expect(screen.getByText('80%')).toBeVisible()
+    expect(screen.getByLabelText('Input')).toHaveTextContent('↑20')
+    expect(screen.getByLabelText('Output')).toHaveTextContent('↓20')
+    expect(container.querySelector('details, summary, button')).toBeNull()
+  })
+
   it.each([
     [0.0234, 0, '0.02$'],
     [0, 0, '0.00$'],
@@ -57,7 +68,24 @@ describe('SessionUsageStrip', () => {
     render(<SessionUsageStrip conversationId="cost-chat" lang="zh" messages={[]} />)
     await act(async () => {})
     expect(screen.getByText(label)).toBeTruthy()
-    expect(screen.queryByText('↑0')).toBeNull()
+    expect(screen.queryByRole('heading', { name: '已加载消息用量' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [{ costUsd: 1.25, unpricedRequests: 2, skippedRecords: 0 }, '1.25$', true],
+    [{ costUsd: 0.5, unpricedRequests: 0, skippedRecords: 1 }, '0.50$', true],
+    [{ costUsd: null, unpricedRequests: 1, skippedRecords: 0 }, '—$', false],
+  ])('distinguishes partial or unknown cost from a complete invoice', async (cost, value, hasKnownCost) => {
+    vi.mocked(api.usageGetConversationCost).mockResolvedValueOnce(cost)
+    render(<SessionUsageStrip conversationId="cost-chat" lang="en" messages={[]} />)
+    await act(async () => {})
+    expect(screen.getByText(value)).toBeVisible()
+    const hint = screen.getByText(value).parentElement!
+    expect(hint).toHaveTextContent('*')
+    expect(hint.title).toContain('not an invoice')
+    expect(hint.title).toContain('Some requests lack pricing or usage')
+    expect(hint.title.includes('Only known costs are shown')).toBe(hasKnownCost)
+    if (!hasKnownCost) expect(screen.queryByText('0.00$')).not.toBeInTheDocument()
   })
 
   it('isolates late costs across navigation and refreshes after generation ends', async () => {
@@ -79,11 +107,11 @@ describe('SessionUsageStrip', () => {
     render(<SessionUsageStrip lang="zh" defaultApiFormat="anthropic_messages" messages={[
       assistant({ input_tokens: 2, cached_input_tokens: 700, cache_creation_input_tokens: 300 }),
     ]} />)
-    expect(screen.getByText('缓存 70%')).toBeTruthy()
-    expect(screen.getByText('↑302')).toBeTruthy()
+    expect(screen.getByText('70%')).toBeTruthy()
+    expect(screen.getByText('302')).toBeTruthy()
   })
 
-  it('shows input/output with arrows and cache hit as a percentage (Anthropic style: input excludes cache)', () => {
+  it('shows loaded input/output and cache hit percentage (Anthropic input excludes cache)', () => {
     render(
       <SessionUsageStrip
         lang="zh"
@@ -96,14 +124,9 @@ describe('SessionUsageStrip', () => {
       />,
     )
     // 输入 = 1000+500（不减）；缓存命中率 = 1100 / (1500+1100) ≈ 42.3% → 取整 42%
-    expect(screen.getByText('↑1.5K')).toBeTruthy()
-    expect(screen.getByText('缓存 42%')).toBeTruthy()
-    expect(screen.getByText('↓250')).toBeTruthy()
-    // 悬浮提示带全量描述（在容器 span 上）
-    expect(screen.getByText('↑1.5K').parentElement).toHaveAttribute(
-      'title',
-      '输入 1.5K · 缓存命中 42% · 输出 250',
-    )
+    expect(screen.getByText('1.5K')).toBeTruthy()
+    expect(screen.getByText('42%')).toBeTruthy()
+    expect(screen.getByText('250')).toBeTruthy()
   })
 
   it('subtracts cached tokens from OpenAI-style input and rounds big percentages', () => {
@@ -113,9 +136,9 @@ describe('SessionUsageStrip', () => {
         messages={[assistant({ input_tokens: 10_000, output_tokens: 300, cached_input_tokens: 4_000 })]}
       />,
     )
-    expect(screen.getByText('↑6.0K')).toBeTruthy()
-    expect(screen.getByText('缓存 40%')).toBeTruthy()
-    expect(screen.getByText('↓300')).toBeTruthy()
+    expect(screen.getByText('6.0K')).toBeTruthy()
+    expect(screen.getByText('40%')).toBeTruthy()
+    expect(screen.getByText('300')).toBeTruthy()
   })
 
   it('resolves per-message provider format over the default', () => {
@@ -131,9 +154,9 @@ describe('SessionUsageStrip', () => {
       />,
     )
     // anthropic-p 不减（10000）；默认 openai_chat 的减（2000−500=1500）
-    expect(screen.getByText('↑11.5K')).toBeTruthy()
+    expect(screen.getByText('11.5K')).toBeTruthy()
     // 3500 / (11500 + 3500) = 23.3% → 取整 23%
-    expect(screen.getByText('缓存 23%')).toBeTruthy()
+    expect(screen.getByText('23%')).toBeTruthy()
   })
 
   it('does not subtract cache from dsh-style input (already exclusive)', () => {
@@ -149,21 +172,28 @@ describe('SessionUsageStrip', () => {
       />,
     )
     // 再减一次会变成 ↑0 / 缓存 100%。新鲜输入 457+122=579。
-    expect(screen.getByText('↑579')).toBeTruthy()
-    expect(screen.getByText('缓存 99%')).toBeTruthy()
-    expect(screen.getByText('↓2.0K')).toBeTruthy()
+    expect(screen.getByText('579')).toBeTruthy()
+    expect(screen.getByText('99%')).toBeTruthy()
+    expect(screen.getByText('2.0K')).toBeTruthy()
   })
 
-  it('supports camelCase fields and hides the cache item when no cache was reported', () => {
+  it('supports camelCase fields and a reported zero cache hit rate', () => {
     render(
       <SessionUsageStrip
         lang="zh"
         messages={[assistant({ inputTokens: 200, outputTokens: 40, cachedInputTokens: 0 })]}
       />,
     )
-    expect(screen.getByText('↑200')).toBeTruthy()
-    expect(screen.getByText('↓40')).toBeTruthy()
-    expect(screen.queryByText(/缓存/)).toBeNull()
+    expect(screen.getByText('200')).toBeTruthy()
+    expect(screen.getByText('40')).toBeTruthy()
+    expect(screen.getByText('0%')).toBeTruthy()
+  })
+
+  it('shows unknown fields as unknown instead of zero', () => {
+    render(<SessionUsageStrip lang="en" messages={[assistant({ input_tokens: 200 })]} />)
+    expect(screen.getByLabelText('Input')).toHaveTextContent('↑200')
+    expect(screen.getByLabelText('Output')).toHaveTextContent('↓—')
+    expect(screen.getByTitle('Cache hit rate for loaded messages')).toHaveTextContent('—')
   })
 
   it('renders nothing when no message carries usage', () => {

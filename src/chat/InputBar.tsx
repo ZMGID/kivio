@@ -419,7 +419,7 @@ export interface InputBarProps {
   gitLang?: Lang
   /** 胶囊卡片里「在 Git 面板中打开」：打开 Dock 并切到 Git 页 */
   onOpenGitPanel?: () => void
-  /** 功能栏右侧的用量注入区（会话输入/缓存命中/输出）：渲染在模式胶囊与上下文指示器左侧 */
+  /** 常驻费用、缓存及 token 用量，位于底栏模式按钮左侧。 */
   usageSlot?: ReactNode
 }
 
@@ -629,8 +629,8 @@ export const InputBar = memo(function InputBar({
   const showAssistantEntry = Boolean(onOpenAssistantCenter)
   const modeEntryEnabled = Boolean(onModeChange) && modeOptions.length > 0
   const presetEntryEnabled = Boolean(onPresetChange) && presetOptions.length > 0
-  // 状态条只放「你在哪」—— 当前项目或集。Git 分支/diff 归下面的工具栏。
-  const gitStatusEnabled = Boolean(gitWorkdir && gitLang && onOpenGitPanel)
+  // 状态条展示当前项目或集及其 Git 状态。
+  const gitStatusEnabled = Boolean(effectiveProject && gitWorkdir && gitLang && onOpenGitPanel)
   const todoBarVisible = (agentTodoState?.items?.length ?? 0) > 0
   const statusBarVisible = Boolean(
     (projectEntryEnabled && effectiveProject) || effectiveSet,
@@ -2020,11 +2020,13 @@ export const InputBar = memo(function InputBar({
             </div>
           </div>
         )}
-        {/* ① 状态条：「你在哪 + 在做什么 + 改了多少」—— 项目/集、当前 todo、diff 徽标。 */}
+        {/* 状态条：项目/集、Git 分支及按需显示的任务和改动。 */}
         {(statusBarVisible || todoBarVisible || goalSlot || subAgentSlot || gitStatusEnabled) && (
           <div className="chat-composer-status" data-tauri-drag-region="false">
+            {(statusBarVisible || gitStatusEnabled) && (
+              <div className="chat-composer-environment">
             {statusBarVisible && effectiveProject && (
-              <div className="relative min-w-0">
+              <div className="chat-composer-project relative min-w-0">
                 <button
                   type="button"
                   onClick={toggleProjectMenu}
@@ -2036,6 +2038,7 @@ export const InputBar = memo(function InputBar({
                 >
                   <Folder strokeWidth={1.75} />
                   <span className="min-w-0 truncate">{effectiveProject.name}</span>
+                  <ChevronDown size={12} strokeWidth={2} className={`shrink-0 transition-transform ${projectMenuOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {projectMenuOpen && projectEntryEnabled && (
                   <>
@@ -2070,6 +2073,21 @@ export const InputBar = memo(function InputBar({
                 <Layers strokeWidth={1.75} />
                 <span className="min-w-0 truncate">{effectiveSet.name}</span>
               </button>
+            )}
+            {gitStatusEnabled && gitWorkdir && gitLang && onOpenGitPanel && (
+              <div className="chat-composer-git">
+                <GitStatusPill
+                  key={`${effectiveProject?.id ?? ''}:${gitWorkdir}`}
+                  workdir={gitWorkdir}
+                  projectId={effectiveProject?.id ?? null}
+                  onChooseProject={projectEntryEnabled ? toggleProjectMenu : undefined}
+                  lang={gitLang}
+                  disabled={disabled}
+                  onOpenGitPanel={onOpenGitPanel}
+                />
+              </div>
+            )}
+              </div>
             )}
             {goalSlot}
             {!goalSlot && todoBarVisible && (
@@ -2179,6 +2197,7 @@ export const InputBar = memo(function InputBar({
 
         {/* 底部功能栏：在卡片内，左侧操作与状态，右侧上下文和发送。 */}
         <div className="chat-composer-tools" data-tauri-drag-region="false">
+            <div className="chat-composer-tool-group">
             <ComposerAddMenu
               onAddAttachment={() => void openAttachmentPicker()}
               directories={additionalDirectories}
@@ -2297,23 +2316,12 @@ export const InputBar = memo(function InputBar({
               <WandSparkles size={18} strokeWidth={1.75} />
             </IconButton>
 
-            {/* Git 分支胶囊 + diff 徽标（ml-auto 把徽标顶到右侧、挨着上下文指示器）。 */}
-            {gitStatusEnabled && gitWorkdir && gitLang && onOpenGitPanel && (
-              <GitStatusPill
-                key={`${effectiveProject?.id ?? ''}:${gitWorkdir}`}
-                workdir={gitWorkdir}
-                projectId={effectiveProject?.id ?? null}
-                onChooseProject={projectEntryEnabled ? toggleProjectMenu : undefined}
-                lang={gitLang}
-                disabled={disabled}
-                onOpenGitPanel={onOpenGitPanel}
-              />
-            )}
 
-            <div className="ml-auto flex items-center gap-2">
+            </div>
+            <div className="chat-composer-tool-actions ml-auto flex items-center justify-end gap-2">
             {usageSlot}
             {presetEntryEnabled && activePresetOption && (
-              <div className="relative shrink-0 self-center">
+              <div className="relative min-w-0 max-w-full shrink-0 self-center">
                 <button
                   type="button"
                   onClick={togglePresetMenu}
@@ -2382,7 +2390,7 @@ export const InputBar = memo(function InputBar({
               </div>
             )}
             {modeEntryEnabled && activeModeOption && (
-              <div className="relative shrink-0 self-center">
+              <div className="relative min-w-0 max-w-full shrink-0 self-center">
                 <button
                   type="button"
                   onClick={toggleModeMenu}

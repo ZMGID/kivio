@@ -1358,7 +1358,6 @@ function ReadingWorkspace({
                 <InputBar
                   {...inputBarProps}
                   appearance="embedded"
-                  usageSlot={undefined}
                   conversationId={composerId}
                   onSend={send}
                   onSendWhileRunning={undefined}
@@ -1384,7 +1383,7 @@ function ReadingWorkspace({
                   contextSlot={
                     <div className="reading-context-status">
                       <span className="context-label"><FileText size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>
-                      {inputBarProps.usageSlot && <details className="reading-usage"><summary>用量</summary><div>{inputBarProps.usageSlot}</div></details>}
+                      {inputBarProps.contextSlot}
                     </div>
                   }
                 />

@@ -1,6 +1,6 @@
 import { Button, IconButton } from '../components/Button'
 import { Archive, Eraser, RefreshCw, Square } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   autoCompactPercent,
@@ -13,6 +13,10 @@ import { i18n, type I18n, type Lang } from '../components/i18n'
 import type { ConversationContextState } from './types'
 import { usePopoverMenu } from './usePopoverMenu'
 import { formatTokens } from '../utils/tokens'
+import { getSettingsCached, peekSettings, subscribeSettings } from '../api/settingsCache'
+import type { ModelProvider } from '../api/tauri'
+import { resolveModelInfo } from '../data/modelMatching'
+import { useModelDatabase } from '../data/useModelDatabase'
 
 const PANEL_WIDTH = 280
 const PANEL_GAP = 8
@@ -31,6 +35,8 @@ const SEGMENT_LABELS: Record<string, keyof I18n> = {
 
 interface ContextIndicatorProps {
   contextState?: ConversationContextState | null
+  model?: string | null
+  providerId?: string | null
   messageCount?: number
   lastMessageId?: string
   loading?: boolean
@@ -72,6 +78,8 @@ function messageCountLabel(messageCount: number, compressedMessageCount: number,
 
 export function ContextIndicator({
   contextState,
+  model,
+  providerId,
   messageCount = 0,
   lastMessageId,
   loading = false,
@@ -89,21 +97,39 @@ export function ContextIndicator({
 }: ContextIndicatorProps) {
   void _placement
   const t = i18n[lang]
+  useModelDatabase()
+  const [providers, setProviders] = useState<ModelProvider[]>(() => peekSettings()?.providers ?? [])
+  useEffect(() => {
+    if (!model || !providerId || usesExternalRuntime) return
+    let active = true
+    const apply = (settings: { providers?: ModelProvider[] }) => {
+      if (active) setProviders(settings.providers ?? [])
+    }
+    const unsubscribe = subscribeSettings(apply)
+    void getSettingsCached().then(apply).catch(err => console.error('Failed to load context model settings:', err))
+    return () => { active = false; unsubscribe() }
+  }, [model, providerId, usesExternalRuntime])
   const [open, setOpen] = useState(false)
+  const panelId = useId()
   // 用 bottom/right 锚定，避免量高不准时整块飘到对话消息中间。
   const [pos, setPos] = useState<{ bottom: number; right: number; maxH: number; width: number } | null>(null)
   const triggerRef = useRef<HTMLDivElement>(null)
   const popoverRef = useRef<HTMLDivElement>(null)
-  usePopoverMenu(open, () => setOpen(false), popoverRef)
+  usePopoverMenu(open && pos !== null, () => setOpen(false), popoverRef)
 
   const reportedTokens = reportedContextTokens(contextState)
-  const contextWindowTokens = valueFrom(
+  const provider = usesExternalRuntime ? undefined : providers.find(item => item.id === providerId)
+  const modelWindow = model ? resolveModelInfo(model, provider?.modelOverrides, provider).contextWindow : undefined
+  const measuredWindow = valueFrom(
     contextState?.context_window_estimated, contextState?.contextWindowEstimated, false,
   ) ? null : valueFrom(
     contextState?.context_window_tokens,
     contextState?.contextWindowTokens,
     null,
   )
+  const contextWindowTokens = measuredWindow != null && Number.isFinite(measuredWindow) && measuredWindow > 0
+    ? measuredWindow
+    : modelWindow != null && Number.isFinite(modelWindow) && modelWindow > 0 ? modelWindow : null
   const usageRatio = reportedTokens != null && contextWindowTokens != null && contextWindowTokens > 0
     ? reportedTokens / contextWindowTokens : null
   const status = contextState?.status ?? 'unknown'
@@ -191,7 +217,7 @@ export function ContextIndicator({
 
     // 回退：贴在圆环正上方，右缘对齐
     const bottom = window.innerHeight - rect.top + PANEL_GAP
-    const right = Math.max(VIEW_MARGIN, window.innerWidth - rect.right)
+    const right = Math.min(window.innerWidth - width - VIEW_MARGIN, Math.max(VIEW_MARGIN, window.innerWidth - rect.right))
     const maxH = Math.max(96, Math.min(PANEL_MAX_H, spaceAbove))
     setPos({ bottom, right, maxH, width })
   }, [])
@@ -221,12 +247,16 @@ export function ContextIndicator({
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  const panel = open
-    ? createPortal(
+  const panel = createPortal(
         <div
+          id={panelId}
           ref={popoverRef}
           className="chat-motion-popover fixed z-[200] flex flex-col overflow-hidden kv-menu"
+          hidden={!open}
+          aria-hidden={open ? undefined : true}
+          {...(open ? {} : { inert: '' })}
           style={{
+            display: open ? 'flex' : 'none',
             padding: 10,
             bottom: pos?.bottom ?? 0,
             right: pos?.right ?? 0,
@@ -237,26 +267,37 @@ export function ContextIndicator({
           }}
           data-tauri-drag-region="false"
         >
-          <div className="mb-1.5 flex items-center justify-between gap-2" title={sourceLabel || undefined}>
-            <span className="text-[12px] font-medium text-neutral-800">{t.contextPanelTitle}</span>
-            <span className="text-[11px] tabular-nums text-neutral-500">{displayMetric}</span>
-          </div>
+          <div
+            className="custom-scrollbar min-h-0 flex-1 overflow-y-auto"
+            role="region"
+            aria-label={t.contextPanelTitle}
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.target === event.currentTarget && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                event.stopPropagation()
+              }
+            }}
+          >
+            <div className="mb-1.5 flex items-center justify-between gap-2" title={sourceLabel || undefined}>
+              <span className="text-[12px] font-medium text-neutral-800">{t.contextPanelTitle}</span>
+              <span className="text-[11px] tabular-nums text-neutral-500">{displayMetric}</span>
+            </div>
 
-          <div className="h-1 shrink-0 overflow-hidden rounded-full bg-neutral-100"
-            role="progressbar" aria-label={t.contextPanelTitle}
-            aria-valuenow={usageRatio == null ? undefined : Math.min(100, usageRatio * 100)}
-            aria-valuemin={0} aria-valuemax={100} aria-valuetext={displayMetric}>
-            {usageRatio != null && (
-              <div className="flex h-full bg-[var(--accent)]" style={{ width: `${ringRatio * 100}%` }}>
-                {!isExternalContext && segments.map((segment) => (
-                  <span key={segment.id} className="h-full"
-                    style={{ width: `${segment.percent * 100}%`, backgroundColor: segment.color }} />
-                ))}
-              </div>
-            )}
-          </div>
-          {!isExternalContext && segments.length > 0 && (
-            <div className="custom-scrollbar mt-2 min-h-0 overflow-y-auto" title={t.contextBreakdownHint}>
+            <div className="h-1 shrink-0 overflow-hidden rounded-full bg-neutral-100"
+              role="progressbar" aria-label={t.contextPanelTitle}
+              aria-valuenow={usageRatio == null ? undefined : Math.min(100, usageRatio * 100)}
+              aria-valuemin={0} aria-valuemax={100} aria-valuetext={displayMetric}>
+              {usageRatio != null && (
+                <div className="flex h-full bg-[var(--accent)]" style={{ width: `${ringRatio * 100}%` }}>
+                  {!isExternalContext && segments.map((segment) => (
+                    <span key={segment.id} className="h-full"
+                      style={{ width: `${segment.percent * 100}%`, backgroundColor: segment.color }} />
+                  ))}
+                </div>
+              )}
+            </div>
+            {!isExternalContext && segments.length > 0 && (
+              <div className="mt-2" title={t.contextBreakdownHint}>
                 <div className="pb-1 text-right text-[10px] leading-none text-neutral-400">{t.contextCharacterShare}</div>
                 <dl className="space-y-1">
                   {segments.map((segment) => (
@@ -276,16 +317,22 @@ export function ContextIndicator({
                     </div>
                   ))}
                 </dl>
-            </div>
-          )}
-          {showCache && (
-            <div className="mt-1.5 flex items-center justify-between border-t border-[var(--theme-surface-border)] pt-1.5 text-[11px] text-neutral-500"
-              title={t.contextCacheHint}>
-              <span>{t.contextCacheHitRate}</span>
-              <span className="tabular-nums">{percentFormat.format(cacheRate)}</span>
-            </div>
-          )}
-          <div className="mt-1.5 flex items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-1">
+              </div>
+            )}
+            {showCache && (
+              <div className="mt-1.5 flex items-center justify-between border-t border-[var(--theme-surface-border)] pt-1.5 text-[11px] text-neutral-500"
+                title={t.contextCacheHint}>
+                <span>{t.contextCacheHitRate}</span>
+                <span className="tabular-nums">{percentFormat.format(cacheRate)}</span>
+              </div>
+            )}
+            {error && (
+              <p className="mt-1 text-[10px] text-danger">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="mt-1.5 flex shrink-0 items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-1">
             {compressMeta && (
               <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-400 dark:text-neutral-500" title={compressMeta}>
                 {compressMeta}
@@ -329,16 +376,9 @@ export function ContextIndicator({
               </Button>
             )}
           </div>
-
-          {error && (
-            <p className="mt-1 text-[10px] text-danger">
-              {error}
-            </p>
-          )}
         </div>,
         document.body,
       )
-    : null
 
   return (
     <div className="relative" ref={triggerRef} data-tauri-drag-region="false">
@@ -354,6 +394,7 @@ export function ContextIndicator({
             messageCount > 0 ? messageCountLabel(messageCount, compressedMessageCount, t) : '',
           ].filter(Boolean).join(' · ')}
         aria-expanded={open}
+        aria-controls={panelId}
         onClick={() => setOpen((value) => !value)}
       >
         {/* SVG 描边环，不用 conic-gradient + 白心盖中间：白心在点阵/半透底上就是一坨实白，

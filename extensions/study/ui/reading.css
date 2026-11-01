@@ -376,9 +376,6 @@
     flex-direction: column;
   }
   .reading-context-status { display: flex; align-items: center; gap: 12px; min-width: 0; }
-  .reading-usage { position: relative; font-size: 11px; color: var(--text-muted); }
-  .reading-usage summary { cursor: pointer; }
-  .reading-usage > div { position: absolute; bottom: 28px; right: 0; padding: 12px; background: var(--theme-surface); border: 1px solid var(--theme-surface-border); border-radius: 10px; z-index: 30; width: max-content; max-width: 280px; }
   .reader-pane { container: reader / inline-size; }
   @container reader (max-width: 650px) {
     .reader-zoom-controls > .kv-icon-btn { display: none; }

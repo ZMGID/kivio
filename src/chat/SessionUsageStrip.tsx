@@ -34,12 +34,8 @@ function formatCachePercent(cached: number, input: number): string {
 }
 
 /**
- * 当前对话的 provider 实报用量（输入框功能栏右侧的一行紧凑小字，口径对齐
- * AssistantMessageMeta 的 ↑↓ 写法与 usage.rs 的 apply_cost）：
- * - ↑ = Σ input_tokens（Anthropic 之外的家 input 已含缓存，先减去缓存部分）。
- * - 缓存 = 命中缓存占输入总量的百分比（Σ cached_input_tokens / (新鲜 + 缓存)）。
- * - ↓ = Σ output_tokens。
- * 费用按完整对话的已记录请求累计，与当前加载的消息窗口无关。
+ * 已加载消息的 provider 实报用量，以及独立于消息窗口的完整对话和子代理估算费用。
+ * 输入排除缓存命中；缓存命中率以新鲜输入与缓存命中的总和为分母。
  */
 export function SessionUsageStrip({
   conversationId,
@@ -55,6 +51,9 @@ export function SessionUsageStrip({
     let cached = 0
     let output = 0
     let hasAny = false
+    let hasInput = false
+    let hasOutput = false
+    let hasCached = false
     for (const message of messages) {
       const usage = message.usage
       if (!usage) continue
@@ -70,17 +69,20 @@ export function SessionUsageStrip({
           ?? (apiFormat !== 'anthropic_messages')
         input += included ? Math.max(0, rawInput - (rawCached ?? 0)) : rawInput + rawWrite
         hasAny = true
+        hasInput = true
       }
       if (rawOutput != null) {
         output += rawOutput
         hasAny = true
+        hasOutput = true
       }
       if (rawCached != null) {
         cached += rawCached
         hasAny = true
+        hasCached = true
       }
     }
-    return { input, cached, output, hasAny }
+    return { input, cached, output, hasAny, hasInput, hasOutput, hasCached }
   }, [apiFormats, cacheIncludedInInput, defaultApiFormat, messages])
 
   const [costSnapshot, setCostSnapshot] = useState<{ id: string; value: ConversationCost | null } | null>(null)
@@ -109,32 +111,39 @@ export function SessionUsageStrip({
     ? `${amount.toFixed(2)}$`
     : '—$'
   const costHint = lang === 'zh'
-    ? `当前对话及其子代理累计估算费用（美元），按已记录请求及模型价格计算，非实际账单。${partialCost ? '部分请求缺少价格或用量，仅显示已知部分。' : ''}`
-    : `Estimated conversation and sub-agent cost in USD from recorded requests and model prices, not an invoice.${partialCost ? ' Some requests lack pricing or usage; known costs only.' : ''}`
+    ? '根据已记录请求及模型价格估算，单位为美元，并非实际账单。'
+    : 'Estimated in USD from recorded requests and model prices; not an invoice.'
+  const partialHint = lang === 'zh'
+    ? `部分请求缺少价格或用量。${knownCost ? '仅显示已知费用。' : ''}`
+    : `Some requests lack pricing or usage.${knownCost ? ' Only known costs are shown.' : ''}`
 
   if (!totals.hasAny && !conversationId) return null
 
   const t = i18n[lang]
-  const cacheLabel = totals.cached > 0
-    ? `${t.chatUsageCacheShort} ${formatCachePercent(totals.cached, totals.input)}`
-    : null
-  // 悬浮提示给全量描述（箭头太紧凑，命中率的分母语义放这里说明）。
-  const tooltip = [
-    `${t.chatUsageInput} ${formatTokensK(totals.input)}`,
-    ...(cacheLabel ? [`${t.chatUsageCache} ${formatCachePercent(totals.cached, totals.input)}`] : []),
-    `${t.chatUsageOutput} ${formatTokensK(totals.output)}`,
-  ].join(' · ')
+  const cachePercent = totals.hasInput && totals.hasCached
+    ? formatCachePercent(totals.cached, totals.input) || '—'
+    : '—'
 
   return (
-    <span
-      className="chat-session-usage flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] leading-none text-neutral-400 dark:text-neutral-500"
-      title={tooltip}
-      data-tauri-drag-region="false"
-    >
-      {conversationId && <span title={costHint}>{costText}</span>}
-      {cacheLabel && <span>{cacheLabel}</span>}
-      {totals.hasAny && <span>↑{formatTokensK(totals.input)}</span>}
-      {totals.hasAny && <span>↓{formatTokensK(totals.output)}</span>}
-    </span>
+    <div className="chat-session-usage flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] leading-5 tabular-nums text-[var(--text-muted)]"
+      data-tauri-drag-region="false">
+      {conversationId && (
+        <span className="whitespace-nowrap" title={`${costHint}${partialCost ? ` ${partialHint}` : ''}`}>
+          <span>{costText}</span>{partialCost ? '*' : ''}
+        </span>
+      )}
+      <span className="whitespace-nowrap" aria-label={t.chatUsageCache}
+        title={lang === 'zh' ? '已加载消息的缓存命中率' : 'Cache hit rate for loaded messages'}>
+        <span>{cachePercent}</span>
+      </span>
+      <span className="whitespace-nowrap" aria-label={t.chatUsageInput}
+        title={lang === 'zh' ? '已加载消息的输入 token，不含缓存命中' : 'Loaded input tokens, excluding cache hits'}>
+        ↑<span>{totals.hasInput ? formatTokensK(totals.input) : '—'}</span>
+      </span>
+      <span className="whitespace-nowrap" aria-label={t.chatUsageOutput}
+        title={lang === 'zh' ? '已加载消息的输出 token' : 'Loaded output tokens'}>
+        ↓<span>{totals.hasOutput ? formatTokensK(totals.output) : '—'}</span>
+      </span>
+    </div>
   )
 }

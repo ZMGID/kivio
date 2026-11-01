@@ -3,6 +3,52 @@ import { describe, expect, it, vi } from 'vitest'
 import { ContextIndicator } from './ContextIndicator'
 import type { ConversationContextState } from './types'
 
+const settings = vi.hoisted(() => ({
+  providers: [
+    { id: 'first', modelOverrides: {
+      'context-small': { contextWindow: 128_000 },
+      'context-large': { contextWindow: 256_000 },
+      'context-invalid': { contextWindow: 0 },
+    } },
+    { id: 'second', modelOverrides: { 'context-small': { contextWindow: 64_000 } } },
+  ],
+}))
+
+vi.mock('../api/settingsCache', () => ({
+  peekSettings: () => settings,
+  getSettingsCached: async () => settings,
+  subscribeSettings: () => () => {},
+}))
+
+describe('selected model context capacity', () => {
+  it('shows capacity before usage exists and follows model and provider changes', () => {
+    const { rerender } = render(<ContextIndicator model="context-small" providerId="first" lang="en" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Context' }))
+    expect(screen.getByText('—/128.0k')).toBeVisible()
+    rerender(<ContextIndicator model="context-large" providerId="first" lang="en" />)
+    expect(screen.getByText('—/256.0k')).toBeVisible()
+    rerender(<ContextIndicator model="context-small" providerId="second" lang="en" />)
+    expect(screen.getByText('—/64.0k')).toBeVisible()
+    rerender(<ContextIndicator model="unknown-context-model" providerId="first" lang="en" />)
+    expect(screen.getByText('—')).toBeVisible()
+    rerender(<ContextIndicator model="context-invalid" providerId="first" lang="en" />)
+    expect(screen.getByText('—')).toBeVisible()
+  })
+
+  it('keeps reported runtime capacity ahead of selected model metadata', () => {
+    render(<ContextIndicator model="context-small" providerId="first" lang="en"
+      contextState={{ reported_context_tokens: 32_000, context_window_tokens: 64_000, token_count_source: 'provider_context_reported' }} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Context' }))
+    expect(screen.getByText('32.0k/64.0k (50%)')).toBeVisible()
+  })
+
+  it('does not use a Kivio provider override for an external CLI', () => {
+    render(<ContextIndicator model="context-small" providerId="first" usesExternalRuntime lang="en" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Context' }))
+    expect(screen.getByText('—')).toBeVisible()
+  })
+})
+
 const breakdownState: ConversationContextState = {
   reported_context_tokens: 53_000,
   token_count_source: 'provider_context_reported',
@@ -76,6 +122,64 @@ describe('ContextIndicator character share', () => {
   })
 })
 
+describe('ContextIndicator usage panel', () => {
+
+  it('lets keyboard users scroll details and returns focus on Escape', () => {
+    render(<ContextIndicator lang="en" />)
+    const trigger = screen.getByRole('button', { name: 'Context' })
+    trigger.focus()
+    fireEvent.click(trigger)
+    expect(screen.getByRole('button', { name: 'Refresh context' })).toHaveFocus()
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(screen.getByRole('button', { name: 'Refresh context' })).toHaveFocus()
+    const details = screen.getByRole('region', { name: 'Context capacity' })
+    expect(details).toHaveAttribute('tabindex', '0')
+    details.focus()
+    const down = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    fireEvent(details, down)
+    expect(down.defaultPrevented).toBe(false)
+    expect(details).toHaveFocus()
+    fireEvent.keyDown(details, { key: 'Escape' })
+    expect(trigger).toHaveFocus()
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('region', { name: 'Context capacity' })).not.toBeInTheDocument()
+  })
+
+  it('keeps context actions outside the scrollable details and preserves their behavior', () => {
+    const onRefresh = vi.fn()
+    const onCompress = vi.fn()
+    const onClear = vi.fn()
+    render(
+      <ContextIndicator
+        lang="en"
+        messageCount={4}
+        lastMessageId="last"
+        onRefresh={onRefresh}
+        onCompress={onCompress}
+        onClear={onClear}
+      />,
+    )
+    const trigger = screen.getByRole('button', { name: 'Context' })
+    fireEvent.click(trigger)
+    const details = screen.getByRole('region', { name: 'Context capacity' })
+    expect(details).toHaveClass('overflow-y-auto')
+    const refresh = screen.getByRole('button', { name: 'Refresh context' })
+    const compress = screen.getByRole('button', { name: 'Compress context' })
+    const clear = screen.getByRole('button', { name: 'Clear context' })
+    expect(details).not.toContainElement(refresh)
+    expect(details).not.toContainElement(compress)
+    expect(details).not.toContainElement(clear)
+    fireEvent.click(refresh)
+    fireEvent.click(compress)
+    fireEvent.click(clear)
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+    expect(onCompress).toHaveBeenCalledTimes(1)
+    expect(onClear).toHaveBeenCalledTimes(1)
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
 describe('ContextIndicator stop action', () => {
   it('explains Antigravity automatic management without offering unsupported manual compaction', () => {
     const onCompress = vi.fn()
@@ -100,4 +204,24 @@ describe('ContextIndicator stop action', () => {
     expect(screen.getByRole('button', { name: 'Stop generating' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Stop compaction' })).toBeNull()
   })
+})
+
+it('keeps usage details inside a narrow viewport when the trigger is inset', () => {
+  vi.stubGlobal('innerWidth', 360)
+  try {
+    render(<ContextIndicator lang="en" />)
+    const trigger = screen.getByRole('button', { name: 'Context' })
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      x: 250, y: 350, left: 250, right: 275, top: 350, bottom: 375,
+      width: 25, height: 25, toJSON: () => ({}),
+    })
+    fireEvent.click(trigger)
+    const panel = document.getElementById(trigger.getAttribute('aria-controls')!)!
+    const right = parseFloat(panel.style.right)
+    const width = parseFloat(panel.style.width)
+    expect(360 - right - width).toBeGreaterThanOrEqual(8)
+    expect(right).toBeGreaterThanOrEqual(8)
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
