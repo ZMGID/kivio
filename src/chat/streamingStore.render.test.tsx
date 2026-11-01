@@ -73,55 +73,6 @@ function message(id: number): ChatMessage {
 }
 
 describe('MessageList ← streamingStore 集成', () => {
-  it.each(['wheel', 'scrollbar', 'keyboard', 'touch'])('pins the live page after viewport %s input without mounting every later step', async (input) => {
-    const snapshot = (count: number) => snapWith({
-      messageId: 'reading-process', streaming: true,
-      toolCalls: Array.from({ length: count }, (_, i) => ({
-        id: `tool-${i}`, name: `viewport_step_${i}`, status: 'completed',
-      })),
-      segments: Array.from({ length: count }, (_, i) => ({
-        id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
-      })),
-    })
-    act(() => {
-      setSnapshot(snapshot(60))
-      setCoarse({ streaming: true, streamFrozen: false })
-    })
-    const { container } = mountList()
-    await flush()
-    fireEvent.click(container.querySelector<HTMLButtonElement>('[data-tool-call-cluster] > button')!)
-    const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
-    Object.defineProperties(viewport, {
-      scrollHeight: { configurable: true, value: 3000 },
-      clientHeight: { configurable: true, value: 600 },
-    })
-    // Deliver the initial bottom/layout scroll before the reader moves the thumb.
-    act(() => {
-      viewport.scrollTop = 2400
-      fireEvent.scroll(viewport)
-    })
-    const inspected = screen.getByText('viewport_step_40')
-    act(() => {
-      if (input === 'wheel') fireEvent.wheel(viewport, { deltaY: -100 })
-      if (input === 'scrollbar') {
-        viewport.scrollTop = 1200
-        fireEvent.scroll(viewport)
-      }
-      if (input === 'keyboard') fireEvent.keyDown(viewport, { key: 'PageUp' })
-      if (input === 'touch') {
-        fireEvent.touchStart(viewport, { touches: [{ clientY: 100 }] })
-        fireEvent.touchMove(viewport, { touches: [{ clientY: 200 }] })
-      }
-      setSnapshot(snapshot(61))
-    })
-    expect(screen.getByText('viewport_step_40')).toBe(inspected)
-    act(() => setSnapshot(snapshot(160)))
-    expect(screen.getByText('viewport_step_40')).toBe(inspected)
-    expect(screen.getByText('viewport_step_159')).toBeVisible()
-    expect(screen.queryByText('viewport_step_100')).not.toBeInTheDocument()
-    expect(screen.queryByText('viewport_step_39')).not.toBeInTheDocument()
-  })
-
   it.each([0, 2])('preserves the transcript while a completed send waits for React history commit (prior messages: %s)', async (historyCount) => {
     const conversationId = `empty-handoff-${historyCount}`
     const history = Array.from({ length: historyCount }, (_, index) => message(index))

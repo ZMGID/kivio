@@ -9,7 +9,7 @@ function openActivity(container: HTMLElement) {
 }
 
 describe('assistant body visibility', () => {
-  it('pins revealed live steps when newer steps append and does not expand them on settle', () => {
+  it('keeps every live step reachable without a 显示更早的过程 pager', () => {
     const make = (count: number, answer?: string): ChatMessage => ({
       id: 'growing-process', role: 'assistant', timestamp: 1, content: answer ?? '',
       stream_outcome: answer ? 'completed' : undefined,
@@ -23,55 +23,18 @@ describe('assistant body visibility', () => {
         ...(answer ? [{ id: 'answer', kind: 'text' as const, phase: 'synthesis' as const, order: count, text: answer }] : []),
       ],
     })
-    const { container, rerender } = render(<MessageBubble message={make(20)} messageStreaming />)
+    const { container, rerender } = render(<MessageBubble message={make(30)} messageStreaming />)
     openActivity(container)
     expect(screen.getByText('live_step_0')).toBeVisible()
+    expect(screen.getByText('live_step_29')).toBeVisible()
     expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
-    rerender(<MessageBubble message={make(21)} messageStreaming />)
-    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_20')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（1）' }))
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    rerender(<MessageBubble message={make(22)} messageStreaming />)
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_21')).toBeVisible()
-    rerender(<MessageBubble message={make(22, 'Settled answer')} />)
+    rerender(<MessageBubble message={make(30, 'Settled answer')} />)
+    // 用户展开过活动，结束后仍按用户意图保持展开。
     expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('live_step_0')).toBeVisible()
-    expect(screen.queryByText('live_step_1')).not.toBeInTheDocument()
-    expect(screen.getByText('Settled answer')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    openActivity(container)
-    expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('live_step_21')).toBeVisible()
     expect(screen.getByText('Settled answer')).toBeVisible()
   })
 
-  it.each(['pointer', 'focus'])('retains the inspected live page after a %s interaction', (interaction) => {
-    const make = (count: number): ChatMessage => ({
-      id: 'reading-live-page', role: 'assistant', timestamp: 1, content: '',
-      tool_calls: Array.from({ length: count }, (_, i) => ({
-        id: `tool-${i}`, name: `inspect_${i}`, status: 'completed',
-      })),
-      segments: Array.from({ length: count }, (_, i) => ({
-        id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`,
-      })),
-    })
-    const { container, rerender } = render(<MessageBubble message={make(21)} messageStreaming />)
-    openActivity(container)
-    const inspected = screen.getByText('inspect_1')
-    if (interaction === 'pointer') fireEvent.pointerDown(inspected)
-    else fireEvent.focus(inspected)
-    rerender(<MessageBubble message={make(25)} messageStreaming />)
-    expect(screen.getByText('inspect_1')).toBe(inspected)
-    expect(inspected).toBeVisible()
-    expect(screen.getByText('inspect_24')).toBeVisible()
-    expect(screen.queryByText('inspect_0')).not.toBeInTheDocument()
-  })
-
-  it('keeps a pending question, permission prompt, and live thought outside the recent page', () => {
+  it('keeps a pending question, permission prompt, and live thought visible in a long process', () => {
     const later = Array.from({ length: 24 }, (_, index) => index)
     const message: ChatMessage = {
       id: 'blocked-process', role: 'assistant', timestamp: 1, content: '窗口外的最终答复',
@@ -108,35 +71,6 @@ describe('assistant body visibility', () => {
     expect(screen.queryByText('live_step_0')).not.toBeInTheDocument()
     expect(screen.getByText('live_step_23')).toBeVisible()
     expect(screen.getByText('窗口外的最终答复')).toBeVisible()
-  })
-
-  it('bounds a large tool process and lets the reader reveal earlier steps without hiding the answer', () => {
-    const message: ChatMessage = {
-      id: 'large-process', role: 'assistant', timestamp: 1, content: 'Final result',
-      stream_outcome: 'completed',
-      tool_calls: Array.from({ length: 55 }, (_, i) => ({
-        id: `tool-${i}`, name: `step_${i}`, source: 'native', status: 'completed',
-      })),
-      segments: [
-        ...Array.from({ length: 55 }, (_, i) => ({
-          id: `segment-${i}`, kind: 'tool' as const, phase: 'tool_loop' as const,
-          order: i, tool_call_id: `tool-${i}`,
-        })),
-        { id: 'answer', kind: 'text', phase: 'synthesis', order: 55, text: 'Final result' },
-      ],
-    }
-    const { container } = render(<MessageBubble message={message} />)
-    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
-    openActivity(container)
-    expect(screen.getByText('Final result')).toBeVisible()
-    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
-    expect(screen.getByText('step_54')).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（35）' }))
-    expect(screen.getByText('step_15')).toBeVisible()
-    expect(screen.queryByText('step_0')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '显示更早的过程（15）' }))
-    expect(screen.getByText('step_0')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /显示更早的过程/ })).not.toBeInTheDocument()
   })
 
   it.each([undefined, '已完成的思考'])('does not restore a legacy stop-only answer with reasoning %s', reasoning => {

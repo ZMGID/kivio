@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ScrollFollowingContext } from './scroll/useScrollFollow'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -662,7 +661,6 @@ function workingGroupTitle(generating: boolean, durationMs: number | null): stri
 
 function renderProcessSegments({
   segments,
-  visibleProcessIds,
   toolCallById,
   artifacts,
   citations,
@@ -676,7 +674,6 @@ function renderProcessSegments({
   onReasoningExpand,
 }: {
   segments: ChatMessageSegment[]
-  visibleProcessIds: ReadonlySet<string>
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
@@ -720,23 +717,14 @@ function renderProcessSegments({
   for (let index = 0; index < segments.length; ) {
     const segment = segments[index]
     if (!canGroup(segment)) {
-      if (visibleProcessIds.has(segment.id)) nodes.push(<div key={segment.id}>{renderSegment(segment)}</div>)
+      nodes.push(<div key={segment.id}>{renderSegment(segment)}</div>)
       index += 1
       continue
     }
     let end = index + 1
-    let anyVisible = visibleProcessIds.has(segment.id)
-    while (end < segments.length) {
-      const next = segments[end]
-      // 隐藏的旁白什么都不渲染；在已可见的组后面拿它当边界，会出现两行紧挨的折叠摘要。
-      if (!canGroup(next) && !(anyVisible && next.kind === 'text' && !visibleProcessIds.has(next.id))) break
-      anyVisible ||= visibleProcessIds.has(next.id)
-      end += 1
-    }
-    // Page after grouping so hidden boundaries and the first activity's identity remain stable.
+    while (end < segments.length && canGroup(segments[end])) end += 1
     const activity = segments.slice(index, end)
-    const visible = activity.filter(item => visibleProcessIds.has(item.id))
-    if (visible.length > 0) {
+    {
       const tools = activity.flatMap(item => item.kind === 'tool'
         ? [toolCallById.get(segmentToolCallId(item))!] : [])
       const latest = activity[activity.length - 1]
@@ -752,7 +740,7 @@ function renderProcessSegments({
             text: segmentText(latest), streaming: reasoningStreaming && latest.id === activeReasoningId,
           } : undefined}
         >
-          {() => visible.map(item => <div key={item.id}>
+          {() => activity.map(item => <div key={item.id}>
             {item.kind === 'tool' ? <ToolCallErrorBoundary>
               <ToolCallBlock toolCall={toolCallById.get(segmentToolCallId(item))!}
                 defaultOpen={activity.length === 1} conversationId={conversationId} />
@@ -775,15 +763,12 @@ function renderProcessSegments({
  */
 function TimelineGroupBlock({
   segments,
-  visibleProcessIds,
   allProcessSegments,
   showHeader,
   userOpen,
   defaultOpen,
   onToggle,
   onReasoningExpand,
-  hiddenProcessCount,
-  onShowEarlier,
   toolCalls,
   toolCallById,
   artifacts,
@@ -796,15 +781,12 @@ function TimelineGroupBlock({
   reasoningSegmentCount,
 }: {
   segments: ChatMessageSegment[]
-  visibleProcessIds: ReadonlySet<string>
   allProcessSegments: ChatMessageSegment[]
   showHeader: boolean
   userOpen: boolean | null
   defaultOpen: boolean
   onToggle: () => void
   onReasoningExpand: () => void
-  hiddenProcessCount: number
-  onShowEarlier: () => void
   toolCalls: ToolCallRecord[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
@@ -877,7 +859,6 @@ function TimelineGroupBlock({
                 those segments visible instead of replaying opacity from zero. */}
             {renderProcessSegments({
               segments,
-              visibleProcessIds,
               toolCallById,
               artifacts,
               citations,
@@ -890,19 +871,12 @@ function TimelineGroupBlock({
               activeReasoningId: messageStreaming ? allProcessSegments.at(-1)?.id : undefined,
               onReasoningExpand,
             })}
-            {showHeader && hiddenProcessCount > 0 && (
-              <Button size="sm" variant="ghost" data-chat-disclosure onClick={onShowEarlier}>
-                显示更早的过程（{hiddenProcessCount}）
-              </Button>
-            )}
           </div>
         )}
       </ChatDisclosureBody>
     </section>
   )
 }
-
-const PROCESS_PAGE = 20
 
 function awaitingAskUserPhase(value: unknown): boolean {
   if (!value || typeof value !== 'object' || !('askUser' in value)) return false
@@ -924,41 +898,6 @@ function isPendingPermissionTool(tool: ToolCallRecord): boolean {
   if (tool.requires_confirmation !== true && tool.requiresConfirmation !== true) return false
   const status = normalizeToolCallStatus(tool.status)
   return status === 'pending' || status === 'running'
-}
-
-function criticalProcessIds(
-  segments: readonly ChatMessageSegment[],
-  toolCallById: ReadonlyMap<string, ToolCallRecord>,
-  reasoningStreaming: boolean,
-): Set<string> {
-  const ids = new Set<string>()
-  let latestReasoningId: string | undefined
-  for (const segment of segments) {
-    if (segment.kind === 'reasoning') latestReasoningId = segment.id
-    if (segment.kind !== 'tool') continue
-    const tool = toolCallById.get(segmentToolCallId(segment))
-    if (tool && (isAwaitingAskUser(tool) || isPendingPermissionTool(tool))) ids.add(segment.id)
-  }
-  if (reasoningStreaming && latestReasoningId) ids.add(latestReasoningId)
-  return ids
-}
-
-/** Next hidden page, walking back from the live end so a slid-out step is reachable before older history. */
-function earlierProcessPage(segments: readonly ChatMessageSegment[], visibleIds: ReadonlySet<string>): string[] {
-  let anchor = -1
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    if (!visibleIds.has(segments[index].id)) {
-      anchor = index
-      break
-    }
-  }
-  if (anchor < 0) return []
-  const ids: string[] = []
-  for (let index = anchor; index >= 0 && ids.length < PROCESS_PAGE; index -= 1) {
-    if (visibleIds.has(segments[index].id)) break
-    ids.push(segments[index].id)
-  }
-  return ids
 }
 
 function TimelineSegments({
@@ -992,14 +931,7 @@ function TimelineSegments({
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const handleReasoningExpand = useCallback(() => setUserOpen(true), [])
-  // Latest 20 process segments stay mounted. Pages opened with
-  // 「显示更早的过程」 stay pinned, so a newer step cannot drop them.
-  // Streaming does not expand the window. Closing a finished Work and opening
-  // it again drops those pins and returns to the latest 20.
-  const [pinnedProcessIds, setPinnedProcessIds] = useState<ReadonlySet<string>>(() => new Set())
-  // Read the authority, not a possibly batched parent render, when a delta arrives.
-  const following = useContext(ScrollFollowingContext).isFollowing()
-  const committedPage = useRef<{ following: boolean; ids: ReadonlySet<string> }>({ following, ids: pinnedProcessIds })
+  // 过程全部挂载：工具簇默认折叠且组内行懒挂载，不再分页出「显示更早的过程」按钮。
   const defaultOpen = messageStreaming || cancelled
   const toolCallById = useMemo(() => {
     const toolCallById = new Map<string, ToolCallRecord>()
@@ -1066,40 +998,9 @@ function TimelineSegments({
   }, [segments, toolCalls, toolCallById, completed, messageStreaming])
 
   const { reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
-  const readerDetached = committedPage.current.following && !following
-  const visibleProcessIds = useMemo(() => {
-    const ids = criticalProcessIds(allProcessSegments, toolCallById, reasoningStreaming)
-    for (const segment of allProcessSegments.slice(-PROCESS_PAGE)) ids.add(segment.id)
-    for (const id of pinnedProcessIds) ids.add(id)
-    // Include the last committed page before rendering children: scroll and
-    // stream updates may be batched, so pinning only in an effect is too late.
-    if (readerDetached) {
-      for (const id of committedPage.current.ids) ids.add(id)
-    }
-    return ids
-  }, [allProcessSegments, toolCallById, reasoningStreaming, pinnedProcessIds, readerDetached])
-  useLayoutEffect(() => {
-    if (readerDetached) setPinnedProcessIds(visibleProcessIds)
-    committedPage.current = { following, ids: visibleProcessIds }
-  }, [readerDetached, visibleProcessIds, following])
-  let hiddenProcessCount = 0
-  for (const segment of allProcessSegments) {
-    if (!visibleProcessIds.has(segment.id)) hiddenProcessCount += 1
-  }
-  const pinVisibleProcess = () => {
-    setPinnedProcessIds(current => {
-      if ([...visibleProcessIds].every(id => current.has(id))) return current
-      return new Set([...current, ...visibleProcessIds])
-    })
-  }
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
   return (
-    <section
-      aria-label="回答时间线"
-      className="space-y-1.5"
-      onPointerDownCapture={pinVisibleProcess}
-      onFocusCapture={pinVisibleProcess}
-    >
+    <section aria-label="回答时间线" className="space-y-1.5">
       {groupItems.map((item: TimelineGroupItem) => {
         if (item.type === 'presentation') {
           return <TimelineToolSegment
@@ -1142,27 +1043,12 @@ function TimelineSegments({
           <TimelineGroupBlock
             key={groupKey}
             segments={item.segments}
-            visibleProcessIds={visibleProcessIds}
             allProcessSegments={allProcessSegments}
             showHeader={showHeader}
             userOpen={userOpen}
             defaultOpen={defaultOpen}
             onReasoningExpand={handleReasoningExpand}
-            onToggle={() => {
-              if (!messageStreaming && !(userOpen ?? defaultOpen)) setPinnedProcessIds(new Set())
-              setUserOpen(current => !(current ?? defaultOpen))
-            }}
-            hiddenProcessCount={hiddenProcessCount}
-            onShowEarlier={() => {
-              const reveal = earlierProcessPage(allProcessSegments, visibleProcessIds)
-              if (reveal.length === 0) return
-              setUserOpen(true)
-              setPinnedProcessIds(current => {
-                const next = new Set(current)
-                for (const id of reveal) next.add(id)
-                return next
-              })
-            }}
+            onToggle={() => setUserOpen(current => !(current ?? defaultOpen))}
             toolCalls={toolCalls}
             toolCallById={toolCallById}
             artifacts={artifacts}

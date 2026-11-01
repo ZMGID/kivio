@@ -54,23 +54,6 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('Unable to finish')).toBeVisible()
   })
 
-  it('does not regroup across a hidden commentary boundary when an older page is revealed', () => {
-    const tools = Array.from({ length: 22 }, (_, index): ToolCallRecord => ({
-      id: `t${index}`, name: `operation_${index}`, status: 'completed',
-    }))
-    const segments = message(tools).segments!
-    segments.splice(1, 0, { id: 'boundary', kind: 'text', phase: 'tool_loop', order: 0.5, text: 'Earlier progress' })
-    const { container } = render(<MessageBubble message={message(tools, segments)} messageStreaming />)
-    const row = activityButton(container)
-    fireEvent.click(row)
-    fireEvent.click(screen.getByRole('button', { name: /显示更早的过程/ }))
-    expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(2)
-    expect(screen.getByText('Earlier progress')).toBeVisible()
-    expect(activityButton(container, 1)).toBe(row)
-    expect(row).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('operation_1')).toBeVisible()
-  })
-
   it('summarizes the complete large cluster without crossing a commentary boundary', () => {
     const reads = Array.from({ length: 128 }, (_, index): ToolCallRecord => ({
       id: `read-${index}`, name: 'read', status: index === 0 ? 'error' : index === 1 ? 'cancelled' : 'completed',
@@ -88,20 +71,6 @@ describe('tool activity in the message timeline', () => {
     expect(second).toHaveTextContent('执行 1 条命令')
     expect(second).not.toHaveTextContent('失败')
     expect(second).not.toHaveTextContent('已停止')
-  })
-
-  it('does not split a cluster around hidden commentary folded in after the reader pinned the view', () => {
-    const early = [0, 1].map((index): ToolCallRecord => ({ id: `early-${index}`, name: 'bash', status: 'completed', arguments: { command: `echo ${index}` } }))
-    const note: ChatMessageSegment = { id: 'note', kind: 'text', phase: 'synthesis', order: 2, text: 'Progress note' }
-    const first = message(early, [...message(early).segments!, note])
-    const { container, rerender } = render(<MessageBubble message={first} messageStreaming />)
-    fireEvent.pointerDown(screen.getByRole('region', { name: '回答时间线' }))
-    const later = Array.from({ length: 25 }, (_, index): ToolCallRecord => ({ id: `later-${index}`, name: 'bash', status: 'completed', arguments: { command: `echo later ${index}` } }))
-    const segments = [...first.segments!, ...later.map((tool, index): ChatMessageSegment => ({
-      id: `seg-${tool.id}`, kind: 'tool', phase: 'tool_loop', order: 3 + index, tool_call_id: tool.id,
-    }))]
-    rerender(<MessageBubble message={message([...early, ...later], segments)} messageStreaming />)
-    expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(1)
   })
 
   it('keeps unanswered questions and permissions visible when Work is closed', () => {
