@@ -2,7 +2,7 @@
 // 宽度通过 CSS 变量 --chat-dock-width 直写（拖拽过程不触发 React 重渲），松手才持久化。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, FolderTree, GitBranch, PanelRightClose, Plus, Terminal, X } from 'lucide-react'
+import { Activity, FolderTree, GitBranch, Plus, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { FileTreePanel } from './FileTreePanel'
@@ -10,6 +10,7 @@ import { GitPanel } from './GitPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SubAgentPanel } from '../SubAgentPanel'
+import { SidebarToggleIcon } from '../SidebarToggleIcon'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
 export type DockOpenTabRequest = { tab: DockTab }
@@ -216,8 +217,8 @@ export const RightDock = memo(function RightDock({
           )
         })}
         </div>
-        <IconButton label={t.dockClose} size="sm" variant="ghost" onClick={onClose}>
-          <PanelRightClose size={15} />
+        <IconButton label={t.dockClose} size="sm" variant="ghost" className="group" aria-pressed={open} onClick={onClose}>
+          <SidebarToggleIcon side="right" open={open} />
         </IconButton>
       </div>
   )

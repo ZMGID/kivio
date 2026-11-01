@@ -213,6 +213,8 @@ html、body 和 root 保持透明，让原生材质与截图浮窗继续工作�
 
 IconButton 默认 sm（28px），另有 xs / md / lg（22px / 32px / 36px）与 circle；图标带 aria-label 和 title。ghost 复用透明基底，静止图标使用 text-muted，悬停沿用既有 hover 表面与 text 主文字色；其尺寸、聚焦和禁用行为由同一共享控件维护。
 
+聊天标题栏的侧栏、新建与弹出窗口动作统一使用 28px 的共享 ghost IconButton。新建用加号；左右侧栏复用镜像分栏轮廓，内部隔线随开合状态变化，悬停和键盘聚焦预示操作方向，不再旋转或放大图标；减少动态效果时关闭隔线过渡。Dock 展开后的关闭按钮沿用同一图标，开合状态通过 aria-pressed 暴露，弹出窗口保留向右上方的外开箭头。
+
 ### Inputs / Fields
 
 通过 [settings/public/controls.ts](src/settings/public/controls.ts) 使用 Input、TextArea、Select、Toggle 等既有控件。输入聚焦以强调色边框与光环（3px、32% 强调色混色）反馈；Select 是按钮加门户菜单，不是原生 select，选项默认高度（28px），菜单圆角使用 menu。

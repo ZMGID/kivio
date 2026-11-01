@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { PanelRight, SquareArrowOutUpRight } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
 import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'
@@ -7,6 +7,7 @@ import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
 import { ModelSelector } from './ModelSelector'
 import { PermissionPicker } from './PermissionPicker'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
+import { SidebarToggleIcon } from './SidebarToggleIcon'
 import type { AgentRuntimeConfig, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
@@ -116,7 +117,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               variant="ghost"
               onClick={() => onOpenPopout(conversationId)}
             >
-              <SquareArrowOutUpRight size={15} />
+              <ExternalLink size={15} strokeWidth={1.75} />
             </IconButton>
           </div>
         )}
@@ -127,8 +128,10 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               size="sm"
               variant="ghost"
               onClick={onToggleDock}
+              className="group"
+              aria-pressed={dockOpen}
             >
-              <PanelRight size={15} />
+              <SidebarToggleIcon side="right" open={dockOpen} />
             </IconButton>
           </div>
         )}

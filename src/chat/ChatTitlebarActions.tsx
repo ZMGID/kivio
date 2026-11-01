@@ -1,6 +1,7 @@
-import { PanelLeftClose, PanelLeftOpen, SquarePen } from 'lucide-react'
+import { Plus } from 'lucide-react'
+import { IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
-import { chatTitlebarPillIconClass } from './platform'
+import { SidebarToggleIcon } from './SidebarToggleIcon'
 
 type ChatTitlebarActionsProps = {
   sidebarExpanded: boolean
@@ -14,7 +15,6 @@ export function ChatTitlebarActions({
   onNewConversation,
 }: ChatTitlebarActionsProps) {
   const t = useT()
-  const ToggleIcon = sidebarExpanded ? PanelLeftClose : PanelLeftOpen
   const toggleLabel = sidebarExpanded ? t.chatCollapseSidebar : t.chatExpandSidebar
 
   return (
@@ -22,34 +22,24 @@ export function ChatTitlebarActions({
       className="inline-flex h-8 shrink-0 items-center gap-0.5"
       data-tauri-drag-region="false"
     >
-      <button
-        type="button"
+      <IconButton
+        label={toggleLabel}
+        variant="ghost"
+        size="sm"
         onClick={onToggleSidebar}
-        className={`${chatTitlebarPillIconClass} group`}
-        title={toggleLabel}
-        aria-label={toggleLabel}
+        className="group"
+        aria-pressed={sidebarExpanded}
       >
-        <ToggleIcon
-          size={15}
-          strokeWidth={1.75}
-          className={`transition-transform duration-300 ease-out group-hover:scale-110 ${
-            sidebarExpanded ? 'group-hover:-translate-x-0.5' : 'group-hover:translate-x-0.5'
-          }`}
-        />
-      </button>
-      <button
-        type="button"
+        <SidebarToggleIcon side="left" open={sidebarExpanded} />
+      </IconButton>
+      <IconButton
+        label={t.chatNewChat}
+        variant="ghost"
+        size="sm"
         onClick={onNewConversation}
-        className={`${chatTitlebarPillIconClass} group`}
-        title={t.chatNewChat}
-        aria-label={t.chatNewChat}
       >
-        <SquarePen
-          size={15}
-          strokeWidth={1.75}
-          className="transition-transform duration-300 ease-out group-hover:-rotate-6 group-hover:scale-110"
-        />
-      </button>
+        <Plus size={15} strokeWidth={2} />
+      </IconButton>
     </div>
   )
 }

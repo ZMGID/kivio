@@ -1097,11 +1097,6 @@ button.chat-composer-status-item:hover {
     font-size: 12px;
   }
 
-  .chat-titlebar-pill-icon {
-    height: 1.375rem;
-    width: 1.375rem;
-  }
-
   /* 紧凑模式：模型选择器只留图标（名字截断成"d."很难看 + 下拉箭头一起藏）。仍可点开。 */
   .chat-model-selector-label,
   .chat-model-selector-caret {

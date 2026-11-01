@@ -39,7 +39,3 @@ export const chatTitlebarIconButtonClass = [
   'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-transparent bg-transparent text-neutral-600 transition duration-[var(--kv-dur-instant)] active:scale-[0.97] dark:text-neutral-400',
   chatTitlebarGhostHoverClass,
 ].join(' ')
-
-/** 复合控件内的次级图标按钮（如侧栏操作组里的切栏 / 新建）。 */
-export const chatTitlebarPillIconClass =
-  'chat-titlebar-pill-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-600 transition duration-[var(--kv-dur-instant)] hover:bg-black/[0.05] hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-white/[0.08]'
