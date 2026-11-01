@@ -584,6 +584,7 @@ pub fn run() {
             chat::media_station::media_station_reference,
             voice_live::voice_live_start,
             voice_live::voice_delegate,
+            voice_codex::voice_codex_reserve,
             voice_codex::voice_codex_start,
             voice_codex::voice_codex_stop,
             voice_codex::voice_codex_mute,

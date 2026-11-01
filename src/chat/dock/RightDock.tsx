@@ -12,6 +12,7 @@ import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SubAgentPanel } from '../SubAgentPanel'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
+export type DockOpenTabRequest = { tab: DockTab }
 
 // 启动页入口：单键直达（仅启动页可见时生效，输入框内不拦截）。
 const DOCK_ENTRIES = [
@@ -43,6 +44,7 @@ type RightDockProps = {
   toolbarHost?: HTMLDivElement | null
   width: number
   activeTab: DockTab
+  openTabRequest: DockOpenTabRequest | null
   workdir: string
   lang: Lang
   /** 当前对话 id（任务页按对话隔离）。null = 还没有对话。 */
@@ -52,6 +54,7 @@ type RightDockProps = {
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
   onToggleTab: (tab: DockTab) => void
+  onOpenTabRequestHandled: (request: DockOpenTabRequest) => void
   onWidthChange: (width: number) => void
   onClose: () => void
   onTreeExpandedChange: (paths: string[]) => void
@@ -64,6 +67,7 @@ export const RightDock = memo(function RightDock({
   toolbarHost,
   width,
   activeTab,
+  openTabRequest,
   workdir,
   lang,
   conversationId,
@@ -72,6 +76,7 @@ export const RightDock = memo(function RightDock({
   revealRequest,
   previewRequest,
   onToggleTab,
+  onOpenTabRequestHandled,
   onWidthChange,
   onClose,
   onTreeExpandedChange,
@@ -156,15 +161,14 @@ export const RightDock = memo(function RightDock({
     setOpenTabs(next)
     if (activeTab === tab && next.length) onToggleTab(next[next.length - 1])
   }
-  // 外部（工具卡片预览、定位文件等）切换 tab 时自动成为已打开 tab；首次渲染不算。
-  const prevTab = useRef(activeTab)
   useEffect(() => {
-    if (prevTab.current === activeTab) return
-    prevTab.current = activeTab
-    if (!open) return
-    setOpenTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]))
-    setLauncher(false)
-  }, [activeTab, open])
+    if (!openTabRequest) return
+    if (open && activeTab === openTabRequest.tab) {
+      setOpenTabs((prev) => (prev.includes(activeTab) ? prev : [...prev, activeTab]))
+      setLauncher(false)
+    }
+    onOpenTabRequestHandled(openTabRequest)
+  }, [activeTab, open, openTabRequest, onOpenTabRequestHandled])
   useEffect(() => {
     if (!open || !showLauncher) return
     const onKey = (e: KeyboardEvent) => {

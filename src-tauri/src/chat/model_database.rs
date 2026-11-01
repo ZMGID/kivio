@@ -90,6 +90,14 @@ fn validate(text: &str) -> Result<Map<String, Value>, String> {
                 return Err(invalid());
             }
         }
+        if let (Some(context), Some(output)) = (
+            entry.get("contextWindow").and_then(Value::as_u64),
+            entry.get("maxOutput").and_then(Value::as_u64),
+        ) {
+            if context > 0 && output > context {
+                return Err(invalid());
+            }
+        }
         if !entry
             .get("capabilities")
             .and_then(Value::as_object)
@@ -319,11 +327,15 @@ mod tests {
             .install(&database("2026-10-13.2", 200), dir.path())
             .unwrap();
         let saved = std::fs::read_to_string(dir.path().join(CACHE_FILE)).unwrap();
+        let mut oversized_output: Value =
+            serde_json::from_str(&database("2026-10-13.3", 300)).unwrap();
+        oversized_output["sample-1"]["maxOutput"] = Value::from(301);
         for invalid in [
             "{}".into(),
             "broken JSON".into(),
             database("2026-10-13.3", 300).replace("\"schemaVersion\":1", "\"schemaVersion\":2"),
             database("2026-10-13.3", 300).replace("\"vision\":true", "\"vision\":\"yes\""),
+            oversized_output.to_string(),
         ] {
             assert!(store.install(&invalid, dir.path()).is_err());
             assert_eq!(store.snapshot().version, "2026-10-13.2");
@@ -345,6 +357,14 @@ mod tests {
                 .version,
             "2026-10-13.1"
         );
+    }
+    #[test]
+    fn output_capacity_allows_the_context_boundary_and_unknown_windows() {
+        for context in [300, 0] {
+            let mut data: Value = serde_json::from_str(&database("2026-10-13.1", context)).unwrap();
+            data["sample-1"]["maxOutput"] = Value::from(300);
+            assert_eq!(validate(&data.to_string()).unwrap()["sample-1"]["maxOutput"], 300);
+        }
     }
     #[test]
     fn bundled_catalog_is_valid_and_version_revisions_sort_numerically() {

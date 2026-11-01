@@ -1383,7 +1383,7 @@ function ReadingWorkspace({
                   contextSlot={
                     <div className="reading-context-status">
                       <span className="context-label"><FileText size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>
-                      {inputBarProps.contextSlot}
+                      {chatReady && !chatLoading && inputBarProps.contextSlot}
                     </div>
                   }
                 />

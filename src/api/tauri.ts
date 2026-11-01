@@ -1851,7 +1851,8 @@ export const api = {
     invoke<VoiceLiveStart>('voice_live_start', args),
   voiceDelegate: (args: { conversationId: string; request: string }) =>
     invoke<string>('voice_delegate', args),
-  voiceCodexStart: () => invoke<{ sessionId: string }>('voice_codex_start'),
+  voiceCodexReserve: () => invoke<string>('voice_codex_reserve'),
+  voiceCodexStart: (sessionId: string) => invoke<void>('voice_codex_start', { sessionId }),
   voiceCodexStop: (sessionId: string) => invoke<void>('voice_codex_stop', { sessionId }),
   voiceCodexMute: (sessionId: string, muted: boolean) => invoke<void>('voice_codex_mute', { sessionId, muted }),
   onVoiceCodexEvent: (listener: (event: VoiceCodexEvent) => void): Promise<() => void> =>

@@ -1914,6 +1914,7 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
 export function ToolCallCluster({
   segments,
   toolCalls,
+  toolCallById,
   messageStreaming,
   latestReasoning,
   activityCount,
@@ -1922,6 +1923,7 @@ export function ToolCallCluster({
 }: {
   segments: ChatMessageSegment[]
   toolCalls: ToolCallRecord[]
+  toolCallById: ReadonlyMap<string, ToolCallRecord>
   messageStreaming: boolean
   latestReasoning?: { text: string; streaming: boolean }
   activityCount?: number
@@ -1931,7 +1933,7 @@ export function ToolCallCluster({
   const t = useT()
   const previewEnabled = useContext(ReasoningPreviewContext)
   const [open, setOpen] = useState(false)
-  const summary = summarizeToolGroup(segments, toolCalls, undefined, messageStreaming)
+  const summary = summarizeToolGroup(segments, toolCalls, toolCallById, messageStreaming)
   let activeTool: ToolCallRecord | undefined
   if (messageStreaming) {
     for (let index = toolCalls.length - 1; index >= 0; index -= 1) {

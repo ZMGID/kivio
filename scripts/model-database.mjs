@@ -30,6 +30,7 @@ export function validateDatabase(text) {
       const n = entry[key]
       if ((key === 'contextWindow' || n !== undefined) && (!Number.isInteger(n) || n < 0 || n > 4294967295)) invalid()
     }
+    if (entry.contextWindow > 0 && entry.maxOutput > entry.contextWindow) invalid()
     if (!object(entry.capabilities) || Object.values(entry.capabilities).some(v => typeof v !== 'boolean')) invalid()
     if (entry.pricing !== undefined && (!object(entry.pricing) || Object.values(entry.pricing).some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0))) invalid()
     if (entry.reasoningEfforts !== undefined && (!Array.isArray(entry.reasoningEfforts) || entry.reasoningEfforts.some(l => !['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(l)))) invalid()

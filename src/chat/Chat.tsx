@@ -3163,6 +3163,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
             width={dock.width}
             activeTab={dock.tab}
+            openTabRequest={dock.openTabRequest}
             workdir={dockWorkdir}
             lang={uiLang}
             conversationId={currentConversation?.id ?? null}
@@ -3170,6 +3171,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             revealRequest={dock.reveal}
             previewRequest={dock.preview}
             onToggleTab={dock.setTab}
+            onOpenTabRequestHandled={dock.onOpenTabRequestHandled}
             onWidthChange={dock.setWidth}
             onClose={dock.close}
             onTreeExpandedChange={dock.setTreeExpanded}

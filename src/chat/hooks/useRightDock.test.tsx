@@ -134,6 +134,20 @@ describe('useRightDock: persisted UI state', () => {
     expect(result.current).toMatchObject({ open: true, tab: 'tasks' })
   })
 
+  it('keeps a newer open request when an older one is acknowledged', () => {
+    const { result } = setup()
+    act(() => result.current.openGit())
+    const first = result.current.openTabRequest
+    expect(first).not.toBeNull()
+    act(() => result.current.openTasks())
+    const second = result.current.openTabRequest
+    expect(second).not.toBe(first)
+    act(() => result.current.onOpenTabRequestHandled(first!))
+    expect(result.current.openTabRequest).toBe(second)
+    act(() => result.current.onOpenTabRequestHandled(second!))
+    expect(result.current.openTabRequest).toBeNull()
+  })
+
   it('remembers width and tab across mounts', () => {
     const { result } = setup()
     act(() => {

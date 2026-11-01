@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react
 import { afterEach, expect, it, vi } from 'vitest'
 import { render } from '../../../src/test/renderWithNotices'
 import ReadingCenter, { type ReadingCenterProps } from './ReadingCenter'
-import { loadReadingLibrary, retryReadingSaves, updateReadingDocument } from './readingLibrary'
+import { loadReadingLibrary, refreshReadingLibrary, retryReadingSaves, updateReadingDocument } from './readingLibrary'
 import type { ReadingDocument } from '../api/reading'
 import { readingApi } from '../api/reading'
 import { readingOperationsApi } from '../api/readingOperations'
@@ -12,10 +12,11 @@ import { getComposerDraft, setComposerDraft, migrateComposerDraft } from '../../
 import { loadReadingPdf } from './pdfDocument'
 const storage = vi.hoisted(() => ({
   document: { id: 'paper', name: 'Paper', hasPdf: true, conversationIds: [], activeConversationId: null, page: 1, offset: 0, notes: [], noteDraft: 'Original thought' } as ReadingDocument,
+  additionalDocument: null as ReadingDocument | null,
   save: vi.fn(),
 }))
 vi.mock('../api/reading', () => ({ readingApi: {
-  list: async () => ({ documents: [structuredClone(storage.document)], issues: [] }), collections: async () => [],
+  list: async () => ({ documents: [structuredClone(storage.document), ...(storage.additionalDocument ? [structuredClone(storage.additionalDocument)] : [])], issues: [] }), collections: async () => [],
   save: (doc: ReadingDocument) => storage.save(doc),
   pdf: vi.fn(() => new Promise(() => {})),
   prepareChat: vi.fn(),
@@ -24,12 +25,12 @@ vi.mock('../api/reading', () => ({ readingApi: {
 } }))
 vi.mock('./StudyEnvironment', () => ({ default: ({ children }: { children: (open: () => void) => React.ReactNode }) => children(() => {}) }))
 vi.mock('../api/readingOperations', () => ({ readingOperationsApi: { status: vi.fn(async () => ({ translation: null, view: { kind: 'source', output: null, latest: null } })), selectView: vi.fn() } }))
-vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: ReadingDocument) => void }) => <button onClick={() => onRead(storage.document)}>Open paper</button> }))
+vi.mock('./LiteratureLibrary', () => ({ default: ({ onRead }: { onRead: (doc: ReadingDocument) => void }) => <><button onClick={() => onRead(storage.document)}>Open paper</button>{storage.additionalDocument && <button onClick={() => onRead(storage.additionalDocument!)}>Open second paper</button>}</> }))
 vi.mock('../../../src/chat/api', () => ({ chatApi: { getConversation: vi.fn() } }))
 vi.mock('../../../src/api/tauri', () => ({ api: { chatSavePastedImage: vi.fn() } }))
 vi.mock('pdfjs-dist', () => ({}))
 vi.mock('./pdfDocument', () => ({ loadReadingPdf: vi.fn() }))
-vi.mock('../../../src/chat/InputBar', () => ({ InputBar: ({ onSend }: { onSend: (text: string, attachments: { id: string; type: string; name: string; path: string }[]) => Promise<boolean> }) => <><button onClick={() => void onSend('Explain this', [])}>Ask study</button><button onClick={() => void onSend('Explain image', [{ id: 'image', type: 'image', name: 'Page.png', path: '/page.png' }])}>Ask image</button></> }))
+vi.mock('../../../src/chat/InputBar', () => ({ InputBar: ({ onSend, contextSlot }: { onSend: (text: string, attachments: { id: string; type: string; name: string; path: string }[]) => Promise<boolean>; contextSlot?: React.ReactNode }) => <>{contextSlot}<button onClick={() => void onSend('Explain this', [])}>Ask study</button><button onClick={() => void onSend('Explain image', [{ id: 'image', type: 'image', name: 'Page.png', path: '/page.png' }])}>Ask image</button></> }))
 vi.mock('../../../src/chat/MessageList', () => ({ MessageList: ({ messages = [], onSaveMessageToNote }: { messages: { id: string; content: string }[]; onSaveMessageToNote: (id: string) => void }) => <>{messages.map(message => <button key={message.id} onClick={() => onSaveMessageToNote(message.id)}>Save {message.id}</button>)}</> }))
 vi.mock('../../../src/chat/ChatMarkdown', () => ({ ChatMarkdown: ({ content }: { content: string }) => <p>{content}</p> }))
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -365,4 +366,62 @@ it('ignores a late missing-chat receipt after switching to a valid conversation'
   await act(async () => { finish(['old-chat']) })
   expect(disk).toMatchObject({ activeConversationId: 'current-chat', conversationIds: ['old-chat', 'current-chat'] })
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
+it('only exposes the active paper’s context actions after its chat is ready', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  vi.mocked(readingApi.pdf).mockImplementation(() => new Promise(() => {}))
+  vi.mocked(readingApi.missingConversations).mockResolvedValue([])
+  storage.save.mockResolvedValue(undefined)
+  storage.additionalDocument = { ...storage.document, id: 'paper-b', name: 'Paper B', activeConversationId: 'chat-b', conversationIds: ['chat-b'] }
+  await loadReadingLibrary()
+  await refreshReadingLibrary()
+  await updateReadingDocument('paper', doc => ({ ...doc, activeConversationId: 'chat-a', conversationIds: ['chat-a'] }))
+
+  let rejectB!: (error: Error) => void
+  let resolveB!: () => void
+  const activate = vi.fn()
+    .mockResolvedValueOnce(undefined)
+    .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectB = reject }))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { resolveB = resolve }))
+  const actionA = vi.fn()
+  const actionB = vi.fn()
+  const props = {
+    inputBarProps: { contextSlot: <button onClick={actionA}>Paper A action</button> },
+    messageListProps: { conversationId: 'chat-a', messages: [] },
+    onActivateConversation: activate,
+  } as unknown as ReadingCenterProps
+  const view = render(<ReadingCenter {...props} />)
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Open paper' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Paper A action' }))
+    expect(actionA).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kivio Study' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open second paper' }))
+    await waitFor(() => expect(rejectB).toBeTypeOf('function'))
+    expect(screen.queryByRole('button', { name: 'Paper A action' })).not.toBeInTheDocument()
+    expect(screen.getByText('正在读取原文…')).toBeInTheDocument()
+
+    await act(async () => { rejectB(new Error('Cannot read B')) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Cannot read B')
+    expect(screen.queryByRole('button', { name: 'Paper A action' })).not.toBeInTheDocument()
+    expect(actionA).toHaveBeenCalledOnce()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Kivio Study' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open second paper' }))
+    await waitFor(() => expect(resolveB).toBeTypeOf('function'))
+    view.rerender(<ReadingCenter {...props}
+      inputBarProps={{ ...props.inputBarProps, contextSlot: <button onClick={actionB}>Paper B action</button> }}
+      messageListProps={{ ...props.messageListProps, conversationId: 'chat-b' }}
+    />)
+    expect(screen.queryByRole('button', { name: 'Paper B action' })).not.toBeInTheDocument()
+    await act(async () => { resolveB() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Paper B action' }))
+    expect(actionB).toHaveBeenCalledOnce()
+    expect(actionA).toHaveBeenCalledOnce()
+  } finally {
+    view.unmount()
+    storage.additionalDocument = null
+  }
 })

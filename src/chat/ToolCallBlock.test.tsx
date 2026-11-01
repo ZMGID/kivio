@@ -41,13 +41,17 @@ function toolSegments(...ids: string[]): ChatMessageSegment[] {
   return ids.map((id, order) => ({ id: `segment-${id}`, kind: 'tool', phase: 'tool_loop', order, tool_call_id: id }))
 }
 
+function toolIndex(...calls: ToolCallRecord[]): ReadonlyMap<string, ToolCallRecord> {
+  return new Map(calls.map(call => [call.id, call]))
+}
+
 describe('ToolCallCluster', () => {
   it('prefers an older active tool over a later completed one', () => {
     const toolCalls = [
       buildToolCall({ id: 'a', status: 'running', arguments: { path: '/tmp/active.ts' } }),
       buildToolCall({ id: 'b', toolName: 'run_command', status: 'success', arguments: { command: 'echo done' } }),
     ]
-    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} messageStreaming>{() => null}</ToolCallCluster>)
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} toolCallById={toolIndex(...toolCalls)} messageStreaming>{() => null}</ToolCallCluster>)
     const row = screen.getByRole('button')
     expect(row).toHaveTextContent('active.ts')
     expect(row).not.toHaveTextContent('echo done')
@@ -58,19 +62,32 @@ describe('ToolCallCluster', () => {
       buildToolCall({ id: 'a', status: 'error', arguments: { path: 'a.ts' } }),
       buildToolCall({ id: 'b', status: 'cancelled', arguments: { path: 'b.ts' } }),
     ]
-    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={toolCalls} toolCallById={toolIndex(...toolCalls)} messageStreaming={false}>{() => null}</ToolCallCluster>)
     const row = screen.getByRole('button')
     expect(row).toHaveTextContent('读取 2 个文件')
     expect(row.textContent?.match(/1 项失败/g)).toHaveLength(1)
     expect(row.textContent?.match(/1 项已停止/g)).toHaveLength(1)
   })
 
+  it('summarizes indexed records for this cluster without including unrelated calls', () => {
+    const first = buildToolCall({ id: 'a', arguments: { path: 'a.ts' } })
+    const stale = buildToolCall({ id: 'b', arguments: { path: 'b.ts' } })
+    const latest: ToolCallRecord = { ...stale, status: 'error' }
+    const unrelated = buildToolCall({ id: 'outside', status: 'cancelled' })
+    render(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, stale]} toolCallById={toolIndex(first, latest, unrelated)} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    const row = screen.getByRole('button')
+    expect(row).toHaveTextContent('读取 2 个文件，1 项失败')
+    expect(row).not.toHaveTextContent('已停止')
+  })
+
   it('mounts children lazily and stays open on append and completion without moving scroll', async () => {
     const onExpand = vi.fn()
     const children = vi.fn(() => <div>Details</div>)
     const first = buildToolCall({ id: 'a', status: 'running' })
+    const second = buildToolCall({ id: 'b' })
+    const completed: ToolCallRecord = { ...first, status: 'success' }
     const { rerender, container } = render(
-      <ToolCallCluster segments={toolSegments('a')} toolCalls={[first]} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>,
+      <ToolCallCluster segments={toolSegments('a')} toolCalls={[first]} toolCallById={toolIndex(first)} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>,
     )
     expect(children).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button'))
@@ -78,8 +95,8 @@ describe('ToolCallCluster', () => {
     expect(screen.getByText('Details')).toBeVisible()
     const scroll = container.querySelector<HTMLElement>('.custom-scrollbar')!
     scroll.scrollTop = 42
-    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, buildToolCall({ id: 'b' })]} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>)
-    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[{ ...first, status: 'success' }, buildToolCall({ id: 'b' })]} messageStreaming={false} onExpand={onExpand}>{children}</ToolCallCluster>)
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[first, second]} toolCallById={toolIndex(first, second)} messageStreaming onExpand={onExpand}>{children}</ToolCallCluster>)
+    rerender(<ToolCallCluster segments={toolSegments('a', 'b')} toolCalls={[completed, second]} toolCallById={toolIndex(completed, second)} messageStreaming={false} onExpand={onExpand}>{children}</ToolCallCluster>)
     expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
     expect(container.querySelector('.custom-scrollbar')).toBe(scroll)
     expect(scroll.scrollTop).toBe(42)
@@ -90,13 +107,13 @@ describe('ToolCallCluster', () => {
     const segment: ChatMessageSegment = { id: 'r', kind: 'reasoning', phase: 'tool_loop', order: 0 }
     const { rerender } = render(
       <ReasoningPreviewContext.Provider value={false}>
-        <ToolCallCluster segments={[segment]} toolCalls={[]} messageStreaming latestReasoning={{ text: 'private thought', streaming: true }}>{() => null}</ToolCallCluster>
+        <ToolCallCluster segments={[segment]} toolCalls={[]} toolCallById={toolIndex()} messageStreaming latestReasoning={{ text: 'private thought', streaming: true }}>{() => null}</ToolCallCluster>
       </ReasoningPreviewContext.Provider>,
     )
     expect(screen.getByRole('button')).toHaveTextContent('Thinking…')
     expect(screen.getByRole('button')).toHaveAttribute('title', '展开完整思考')
     expect(screen.queryByText('private thought')).not.toBeInTheDocument()
-    rerender(<ToolCallCluster segments={[segment]} toolCalls={[]} messageStreaming={false}>{() => null}</ToolCallCluster>)
+    rerender(<ToolCallCluster segments={[segment]} toolCalls={[]} toolCallById={toolIndex()} messageStreaming={false}>{() => null}</ToolCallCluster>)
     expect(screen.getByRole('button')).toHaveTextContent('Thought')
   })
 })

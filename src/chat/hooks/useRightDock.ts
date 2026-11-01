@@ -9,7 +9,7 @@ import {
   onDockSubAgentRequest,
 } from '../dock/dockPreview'
 import { resolveDockPreviewTarget } from '../dock/dockPreviewTarget'
-import type { DockPreviewRequest, DockRevealRequest, DockTab } from '../dock/RightDock'
+import type { DockOpenTabRequest, DockPreviewRequest, DockRevealRequest, DockTab } from '../dock/RightDock'
 import {
   getRememberedDockOpen,
   getRememberedDockTab,
@@ -47,6 +47,7 @@ export function useRightDock({
   const [open, setOpen] = useState(() => getRememberedDockOpen())
   const [width, setWidthState] = useState(() => getRememberedDockWidth())
   const [tab, setTabState] = useState<DockTab>(() => getRememberedDockTab())
+  const [openTabRequest, setOpenTabRequest] = useState<DockOpenTabRequest | null>(null)
   const [workdir, setWorkdir] = useState('')
   const [workingRoot, setWorkingRoot] = useState(() =>
     peekSettings()?.chatTools.nativeTools.workingDirectory,
@@ -82,12 +83,19 @@ export function useRightDock({
 
   const showTab = useCallback((next: DockTab) => {
     setTabState(next)
+    setOpenTabRequest({ tab: next })
     rememberDockTab(next)
     setOpen(true)
     rememberDockOpen(true)
   }, [])
 
+  // 按请求对象身份确认，避免旧请求的确认清除更新的请求。
+  const onOpenTabRequestHandled = useCallback((request: DockOpenTabRequest) => {
+    setOpenTabRequest((current) => current === request ? null : current)
+  }, [])
+
   const toggle = useCallback(() => {
+    setOpenTabRequest(null)
     setOpen((prev) => {
       rememberDockOpen(!prev)
       return !prev
@@ -95,6 +103,7 @@ export function useRightDock({
   }, [])
 
   const close = useCallback(() => {
+    setOpenTabRequest(null)
     setOpen(false)
     rememberDockOpen(false)
   }, [])
@@ -116,6 +125,7 @@ export function useRightDock({
   }, [])
 
   const setTab = useCallback((next: DockTab) => {
+    setOpenTabRequest(null)
     setTabState(next)
     rememberDockTab(next)
   }, [])
@@ -165,6 +175,8 @@ export function useRightDock({
     open,
     width,
     tab,
+    openTabRequest,
+    onOpenTabRequestHandled,
     workdir,
     treeExpanded,
     reveal,

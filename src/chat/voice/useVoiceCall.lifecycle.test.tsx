@@ -6,6 +6,7 @@ import { useVoiceCall } from './useVoiceCall'
 const mocks = vi.hoisted(() => ({
   settings: vi.fn(),
   listen: vi.fn(),
+  reserve: vi.fn(),
   start: vi.fn(),
   stop: vi.fn(),
   mute: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../api/tauri', () => ({ api: {
   onVoiceCodexEvent: mocks.listen,
+  voiceCodexReserve: mocks.reserve,
   voiceCodexStart: mocks.start,
   voiceCodexStop: mocks.stop,
   voiceCodexMute: mocks.mute,
@@ -62,7 +64,8 @@ beforeEach(() => {
     unlisteners.push(unlisten)
     return unlisten
   })
-  mocks.start.mockResolvedValue({ sessionId: 'session' })
+  mocks.reserve.mockResolvedValue('session')
+  mocks.start.mockResolvedValue(undefined)
   mocks.stop.mockResolvedValue(undefined)
   mocks.mute.mockResolvedValue(undefined)
 })
@@ -162,14 +165,14 @@ describe('Codex voice integration', () => {
   })
 
   it('buffers early events and filters other sessions before the start returns', async () => {
-    const starting = deferred<{ sessionId: string }>()
+    const starting = deferred<void>()
     mocks.start.mockReturnValueOnce(starting.promise)
     const { result } = callHook()
     await act(async () => { result.current.start() })
     emit(0, { sessionId: 'other', type: 'final', role: 'user', itemId: 'wrong', text: 'Wrong' })
     emit(0, { sessionId: 'session', type: 'active' })
     emit(0, { sessionId: 'session', type: 'partial', itemId: 'answer', delta: 'Early' })
-    await act(async () => { starting.resolve({ sessionId: 'session' }) })
+    await act(async () => { starting.resolve() })
     expect(result.current.state).toBe('active')
     expect(result.current.channel).toBe('codex')
     expect(result.current.transcriptRows).toEqual([{ id: 'voice-1', role: 'unknown', text: 'Early', finalized: false }])
@@ -197,19 +200,97 @@ describe('Codex voice integration', () => {
     expect(unlisteners[0]).not.toHaveBeenCalled()
   })
 
-  it('stops only a cancelled late start and ignores its events after a replacement starts', async () => {
-    const starting = deferred<{ sessionId: string }>()
-    mocks.start.mockReturnValueOnce(starting.promise).mockResolvedValueOnce({ sessionId: 'new' })
+  it('cancels a connecting native start immediately, before the start promise resolves', async () => {
+    const starting = deferred<void>()
+    const stopping = deferred<void>()
+    mocks.start.mockReturnValueOnce(starting.promise)
+    mocks.stop.mockReturnValueOnce(stopping.promise)
+    const { result } = callHook()
+    await act(async () => { result.current.start() })
+    expect(mocks.start).toHaveBeenCalledWith('session')
+    expect(result.current.state).toBe('connecting')
+    act(() => result.current.hangup())
+    expect(mocks.stop).toHaveBeenCalledWith('session')
+    expect(result.current.state).toBe('closing')
+    await act(async () => { stopping.resolve() })
+    expect(result.current.state).toBe('idle')
+    await act(async () => { starting.reject('Codex voice session cancelled') })
+    expect(result.current.state).toBe('idle')
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
+
+  it('does not start a reservation that arrives after hangup and a replacement', async () => {
+    const reserving = deferred<string>()
+    mocks.reserve.mockReturnValueOnce(reserving.promise).mockResolvedValueOnce('new')
     const { result } = callHook()
     await act(async () => { result.current.start() })
     act(() => result.current.hangup())
+    expect(result.current.state).toBe('idle')
+    await act(async () => { result.current.start() })
+    emit(1, { sessionId: 'new', type: 'active' })
+    await act(async () => { reserving.resolve('old') })
+    expect(mocks.start).toHaveBeenCalledTimes(1)
+    expect(mocks.start).toHaveBeenCalledWith('new')
+    expect(mocks.stop).toHaveBeenCalledWith('old')
+    expect(mocks.stop).not.toHaveBeenCalledWith('new')
+    expect(result.current.state).toBe('active')
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
+
+  it('releases a reservation that arrives after unmount without starting it', async () => {
+    const reserving = deferred<string>()
+    mocks.reserve.mockReturnValueOnce(reserving.promise)
+    const { result, unmount } = callHook()
+    await act(async () => { result.current.start() })
+    unmount()
+    await act(async () => { reserving.resolve('late') })
+    expect(mocks.start).not.toHaveBeenCalled()
+    expect(mocks.stop).toHaveBeenCalledWith('late')
+    expect(unlisteners[0]).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a connecting native start when the hook unmounts', async () => {
+    const starting = deferred<void>()
+    mocks.start.mockReturnValueOnce(starting.promise)
+    const { result, unmount } = callHook()
+    await act(async () => { result.current.start() })
+    unmount()
+    expect(mocks.stop).toHaveBeenCalledWith('session')
+    expect(unlisteners[0]).toHaveBeenCalledOnce()
+    await act(async () => { starting.reject('Codex voice session cancelled') })
+    expect(mocks.notify).not.toHaveBeenCalled()
+  })
+
+  it('reports a connecting cleanup failure without falling back to another device', async () => {
+    const starting = deferred<void>()
+    mocks.start.mockReturnValueOnce(starting.promise)
+    mocks.stop.mockRejectedValueOnce(new Error('cleanup failed'))
+    const { result } = callHook()
+    await act(async () => { result.current.start() })
+    await act(async () => { result.current.hangup() })
+    expect(result.current.state).toBe('idle')
+    expect(result.current.lastError).toContain('cleanup failed')
+    await act(async () => { starting.reject('unavailable: late failure') })
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+  })
+
+
+  it('stops only a cancelled late start and ignores its events after a replacement starts', async () => {
+    const starting = deferred<void>()
+    mocks.reserve.mockResolvedValueOnce('old').mockResolvedValueOnce('new')
+    mocks.start.mockReturnValueOnce(starting.promise).mockResolvedValueOnce(undefined)
+    const { result } = callHook()
+    await act(async () => { result.current.start() })
+    await act(async () => { result.current.hangup() })
     expect(unlisteners[0]).toHaveBeenCalledOnce()
     await act(async () => { result.current.start() })
     emit(1, { sessionId: 'new', type: 'active' })
     emit(1, { sessionId: 'new', type: 'final', role: 'user', itemId: 'new-item', text: 'Current' })
     emit(0, { sessionId: 'old', type: 'final', role: 'user', itemId: 'old-item', text: 'Stale' })
     emit(0, { sessionId: 'old', type: 'closed', error: 'stale' })
-    await act(async () => { starting.resolve({ sessionId: 'old' }) })
+    await act(async () => { starting.resolve() })
     expect(mocks.stop).toHaveBeenCalledWith('old')
     expect(mocks.stop).not.toHaveBeenCalledWith('new')
     expect(result.current.state).toBe('active')
@@ -220,7 +301,7 @@ describe('Codex voice integration', () => {
   it('does not report a stale stop failure or dispose the replacement call', async () => {
     const stopping = deferred<void>()
     mocks.stop.mockReturnValueOnce(stopping.promise)
-    mocks.start.mockResolvedValueOnce({ sessionId: 'old' }).mockResolvedValueOnce({ sessionId: 'new' })
+    mocks.reserve.mockResolvedValueOnce('old').mockResolvedValueOnce('new')
     const { result } = callHook()
     await act(async () => { result.current.start() })
     emit(0, { sessionId: 'old', type: 'active' })
@@ -234,6 +315,19 @@ describe('Codex voice integration', () => {
     expect(result.current.state).toBe('active')
     expect(result.current.lastError).toBeNull()
     expect(mocks.notify).not.toHaveBeenCalled()
+  })
+
+  it('reports a cleanup error delivered in the closing event even if stop rejects later', async () => {
+    const stopping = deferred<void>()
+    mocks.stop.mockReturnValueOnce(stopping.promise)
+    const { result } = callHook()
+    await act(async () => { result.current.start() })
+    emit(0, { sessionId: 'session', type: 'active' })
+    act(() => result.current.hangup())
+    emit(0, { sessionId: 'session', type: 'closed', error: 'cleanup failed' })
+    expect(result.current.lastError).toContain('cleanup failed')
+    await act(async () => { stopping.reject(new Error('cleanup failed')) })
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
   })
 
   it('shows only acknowledged mute state and prevents overlapping commands', async () => {
@@ -260,7 +354,7 @@ describe('Codex voice integration', () => {
   it('ignores a late mute acknowledgement after hangup and restart', async () => {
     const muting = deferred<void>()
     mocks.mute.mockReturnValueOnce(muting.promise)
-    mocks.start.mockResolvedValueOnce({ sessionId: 'old' }).mockResolvedValueOnce({ sessionId: 'new' })
+    mocks.reserve.mockResolvedValueOnce('old').mockResolvedValueOnce('new')
     const { result } = callHook()
     await act(async () => { result.current.start() })
     emit(0, { sessionId: 'old', type: 'active' })
@@ -296,6 +390,16 @@ describe('GPT-Live selection and microphone lifetime', () => {
     expect(getUserMedia).toHaveBeenCalledOnce()
     expect(unlisteners[0]).toHaveBeenCalledOnce()
     act(() => result.current.hangup())
+  })
+
+  it('does not fall back if cleanup after an unavailable start fails', async () => {
+    mocks.start.mockRejectedValueOnce('unavailable: no subscription')
+    mocks.stop.mockRejectedValueOnce(new Error('cleanup failed'))
+    const { result } = callHook()
+    await act(async () => { result.current.start() })
+    expect(result.current.state).toBe('error')
+    expect(result.current.lastError).toContain('cleanup failed')
+    expect(getUserMedia).not.toHaveBeenCalled()
   })
 
   it.each([

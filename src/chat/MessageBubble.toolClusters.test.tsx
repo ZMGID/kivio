@@ -71,6 +71,24 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('operation_1')).toBeVisible()
   })
 
+  it('summarizes the complete large cluster without crossing a commentary boundary', () => {
+    const reads = Array.from({ length: 128 }, (_, index): ToolCallRecord => ({
+      id: `read-${index}`, name: 'read', status: index === 0 ? 'error' : index === 1 ? 'cancelled' : 'completed',
+      arguments: { path: `file-${index % 8}.ts` },
+    }))
+    const last: ToolCallRecord = { id: 'last', name: 'bash', status: 'completed', arguments: { command: 'echo done' } }
+    const segments = message([...reads, last]).segments!
+    segments.splice(128, 0, { id: 'boundary', kind: 'text', phase: 'tool_loop', order: 127.5, text: 'Moving on' })
+    const { container } = render(<MessageBubble message={message([...reads, last], segments)} />)
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    const first = activityButton(container)
+    const second = activityButton(container, 1)
+    expect(first).toHaveTextContent('读取 8 个文件，1 项失败，1 项已停止')
+    expect(second).toHaveTextContent('执行 1 条命令')
+    expect(second).not.toHaveTextContent('失败')
+    expect(second).not.toHaveTextContent('已停止')
+  })
+
   it('keeps unanswered questions and permissions visible when Work is closed', () => {
     const question: ToolCallRecord = { id: 'ask', name: 'AskUserQuestion', status: 'running', structured_content: {
       askUser: { phase: 'awaiting', questions: [{ id: 'q', prompt: '继续吗？', options: [{ id: 'yes', label: '继续' }, { id: 'no', label: '停止' }] }] },

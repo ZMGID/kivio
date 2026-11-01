@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "version": "2026-10-31.3",
+    "version": "2026-11-01.1",
     "schemaVersion": 1,
     "description": "AI model database for Kivio. Keyed by model ID patterns. Used for auto-filling model info when adding models.",
     "sources": [
@@ -56600,7 +56600,7 @@
       "provider": "novita",
       "sourceId": "novita/meta-llama/llama-3-8b-instruct"
     },
-    "maxOutput": 16384,
+    "maxOutput": 8192,
     "reasoningEfforts": [],
     "omp": {
       "commit": "c29f7c56f5530d805bb2887ade964aa55970d8e1",
@@ -56609,8 +56609,8 @@
       "reasoningDisableMode": "openrouter-enabled-false"
     },
     "verification": {
-      "date": "2026-10-31",
-      "url": "https://github.com/can1357/oh-my-pi/blob/c29f7c56f5530d805bb2887ade964aa55970d8e1/packages/catalog/src/models.json"
+      "date": "2026-11-01",
+      "url": "https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md"
     },
     "catalogCost": {
       "cacheRead": 0,
@@ -62584,7 +62584,7 @@
   },
   "ministral-3b-2512": {
     "displayName": "Ministral 3 3B",
-    "contextWindow": 131072,
+    "contextWindow": 262144,
     "capabilities": {
       "vision": true,
       "videoInput": false,
@@ -62619,8 +62619,8 @@
       "reasoningDisableMode": "lowest-effort"
     },
     "verification": {
-      "date": "2026-10-31",
-      "url": "https://github.com/can1357/oh-my-pi/blob/c29f7c56f5530d805bb2887ade964aa55970d8e1/packages/catalog/src/models.json"
+      "date": "2026-11-01",
+      "url": "https://docs.mistral.ai/models/ministral-3-3b-25-12"
     },
     "catalogCost": {
       "cacheRead": 0.01,

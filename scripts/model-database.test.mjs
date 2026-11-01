@@ -21,6 +21,15 @@ test('publication gate rejects incompatible, incomplete and malformed model data
     assert.throws(() => validateDatabase(JSON.stringify(data)))
   }
 })
+test('output capacity cannot exceed a known context window', () => {
+  const data = catalog()
+  data.sample.maxOutput = data.sample.contextWindow + 1
+  assert.throws(() => validateDatabase(JSON.stringify(data)), /sample/)
+  data.sample.maxOutput = data.sample.contextWindow
+  assert.equal(validateDatabase(JSON.stringify(data)).sample.maxOutput, 200000)
+  data.sample.contextWindow = 0
+  assert.equal(validateDatabase(JSON.stringify(data)).sample.maxOutput, 200000)
+})
 test('publication order handles same-day revisions and calendar boundaries', () => {
   assert.equal(compareVersions('2026-10-13.10', '2026-10-13.9'), 1)
   assert.equal(compareVersions('2026-10-13.1', '2026-10-13.1'), 0)

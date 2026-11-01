@@ -77,7 +77,7 @@ type VoiceCall = {
   turnSequence: number
   completedItems: Set<string>
   muting: boolean
-  /** Codex subscription call: the backend owns media; this is its session id once started. */
+  /** Codex subscription call: a reserved native session, including while connecting. */
   codexSession: string | null
   codexUnlisten: (() => void) | null
 }
@@ -545,7 +545,10 @@ export function useVoiceCall({ providerId, model, lang, onDelegationComplete }: 
           break
         case 'closed':
           if (event.error && !call.closing) fail(call, event.error)
-          else dispose(call, 'idle')
+          else {
+            if (event.error) reportError(event.error)
+            dispose(call, 'idle')
+          }
           break
       }
     }
@@ -553,22 +556,38 @@ export function useVoiceCall({ providerId, model, lang, onDelegationComplete }: 
     /** Resolves false when Codex voice is unavailable and the caller may fall back. */
     const startCodex = async (mayFallBack: boolean): Promise<boolean> => {
       let sessionId: string | null = null
+      let started = false
       const buffered: VoiceCodexEvent[] = []
       // Subscribe before starting so `active` and early captions are never missed.
       const unlisten = await api.onVoiceCodexEvent((event) => {
-        if (currentRef.current !== call) return
-        if (sessionId === null) {
+        if (currentRef.current !== call || event.sessionId !== sessionId) return
+        if (!started) {
           if (event.type !== 'levels') buffered.push(event)
-        } else if (event.sessionId === sessionId) handleCodex(event)
+        } else handleCodex(event)
       })
       if (!isCurrent()) {
         unlisten()
         return true
       }
       call.codexUnlisten = unlisten
+      sessionId = await api.voiceCodexReserve()
+      if (!isCurrent()) {
+        void api.voiceCodexStop(sessionId).catch(() => {})
+        return true
+      }
+      call.codexSession = sessionId
       try {
-        sessionId = (await api.voiceCodexStart()).sessionId
+        await api.voiceCodexStart(sessionId)
       } catch (error) {
+        if (!isCurrent()) return true
+        try {
+          await api.voiceCodexStop(sessionId)
+        } catch (cleanupError) {
+          if (isCurrent()) throw cleanupError
+          return true
+        }
+        if (!isCurrent()) return true
+        call.codexSession = null
         call.codexUnlisten?.()
         call.codexUnlisten = null
         const detail = errorDetail(error)
@@ -576,11 +595,8 @@ export function useVoiceCall({ providerId, model, lang, onDelegationComplete }: 
         if (mayFallBack) return false
         throw new Error(detail.slice(CODEX_UNAVAILABLE.length).trim())
       }
-      call.codexSession = sessionId
-      if (!isCurrent()) {
-        void api.voiceCodexStop(sessionId).catch(() => {})
-        return true
-      }
+      if (!isCurrent()) return true
+      started = true
       setChannel('codex')
       for (const event of buffered.splice(0)) if (event.sessionId === sessionId) handleCodex(event)
       return true

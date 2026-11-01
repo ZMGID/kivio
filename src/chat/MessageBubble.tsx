@@ -738,6 +738,7 @@ function renderProcessSegments({
           key={segment.id}
           segments={activity}
           toolCalls={tools}
+          toolCallById={toolCallById}
           messageStreaming={messageStreaming}
           onExpand={onReasoningExpand}
           latestReasoning={latest.kind === 'reasoning' ? {

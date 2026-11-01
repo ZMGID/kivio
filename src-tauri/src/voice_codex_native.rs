@@ -12,6 +12,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::proc::NoConsoleWindow;
 
@@ -288,27 +289,30 @@ fn operation(message: &Value) -> &'static str {
     }
 }
 
-fn kill(child: &mut Option<Child>) {
+fn kill(child: &mut Option<Child>, retiring: &mut Option<Child>) {
     if let Some(mut child) = child.take() {
         let _ = child.start_kill();
+        *retiring = Some(child);
     }
 }
 
 struct KillOnCancel<'a> {
     child: &'a mut Option<Child>,
+    retiring: &'a mut Option<Child>,
     armed: bool,
 }
 
 impl Drop for KillOnCancel<'_> {
     fn drop(&mut self) {
         if self.armed {
-            kill(self.child);
+            kill(self.child, self.retiring);
         }
     }
 }
 
 pub(super) struct NativeHost {
     child: Option<Child>,
+    retiring: Option<Child>,
     input: ChildStdin,
     output: ChildStdout,
     device_selection: bool,
@@ -325,7 +329,7 @@ impl NativeHost {
             .map_err(|_| UNAVAILABLE)?;
         let input = child.stdin.take().ok_or(UNAVAILABLE)?;
         let output = child.stdout.take().ok_or(UNAVAILABLE)?;
-        let mut host = Self { child: Some(child), input, output, device_selection };
+        let mut host = Self { child: Some(child), retiring: None, input, output, device_selection };
         host.expect(json!({"type":"hello","protocol":1,"buildCommit":commit}), "ready", 30).await?;
         host.expect(json!({"type":"initializeRuntime"}), "runtimeReady", 30).await?;
         Ok(host)
@@ -337,7 +341,7 @@ impl NativeHost {
         }
         let operation = operation(&message);
         // Dropping a partially completed exchange must not leave the microphone live.
-        let mut guard = KillOnCancel { child: &mut self.child, armed: true };
+        let mut guard = KillOnCancel { child: &mut self.child, retiring: &mut self.retiring, armed: true };
         let error = match timeout(
             Duration::from_secs(seconds),
             framed_exchange(&mut self.input, &mut self.output, &message),
@@ -387,12 +391,16 @@ impl NativeHost {
         Ok(sdp.unwrap().to_owned())
     }
 
-    pub(super) async fn answer(&mut self, sdp: &str) -> Result<(), String> {
+    pub(super) async fn answer(&mut self, sdp: &str, cancel: &CancellationToken) -> Result<(), String> {
         if !valid_sdp(sdp) {
             self.close();
             return Err("Invalid Codex voice SDP".into());
         }
         self.expect(json!({"type":"applyAnswer","sdp":sdp}), "transportReady", 20).await?;
+        if cancel.is_cancelled() {
+            self.close();
+            return Err(super::CANCELLED.into());
+        }
         let message = if self.device_selection {
             json!({"type":"openDevices","selection":{}})
         } else {
@@ -425,7 +433,16 @@ impl NativeHost {
     }
 
     pub(super) fn close(&mut self) {
-        kill(&mut self.child);
+        kill(&mut self.child, &mut self.retiring);
+    }
+
+    pub(super) async fn shutdown(&mut self) -> Result<(), String> {
+        self.close();
+        if let Some(child) = self.retiring.as_mut() {
+            child.wait().await.map_err(|_| "Could not confirm Codex voice helper cleanup".to_string())?;
+        }
+        self.retiring.take();
+        Ok(())
     }
 }
 
@@ -618,12 +635,16 @@ while True:
     elif kind == 'startTransport': response = {'type':'offer','sdp':'fixture-offer'}
     elif kind == 'applyAnswer':
         assert request == {'type':'applyAnswer','sdp':'fixture-answer'}
+        if (root/'stall-answer').exists():
+            (root/'answer-received').write_text('received')
+            while (root/'stall-answer').exists(): time.sleep(0.01)
         response = {'type':'transportTimedOut' if (root/'timeout-answer').exists() else 'transportReady'}
     elif kind == 'openDevices':
         version = json.loads((pathlib.Path(__file__).resolve().parents[1]/'manifest.json').read_text())['appVersion']
         expected = {'type':'openDevices'}
         if tuple(map(int, version.split('.'))) >= (0,161,0): expected['selection'] = {}
         assert request == expected
+        (root/'devices-opened').write_text('opened')
         response = {'type':'devicesOpened'}
     elif kind == 'setAudioControls':
         assert request['controls']['speakerSuppressed'] is False
@@ -648,6 +669,36 @@ while True:
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn cancellation_before_answer_completion_never_opens_devices() {
+        if !Path::new("/usr/bin/python3").is_file() { return; }
+        let temp = tempfile::tempdir().unwrap();
+        let (_, helper) = package(temp.path(), "0.161.0");
+        std::fs::write(&helper, FAKE_HELPER).unwrap();
+        let manifest = helper.parent().unwrap().parent().unwrap().join("manifest.json");
+        std::fs::write(manifest, json!({"appVersion":"0.161.0"}).to_string()).unwrap();
+        std::fs::write(temp.path().join("stall-answer"), "stall").unwrap();
+        let mut host = NativeHost::open(&helper).await.unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let answer = host.answer("fixture-answer", &cancel);
+        tokio::pin!(answer);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut answer => panic!("answer completed before cancellation: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        if temp.path().join("answer-received").is_file() { break; }
+                    }
+                }
+            }
+        }).await.unwrap();
+        cancel.cancel();
+        std::fs::remove_file(temp.path().join("stall-answer")).unwrap();
+        assert!(answer.await.is_err());
+        assert!(!temp.path().join("devices-opened").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn host_speaks_reference_protocol_and_cancellation_kills_it() {
         if !Path::new("/usr/bin/python3").is_file() {
             return;
@@ -660,7 +711,7 @@ while True:
             std::fs::write(manifest, json!({"appVersion":version}).to_string()).unwrap();
             let mut host = NativeHost::open(&helper).await.unwrap();
             assert_eq!(host.offer().await.unwrap(), "fixture-offer");
-            host.answer("fixture-answer").await.unwrap();
+            host.answer("fixture-answer", &CancellationToken::new()).await.unwrap();
             host.controls(false).await.unwrap();
             assert_eq!(host.levels().await.unwrap(), (1.0, 32768.0 / 65535.0));
             std::fs::write(temp.path().join("stall-controls"), partial_bytes).unwrap();
@@ -678,6 +729,9 @@ while True:
             drop(operation);
             assert!(host.child.is_none());
             assert!(host.controls(false).await.is_err());
+            assert!(host.retiring.is_some());
+            host.shutdown().await.unwrap();
+            assert!(host.retiring.is_none());
         }
     }
 
@@ -702,7 +756,7 @@ while True:
         std::fs::remove_file(temp.path().join("fail-controls")).unwrap();
         let mut host = NativeHost::open(&helper).await.unwrap();
         std::fs::write(temp.path().join("timeout-answer"), "timeout").unwrap();
-        assert_eq!(host.answer("fixture-answer").await.unwrap_err(), "Codex voice helper transport answer timed out");
+        assert_eq!(host.answer("fixture-answer", &CancellationToken::new()).await.unwrap_err(), "Codex voice helper transport answer timed out");
         assert!(host.child.is_none());
         std::fs::remove_file(temp.path().join("timeout-answer")).unwrap();
         let mut host = NativeHost::open(&helper).await.unwrap();

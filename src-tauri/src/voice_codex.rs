@@ -11,7 +11,6 @@ use std::{
     time::Duration,
 };
 
-use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 use tokio::{
@@ -33,11 +32,18 @@ const MAX_PENDING: usize = 256;
 const MAX_TRANSCRIPT: usize = 64 * 1024;
 const MAX_ITEMS: usize = 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CANCELLED: &str = "Codex voice session cancelled";
 
 #[derive(Clone, Default)]
 pub(crate) struct VoiceCodexService {
-    session: Arc<Mutex<Option<SessionSlot>>>,
+    session: Arc<Mutex<SessionState>>,
     start_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Default)]
+struct SessionState {
+    current: Option<SessionSlot>,
+    pending: HashMap<String, (CancellationToken, bool)>,
 }
 
 #[derive(Clone)]
@@ -45,7 +51,7 @@ struct SessionSlot {
     id: String,
     cancel: CancellationToken,
     control: mpsc::Sender<Control>,
-    done: watch::Receiver<bool>,
+    done: watch::Receiver<Option<Result<(), String>>>,
 }
 
 enum Control {
@@ -61,32 +67,31 @@ impl Drop for CancelStart {
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct VoiceCodexStart {
-    session_id: String,
+
+#[tauri::command]
+pub(crate) fn voice_codex_reserve(service: State<'_, VoiceCodexService>) -> Result<String, String> {
+    service.reserve()
 }
 
 #[tauri::command]
 pub(crate) async fn voice_codex_start(
     app: AppHandle,
     service: State<'_, VoiceCodexService>,
-) -> Result<VoiceCodexStart, String> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let cancel = CancellationToken::new();
+    session_id: String,
+) -> Result<(), String> {
+    let cancel = service.claim(&session_id)?;
     let (control, controls) = mpsc::channel(8);
-    let (done, done_rx) = watch::channel(false);
+    let (done, done_rx) = watch::channel(None);
     let (started, result) = oneshot::channel();
     let mut guard = CancelStart(Some(cancel.clone()));
-    service.replace(SessionSlot { id: id.clone(), cancel: cancel.clone(), control, done: done_rx }).await?;
+    let slot = SessionSlot { id: session_id, cancel, control, done: done_rx };
     let service = service.inner().clone();
-    let actor_id = id.clone();
     tauri::async_runtime::spawn(async move {
-        run_session(app, service, actor_id, cancel, controls, started, done).await;
+        run_session(app, service, slot, controls, started, done).await;
     });
     result.await.map_err(|_| "Codex voice session stopped during startup".to_string())??;
     guard.0 = None;
-    Ok(VoiceCodexStart { session_id: id })
+    Ok(())
 }
 
 #[tauri::command]
@@ -104,7 +109,7 @@ pub(crate) async fn voice_codex_mute(
     muted: bool,
 ) -> Result<(), String> {
     let slot = service.session.lock().map_err(|_| "Voice session lock failed")?
-        .as_ref().filter(|slot| slot.id == session_id).cloned()
+        .current.as_ref().filter(|slot| slot.id == session_id).cloned()
         .ok_or_else(|| "Codex voice session is not active".to_string())?;
     let (reply, result) = oneshot::channel();
     timeout(Duration::from_secs(12), async {
@@ -115,28 +120,61 @@ pub(crate) async fn voice_codex_mute(
 }
 
 impl VoiceCodexService {
+    fn reserve(&self) -> Result<String, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.session.lock().map_err(|_| "Voice session lock failed")?
+            .pending.insert(id.clone(), (CancellationToken::new(), false));
+        Ok(id)
+    }
+
+    fn claim(&self, id: &str) -> Result<CancellationToken, String> {
+        let mut state = self.session.lock().map_err(|_| "Voice session lock failed")?;
+        let (cancel, claimed) = state.pending.get_mut(id).ok_or(CANCELLED)?;
+        if *claimed || cancel.is_cancelled() { return Err(CANCELLED.into()); }
+        *claimed = true;
+        Ok(cancel.clone())
+    }
+
     async fn replace(&self, next: SessionSlot) -> Result<(), String> {
         let _start = self.start_lock.lock().await;
-        // Reserve before awaiting cleanup so navigation also cancels a pending replacement.
-        let previous = self.session.lock().map_err(|_| "Voice session lock failed")?.replace(next);
+        let previous = {
+            let mut state = self.session.lock().map_err(|_| "Voice session lock failed")?;
+            let (cancel, claimed) = state.pending.remove(&next.id).ok_or(CANCELLED)?;
+            if !claimed || cancel.is_cancelled() || next.cancel.is_cancelled() {
+                return Err(CANCELLED.into());
+            }
+            state.current.replace(next.clone())
+        };
         if let Some(previous) = previous {
             if let Err(error) = stop_slot(previous.clone()).await {
-                *self.session.lock().map_err(|_| "Voice session lock failed")? = Some(previous);
+                self.session.lock().map_err(|_| "Voice session lock failed")?.current = Some(previous);
                 return Err(error);
             }
+        }
+        if next.cancel.is_cancelled() {
+            self.finish(&next.id);
+            return Err(CANCELLED.into());
         }
         Ok(())
     }
 
     pub(crate) fn cancel(&self) {
-        if let Ok(slot) = self.session.lock() {
-            if let Some(slot) = slot.as_ref() { slot.cancel.cancel(); }
+        if let Ok(mut state) = self.session.lock() {
+            for (_, (cancel, _)) in state.pending.drain() { cancel.cancel(); }
+            if let Some(slot) = state.current.as_ref() { slot.cancel.cancel(); }
         }
     }
 
     async fn stop(&self, id: Option<&str>) -> Result<(), String> {
-        let slot = self.session.lock().map_err(|_| "Voice session lock failed")?
-            .as_ref().filter(|slot| id.is_none_or(|id| id == slot.id)).cloned();
+        let slot = {
+            let mut state = self.session.lock().map_err(|_| "Voice session lock failed")?;
+            if let Some(id) = id {
+                if let Some((cancel, _)) = state.pending.remove(id) { cancel.cancel(); }
+            } else {
+                for (_, (cancel, _)) in state.pending.drain() { cancel.cancel(); }
+            }
+            state.current.as_ref().filter(|slot| id.is_none_or(|id| id == slot.id)).cloned()
+        };
         match slot {
             Some(slot) => stop_slot(slot).await,
             None => Ok(()),
@@ -148,9 +186,9 @@ impl VoiceCodexService {
     }
 
     fn finish(&self, id: &str) {
-        if let Ok(mut slot) = self.session.lock() {
-            if slot.as_ref().is_some_and(|slot| slot.id == id) {
-                *slot = None;
+        if let Ok(mut state) = self.session.lock() {
+            if state.current.as_ref().is_some_and(|slot| slot.id == id) {
+                state.current = None;
             }
         }
     }
@@ -160,18 +198,96 @@ impl VoiceCodexService {
 mod session_tests {
     use super::*;
 
-    fn slot(id: &str) -> (SessionSlot, watch::Sender<bool>) {
+    fn slot(id: &str) -> (SessionSlot, watch::Sender<Option<Result<(), String>>>) {
         let (control, _) = mpsc::channel(1);
-        let (done, done_rx) = watch::channel(false);
+        let (done, done_rx) = watch::channel(None);
         (SessionSlot { id: id.into(), cancel: CancellationToken::new(), control, done: done_rx }, done)
     }
+
+    fn reserved_slot(service: &VoiceCodexService) -> (SessionSlot, watch::Sender<Option<Result<(), String>>>) {
+        let id = service.reserve().unwrap();
+        let (mut slot, done) = slot(&id);
+        slot.cancel = service.claim(&id).unwrap();
+        (slot, done)
+    }
+
+    #[tokio::test]
+    async fn stop_before_start_claim_prevents_a_late_start() {
+        let service = VoiceCodexService::default();
+        let id = service.reserve().unwrap();
+        service.stop(Some(&id)).await.unwrap();
+        assert!(service.claim(&id).is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_after_claim_before_registration_prevents_media_start() {
+        let service = VoiceCodexService::default();
+        let id = service.reserve().unwrap();
+        let cancel = service.claim(&id).unwrap();
+        let (mut pending, _done) = slot(&id);
+        pending.cancel = cancel;
+        service.stop(Some(&id)).await.unwrap();
+        assert!(service.replace(pending).await.is_err());
+        assert!(service.session.lock().unwrap().current.is_none());
+    }
+
+    #[tokio::test]
+    async fn reload_cancels_starts_waiting_for_the_start_lock() {
+        let service = VoiceCodexService::default();
+        let id = service.reserve().unwrap();
+        let cancel = service.claim(&id).unwrap();
+        let (mut pending, _done) = slot(&id);
+        pending.cancel = cancel;
+        let lock = service.start_lock.lock().await;
+        let replacement = service.replace(pending);
+        tokio::pin!(replacement);
+        tokio::select! {
+            biased;
+            result = &mut replacement => panic!("started while lock was held: {result:?}"),
+            _ = tokio::task::yield_now() => {}
+        }
+        service.cancel();
+        drop(lock);
+        assert!(replacement.await.is_err());
+        assert!(service.session.lock().unwrap().current.is_none());
+    }
+
+    #[tokio::test]
+    async fn lost_cleanup_confirmation_blocks_replacement() {
+        let service = VoiceCodexService::default();
+        let old_id = service.reserve().unwrap();
+        let old_cancel = service.claim(&old_id).unwrap();
+        let (mut old, done) = slot(&old_id);
+        old.cancel = old_cancel;
+        service.replace(old).await.unwrap();
+        drop(done);
+        let next_id = service.reserve().unwrap();
+        let next_cancel = service.claim(&next_id).unwrap();
+        let (mut next, _next_done) = slot(&next_id);
+        next.cancel = next_cancel;
+        assert!(service.replace(next).await.is_err());
+        assert_eq!(service.session.lock().unwrap().current.as_ref().unwrap().id, old_id);
+    }
+
+    #[tokio::test]
+    async fn failed_cleanup_blocks_replacement_and_preserves_the_old_slot() {
+        let service = VoiceCodexService::default();
+        let (old, done) = reserved_slot(&service);
+        service.replace(old.clone()).await.unwrap();
+        done.send(Some(Err("cleanup failed".into()))).unwrap();
+        let (next, _next_done) = reserved_slot(&service);
+        assert_eq!(service.replace(next).await.unwrap_err(), "cleanup failed");
+        assert_eq!(service.session.lock().unwrap().current.as_ref().unwrap().id, old.id);
+        assert_eq!(service.shutdown().await.unwrap_err(), "cleanup failed");
+    }
+
 
     #[tokio::test]
     async fn replacement_waits_for_cleanup_and_late_old_stop_cannot_cancel_it() {
         let service = VoiceCodexService::default();
-        let (old, done) = slot("old");
+        let (old, done) = reserved_slot(&service);
         service.replace(old.clone()).await.unwrap();
-        let (next, _next_done) = slot("next");
+        let (next, _next_done) = reserved_slot(&service);
         let replacement = service.replace(next.clone());
         tokio::pin!(replacement);
         tokio::select! {
@@ -179,11 +295,11 @@ mod session_tests {
             result = &mut replacement => panic!("started before cleanup: {result:?}"),
             _ = old.cancel.cancelled() => {}
         }
-        service.finish("old");
-        assert_eq!(service.session.lock().unwrap().as_ref().unwrap().id, "next");
-        done.send(true).unwrap();
+        service.finish(&old.id);
+        assert_eq!(service.session.lock().unwrap().current.as_ref().unwrap().id, next.id);
+        done.send(Some(Ok(()))).unwrap();
         replacement.await.unwrap();
-        service.stop(Some("old")).await.unwrap();
+        service.stop(Some(&old.id)).await.unwrap();
         assert!(!next.cancel.is_cancelled());
         service.cancel();
         assert!(next.cancel.is_cancelled());
@@ -192,9 +308,9 @@ mod session_tests {
     #[tokio::test]
     async fn page_reload_cancels_the_reserved_start_while_previous_session_closes() {
         let service = VoiceCodexService::default();
-        let (old, done) = slot("old");
+        let (old, done) = reserved_slot(&service);
         service.replace(old.clone()).await.unwrap();
-        let (next, _next_done) = slot("next");
+        let (next, _next_done) = reserved_slot(&service);
         let replacement = service.replace(next.clone());
         tokio::pin!(replacement);
         tokio::select! {
@@ -204,20 +320,20 @@ mod session_tests {
         }
         service.cancel();
         assert!(next.cancel.is_cancelled());
-        done.send(true).unwrap();
-        replacement.await.unwrap();
-        service.finish("next");
-        assert!(service.session.lock().unwrap().is_none());
+        done.send(Some(Ok(()))).unwrap();
+        assert!(replacement.await.is_err());
+        assert!(service.session.lock().unwrap().current.is_none());
     }
 }
 
 async fn stop_slot(mut slot: SessionSlot) -> Result<(), String> {
     slot.cancel.cancel();
     timeout(Duration::from_secs(5), async {
-        while !*slot.done.borrow_and_update() {
-            if slot.done.changed().await.is_err() { break; }
+        loop {
+            if let Some(result) = slot.done.borrow_and_update().clone() { return result; }
+            slot.done.changed().await.map_err(|_| "Codex voice cleanup confirmation was lost".to_string())?;
         }
-    }).await.map_err(|_| "Codex voice cleanup timed out".to_string())
+    }).await.map_err(|_| "Codex voice cleanup timed out".to_string())?
 }
 
 fn emit(app: &AppHandle, id: &str, mut event: Value) {
@@ -228,17 +344,24 @@ fn emit(app: &AppHandle, id: &str, mut event: Value) {
 async fn run_session(
     app: AppHandle,
     service: VoiceCodexService,
-    id: String,
-    cancel: CancellationToken,
+    slot: SessionSlot,
     mut controls: mpsc::Receiver<Control>,
     started: oneshot::Sender<Result<(), String>>,
-    done: watch::Sender<bool>,
+    done: watch::Sender<Option<Result<(), String>>>,
 ) {
+    if let Err(error) = service.replace(slot.clone()).await {
+        let cleanup = if error == CANCELLED { Ok(()) } else { Err(error.clone()) };
+        let _ = done.send(Some(cleanup));
+        let _ = started.send(Err(error));
+        return;
+    }
+    let id = slot.id;
+    let cancel = slot.cancel;
     let mut runtime = Runtime::default();
     let setup = tokio::select! {
         biased;
-        _ = cancel.cancelled() => Err("Codex voice session cancelled".to_string()),
-        result = runtime.start(&app, &id) => result,
+        _ = cancel.cancelled() => Err(CANCELLED.to_string()),
+        result = runtime.start(&app, &id, &cancel) => result,
     };
     match setup {
         Ok(early) => {
@@ -247,18 +370,18 @@ async fn run_session(
                 cancel.cancel();
             }
             let error = runtime.run(&app, &id, &cancel, &mut controls, early).await.err();
-            runtime.close().await;
-            service.finish(&id);
-            let _ = done.send(true);
+            let cleanup = runtime.close().await;
+            if cleanup.is_ok() { service.finish(&id); }
+            let _ = done.send(Some(cleanup.clone()));
             let mut event = json!({"type":"closed"});
-            if let Some(error) = error { event["error"] = json!(error); }
+            if let Some(error) = cleanup.err().or(error) { event["error"] = json!(error); }
             emit(&app, &id, event);
         }
         Err(error) => {
-            runtime.close().await;
-            service.finish(&id);
-            let _ = done.send(true);
-            let _ = started.send(Err(error));
+            let cleanup = runtime.close().await;
+            if cleanup.is_ok() { service.finish(&id); }
+            let _ = done.send(Some(cleanup.clone()));
+            let _ = started.send(Err(cleanup.err().unwrap_or(error)));
         }
     }
 }
@@ -274,7 +397,7 @@ struct Runtime {
 }
 
 impl Runtime {
-    async fn start(&mut self, app: &AppHandle, session: &str) -> Result<VecDeque<Value>, String> {
+    async fn start(&mut self, app: &AppHandle, session: &str, cancel: &CancellationToken) -> Result<VecDeque<Value>, String> {
         let def = get_agent_def("codex").ok_or_else(|| "unavailable: Codex is not registered".to_string())?;
         let resolved = timeout(Duration::from_secs(15), resolve_binary(def)).await.ok().flatten();
         let (binary, helper) = native::discover(resolved.as_deref().unwrap_or_else(|| Path::new("")))?;
@@ -367,7 +490,7 @@ impl Runtime {
             Ok::<(), String>(())
         }).await.map_err(|_| "Codex voice signaling timed out".to_string())??;
         let host = self.host.as_mut().unwrap();
-        host.answer(answer.as_deref().unwrap()).await?;
+        host.answer(answer.as_deref().unwrap(), cancel).await?;
         host.controls(false).await?;
         Ok(early)
     }
@@ -434,8 +557,12 @@ impl Runtime {
         }
     }
 
-    async fn close(&mut self) {
-        if let Some(mut host) = self.host.take() { host.close(); }
+    async fn close(&mut self) -> Result<(), String> {
+        let cleanup = match self.host.as_mut() {
+            Some(host) => host.shutdown().await,
+            None => Ok(()),
+        };
+        self.host.take();
         self.mcp.take();
         if self.server_started {
             if let (Some(rpc), Some(thread)) = (self.rpc.as_mut(), self.thread.as_ref()) {
@@ -444,6 +571,7 @@ impl Runtime {
         }
         self.rpc.take();
         self.cwd.take();
+        cleanup
     }
 }
 

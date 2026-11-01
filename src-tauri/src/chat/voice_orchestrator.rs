@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -78,25 +79,13 @@ pub(crate) async fn ensure_brain_conversation(
     }
 
     if let Some((id, _)) = latest {
-        if let Some(_reservation) = crate::chat::commands::ChatSendReservation::try_acquire(state.inner(), &id) {
+        reuse_brain_conversation(state.inner(), &id, async {
             repository(app)
-                .mutate(app, &id, |conversation| {
-                    if !is_brain_conversation(conversation) {
-                        return Err("语音编排对话已被修改，请重试".into());
-                    }
-                    conversation.provider_id = provider_id;
-                    conversation.model = model;
-                    conversation.agent_runtime = AgentRuntimeConfig::default();
-                    conversation.agent_plan_state = crate::chat::plan::with_mode(
-                        &conversation.agent_plan_state,
-                        AgentPlanMode::Act,
-                    );
-                    conversation.archived = false;
-                    Ok(())
-                })
+                .mutate(app, &id, |conversation| configure_brain(conversation, provider_id, model))
                 .await
-                .map_err(repository_error)?;
-        }
+                .map(|_| ())
+                .map_err(repository_error)
+        }).await?;
         return Ok(id);
     }
 
@@ -126,6 +115,35 @@ pub(crate) async fn ensure_brain_conversation(
     Ok(conversation.id)
 }
 
+fn configure_brain(
+    conversation: &mut Conversation,
+    provider_id: String,
+    model: String,
+) -> Result<(), String> {
+    if !is_brain_conversation(conversation) {
+        return Err("语音编排对话已被修改，请重试".into());
+    }
+    conversation.provider_id = provider_id;
+    conversation.model = model;
+    conversation.agent_runtime = AgentRuntimeConfig::default();
+    conversation.agent_plan_state = crate::chat::plan::with_mode(
+        &conversation.agent_plan_state,
+        AgentPlanMode::Act,
+    );
+    conversation.archived = false;
+    Ok(())
+}
+
+async fn reuse_brain_conversation(
+    state: &AppState,
+    id: &str,
+    update: impl Future<Output = Result<(), String>>,
+) -> Result<(), String> {
+    let _reservation = crate::chat::commands::ChatSendReservation::try_acquire(state, id)
+        .ok_or_else(|| "语音编排对话正在生成中，请稍后再试".to_string())?;
+    update.await
+}
+
 fn nonempty(value: Option<&str>) -> Option<String> {
     value.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
 }
@@ -153,13 +171,41 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
     result
 }
 
-fn answer_for_message(messages: &[ChatMessage], user_id: &str) -> Result<String, String> {
-    let start = messages.iter().position(|message| message.id == user_id)
+fn answer_for_message(conversation: &Conversation, user_id: &str) -> Result<String, String> {
+    let start = conversation.messages.iter().position(|message| message.id == user_id)
         .ok_or_else(|| "消息未发送到对话".to_string())?;
-    let answer = messages[start + 1..].iter()
+    let mut first_success = None;
+    let mut last_failure = None;
+    let mut last_answer = None;
+    for answer in conversation.messages[start + 1..].iter()
         .take_while(|message| message.role != "user")
         .filter(|message| message.role == "assistant")
-        .last()
+    {
+        last_answer = Some(answer);
+        if answer.degraded.is_some()
+            || answer.stream_outcome.as_deref().is_some_and(|outcome| outcome != "completed")
+        {
+            last_failure = Some(answer);
+            continue;
+        }
+        let content = answer.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if answer.group_id.as_ref()
+            .and_then(|group| conversation.group_selections.get(group))
+            .is_some_and(|selected| selected == &answer.id)
+        {
+            return Ok(content.to_string());
+        }
+        if first_success.is_none() {
+            first_success = Some(content);
+        }
+    }
+    if let Some(content) = first_success {
+        return Ok(content.to_string());
+    }
+    let answer = last_failure.or(last_answer)
         .ok_or_else(|| "回复未完成或已取消".to_string())?;
     if let Some(degraded) = answer.degraded.as_ref() {
         return Err(degraded.reason.clone());
@@ -187,7 +233,7 @@ async fn send_and_answer(app: &AppHandle, id: &str, request: String) -> Result<S
         QueuedSendOutcome::Cancelled => return Err("发送已取消".into()),
     };
     let conversation = repository(app).get(app, id).await.map_err(repository_error)?;
-    answer_for_message(&conversation.messages, &user_id)
+    answer_for_message(&conversation, &user_id)
 }
 
 pub(crate) async fn delegate(app: &AppHandle, conversation_id: &str, request: String) -> Result<String, String> {
@@ -372,6 +418,82 @@ mod tests {
         serde_json::from_value(json!({"id": id, "role": role, "content": content, "timestamp": 1, "stream_outcome": outcome})).unwrap()
     }
 
+    fn test_conversation(messages: Vec<ChatMessage>) -> Conversation {
+        serde_json::from_value(json!({
+            "id": "voice-conversation",
+            "title": "voice",
+            "provider_id": "old-provider",
+            "model": "old-model",
+            "messages": messages,
+            "created_at": 1,
+            "updated_at": 1
+        })).unwrap()
+    }
+
+    fn grouped_message(id: &str, role: &str, content: &str, outcome: Option<&str>) -> ChatMessage {
+        let mut message = message(id, role, content, outcome);
+        message.group_id = Some("group".into());
+        message
+    }
+
+    fn degraded_message(id: &str, reason: &str) -> ChatMessage {
+        let mut answer = grouped_message(id, "assistant", "partial answer", Some("completed"));
+        answer.degraded = Some(serde_json::from_value(json!({
+            "kind": "unknown",
+            "reason": reason,
+            "text": reason
+        })).unwrap());
+        answer
+    }
+
+    #[tokio::test]
+    async fn busy_brain_reconnect_reports_error_and_retry_applies_model() {
+        let state = crate::state::test_app_state();
+        let id = "voice-conversation";
+        let reservation = crate::chat::commands::ChatSendReservation::try_acquire(&state, id).unwrap();
+        let mut brain = test_conversation(Vec::new());
+        brain.assistant_snapshot = Some(brain_snapshot());
+        brain.archived = true;
+
+        let result = reuse_brain_conversation(&state, id, async {
+            configure_brain(&mut brain, "new-provider".into(), "new-model".into())
+        }).await;
+        assert!(result.unwrap_err().contains("正在生成中"));
+        assert_eq!(brain.provider_id, "old-provider");
+        assert_eq!(brain.model, "old-model");
+        assert!(brain.archived);
+
+        drop(reservation);
+        let result = reuse_brain_conversation(&state, id, async {
+            assert!(crate::chat::commands::ChatSendReservation::try_acquire(&state, id).is_none());
+            configure_brain(&mut brain, "new-provider".into(), "new-model".into())
+        }).await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(brain.provider_id, "new-provider");
+        assert_eq!(brain.model, "new-model");
+        assert!(!brain.archived);
+        assert!(crate::chat::commands::ChatSendReservation::try_acquire(&state, id).is_some());
+    }
+
+    #[tokio::test]
+    async fn brain_reconnect_propagates_update_error_and_releases_reservation() {
+        let state = crate::state::test_app_state();
+        let id = "voice-conversation";
+        let result = reuse_brain_conversation(&state, id, async {
+            Err("保存失败".to_string())
+        }).await;
+        assert_eq!(result.unwrap_err(), "保存失败");
+
+        let mut changed = test_conversation(Vec::new());
+        let result = reuse_brain_conversation(&state, id, async {
+            configure_brain(&mut changed, "new-provider".into(), "new-model".into())
+        }).await;
+        assert_eq!(result.unwrap_err(), "语音编排对话已被修改，请重试");
+        assert_eq!(changed.provider_id, "old-provider");
+        assert_eq!(changed.model, "old-model");
+        assert!(crate::chat::commands::ChatSendReservation::try_acquire(&state, id).is_some());
+    }
+
     #[test]
     fn truncation_counts_unicode_characters_including_ellipsis() {
         assert_eq!(truncate_text("  一二三  ", 3), "一二三");
@@ -389,14 +511,84 @@ mod tests {
 
     #[test]
     fn reply_is_bound_to_its_user_message_and_failed_replies_are_errors() {
-        let messages = vec![
+        let conversation = test_conversation(vec![
             message("u1", "user", "same", None),
             message("a1", "assistant", " first ", Some("completed")),
             message("u2", "user", "same", None),
             message("a2", "assistant", "cancelled", Some("cancelled")),
-        ];
-        assert_eq!(answer_for_message(&messages, "u1").unwrap(), "first");
-        assert!(answer_for_message(&messages, "u2").is_err());
-        assert!(answer_for_message(&messages, "missing").is_err());
+        ]);
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "first");
+        assert_eq!(answer_for_message(&conversation, "u2").unwrap_err(), "cancelled");
+        assert_eq!(answer_for_message(&conversation, "missing").unwrap_err(), "消息未发送到对话");
+    }
+
+    #[test]
+    fn partial_fan_out_prefers_selected_success_then_first_success() {
+        let mut conversation = test_conversation(vec![
+            grouped_message("u1", "user", "question", None),
+            grouped_message("failed", "assistant", "provider failed", Some("error")),
+            grouped_message("blank", "assistant", "  ", Some("completed")),
+            degraded_message("degraded", "provider degraded"),
+            grouped_message("success1", "assistant", " first answer ", Some("completed")),
+            grouped_message("success2", "assistant", "second answer", Some("completed")),
+            grouped_message("cancelled", "assistant", "cancelled", Some("cancelled")),
+        ]);
+
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "first answer");
+        conversation.group_selections.insert("group".into(), "success2".into());
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "second answer");
+        conversation.group_selections.insert("group".into(), "failed".into());
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "first answer");
+
+        conversation.messages[4].stream_outcome = None;
+        conversation.group_selections.insert("group".into(), "success1".into());
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "first answer");
+    }
+
+    #[test]
+    fn all_failed_answers_preserve_error_cancel_and_degradation() {
+        let mut conversation = test_conversation(vec![
+            grouped_message("u1", "user", "question", None),
+            grouped_message("first", "assistant", "first error", Some("error")),
+            grouped_message("last", "assistant", "specific provider error", Some("error")),
+        ]);
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap_err(), "specific provider error");
+
+        conversation.messages.push(grouped_message("blank", "assistant", "  ", Some("completed")));
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap_err(), "specific provider error");
+        conversation.messages.push(grouped_message("cancelled", "assistant", "", Some("cancelled")));
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap_err(), "回复失败或已取消");
+        conversation.messages.push(degraded_message("degraded", "specific degraded reason"));
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap_err(), "specific degraded reason");
+
+        let only_blank = test_conversation(vec![
+            message("u1", "user", "question", None),
+            message("blank", "assistant", " \n", Some("completed")),
+        ]);
+        assert_eq!(answer_for_message(&only_blank, "u1").unwrap_err(), "回复为空");
+    }
+
+    #[test]
+    fn answer_selection_never_crosses_next_user_turn() {
+        let mut conversation = test_conversation(vec![
+            grouped_message("u1", "user", "first", None),
+            grouped_message("a1", "assistant", "first answer", Some("completed")),
+            grouped_message("u2", "user", "second", None),
+            grouped_message("error2", "assistant", "second failed", Some("error")),
+            grouped_message("u3", "user", "third", None),
+            grouped_message("a3", "assistant", "third answer", Some("completed")),
+        ]);
+        conversation.group_selections.insert("group".into(), "a3".into());
+        assert_eq!(answer_for_message(&conversation, "u1").unwrap(), "first answer");
+        assert_eq!(answer_for_message(&conversation, "u2").unwrap_err(), "second failed");
+        assert_eq!(answer_for_message(&conversation, "u3").unwrap(), "third answer");
+
+        let empty = test_conversation(vec![
+            message("u1", "user", "first", None),
+            message("u2", "user", "second", None),
+            message("a2", "assistant", "later answer", None),
+        ]);
+        assert_eq!(answer_for_message(&empty, "u1").unwrap_err(), "回复未完成或已取消");
+        assert_eq!(answer_for_message(&empty, "u2").unwrap(), "later answer");
     }
 }

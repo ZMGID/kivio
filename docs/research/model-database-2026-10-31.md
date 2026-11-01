@@ -1,6 +1,12 @@
 # 模型库更新 — 2026-10-31
 
-## 当前：仅修正 OpenAI 上下文（2026-10-31.3）
+## 本地修复：容量一致性（2026-11-01.1）
+
+内置快照修正两条容量矛盾：[Meta Llama 3 官方模型卡](https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md)确认 8K 窗口，将 `meta-llama/llama-3-8b-instruct` 的 `maxOutput` 从 16,384 恢复为 8,192；[Ministral 3 3B 官方资料](https://docs.mistral.ai/models/ministral-3-3b-25-12)确认 256K 窗口，将 `ministral-3b-2512` 的 `contextWindow` 从 131,072 修正为 262,144，保留已有输出上限。其他模型和价格不变。
+
+发布脚本及原生下载校验拒绝「已知正数上下文容量小于最大输出」的数据；容量为 0 的未知窗口不据此拒绝。非法下载不覆盖当前快照或缓存，用户覆盖仍保留。内置版本递增为 `2026-11-01.1`；本次没有向独立模型库仓库发布，`.source.json` 继续记录补丁前的上游来源，而非声称存在新的远端提交。
+
+## 此前：仅修正 OpenAI 上下文（2026-10-31.3）
 
 近期 OpenAI 型号及已确认别名的 contextWindow 统一采用 Codex 当前窗口：GPT-6.1 Terra / Sol 为 500K；GPT-6 Astra / Sol / Luna 与 GPT-5.6 Sol / Terra / Luna 为 272K。本机 Codex 0.166.0 在 2026-10-31T08:11:50.995338700Z 刷新的目录确认这些值，仅提取型号与窗口保存到模型库 sources/codex-models-2026-10-31.json。发布数据仅变更 38 条记录的 contextWindow 及版本号，其他参数保留 .2；没有新增模型或计费改动。用户覆盖仍优先，已有客户端更新模型库即可取得这些默认值。
 
