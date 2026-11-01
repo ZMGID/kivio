@@ -1,7 +1,8 @@
 // Right Dock 容器：tab 条（文件树 / Git / 终端 / 任务）+ 常驻面板 + 左缘拖拽调宽 + 折叠滑出。
 // 宽度通过 CSS 变量 --chat-dock-width 直写（拖拽过程不触发 React 重渲），松手才持久化。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { Activity, FolderTree, GitBranch, Plus, Terminal, X } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Activity, FolderTree, GitBranch, PanelRightClose, Plus, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { FileTreePanel } from './FileTreePanel'
@@ -39,6 +40,7 @@ export type DockPreviewRequest =
 
 type RightDockProps = {
   open: boolean
+  toolbarHost?: HTMLDivElement | null
   width: number
   activeTab: DockTab
   workdir: string
@@ -59,6 +61,7 @@ type RightDockProps = {
 
 export const RightDock = memo(function RightDock({
   open,
+  toolbarHost,
   width,
   activeTab,
   workdir,
@@ -87,6 +90,7 @@ export const RightDock = memo(function RightDock({
 
       const applyWidth = (nextWidth: number) => {
         shellRef.current?.style.setProperty('--chat-dock-width', `${nextWidth}px`)
+        toolbarHost?.parentElement?.style.setProperty('--chat-dock-width', `${nextWidth}px`)
       }
 
       const onMove = (moveEvent: PointerEvent) => {
@@ -116,7 +120,7 @@ export const RightDock = memo(function RightDock({
       window.addEventListener('pointermove', onMove)
       window.addEventListener('pointerup', onUp)
     },
-    [width, onWidthChange],
+    [width, onWidthChange, toolbarHost],
   )
 
   // 启动页：没有已打开面板，或点了 + 时显示；此时所有面板都不算活动。
@@ -174,31 +178,19 @@ export const RightDock = memo(function RightDock({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, showLauncher, chooseEntry])
-  return (
-    <aside
-      ref={shellRef}
-      className={`chat-dock-shell relative flex min-h-0 shrink-0 flex-col overflow-hidden${open ? '' : ' is-collapsed'}`}
-      style={{ ['--chat-dock-width' as string]: `${width}px` }}
-      aria-hidden={!open}
-    >
-      {/* 左缘拖拽手柄 */}
-      <div
-        className="absolute bottom-0 left-0 top-0 z-20 w-[6px] cursor-col-resize"
-        onPointerDown={handleResizeStart}
-      />
-
-      {/* 顶栏：+ 打开启动页；只显示已打开的面板 tab */}
-      <div className="flex shrink-0 items-center gap-1 px-3 pb-1 pt-2.5">
+  const toolbar = (
+      <div className="flex min-h-10 shrink-0 items-center gap-1 px-2 py-1" data-tauri-drag-region>
         <IconButton label={t.dockNewTab} size="sm" variant="ghost" onClick={() => setLauncher(true)}>
           <Plus size={14} />
         </IconButton>
+        <div className="custom-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {openTabs.map((tab) => {
           const entry = DOCK_ENTRIES.find((x) => x.tab === tab)!
           const Icon = entry.icon
           return (
             <div
               key={tab}
-              className={`flex items-center gap-1 rounded-lg pl-2.5 pr-1 text-[12.5px] transition-colors ${
+              className={`flex shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1 text-[12.5px] transition-colors ${
                 shown === tab
                   ? 'bg-[var(--accent-soft)] font-medium text-neutral-900 dark:text-neutral-100'
                   : 'text-neutral-500 hover:bg-neutral-500/8 hover:text-neutral-700 dark:text-neutral-400'
@@ -219,31 +211,45 @@ export const RightDock = memo(function RightDock({
             </div>
           )
         })}
-        <div className="flex-1" />
+        </div>
         <IconButton label={t.dockClose} size="sm" variant="ghost" onClick={onClose}>
-          <X size={13} />
+          <PanelRightClose size={15} />
         </IconButton>
       </div>
+  )
+  return (
+    <aside
+      ref={shellRef}
+      className={`chat-dock-shell relative flex min-h-0 shrink-0 flex-col overflow-hidden${open ? '' : ' is-collapsed'}`}
+      style={{ ['--chat-dock-width' as string]: `${width}px` }}
+      aria-hidden={!open}
+    >
+      {/* 左缘拖拽手柄 */}
+      <div
+        className="absolute bottom-0 left-0 top-0 z-20 w-[6px] cursor-col-resize"
+        onPointerDown={handleResizeStart}
+      />
+
+      {toolbarHost ? (open && createPortal(toolbar, toolbarHost)) : toolbar}
 
       {showLauncher && (
-        <div className="flex min-h-0 flex-1 flex-col justify-center px-8 pb-16">
-          <div className="mb-4 text-center text-[14px] font-semibold text-neutral-900 dark:text-neutral-100">
-            {t.dockLauncherTitle}
+        <div className="chat-dock-launcher custom-scrollbar">
+          <div className="chat-dock-launcher-content">
+            <h2 className="chat-dock-launcher-title">{t.dockLauncherTitle}</h2>
+            {DOCK_ENTRIES.map(({ tab, key, icon: Icon, label }) => (
+              <button
+                key={tab}
+                type="button"
+                className="chat-dock-launcher-entry"
+                aria-keyshortcuts={key}
+                onClick={() => chooseEntry(tab)}
+              >
+                <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+                <span>{t[label]}</span>
+                <kbd>{key}</kbd>
+              </button>
+            ))}
           </div>
-          {DOCK_ENTRIES.map(({ tab, key, icon: Icon, label }) => (
-            <button
-              key={tab}
-              type="button"
-              className="flex items-center gap-3 rounded-lg px-2 py-2 text-left text-[14px] text-neutral-800 transition-colors hover:bg-neutral-500/8 dark:text-neutral-200"
-              onClick={() => chooseEntry(tab)}
-            >
-              <Icon size={17} strokeWidth={1.75} />
-              <span className="flex-1">{t[label]}</span>
-              <kbd className="rounded-md bg-neutral-500/10 px-2 py-0.5 text-[11.5px] font-medium uppercase text-neutral-500">
-                {key}
-              </kbd>
-            </button>
-          ))}
         </div>
       )}
 

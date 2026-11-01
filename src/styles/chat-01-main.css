@@ -264,6 +264,63 @@
   pointer-events: none;
 }
 
+.chat-dock-launcher {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 32px;
+}
+
+.chat-dock-launcher-content {
+  width: 100%;
+  max-width: 280px;
+  margin: auto;
+  padding-bottom: clamp(32px, 12vh, 128px);
+}
+
+.chat-dock-launcher-title {
+  margin: 0 0 16px;
+  color: var(--text);
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.chat-dock-launcher-entry {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  line-height: 20px;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.chat-dock-launcher-entry:hover {
+  background: var(--theme-surface-hover);
+}
+
+.chat-dock-launcher-entry kbd {
+  display: grid;
+  place-items: center;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--theme-surface-muted);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
 .chat-composer-shell {
   background: var(--theme-surface);
 }
@@ -903,6 +960,7 @@ button.chat-composer-status-item:hover {
 .chat-window-host--native-effect .settings-embedded-nav,
 .chat-window-host--native-effect .chat-sidebar-shell,
 .chat-window-host--native-effect .chat-titlebar-strip-nav--reserve,
+.chat-window-host--native-effect .chat-titlebar-strip-dock,
 .chat-window-host--native-effect .chat-dock-shell {
   background: color-mix(in srgb, var(--theme-surface-soft) 72%, transparent);
 }
@@ -911,6 +969,7 @@ button.chat-composer-status-item:hover {
 .dark .chat-window-host--native-effect .settings-embedded-nav,
 .dark .chat-window-host--native-effect .chat-sidebar-shell,
 .dark .chat-window-host--native-effect .chat-titlebar-strip-nav--reserve,
+.dark .chat-window-host--native-effect .chat-titlebar-strip-dock,
 .dark .chat-window-host--native-effect .chat-dock-shell {
   background: color-mix(in srgb, var(--theme-surface-soft) 48%, transparent);
 }

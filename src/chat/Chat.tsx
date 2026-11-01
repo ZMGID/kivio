@@ -346,6 +346,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useChatPerfRenderProbe('Chat', { view: hashPath() })
   useChatPerfLongTaskProbe()
   const extensions = useExtensions()
+  const [dockToolbarHost, setDockToolbarHost] = useState<HTMLDivElement | null>(null)
   const extensionId = extensionIdForPath(useExtensionPath())
   useEffect(() => { void initializeExtensions().catch(() => {}) }, [])
   const [chatView, setChatView] = useState<ChatView>(() => {
@@ -2926,6 +2927,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           settingsMode={settingsPanelActive}
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
+          dockVisible={chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && dockOpen}
+          dockWidth={dock.width}
+          dockToolbarRef={setDockToolbarHost}
         >
           {chatView === 'conversation' ? conversationTitlebarControls : null}
         </ChatTitlebar>
@@ -3166,6 +3170,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           <RightDock
             subAgentRequest={dock.subAgentRequest}
             open={dockOpen}
+            toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
             width={dock.width}
             activeTab={dock.tab}
             workdir={dockWorkdir}

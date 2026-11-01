@@ -120,13 +120,12 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             </IconButton>
           </div>
         )}
-        {!usesChatRuntime && (
+        {!usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <IconButton
               label={i18n[uiLang].dockToggle}
               size="sm"
               variant="ghost"
-              className={dockOpen ? 'bg-neutral-900/5 text-neutral-800' : ''}
               onClick={onToggleDock}
             >
               <PanelRight size={15} />

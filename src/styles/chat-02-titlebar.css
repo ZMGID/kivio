@@ -95,6 +95,25 @@
   padding-left: 8px;
 }
 
+.chat-titlebar-strip-dock {
+  display: flex;
+  flex-shrink: 0;
+  align-self: stretch;
+  align-items: center;
+  width: var(--chat-dock-width);
+  border-left: 1px solid var(--theme-surface-border);
+  background: var(--theme-surface-soft);
+}
+
+.chat-titlebar-dock-tools {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-titlebar-dock-tools > div {
+  min-width: 0;
+}
+
 /* 独立窗口沿用主窗口的顶栏底色，由外壳统一处理 Mica 和深浅色。
    顶栏仍占独立一行；提高层级仅用于保证下拉菜单显示在正文之上。 */
 .chat-titlebar-strip--popout {

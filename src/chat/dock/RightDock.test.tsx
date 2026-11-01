@@ -62,6 +62,25 @@ function dockProps(overrides: Partial<ComponentProps<typeof RightDock>> = {}): C
 }
 
 describe('RightDock tabs', () => {
+  it('opens panels from the window toolbar and removes its controls when collapsed', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    try {
+      const props = dockProps({ toolbarHost: host })
+      const view = render(<RightDock {...props} />)
+      fireEvent.click(screen.getByText('文件'))
+      expect(screen.getByTestId('files-panel')).toHaveAttribute('data-active', 'true')
+      fireEvent.click(host.querySelector<HTMLButtonElement>('[aria-label="打开面板"]')!)
+      expect(screen.getByRole('button', { name: '终端 t' })).toBeVisible()
+      view.rerender(<RightDock {...props} open={false} />)
+      expect(host.querySelector('button')).toBeNull()
+      view.rerender(<RightDock {...props} open />)
+      expect(host.querySelector('[aria-label="打开面板"]')).not.toBeNull()
+    } finally {
+      host.remove()
+    }
+  })
+
   it('shows parent commands only in the task list, never inside a child detail', async () => {
     render(<RightDock {...dockProps({ activeTab: 'tasks' })} />)
     fireEvent.click(screen.getByText('任务'))
