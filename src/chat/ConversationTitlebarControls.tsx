@@ -129,7 +129,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               variant="ghost"
               onClick={onToggleDock}
               className="group"
-              aria-pressed={dockOpen}
+              aria-expanded={dockOpen}
             >
               <SidebarToggleIcon side="right" open={dockOpen} />
             </IconButton>

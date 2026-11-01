@@ -28,7 +28,7 @@ export function ChatTitlebarActions({
         size="sm"
         onClick={onToggleSidebar}
         className="group"
-        aria-pressed={sidebarExpanded}
+        aria-expanded={sidebarExpanded}
       >
         <SidebarToggleIcon side="left" open={sidebarExpanded} />
       </IconButton>

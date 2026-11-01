@@ -217,7 +217,7 @@ export const RightDock = memo(function RightDock({
           )
         })}
         </div>
-        <IconButton label={t.dockClose} size="sm" variant="ghost" className="group" aria-pressed={open} onClick={onClose}>
+        <IconButton label={t.dockClose} size="sm" variant="ghost" className="group" aria-expanded={open} onClick={onClose}>
           <SidebarToggleIcon side="right" open={open} />
         </IconButton>
       </div>
