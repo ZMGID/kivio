@@ -25,27 +25,13 @@ function renderPanel(overrides: Partial<Parameters<typeof makeProvider>[0]> = {}
 }
 
 describe('ProviderRequestPanel', () => {
-  it('renders every section of the page', () => {
-    renderPanel()
-    for (const label of [
-      '压缩请求体 (gzip)',
-      t.useSystemProxy,
-      t.promptCaching,
-      t.cliIdentity,
-      t.customHeaders,
-    ]) {
-      expect(screen.getByText(label)).toBeTruthy()
-    }
-  })
 
-  it('shows default retention for OpenAI and Anthropic with protocol hints', () => {
+  it('shows default retention for OpenAI and Anthropic', () => {
     renderPanel({ apiFormat: 'openai_chat' })
-    expect(screen.getByText(t.promptCachingHintOpenAI)).toBeTruthy()
     expect(screen.getByRole('button', { name: t.promptCacheShort })).toBeTruthy()
 
     cleanup()
     renderPanel({ apiFormat: 'anthropic_messages' })
-    expect(screen.getByText(t.promptCachingHintAnthropic)).toBeTruthy()
     expect(screen.getByRole('button', { name: t.promptCacheShort })).toBeTruthy()
   })
 

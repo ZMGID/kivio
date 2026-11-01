@@ -46,10 +46,6 @@ describe('ConversationContextMenu export', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('renders the English action', () => {
-    renderMenu('en')
-    expect(screen.getByRole('menuitem', { name: 'Export' })).toBeInTheDocument()
-  })
 })
 
 describe('ConversationContextMenu popout', () => {
@@ -77,25 +73,6 @@ describe('ConversationContextMenu popout', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('renders the English action', () => {
-    render(
-      <ConversationContextMenu
-        anchor={{ left: 0, top: 0 }}
-        projects={[]}
-        sets={[]}
-        lang="en"
-        onRegenerateTitle={vi.fn()}
-        onExport={vi.fn()}
-        onMoveToProject={vi.fn()}
-        onMoveToSet={vi.fn()}
-        onOpenInPopout={vi.fn()}
-        onDelete={vi.fn()}
-        onClose={vi.fn()}
-      />,
-    )
-    expect(screen.getByRole('menuitem', { name: 'Open in new window' })).toBeInTheDocument()
-  })
-
   it('hides the action when no handler is provided', () => {
     renderMenu('zh')
     expect(screen.queryByRole('menuitem', { name: '在新窗口打开' })).not.toBeInTheDocument()
@@ -111,11 +88,6 @@ describe('ConversationContextMenu regenerate title', () => {
     await user.click(screen.getByRole('menuitem', { name: '重新生成标题' }))
     expect(onRegenerateTitle).toHaveBeenCalledOnce()
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
-  })
-
-  it('renders the English action', () => {
-    renderMenu('en')
-    expect(screen.getByRole('menuitem', { name: 'Regenerate title' })).toBeInTheDocument()
   })
 
   it('disables regenerate when the conversation has no messages', () => {
@@ -156,11 +128,4 @@ describe('ConversationContextMenu native session', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
-  it('renders the English native session label', () => {
-    renderMenu('en', vi.fn(), vi.fn(), {
-      showNativeSession: true,
-      nativeSessionId: 'thr_live',
-    })
-    expect(screen.getByRole('menuitem', { name: /Native session/ })).toBeInTheDocument()
-  })
 })

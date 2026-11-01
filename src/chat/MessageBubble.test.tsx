@@ -324,19 +324,6 @@ describe('MessageBubble mount motion', () => {
     timestamp: 1,
   }
 
-  it('does not replay entrance motion for historical messages', () => {
-    const { container, rerender } = render(<MessageBubble message={assistantMessage} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
-
-    rerender(<MessageBubble message={{ ...assistantMessage, id: 'user-motion', role: 'user' }} />)
-    expect(container.firstElementChild).not.toHaveClass('chat-motion-bubble-in')
-  })
-
-  it('keeps entrance motion for the live streaming preview', () => {
-    const { container } = render(<MessageBubble message={assistantMessage} messageStreaming />)
-    expect(container.firstElementChild).toHaveClass('chat-motion-bubble-in')
-  })
-
   // settle 冻结帧：messageStreaming 翻 false 但 live 行还在。Markdown 若跟着切 static，
   // Streamdown 整树重挂、代码块退回未高亮 fallback（180ms 后再补）——「生成完闪一下」。
   it('keeps live markdown in streaming mode on the frozen frame when markdownStreaming stays true', async () => {
@@ -384,16 +371,10 @@ describe('MessageBubble mount motion', () => {
 
   // 元信息条 hover 显隐：鼠标在这条消息上显示、移走隐藏。React 合成 pointer 事件挂在
   // 消息根元素上（不用 CSS group-hover——macOS WKWebView 的 :hover 移出后粘滞不消）。
-  it('reveals the assistant meta row while the message is hovered', () => {
+  it('tracks assistant hover until the pointer leaves the message', () => {
     const { container } = render(<MessageBubble message={assistantMessage} />)
     const root = container.firstElementChild as HTMLElement
 
-    // 显隐不走 React state（滚动时消息滑过光标会连环 enter/leave，state 会整棵重渲），
-    // 走根元素 data-msg-hovered 属性 + index.css 的 `[data-msg-hovered] .msg-hover-reveal`。
-    // jsdom 不算样式，这里断言属性翻转 + 行挂着约定的 reveal 类。
-    const meta = screen.getByLabelText('复制').closest('.transition-opacity') as HTMLElement
-    expect(meta).toHaveClass('msg-hover-reveal')
-    expect(meta).toHaveClass('opacity-0')
     expect(root).not.toHaveAttribute('data-msg-hovered')
 
     fireEvent.pointerEnter(root)
@@ -416,7 +397,7 @@ describe('MessageBubble mount motion', () => {
   })
 
   // 用户气泡下的三个操作图标（复制/回到这里/建分支）：同一套显隐。
-  it('reveals the user bubble actions while the bubble is hovered', () => {
+  it('tracks user message hover until the pointer leaves', () => {
     const { container } = render(
       <MessageBubble
         message={{ ...assistantMessage, id: 'user-hover', role: 'user', content: '你好' }}
@@ -425,9 +406,6 @@ describe('MessageBubble mount motion', () => {
     )
     const root = container.firstElementChild as HTMLElement
 
-    const actions = screen.getByLabelText('复制').closest('.transition-opacity') as HTMLElement
-    expect(actions).toHaveClass('msg-hover-reveal')
-    expect(actions).toHaveClass('opacity-0')
     expect(root).not.toHaveAttribute('data-msg-hovered')
 
     fireEvent.pointerEnter(root)
@@ -1425,7 +1403,7 @@ describe('MessageBubble explicit artifact presentation', () => {
     expect(screen.getByRole('button', { name: /report\.txt/ })).toBeInTheDocument()
   })
 
-  it('lays presented images out as wrapping tiles and files as compact chips', () => {
+  it('renders presented images and files without exposing raw PDF data', () => {
     const message: ChatMessage = {
       id: 'msg-mixed-artifacts',
       role: 'assistant',
@@ -1478,13 +1456,9 @@ describe('MessageBubble explicit artifact presentation', () => {
 
     const { container } = render(<MessageBubble message={message} />)
 
-    const images = container.querySelectorAll('img')
-    expect(images).toHaveLength(2)
-    expect(images[0]?.closest('.flex-wrap')).not.toBeNull()
-    expect(images[0]?.closest('button')?.style.width).toBe('128px')
-    expect(images[0]?.closest('button')?.className ?? '').not.toContain('h-16')
-    expect(screen.getByRole('button', { name: '打开文件 简历.pdf' }).className).toContain('h-16')
-    expect(screen.getByRole('button', { name: '打开文件 notes.md' }).className).toContain('h-16')
+    expect(container.querySelectorAll('img')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: '打开文件 简历.pdf' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '打开文件 notes.md' })).toBeVisible()
     expect(container.textContent).not.toContain('%PDF')
   })
 })

@@ -1,11 +1,32 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CliProviderModal } from './CliProviderModal'
+import { applyModelDatabaseSnapshot, getModelDatabaseSnapshot } from '../data/modelMatching'
 
 vi.mock('../api/externalCliSettings', () => ({
   externalCliSettingsApi: {
     externalCliFetchRelayModels: vi.fn(),
   },
+}))
+
+const originalCatalog = getModelDatabaseSnapshot()
+beforeAll(() => applyModelDatabaseSnapshot({
+  ...originalCatalog,
+  revision: originalCatalog.revision + 1,
+  database: {
+    ...originalCatalog.database,
+    'fixture-reasoner': {
+      displayName: 'Fixture Reasoner',
+      contextWindow: 500000,
+      maxOutput: 65536,
+      capabilities: { reasoning: true, vision: true },
+      reasoningEfforts: ['low', 'high', 'xhigh', 'max'],
+    },
+  },
+}))
+afterAll(() => applyModelDatabaseSnapshot({
+  ...originalCatalog,
+  revision: getModelDatabaseSnapshot().revision + 1,
 }))
 
 describe('CliProviderModal native providers', () => {
@@ -31,7 +52,6 @@ describe('CliProviderModal native providers', () => {
       target: { value: 'sk-test' },
     })
     fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'gpt-test' } })
-    expect(screen.queryByText('启动默认值')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '当前默认模型' })).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
 
@@ -66,7 +86,7 @@ describe('CliProviderModal native providers', () => {
     fireEvent.click(screen.getByRole('button', { name: 'OpenAI Compatible' }))
     fireEvent.click(screen.getByRole('option', { name: 'Claude' }))
     fireEvent.change(screen.getByLabelText('模型 ID'), {
-      target: { value: 'claude-sonnet-4.6' },
+      target: { value: 'fixture-reasoner' },
     })
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
 
@@ -78,7 +98,7 @@ describe('CliProviderModal native providers', () => {
       npm: '@ai-sdk/anthropic',
       options: {},
       models: {
-        'claude-sonnet-4.6': {
+        'fixture-reasoner': {
           reasoning: true,
           attachment: true,
         },
@@ -136,10 +156,10 @@ describe('CliProviderModal native providers', () => {
       target: { value: 'sk-pi' },
     })
     fireEvent.change(screen.getByLabelText('模型 ID'), {
-      target: { value: 'grok-4.5' },
+      target: { value: 'fixture-reasoner' },
     })
-    expect(screen.getByLabelText('默认模型')).toHaveValue('grok-4.5')
-    expect(screen.getByText('Grok 4.5')).toBeInTheDocument()
+    expect(screen.getByLabelText('默认模型')).toHaveValue('fixture-reasoner')
+    expect(screen.getByText('Fixture Reasoner')).toBeInTheDocument()
     expect(screen.getByText('500K 上下文')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '模型高级设置' }))
     expect(screen.getByRole('switch', { name: '支持推理' })).toHaveAttribute('aria-checked', 'true')
@@ -159,8 +179,8 @@ describe('CliProviderModal native providers', () => {
       api: 'openai-completions',
       models: [
         {
-          id: 'grok-4.5',
-          name: 'Grok 4.5',
+          id: 'fixture-reasoner',
+          name: 'Fixture Reasoner',
           reasoning: true,
           input: ['text', 'image'],
           contextWindow: 256000,
@@ -243,9 +263,6 @@ describe('CliProviderModal native providers', () => {
       target: { value: 'gpt-test' },
     })
 
-    expect(screen.queryByText('启动默认值')).not.toBeInTheDocument()
-    expect(screen.queryByText('Pi 默认值')).not.toBeInTheDocument()
-    expect(screen.getByText('默认值')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '当前默认模型' })).toHaveAttribute('aria-pressed', 'true')
 
     fireEvent.click(screen.getByRole('button', { name: 'openai-completions' }))
@@ -284,7 +301,7 @@ describe('CliProviderModal native providers', () => {
       target: { value: 'sk-dsh' },
     })
     fireEvent.change(screen.getByLabelText('模型 ID'), {
-      target: { value: 'gpt-5.6-sol' },
+      target: { value: 'fixture-reasoner' },
     })
 
     expect(screen.queryByRole('button', { name: '模型高级设置' })).toBeInTheDocument()
@@ -300,7 +317,7 @@ describe('CliProviderModal native providers', () => {
     const config = JSON.parse(onSave.mock.calls[0][0].configJson)
     expect(config.defaultInput).toEqual(['text', 'image'])
     expect(config.models[0]).toMatchObject({
-      id: 'gpt-5.6-sol',
+      id: 'fixture-reasoner',
       input: ['text', 'image'],
     })
     expect(config.models[0].reasoningEfforts).toMatchObject({

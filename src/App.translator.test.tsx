@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { i18n } from './components/i18n'
 
 const mocks = vi.hoisted(() => ({ translate: vi.fn(), commit: vi.fn(), save: vi.fn(), close: vi.fn(), resolveLang: vi.fn() }))
 vi.mock('./api/tauri', () => ({
@@ -43,10 +44,10 @@ describe('input translation', () => {
   it('shows the automatic target, saves a manual choice and translates the current input again', async () => {
     render(<App />)
     await typeAndTranslate()
-    expect(screen.getByRole('button', { name: '目标语言' })).toHaveTextContent('自动 → 英语')
-    fireEvent.click(screen.getByRole('button', { name: '目标语言' }))
-    await act(async () => { fireEvent.click(screen.getByRole('option', { name: '日语' })) })
-    expect(screen.getByRole('button', { name: '目标语言' })).toHaveTextContent('译为日语')
+    expect(screen.getByRole('button', { name: i18n.zh.targetLang })).toHaveTextContent(i18n.zh.langEn)
+    fireEvent.click(screen.getByRole('button', { name: i18n.zh.targetLang }))
+    await act(async () => { fireEvent.click(screen.getByRole('option', { name: i18n.zh.langJa })) })
+    expect(screen.getByRole('button', { name: i18n.zh.targetLang })).toHaveTextContent(i18n.zh.langJa)
     expect(screen.queryByText('Hello')).not.toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(600) })
     expect(screen.getByText('Hello')).toBeInTheDocument()
@@ -57,16 +58,16 @@ describe('input translation', () => {
     mocks.save.mockRejectedValueOnce(new Error('Settings unavailable'))
     render(<App />)
     await typeAndTranslate()
-    fireEvent.click(screen.getByRole('button', { name: '目标语言' }))
-    await act(async () => { fireEvent.click(screen.getByRole('option', { name: '日语' })) })
+    fireEvent.click(screen.getByRole('button', { name: i18n.zh.targetLang }))
+    await act(async () => { fireEvent.click(screen.getByRole('option', { name: i18n.zh.langJa })) })
     expect(screen.getByRole('alert')).toHaveTextContent('Settings unavailable')
-    expect(screen.getByRole('button', { name: '目标语言' })).toHaveTextContent('自动')
+    expect(screen.getByRole('button', { name: i18n.zh.targetLang })).toHaveTextContent(i18n.zh.langEn)
   })
 
   it('uses Escape to dismiss the language menu before closing the translator', async () => {
     render(<App />)
     await act(async () => {})
-    fireEvent.click(screen.getByRole('button', { name: '目标语言' }))
+    fireEvent.click(screen.getByRole('button', { name: i18n.zh.targetLang }))
     await act(async () => { fireEvent.keyDown(document, { key: 'Escape' }) })
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
     expect(mocks.close).not.toHaveBeenCalled()

@@ -5,6 +5,7 @@ import {
   EMPTY_HERO_ROTATE_MAX_MS,
   EMPTY_HERO_ROTATE_MIN_MS,
   emptyHeroGreetings,
+  emptyHeroJabPool,
   useEmptyHeroJab,
   useEmptyHeroLine,
 } from './emptyHero'
@@ -68,7 +69,7 @@ describe('useEmptyHeroJab', () => {
     act(() => {
       result.current.onPoke(1)
     })
-    expect(result.current.jab).toBe('嗯？我在')
+    expect(result.current.jab).toBe(emptyHeroJabPool('zh', 1)[0])
     act(() => {
       vi.advanceTimersByTime(EMPTY_HERO_JAB_MS)
     })
@@ -80,7 +81,7 @@ describe('useEmptyHeroJab', () => {
     act(() => {
       result.current.onPoke(6)
     })
-    expect(result.current.jab).toBe('脸有点热了')
+    expect(result.current.jab).toBe(emptyHeroJabPool('zh', 6)[0])
   })
 })
 

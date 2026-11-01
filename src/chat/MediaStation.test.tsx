@@ -7,6 +7,13 @@ import { getSettingsCached } from '../api/settingsCache'
 import type { Settings } from '../api/tauri'
 import { confirmDialog } from '../components/dialogQueue'
 
+vi.mock('../data/modelDatabase.json', () => ({ default: {
+  _meta: { version: 'test' },
+  'gpt-image-1': { displayName: 'Image fixture', contextWindow: 0, maxOutput: 0, capabilities: { imageGeneration: true } },
+  'grok-imagine-video': { displayName: 'Video fixture', contextWindow: 0, maxOutput: 0, capabilities: { videoGeneration: true } },
+  'doubao-seedance-2-5-260628': { displayName: 'Library video fixture', contextWindow: 0, maxOutput: 0, capabilities: { videoGeneration: true } },
+} }))
+
 vi.mock('../api/mediaStation', () => ({ mediaStationApi: { list: vi.fn(), start: vi.fn(), cancel: vi.fn(), resume: vi.fn(), read: vi.fn(), export: vi.fn(), reference: vi.fn(), delete: vi.fn() } }))
 vi.mock('../api/settingsCache', () => ({ getSettingsCached: vi.fn() }))
 vi.mock('../api/tauri', () => ({ isTauriRuntime: () => true }))
@@ -207,17 +214,18 @@ it('opens a creation as a dialog over the history instead of inside it', async (
 it('rotates starter ideas and fills in both the prompt and its aspect ratio', async () => {
   render(<MediaStation onOpenSettings={vi.fn()} />)
   fireEvent.click(screen.getByRole('button', { name: '生图' }))
-  const titles = () => screen.getAllByRole('button').filter((b) => b.classList.contains('kv-media-idea')).map((b) => b.querySelector('strong')!.textContent)
-  const first = titles()
-  expect(first).toHaveLength(4)
+  const ideas = () => screen.getAllByRole('button').filter((button) => button.classList.contains('kv-media-idea'))
+  const first = ideas().map((button) => button.querySelector('strong')!.textContent)
+  expect(first.length).toBeGreaterThan(0)
   fireEvent.click(screen.getByRole('button', { name: '换一批' }))
-  expect(titles()).not.toEqual(first)
-  const idea = screen.getAllByRole('button').find((b) => b.querySelector('strong')?.textContent === '水墨山水')
-    ?? (fireEvent.click(screen.getByRole('button', { name: '换一批' })), screen.getAllByRole('button').find((b) => b.querySelector('strong')?.textContent === '水墨山水'))
-    ?? (fireEvent.click(screen.getByRole('button', { name: '换一批' })), screen.getAllByRole('button').find((b) => b.querySelector('strong')?.textContent === '水墨山水'))
-  fireEvent.click(idea!)
-  expect(screen.getByLabelText('创作描述')).toHaveValue('水墨山水，远山与云雾，一叶扁舟，大面积留白。')
-  expect(screen.getByLabelText('画幅')).toHaveTextContent('16:9')
+  expect(ideas().map((button) => button.querySelector('strong')!.textContent)).not.toEqual(first)
+  const idea = ideas().find((button) => button.querySelector('.kv-media-idea-ratio')?.textContent !== screen.getByLabelText('画幅').textContent)!
+  const ratio = idea.querySelector('.kv-media-idea-ratio')!.textContent!
+  const prompt = idea.title
+  expect(prompt).not.toBe('')
+  fireEvent.click(idea)
+  expect(screen.getByLabelText('创作描述')).toHaveValue(prompt)
+  expect(screen.getByLabelText('画幅')).toHaveTextContent(ratio)
 })
 
 it('keeps each media kind’s result across switches, late submissions, dismissal, and navigation', async () => {

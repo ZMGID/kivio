@@ -44,7 +44,6 @@ describe('ChatMarkdown artifact 图片', () => {
     ]} />)
     const image = container.querySelector('img')!
     const video = screen.getByRole('button', { name: '打开文件 demo.mp4' })
-    expect(video.className).not.toContain('h-16')
     expect(image).toHaveAttribute('src', 'data:image/png;base64,BBBB')
     expect(image.compareDocumentPosition(screen.getByText('Between')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByText('Between').compareDocumentPosition(video) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -82,7 +81,7 @@ describe('ChatMarkdown artifact 图片', () => {
     expect(container.querySelector('img')).toHaveAttribute('src', 'data:image/png;base64,AAAA')
   })
 
-  it('renders consecutive markdown images as inline tiles', () => {
+  it('renders consecutive markdown images with their corresponding artifacts', () => {
     const { container } = render(
       <ChatMarkdown
         content={'![a](one.png)\n\n![b](two.png)'}
@@ -92,10 +91,10 @@ describe('ChatMarkdown artifact 图片', () => {
         ]}
       />,
     )
-    const images = container.querySelectorAll('[data-chat-inline-image]')
+    const images = container.querySelectorAll('img')
     expect(images).toHaveLength(2)
-    expect(images[0]?.getAttribute('style') ?? '').toContain('128px')
-    expect(container.querySelectorAll('[data-chat-md-image]')).toHaveLength(2)
+    expect(images[0]).toHaveAttribute('src', 'data:image/png;base64,AAAA')
+    expect(images[1]).toHaveAttribute('src', 'data:image/png;base64,BBBB')
   })
 })
 

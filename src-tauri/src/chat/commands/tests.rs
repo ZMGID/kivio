@@ -114,10 +114,21 @@ fn history_window_bounds_payload_and_keeps_oversized_message_reachable() {
 
 #[test]
 fn resolve_thinking_maps_levels_and_defaults_to_high() {
-    // 有 effort 旋钮的模型（gpt-5.6 支持 low/medium/high/xhigh/max）。模型库里查得到，
-    // 不需要 provider（provider 只用于读 model_overrides + Anthropic 家族兜底）。
+    let mut provider = test_provider("test", "Test", vec!["effort-model"]);
+    provider.model_overrides.insert(
+        "effort-model".into(),
+        crate::settings::ModelInfo {
+            reasoning_efforts: Some(
+                ["low", "medium", "high", "xhigh", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            ..Default::default()
+        },
+    );
     let r = |level: Option<&str>, global: bool| {
-        resolve_thinking(level, global, None, "gpt-5.6").unwrap()
+        resolve_thinking(level, global, Some(&provider), "effort-model").unwrap()
     };
     // 未设置 → 默认档 high，不再跟随全局（全局只服务 lens / 翻译）。
     assert_eq!(r(None, true), (true, Some("high".to_string())));
@@ -127,7 +138,7 @@ fn resolve_thinking_maps_levels_and_defaults_to_high() {
     // 具体等级 → 开 + 带等级。
     assert_eq!(r(Some("low"), false), (true, Some("low".to_string())));
     assert_eq!(r(Some("high"), false), (true, Some("high".to_string())));
-    // xhigh / max 原样放行（该模型认不认由模型库门控，不在这里收敛）。
+    // 各个受支持的等级原样放行。
     assert_eq!(r(Some("xhigh"), false), (true, Some("xhigh".to_string())));
     assert_eq!(r(Some("max"), false), (true, Some("max".to_string())));
     // 未知值 → 当作未设置，落默认档 high。
@@ -177,33 +188,20 @@ fn video_analysis_tool_is_available_in_chat_and_plan_without_extra_approval() {
 
 #[test]
 fn resolve_thinking_drops_level_for_models_without_effort_knob() {
-    // 模型库里 `reasoningEfforts: []` = 没有思考深度旋钮。
-    // 2026-10-13.3 catalog 已剪掉 claude-3.5-haiku；改用仍带显式空列表的 glm-4.7。
+    let mut provider = test_provider("test", "Test", vec!["toggle-model"]);
+    provider.model_overrides.insert(
+        "toggle-model".into(),
+        crate::settings::ModelInfo {
+            reasoning_efforts: Some(Vec::new()),
+            ..Default::default()
+        },
+    );
     assert_eq!(
-        resolve_thinking(Some("high"), true, None, "glm-4.7").unwrap(),
+        resolve_thinking(Some("high"), true, Some(&provider), "toggle-model").unwrap(),
         (true, None)
     );
-    // Claude 4：UI 档位会下发（适配器再映射成 budget_tokens / adaptive+effort）。
-    for model in [
-        "claude-opus-4",
-        "claude-sonnet-4",
-        "claude-opus-4.5",
-        "claude-sonnet-4.5",
-    ] {
-        assert_eq!(
-            resolve_thinking(Some("high"), true, None, model).unwrap(),
-            (true, Some("high".to_string())),
-            "{model}"
-        );
-    }
-    // 4.6+ 反过来必须带上。
     assert_eq!(
-        resolve_thinking(Some("max"), true, None, "claude-opus-4.7").unwrap(),
-        (true, Some("max".to_string()))
-    );
-    // off 仍然优先：关思考就是关思考。
-    assert_eq!(
-        resolve_thinking(Some("off"), true, None, "claude-opus-4.7").unwrap(),
+        resolve_thinking(Some("off"), true, Some(&provider), "toggle-model").unwrap(),
         (false, None)
     );
 }
@@ -796,16 +794,11 @@ fn agent_run_entry_label_distinguishes_regenerate() {
 
 #[test]
 fn build_title_summary_prompt_uses_first_turn_context() {
-    let prompt = build_title_summary_prompt(
-        "今天下雨吗，吉林市。天气怎么样？",
-        "吉林市今天有小雨，建议带伞。",
-        "zh-CN",
-    );
-
-    assert!(prompt.contains("首轮对话"));
-    assert!(prompt.contains("用户：今天下雨吗"));
-    assert!(prompt.contains("助手：吉林市今天有小雨"));
-    assert!(prompt.contains("只输出标题本身"));
+    let user = "今天下雨吗，吉林市。天气怎么样？";
+    let assistant = "吉林市今天有小雨，建议带伞。";
+    let prompt = build_title_summary_prompt(user, assistant, "zh-CN");
+    assert!(prompt.contains(user));
+    assert!(prompt.contains(assistant));
 }
 
 #[test]
@@ -4385,66 +4378,48 @@ fn image_patch_estimates_fit_dimensions_before_budget_and_preserve_original() {
     );
 }
 
+// Behavior only: levels come from a provider override, never from catalog entries that
+// change on every model-database refresh.
 #[test]
-fn resolve_thinking_rejects_off_for_always_on_models() {
-    for model in [
-        "gpt-6-astra",
-        "gpt-6.1-sol",
-        "kimi-k3",
-        "kimi-k2.7-code",
-        "gemini-2.5-pro",
-        "gemini-3.8-flash",
-        "claude-opus-5.5",
-        "grok-4.6",
-        "glm-5.3",
-        "z-ai/glm-5.3-flash",
-    ] {
-        let error = resolve_thinking(Some("off"), true, None, model).unwrap_err();
-        assert!(error.contains("不支持关闭思考"), "{model}: {error}");
-    }
-    assert_eq!(
-        resolve_thinking(Some("off"), true, None, "kimi-k2.6").unwrap(),
-        (false, None)
-    );
-    assert_eq!(
-        resolve_thinking(Some("high"), true, None, "kimi-k2.6").unwrap(),
-        (true, None)
-    );
-}
-
-#[test]
-fn resolve_thinking_checks_stored_levels_and_uses_an_available_default() {
-    for model in ["qwen3.8-flash-next", "Qwen/Qwen3.8-27B", "qwen3.8-max-0902"] {
-        assert_eq!(
-            resolve_thinking(None, true, None, model).unwrap(),
-            (true, Some("xhigh".into())),
-            "{model}"
-        );
-        assert_eq!(
-            resolve_thinking(Some("medium"), true, None, model).unwrap(),
-            (true, Some("medium".into()))
-        );
-        assert!(resolve_thinking(Some("high"), true, None, model).is_err());
-    }
-    assert_eq!(
-        resolve_thinking(Some("off"), true, None, "gpt-4o").unwrap(),
-        (true, None)
-    );
-    let mut provider = test_provider("test", "Test", vec!["custom"]);
+fn resolve_thinking_validates_stored_levels_and_picks_a_default() {
+    let mut provider = test_provider("test", "Test", vec!["with-high", "no-high", "plain"]);
+    let efforts = |levels: &[&str]| crate::settings::ModelInfo {
+        reasoning_efforts: Some(levels.iter().map(|level| level.to_string()).collect()),
+        ..Default::default()
+    };
+    provider
+        .model_overrides
+        .insert("with-high".into(), efforts(&["low", "high"]));
+    provider
+        .model_overrides
+        .insert("no-high".into(), efforts(&["low", "medium", "xhigh"]));
     provider.model_overrides.insert(
-        "custom".into(),
+        "plain".into(),
         crate::settings::ModelInfo {
-            reasoning_efforts: Some(vec!["low".into()]),
+            capabilities: Some(crate::settings::ModelCapabilities {
+                reasoning: Some(false),
+                ..Default::default()
+            }),
             ..Default::default()
         },
     );
+    let resolve = |level, model| resolve_thinking(level, true, Some(&provider), model);
+
     assert_eq!(
-        resolve_thinking(None, true, Some(&provider), "custom").unwrap(),
-        (true, Some("low".into()))
+        resolve(None, "with-high").unwrap(),
+        (true, Some("high".into()))
     );
-    assert!(
-        resolve_thinking(Some("max"), true, Some(&provider), "custom")
-            .unwrap_err()
-            .contains("不支持思考强度")
+    assert_eq!(
+        resolve(None, "no-high").unwrap(),
+        (true, Some("xhigh".into()))
     );
+    assert_eq!(
+        resolve(Some("medium"), "no-high").unwrap(),
+        (true, Some("medium".into()))
+    );
+    assert!(resolve(Some("high"), "no-high")
+        .unwrap_err()
+        .contains("不支持思考强度"));
+    // Non-reasoning models ignore any stored choice, including Off.
+    assert_eq!(resolve(Some("off"), "plain").unwrap(), (true, None));
 }

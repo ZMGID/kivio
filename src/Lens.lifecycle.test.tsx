@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Lens from './Lens'
 import type { LensStreamPayload } from './api/tauri'
+import { i18n } from './components/i18n'
 
 const mocks = vi.hoisted(() => ({
   capture: vi.fn(), readImage: vi.fn(), close: vi.fn(), takeSelection: vi.fn(),
@@ -166,7 +167,7 @@ describe('Lens content lifecycle', () => {
     const { container } = render(<Lens />)
     await act(async () => {})
     await capture(container)
-    await act(async () => { fireEvent.click(container.querySelector('button[title="保存"]')!) })
+    await act(async () => { fireEvent.click(within(container).getByRole('button', { name: i18n.zh.annotateSave })) })
     await waitFor(() => expect(mocks.dialog).toHaveBeenCalledOnce())
     if (pendingStage === 'write') await waitFor(() => expect(mocks.saveImage).toHaveBeenCalledOnce())
 
@@ -185,7 +186,7 @@ describe('Lens content lifecycle', () => {
     const { container } = render(<Lens />)
     await act(async () => {})
     await capture(container)
-    await act(async () => { fireEvent.click(container.querySelector('button[title="保存"]')!) })
+    await act(async () => { fireEvent.click(within(container).getByRole('button', { name: i18n.zh.annotateSave })) })
     await waitFor(() => expect(mocks.saveImage).toHaveBeenCalledWith('png', 'screenshot.png'))
     await waitFor(() => expect(mocks.close).toHaveBeenCalledOnce())
     expect(container.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
@@ -244,7 +245,7 @@ describe('Lens content lifecycle', () => {
     expect(history).toHaveLength(1)
     expect(history[0].messages).toEqual([
       { role: 'user', content: 'question' },
-      { role: 'assistant', content: scenario === 'error' ? '出错了: request failed' : 'streamed answer' },
+      { role: 'assistant', content: scenario === 'error' ? expect.stringContaining('request failed') : 'streamed answer' },
     ])
   })
 })

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { HotkeysTab } from './HotkeysTab'
@@ -47,10 +47,19 @@ function renderTab(overrides: Partial<Parameters<typeof HotkeysTab>[0]> = {}) {
 describe('HotkeysTab', () => {
   it('每个快捷键行显示各自 settings 字段的值（不串行）', () => {
     renderTab()
-    // HotkeyInput 把值拆成按键徽章渲染（修饰键随平台变形），故断言各行独有的数字键。
-    // 八个值的数字互不相同，任一 props 接错都会让某个数字缺失或重复。
-    for (const digit of ['1', '2', '3', '4', '5', '6', '7', '8']) {
-      expect(screen.getAllByText(digit)).toHaveLength(1)
+    const rows = [
+      [t.tabTranslate, '1'],
+      [t.chatHotkeyLabel, '2'],
+      [t.closeChatHotkeyLabel, '3'],
+      [t.screenshotHotkey, '4'],
+      [t.screenshotTextHotkey, '5'],
+      [t.replaceTranslateHotkey, '6'],
+      [t.annotateHotkeyLabel, '7'],
+      [t.lensTabLabel, '8'],
+    ]
+    for (const [label, digit] of rows) {
+      const row = screen.getByText(label).closest<HTMLElement>('.kv-row')!
+      expect(within(row).getByText(digit)).toBeTruthy()
     }
   })
 
@@ -102,12 +111,17 @@ describe('HotkeysTab', () => {
       scope === 'chat' ? '与「翻译」冲突' : undefined,
     )
     renderTab({ conflictMessageFor: conflictMessageFor as never })
-    expect(screen.getByText('与「翻译」冲突')).toBeTruthy()
+    const chat = screen.getByText(t.chatHotkeyLabel).closest<HTMLElement>('.kv-row')!
+    const main = screen.getByText(t.tabTranslate).closest<HTMLElement>('.kv-row')!
+    expect(within(chat).getByText('与「翻译」冲突')).toBeTruthy()
+    expect(within(main).queryByText('与「翻译」冲突')).toBeNull()
   })
 
   it('recordingTarget 只让对应行进入录制态', () => {
     renderTab({ recordingTarget: 'lens' })
     expect(screen.getAllByRole('button', { name: t.hotkeyRecording })).toHaveLength(1)
+    const row = screen.getByText(t.lensTabLabel).closest<HTMLElement>('.kv-row')!
+    expect(within(row).getByRole('button', { name: t.hotkeyRecording })).toBeTruthy()
   })
 
   it('恢复默认写入全部默认热键字段', async () => {

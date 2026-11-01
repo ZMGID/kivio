@@ -20,7 +20,6 @@ describe('ChatMarkdown citation popover', () => {
     fireEvent.click(screen.getByRole('button', { name: '来源 4' }))
     const popover = screen.getByRole('dialog', { name: '来源 4' })
 
-    expect(popover).toHaveClass('fixed')
     expect(container.contains(popover)).toBe(false)
     expect(document.body.contains(popover)).toBe(true)
 

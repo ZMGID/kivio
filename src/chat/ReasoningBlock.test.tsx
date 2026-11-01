@@ -13,6 +13,7 @@ describe('ReasoningBlock', () => {
     expect(preview).toHaveTextContent('latest line')
     expect(screen.queryByText('older line')).not.toBeInTheDocument()
     expect(screen.queryByTestId('reasoning-scroll')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('reasoning-text')).not.toBeInTheDocument()
     expect(screen.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
     rerender(<ReasoningBlock reasoning={'older line\r\nlatest line\nnext line'} streaming />)
     expect(preview).toHaveTextContent('next line')
@@ -79,14 +80,6 @@ describe('ReasoningBlock', () => {
     render(<ReasoningBlock reasoning="" />)
     const section = screen.getByLabelText('Thinking')
     expect(within(section).queryByTestId('reasoning-scroll')).not.toBeInTheDocument()
-  })
-
-  it('shows the thinking title and the newest line without mounting full text', () => {
-    render(<ReasoningBlock reasoning={'line one\nline two\nline three\nline four'} streaming />)
-    const section = screen.getByLabelText('Thinking')
-    expect(within(section).getByRole('button', { name: /Thinking/i })).toBeInTheDocument()
-    expect(within(section).getByTestId('reasoning-preview')).toHaveTextContent('line four')
-    expect(within(section).queryByTestId('reasoning-text')).not.toBeInTheDocument()
   })
 
   it('leaves max-height unset while streaming so growth never animates', () => {

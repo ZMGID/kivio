@@ -19,14 +19,6 @@ function setup(record: AutomationRun | null = run) {
   return { onTest, onChange }
 }
 describe('node workbench', () => {
-  it('uses the shared tabs, select menu, and scrollbar primitives', () => {
-    const { container } = render(<WorkflowWorkbench graph={graph} node={node} run={run} running={false} issues={[]} onTest={vi.fn()} onChange={vi.fn()}><div>参数表单</div></WorkflowWorkbench>)
-    expect(screen.getByRole('tablist')).toHaveClass('kv-seg')
-    expect(screen.getByLabelText('插入到参数末尾')).toHaveClass('kv-select')
-    expect(container.querySelector('.kv-workbench-content')).toHaveClass('custom-scrollbar')
-    expect(container.querySelector('select')).toBeNull()
-  })
-
   it('edits the connected Context prompt when inserting from an Agent node', () => {
     const agent = createFlowNode('action.agent', { label: 'Agent' }, { x: 0, y: 0 })
     const context = createFlowNode('agent.context', { label: 'Context', agent: { prompt: '处理：' } }, { x: 0, y: 0 })

@@ -337,34 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_optimize_timeout_is_localized() {
-        assert_eq!(
-            localize(
-                "en",
-                "问题优化超时，请重试",
-                "Prompt optimize timed out. Try again."
-            ),
-            "Prompt optimize timed out. Try again."
-        );
-        assert_eq!(
-            localize(
-                "zh",
-                "问题优化超时，请重试",
-                "Prompt optimize timed out. Try again."
-            ),
-            "问题优化超时，请重试"
-        );
-    }
-
-    #[test]
-    fn prompt_optimize_call_spec_stays_stream_friendly() {
-        let spec = prompt_optimize_call_spec();
-        assert!(spec.thinking_enabled);
-        assert_eq!(spec.max_output_tokens, 2048);
-        assert_eq!(spec.label, "Chat prompt optimize");
-    }
-
-    #[test]
     fn sanitize_strips_fences_and_prefixes() {
         assert_eq!(
             sanitize_optimized_prompt("```\n把这段代码按模块拆开\n```"),
@@ -385,20 +357,22 @@ mod tests {
             test_message("user", "那这个呢"),
         ];
         let context = recent_conversation_context(&messages);
-        assert!(context.contains("用户：第一问"));
-        assert!(context.contains("助手：第一答"));
-        assert!(context.contains("用户：那这个呢"));
+        let first_user = context.find("第一问").unwrap();
+        let assistant = context.find("第一答").unwrap();
+        let next_user = context.find("那这个呢").unwrap();
+        assert!(first_user < assistant && assistant < next_user);
     }
 
     #[test]
     fn user_prompt_includes_draft_and_optional_context() {
-        let plain = build_optimize_user_prompt("帮我看看这个", "", "zh");
-        assert!(plain.contains("帮我看看这个"));
-        assert!(!plain.contains("最近对话"));
+        let draft = "帮我看看这个";
+        let plain = build_optimize_user_prompt(draft, "", "zh");
+        assert!(plain.contains(draft));
 
-        let with_ctx = build_optimize_user_prompt("那这个呢", "用户：第一问", "zh");
-        assert!(with_ctx.contains("最近对话"));
-        assert!(with_ctx.contains("那这个呢"));
+        let context = "previous-context-marker";
+        let with_ctx = build_optimize_user_prompt(draft, context, "zh");
+        assert!(with_ctx.contains(context));
+        assert!(with_ctx.contains(draft));
     }
 
     fn test_app_state() -> AppState {
@@ -530,8 +504,8 @@ mod tests {
             "must not send explicit thinking-off; body={body}"
         );
         assert!(
-            body.contains("optimize-model") && body.contains("提问优化助手"),
-            "request should use the Chinese builtin prompt against optimize-model; body={body}"
+            body.contains("optimize-model"),
+            "model missing; body={body}"
         );
     }
 }

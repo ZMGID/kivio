@@ -1,11 +1,27 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ProviderModelsPicker, type ProviderModelsPickerLabels } from './ProviderModelsPicker'
 import { makeProvider } from './tabs/testFixtures'
+import { applyModelDatabaseSnapshot, getModelDatabaseSnapshot } from '../data/modelMatching'
 
 vi.mock('../components/ModelIcon', () => ({
   ModelIcon: () => null,
+}))
+
+const originalCatalog = getModelDatabaseSnapshot()
+beforeAll(() => applyModelDatabaseSnapshot({
+  ...originalCatalog,
+  revision: originalCatalog.revision + 1,
+  database: {
+    ...originalCatalog.database,
+    'kimi-code/k3': { displayName: 'Fixture Standard' },
+    'kimi-code/k3-256k': { displayName: 'Fixture Extended' },
+  },
+}))
+afterAll(() => applyModelDatabaseSnapshot({
+  ...originalCatalog,
+  revision: getModelDatabaseSnapshot().revision + 1,
 }))
 
 const labels: ProviderModelsPickerLabels = {
@@ -23,13 +39,13 @@ const labels: ProviderModelsPickerLabels = {
 }
 
 describe('ProviderModelsPicker', () => {
-  it('shows and searches Kimi names while adding the original OAuth ID', async () => {
+  it('searches Kimi OAuth display names while adding the original ID', async () => {
     const onAdd = vi.fn()
     const user = userEvent.setup()
     render(<ProviderModelsPicker provider={makeProvider({ baseUrl: 'https://api.kimi.com/coding/v1', availableModels: ['k3', 'k3-256k'], enabledModels: [] })} lang="zh" labels={labels} fetching={false} onClose={() => {}} onFetch={() => {}} onAdd={onAdd} onAddAll={() => {}} onRemove={() => {}} />)
-    await user.type(screen.getByPlaceholderText(labels.searchPlaceholder), 'Kimi K3 256K')
-    expect(screen.getByText('Kimi K3 256K')).toBeInTheDocument()
-    expect(screen.queryByText('Kimi K3')).not.toBeInTheDocument()
+    await user.type(screen.getByPlaceholderText(labels.searchPlaceholder), 'Fixture Extended')
+    expect(screen.getByText('Fixture Extended')).toBeInTheDocument()
+    expect(screen.queryByText('Fixture Standard')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '添加 k3-256k' }))
     expect(onAdd).toHaveBeenCalledWith('k3-256k')
   })
@@ -56,26 +72,6 @@ describe('ProviderModelsPicker', () => {
     expect(screen.getByText('deepseek-v4-flash')).toBeTruthy()
   })
 
-  it('puts refresh and manual-add in equal icon buttons beside search', () => {
-    render(
-      <ProviderModelsPicker
-        provider={makeProvider()}
-        lang="zh"
-        labels={labels}
-        fetching={false}
-        onClose={() => {}}
-        onFetch={() => {}}
-        onAdd={() => {}}
-        onAddAll={() => {}}
-        onRemove={() => {}}
-      />,
-    )
-    const refresh = screen.getByRole('button', { name: '获取模型列表' })
-    const add = screen.getByRole('button', { name: '手动添加' })
-    expect(refresh).toHaveClass('kv-icon-btn', 'sm')
-    expect(add).toHaveClass('kv-icon-btn', 'sm')
-    expect(refresh.textContent).not.toMatch(/获取模型列表/)
-  })
 
   it('does not list enabled models the provider no longer offers', () => {
     render(

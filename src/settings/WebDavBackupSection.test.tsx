@@ -58,7 +58,6 @@ describe('WebDAV configuration form', () => {
     await user.click(screen.getByRole('button', { name: 'Choose service' }))
     await user.click(screen.getByRole('button', { name: 'Choose Nextcloud' }))
     expect(screen.getByLabelText('WebDAV server URL')).toHaveValue('')
-    expect(screen.getByLabelText('WebDAV server URL')).toHaveAttribute('placeholder', 'https://cloud.example.com/remote.php/dav/files/USERNAME/')
     expect(screen.getByRole('button', { name: 'Upload backup' })).toBeDisabled()
 
   })

@@ -25,14 +25,12 @@ describe('ChatHeadingOutline', () => {
     const outline = screen.getByLabelText('回答标题目录')
     const list = outline.querySelector('.chat-heading-navigator-list')!
     expect(list.querySelectorAll('button')).toHaveLength(2)
-    expect(outline).not.toHaveClass('is-expanded')
 
     fireEvent.pointerEnter(list)
-    expect(outline).toHaveClass('is-expanded')
     expect(list.querySelectorAll('button')).toHaveLength(3)
 
     fireEvent.pointerLeave(list)
-    expect(outline).not.toHaveClass('is-expanded')
+    expect(list.querySelectorAll('button')).toHaveLength(2)
   })
 
   it('navigates directly from a collapsed tick and exposes the current location', () => {

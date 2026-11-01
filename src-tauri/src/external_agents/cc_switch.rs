@@ -218,7 +218,7 @@ mod tests {
     fn codex_takes_toml_and_auth() {
         let config = json!({
             "auth": { "OPENAI_API_KEY": "sk-y" },
-            "config": "model = \"gpt-5.6\"\nmodel_provider = \"custom\"\n",
+            "config": "model = \"test-model\"\nmodel_provider = \"custom\"\n",
         });
         let p = convert(
             "codex",
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn grok_takes_config_toml() {
         let config = json!({
-            "config": "[models]\ndefault = \"grok-4.5\"\n\n[model.\"grok-4.5\"]\nmodel = \"grok-4.5\"\nbase_url = \"https://relay.example/v1\"\napi_key = \"sk-x\"\n"
+            "config": "[models]\ndefault = \"test-model\"\n\n[model.\"test-model\"]\nmodel = \"test-model\"\nbase_url = \"https://relay.example/v1\"\napi_key = \"sk-x\"\n"
         });
         let p = convert(
             "grok",
@@ -281,15 +281,6 @@ mod tests {
             "grok",
             "g1".into(),
             "Empty".into(),
-            String::new(),
-            false,
-            &json!({"config": ""})
-        )
-        .is_none());
-        assert!(convert(
-            "grok",
-            "g2".into(),
-            "Official".into(),
             String::new(),
             false,
             &json!({"config": ""})

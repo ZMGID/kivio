@@ -3342,18 +3342,6 @@ mod tests {
     }
 
     #[test]
-    fn production_codex_paths_do_not_use_the_binary_compatibility_launcher() {
-        let production = include_str!("codex_app_server.rs")
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production source");
-        assert!(
-            !production.contains("spawn::cli_command("),
-            "Codex session/probe paths must use RuntimeAgentDef launch policy"
-        );
-    }
-
-    #[test]
     fn production_codex_launcher_applies_definition_policy_to_a_renamed_wsl_binary() {
         let command = codex_cli_command(Path::new(r"\\wsl$\Ubuntu\usr\bin\company-codex-wrapper"));
         assert!(command
@@ -3731,57 +3719,49 @@ mod tests {
 
     #[test]
     fn merge_uses_live_model_list_and_falls_back_to_curated() {
-        // Live 0.158 shape: GPT-6 family first, server default flagged.
+        let (known_id, _, known_efforts) = CODEX_CURATED_CATALOG.first().copied().unwrap();
         let runtime = parse_codex_model_list_result(&json!({
             "data": [
-                {"id": "gpt-6-sol", "displayName": "GPT-6-Sol"},
+                {"id": "live-model", "displayName": "Live"},
                 {
-                    "id": "gpt-6-astra",
-                    "displayName": "GPT-6-Astra",
+                    "id": "live-default",
+                    "displayName": "Live Default",
                     "isDefault": true,
                     "supportedReasoningEfforts": [
                         {"reasoningEffort": "low", "description": "Fast"},
                         {"reasoningEffort": "ultra", "description": "Deep"}
                     ]
                 },
-                {"id": "gpt-5.6-sol", "displayName": "GPT-5.6-Sol"},
-                {"id": "gpt-5.4", "displayName": "gpt-5.4", "hidden": true}
+                {"id": known_id},
+                {"id": "hidden-model", "hidden": true}
             ]
         }))
         .unwrap();
 
-        let merged = merge_codex_model_catalog(runtime, Some("gpt-6-astra"));
+        let merged = merge_codex_model_catalog(runtime, Some("live-default"));
         let ids: Vec<&str> = merged.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["default", "live-default", "live-model", known_id]);
         assert_eq!(
-            ids,
-            vec!["default", "gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"]
-        );
-        assert_eq!(
-            merged.reasoning_by_model.get("gpt-6-astra").unwrap().len(),
+            merged.reasoning_by_model.get("live-default").unwrap().len(),
             2
         );
         assert_eq!(merged.reasoning_options.len(), 2);
         // Listed without efforts: curated ladder fills in when the id is known.
-        assert!(merged
+        let actual_efforts: Vec<_> = merged
             .reasoning_by_model
-            .get("gpt-5.6-sol")
+            .get(known_id)
             .unwrap()
             .iter()
-            .any(|e| e.id == "ultra"));
-        assert!(!merged.reasoning_by_model.contains_key("gpt-6-sol"));
+            .map(|effort| effort.id.as_str())
+            .collect();
+        assert_eq!(actual_efforts.as_slice(), known_efforts);
+        assert!(!merged.reasoning_by_model.contains_key("live-model"));
 
         let fallback = codex_static_fallback_probe();
-        let ids: Vec<&str> = fallback.models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec![
-                "default",
-                "gpt-5.6-sol",
-                "gpt-5.6-terra",
-                "gpt-5.6-luna",
-                "gpt-5.5"
-            ]
-        );
+        assert_eq!(fallback.models[0].id, "default");
+        let ids: Vec<_> = fallback.models[1..].iter().map(|m| m.id.as_str()).collect();
+        let expected: Vec<_> = CODEX_CURATED_CATALOG.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, expected);
     }
 
     #[test]

@@ -53,7 +53,7 @@ describe('InputBar 问题优化', () => {
     })
   })
 
-  it('优化等待时草稿呼吸，落地时旧稿先化开再换上新稿', async () => {
+  it('keeps the draft while optimization is pending and replaces it after resolution', async () => {
     let finish: (value: string) => void = () => {}
     optimizePrompt.mockImplementationOnce(
       () => new Promise<string>((resolve) => {
@@ -67,20 +67,14 @@ describe('InputBar 问题优化', () => {
       fireEvent.click(screen.getByRole('button', { name: '优化问题' }))
     })
     await waitFor(() => {
-      expect(textarea).toHaveClass('is-optimizing')
       expect(textarea).toHaveAttribute('aria-busy', 'true')
+      expect((textarea as HTMLTextAreaElement).value).toBe('帮我看看这个')
     })
     await act(async () => {
       finish('更清楚的问题')
     })
     await waitFor(() => {
-      expect(textarea).not.toHaveClass('is-optimizing')
-      expect(textarea).toHaveClass('is-optimize-out')
-      expect((textarea as HTMLTextAreaElement).value).toBe('帮我看看这个')
-    })
-    await waitFor(() => {
       expect((textarea as HTMLTextAreaElement).value).toBe('更清楚的问题')
-      expect(textarea).toHaveClass('is-optimize-reveal')
     })
   })
 })

@@ -49,19 +49,19 @@ describe('buildModelPairOptions', () => {
     id: 'p1',
     name: 'Proxy',
     enabled: true,
-    enabledModels: ['gemini-3.1-flash-image', 'gpt-5.6', 'grok-4.5'],
+    enabledModels: ['image-model', 'chat-model', 'other-model'],
   } as unknown as ModelProvider
 
   it('lists all enabled models without a filter', () => {
     expect(buildModelPairOptions([provider]).map(o => o.value)).toEqual([
-      modelPairValue('p1', 'gemini-3.1-flash-image'),
-      modelPairValue('p1', 'gpt-5.6'),
-      modelPairValue('p1', 'grok-4.5'),
+      '["p1","image-model"]',
+      '["p1","chat-model"]',
+      '["p1","other-model"]',
     ])
   })
 
   it('keeps only models passing the filter predicate', () => {
     const opts = buildModelPairOptions([provider], (_p, model) => model.includes('image'))
-    expect(opts.map(o => o.value)).toEqual([modelPairValue('p1', 'gemini-3.1-flash-image')])
+    expect(opts.map(o => o.value)).toEqual(['["p1","image-model"]'])
   })
 })

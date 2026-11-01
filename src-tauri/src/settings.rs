@@ -3900,16 +3900,17 @@ mod tests {
         let mut settings = Settings::default();
         let provider: ModelProvider = serde_json::from_value(serde_json::json!({
             "id": "worker", "name": "Worker", "enabled": true,
-            "baseUrl": "http://localhost", "enabledModels": ["gpt-5.5"]
+            "baseUrl": "http://localhost", "enabledModels": ["worker-model"],
+            "modelOverrides": {"worker-model": {"reasoningEfforts": ["medium"]}}
         }))
         .unwrap();
         settings.providers = vec![provider];
         settings.chat_tools.sub_agent_provider_id = "worker".into();
-        settings.chat_tools.sub_agent_model = "gpt-5.5".into();
+        settings.chat_tools.sub_agent_model = "worker-model".into();
         let mut settings = sanitize_settings(settings);
         assert_eq!(
             settings.chat_tools.sub_agent_models["task"].model,
-            "gpt-5.5"
+            "worker-model"
         );
         assert!(settings.chat_tools.sub_agent_provider_id.is_empty());
         assert!(settings.chat_tools.sub_agent_model.is_empty());
@@ -3925,7 +3926,7 @@ mod tests {
         let restored = sanitize_settings(serde_json::from_value(saved).unwrap());
         assert_eq!(
             restored.chat_tools.sub_agent_models["task"].model,
-            "gpt-5.5"
+            "worker-model"
         );
         assert_eq!(
             restored.chat_tools.sub_agent_models["task"]
@@ -4253,7 +4254,10 @@ mod tests {
         for value in [serde_json::json!({}), serde_json::json!({"voice": null})] {
             let settings: Settings = serde_json::from_value(value).unwrap();
             assert!(settings.voice.is_none());
-            assert!(serde_json::to_value(settings).unwrap().get("voice").is_none());
+            assert!(serde_json::to_value(settings)
+                .unwrap()
+                .get("voice")
+                .is_none());
         }
 
         let settings: Settings = serde_json::from_value(serde_json::json!({
@@ -4262,30 +4266,52 @@ mod tests {
                 "orchestratorProviderId": " brain ",
                 "orchestratorModel": "  "
             }
-        })).unwrap();
+        }))
+        .unwrap();
         let (canonical, persisted) = settings_for_persistence(&settings);
         let value = serde_json::to_value(persisted).unwrap();
-        assert_eq!(value["voice"], serde_json::json!({
-            "channel": null,
-            "liveProviderId": "live",
-            "orchestratorProviderId": "brain",
-            "orchestratorModel": null
-        }));
+        assert_eq!(
+            value["voice"],
+            serde_json::json!({
+                "channel": null,
+                "liveProviderId": "live",
+                "orchestratorProviderId": "brain",
+                "orchestratorModel": null
+            })
+        );
         let restored = sanitize_settings(serde_json::from_value(value).unwrap());
         assert_eq!(restored.voice, canonical.voice);
 
         let partial: Settings = serde_json::from_value(serde_json::json!({
             "voice": {"orchestratorModel": "\u{2003}model\u{3000}"}
-        })).unwrap();
-        assert_eq!(sanitize_settings(partial).voice.unwrap(), VoiceSettings {
-            channel: None,
-            live_provider_id: None,
-            orchestrator_provider_id: None,
-            orchestrator_model: Some("model".into()),
-        });
-        for (raw, expected) in [("codex", Some("codex")), (" live ", Some("live")), ("auto", None), ("bogus", None)] {
-            let settings: Settings = serde_json::from_value(serde_json::json!({"voice": {"channel": raw}})).unwrap();
-            assert_eq!(sanitize_settings(settings).voice.unwrap().channel.as_deref(), expected, "{raw}");
+        }))
+        .unwrap();
+        assert_eq!(
+            sanitize_settings(partial).voice.unwrap(),
+            VoiceSettings {
+                channel: None,
+                live_provider_id: None,
+                orchestrator_provider_id: None,
+                orchestrator_model: Some("model".into()),
+            }
+        );
+        for (raw, expected) in [
+            ("codex", Some("codex")),
+            (" live ", Some("live")),
+            ("auto", None),
+            ("bogus", None),
+        ] {
+            let settings: Settings =
+                serde_json::from_value(serde_json::json!({"voice": {"channel": raw}})).unwrap();
+            assert_eq!(
+                sanitize_settings(settings)
+                    .voice
+                    .unwrap()
+                    .channel
+                    .as_deref(),
+                expected,
+                "{raw}"
+            );
         }
     }
 

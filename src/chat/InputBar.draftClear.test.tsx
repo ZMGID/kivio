@@ -177,7 +177,6 @@ describe('InputBar 发送清草稿', () => {
       fireEvent(screen.getByRole('textbox'), event)
       expect(event.defaultPrevented).toBe(true)
       expect(blockContextMenu).not.toHaveBeenCalled()
-      expect(screen.getByRole('menu')).toHaveClass('kv-menu')
       expect(screen.getByRole('menuitem', { name: '粘贴' })).toBeVisible()
     } finally {
       document.removeEventListener('contextmenu', blockContextMenu)

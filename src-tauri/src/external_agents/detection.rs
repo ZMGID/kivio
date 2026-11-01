@@ -1459,50 +1459,17 @@ mod tests {
 
     #[test]
     fn sandbox_picker_options_are_materialized_from_registered_capabilities() {
-        let cases: &[(&str, &[&str])] = &[
-            (
-                "claude",
-                &[
-                    "plan",
-                    "default",
-                    "acceptEdits",
-                    "auto",
-                    "dontAsk",
-                    "bypassPermissions",
-                ],
-            ),
-            (
-                "codex",
-                &["plan", "read-only", "workspace-write", "danger-full-access"],
-            ),
-            (
-                "dsh",
-                &["read-only", "workspace-write", "danger-full-access"],
-            ),
-            ("grok", &["ask", "strict", "full"]),
-            (
-                "antigravity",
-                &[
-                    "default",
-                    "plan",
-                    "accept-edits",
-                    "sandbox",
-                    "always-proceed",
-                ],
-            ),
-            ("pi", &[]),
-        ];
-
-        for (id, expected_ids) in cases {
-            let def = crate::external_agents::registry::get_agent_def(id).unwrap();
+        for def in AGENT_DEFS {
             let actual = sandbox_options_for(def);
+            let actual_pairs: Vec<_> = actual
+                .iter()
+                .map(|option| (option.id.as_str(), option.label.as_str()))
+                .collect();
             assert_eq!(
-                actual
-                    .iter()
-                    .map(|option| option.id.as_str())
-                    .collect::<Vec<_>>(),
-                *expected_ids,
-                "sandbox picker options for {id}"
+                actual_pairs.as_slice(),
+                def.sandbox_options,
+                "sandbox picker options for {}",
+                def.id
             );
             assert!(
                 actual
@@ -1752,21 +1719,21 @@ default_effort = "high"
         let result = parse_dsh_settings_models(
             r#"
 agent-default-model:
-  provider: openrouter
-  model: deepseek/deepseek-r1
+  provider: relay
+  model: vendor/relay-model
   reasoningEffort: max
 llm-deepseek:
   models:
-    - id: deepseek-v4-pro
-      name: V4 Pro
+    - id: native-model
+      name: Native Model
       contextWindow: 131072
 llm-pi-ai:
   providers:
-    openrouter:
-      displayName: OpenRouter
+    relay:
+      displayName: Relay
       models:
-        - id: deepseek/deepseek-r1
-          name: DeepSeek R1
+        - id: vendor/relay-model
+          name: Relay Model
           contextWindow: 163840
 "#,
         )
@@ -1777,17 +1744,13 @@ llm-pi-ai:
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "default",
-                "deepseek-v4-pro",
-                "openrouter:deepseek/deepseek-r1"
-            ]
+            vec!["default", "native-model", "relay:vendor/relay-model"]
         );
         assert_eq!(result.models[1].context_window_tokens, Some(131_072));
-        assert_eq!(result.models[2].label, "DeepSeek R1 (OpenRouter)");
+        assert_eq!(result.models[2].label, "Relay Model (Relay)");
         assert_eq!(
             result.current_model.as_deref(),
-            Some("openrouter:deepseek/deepseek-r1")
+            Some("relay:vendor/relay-model")
         );
         assert_eq!(result.current_reasoning.as_deref(), Some("max"));
     }
@@ -1795,12 +1758,12 @@ llm-pi-ai:
     #[test]
     fn dsh_settings_defaults_native_catalog_but_respects_explicit_empty_models() {
         let defaults = parse_dsh_settings_models("{}").expect("default dsh settings");
-        assert_eq!(defaults.models.len(), 4);
-        assert_eq!(defaults.models[1].id, "deepseek-v4-flash");
-        assert_eq!(defaults.models[2].id, "deepseek-v4-pro");
-        assert_eq!(defaults.models[3].id, "deepseek-v4-flash-vision-exp");
-        assert_eq!(defaults.models[3].label, "DeepSeek-V4-Flash-Vision-Exp");
-        assert_eq!(defaults.current_model.as_deref(), Some("deepseek-v4-flash"));
+        let default_model = defaults.current_model.as_deref().expect("default model");
+        assert_ne!(default_model, "default");
+        assert!(defaults
+            .models
+            .iter()
+            .any(|model| model.id == default_model));
         assert_eq!(defaults.current_reasoning.as_deref(), Some("high"));
 
         let empty = parse_dsh_settings_models("llm-deepseek:\n  models: []\n")
@@ -1813,42 +1776,38 @@ llm-pi-ai:
                 .collect::<Vec<_>>(),
             vec!["default"]
         );
-        assert_eq!(empty.current_model.as_deref(), Some("deepseek-v4-flash"));
-        assert_eq!(empty.current_reasoning.as_deref(), Some("high"));
+        assert_eq!(empty.current_model.as_deref(), Some(default_model));
+        assert_eq!(empty.current_reasoning, defaults.current_reasoning);
     }
 
     #[test]
-    fn dsh_settings_keep_official_vision_catalog_fields() {
+    fn dsh_settings_accepts_extra_vision_model_fields() {
         let result = parse_dsh_settings_models(
             r#"
 llm-deepseek:
   models:
-    - id: deepseek-v4-flash
-      name: DeepSeek-V4-Flash
-    - id: deepseek-v4-flash-vision-exp
-      name: DeepSeek-V4-Flash-Vision-Exp
+    - id: native-text
+      name: Text Model
+    - id: native-vision
+      name: Vision Model
       inputModalities: [text, image]
       imagePixelBudget: 3317760
       imageMaxBytes: 20971520
 "#,
         )
-        .expect("parse official vision catalog");
+        .expect("parse dsh vision model entries");
         assert_eq!(
             result
                 .models
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![
-                "default",
-                "deepseek-v4-flash",
-                "deepseek-v4-flash-vision-exp"
-            ]
+            vec!["default", "native-text", "native-vision"]
         );
         assert_eq!(
             result
                 .reasoning_by_model
-                .get("deepseek-v4-flash-vision-exp")
+                .get("native-vision")
                 .map(|items| items
                     .iter()
                     .map(|item| item.id.as_str())
@@ -1897,13 +1856,16 @@ llm-deepseek:
     fn dsh_settings_expose_per_model_reasoning_efforts() {
         let result = parse_dsh_settings_models(
             r#"
+llm-deepseek:
+  models:
+    - id: native-model
 llm-pi-ai:
   providers:
-    gpt:
-      displayName: gpt
+    relay:
+      displayName: Relay
       models:
-        - id: gpt-5.6-sol
-          name: gpt-5.6-sol
+        - id: reasoning-model
+          name: Reasoning Model
           reasoningEfforts:
             off:
             low: low
@@ -1911,40 +1873,43 @@ llm-pi-ai:
             high: high
             xhigh: xhigh
             max: max
-        - id: gpt-image-2
-          name: gpt-image-2
+        - id: no-reasoning-model
+          name: No Reasoning Model
           reasoningEfforts: false
         - id: plain
           name: plain
 "#,
         )
         .expect("parse dsh reasoning");
-        let sol = result
+        let model_efforts = result
             .reasoning_by_model
-            .get("gpt:gpt-5.6-sol")
-            .expect("sol efforts");
+            .get("relay:reasoning-model")
+            .expect("model efforts");
         assert_eq!(
-            sol.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            model_efforts
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["default", "off", "low", "medium", "high", "xhigh", "max"]
         );
         assert_eq!(
             result
                 .reasoning_by_model
-                .get("gpt:gpt-image-2")
+                .get("relay:no-reasoning-model")
                 .map(Vec::is_empty),
             Some(true)
         );
         assert_eq!(
             result
                 .reasoning_by_model
-                .get("gpt:plain")
+                .get("relay:plain")
                 .map(Vec::is_empty),
             Some(true)
         );
         assert_eq!(
             result
                 .reasoning_by_model
-                .get("deepseek-v4-flash")
+                .get("native-model")
                 .map(|items| items
                     .iter()
                     .map(|item| item.id.as_str())
@@ -1975,9 +1940,7 @@ llm-pi-ai:
         )
         .expect("parse dsh provider summaries");
         assert_eq!(summaries.len(), 2);
-        assert_eq!(summaries[0].id, "deepseek-official");
-        assert_eq!(summaries[0].name, "DeepSeek");
-        assert_eq!(summaries[0].model_count, 3);
+        assert_eq!(summaries[0].id, DSH_OFFICIAL_PROVIDER_ID);
         assert!(!summaries[0].is_default);
         assert_eq!(summaries[1].id, "xiaobai");
         assert_eq!(summaries[1].name, "XiaoBai");
@@ -1996,24 +1959,22 @@ llm-pi-ai:
     fn dsh_native_provider_summaries_always_include_official_deepseek() {
         let empty = parse_dsh_native_provider_summaries("{}").expect("empty dsh settings");
         assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].id, "deepseek-official");
-        assert_eq!(empty[0].name, "DeepSeek");
-        assert_eq!(empty[0].model_count, 3);
+        assert_eq!(empty[0].id, DSH_OFFICIAL_PROVIDER_ID);
         assert!(empty[0].is_default);
 
-        let official = parse_dsh_native_provider_summaries(
+        let text = format!(
             r#"
 agent-default-model:
-  provider: deepseek-official
-  model: deepseek-v4-flash
+  provider: {DSH_OFFICIAL_PROVIDER_ID}
+  model: model-one
 llm-deepseek:
   models:
-    - id: deepseek-v4-flash
-    - id: deepseek-v4-pro
+    - id: model-one
+    - id: model-two
     - id: ""
 "#,
-        )
-        .expect("official dsh settings");
+        );
+        let official = parse_dsh_native_provider_summaries(&text).expect("official dsh settings");
         assert_eq!(official.len(), 1);
         assert_eq!(official[0].model_count, 2);
         assert!(official[0].is_default);

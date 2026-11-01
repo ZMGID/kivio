@@ -24,7 +24,7 @@ vi.mock('./attachmentPreview', () => ({
 
 import { ImageReadCluster, ToolCallBlock, ToolCallCluster } from './ToolCallBlock'
 import type { ChatMessageSegment, ToolCallRecord } from './types'
-import { LangContext } from '../components/i18n'
+import { i18n, LangContext } from '../components/i18n'
 import { ReasoningPreviewContext } from './reasoningPreview'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
@@ -280,7 +280,7 @@ describe('ToolCallBlock', () => {
     expect(text).not.toContain('line 13')
   })
 
-  it('keeps the error out of the collapsed row and shows it (not red) in the expanded detail', async () => {
+  it('keeps the error out of the collapsed row and shows it in the expanded detail', async () => {
     const user = userEvent.setup()
     render(
       <ToolCallBlock
@@ -293,10 +293,7 @@ describe('ToolCallBlock', () => {
     const button = screen.getByRole('button', { name: /Read/ })
     expect(within(button).queryByText(/permission denied/)).not.toBeInTheDocument()
     await user.click(button)
-    const detail = screen.getByText(/permission denied/)
-    expect(detail).toBeInTheDocument()
-    // 错误不再标红
-    expect(detail.className).not.toContain('text-red-500')
+    expect(screen.getByText(/permission denied/)).toBeInTheDocument()
   })
 
   it('expands details when clicked', async () => {
@@ -310,7 +307,7 @@ describe('ToolCallBlock', () => {
       />,
     )
     await user.click(screen.getByRole('button', { name: /Read/ }))
-    expect(screen.getByText('参数')).toBeInTheDocument()
+    expect(screen.getByText(i18n.zh.toolCardArgs)).toBeInTheDocument()
     expect(screen.getAllByText(/README\.md/).length).toBeGreaterThan(0)
   })
 
@@ -327,8 +324,8 @@ describe('ToolCallBlock', () => {
       </LangContext.Provider>,
     )
     await user.click(screen.getByRole('button', { name: /Read/ }))
-    expect(screen.getByText('Arguments')).toBeInTheDocument()
-    expect(screen.queryByText('参数')).not.toBeInTheDocument()
+    expect(screen.getByText(i18n.en.toolCardArgs)).toBeInTheDocument()
+    expect(screen.queryByText(i18n.zh.toolCardArgs)).not.toBeInTheDocument()
   })
 
   it('keeps $ sequences from tool arguments intact in localized previews', async () => {

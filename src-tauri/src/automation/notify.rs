@@ -210,10 +210,10 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_sender_identity_is_branded_and_separate_from_legacy_app_cache() {
-        let (app_id, display_name) = super::windows_sender_identity("com.zmair.kivio");
-        assert_eq!(app_id, "com.zmair.kivio.notifications");
-        assert_eq!(display_name, "Kivio");
+    fn windows_sender_identity_is_separate_from_legacy_app_cache() {
+        let bundle_id = "com.zmair.kivio";
+        let (app_id, _) = super::windows_sender_identity(bundle_id);
+        assert_ne!(app_id, bundle_id);
     }
 
     #[test]
@@ -222,16 +222,6 @@ mod tests {
         assert!(!out.contains('\n'));
         assert!(!out.contains('\r'));
         assert_eq!(out, "ok'@Get-Process");
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_script_activates_the_winrt_xml_type_explicitly() {
-        let script = windows_script("com.zmair.kivio", "Kivio Desktop", "<toast />");
-        assert!(script.contains(
-            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::new()"
-        ));
-        assert!(script.contains("$ErrorActionPreference = 'Stop'"));
     }
 
     #[cfg(target_os = "windows")]

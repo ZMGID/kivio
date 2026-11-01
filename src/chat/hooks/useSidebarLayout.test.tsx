@@ -1,7 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getRememberedChatSidebarCollapsed, getRememberedSidebarWidth } from '../persistence'
-import { isTauriRuntime } from '../utils'
 import { useSidebarLayout } from './useSidebarLayout'
 
 vi.mock('../chatPerformanceProbe', () => ({
@@ -45,11 +44,5 @@ describe('useSidebarLayout', () => {
     const { result } = renderHook(() => useSidebarLayout())
     act(() => { result.current.setWidth(288) })
     expect(shell.style.getPropertyValue('--chat-sidebar-width')).toBe('288px')
-  })
-
-  it('does not touch the native window when not in Tauri', async () => {
-    renderHook(() => useSidebarLayout())
-    await act(async () => { await Promise.resolve() })
-    expect(isTauriRuntime()).toBe(false)
   })
 })

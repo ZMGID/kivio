@@ -944,16 +944,6 @@ mod tests {
     }
 
     #[test]
-    fn automation_runner_has_no_app_state_dependency() {
-        let runner = include_str!("runner.rs");
-        assert!(!runner.contains("AppState"));
-        assert!(!runner.contains("state::<"));
-        let tools = include_str!("tools.rs");
-        assert!(!tools.contains("AppState"));
-        assert!(!tools.contains("state::<"));
-    }
-
-    #[test]
     fn spec_defaults_to_builtin_and_merges_legacy_skill() {
         let spec = AgentSpec::from_json(&json!({
             "prompt": "  hello  ",

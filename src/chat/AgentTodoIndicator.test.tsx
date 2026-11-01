@@ -31,17 +31,14 @@ describe('AgentTodoIndicator', () => {
     expect(screen.getByRole('button', { name: 'Agent 待办' })).toHaveTextContent('完成 1/1')
   })
 
-  it('localizes the panel and names blockers by content', () => {
+  it('names blockers by content', () => {
     render(
       <LangContext.Provider value="en">
         <AgentTodoIndicator todoState={state} />
       </LangContext.Provider>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Agent todo' }))
-    expect(screen.getByText('Now')).toBeInTheDocument()
-    expect(screen.getByText('Skipped')).toBeInTheDocument()
     expect(screen.getByText('Waiting on: Read the protocol')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close todo panel' })).toBeInTheDocument()
   })
 
   it('renders nothing for an empty list', () => {

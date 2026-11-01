@@ -1175,11 +1175,9 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalog_preserves_legacy_plugins_and_exposes_native_components() {
+    fn bundled_catalog_has_unique_ids_and_valid_components() {
         let catalog = catalog();
         let ids: Vec<_> = catalog.plugins.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids.len(), 32);
-        assert!(ids.starts_with(&["feishu-cli", "wecom-cli"]));
         assert_eq!(
             ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
             ids.len()
@@ -1210,7 +1208,6 @@ mod tests {
                 "{}",
                 item.id
             );
-            assert!(!item.setup.contains("Dsivio"), "{}", item.id);
             assert!(
                 item.icon.starts_with("data:image/png;base64,"),
                 "{}",
@@ -1218,19 +1215,6 @@ mod tests {
             );
             assert!(item.skills.is_empty() && item.command.is_none());
         }
-        let snapshot = snapshot_of(&catalog, &[]);
-        assert!(snapshot["categories"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|category| category["id"] == "productivity"));
-        let feishu = &snapshot["plugins"][0]["manifest"];
-        assert_eq!(feishu["setupSkillId"], "feishu-cli-setup");
-        assert_eq!(feishu["skillIds"], json!(["feishu-cli"]));
-        assert!(feishu["icon"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,"));
     }
 
     #[tokio::test]

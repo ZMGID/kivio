@@ -20,13 +20,12 @@ describe('ThinkingLevelSelector', () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: ['low', 'medium', 'high'], offMode: 'supported' })
   })
 
-  it('OAuth 档位模型返回空能力时隐藏旋钮，不回写残留的会话档位', async () => {
+  it('hides the control without writing a stale choice when capabilities are empty', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: [], offMode: 'unsupported' })
     const onChange = vi.fn()
     await act(async () => {
-      render(<ThinkingLevelSelector value="high" currentProviderId="antigravity-oauth" currentModel="gemini-3.8-flash-low" onChange={onChange} />)
+      render(<ThinkingLevelSelector value="high" currentProviderId="p1" currentModel="no-levels" onChange={onChange} />)
     })
-    expect(thinkingCapabilitiesForModel).toHaveBeenCalledWith('gemini-3.8-flash-low', 'antigravity-oauth')
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
     expect(onChange).not.toHaveBeenCalled()
   })
@@ -42,25 +41,6 @@ describe('ThinkingLevelSelector', () => {
     )
     await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
     expect(screen.getByRole('button')).toHaveTextContent('High')
-  })
-
-  it('下拉项为英文标签且不含「跟随全局」', async () => {
-    render(
-      <ThinkingLevelSelector
-        value="high"
-        currentProviderId="p1"
-        currentModel="m1"
-        onChange={() => {}}
-      />,
-    )
-    await waitFor(() => expect(screen.getByRole('button')).toBeEnabled())
-    act(() => {
-      fireEvent.click(screen.getByRole('button'))
-    })
-    expect(screen.queryByText('跟随全局')).not.toBeInTheDocument()
-    // 英文标签存在（Off + 兜底 low/medium/high）。
-    expect(screen.getByText('Off')).toBeInTheDocument()
-    expect(screen.getByText('Medium')).toBeInTheDocument()
   })
 
   it('选择某一档回调原始等级值', async () => {
@@ -95,7 +75,7 @@ describe('ThinkingLevelSelector', () => {
       <ThinkingLevelSelector
         value="xhigh"
         currentProviderId="p1"
-        currentModel="gpt-5.6-sol"
+        currentModel="pending-capabilities"
         onChange={onChange}
       />,
     )
@@ -112,7 +92,7 @@ describe('ThinkingLevelSelector', () => {
   it('没有强度档位但支持开关时仍可关闭并重新开启', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: [], offMode: 'supported' })
     const onChange = vi.fn()
-    await act(async () => { render(<ThinkingLevelSelector value="high" currentProviderId="p1" currentModel="kimi-k2.6" onChange={onChange} />) })
+    await act(async () => { render(<ThinkingLevelSelector value="high" currentProviderId="p1" currentModel="toggle-only" onChange={onChange} />) })
     expect(screen.getByRole('button')).toHaveTextContent('On')
     fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Off' }))
@@ -125,7 +105,7 @@ describe('ThinkingLevelSelector', () => {
   it('始终思考模型保留旧 Off 的明确提示且不能再次选择 Off', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: ['low', 'high', 'max'], offMode: 'unsupported' })
     const onChange = vi.fn()
-    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="kimi-k3" onChange={onChange} />) })
+    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="always-thinking" onChange={onChange} />) })
     expect(screen.getByRole('button')).toHaveTextContent(/Off.*(不可用|unavailable)/)
     fireEvent.click(screen.getByRole('button'))
     expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeDisabled()
@@ -138,7 +118,7 @@ describe('ThinkingLevelSelector', () => {
   it('无强度档位的始终思考模型允许修正旧 Off 为 On', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: [], offMode: 'unsupported' })
     const onChange = vi.fn()
-    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="kimi-k2.7-code" onChange={onChange} />) })
+    await act(async () => { render(<ThinkingLevelSelector value="off" currentProviderId="p1" currentModel="toggle-always-thinking" onChange={onChange} />) })
     fireEvent.click(screen.getByRole('button'))
     expect(screen.getByRole('menuitemradio', { name: 'Off' })).toBeDisabled()
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'On' }))

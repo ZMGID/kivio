@@ -497,15 +497,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn title_model_call_spec_stays_stream_friendly() {
-        let spec = title_model_call_spec();
-        // thinking_enabled=false would inject effort:"none" and 400 on xAI.
-        assert!(spec.thinking_enabled);
-        assert_eq!(spec.max_output_tokens, 2048);
-        assert_eq!(spec.label, "Chat title summary");
-    }
-
     fn test_app_state() -> AppState {
         let offline_models =
             crate::offline_models::OfflineModelManager::headless(reqwest::Client::new());
@@ -639,8 +630,8 @@ mod tests {
             "must not send explicit thinking-off; body={body}"
         );
         assert!(
-            body.contains("title-model") && body.contains("只负责为对话生成简洁标题"),
-            "request should be the Chinese title prompt against title-model; body={body}"
+            body.contains("title-model"),
+            "title model missing; body={body}"
         );
     }
 

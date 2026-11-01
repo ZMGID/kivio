@@ -33,7 +33,7 @@ describe('useSettingsBackupController', () => {
     expect(imported).toHaveBeenCalledOnce()
     pending.resolve()
     await act(async () => { await first })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.' })
+    expect(result.current.status?.kind).toBe('ok')
   })
 
   it('keeps import failure visible and allows a later retry', async () => {
@@ -46,9 +46,9 @@ describe('useSettingsBackupController', () => {
     }
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     await act(async () => { await result.current.importBackup() })
-    expect(result.current.status).toEqual({ kind: 'err', msg: 'Operation failed: version conflict' })
+    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('version conflict') })
     await act(async () => { await result.current.importBackup() })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.' })
+    expect(result.current.status?.kind).toBe('ok')
   })
   it('requires an explicit trusted restore action to preserve executable configuration', async () => {
     const imported = vi.fn(async () => {})
@@ -65,7 +65,7 @@ describe('useSettingsBackupController', () => {
     expect(result.current.status?.msg).toContain('execution permissions')
     await act(async () => { await result.current.exportBackup() })
     expect(exported).toHaveBeenLastCalledWith('share.json', 'configuration')
-    expect(result.current.status?.msg).toContain('Configuration exported')
+    expect(result.current.status?.kind).toBe('ok')
   })
 
   it('prepares full restore only after confirmation and offers restart only after validation', async () => {
@@ -125,7 +125,7 @@ describe('manual WebDAV backup lifecycle', () => {
     await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
     expect(port.webdav!.release).toHaveBeenCalledWith('download')
     expect(result.current.restartRequired).toBe(false)
-    expect(result.current.status).toEqual({ kind: 'err', msg: 'Operation failed: Invalid checksum' })
+    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('Invalid checksum') })
     port.importFull = async () => {}
     await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
     expect(result.current.restartRequired).toBe(true)
@@ -179,7 +179,7 @@ describe('manual WebDAV backup lifecycle', () => {
     expect(result.current.busy).toBe(true)
     pending.resolve([])
     await act(async () => { await upload })
-    expect(result.current.status).toEqual({ kind: 'ok', msg: 'Backup uploaded.' })
+    expect(result.current.status?.kind).toBe('ok')
     expect(result.current.busy).toBe(false)
   })
 

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ProvidersTab } from './ProvidersTab'
@@ -11,6 +11,14 @@ vi.mock('../../api/tauri', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('../../api/tauri')
   return { ...actual, api: { openExternal: vi.fn() } }
 })
+
+vi.mock('../providerPresets', () => ({
+  PROVIDER_PRESETS: [
+    { name: 'Beta Test', baseUrl: 'https://beta.example/v1' },
+    { name: 'Alpha Test', baseUrl: 'https://alpha.example/v1', sponsored: true },
+    { name: 'Gamma Test', baseUrl: 'https://gamma.example/v1' },
+  ],
+}))
 
 type Props = Parameters<typeof ProvidersTab>[0]
 
@@ -72,17 +80,14 @@ describe('ProvidersTab', () => {
     expect(props.onOpenModelPicker).toHaveBeenCalled()
   })
 
-  it('未选中供应商时显示引导文案且不渲染详情', () => {
-    renderTab({ selectedProvider: undefined })
+  it('切换供应商选择时显示对应详情', () => {
+    const { props, rerender } = renderTabWithRerender({ selectedProvider: undefined })
     expect(screen.getByText(/在左侧选择供应商/)).toBeTruthy()
     expect(screen.queryByText(t.baseUrl)).toBeNull()
-  })
-
-  it('选中供应商时渲染详情区', () => {
-    renderTab()
+    rerender({ ...props, selectedProvider: props.settings.providers[0] })
     expect(screen.queryByText(/在左侧选择供应商/)).toBeNull()
     expect(screen.getByText(t.baseUrl)).toBeTruthy()
-    expect(screen.getByDisplayValue('https://api.openai.com/v1')).toBeTruthy()
+    expect(screen.getByDisplayValue(props.settings.providers[0].baseUrl)).toBeTruthy()
   })
 
   it('密钥默认掩码显示，池中每条各一行', () => {
@@ -139,21 +144,6 @@ describe('ProvidersTab', () => {
     expect(props.onUpdateProvider).not.toHaveBeenCalled()
   })
 
-  it('gzip 开关搬进「请求配置」二级页，一级页看不到', async () => {
-    renderTab()
-    expect(screen.queryByText(/压缩请求体/)).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: new RegExp(t.requestConfig) }))
-    expect(screen.getByText(/压缩请求体/)).toBeTruthy()
-    expect(screen.queryByText(/WAF 会扫描明文请求体/)).toBeNull()
-  })
-
-  it('gzipInfoOpen 命中时二级页展开 gzip 说明', async () => {
-    // 单独一条：同一个 document 里 render 两棵树再靠 getAllByRole 挑最后一个，
-    // 正是本文件 renderTabWithRerender 那条注释要消灭的写法。
-    renderTab({ gzipInfoOpen: new Set(['p1']) })
-    await userEvent.click(screen.getByRole('button', { name: new RegExp(t.requestConfig) }))
-    expect(screen.getByText(/WAF 会扫描明文请求体/)).toBeTruthy()
-  })
 
   it('测试连接与模型管理是两个不同回调', async () => {
     const props = renderTab()
@@ -178,55 +168,23 @@ describe('ProvidersTab', () => {
     expect(props.onOpenModelDrawer).not.toHaveBeenCalled()
   })
 
-  it('左侧添加按钮打开预设弹层，不直接新建空白供应商', async () => {
-    const props = renderTab()
-    const addBtn = screen.getByRole('button', { name: t.addProvider })
-    expect(addBtn).toHaveClass('kv-provider-add--preset')
-    expect(addBtn.closest('.kv-provider-list')).toBeTruthy()
-    expect(screen.queryByText(t.presetProvidersHint)).toBeNull()
-    expect(document.querySelector('.kv-provider-list-presets')).toBeNull()
-    expect(document.querySelectorAll('.kv-provider-item')).toHaveLength(1)
-
-    await userEvent.click(addBtn)
-    expect(props.onAddProvider).not.toHaveBeenCalled()
-    expect(screen.getByRole('dialog', { name: t.presetProviders })).toBeTruthy()
-  })
-
-  it('点预设入口弹出选择层，点一项走 onAddProviderFromPreset', async () => {
+  it('opens presets and adds the selected provider, with sponsored entries first', async () => {
     const props = renderTab()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
-    expect(screen.getByRole('dialog', { name: t.presetProviders })).toBeTruthy()
-    expect(screen.getByText(t.presetProvidersHint)).toBeTruthy()
-    const tiles = [...document.querySelectorAll('.kv-provider-preset-tile')]
-    expect(tiles[0]?.textContent).toMatch(t.presetCustom)
-    const presetTiles = tiles.slice(1)
-    expect(presetTiles.length).toBeGreaterThan(15)
-    expect(presetTiles[0]?.textContent).toMatch(/Hezubus/)
-    expect(presetTiles[0]?.querySelector('.kv-provider-preset-tile-heart')).toBeTruthy()
-    expect(presetTiles[0]?.textContent).not.toMatch(/赞助/)
-    expect(presetTiles[1]?.textContent).toMatch(/Codex OAuth/)
-    expect(presetTiles[2]?.textContent).toMatch(/Kimi OAuth/)
-    expect(presetTiles.at(-2)?.textContent).toMatch(/ModelScope/)
-    expect(presetTiles.at(-1)?.textContent).toMatch(/GitHub Models/)
-    expect(screen.getByRole('button', { name: /GLM Coding Plan/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Xiaomi Token Plan/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /MiniMax Token Plan/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /OpenCode Go/ })).toBeTruthy()
-    expect(screen.queryByText('已添加')).toBeNull()
-    expect(screen.getByText(t.baseUrl)).toBeTruthy()
-
-    await userEvent.click(screen.getByRole('button', { name: /Hezubus/ }))
-    expect(props.onAddProviderFromPreset).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'Hezubus',
-        baseUrl: 'https://hezubus.cc/',
-        sponsored: true,
-      }),
-    )
+    const dialog = screen.getByRole('dialog', { name: t.presetProviders })
+    expect(props.onAddProvider).not.toHaveBeenCalled()
+    const sponsored = within(dialog).getByRole('button', { name: /Alpha Test/ })
+    const regular = within(dialog).getByRole('button', { name: /Beta Test/ })
+    expect(sponsored.compareDocumentPosition(regular) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await userEvent.click(sponsored)
+    expect(props.onAddProviderFromPreset).toHaveBeenCalledWith({
+      name: 'Alpha Test', baseUrl: 'https://alpha.example/v1', sponsored: true,
+    })
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('预设网格第一项是自定义配置，点了走空白供应商', async () => {
+
+  it('选择自定义配置时创建空白供应商', async () => {
     const props = renderTab()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
     await userEvent.click(screen.getByRole('button', { name: t.presetCustom }))
@@ -239,11 +197,9 @@ describe('ProvidersTab', () => {
     renderTab()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
     const dialog = screen.getByRole('dialog', { name: t.presetProviders })
-    await userEvent.type(screen.getByPlaceholderText(t.presetProvidersSearch), 'kimi')
-    expect(dialog.querySelectorAll('.kv-provider-preset-tile')).toHaveLength(3)
-    expect(dialog.textContent).toMatch(/Kimi OAuth/)
-    expect(dialog.textContent).toMatch(/Kimi for Coding/)
-    expect(dialog.textContent).not.toMatch(/DeepSeek/)
+    await userEvent.type(screen.getByPlaceholderText(t.presetProvidersSearch), 'alpha')
+    expect(within(dialog).getByRole('button', { name: /Alpha Test/ })).toBeTruthy()
+    expect(within(dialog).queryByRole('button', { name: /Beta Test/ })).toBeNull()
   })
 
   it('预设弹层点关闭后详情仍在', async () => {
@@ -255,12 +211,19 @@ describe('ProvidersTab', () => {
     expect(screen.getByText(t.baseUrl)).toBeTruthy()
   })
 
-  it('「请求配置」入口进二级页，返回后回到一级页', async () => {
-    renderTab()
+  it('opens request settings, toggles gzip details, and returns to provider details', async () => {
+    const { props, rerender } = renderTabWithRerender()
     expect(screen.queryByText(t.customHeaders)).toBeNull()
+    expect(screen.queryByRole('switch', { name: '压缩请求体 (gzip)' })).toBeNull()
 
     await userEvent.click(screen.getByRole('button', { name: new RegExp(t.requestConfig) }))
     expect(screen.getByText(t.customHeaders)).toBeTruthy()
+    expect(screen.getByRole('switch', { name: '压缩请求体 (gzip)' })).toBeInTheDocument()
+    expect(screen.queryByText(/WAF 会扫描明文请求体/)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: '显示说明' }))
+    expect(props.onToggleGzipInfo).toHaveBeenCalledWith('p1')
+    rerender({ ...props, gzipInfoOpen: new Set(['p1']) })
+    expect(screen.getByText(/WAF 会扫描明文请求体/)).toBeTruthy()
     // 二级页接管右栏：一级页的字段不该还留在 DOM 里。
     expect(screen.queryByText(t.baseUrl)).toBeNull()
 

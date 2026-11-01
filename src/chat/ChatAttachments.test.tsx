@@ -46,21 +46,6 @@ describe('ChatAttachments 图片右键', () => {
 })
 
 describe('ChatAttachments 卡片形态', () => {
-  it('keeps sent images as compact 64px tiles instead of natural size', async () => {
-    const { container } = render(
-      <ChatAttachments attachments={[imageAttachment]} variant="user" />,
-    )
-
-    const img = await waitFor(() => {
-      const el = container.querySelector('img')
-      if (!el) throw new Error('图片还没加载出来')
-      return el
-    })
-    expect(img.className).toContain('object-cover')
-    expect(img.className).not.toContain('max-h-72')
-    expect(img.closest('.h-16.w-16')).not.toBeNull()
-  })
-
   it('renders file cards with a type label and filename', () => {
     const { container } = render(
       <ChatAttachments

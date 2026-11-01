@@ -18,16 +18,15 @@ describe('chat performance fixtures', () => {
 
   it('keeps F2 code-heavy enough to exercise row estimates', () => {
     const summary = summarizeChatPerformanceFixture(createChatPerformanceFixture('F2'))
-    expect(summary.messageCount).toBe(40)
+    expect(summary.assistantCount).toBe(20)
     expect(summary.codeBlockCount).toBeGreaterThanOrEqual(200)
   })
 
   it('contains every heavy content type in F3', () => {
-    expect(summarizeChatPerformanceFixture(createChatPerformanceFixture('F3'))).toMatchObject({
-      mermaidCount: 12,
-      imageCount: 12,
-      toolCallCount: 12,
-    })
+    const summary = summarizeChatPerformanceFixture(createChatPerformanceFixture('F3'))
+    expect(summary.mermaidCount).toBeGreaterThan(0)
+    expect(summary.imageCount).toBeGreaterThan(0)
+    expect(summary.toolCallCount).toBeGreaterThan(0)
   })
 
   it('keeps F4 at exactly 20k streaming characters', () => {

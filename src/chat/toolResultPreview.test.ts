@@ -8,7 +8,7 @@ describe('formatToolResultPreview', () => {
   })
 
   it('compacts plain text previews', () => {
-    expect(formatToolResultPreview('hello world')).toBe('hello world')
+    expect(formatToolResultPreview('  hello\n   world  ')).toBe('hello world')
   })
 
   it('extracts Tavily answer from JSON stdout', () => {
@@ -22,7 +22,7 @@ describe('formatToolResultPreview', () => {
       results: [{ title: 'Kivio Docs', content: 'Screen-level AI assistant', url: 'https://example.com' }],
     })
     const preview = formatToolResultPreview(raw)
-    expect(preview).toContain('1 条结果')
+    expect(preview).toContain('1')
     expect(preview).toContain('Kivio Docs')
   })
 

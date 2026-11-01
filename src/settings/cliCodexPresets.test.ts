@@ -40,19 +40,14 @@ describe('cliCodexPresets', () => {
 
   it('applyCodexPreset preserves OPENAI_API_KEY across switches', () => {
     const withKey = '{\n  "OPENAI_API_KEY": "sk-keep"\n}'
-    const next = applyCodexPreset('deepseek', withKey)
-    expect(next.configToml).toContain('deepseek.com')
+    const preset = CODEX_RELAY_PRESETS[0]
+    const next = applyCodexPreset(preset.id, withKey)
+    expect(next.configToml).toBe(preset.configToml)
     expect(JSON.parse(next.authJson).OPENAI_API_KEY).toBe('sk-keep')
   })
 
   it('preset buttons start with custom', () => {
     expect(CODEX_PRESET_BUTTONS[0]?.id).toBe(CODEX_CUSTOM_PRESET_ID)
-  })
-
-  it('default custom template model is gpt-5.5', () => {
-    const empty = initialCodexTomlAuth(null)
-    expect(empty.configToml).toContain('model = "gpt-5.5"')
-    expect(extractCodexModel(empty.configToml)).toBe('gpt-5.5')
   })
 
   it('initialCodexTomlAuth uses defaults for empty, keeps existing', () => {
@@ -66,14 +61,19 @@ describe('cliCodexPresets', () => {
   })
 
   it('setCodexStructuredFields patches url / model / key and keeps wire_api', () => {
-    const deepseek = CODEX_RELAY_PRESETS.find((p) => p.id === 'deepseek')!
-    const next = setCodexStructuredFields(deepseek.configToml, deepseek.authJson, {
+    const current = `model = "old-model"
+model_provider = "relay"
+[model_providers.relay]
+name = "Example Relay"
+base_url = "https://old.example/v1"
+wire_api = "chat"`
+    const next = setCodexStructuredFields(current, '{"OPENAI_API_KEY":"old-key"}', {
       baseUrl: 'https://my.proxy/v1',
-      model: 'gpt-5.5',
+      model: 'new-model',
       apiKey: 'sk-test',
     })
     expect(extractCodexBaseUrl(next.configToml)).toBe('https://my.proxy/v1')
-    expect(extractCodexModel(next.configToml)).toBe('gpt-5.5')
+    expect(extractCodexModel(next.configToml)).toBe('new-model')
     expect(next.configToml).toContain('wire_api = "chat"')
     expect(extractOpenAiApiKey(next.authJson)).toBe('sk-test')
   })

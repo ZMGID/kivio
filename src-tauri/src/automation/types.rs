@@ -384,12 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn upsert_example_deserializes_without_ids_or_timestamps() {
-        let automation: Automation =
-            serde_json::from_str(UPSERT_MINIMAL_EXAMPLE).expect("example json");
-        assert_eq!(automation.name, "AI briefing");
-        assert_eq!(automation.nodes.len(), 5);
+    fn missing_identity_and_timestamps_deserialize_as_defaults() {
+        let automation: Automation = serde_json::from_value(serde_json::json!({
+            "name": "Example"
+        }))
+        .unwrap();
         assert!(automation.id.is_empty());
         assert_eq!(automation.schema_version, 0);
+        assert!(automation.created_at.is_empty());
+        assert!(automation.updated_at.is_empty());
     }
 }

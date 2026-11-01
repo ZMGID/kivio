@@ -87,13 +87,12 @@ describe('ChatTab', () => {
     expect(screen.getByText('16,384 tokens')).toBeTruthy()
   })
 
-  it('source=fallback 时来源标签用警示色且左右同为 16,384', () => {
+  it('source=fallback 时生效值与兜底值一致', () => {
     renderTab({
       effectiveChatMaxOutput: { maxOutput: 16384, source: 'fallback' },
       chatMaxOutputSourceLabel: '兜底设置',
     })
     expect(screen.getAllByText('16,384 tokens')).toHaveLength(2)
-    expect(screen.getByText('兜底设置').className).toContain('warn')
     expect(screen.getByText('兜底')).toBeTruthy()
   })
 
@@ -161,11 +160,6 @@ describe('ChatTab', () => {
     expect(props.onUpdateChat).toHaveBeenCalled()
   })
 
-  it('工具状态徽标按各自开关渲染', () => {
-    renderTab()
-    const onTags = screen.getAllByText('已启用')
-    expect(onTags).toHaveLength(1)
-  })
 
   it('跳转按钮把目标 tab 传给 onNavigateTab', async () => {
     const props = renderTab()

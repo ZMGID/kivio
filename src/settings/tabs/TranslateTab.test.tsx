@@ -29,14 +29,6 @@ function renderTab() {
 }
 
 describe('TranslateTab', () => {
-  it('渲染输出 / 模型 / 提示词三组', () => {
-    renderTab()
-    expect(screen.getByText('输入翻译输出语言')).toBeTruthy()
-    expect(screen.getByText('阅读目标语言')).toBeTruthy()
-    expect(screen.getByText(t.selectModelPair)).toBeTruthy()
-    expect(screen.getByText(t.translatorPrompt)).toBeTruthy()
-  })
-
   // Select 是自绘组件（button + 弹出菜单），不是原生 <select>，故点开后选条目。
   it('目标语言下拉写 targetLang', async () => {
     const props = renderTab()

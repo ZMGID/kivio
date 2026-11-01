@@ -622,11 +622,11 @@ mod tests {
     #[test]
     fn context_window_from_resolved_model() {
         assert_eq!(
-            context_window_from_claude_resolved_model("claude-opus-4-8[1m]"),
+            context_window_from_claude_resolved_model("claude-test[1m]"),
             Some(1_000_000)
         );
         assert_eq!(
-            context_window_from_claude_resolved_model("claude-sonnet-4-6"),
+            context_window_from_claude_resolved_model("claude-test"),
             Some(200_000)
         );
     }
@@ -661,42 +661,6 @@ mod tests {
             CLAUDE_BUILTIN_TIERS,
             "fallback and configured model catalogs must stay aligned",
         );
-        assert_eq!(
-            map_claude_config_to_catalog_id("fable").as_deref(),
-            Some("claude-fable-5-1")
-        );
-        assert_eq!(
-            map_claude_config_to_catalog_id("claude-fable-5-1").as_deref(),
-            Some("claude-fable-5-1")
-        );
-        // Current family tiers, including Haiku 5.5 from Claude Code 2.1.293.
-        assert_eq!(CLAUDE_BUILTIN_TIERS.len(), 4);
-        assert_eq!(
-            CLAUDE_BUILTIN_TIERS,
-            &[
-                ("claude-fable-5-1", "Fable 5.1"),
-                ("claude-opus-5-5", "Opus 5.5"),
-                ("claude-sonnet-5-5", "Sonnet 5.5"),
-                ("claude-haiku-5-5", "Haiku 5.5"),
-            ]
-        );
-        // 不提供裸别名 / 冷门 / 历史版本堆。
-        for noise in [
-            "sonnet",
-            "opus",
-            "haiku",
-            "fable",
-            "best",
-            "opusplan",
-            "sonnet[1m]",
-            "claude-opus-4-8",
-            "claude-mythos-5",
-        ] {
-            assert!(
-                !CLAUDE_BUILTIN_TIERS.iter().any(|(id, _)| *id == noise),
-                "{noise} 不应出现在 builtin catalog"
-            );
-        }
     }
 
     /// 把 CLAUDE_CONFIG_DIR 指到空目录，避免读到本机真实 `~/.claude/settings.json`。
@@ -746,27 +710,16 @@ mod tests {
     }
 
     #[test]
-    fn catalog_is_default_plus_four_tiers_without_spawn() {
+    fn catalog_uses_builtin_tiers_and_keeps_legacy_selection() {
         let _guard = env_lock();
         let (dir, prev) = isolate_claude_config();
         let (models, _) = build_claude_model_catalog();
-        assert_eq!(models.len(), 5, "default + 4 tiers: {:?}", models);
+        assert_eq!(models.len(), CLAUDE_BUILTIN_TIERS.len() + 1);
         assert_eq!(models[0].id, "default");
         for (i, (id, label)) in CLAUDE_BUILTIN_TIERS.iter().enumerate() {
             assert_eq!(models[i + 1].id, *id);
             assert_eq!(models[i + 1].label, *label);
         }
-        assert!(models
-            .iter()
-            .any(|model| model.id == "claude-haiku-5-5" && model.label == "Haiku 5.5"));
-        assert_eq!(
-            map_claude_config_to_catalog_id("haiku").as_deref(),
-            Some("claude-haiku-5-5")
-        );
-        assert_eq!(
-            map_claude_config_to_catalog_id("claude-haiku-5-5").as_deref(),
-            Some("claude-haiku-5-5")
-        );
         // Explicit old selections stay on the old model and retain provider overrides.
         assert_eq!(
             map_claude_config_to_catalog_id("claude-haiku-4-5-20251001").as_deref(),
@@ -820,38 +773,26 @@ mod tests {
         }
 
         let (models, _) = build_claude_model_catalog();
-        // tier id 稳定；label 变成映射后的 runtime id（cc-gui 同款）。
-        let fable = models.iter().find(|m| m.id == "claude-fable-5-1").unwrap();
-        assert_eq!(fable.label, "kimi-k3");
-        let opus = models.iter().find(|m| m.id == "claude-opus-5-5").unwrap();
-        assert_eq!(opus.label, "MiniMax-M4[1m]");
-        let sonnet = models.iter().find(|m| m.id == "claude-sonnet-5-5").unwrap();
-        assert_eq!(sonnet.label, "GLM-5.1");
-        let haiku = models.iter().find(|m| m.id == "claude-haiku-5-5").unwrap();
-        assert_eq!(haiku.label, "deepseek-v4-flash");
-        // 四档都在，不会因映射折叠。
-        assert_eq!(
-            models
+        for (family, expected) in [
+            ("fable", "kimi-k3"),
+            ("opus", "MiniMax-M4[1m]"),
+            ("sonnet", "GLM-5.1"),
+            ("haiku", "deepseek-v4-flash"),
+        ] {
+            let id = CLAUDE_BUILTIN_TIERS
                 .iter()
-                .filter(|m| m.id.starts_with("claude-"))
-                .count(),
-            4
-        );
+                .find(|(id, _)| claude_model_family_key(id) == Some(family))
+                .unwrap()
+                .0;
+            let tier = models.iter().find(|model| model.id == id).unwrap();
+            assert_eq!(tier.label, expected);
+            assert_eq!(resolve_claude_cli_model(id), expected);
+        }
 
         // 传给 CLI 的是 runtime，不是 catalog id。
         assert_eq!(resolve_claude_cli_model("claude-fable-5"), "kimi-k3");
-        assert_eq!(resolve_claude_cli_model("claude-fable-5-1"), "kimi-k3");
         assert_eq!(resolve_claude_cli_model("claude-sonnet-5"), "GLM-5.1");
         assert_eq!(resolve_claude_cli_model("claude-opus-5"), "MiniMax-M4[1m]");
-        assert_eq!(
-            resolve_claude_cli_model("claude-opus-5-5"),
-            "MiniMax-M4[1m]"
-        );
-        assert_eq!(resolve_claude_cli_model("claude-sonnet-5-5"), "GLM-5.1");
-        assert_eq!(
-            resolve_claude_cli_model("claude-haiku-5-5"),
-            "deepseek-v4-flash"
-        );
         assert_eq!(
             resolve_claude_cli_model("claude-haiku-4-5-20251001"),
             "deepseek-v4-flash"
@@ -888,21 +829,17 @@ mod tests {
 
     #[test]
     fn map_config_aliases_to_catalog_for_picker_backfill() {
+        for (id, _) in CLAUDE_BUILTIN_TIERS {
+            let family = claude_model_family_key(id).unwrap();
+            assert_eq!(
+                map_claude_config_to_catalog_id(family).as_deref(),
+                Some(*id)
+            );
+            assert_eq!(map_claude_config_to_catalog_id(id).as_deref(), Some(*id));
+        }
         assert_eq!(
-            map_claude_config_to_catalog_id("opus").as_deref(),
-            Some("claude-opus-5-5")
-        );
-        assert_eq!(
-            map_claude_config_to_catalog_id("sonnet").as_deref(),
-            Some("claude-sonnet-5-5")
-        );
-        assert_eq!(
-            map_claude_config_to_catalog_id("claude-sonnet-5-5").as_deref(),
-            Some("claude-sonnet-5-5")
-        );
-        assert_eq!(
-            map_claude_config_to_catalog_id("claude-opus-4-8").as_deref(),
-            Some("claude-opus-5-5")
+            map_claude_config_to_catalog_id("claude-opus-4-8"),
+            map_claude_config_to_catalog_id("opus")
         );
         assert_eq!(map_claude_config_to_catalog_id("my-gateway-x"), None);
         assert_eq!(map_claude_config_to_catalog_id("default"), None);
@@ -920,9 +857,13 @@ mod tests {
         let (models, _) = build_claude_model_catalog();
         let tiers: Vec<_> = models
             .iter()
-            .filter(|m| m.id.starts_with("claude-"))
+            .filter(|m| {
+                CLAUDE_BUILTIN_TIERS
+                    .iter()
+                    .any(|(id, _)| *id == m.id.as_str())
+            })
             .collect();
-        assert_eq!(tiers.len(), 4);
+        assert_eq!(tiers.len(), CLAUDE_BUILTIN_TIERS.len());
         assert!(tiers.iter().all(|m| m.label == "kimi-k3"));
         // id 互不相同 —— 选中哪一档仍然可区分。
         let mut ids = std::collections::HashSet::new();
@@ -944,8 +885,8 @@ mod tests {
     #[test]
     fn labels_match_cli_picker() {
         assert_eq!(
-            label_for_claude_model("default", "claude-opus-4-8[1m]"),
-            "Default (Opus 4.8 (1M context))"
+            label_for_claude_model("default", "claude-opus-93-8[1m]"),
+            "Default (Opus 93.8 (1M context))"
         );
         assert_eq!(
             label_for_claude_model("sonnet[1m]", "claude-sonnet-4-6[1m]"),
@@ -958,10 +899,10 @@ mod tests {
         let init = json!({
             "type": "system",
             "subtype": "init",
-            "model": "claude-opus-4-8[1m]"
+            "model": "claude-test[1m]"
         });
         let info = parse_claude_init_info(&init).unwrap();
-        assert_eq!(info.resolved_model, "claude-opus-4-8[1m]");
+        assert_eq!(info.resolved_model, "claude-test[1m]");
         assert_eq!(info.context_window_tokens, Some(1_000_000));
     }
 

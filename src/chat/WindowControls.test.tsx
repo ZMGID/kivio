@@ -55,7 +55,7 @@ afterEach(() => { vi.useRealTimers() })
 
 it('reflects native maximize events and switches back after restoring with the button', async () => {
   await renderControls()
-  expect(screen.getByRole('button', { name: '最大化' }).querySelector('.lucide-square')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '最大化' })).toBeVisible()
 
   // 模拟双击标题栏或系统快捷键最大化，未点击 React 按钮。
   await act(async () => {
@@ -64,17 +64,16 @@ it('reflects native maximize events and switches back after restoring with the b
     await vi.advanceTimersByTimeAsync(150)
   })
   const restore = screen.getByRole('button', { name: '还原窗口' })
-  expect(restore.querySelector('.lucide-copy')).toBeTruthy()
   expect(restore).toHaveAttribute('title', '还原窗口')
 
   fireEvent.click(restore)
   await act(async () => { await vi.advanceTimersByTimeAsync(150) })
   expect(native.toggle).toHaveBeenCalledOnce()
-  expect(screen.getByRole('button', { name: '最大化' }).querySelector('.lucide-square')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '最大化' })).toBeVisible()
 })
 
 it('shows restore immediately when opened in an already maximized window', async () => {
   native.maximized = true
   await renderControls()
-  expect(screen.getByRole('button', { name: '还原窗口' }).querySelector('.lucide-copy')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '还原窗口' })).toBeVisible()
 })

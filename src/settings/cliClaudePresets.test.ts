@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyClaudePreset,
+  CLAUDE_RELAY_PRESETS,
   CLAUDE_TOKEN,
   CLAUDE_TOKEN_ALT,
   readClaudeApiKey,
@@ -39,7 +40,7 @@ describe('cliClaudePresets key compat', () => {
       { key: CLAUDE_TOKEN_ALT, value: 'sk-keep' },
       { key: 'ANTHROPIC_BASE_URL', value: 'https://old' },
     ]
-    const next = applyClaudePreset('deepseek', fromAlt)
+    const next = applyClaudePreset(CLAUDE_RELAY_PRESETS[0].id, fromAlt)
     expect(readClaudeApiKey(next)).toBe('sk-keep')
     expect(next.some((p) => p.key === CLAUDE_TOKEN_ALT)).toBe(false)
     expect(next.find((p) => p.key === CLAUDE_TOKEN)?.value).toBe('sk-keep')

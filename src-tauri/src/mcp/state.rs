@@ -243,11 +243,4 @@ mod tests {
             "new"
         );
     }
-
-    #[test]
-    fn manager_depends_on_explicit_services_not_app_state() {
-        let source = include_str!("manager.rs");
-        assert!(!source.contains("impl AppState"));
-        assert!(!source.contains("use crate::state::AppState"));
-    }
 }

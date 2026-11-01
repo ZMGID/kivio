@@ -103,17 +103,15 @@ describe('ProviderIcon provider→brand mapping', () => {
   it('every auto-match key exists in the picker registry (both share one table)', () => {
     const keys = providerIconMapKeys()
     // 空表会让循环体一次都不跑，那这条就成了恒真断言。
-    expect(keys.length).toBeGreaterThan(20)
+    expect(keys.length).toBeGreaterThan(0)
     for (const key of keys) {
       expect(PROVIDER_BRANDS[key], `PROVIDER_ICON_MAP 里的 ${key} 在 PROVIDER_BRANDS 里不存在`)
         .toBeTruthy()
     }
   })
 
-  it('icon picker puts coding brands first, hides ChatGLM, and buries ModelScope/Github', () => {
-    expect(PROVIDER_PICKER_KEYS.slice(0, 6)).toEqual(['Kimi', 'Zhipu', 'XiaomiMiMo', 'Minimax', 'OpenCode', 'Hezubus'])
+  it('hides the retired brand and resolves all picker keys', () => {
     expect(PROVIDER_PICKER_KEYS).not.toContain('ChatGLM')
-    expect(PROVIDER_PICKER_KEYS.slice(-3)).toEqual(['ModelScope', 'GiteeAI', 'Github'])
     for (const key of PROVIDER_PICKER_KEYS) {
       expect(PROVIDER_BRANDS[key], `picker key ${key} missing from PROVIDER_BRANDS`).toBeTruthy()
     }

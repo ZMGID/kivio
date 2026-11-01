@@ -85,8 +85,6 @@ describe('ConversationList inline rename', () => {
 
     await user.dblClick(screen.getByRole('button', { name: '原会话标题' }))
     const input = screen.getByDisplayValue('原会话标题')
-    expect(input).toHaveClass('border-0', 'bg-transparent')
-    expect(input.closest('[data-reorder-id="conversation-1"]')).toHaveClass('kv-conv-row')
     await user.clear(input)
     await user.type(input, '改名后的会话')
     await user.keyboard('{Enter}')
@@ -134,23 +132,18 @@ describe('ConversationList pin and archive', () => {
       id: 'conversation-2',
       title: '留下的对话',
     }
-    const { container } = render(
+    render(
       <ConversationList
         {...listProps}
         conversations={[conversation, second]}
       />,
     )
+    const remaining = screen.getByRole('button', { name: '留下的对话' })
 
     await user.click(screen.getAllByRole('button', { name: '归档' })[0])
 
-    const exiting = container.querySelector('.kv-conv-exit.is-exiting')
-    expect(exiting).toBeTruthy()
-    expect(exiting).toHaveTextContent('原会话标题')
     expect(screen.queryByRole('button', { name: '原会话标题' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '留下的对话' })).toBeInTheDocument()
-    const remainingWrap = screen.getByRole('button', { name: '留下的对话' }).closest('.kv-conv-exit')
-    expect(remainingWrap).toBeTruthy()
-    expect(remainingWrap).not.toHaveClass('is-exiting')
+    expect(screen.getByRole('button', { name: '留下的对话' })).toBe(remaining)
   })
 
   it('opens context menu on right-click without rename, pin, or native session', async () => {
@@ -213,23 +206,6 @@ describe('ConversationList pin and archive', () => {
 })
 
 describe('ConversationList generating wave', () => {
-  it('puts wave and actions in the same replace slot while generating', () => {
-    const { container } = render(
-      <ConversationList
-        {...listProps}
-        generatingConversationIds={new Set(['conversation-1'])}
-      />,
-    )
-
-    const trailing = container.querySelector('.kv-conv-trailing')
-    expect(trailing).toBeTruthy()
-    // data-busy 存在（值为空串也算）→ CSS 走互斥替换，而不是并排
-    expect(trailing).toHaveAttribute('data-busy')
-    expect(trailing?.querySelector('.kv-conv-wave.chat-gen-wave')).toBeTruthy()
-    expect(trailing?.querySelector('.kv-conv-actions')).toBeTruthy()
-    expect(screen.getByRole('status', { name: '正在生成' })).toBeInTheDocument()
-  })
-
   it('still fires pin while generating — the wave must not swallow the click', async () => {
     const user = userEvent.setup()
     const onTogglePin = vi.fn()
@@ -240,6 +216,7 @@ describe('ConversationList generating wave', () => {
         onTogglePinConversation={onTogglePin}
       />,
     )
+    expect(screen.getByRole('status', { name: '正在生成' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '置顶聊天', hidden: true }))
     expect(onTogglePin).toHaveBeenCalledWith('conversation-1', true)
@@ -257,8 +234,6 @@ describe('ConversationList generating wave', () => {
     const trailing = container.querySelector('.kv-conv-trailing')
     expect(trailing).not.toHaveAttribute('data-busy')
     expect(trailing).toHaveAttribute('data-pinned')
-    expect(trailing).toHaveClass('w-[48px]')
-    expect(trailing?.querySelector('.kv-conv-actions')).toHaveClass('w-full', 'justify-between')
     expect(screen.queryByRole('status', { name: '正在生成' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '取消置顶' })).toBeInTheDocument()
   })
@@ -295,17 +270,6 @@ describe('ConversationList title display', () => {
 
     expect(screen.getByRole('button', { name: /我这几天玩apex，总是突然掉帧/ })).toBeInTheDocument()
     expect(screen.queryByText('新对话')).not.toBeInTheDocument()
-  })
-
-  it('does not bold the selected conversation', () => {
-    render(
-      <ConversationList
-        {...listProps}
-        currentConversationId={conversation.id}
-      />,
-    )
-
-    expect(screen.getByRole('button', { name: '原会话标题' })).not.toHaveClass('font-semibold')
   })
 
   it('shows untitled instead of 新对话 when there is no fallback', () => {

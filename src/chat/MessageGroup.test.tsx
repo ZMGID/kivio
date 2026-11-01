@@ -183,9 +183,8 @@ describe('MessageGroup — columns 模式', () => {
         onSelectColumn={() => {}}
       />,
     )
-    // a2 被选 → a1 显示「用这条继续」，a2 显示「已选」。
-    expect(screen.getByText('已选')).toBeInTheDocument()
-    expect(screen.getAllByText('用这条继续')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '已选' }).closest('[data-message-id]')).toHaveAttribute('data-message-id', 'a2')
+    expect(screen.getByRole('button', { name: '用这条继续' }).closest('[data-message-id]')).toHaveAttribute('data-message-id', 'a1')
   })
 
   it('流式态：从 group store 读实时列，无选中标记', async () => {

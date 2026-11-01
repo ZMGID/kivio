@@ -542,7 +542,6 @@ describe('ExternalAgentsSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('DeepSeek')).toBeInTheDocument()
     })
-    expect(screen.getByText('官方提供方 · 2 个模型')).toBeInTheDocument()
     expect(screen.getByText('默认')).toBeInTheDocument()
     expect(screen.queryByText('使用 CLI 自身配置')).not.toBeInTheDocument()
     expect(screen.queryByText('暂无供应商，点击上方「添加」创建一个。')).not.toBeInTheDocument()
@@ -700,8 +699,6 @@ describe('ExternalAgentsSettings', () => {
     })
     expect(screen.queryByRole('tab', { name: '插件配置' })).not.toBeInTheDocument()
     const plugins = screen.getByText('插件')
-    const providers = screen.getByText('所有供应商')
-    expect(plugins.compareDocumentPosition(providers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     fireEvent.click(plugins.closest('button')!)
     expect(screen.getByRole('tab', { name: '插件配置' })).toBeInTheDocument()

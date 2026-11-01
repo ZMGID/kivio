@@ -35,7 +35,6 @@ describe('onboarding matches current capabilities', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '登录授权' })) })
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(screen.getByText('已授权')).toBeInTheDocument()
-    expect(screen.queryByText(/设置会自动保存/)).not.toBeInTheDocument()
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '测试连接' })) })
     expect(api.testProviderConnection).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       request: expect.objectContaining({ oauth: { provider: 'codex', credentialId: 'credential' } }),

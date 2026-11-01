@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { LensTab } from './LensTab'
@@ -30,16 +30,12 @@ function renderTab(settingsOverrides: Record<string, unknown> = {}) {
 }
 
 describe('LensTab', () => {
-  it('enabled 开启时渲染全部分组', () => {
-    renderTab()
-    expect(screen.getByText(t.lensSection)).toBeTruthy()
-    expect(screen.getByText(t.engine)).toBeTruthy()
-    // imageArchive 同时用作组标题和行标签，故 getAllByText
-    expect(screen.getAllByText(t.imageArchive).length).toBeGreaterThan(0)
-    expect(screen.getByText(t.customPrompts)).toBeTruthy()
-  })
 
   it('enabled 关闭时隐藏下游全部分组（三层嵌套条件）', () => {
+    renderTab()
+    expect(screen.getByText(t.engine)).toBeTruthy()
+    expect(screen.getByText(t.customPrompts)).toBeTruthy()
+    cleanup()
     renderTab({ lens: { enabled: false, hotkey: '' } })
     // 总开关所在组仍在
     expect(screen.getByText(t.lensSection)).toBeTruthy()
@@ -75,7 +71,8 @@ describe('LensTab', () => {
 
   it('提示词的默认值来自 lensDefaults（system / question 不串）', () => {
     renderTab()
-    expect(screen.getByText(t.lensSystemPrompt)).toBeTruthy()
-    expect(screen.getByText(t.lensQuestionPrompt)).toBeTruthy()
+    const prompts = screen.getAllByRole('textbox').filter((field) => field.tagName === 'TEXTAREA')
+    expect(prompts[0]).toHaveValue('默认系统提示')
+    expect(prompts[1]).toHaveValue('默认问题提示')
   })
 })

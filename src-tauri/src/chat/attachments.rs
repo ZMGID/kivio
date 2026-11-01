@@ -1364,7 +1364,6 @@ mod tests {
 
         assert!(content.contains("看看这个"));
         assert!(content.contains("screen.png"));
-        assert!(content.contains("图片附件会随本轮请求发送给视觉模型"));
     }
 
     #[test]

@@ -31,7 +31,7 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   vi.spyOn(chatApi, 'getSets').mockResolvedValue([])
   vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
   vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
-  const initial = makeSettings({ settingsLanguage: 'zh', chat: {} as Settings['chat'] })
+  const initial = makeSettings({ settingsLanguage: 'zh', chat: {} as Settings['chat'], chatModel: 'stale-chat-model' })
   let cached = initial
   const binding = { providerId: 'p1', model: 'configured-chat-model' }
   const configured = {
@@ -54,6 +54,6 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   for (let step = 0; step < 3; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始使用 Kivio Desktop' })) })
   await waitFor(() => expect(screen.getByRole('button', { name: binding.model })).toBeInTheDocument())
-  expect(screen.queryByRole('button', { name: 'GPT-4o' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: initial.chatModel })).not.toBeInTheDocument()
   expect(cached.onboardingStatus).toBe('completed')
 })

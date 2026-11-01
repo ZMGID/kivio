@@ -1,162 +1,64 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
 
-describe('matchModel', () => {
-  it('uses Codex defaults for recent OpenAI models with every provider and preserves overrides', () => {
-    expect(matchModelExact('gpt-5.4')?.contextWindow).toBe(1000000)
-    expect(matchModelExact('gpt-5.4-mini')?.contextWindow).toBe(400000)
-    expect(matchModelExact('gpt-5.4-nano')?.contextWindow).toBe(400000)
-    expect(matchModelExact('gpt-5.5-pro')?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
-    const codex = { baseUrl: 'https://chatgpt.com/backend-api/codex', request: { oauth: { provider: 'codex' as const } } }
-    for (const [id, context] of [['gpt-6-astra', 272000], ['gpt-6.1-sol', 500000], ['gpt-6.1-terra', 500000], ['gpt-5.6-sol', 272000]] as const) {
-      for (const provider of [undefined, codex, { baseUrl: 'https://api.openai.com/v1' }, { baseUrl: 'https://gateway.example/v1' }]) {
-        expect(resolveModelInfo(id, undefined, provider).contextWindow).toBe(context)
-        expect(resolveModelInfo(`openai/${id}`, undefined, provider).contextWindow).toBe(context)
-        expect(resolveModelInfo(id, { [id]: { contextWindow: 8192 } }, provider).contextWindow).toBe(8192)
-      }
-    }
-  })
-
-  it('keeps qualified OMP route limits when version separators are normalized', () => {
-    expect(matchModelExact('openai/gpt-5-4')?.contextWindow).toBe(1050000)
-    expect(matchModelExact('gpt-5-4')?.contextWindow).toBe(1000000)
-    expect(matchModelExact('anthropic/claude-sonnet-4-6')?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high'])
-    expect(matchModelExact('claude-sonnet-4-6')?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
-  })
-
-  it.each([
-    [['gpt-6.1-terra', 'openai/gpt-6.1-terra'], 500000, 128000, ['low', 'medium', 'high', 'xhigh', 'max'], 1, 5],
-    [['kimi-k3.1-pro', 'moonshotai/kimi-k3.1-pro'], 1048576, 1048576, ['low', 'high', 'max'], 2, 10],
-    [['kimi-k3.1-pro-highspeed', 'moonshotai/kimi-k3.1-pro-highspeed'], 1048576, 1048576, ['low', 'high', 'max'], 4, 20],
-    [['minimax-m3.1-flash', 'minimax/minimax-m3.1-flash'], 1000000, 524288, ['low', 'medium', 'high', 'xhigh', 'max'], 0.15, 0.6],
-    [['mercury-3'], 1000000, 131072, ['low', 'medium', 'high'], 0.1, 0.35],
-    [['gemini-4-argon'], 1048576, 32768, ['low', 'medium', 'high'], 2, 10],
-    [['claude-haiku-5-5', 'anthropic/claude-haiku-5-5'], 1000000, 128000, ['low', 'medium', 'high', 'xhigh', 'max'], 0.1, 0.5],
-    [['inception/mercury-3'], 1000000, 131072, ['minimal', 'low', 'medium', 'high'], 0.1, 0.35],
-    [['google/gemini-4-argon'], 1048576, 943718, ['low', 'medium', 'high'], 2, 10],
-  ])('resolves the October 31 catalog and route reference price for %s', (ids, contextWindow, maxOutput, reasoningEfforts, input, output) => {
-    for (const id of ids) {
-      expect(matchModelExact(id), id).toMatchObject({
-        contextWindow, maxOutput, reasoningEfforts, pricing: { input, output },
-        capabilities: { functionCalling: true, reasoning: true, streaming: true },
-      })
-      expect(resolveModelInfo(id, { [id]: { contextWindow: 8192, pricing: { input: 9 } } })).toMatchObject({
-        contextWindow: 8192, pricing: { input: 9, output },
-      })
-    }
-  })
-
-  it.each([
-    ['qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
-    ['alibaba/qwen3.8-flash-next', ['low', 'medium', 'xhigh']],
-    ['qwen3.8-27b', ['low', 'medium', 'xhigh']],
-    ['qwen/qwen3.8-27b', ['minimal', 'low', 'medium', 'high']],
-    ['qwen3.8-max-0902', ['low', 'medium', 'xhigh']],
-    ['qwen3.8-omni-flash', ['low', 'medium', 'xhigh']],
-    ['deepseek-flash', ['low', 'high', 'max']],
-    ['deepseek-v4-pro-0813', ['low', 'high', 'max']],
-    ['glm-5.1', []],
-    ['gpt-5.5-pro', ['low', 'medium', 'high', 'xhigh']],
-  ])('uses the current catalog effort controls for %s', (id, efforts) => {
-    expect(matchModel(id)?.reasoningEfforts).toEqual(efforts)
-    expect(resolveModelInfo(id, { [id]: { reasoningEfforts: ['low'] } }).reasoningEfforts).toEqual(['low'])
-  })
-
-  it.each([
-    ['gpt-5.5', 1050000], ['gpt-5.5-pro', 1050000],
-    ['gpt-5.6', 272000], ['gpt-5.6-sol', 272000], ['gpt-5.6-terra', 272000], ['gpt-5.6-luna', 272000],
-    ['gpt-6-sol', 272000], ['gpt-6-luna', 272000], ['gpt-6-astra', 272000],
-    ['gpt-6.1-sol', 500000], ['gpt-6.1-terra', 500000],
-  ])(
-    'uses the reviewed Kivio context and output defaults for %s', (id, contextWindow) => {
-      expect(matchModel(id)).toMatchObject({ contextWindow, maxOutput: 128_000 })
-      expect(matchModel(`openai/${id}`)?.contextWindow).toBe(contextWindow)
+vi.mock('./modelDatabase.json', () => ({
+  default: {
+    _meta: { version: 'test' },
+    'model-4': { displayName: 'Model 4', contextWindow: 100 },
+    'model-4.6': {
+      displayName: 'Model 4.6', contextWindow: 200, maxOutput: 60, temperature: 0.7,
+      capabilities: { vision: true, videoInput: true, functionCalling: true, reasoning: true, streaming: true, embedding: true },
+      dimensions: 1024, multilingual: true, reasoningEfforts: ['low', 'high'],
+      pricing: { input: 2, output: 4, cachedInput: 0.2 },
     },
-  )
+    'model-4.6-fast': { displayName: 'Model 4.6 Fast', contextWindow: 300 },
+    'model-4.6-free': { displayName: 'Model 4.6 Free', contextWindow: 300 },
+    'vendor/model-4.6': { displayName: 'Vendor Model 4.6', contextWindow: 400 },
+    '[self-hosted]model/model-4.6-private': { displayName: 'Private Model 4.6', contextWindow: 500 },
+    'kimi-code/k3': { displayName: 'Coding Model', contextWindow: 600, reasoningEfforts: ['low', 'high'] },
+    'kimi-code/k3-256k': { displayName: 'Coding Model Small', contextWindow: 700 },
+  },
+}))
 
-  it.each([
-    ['[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored', 'Qwen3.8 27B Uncensored', ['low', 'medium', 'xhigh']],
-    ['[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive', 'Qwen3.5 9B Uncensored (HauhauCS Aggressive)', []],
-  ])('keeps the self-hosted variant identity and avoids inherited commercial pricing for %s', (id, displayName, efforts) => {
-    expect(matchModel(id)).toMatchObject({ displayName, contextWindow: 262144, reasoningEfforts: efforts })
-    expect(matchModel(id)?.pricing?.input).toBeUndefined()
-    expect(matchModel(id)?.pricing?.output).toBeUndefined()
-    expect(resolveModelInfo(id, { [id]: { maxOutput: 8192 } }).maxOutput).toBe(8192)
+describe('matchModel', () => {
+  it('prefers qualified entries and normalizes version separators without losing the route', () => {
+    expect(matchModelExact('vendor/model-4-6')?.displayName).toBe('Vendor Model 4.6')
+    expect(matchModelExact('model-4-6')?.displayName).toBe('Model 4.6')
+    expect(matchModel('vendor/model-4-6')).toEqual(matchModelExact('vendor/model-4.6'))
   })
 
-  it.each([
-    ['openai/gpt-6-sol', 'GPT-6 Sol', 272000, 2, 10, 0.2],
-    ['openai/gpt-6-luna', 'GPT-6 Luna', 272000, 0.1, 0.5, 0.01],
-    ['anthropic/claude-opus-5-5', 'Claude Opus 5.5', 1000000, 4, 20, 0.2],
-    ['xiaomi/mimo-v2.6-pro', 'MiMo V2.6 Pro', 1050000, 0.435, 0.87, 0.0036],
-    ['xiaomi/mimo-v2.6-flash', 'MiMo V2.6 Flash', 1050000, 0.14, 0.28, 0.0028],
-    ['z-ai/glm-5.3-flashx', 'GLM-5.3 FlashX', 1048576, 0.37, 1.25, 0.09],
-    ['x-ai/grok-4.7', 'Grok 4.7', 500000, 2, 6, 0.5],
-    ['qwen/qwen3.8-omni-flash', 'Qwen3.8 Omni Flash', 1000000, 0.15, 0.47, 0.016],
-  ])('resolves the September 24 catalog entry for %s without inheriting an older variant', (id, name, context, input, output, cachedInput) => {
-    expect(matchModelExact(id)).toMatchObject({
-      displayName: name, contextWindow: context,
-      pricing: { input, output, cachedInput },
-      capabilities: { vision: true, reasoning: true, functionCalling: true, streaming: true },
-    })
-    expect(matchModel(id)).toEqual(matchModelExact(id))
+  it('matches provider-prefixed and case-insensitive IDs without inferring exact metadata for private aliases', () => {
+    expect(matchModelExact(' Other/MODEL-4.6 ')).toEqual(matchModelExact('model-4.6'))
+    expect(matchModelExact('company-model-4.6-fast-special')).toBeNull()
   })
 
-  it('keeps published effort controls and user overrides for the new models', () => {
-    for (const id of ['gpt-6-sol', 'gpt-6-luna', 'claude-opus-5-5']) {
-      expect(matchModel(id)?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
-    }
-    for (const id of ['mimo-v2.6-pro', 'mimo-v2.6-flash']) {
-      expect(matchModel(id)?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high'])
-    }
-    expect(resolveModelInfo('gpt-6-sol', { 'gpt-6-sol': { contextWindow: 1050000 } }).contextWindow).toBe(1050000)
-    expect(matchModel('claude-opus-5')?.displayName).toBe('Claude Opus 5')
-    expect(matchModel('mimo-v2.5-pro')?.capabilities?.vision).toBe(false)
-    expect(matchModel('grok-4.6')?.displayName).toBe('Grok 4.6')
-    expect(matchModel('grok-4.7')?.maxOutput).toBe(500000)
-    expect(matchModel('qwen3.8-omni-flash')?.maxOutput).toBe(131072)
+  it('uses the longest normalized prefix for dated and parameterized variants', () => {
+    expect(matchModel('model-4-6-fast-20260101')).toEqual(matchModelExact('model-4.6-fast'))
+    expect(matchModel('model-4.6-high')).toEqual(matchModelExact('model-4.6'))
+    expect(matchModel('model-4.6[fast=true]')).toEqual(matchModelExact('model-4.6'))
   })
 
-  it('refreshes changed prices without changing old family identities', () => {
-    expect(matchModel('claude-sonnet-5')?.pricing).toEqual({ input: 2, output: 10, cachedInput: 0.2 })
-    expect(matchModel('glm-5.3-flash')?.pricing).toEqual({ input: 0.15, output: 0.5, cachedInput: 0.03 })
-    expect(matchModel('mimo-v2.5')?.pricing).toEqual({ input: 0.14, output: 0.28, cachedInput: 0.0028 })
+  it('prefers a prefix to a contained match and otherwise picks the longest contained match', () => {
+    expect(matchModel('model-4-alias-model-4.6')).toEqual(matchModelExact('model-4'))
+    expect(matchModel('company-model-4.6-fast-special')).toEqual(matchModelExact('model-4.6-fast'))
   })
 
-  it('resolves OpenCode free route identities without assuming native zero-priced billing', () => {
-    for (const id of ['big-pickle', 'deepseek-v4-flash-free', 'ling-3.0-flash-fin-free', 'mimo-v2.5-free', 'muse-spark-1.2-contributor-free', 'muse-spark-1.3-contributor-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free']) {
-      const info = matchModelExact(id)
-      expect(info, id).not.toBeNull()
-      expect(info?.pricing?.input).toBeUndefined()
-      expect(info?.pricing?.output).toBeUndefined()
-      expect(matchModel(`opencode/${id}`)).toEqual(info)
-    }
-    expect(matchModelExact('muse-spark-1.3-contributor-free')?.maxOutput).toBe(131072)
-    expect(matchModelExact('muse-spark-1.3-contributor')?.pricing?.input).toBeGreaterThan(0)
-    expect(matchModelExact('deepseek-v4-flash-free')?.contextWindow).toBe(200000)
-    expect(matchModelExact('nemotron-3.5-lightning-free')?.reasoningEfforts).toEqual([])
+  it('keeps major and known minor versions distinct and does not collapse an unknown minor', () => {
+    expect(matchModel('model-4')).toEqual(matchModelExact('model-4'))
+    expect(matchModel('model-4.6')).toEqual(matchModelExact('model-4.6'))
+    expect(matchModel('model-4.7-nebula')).toBeNull()
   })
 
-  it('resolves Kimi Code short IDs only with provider context and preserves overrides', () => {
-    const provider = { baseUrl: 'https://api.kimi.com/coding/v1' }
-    expect(resolveModelInfo('k3', undefined, provider).displayName).toBe('Kimi K3')
-    expect(resolveModelInfo('k3-256k', undefined, provider).contextWindow).toBe(262144)
-    expect(resolveModelInfo('k3', undefined, provider).reasoningEfforts).toEqual(['low', 'high', 'max'])
-    expect(resolveModelInfo('k3', undefined, provider).pricing?.input).toBeUndefined()
-    expect(resolveModelInfo('k3', { k3: { contextWindow: 1048576 } }, provider).contextWindow).toBe(1048576)
-    expect(matchModel('k3')).toBeNull()
-    expect(resolveModelInfo('k3', undefined, { baseUrl: 'https://other.example/v1' })).toEqual({})
-  })
-
-  it('resolves September models through provider and effort aliases without losing variants', () => {
-    expect(matchModel('gemini-3.8-flash-high')).toEqual(matchModelExact('gemini-3.8-flash'))
-    expect(matchModel('openai/gpt-6-astra')?.contextWindow).toBe(272000)
-    expect(matchModel('anthropic/claude-fable-5-1')?.displayName).toBe('Claude Fable 5.1')
-    expect(matchModel('claude-mythos-5-1')?.displayName).toBe('Claude Mythos 5.1')
-    expect(matchModel('meta/muse-spark-1.3-contributor')?.pricing?.input).toBe(0.1)
-    expect(matchModel('meta/muse-spark-1.3')?.pricing?.input).toBe(1.25)
-    expect(matchModel('gemini-3.8-flash-high')?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
-    expect(matchModelExact('gpt-6')).toBeNull()
+  it('does not inherit commercial prices for exact free or self-hosted variants', () => {
+    const free = matchModelExact('model-4.6-free')
+    expect(free?.displayName).toBe('Model 4.6 Free')
+    expect(free?.pricing?.input).toBeUndefined()
+    expect(free?.pricing?.output).toBeUndefined()
+    expect(matchModel('opencode/model-4.6-free')).toEqual(free)
+    const privateModel = matchModel('[self-hosted]model/model-4.6-private')
+    expect(privateModel?.displayName).toBe('Private Model 4.6')
+    expect(privateModel?.pricing?.input).toBeUndefined()
+    expect(privateModel?.pricing?.output).toBeUndefined()
   })
 
   it('returns null for blank model names', () => {
@@ -164,457 +66,79 @@ describe('matchModel', () => {
     expect(matchModel('   ')).toBeNull()
   })
 
-  it('matches dash-versioned ids against dot-keyed db entries', () => {
-    // Provider ids use dashes (claude-sonnet-4-6); db keys use dots (claude-sonnet-4.6).
-    // Without separator normalization these fall back to the older major-version entry.
-    expect(matchModel('claude-sonnet-4-6')?.displayName).toBe('Claude Sonnet 4.6')
-    expect(matchModel('claude-opus-4-8')?.displayName).toBe('Claude Opus 4.8')
-    expect(matchModel('claude-opus-4-7')?.displayName).toBe('Claude Opus 4.7')
-    expect(matchModel('claude-opus-4-5')?.displayName).toBe('Claude Opus 4.5')
-    expect(matchModel('claude-opus-4-5')?.reasoningEfforts).toEqual(['minimal', 'low', 'medium', 'high', 'xhigh'])
-    expect(matchModel('claude-haiku-4-5')?.displayName).toBe('Claude Haiku 4.5')
+  it('recognizes uncatalogued image generation naming patterns', () => {
+    for (const id of ['gpt-image-new', 'grok-imagine-image-new', 'nano-banana-new', 'qwen-image-new']) {
+      expect(matchModelExact(id)).toBeNull()
+      expect(matchModel(id)?.capabilities).toMatchObject({ vision: true, imageGeneration: true })
+    }
+    expect(matchModel('dall-e-3')?.capabilities).toMatchObject({ vision: false, imageGeneration: true })
+    expect(matchModel('other/gpt-image-new')?.displayName).toBe('GPT Image New')
   })
 
-  it('still resolves the bare major-version model to its own entry', () => {
-    expect(matchModel('claude-sonnet-5')?.displayName).toBe('Claude Sonnet 5')
-    expect(matchModel('claude-opus-5')?.displayName).toBe('Claude Opus 5')
-  })
-
-  it('matches dated dash-versioned ids by longest normalized prefix', () => {
-    expect(matchModel('claude-opus-4-8-20260101')?.displayName).toBe('Claude Opus 4.8')
-  })
-
-  it('does not collapse an unknown minor version onto its base entry', () => {
-    // Unknown 5.7 variants must not fall back to the base "gpt-5" entry.
-    expect(matchModel('gpt-5.7-nebula')).toBeNull()
-    // Known 5.6 variants resolve to their exact entries rather than the base family.
-    expect(matchModel('gpt-5.6-luna')?.displayName).toBe('GPT-5.6 Luna')
-    expect(matchModel('gpt-5.6-sol')?.displayName).toBe('GPT-5.6 Sol')
-    expect(matchModel('gpt-5.6-terra')?.displayName).toBe('GPT-5.6 Terra')
-    expect(matchModel('gpt-5.5')?.displayName).toBe('GPT-5.5')
-    expect(matchModel('gpt-5')?.displayName).toBe('GPT-5')
-  })
-
-  it('recognizes image generation model naming patterns', () => {
-    const info = matchModel('dall-e-3')
-    expect(info?.capabilities?.imageGeneration).toBe(true)
-
-    const flare = matchModel('gpt-image-2.5-flare')
-    expect(flare?.displayName).toBe('GPT Image 2.5 Flare')
-    expect(flare?.capabilities?.vision).toBe(true)
-    expect(flare?.capabilities?.imageGeneration).toBe(true)
-    // Text and image tokens have different official rates; no blended scalar.
-    expect(flare?.pricing?.output).toBeUndefined()
-
-    const sunburstSnapshot = matchModel('gpt-image-2.5-sunburst-2026-09-08')
-    expect(sunburstSnapshot?.displayName).toBe('GPT Image 2.5 Sunburst (2026-09-08)')
-    expect(sunburstSnapshot?.capabilities?.imageGeneration).toBe(true)
-  })
-
-  it('matches current Grok Imagine image ids without collapsing variants', () => {
-    expect(matchModel('grok-imagine-image')?.displayName).toBe('Grok Imagine Image')
-    expect(matchModel('grok-imagine-image')?.capabilities?.imageGeneration).toBe(true)
-    expect(matchModel('grok-imagine-image-2.0')?.displayName).toBe('Grok Imagine Image 2.0')
-    expect(matchModel('grok-imagine-image-2.0')?.displayName).not.toBe('Grok Imagine Image')
-    expect(matchModel('x-ai/grok-imagine-image-2.0')?.displayName).toBe('Grok Imagine Image 2.0')
-    expect(matchModel('grok-imagine-image-quality')?.displayName).toBe('Grok Imagine Image Quality')
-    expect(matchModel('grok-imagine-image-quality')?.displayName).not.toBe('Grok Imagine Image')
-    expect(matchModel('x-ai/grok-imagine-image-quality')?.displayName).toBe('Grok Imagine Image Quality')
-  })
-
-  it('matches current third-party image models used by Mixer', () => {
-    expect(matchModel('gemini-3.1-flash-lite-image')?.capabilities?.imageGeneration).toBe(true)
-    expect(matchModel('google/gemini-3.1-flash-lite-image')?.displayName).toBe(
-      'Gemini 3.1 Flash Lite Image',
-    )
-    expect(matchModel('nano-banana-2')?.displayName).toBe('Nano Banana 2')
-    expect(matchModel('nano-banana-2')?.displayName).not.toBe('Nano Banana')
-    expect(matchModel('qwen/qwen-image-3')?.displayName).toBe('Qwen Image 3')
-    expect(matchModel('qwen-image-3-pro')?.displayName).toBe('Qwen Image 3 Pro')
-    expect(matchModel('qwen-image-3')?.displayName).not.toBe('Qwen Image')
-    expect(matchModel('krea-2-large')?.capabilities?.imageGeneration).toBe(true)
-    expect(matchModel('meta/muse-image')?.displayName).toBe('Muse Image')
-    expect(matchModel('mai-image-2.5-pro')?.displayName).toBe('MAI Image 2.5 Pro')
-    expect(matchModel('riverflow-v2.5-pro')?.displayName).toBe('Riverflow V2.5 Pro')
-    expect(matchModel('black-forest-labs/flux.2-klein-4b')?.displayName).toBe('FLUX.2 Klein 4B')
-  })
-
-  it('matches the latest official Kimi model ids', () => {
-    const k3 = matchModel('kimi-k3')
-    expect(k3?.displayName).toBe('Kimi K3')
-    expect(k3?.contextWindow).toBe(1_048_576)
-    expect(k3?.maxOutput).toBe(131_072)
-    expect(k3?.temperature).toBeUndefined()
-
-    expect(matchModel('kimi-k2.7-code')?.displayName).toBe('Kimi K2.7 Code')
-    expect(matchModel('kimi-k2.7-code-highspeed')?.displayName)
-      .toBe('Kimi K2.7 Code HighSpeed')
-    expect(matchModel('kimi-k2.7-code-highspeed')?.pricing?.output).toBe(8)
-  })
-
-  it('matches Claude Mythos 5 official metadata', () => {
-    const info = matchModel('claude-mythos-5')
-    expect(info?.displayName).toBe('Claude Mythos 5')
-    expect(info?.contextWindow).toBe(1_000_000)
-    expect(info?.maxOutput).toBe(128_000)
-    expect(info?.pricing?.input).toBe(10)
-  })
-
-  it('matches Claude Opus 5 without collapsing onto Opus 4.x', () => {
-    const info = matchModel('claude-opus-5')
-    expect(info?.displayName).toBe('Claude Opus 5')
-    expect(info?.contextWindow).toBe(1_000_000)
-    expect(info?.maxOutput).toBe(128_000)
-    expect(info?.pricing?.input).toBe(5)
-    expect(info?.pricing?.output).toBe(25)
-    expect(info?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
-    // OpenRouter-style provider prefix
-    expect(matchModel('anthropic/claude-opus-5')?.displayName).toBe('Claude Opus 5')
-    // Must not degrade to Opus 4
-    expect(matchModel('claude-opus-5')?.displayName).not.toBe('Claude Opus 4')
-  })
-
-  it('matches latest Gemini Flash family ids', () => {
-    expect(matchModel('gemini-3.7-flash')?.displayName).toBe('Gemini 3.7 Flash')
-    expect(matchModel('gemini-3.7-flash')?.contextWindow).toBe(1_048_576)
-    expect(matchModel('gemini-3.7-flash')?.maxOutput).toBe(65_536)
-    expect(matchModel('gemini-3.7-flash')?.pricing?.input).toBe(0.75)
-    expect(matchModel('gemini-3.6-flash')?.displayName).toBe('Gemini 3.6 Flash')
-    expect(matchModel('gemini-3.6-flash')?.pricing?.output).toBe(3.75)
-    expect(matchModel('gemini-3.5-flash-lite')?.displayName).toBe('Gemini 3.5 Flash-Lite')
-    expect(matchModel('gemini-3.5-flash-lite')?.pricing?.input).toBe(0.3)
-    expect(matchModel('gemini-3.1-flash-lite')?.displayName).toBe('Gemini 3.1 Flash-Lite')
-    expect(matchModel('gemini-3-flash-preview')?.displayName).toBe('Gemini 3 Flash Preview')
-    // Longer lite id must not collapse onto gemini-3.5-flash
-    expect(matchModel('gemini-3.5-flash-lite')?.displayName).not.toBe('Gemini 3.5 Flash')
-    expect(matchModel('gemini-3.7-flash')?.displayName).not.toBe('Gemini 3.6 Flash')
-  })
-
-  it('matches Grok 4.6 official metadata without collapsing onto 4.5', () => {
-    const info = matchModel('grok-4.6')
-    expect(info?.displayName).toBe('Grok 4.6')
-    expect(info?.contextWindow).toBe(500_000)
-    expect(info?.maxOutput).toBe(500_000)
-    expect(info?.capabilities?.vision).toBe(true)
-    expect(info?.capabilities?.functionCalling).toBe(true)
-    expect(info?.capabilities?.reasoning).toBe(true)
-    expect(info?.capabilities?.webSearch).toBe(true)
-    expect(info?.reasoningEfforts).toEqual(['low', 'medium', 'high', 'xhigh'])
-    expect(info?.pricing?.input).toBe(2)
-    expect(info?.pricing?.output).toBe(6)
-    expect(info?.pricing?.cachedInput).toBe(0.5)
-    expect(matchModel('x-ai/grok-4.6')?.displayName).toBe('Grok 4.6')
-    expect(matchModel('grok-4-6')?.displayName).toBe('Grok 4.6')
-    expect(matchModel('grok-4.6')?.displayName).not.toBe('Grok 4.5')
-    expect(matchModel('grok-4.5')?.displayName).toBe('Grok 4.5')
-  })
-
-  it('matches Cursor Composer model ids without collapsing versions', () => {
-    // Cursor docs pricing catalog: composer-2.5 base + fast sub-row; supportsImage=true.
-    const c25 = matchModel('composer-2.5')
-    expect(c25?.displayName).toBe('Composer 2.5')
-    expect(c25?.contextWindow).toBe(200_000)
-    expect(c25?.maxOutput).toBeUndefined()
-    expect(c25?.capabilities?.vision).toBe(true)
-    expect(c25?.capabilities?.functionCalling).toBe(true)
-    expect(c25?.capabilities?.reasoning).toBe(true)
-    expect(c25?.capabilities?.streaming).toBe(true)
-    expect(c25?.capabilities?.webSearch).toBe(false)
-    expect(c25?.capabilities?.imageGeneration).toBe(false)
-    expect(c25?.pricing?.input).toBe(0.5)
-    expect(c25?.pricing?.output).toBe(2.5)
-    expect(c25?.pricing?.cachedInput).toBe(0.2)
-    expect(c25?.reasoningEfforts).toEqual([])
-    // Explicit fast sub-row id from the same catalog.
-    expect(matchModel('composer-2.5-fast')?.pricing?.input).toBe(3)
-    expect(matchModel('composer-2.5-fast')?.pricing?.output).toBe(15)
-    expect(matchModel('composer-2.5-fast')?.capabilities?.vision).toBe(true)
-    // Param-style ACP ids still resolve to the base entry (not the -fast sub-row).
-    expect(matchModel('composer-2.5[fast=true]')?.displayName).toBe('Composer 2.5')
-    // Version continuation: composer-2 must not steal composer-2.5.
-    expect(matchModel('composer-2')?.displayName).toBe('Composer 2')
-    expect(matchModel('composer-1.5')?.displayName).toBe('Composer 1.5')
-    expect(matchModel('composer-1')?.displayName).toBe('Composer 1')
-    expect(matchModel('composer-1')?.pricing?.input).toBeUndefined()
-    expect(matchModel('composer-1')?.capabilities?.vision).toBe(true)
-  })
-
-  it('matches Tencent Hy family ids without collapsing preview onto GA', () => {
-    const hy4 = matchModel('hy4-preview')
-    expect(hy4?.displayName).toBe('Hy4 Preview')
-    expect(hy4?.contextWindow).toBe(1_048_576)
-    expect(hy4?.maxOutput).toBe(65_536)
-    expect(hy4?.temperature).toBe(0.9)
-    expect(hy4?.capabilities?.vision).toBe(false)
-    expect(hy4?.capabilities?.functionCalling).toBe(true)
-    expect(hy4?.capabilities?.reasoning).toBe(true)
-    expect(hy4?.reasoningEfforts).toEqual(['high'])
-    expect(hy4?.pricing?.input).toBeCloseTo(6 / 6.722, 10)
-    expect(hy4?.pricing?.output).toBeCloseTo(18 / 6.722, 10)
-    expect(hy4?.pricing?.cachedInput).toBeCloseTo(0.3 / 6.722, 10)
-    expect(matchModel('hy4')?.displayName).toBe('Hy4 Preview')
-    expect(matchModel('tencent/hy4-preview')).toMatchObject({
-      displayName: 'Hy4 Preview', contextWindow: 1048576, maxOutput: 64000,
-      pricing: { input: 0.7506, output: 2.2509, cachedInput: 0.0378 },
+  it('copies catalog metadata including embedding fields and prices', () => {
+    expect(matchModelExact('model-4.6')).toMatchObject({
+      displayName: 'Model 4.6', contextWindow: 200, maxOutput: 60, temperature: 0.7,
+      capabilities: { vision: true, videoInput: true, functionCalling: true, reasoning: true, streaming: true, embedding: true },
+      dimensions: 1024, multilingual: true, reasoningEfforts: ['low', 'high'],
+      pricing: { input: 2, output: 4, cachedInput: 0.2 },
     })
-
-    const hy3 = matchModel('hy3')
-    expect(hy3?.displayName).toBe('Hy3')
-    expect(hy3?.contextWindow).toBe(262_144)
-    expect(hy3?.maxOutput).toBe(131_072)
-    expect(hy3?.reasoningEfforts).toEqual(['low', 'high'])
-    expect(hy3?.pricing?.input).toBeCloseTo(1 / 6.722, 10)
-    expect(matchModel('tencent/hy3')?.displayName).toBe('Hy3')
-
-    expect(matchModel('hy3-preview')?.displayName).toBe('Hy3 Preview')
-    expect(matchModel('hy3-preview')?.displayName).not.toBe('Hy3')
-    expect(matchModel('hy-mt2-pro')?.displayName).toBe('Hy-MT2 Pro')
-    expect(matchModel('hy-mt2-1.8b')?.displayName).toBe('Hy-MT2 1.8B')
-    expect(matchModel('hy-vision-2.0-instruct')?.capabilities?.vision).toBe(true)
-    expect(matchModel('hunyuan-t1-vision-20250916')?.displayName).toBe('HY-Vision 1.5 Thinking')
-    expect(matchModel('hy-image-v3')?.capabilities?.imageGeneration).toBe(true)
-  })
-
-  it('matches Doubao Seed family ids without collapsing 2.1 onto 2.0', () => {
-    const pro21 = matchModel('doubao-seed-2.1-pro')
-    expect(pro21?.displayName).toBe('Doubao Seed 2.1 Pro')
-    expect(pro21?.contextWindow).toBe(262_144)
-    expect(pro21?.maxOutput).toBe(262_144)
-    expect(pro21?.capabilities?.vision).toBe(true)
-    expect(pro21?.capabilities?.functionCalling).toBe(true)
-    expect(pro21?.capabilities?.reasoning).toBe(true)
-    expect(pro21?.reasoningEfforts).toEqual(['low', 'medium', 'high'])
-    expect(pro21?.pricing?.input).toBeCloseTo(6 / 6.722, 10)
-    expect(pro21?.pricing?.output).toBeCloseTo(30 / 6.722, 10)
-    expect(matchModel('doubao-seed-2-1-pro-260628')?.displayName).toBe('Doubao Seed 2.1 Pro')
-    expect(matchModel('seed-2.1-pro')?.displayName).toBe('Doubao Seed 2.1 Pro')
-
-    expect(matchModel('doubao-seed-2.1-turbo')?.displayName).toBe('Doubao Seed 2.1 Turbo')
-    expect(matchModel('bytedance-seed/seed-2.1-turbo')?.displayName).toBe('Doubao Seed 2.1 Turbo')
-    expect(matchModel('doubao-seed-evolving')?.displayName).toBe('Doubao Seed Evolving')
-
-    const pro20 = matchModel('doubao-seed-2.0-pro')
-    expect(pro20?.displayName).toBe('Doubao Seed 2.0 Pro')
-    expect(pro20?.capabilities?.vision).toBe(true)
-    expect(pro20?.pricing?.input).toBeCloseTo(3.2 / 6.722, 10)
-    expect(pro20?.displayName).not.toBe('Doubao Seed 2.1 Pro')
-    expect(matchModel('doubao-seed-2.1-pro')?.displayName).not.toBe('Doubao Seed 2.0 Pro')
-
-    expect(matchModel('doubao-seed-2.0-code')?.displayName).toBe('Doubao Seed 2.0 Code')
-    expect(matchModel('bytedance-seed/seed-2.0-code')?.displayName).toBe('Doubao Seed 2.0 Code')
-    expect(matchModel('doubao-seed-2.0-lite')?.pricing?.input).toBeCloseTo(0.6 / 6.722, 10)
-    expect(matchModel('doubao-seed-2.0-mini')?.pricing?.output).toBeCloseTo(2 / 6.722, 10)
-    expect(matchModel('seed-1.6-flash')?.displayName).toBe('Doubao Seed 1.6 Flash')
-    expect(matchModel('doubao-seed-1.6')?.displayName).toBe('Doubao Seed 1.6')
-    expect(matchModel('seed-1.6-flash')?.displayName).not.toBe('Doubao Seed 1.6')
-    expect(matchModel('seedream-5.0-pro')?.capabilities?.imageGeneration).toBe(true)
-  })
-
-  it('matches Ox Alpha as GLM multimodal with a 1M window', () => {
-    const info = matchModel('ox-alpha')
-    expect(info?.displayName).toBe('Ox Alpha')
-    expect(info?.contextWindow).toBe(1_048_576)
-    expect(info?.maxOutput).toBe(16_000)
-    expect(info?.capabilities?.vision).toBe(true)
-    expect(info?.capabilities?.functionCalling).toBe(true)
-    expect(info?.capabilities?.reasoning).toBe(true)
-    expect(info?.capabilities?.streaming).toBe(true)
-    expect(info?.reasoningEfforts).toEqual(['high', 'max'])
-    expect(info?.pricing?.input).toBeUndefined()
-    expect(info?.pricing?.output).toBeUndefined()
-    expect(matchModel('stealth/ox-alpha')).toEqual(info)
-  })
-
-  it('matches GLM-5.3 family without collapsing onto 5.2 or 5', () => {
-    const glm53 = matchModel('glm-5.3')
-    expect(glm53?.displayName).toBe('GLM-5.3')
-    expect(glm53?.contextWindow).toBe(1_000_000)
-    expect(glm53?.maxOutput).toBe(131_072)
-    expect(glm53?.capabilities?.vision).toBe(false)
-    expect(glm53?.reasoningEfforts).toEqual(['low', 'high', 'max'])
-    expect(glm53?.pricing?.input).toBe(1.4)
-    expect(glm53?.pricing?.output).toBe(4.4)
-    expect(matchModel('z-ai/glm-5.3')?.displayName).toBe('GLM-5.3')
-    expect(matchModel('glm-5-3')?.displayName).toBe('GLM-5.3')
-
-    const flash = matchModel('glm-5.3-flash')
-    expect(flash?.displayName).toBe('GLM-5.3 Flash')
-    expect(flash?.capabilities?.vision).toBe(true)
-    expect(flash?.maxOutput).toBe(131_072)
-    expect(flash?.pricing?.input).toBe(0.15)
-    expect(flash?.pricing?.output).toBe(0.5)
-    expect(matchModel('glm-5.3-flash')?.displayName).not.toBe('GLM-5.3')
-
-    const glm47 = matchModel('glm-4.7')
-    expect(glm47?.displayName).toBe('GLM-4.7')
-    expect(glm47?.contextWindow).toBe(204_800)
-    expect(glm47?.maxOutput).toBe(131_072)
-    expect(glm47?.capabilities?.vision).toBe(false)
-    expect(glm47?.reasoningEfforts).toEqual([])
-    expect(glm47?.pricing?.input).toBe(0.6)
-    expect(matchModel('glm-4.7-flash')?.displayName).toBe('GLM-4.7 Flash')
-    expect(matchModel('glm-4.7-flashx')?.displayName).toBe('GLM-4.7 FlashX')
-    expect(matchModel('glm-4.7-flash')?.displayName).not.toBe('GLM-4.7')
-    expect(matchModel('glm-4.6v')?.capabilities?.vision).toBe(true)
-    expect(matchModel('glm-4.6')?.maxOutput).toBe(131_072)
-    expect(matchModel('glm-4.5-air')?.displayName).toBe('GLM-4.5 Air')
-    expect(matchModel('glm-4.5-airx')?.displayName).toBe('GLM-4.5 AirX')
-    expect(matchModel('glm-4.5-airx')?.displayName).not.toBe('GLM-4.5 Air')
-    expect(matchModel('glm-4.5-x')?.displayName).toBe('GLM-4.5 X')
-    expect(matchModel('glm-4.5-x')?.pricing?.input).toBe(2.2)
-    expect(matchModel('glm-4.5-flash')?.displayName).toBe('GLM-4.5 Flash')
-    expect(matchModel('glm-4.5-flash')?.displayName).not.toBe('GLM-4.5')
-    expect(matchModel('glm-image')?.capabilities?.imageGeneration).toBe(true)
-
-    expect(matchModel('glm-5.2')?.maxOutput).toBe(131_072)
-    expect(matchModel('glm-5.2')?.capabilities?.vision).toBe(false)
-    expect(matchModel('glm-5')?.displayName).toBe('GLM-5')
-    expect(matchModel('glm-5')?.contextWindow).toBe(204_800)
-    expect(matchModel('glm-5-turbo')?.displayName).toBe('GLM-5 Turbo')
-    expect(matchModel('glm-5v-turbo')?.displayName).toBe('GLM-5V Turbo')
-    expect(matchModel('glm-5v-turbo')?.capabilities?.vision).toBe(true)
-    expect(matchModel('glm-5.3')?.displayName).not.toBe('GLM-5')
-    expect(matchModel('glm-5.3')?.displayName).not.toBe('GLM-5.2')
-  })
-
-  it('matches Qwen 3.8 family without collapsing onto 3.7', () => {
-    const max = matchModel('qwen3.8-max')
-    expect(max?.displayName).toBe('Qwen3.8 Max')
-    expect(max?.contextWindow).toBe(1_000_000)
-    expect(max?.maxOutput).toBe(131_072)
-    expect(max?.capabilities?.vision).toBe(true)
-    expect(max?.pricing?.input).toBeCloseTo(12 / 6.722, 10)
-    expect(max?.pricing?.output).toBeCloseTo(36 / 6.722, 10)
-    expect(matchModel('qwen/qwen3.8-max')?.displayName).toBe('Qwen3.8 Max')
-
-    expect(matchModel('qwen3.8-flash')?.displayName).toBe('Qwen3.8 Flash')
-    expect(matchModel('qwen3.8-flash')?.maxOutput).toBe(131_072)
-    expect(matchModel('qwen3.8-27b')?.displayName).toBe('Qwen3.8 27B')
-    expect(matchModel('qwen3.7-flash')?.displayName).toBe('Qwen3.7 Flash')
-    expect(matchModel('qwen3.8-max')?.displayName).not.toBe('Qwen3.7 Max')
-    expect(matchModel('qwen3.8-flash')?.displayName).not.toBe('Qwen3.7 Flash')
-    expect(matchModel('qwen3.5-plus')?.displayName).toBe('Qwen3.5 Plus')
-    expect(matchModel('qwen3.5-flash')?.displayName).toBe('Qwen3.5 Flash')
-    expect(matchModel('qwen3.5-flash')?.displayName).not.toBe('Qwen3.5 Plus')
-  })
-
-  it('matches DeepSeek V4.1 Flash and its temporarily routed legacy aliases', () => {
-    const current = matchModel('deepseek-flash')
-    expect(current?.displayName).toBe('DeepSeek V4.1 Flash')
-    expect(current?.contextWindow).toBe(1_000_000)
-    expect(current?.maxOutput).toBe(384_000)
-    expect(current?.capabilities?.vision).toBe(true)
-    expect(current?.reasoningEfforts).toEqual(['low', 'high', 'max'])
-    expect(current?.pricing?.input).toBe(0.3)
-
-    const flash = matchModel('deepseek-v4-flash')
-    expect(flash?.displayName).toBe('DeepSeek V4.1 Flash (Legacy Alias)')
-    expect(flash?.contextWindow).toBe(1_048_576)
-    expect(flash?.maxOutput).toBe(393_216)
-    expect(flash?.capabilities?.vision).toBe(true)
-    expect(flash?.capabilities?.reasoning).toBe(true)
-    expect(flash?.pricing?.input).toBe(0.3)
-    expect(matchModel('deepseek-v4-pro')?.maxOutput).toBe(393_216)
-    expect(matchModel('deepseek-v4-flash-vision-exp')?.capabilities?.vision).toBe(true)
-    expect(matchModel('deepseek-v4-flash-vision-exp')?.displayName).toContain('Legacy Vision Alias')
-  })
-
-  it('matches other newly released September models without family collapse', () => {
-    expect(matchModel('inception/mercury-2.5')?.displayName).toBe('Mercury 2.5')
-    expect(matchModel('inclusionai/ling-3.0-flash')?.capabilities?.vision).toBe(false)
-    expect(matchModel('inclusionai/ling-3.0-flash-vl')?.capabilities?.vision).toBe(true)
-    expect(matchModel('nex-agi/nex-n2.5-pro:free')?.displayName).toBe('Nex N2.5 Pro')
-    expect(matchModel('sakana/fugu-max')?.contextWindow).toBe(1_000_000)
-    expect(matchModel('sakana/fugu-ultra-v2')?.displayName).toBe('Fugu Ultra V2')
-    expect(matchModel('gpt-5.6-cyber')?.contextWindow).toBe(400_000)
-  })
-
-  it('matches MiniMax M2.7 as a thinking model without collapsing onto highspeed', () => {
-    const m27 = matchModel('minimax-m2.7')
-    expect(m27?.displayName).toBe('MiniMax M2.7')
-    expect(m27?.capabilities?.reasoning).toBe(true)
-    expect(m27?.pricing?.input).toBe(0.3)
-    expect(matchModel('minimax-m2.7-highspeed')?.displayName).toBe('MiniMax M2.7 Highspeed')
-    expect(matchModel('MiniMax-M2.7-highspeed')?.pricing?.output).toBe(2.4)
-    expect(matchModel('minimax-m2.7-highspeed')?.displayName).not.toBe('MiniMax M2.7')
-  })
-})
-
-
-
-describe('matchModelExact', () => {
-  it('does not infer catalog metadata for private aliases', () => {
-    expect(matchModelExact('company-gpt-4o-special')).toBeNull()
+    expect(matchModelExact('model-4')?.capabilities).toMatchObject({ vision: false, videoInput: false, embedding: false })
   })
 })
 
 describe('resolveModelInfo', () => {
-  it('merges database defaults with user overrides', () => {
-    const resolved = resolveModelInfo('gpt-4o', {
-      'gpt-4o': {
-        displayName: 'Custom GPT-4o',
-      },
-    })
-    expect(resolved.displayName).toBe('Custom GPT-4o')
-    expect(resolved.contextWindow).toBeGreaterThan(0)
+  it('resolves Kimi Code short IDs only with provider context and preserves overrides', () => {
+    const provider = { baseUrl: 'https://api.kimi.com/coding/v1' }
+    expect(resolveModelInfo('k3', undefined, provider)).toEqual(matchModelExact('kimi-code/k3'))
+    expect(resolveModelInfo('k3-256k', undefined, provider)).toEqual(matchModelExact('kimi-code/k3-256k'))
+    expect(resolveModelInfo('k3', undefined, { baseUrl: '', request: { oauth: { provider: 'kimi' } } }))
+      .toEqual(matchModelExact('kimi-code/k3'))
+    expect(resolveModelInfo('k3', { k3: { contextWindow: 1234 } }, provider).contextWindow).toBe(1234)
+    expect(matchModel('k3')).toBeNull()
+    expect(resolveModelInfo('k3', undefined, { baseUrl: 'https://other.example/v1' })).toEqual({})
   })
 
-  it('returns override-only info when database has no match', () => {
-    const resolved = resolveModelInfo('custom-local-model', {
-      'custom-local-model': {
-        displayName: 'Local',
-        contextWindow: 8192,
+  it('uses catalog defaults for different providers while preserving explicit overrides', () => {
+    const codex = { baseUrl: 'https://chatgpt.com/backend-api/codex', request: { oauth: { provider: 'codex' as const } } }
+    for (const provider of [undefined, codex, { baseUrl: 'https://api.openai.com/v1' }, { baseUrl: 'https://gateway.example/v1' }]) {
+      expect(resolveModelInfo('model-4.6', undefined, provider)).toEqual(matchModelExact('model-4.6'))
+      expect(resolveModelInfo('model-4.6', { 'model-4.6': { contextWindow: 8192 } }, provider).contextWindow).toBe(8192)
+    }
+  })
+
+  it('merges user overrides with untouched database defaults, including nested fields', () => {
+    const resolved = resolveModelInfo('model-4.6', {
+      'model-4.6': {
+        displayName: 'Custom', capabilities: { vision: false }, pricing: { input: 9 }, reasoningEfforts: [],
       },
     })
-    expect(resolved.displayName).toBe('Local')
-    expect(resolved.contextWindow).toBe(8192)
+    expect(resolved).toMatchObject({
+      displayName: 'Custom', contextWindow: 200, maxOutput: 60,
+      capabilities: { vision: false, videoInput: true, embedding: true }, dimensions: 1024, multilingual: true,
+      pricing: { input: 9, output: 4, cachedInput: 0.2 }, reasoningEfforts: [],
+    })
+  })
+
+  it('returns override-only info when the database has no match', () => {
+    const resolved = resolveModelInfo('custom-local-model', {
+      'custom-local-model': { displayName: 'Local', contextWindow: 8192 },
+    })
+    expect(resolved).toEqual({ displayName: 'Local', contextWindow: 8192 })
   })
 
   it('leaves temperature absent when neither the database nor overrides define it', () => {
-    expect(resolveModelInfo('gpt-4o').temperature).toBeUndefined()
+    expect(resolveModelInfo('model-4').temperature).toBeUndefined()
   })
 
   it('uses a numeric temperature override', () => {
-    const resolved = resolveModelInfo('gpt-4o', {
-      'gpt-4o': { temperature: 0.4 },
-    })
+    const resolved = resolveModelInfo('model-4.6', { 'model-4.6': { temperature: 0.4 } })
     expect(resolved.temperature).toBe(0.4)
     expect(resolved.omitTemperature).toBeUndefined()
   })
 
   it('uses omitTemperature as an explicit blank tombstone', () => {
-    const resolved = resolveModelInfo('gpt-4o', {
-      'gpt-4o': { temperature: 0.4, omitTemperature: true },
-    })
+    const resolved = resolveModelInfo('model-4.6', { 'model-4.6': { temperature: 0.4, omitTemperature: true } })
     expect(resolved.temperature).toBeUndefined()
     expect(resolved.omitTemperature).toBe(true)
-  })
-})
-
-describe('embedding models', () => {
-  it('resolves BAAI/bge-m3 (provider-prefixed) with embedding info', () => {
-    const info = matchModel('BAAI/bge-m3')
-    expect(info?.capabilities?.embedding).toBe(true)
-    expect(info?.dimensions).toBe(1024)
-    expect(info?.multilingual).toBe(true)
-    expect(info?.contextWindow).toBe(8194)
-  })
-
-  it('knows OpenAI embedding dimensions', () => {
-    expect(matchModel('text-embedding-3-small')?.dimensions).toBe(1536)
-    expect(matchModel('text-embedding-3-large')?.dimensions).toBe(3072)
-  })
-
-  it('matches models/-prefixed Gemini embedding id', () => {
-    const info = matchModel('models/gemini-embedding-001')
-    expect(info?.capabilities?.embedding).toBe(true)
-    expect(info?.dimensions).toBe(3072)
-  })
-
-  it('carries embedding fields through resolveModelInfo', () => {
-    const info = resolveModelInfo('jina-embeddings-v3')
-    expect(info.capabilities?.embedding).toBe(true)
-    expect(info.dimensions).toBe(1024)
-    expect(info.multilingual).toBe(true)
   })
 })

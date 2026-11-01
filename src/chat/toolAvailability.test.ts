@@ -46,22 +46,25 @@ describe('deriveToolStatusHint', () => {
   })
 
   it('surfaces the disabled reason when the user asked for tools and the catalog is empty', () => {
-    expect(deriveToolStatusHint({ ...base, toolsDisabledReason: 'MCP 未连接', enabledToolCount: 0 }))
-      .toBe('MCP 未连接')
-    expect(deriveToolStatusHint({ ...base, toolsDisabledReason: 'MCP 未连接', enabledToolCount: null }))
-      .toBe('MCP 未连接')
+    const reason = 'MCP unavailable'
+    expect(deriveToolStatusHint({ ...base, toolsDisabledReason: reason, enabledToolCount: 0 })).toBe(reason)
+    expect(deriveToolStatusHint({ ...base, toolsDisabledReason: reason, enabledToolCount: null })).toBe(reason)
   })
 
   it('prefixes the skill requirement when the active skill needs tools', () => {
-    expect(deriveToolStatusHint({
-      ...base, toolsDisabledReason: 'MCP 未连接', enabledToolCount: 0, toolsRequested: false, recommendedTools: ['x'],
-    })).toBe('当前 Skill 需要工具，但MCP 未连接')
+    const reason = 'MCP unavailable'
+    const hint = deriveToolStatusHint({
+      ...base, toolsDisabledReason: reason, enabledToolCount: 0, toolsRequested: false, recommendedTools: ['x'],
+    })
+    expect(hint.endsWith(reason)).toBe(true)
+    expect(hint).not.toBe(reason)
   })
 
   it('passes the provider "不支持 tools" message through verbatim when a skill is mounted', () => {
+    const reason = '该模型不支持 tools'
     expect(deriveToolStatusHint({
-      ...base, toolsDisabledReason: '该模型不支持 tools', enabledToolCount: 0, effectiveSkillId: 'pdf', recommendedTools: ['x'],
-    })).toBe('该模型不支持 tools')
+      ...base, toolsDisabledReason: reason, enabledToolCount: 0, effectiveSkillId: 'pdf', recommendedTools: ['x'],
+    })).toBe(reason)
   })
 
   it('stays silent when the catalog is empty but nobody asked for tools', () => {
@@ -70,7 +73,9 @@ describe('deriveToolStatusHint', () => {
   })
 
   it('lists at most three missing recommended tools', () => {
-    expect(deriveToolStatusHint({ ...base, unavailableRecommendedTools: ['a', 'b', 'c', 'd'] }))
-      .toBe('当前 Skill 推荐的工具不可用：a, b, c')
+    const missing = ['tool-a', 'tool-b', 'tool-c', 'tool-d']
+    const hint = deriveToolStatusHint({ ...base, unavailableRecommendedTools: missing })
+    for (const name of missing.slice(0, 3)) expect(hint).toContain(name)
+    expect(hint).not.toContain(missing[3])
   })
 })

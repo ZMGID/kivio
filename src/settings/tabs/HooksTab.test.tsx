@@ -42,17 +42,6 @@ describe('HooksTab', () => {
     expect(screen.queryByText('工具执行前')).toBeNull()
   })
 
-  it('所有 Hook 一次列全，不需要切换事件', () => {
-    renderTab([hook(), hook({ id: 'h2', name: 'lint', event: 'tool_execution_start' })])
-    expect(screen.getByText('log-end')).toBeTruthy()
-    expect(screen.getByText('lint')).toBeTruthy()
-  })
-
-  it('每行标出触发时机', () => {
-    renderTab([hook()])
-    expect(screen.getByText('对话结束')).toBeTruthy()
-  })
-
   it('按生命周期顺序排，而非创建顺序', () => {
     // 传入顺序是 agent_end 在前，渲染应把 tool_execution_start 排到它前面。
     renderTab([
@@ -61,6 +50,9 @@ describe('HooksTab', () => {
     ])
     const names = screen.getAllByText(/zzz-end|aaa-tool/).map((el) => el.textContent?.trim())
     expect(names[0]).toContain('aaa-tool')
+    expect(names).toHaveLength(2)
+    expect(names[1]).toContain('zzz-end')
+    expect(screen.getByText(i18n.zh.hookEventAgentEnd)).toBeTruthy()
   })
 
   it('切换启停回调带更新后的整表', async () => {

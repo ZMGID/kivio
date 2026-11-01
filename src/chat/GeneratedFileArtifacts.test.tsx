@@ -39,19 +39,13 @@ const image: ChatToolArtifact = {
 describe('GeneratedFileArtifacts compact chips', () => {
   beforeEach(() => invoke.mockReset())
 
-  it('lays out multiple files as compact wrapping chips, without body preview', () => {
+  it('renders file names without body previews or image artifacts', () => {
     const { container } = render(
       <GeneratedFileArtifacts artifacts={[pdf, markdown, image]} />,
     )
 
-    const row = container.querySelector('.flex-wrap')
-    expect(row).not.toBeNull()
-    expect(row?.className).toContain('flex-wrap')
-
     const pdfButton = screen.getByRole('button', { name: '打开文件 简历.pdf' })
     const mdButton = screen.getByRole('button', { name: '打开文件 english_essay.md' })
-    expect(pdfButton.className).toContain('h-16')
-    expect(mdButton.className).toContain('h-16')
     expect(pdfButton).toHaveTextContent('简历.pdf')
     expect(mdButton).toHaveTextContent('english_essay.md')
     expect(container.textContent).not.toContain('%PDF')

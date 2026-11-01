@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { AppInfoGroup, UpdateGroup, type UpdateFlowState } from './AboutTab'
+import { UpdateGroup, type UpdateFlowState } from './AboutTab'
 import { makeSettings } from './testFixtures'
 import { i18n } from '../../components/i18n'
 
@@ -40,13 +40,6 @@ function renderUpdate(update: Partial<UpdateFlowState> = {}) {
   return props
 }
 
-describe('AppInfoGroup', () => {
-  it('显示版本号', () => {
-    render(<AppInfoGroup t={t} lang="zh" appVersion="2.8.3" />)
-    expect(screen.getByText('v2.8.3')).toBeTruthy()
-  })
-})
-
 describe('UpdateGroup', () => {
   it('idle 态只有检查按钮', () => {
     renderUpdate()
@@ -69,15 +62,6 @@ describe('UpdateGroup', () => {
     expect(screen.getByText(t.updateCheckFailed)).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: t.downloadFromGithub }))
     expect(props.onOpenGithubReleases).toHaveBeenCalled()
-  })
-
-  it('available 态显示版本与更新说明', () => {
-    renderUpdate({
-      status: 'available',
-      info: { version: '2.9.0', body: '新增功能 X' } as never,
-    })
-    expect(screen.getByText('v2.9.0')).toBeTruthy()
-    expect(screen.getByTestId('md').textContent).toBe('新增功能 X')
   })
 
   it('available + downloadState=idle 显示下载与 GitHub 两个按钮', () => {

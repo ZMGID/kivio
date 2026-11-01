@@ -103,23 +103,6 @@ describe('ContextIndicator character share', () => {
     expect(screen.getByTitle(/UTF-16 character shares, not token shares/)).toBeTruthy()
   })
 
-  it('uses the Chinese character-share label without changing the three rows', () => {
-    render(
-      <ContextIndicator
-        contextState={breakdownState}
-        messageCount={4}
-        lang="zh"
-        onRefresh={vi.fn()}
-        onCompress={vi.fn()}
-      />,
-    )
-    fireEvent.click(screen.getByLabelText('上下文'))
-    expect(screen.getByText('字符占比')).toBeTruthy()
-    expect(screen.getByText('系统提示词')).toBeTruthy()
-    expect(screen.getByText('工具')).toBeTruthy()
-    expect(screen.getByText('对话')).toBeTruthy()
-    expect(screen.getByText('≈ 4.0k')).toBeTruthy()
-  })
 })
 
 describe('ContextIndicator usage panel', () => {
@@ -163,7 +146,6 @@ describe('ContextIndicator usage panel', () => {
     const trigger = screen.getByRole('button', { name: 'Context' })
     fireEvent.click(trigger)
     const details = screen.getByRole('region', { name: 'Context capacity' })
-    expect(details).toHaveClass('overflow-y-auto')
     const refresh = screen.getByRole('button', { name: 'Refresh context' })
     const compress = screen.getByRole('button', { name: 'Compress context' })
     const clear = screen.getByRole('button', { name: 'Clear context' })

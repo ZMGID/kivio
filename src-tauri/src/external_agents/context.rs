@@ -607,30 +607,24 @@ mod tests {
         );
         assert_eq!(
             context_window_for_external_model("claude", "claude-sonnet-5", None, None).0,
-            Some(200_000)
+            context_window_from_claude_resolved_model("claude-sonnet-5").map(|v| v as usize)
         );
     }
 
     #[test]
-    fn kimi_static_window_map() {
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/k3"),
-            Some(1_048_576)
-        );
-        assert_eq!(context_window_from_kimi_model("k3"), Some(1_048_576));
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/k3-256k"),
-            Some(262_144)
-        );
-        assert_eq!(context_window_from_kimi_model("k3-256k"), Some(262_144));
-        assert_eq!(
-            context_window_from_kimi_model("kimi-code/kimi-for-coding"),
-            Some(262_144)
-        );
-        assert_eq!(
-            context_window_from_kimi_model("kimi-for-coding-highspeed"),
-            Some(262_144)
-        );
+    fn kimi_static_window_aliases_are_normalized() {
+        for model in [
+            "k3",
+            "k3-256k",
+            "kimi-for-coding",
+            "kimi-for-coding-highspeed",
+        ] {
+            let plain = context_window_from_kimi_model(model);
+            assert_eq!(
+                context_window_from_kimi_model(&format!("  KIMI-CODE/{}  ", model.to_uppercase())),
+                plain
+            );
+        }
         assert_eq!(context_window_from_kimi_model("unknown-kimi"), None);
     }
 
@@ -638,23 +632,23 @@ mod tests {
     fn kimi_window_reaches_context_state() {
         let (window, estimated) =
             context_window_for_external_model("kimi", "kimi-code/k3-256k", None, None);
-        assert_eq!(window, Some(262_144));
+        assert_eq!(
+            window,
+            context_window_from_kimi_model("kimi-code/k3-256k").map(|v| v as usize)
+        );
         assert!(!estimated);
         // 同名模型在别的 agent 下不该走 kimi 映射（那是 agent 专属表）。
         // 但名字里明写 256k，L8 的关键词表照样能捞到——这是另一条来源，不是 kimi 表。
         let (other, _) =
             context_window_for_external_model("cursor", "kimi-code/k3-256k", None, None);
-        assert_eq!(other, Some(262_144));
+        assert_eq!(
+            other,
+            Some(context_window_for_model(None, "kimi-code/k3-256k").0)
+        );
     }
 
     #[test]
     fn unknown_agent_and_model_yields_no_window_instead_of_fake_200k() {
-        // 模型库收录后，composer-2.5 有官方 200K 上下文（Cursor docs pricing catalog）。
-        let (window, estimated) =
-            context_window_for_external_model("cursor", "composer-2.5", None, None);
-        assert_eq!(window, Some(200_000));
-        assert!(!estimated);
-
         // 完全未知的模型 id 仍不能编造 200K 兜底（会触发假百分比 / 错位压缩阈值）。
         let (window, estimated) = context_window_for_external_model(
             "cursor",

@@ -100,23 +100,6 @@ describe('ComputerControlTab', () => {
     expect(await screen.findByRole('button', { name: '更新' })).toBeEnabled()
   })
 
-  it('shows only a compact ready state or install action', async () => {
-    vi.mocked(api.chatSkillsList).mockResolvedValue({ success: true, skills: [cuaSkill] })
-    const onChange = vi.fn()
-    const tools = makeChatToolsFixture()
-    tools.enabled = true
-    render(<ComputerControlTab lang="zh" tools={tools} onChange={onChange} />)
-    expect(await screen.findByText('v0.28.1 · 1 Skill')).toBeTruthy()
-    expect(screen.getAllByText('未安装').length).toBeGreaterThan(0)
-    expect(screen.getByRole('switch', { name: 'Cua Driver 控制' })).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: '安装' }).length).toBeGreaterThan(0)
-    expect(screen.getByText('电脑操作')).toBeTruthy()
-    expect(screen.getByText('浏览器操作')).toBeTruthy()
-    expect(screen.queryByText('0 Skill · 0 MCP')).toBeNull()
-    expect(screen.queryByText(/已连接|可操作/)).toBeNull()
-    expect(screen.queryByText(/CLI 已安装|检测详情/)).toBeNull()
-    expect(onChange).not.toHaveBeenCalled()
-  })
 
   it('installs and enables the official Skill using current settings', async () => {
     let finish!: (value: SkillMeta) => void

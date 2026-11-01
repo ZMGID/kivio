@@ -82,9 +82,9 @@ describe('MixerTab', () => {
 
   it('子代理模型不能关闭思考时不提供 Off 选项', async () => {
     vi.mocked(api.thinkingCapabilitiesForModel).mockResolvedValueOnce({ levels: ['low', 'high', 'max'], offMode: 'unsupported' })
-    const settings = makeSettings({ providers: [makeProvider({ id: 'p1', enabledModels: ['kimi-k3'], availableModels: ['kimi-k3'] })] })
+    const settings = makeSettings({ providers: [makeProvider({ id: 'p1', enabledModels: ['fixed-thinking'], availableModels: ['fixed-thinking'] })] })
     render(<MixerTab settings={settings} t={t} lang="zh" hasChatProvider
-      chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'kimi-k3' } } }}
+      chatTools={{ ...settings.chatTools, subAgentModels: { task: { providerId: 'p1', model: 'fixed-thinking' } } }}
       onUpdateChatTools={vi.fn()} onUpdateDefaultModel={vi.fn()} onUpdateChat={vi.fn()} />)
     const select = await screen.findByRole('button', { name: /TASK.*推理强度/ })
     await userEvent.click(select)
@@ -143,13 +143,6 @@ describe('MixerTab', () => {
     expect(props.onUpdateDefaultModel).toHaveBeenCalledWith('videoAnalysis', 'p1', 'custom-video')
   })
 
-  it('渲染三个分组', () => {
-    renderTab()
-    expect(screen.getByText(t.mixerSection)).toBeTruthy()
-    expect(screen.getByText(t.defaultPromptOptimizeModel)).toBeTruthy()
-    expect(screen.getByText(t.mixerSubAgentSection)).toBeTruthy()
-    expect(screen.getByText(t.mixerAdvisorSection)).toBeTruthy()
-  })
 
   it('「全部恢复自动」一次重置六个槽位（不含 advisor）', async () => {
     const props = renderTab()

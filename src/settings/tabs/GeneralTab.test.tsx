@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { AppearanceGroup, BehaviorGroup, PermissionsGroup } from './GeneralTab'
@@ -49,8 +49,8 @@ describe('AppearanceGroup', () => {
 
   it('两个字体选择器各自回显 uiFontFamily / uiFontMono（不串）', () => {
     renderGroup()
-    expect(screen.getByDisplayValue('Inter')).toBeTruthy()
-    expect(screen.getByDisplayValue('Menlo')).toBeTruthy()
+    expect(within(screen.getByText('界面字体').closest('.kv-row')!).getByRole('textbox')).toHaveValue('Inter')
+    expect(within(screen.getByText('代码字体').closest('.kv-row')!).getByRole('textbox')).toHaveValue('Menlo')
   })
 })
 
@@ -71,12 +71,10 @@ describe('BehaviorGroup', () => {
     return props
   }
 
-  it('retryEnabled 开启时显示重试次数行', () => {
+  it('retryEnabled 决定是否显示重试次数行', () => {
     renderGroup()
     expect(screen.getByText(t.retryAttempts)).toBeTruthy()
-  })
-
-  it('retryEnabled 关闭时隐藏重试次数行', () => {
+    cleanup()
     renderGroup({ settings: makeSettings({ retryEnabled: false }) })
     expect(screen.queryByText(t.retryAttempts)).toBeNull()
   })

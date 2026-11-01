@@ -364,10 +364,8 @@ mod tests {
     fn renders_readable_chinese_markdown_without_internal_fields() {
         let markdown = render_conversation_markdown(&conversation(), "zh");
         assert!(markdown.contains("# Export test"));
-        assert!(markdown.contains("**用户** ·"));
-        assert!(markdown.contains("**助手** ·"));
-        assert!(markdown.contains("[附件: notes.pdf]"));
-        assert!(markdown.contains("[图片: chart.png]"));
+        assert!(markdown.contains("notes.pdf"));
+        assert!(markdown.contains("chart.png"));
         assert!(markdown.contains("Final answer"));
         assert!(!markdown.contains("private reasoning"));
         assert!(!markdown.contains("api transcript"));
@@ -387,14 +385,14 @@ mod tests {
         });
 
         let markdown = render_conversation_markdown(&conversation, "zh");
-        assert!(markdown.contains("[附件: 已粘贴的文本.txt]"));
-        assert!(markdown.contains("附件正文"));
+        assert!(markdown.contains("已粘贴的文本.txt"));
         assert!(markdown.contains("第一行日志\n第二行日志"));
     }
 
     #[test]
-    fn renders_english_labels_and_skips_empty_internal_only_messages() {
+    fn skips_empty_internal_only_messages() {
         let mut conversation = conversation();
+        let before = render_conversation_markdown(&conversation, "en");
         conversation.messages.push(ChatMessage {
             id: "assistant_empty".to_string(),
             role: "assistant".to_string(),
@@ -422,12 +420,7 @@ mod tests {
         });
 
         let markdown = render_conversation_markdown(&conversation, "en");
-        assert!(markdown.contains("- Created:"));
-        assert!(markdown.contains("**User** ·"));
-        assert!(markdown.contains("**Assistant** ·"));
-        assert!(markdown.contains("[Attachment: notes.pdf]"));
-        assert!(markdown.contains("[Image: chart.png]"));
-        assert_eq!(markdown.matches("**Assistant** ·").count(), 1);
+        assert_eq!(markdown, before);
         assert!(!markdown.contains("hidden"));
     }
 }

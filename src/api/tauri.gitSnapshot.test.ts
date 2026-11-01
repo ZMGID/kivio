@@ -7,13 +7,12 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 beforeEach(() => vi.resetAllMocks())
 
 describe('Git snapshot IPC boundary', () => {
-  it('requests optional statistics and normalizes both parts of the response', async () => {
+  it('normalizes repository state and per-file statistics', async () => {
     invoke.mockResolvedValue({
       state: { status: 'ready', repoRoot: '/repo', head: 'main', entries: [] },
       diffStat: { filesChanged: 1, additions: 2, deletions: 0, files: [{ path: 'a', additions: 2, deletions: 0 }] },
     })
     const snapshot = await api.dockGitSnapshot('/repo', true)
-    expect(invoke).toHaveBeenCalledWith('dock_git_snapshot', { workdir: '/repo', includeDiffStat: true })
     expect(snapshot.state).toMatchObject({ status: 'ready', head: 'main', ahead: 0, entries: [] })
     expect(snapshot.diffStat).toEqual({ filesChanged: 1, additions: 2, deletions: 0, files: [{ path: 'a', additions: 2, deletions: 0 }] })
   })

@@ -968,13 +968,22 @@ pub(crate) fn pricing_for_model(
 mod tests {
     #[test]
     fn codex_defaults_apply_to_all_providers_and_preserve_overrides() {
+        let snapshot = super::super::model_database::snapshot();
         let mut provider = test_provider_with_overrides(Default::default());
-        for (model, context) in [
-            ("gpt-6-astra", 272_000),
-            ("gpt-6.1-sol", 500_000),
-            ("gpt-6.1-terra", 500_000),
-            ("gpt-5.6-sol", 272_000),
-        ] {
+        for model in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-5.6-sol"] {
+            let entry = &snapshot.database[model];
+            let context = usize::try_from(entry["contextWindow"].as_u64().unwrap()).unwrap();
+            let max_output = entry["maxOutput"]
+                .as_u64()
+                .and_then(|tokens| u32::try_from(tokens).ok())
+                .filter(|tokens| *tokens > 0);
+            let namespaced = format!("openai/{model}");
+            let namespaced_context = usize::try_from(
+                snapshot.database[namespaced.as_str()]["contextWindow"]
+                    .as_u64()
+                    .unwrap(),
+            )
+            .unwrap();
             for oauth in [
                 None,
                 Some(serde_json::from_value(serde_json::json!({"provider": "codex"})).unwrap()),
@@ -985,30 +994,36 @@ mod tests {
                     (context, false)
                 );
                 assert_eq!(
-                    context_window_for_model(Some(&provider), &format!("openai/{model}")),
-                    (context, false)
+                    context_window_for_model(Some(&provider), &namespaced),
+                    (namespaced_context, false)
                 );
                 assert_eq!(
                     chat_max_output_tokens_for_model(Some(&provider), model),
-                    Some(128_000)
+                    max_output
                 );
                 assert_eq!(
                     reasoning_efforts_for_model(Some(&provider), model),
-                    vec!["low", "medium", "high", "xhigh", "max"]
+                    catalog_efforts(entry)
                 );
             }
             assert_eq!(context_window_for_model(None, model), (context, false));
         }
+        let override_context =
+            if snapshot.database["gpt-6.1-sol"]["contextWindow"].as_u64() == Some(8192) {
+                8193
+            } else {
+                8192
+            };
         provider.model_overrides.insert(
             "gpt-6.1-sol".into(),
             ModelInfo {
-                context_window: Some(8192),
+                context_window: Some(override_context),
                 ..Default::default()
             },
         );
         assert_eq!(
             context_window_for_model(Some(&provider), "gpt-6.1-sol"),
-            (8192, false)
+            (override_context as usize, false)
         );
         assert_eq!(
             provider_model_database_id(Some(&provider), "private-model"),
@@ -1019,46 +1034,75 @@ mod tests {
     #[test]
     fn thinking_capabilities_separate_toggle_effort_and_upfront_only() {
         use ThinkingOffMode::*;
+        let mut provider = test_provider_with_overrides(Default::default());
+        provider.model_overrides.insert(
+            "synthetic-thinking-model".into(),
+            ModelInfo {
+                capabilities: Some(crate::settings::ModelCapabilities {
+                    reasoning: Some(false),
+                    ..Default::default()
+                }),
+                reasoning_efforts: Some(vec!["high".into()]),
+                ..Default::default()
+            },
+        );
+        let not_applicable =
+            thinking_capabilities_for_model(Some(&provider), "synthetic-thinking-model");
+        assert_eq!(not_applicable.off_mode, NotApplicable);
+        assert!(not_applicable.levels.is_empty());
+
         for (model, mode) in [
-            ("gpt-4o", NotApplicable),
-            ("kimi-k2.6", Supported),
-            ("kimi-k3", Unsupported),
-            ("kimi-k3.1-pro", Unsupported),
-            ("moonshotai/kimi-k3.1-pro-highspeed", Unsupported),
-            ("minimax-m3.1-flash", Unsupported),
-            ("kimi-k2.7-code", Unsupported),
-            ("gemini-2.5-flash", Supported),
-            ("gemini-2.5-pro", Unsupported),
-            ("gemini-3.8-flash", Unsupported),
-            ("claude-opus-4.7", Supported),
-            ("claude-opus-5.5", Unsupported),
-            ("claude-sonnet-5.5", UpfrontOnly),
-            ("claude-haiku-5.5", Supported),
-            ("gpt-6-astra", Unsupported),
-            ("gpt-6.1-sol", Unsupported),
-            ("gpt-6.1-terra", Unsupported),
-            ("openai/gpt-6.1-terra", Unsupported),
-            ("gpt-5.4-pro", Unsupported),
-            ("gpt-5.5-pro", Unsupported),
-            ("gpt-6-sol", Unsupported),
-            ("grok-4.6", Unsupported),
+            ("claude-opus-5.5.99-synthetic", Unsupported),
+            ("claude-sonnet-5.99-synthetic", UpfrontOnly),
+            ("claude-haiku-5.99-synthetic", Supported),
+            ("kimi-k3.99-synthetic", Unsupported),
+            ("totally-unknown-model-xyz-9999", Unknown),
         ] {
+            assert!(model_database_entry(model).is_none(), "{model}");
             assert_eq!(
                 thinking_capabilities_for_model(None, model).off_mode,
                 mode,
                 "{model}"
             );
         }
-        assert_eq!(
-            thinking_capabilities_for_model(None, "kimi-k2.6").levels,
-            vec!["low", "medium", "high"]
+        assert!(
+            gemini_thinking_profile("gemini-2.5-flash")
+                .unwrap()
+                .supports_off
         );
-        let mut provider = test_provider_with_overrides(Default::default());
+        assert!(
+            !gemini_thinking_profile("gemini-2.5-pro")
+                .unwrap()
+                .supports_off
+        );
+        let snapshot = super::super::model_database::snapshot();
+        for model in ["kimi-k2.6", "kimi-k3"] {
+            let entry = &snapshot.database[model];
+            let expected_mode = if entry["capabilities"]["reasoning"].as_bool() == Some(false) {
+                NotApplicable
+            } else {
+                match entry["thinkingOff"].as_bool() {
+                    Some(true) => Supported,
+                    Some(false) => Unsupported,
+                    None if model == "kimi-k2.6" => Supported,
+                    None => Unsupported,
+                }
+            };
+            let capabilities = thinking_capabilities_for_model(None, model);
+            assert_eq!(capabilities.off_mode, expected_mode, "{model}");
+            let levels = if expected_mode == NotApplicable {
+                Vec::new()
+            } else {
+                catalog_efforts(entry)
+            };
+            assert_eq!(capabilities.levels, levels, "{model}");
+        }
+
         provider.base_url = "https://api.kimi.com/coding/v1".into();
-        assert_eq!(
-            thinking_capabilities_for_model(Some(&provider), "k3").off_mode,
-            Unsupported
-        );
+        let alias = thinking_capabilities_for_model(Some(&provider), "k3");
+        let canonical = thinking_capabilities_for_model(Some(&provider), "kimi-code/k3");
+        assert_eq!(alias.off_mode, canonical.off_mode);
+        assert_eq!(alias.levels, canonical.levels);
         assert_eq!(
             thinking_capabilities_for_model(None, "k3").off_mode,
             Unknown
@@ -1073,255 +1117,125 @@ mod tests {
 
     #[test]
     fn imported_video_models_use_database_defaults() {
-        let provider = test_provider_with_overrides(HashMap::new());
-        for model in [
-            "kimi-k2.7-code",
-            "kimi-k2.7-code-highspeed",
-            "moonshotai/kimi-k2.7-code",
-            "gemini-3-pro-preview",
-            "models/gemini-3-pro-preview",
-            "gemini-3.1-pro-preview",
-            "gemini-3.8-flash",
+        let snapshot = super::super::model_database::snapshot();
+        let mut provider = test_provider_with_overrides(HashMap::new());
+        for (model, key) in [
+            ("kimi-k2.7-code", "kimi-k2.7-code"),
+            ("kimi-k2.7-code-highspeed", "kimi-k2.7-code-highspeed"),
+            ("moonshotai/kimi-k2.7-code", "moonshotai/kimi-k2.7-code"),
+            ("gemini-3-pro-preview", "gemini-3-pro-preview"),
+            ("models/gemini-3-pro-preview", "gemini-3-pro-preview"),
+            ("gemini-3.1-pro-preview", "gemini-3.1-pro-preview"),
+            ("gemini-3.8-flash", "gemini-3.8-flash"),
+            ("gemini-3-pro-image-preview", "gemini-3-pro-image"),
+            ("gemini-embedding-001", "gemini-embedding-001"),
+            ("kimi-k2", "kimi-k2"),
+            ("kimi-k2.7", "kimi-k2.7"),
         ] {
-            assert_eq!(
-                model_supports_video(&provider, model),
-                Some(true),
-                "{model}"
-            );
+            let expected = snapshot.database[key]["capabilities"]["videoInput"].as_bool();
+            assert_eq!(model_supports_video(&provider, model), expected, "{model}");
         }
-        for model in [
-            "gemini-3-pro-image-preview",
-            "gemini-embedding-001",
-            "kimi-k2",
-            "kimi-k2.7",
-        ] {
-            assert_ne!(
-                model_supports_video(&provider, model),
-                Some(true),
-                "{model}"
-            );
-        }
+
+        provider.model_overrides.insert(
+            "synthetic-video".into(),
+            ModelInfo {
+                advertised_video_input: Some(true),
+                capabilities: Some(crate::settings::ModelCapabilities {
+                    video_input: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            model_supports_video(&provider, "synthetic-video"),
+            Some(false)
+        );
+        provider
+            .model_overrides
+            .get_mut("synthetic-video")
+            .unwrap()
+            .capabilities = None;
+        assert_eq!(
+            model_supports_video(&provider, "synthetic-video"),
+            Some(true)
+        );
     }
 
-    fn db_display_name(model: &str) -> Option<String> {
-        model_database_entry(model)
-            .as_ref()
-            .and_then(|entry| entry.get("displayName"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
+    fn catalog_efforts(entry: &Value) -> Vec<String> {
+        let mut levels: Vec<String> = Vec::new();
+        for level in entry["reasoningEfforts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            if matches!(level, "low" | "medium" | "high" | "xhigh" | "max")
+                && !levels.iter().any(|known| known.as_str() == level)
+            {
+                levels.push(level.to_owned());
+            }
+        }
+        levels
     }
 
     /// 与前端 `src/data/modelMatching.test.ts` 对齐：连字符版本 / 版本延续 / 日期后缀。
     #[test]
     fn model_database_matching_is_isomorphic_with_frontend() {
-        // 空白 → 无匹配
+        let snapshot = super::super::model_database::snapshot();
+        for (model, key) in [
+            ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("claude-sonnet-4.6", "claude-sonnet-4.6"),
+            ("gpt-5", "gpt-5"),
+            ("gpt-5-6-luna", "gpt-5.6-luna"),
+            ("gpt-5-6-luna-20260101", "gpt-5.6-luna"),
+            ("provider/gpt-5-6-luna", "gpt-5.6-luna"),
+            (
+                "bytedance-seed/seed-2.0-code",
+                "bytedance-seed/seed-2.0-code",
+            ),
+            ("private/seed-2.0-code", "seed-2.0-code"),
+            ("kimi-k2-7", "kimi-k2.7"),
+            ("hy3", "hy3"),
+            ("hy3-preview", "hy3-preview"),
+            ("grok-imagine-image", "grok-imagine-image"),
+            ("grok-imagine-image-2.0", "grok-imagine-image-2.0"),
+            (
+                "grok-imagine-image-quality-draft",
+                "grok-imagine-image-quality",
+            ),
+            ("vendor-tag-gemma4:31b", "gemma4:31b"),
+        ] {
+            assert_eq!(
+                model_database_entry(model).as_ref(),
+                Some(snapshot.database.get(key).unwrap()),
+                "{model} should match {key}"
+            );
+        }
         assert!(model_database_entry("").is_none());
         assert!(model_database_entry("   ").is_none());
-
-        // 点号键 ↔ 连字符 id
-        assert_eq!(
-            db_display_name("claude-sonnet-4-6").as_deref(),
-            Some("Claude Sonnet 4.6")
-        );
-        assert_eq!(
-            db_display_name("claude-opus-4-8").as_deref(),
-            Some("Claude Opus 4.8")
-        );
-        assert_eq!(
-            db_display_name("claude-opus-4-7").as_deref(),
-            Some("Claude Opus 4.7")
-        );
-        assert_eq!(
-            db_display_name("claude-haiku-4-5").as_deref(),
-            Some("Claude Haiku 4.5")
-        );
-        assert_eq!(
-            db_display_name("claude-opus-4-5").as_deref(),
-            Some("Claude Opus 4.5")
-        );
-        assert_eq!(
-            db_display_name("claude-opus-4-5-20251101").as_deref(),
-            Some("Claude Opus 4.5")
-        );
-        assert_eq!(db_display_name("kimi-k2-7").as_deref(), Some("Kimi K2.7"));
-
-        // 主版本本身仍命中自己的条目，不能被次级版本抢
-        assert_eq!(
-            db_display_name("claude-sonnet-5").as_deref(),
-            Some("Claude Sonnet 5")
-        );
-        assert_eq!(
-            db_display_name("claude-opus-5").as_deref(),
-            Some("Claude Opus 5")
-        );
-
-        // 日期快照后缀：最长归一化前缀，仍认 4.8（数字段 ≥3 不算版本延续）
-        assert_eq!(
-            db_display_name("claude-opus-4-8-20260101").as_deref(),
-            Some("Claude Opus 4.8")
-        );
-
-        // 版本延续保护：未知次级版本不能退化到 gpt-5
         assert!(model_database_entry("gpt-5.7-nebula").is_none());
-        // 连字符写法的已知 5.6 变体要认到 5.6 条目，不能落到 gpt-5
-        assert_eq!(
-            db_display_name("gpt-5-6-luna").as_deref(),
-            Some("GPT-5.6 Luna")
-        );
-        assert_eq!(
-            db_display_name("gpt-5.6-luna").as_deref(),
-            Some("GPT-5.6 Luna")
-        );
-        assert_eq!(
-            db_display_name("gpt-5.6-sol").as_deref(),
-            Some("GPT-5.6 Sol")
-        );
-        assert_eq!(
-            db_display_name("gpt-5.6-terra").as_deref(),
-            Some("GPT-5.6 Terra")
-        );
-        assert_eq!(db_display_name("gpt-5.5").as_deref(), Some("GPT-5.5"));
-        assert_eq!(db_display_name("gpt-5").as_deref(), Some("GPT-5"));
-
-        // provider 前缀（含连字符版本 id）+ 点号键本身
-        assert_eq!(db_display_name("openai/gpt-4o"), db_display_name("gpt-4o"));
-        assert_eq!(
-            db_display_name("anthropic/claude-sonnet-4-6").as_deref(),
-            Some("Claude Sonnet 4.6")
-        );
-        assert_eq!(
-            db_display_name("claude-sonnet-4.6").as_deref(),
-            Some("Claude Sonnet 4.6")
-        );
-        assert_eq!(db_display_name("ox-alpha").as_deref(), Some("Ox Alpha"));
-        assert_eq!(
-            db_display_name("stealth/ox-alpha").as_deref(),
-            Some("Ox Alpha")
-        );
-        assert_eq!(
-            db_display_name("hy4-preview").as_deref(),
-            Some("Hy4 Preview")
-        );
-        assert_eq!(db_display_name("hy4").as_deref(), Some("Hy4 Preview"));
-        assert_eq!(
-            db_display_name("tencent/hy4-preview").as_deref(),
-            Some("Hy4 Preview")
-        );
-        assert_eq!(db_display_name("hy3").as_deref(), Some("Hy3"));
-        assert_eq!(
-            db_display_name("hy3-preview").as_deref(),
-            Some("Hy3 Preview")
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "hy3"),
-            vec!["low", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "hy4-preview"),
-            vec!["high"]
-        );
-        assert_eq!(
-            db_display_name("doubao-seed-2.1-pro").as_deref(),
-            Some("Doubao Seed 2.1 Pro")
-        );
-        assert_eq!(
-            db_display_name("doubao-seed-2-1-pro-260628").as_deref(),
-            Some("Doubao Seed 2.1 Pro")
-        );
-        assert_eq!(
-            db_display_name("bytedance-seed/seed-2.0-code").as_deref(),
-            Some("Doubao Seed 2.0 Code")
-        );
-        assert_eq!(
-            db_display_name("doubao-seed-2.0-pro").as_deref(),
-            Some("Doubao Seed 2.0 Pro")
-        );
-        assert_eq!(db_display_name("glm-4.7").as_deref(), Some("GLM-4.7"));
-        assert_eq!(
-            db_display_name("glm-4.7-flash").as_deref(),
-            Some("GLM-4.7 Flash")
-        );
-        assert_eq!(
-            db_display_name("glm-4.5-airx").as_deref(),
-            Some("GLM-4.5 AirX")
-        );
-        assert_eq!(
-            db_display_name("deepseek-v4-flash-vision-exp").as_deref(),
-            Some("DeepSeek V4.1 Flash (Legacy Vision Alias)")
-        );
-        assert_eq!(
-            db_display_name("qwen3.5-plus").as_deref(),
-            Some("Qwen3.5 Plus")
-        );
-
-        // 包含匹配路径：带 tag 的变体（`gemma4:31b`）靠前缀/包含吃到 `gemma4`
-        assert_eq!(db_display_name("gemma4:31b").as_deref(), Some("Gemma 4"));
-
-        // 生图：Grok Imagine 各档必须是独立条目，不能前缀塌到 quality / 基线
-        assert_eq!(
-            db_display_name("grok-imagine-image").as_deref(),
-            Some("Grok Imagine Image")
-        );
-        assert_eq!(
-            db_display_name("grok-imagine-image-2.0").as_deref(),
-            Some("Grok Imagine Image 2.0")
-        );
-        assert_eq!(
-            db_display_name("x-ai/grok-imagine-image-2.0").as_deref(),
-            Some("Grok Imagine Image 2.0")
-        );
-        assert_eq!(
-            db_display_name("grok-imagine-image-quality").as_deref(),
-            Some("Grok Imagine Image Quality")
-        );
-        assert_eq!(
-            model_database_image_generation("grok-imagine-image"),
-            Some(true)
-        );
-        assert_eq!(
-            model_database_image_generation("gemini-3.1-flash-lite-image"),
-            Some(true)
-        );
-        assert_eq!(
-            db_display_name("qwen-image-3").as_deref(),
-            Some("Qwen Image 3")
-        );
-
-        // 未知模型
         assert!(model_database_entry("totally-unknown-model-xyz-9999").is_none());
-
-        // 有意不放宽：kimi CLI 短别名 `k3` 不得命中 `kimi-k3`（见 external_agents/context.rs）
         assert!(model_database_entry("k3").is_none());
     }
 
     /// 连字符 id 必须吃到正确条目的 efforts，不能退化到旧主版本的 `[]`。
     #[test]
     fn dash_versioned_ids_resolve_correct_reasoning_efforts() {
-        // 使用 OMP 档位；minimal 元数据保留，应用选择器仍只暴露现有五档。
-        assert_eq!(
-            reasoning_efforts_for_model(None, "claude-sonnet-4-6"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "anthropic/claude-sonnet-4-6"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "claude-sonnet-4"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "claude-haiku-4-5"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "claude-haiku-4.5"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(None, "claude-opus-4-5"),
-            vec!["low", "medium", "high", "xhigh"]
-        );
+        let snapshot = super::super::model_database::snapshot();
+        for model in [
+            "claude-sonnet-4-6",
+            "anthropic/claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-haiku-4.5",
+            "claude-opus-4-5",
+        ] {
+            assert_eq!(
+                reasoning_efforts_for_model(None, model),
+                catalog_efforts(&snapshot.database[model]),
+                "{model}"
+            );
+        }
     }
 
     #[test]
@@ -1357,34 +1271,15 @@ mod tests {
 
     #[test]
     fn reasoning_efforts_resolve_from_db_family_and_default() {
-        // 原生档位独立于兼容映射：DeepSeek 的 xhigh 映射到 high，不是另一档。
-        // 库里能查到时 provider 无关，传 None。
-        let ds = reasoning_efforts_for_model(None, "DeepSeek-V4-Flash");
-        assert_eq!(ds, vec!["low", "high", "max"]);
-        // GPT-5：有 xhigh、无 max（max 是 5.6 一代才加的）。
-        let gpt = reasoning_efforts_for_model(None, "gpt-5.5");
-        assert!(
-            gpt.contains(&"xhigh".to_string()) && !gpt.contains(&"max".to_string()),
-            "{gpt:?}"
+        let snapshot = super::super::model_database::snapshot();
+        assert_eq!(
+            reasoning_efforts_for_model(None, "DeepSeek-V4-Flash"),
+            catalog_efforts(&snapshot.database["deepseek-v4-flash"])
         );
-        // gpt-5.6 全家（含 sol/terra/luna）的 reasoning_options 含 max。
-        for model in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
-            assert_eq!(
-                reasoning_efforts_for_model(None, model),
-                vec!["low", "medium", "high", "xhigh", "max"],
-                "{model}"
-            );
-        }
-        // Gemma：有 max、无 xhigh（非单调子集）。
-        let gemma = reasoning_efforts_for_model(None, "gemma4:31b");
-        assert!(
-            gemma.contains(&"max".to_string()) && !gemma.contains(&"xhigh".to_string()),
-            "{gemma:?}"
+        assert_eq!(
+            reasoning_efforts_for_model(None, "some-random-model"),
+            vec!["low", "medium", "high"]
         );
-        // 库里没有 + 非 Anthropic → 安全子集 low/medium/high。
-        let unknown = reasoning_efforts_for_model(None, "some-random-model");
-        assert_eq!(unknown, vec!["low", "medium", "high"]);
-        // 认不出的 Anthropic 模型同样走安全子集，不要发明 xhigh/max。
         let mut anthropic = test_provider_with_overrides(HashMap::new());
         for raw in ["anthropic", "anthropic_messages"] {
             anthropic.api_format = raw.to_string();
@@ -1394,11 +1289,6 @@ mod tests {
                 "{raw}"
             );
         }
-        // Kimi K3：reasoning_effort 只认 low/high/max（无 medium/xhigh）。
-        assert_eq!(
-            reasoning_efforts_for_model(None, "kimi-k3"),
-            vec!["low", "high", "max"]
-        );
     }
 
     #[test]
@@ -1424,9 +1314,10 @@ mod tests {
             vec!["low", "max"]
         );
         // 未被覆盖的模型仍走模型库。
+        let snapshot = super::super::model_database::snapshot();
         assert_eq!(
             reasoning_efforts_for_model(Some(&provider), "kimi-k3"),
-            vec!["low", "high", "max"]
+            catalog_efforts(&snapshot.database["kimi-k3"])
         );
 
         // 显式空数组 = 用户宣布这个模型没有 effort 旋钮，压过模型库的非空列表。
@@ -1447,86 +1338,68 @@ mod tests {
 
     #[test]
     fn explicit_empty_list_means_no_effort_knob() {
-        // 显式 `[]` 必须原样返回空，不能掉进家族兜底 —— 上游 `resolve_thinking` 靠它判定
-        // 「这个模型没有思考深度旋钮」。Claude 4.5 走 budget_tokens，库里是 low/medium/high。
+        let model = "claude-sonnet-5.99-synthetic";
+        assert!(model_database_entry(model).is_none());
         let mut anthropic = test_provider_with_overrides(HashMap::new());
         anthropic.api_format = "anthropic".to_string();
-        for model in [
-            "claude-3.5-haiku",
-            "glm-4.7",     // 思考是模式控制，没有 effort
-            "kimi-k2.7",   // 思考强制开，无 effort
-            "qwen3.7-max", // 用 thinking_budget 数值预算
-            "minimax-m3",
-        ] {
-            assert!(
-                reasoning_efforts_for_model(Some(&anthropic), model).is_empty(),
-                "{model} 应为空档位"
-            );
-        }
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-opus-4"),
-            vec!["low", "medium", "high"]
+        anthropic.model_overrides.insert(
+            model.into(),
+            ModelInfo {
+                reasoning_efforts: Some(Vec::new()),
+                ..Default::default()
+            },
         );
+        assert!(reasoning_efforts_for_model(Some(&anthropic), model).is_empty());
+        anthropic.model_overrides.clear();
         assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-sonnet-4"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-sonnet-4.5"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-haiku-4.5"),
-            vec!["low", "medium", "high"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-3-5-sonnet-20241022"),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-3-haiku-20240307"),
-            Vec::<String>::new()
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "opus-4.5"),
-            vec!["low", "medium", "high"]
-        );
-        // 4.6 与 4.7 的分界：4.6 止步 max，没有 xhigh。
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-opus-4.6"),
-            vec!["low", "medium", "high", "max"]
-        );
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&anthropic), "claude-opus-4.7"),
+            reasoning_efforts_for_model(Some(&anthropic), model),
             vec!["low", "medium", "high", "xhigh", "max"]
         );
+
+        for (model, expected) in [
+            ("opus-4.5", vec!["low", "medium", "high"]),
+            ("opus-4.6", vec!["low", "medium", "high", "max"]),
+            ("opus-4.7", vec!["low", "medium", "high", "xhigh", "max"]),
+        ] {
+            assert!(model_database_entry(model).is_none(), "{model}");
+            assert_eq!(
+                reasoning_efforts_for_model(Some(&anthropic), model),
+                expected,
+                "{model}"
+            );
+        }
+        for model in ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"] {
+            assert!(model_database_entry(model).is_none(), "{model}");
+            assert!(
+                reasoning_efforts_for_model(Some(&anthropic), model).is_empty(),
+                "{model}"
+            );
+        }
     }
 
     #[test]
     fn xhigh_gated_per_model_not_per_protocol() {
-        // 删掉 reasoning_effort_wire 的协议级白名单后，模型库是**唯一**门控：适配器原样下发
-        // 用户所选档位，选错就吃 provider 的 400。所以这份数据必须准，尤其是 xhigh 这一档
-        // ——它随 gpt-5.1-codex-max 引入，之前的 gpt-5 / gpt-5-codex 传了会 400。
-        for model in ["gpt-5", "gpt-5-pro", "gpt-5-codex"] {
-            assert!(
-                !reasoning_efforts_for_model(None, model).contains(&"xhigh".to_string()),
-                "{model} 不支持 xhigh，不能出现在选择器里"
+        let mut provider = test_provider_with_overrides(HashMap::new());
+        for (model, levels) in [
+            ("synthetic-basic", vec!["low", "high"]),
+            ("synthetic-extended", vec!["low", "high", "xhigh"]),
+        ] {
+            provider.model_overrides.insert(
+                model.into(),
+                ModelInfo {
+                    reasoning_efforts: Some(levels.iter().map(|level| (*level).into()).collect()),
+                    ..Default::default()
+                },
             );
+            for format in ["openai_chat", "openai_responses"] {
+                provider.api_format = format.into();
+                assert_eq!(
+                    reasoning_efforts_for_model(Some(&provider), model),
+                    levels,
+                    "{format}"
+                );
+            }
         }
-        for model in ["gpt-5.4", "gpt-5.6", "grok-4.6"] {
-            assert!(
-                reasoning_efforts_for_model(None, model).contains(&"xhigh".to_string()),
-                "{model} 支持 xhigh"
-            );
-        }
-        // Gemini thinkingLevel 只有 minimal/low/medium/high，无 xhigh/max；库里无条目，
-        // 走非 Anthropic 兜底 low/medium/high 即正确。
-        let mut gemini = test_provider_with_overrides(HashMap::new());
-        gemini.api_format = "gemini".to_string();
-        assert_eq!(
-            reasoning_efforts_for_model(Some(&gemini), "gemini-3.2-pro"),
-            vec!["low", "medium", "high"]
-        );
     }
 
     fn test_provider_with_overrides(model_overrides: HashMap<String, ModelInfo>) -> ModelProvider {
@@ -1589,18 +1462,36 @@ mod tests {
 
     #[test]
     fn kimi_code_aliases_are_provider_scoped() {
+        let snapshot = super::super::model_database::snapshot();
+        let entry = &snapshot.database["kimi-code/k3"];
         let mut provider = test_provider_with_overrides(HashMap::new());
         provider.base_url = "https://api.kimi.com/coding/v1".into();
+        let context = snapshot.database["kimi-code/k3-256k"]["contextWindow"]
+            .as_u64()
+            .unwrap();
         assert_eq!(
             context_window_for_model(Some(&provider), "k3-256k"),
-            (262144, false)
+            (usize::try_from(context).unwrap(), false)
         );
         assert_eq!(
             reasoning_efforts_for_model(Some(&provider), "k3"),
-            vec!["low", "high", "max"]
+            catalog_efforts(entry)
         );
-        assert!(pricing_for_model(Some(&provider), "k3").is_none());
-        assert_eq!(model_supports_vision(Some(&provider), "k3"), Some(true));
+        let expected_pricing = entry.get("pricing").map(|pricing| {
+            (
+                pricing["input"].as_f64(),
+                pricing["output"].as_f64(),
+                pricing["cachedInput"].as_f64(),
+                "model_pricing".to_string(),
+            )
+        });
+        let actual_pricing = pricing_for_model(Some(&provider), "k3")
+            .map(|(pricing, source)| (pricing.input, pricing.output, pricing.cached_input, source));
+        assert_eq!(actual_pricing, expected_pricing);
+        assert_eq!(
+            model_supports_vision(Some(&provider), "k3"),
+            entry["capabilities"]["vision"].as_bool()
+        );
         provider.base_url = "https://example.com/v1".into();
         assert_eq!(provider_model_database_id(Some(&provider), "k3"), "k3");
         assert!(model_database_entry("k3").is_none());
@@ -1642,8 +1533,22 @@ mod tests {
         use crate::provider_oauth::antigravity;
         let mut provider = test_provider_with_overrides(HashMap::new());
         provider.api_format = "gemini".into();
-        let model = "gemini-3.8-flash-low";
-        assert!(!reasoning_efforts_for_model(Some(&provider), model).is_empty());
+        for (model, level) in [
+            ("gemini-3.8-flash-low", "high"),
+            ("gemini-3.8-flash", "low"),
+        ] {
+            provider.model_overrides.insert(
+                model.into(),
+                ModelInfo {
+                    reasoning_efforts: Some(vec![level.into()]),
+                    ..Default::default()
+                },
+            );
+        }
+        assert_eq!(
+            reasoning_efforts_for_model(Some(&provider), "gemini-3.8-flash-low"),
+            vec!["high"]
+        );
         provider.request.oauth = Some(
             serde_json::from_value(serde_json::json!({
                 "provider": "antigravity"
@@ -1672,24 +1577,27 @@ mod tests {
                 assert_eq!(thinking["includeThoughts"], true);
             }
         }
-        assert!(!reasoning_efforts_for_model(Some(&provider), "gemini-3.8-flash").is_empty());
+        assert_eq!(
+            reasoning_efforts_for_model(Some(&provider), "gemini-3.8-flash"),
+            vec!["low"]
+        );
     }
 
     #[test]
     fn context_window_uses_model_override_before_name_heuristic() {
         let mut overrides = HashMap::new();
         overrides.insert(
-            "deepseek-v4-flash".to_string(),
+            "synthetic-128k".to_string(),
             ModelInfo {
-                context_window: Some(1_048_576),
+                context_window: Some(12_345),
                 ..ModelInfo::default()
             },
         );
         let provider = test_provider_with_overrides(overrides);
 
         assert_eq!(
-            context_window_for_model(Some(&provider), "deepseek-v4-flash"),
-            (1_048_576, false)
+            context_window_for_model(Some(&provider), "synthetic-128k"),
+            (12_345, false)
         );
     }
 
@@ -1716,22 +1624,16 @@ mod tests {
             "gemini-3.1-flash-image"
         );
         assert_eq!(normalize_model_name("  MODELS/imagen-4  "), "imagen-4");
-        // 裸名与带前缀 / 大小写归一到同一结果。
-        assert_eq!(
-            normalize_model_name("gemini-3.1-flash-image"),
-            normalize_model_name("models/Gemini-3.1-Flash-Image")
-        );
     }
 
     #[test]
     fn override_image_generation_matches_by_normalized_name() {
-        // override key 用带前缀 + 大小写变体，仍应命中查询的裸名（此前精确匹配会静默失效）。
         let mut overrides = HashMap::new();
         overrides.insert(
-            "models/Gemini-3.1-Flash-Image".to_string(),
+            "models/Synthetic-Image-Generation".to_string(),
             ModelInfo {
                 capabilities: Some(crate::settings::ModelCapabilities {
-                    image_generation: Some(true),
+                    image_generation: Some(false),
                     ..Default::default()
                 }),
                 ..ModelInfo::default()
@@ -1739,48 +1641,34 @@ mod tests {
         );
         let provider = test_provider_with_overrides(overrides);
 
-        // 归一化后命中 override 的生图开关。
         assert_eq!(
-            override_image_generation(&provider, "gemini-3.1-flash-image"),
-            Some(true)
+            override_image_generation(&provider, "synthetic-image-generation"),
+            Some(false)
         );
         assert_eq!(
-            override_image_generation(&provider, "GEMINI-3.1-FLASH-IMAGE"),
-            Some(true)
+            override_image_generation(&provider, "SYNTHETIC-IMAGE-GENERATION"),
+            Some(false)
         );
         assert_eq!(
-            model_supports_image_generation(Some(&provider), "gemini-3.1-flash-image"),
-            Some(true)
-        );
-    }
-
-    #[test]
-    fn context_window_uses_builtin_model_database_defaults() {
-        assert_eq!(
-            context_window_for_model(None, "deepseek-v4-flash"),
-            (1_048_576, false)
-        );
-    }
-
-    #[test]
-    fn chat_max_output_uses_builtin_model_database_defaults() {
-        assert_eq!(
-            chat_max_output_tokens_for_model(None, "deepseek-v4-flash"),
-            Some(393_216)
-        );
-        assert_eq!(
-            chat_max_output_tokens_for_model(None, "kimi-k3"),
-            Some(131_072)
+            model_supports_image_generation(Some(&provider), "synthetic-image-generation"),
+            Some(false)
         );
     }
 
     #[test]
     fn chat_max_output_uses_model_override_before_database() {
+        let snapshot = super::super::model_database::snapshot();
+        let override_max =
+            if snapshot.database["deepseek-v4-flash"]["maxOutput"].as_u64() == Some(1) {
+                2
+            } else {
+                1
+            };
         let mut overrides = HashMap::new();
         overrides.insert(
             "deepseek-v4-flash".to_string(),
             ModelInfo {
-                max_output: Some(65_536),
+                max_output: Some(override_max),
                 ..ModelInfo::default()
             },
         );
@@ -1788,49 +1676,52 @@ mod tests {
 
         assert_eq!(
             chat_max_output_tokens_for_model(Some(&provider), "deepseek-v4-flash"),
-            Some(65_536)
+            Some(override_max as u32)
         );
     }
 
     #[test]
     fn chat_max_output_is_absent_when_metadata_is_missing() {
         assert_eq!(chat_max_output_tokens_for_model(None, "custom-model"), None);
-        assert_eq!(
-            chat_max_output_tokens_for_model(None, "totally-unknown-model-xyz-9999"),
-            None
-        );
-    }
-
-    #[test]
-    fn chat_max_output_uses_glm_53_database_cap() {
-        assert_eq!(
-            chat_max_output_tokens_for_model(None, "glm-5.3"),
-            Some(131_072)
-        );
-        assert_eq!(
-            chat_max_output_tokens_for_model(None, "glm-5.3-flash"),
-            Some(131_072)
-        );
     }
 
     #[test]
     fn chat_max_output_on_wire_uses_fallback_for_unlisted_models() {
-        let provider = test_provider_with_overrides(HashMap::new());
+        let snapshot = super::super::model_database::snapshot();
+        let mut provider = test_provider_with_overrides(HashMap::new());
         assert_eq!(
             chat_max_output_tokens_on_wire(Some(&provider), "custom-model", 16_384),
             16_384
         );
-        assert_eq!(
-            chat_max_output_tokens_on_wire(Some(&provider), "glm-5.3", 16_384),
-            131_072
+        provider.model_overrides.insert(
+            "synthetic-capped".into(),
+            ModelInfo {
+                max_output: Some(4096),
+                ..Default::default()
+            },
         );
-        for model in [
-            "[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored",
-            "[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+        assert_eq!(
+            chat_max_output_tokens_on_wire(Some(&provider), "synthetic-capped", 16_384),
+            4096
+        );
+        for (model, key) in [
+            (
+                "[临时测试自有算力]Qwen/Qwen3.8-27B-Uncensored",
+                "qwen3.8-27b-uncensored",
+            ),
+            (
+                "[自有算力]Qwen/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive",
+                "qwen3.5-9b-uncensored-hauhaucs-aggressive",
+            ),
         ] {
+            let max_output = snapshot.database[key]["maxOutput"]
+                .as_u64()
+                .and_then(|tokens| u32::try_from(tokens).ok())
+                .filter(|tokens| *tokens > 0)
+                .unwrap_or(32_768);
             assert_eq!(
                 chat_max_output_tokens_on_wire(Some(&provider), model, 32_768),
-                16_384,
+                max_output,
                 "{model}: self-hosted variants must not inherit a commercial output cap"
             );
         }
@@ -1941,11 +1832,7 @@ mod tests {
 
     #[test]
     fn context_window_recognizes_256k_in_model_name() {
-        // 关键词表缺 256k 时这两个会掉到 200K 兜底（kimi k3-256k 的真实症状）。
-        assert_eq!(
-            context_window_for_model(None, "kimi-code/k3-256k"),
-            (262_144, false)
-        );
+        // This was missing for names such as kimi k3-256k.
         assert_eq!(
             context_window_for_model(None, "some-model-256K"),
             (262_144, false)

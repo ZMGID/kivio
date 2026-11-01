@@ -1,8 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ModelProvider } from '../api/tauri'
 import { applyModelCatalog } from './modelCatalog'
 import { resolveModelInfo } from './modelMatching'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
+
+vi.mock('./modelDatabase.json', () => ({
+  default: {
+    _meta: { version: 'test' },
+    'known-video': { capabilities: { videoInput: true } },
+    'known-image': { capabilities: { vision: true } },
+  },
+}))
 
 const provider: ModelProvider = {
   id: 'test', name: 'Test', baseUrl: 'https://example.com/v1', apiKeys: [],
@@ -11,38 +19,30 @@ const provider: ModelProvider = {
 }
 
 describe('imported model video capabilities', () => {
-  it.each([
-    'kimi-k2.5', 'kimi-k2.6', 'kimi-k2.7-code',
-    'kimi-k2.7-code-highspeed', 'moonshotai/kimi-k2.7-code', 'kimi-k3',
-    'gemini-3-pro-preview', 'models/gemini-3-pro-preview',
-    'gemini-3.1-pro-preview', 'gemini-3.8-flash', 'google/gemini-2.5-pro',
-    'mimo-v2.6-pro', 'xiaomi/mimo-v2.6-flash', 'mimo-v2.5',
-    'glm-5.3-flash', 'z-ai/glm-5.3-flashx', 'qwen3.8-omni-flash',
-  ])('enables video for %s when the catalog contains only IDs', (id) => {
-    const imported = applyModelCatalog(provider, { models: [id], capabilities: {} })
-    expect(resolveModelInfo(id, imported.modelOverrides, provider).capabilities?.videoInput).toBe(true)
+  it('retains catalog video capability when an imported model has only an ID', () => {
+    const imported = applyModelCatalog(provider, { models: ['known-video'], capabilities: {} })
+    expect(resolveModelInfo('known-video', imported.modelOverrides, provider).capabilities?.videoInput).toBe(true)
   })
 
   it('preserves explicit settings while importing advertised capabilities', () => {
-    const id = 'gemini-2.5-pro'
+    const id = 'known-video'
     const imported = applyModelCatalog({ ...provider, modelOverrides: {
       [id]: { capabilities: { videoInput: false } },
     } }, { models: [id], capabilities: { [id]: { videoInput: true } } })
     expect(resolveModelInfo(id, imported.modelOverrides, provider).capabilities?.videoInput).toBe(false)
   })
 
-  it('uses advertised capabilities for unknown IDs and honors advertised false', () => {
-    const imported = applyModelCatalog(provider, { models: ['private-model', 'kimi-k3'],
-      capabilities: { 'private-model': { videoInput: true }, 'kimi-k3': { videoInput: false } },
+  it('uses advertised capabilities for unknown IDs and honors advertised false over catalog defaults', () => {
+    const imported = applyModelCatalog(provider, { models: ['private-model', 'known-video'],
+      capabilities: { 'private-model': { videoInput: true }, 'known-video': { videoInput: false } },
     })
     expect(resolveModelInfo('private-model', imported.modelOverrides, provider).capabilities?.videoInput).toBe(true)
-    expect(resolveModelInfo('kimi-k3', imported.modelOverrides, provider).capabilities?.videoInput).toBe(false)
+    expect(resolveModelInfo('known-video', imported.modelOverrides, provider).capabilities?.videoInput).toBe(false)
   })
 
   it('does not enable video merely because a model accepts images', () => {
-    for (const id of ['gemini-3-pro-image-preview', 'gemini-embedding-001', 'kimi-k2', 'kimi-k2.7', 'gpt-4o']) {
-      const imported = applyModelCatalog(provider, { models: [id], capabilities: {} })
-      expect(resolveModelInfo(id, imported.modelOverrides, provider).capabilities?.videoInput).not.toBe(true)
-    }
+    const imported = applyModelCatalog(provider, { models: ['known-image'], capabilities: {} })
+    expect(resolveModelInfo('known-image', imported.modelOverrides, provider).capabilities)
+      .toMatchObject({ vision: true, videoInput: false })
   })
 })

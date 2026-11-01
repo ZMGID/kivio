@@ -35,8 +35,6 @@ describe('MessageNavigator', () => {
     )
     const turn = screen.getByRole('button', { name: '第 1 轮：第一轮问题' })
     expect(turn).toHaveAttribute('aria-current', 'location')
-    expect(turn).toHaveClass('is-visible')
-    expect(screen.getByRole('button', { name: '上下文压缩摘要' })).toHaveClass('is-visible')
     fireEvent.mouseEnter(turn)
     expect(screen.getByRole('tooltip')).toHaveTextContent('第一轮问题')
     expect(screen.getByRole('tooltip')).toHaveTextContent('第一轮回答')

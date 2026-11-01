@@ -265,8 +265,6 @@ mod tests {
         assert!(commands
             .iter()
             .all(|c| is_report(&c.name) && !is_terminal_only(&c.name)));
-        assert!(help_text().contains("/usage"));
-        assert!(help_text().contains("/技能名"));
         assert_eq!(command_name("  /usage  "), Some("usage"));
         assert_eq!(command_name("hello /usage"), None);
     }

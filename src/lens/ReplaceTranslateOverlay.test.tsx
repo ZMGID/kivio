@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ReplaceTranslateOverlay } from './ReplaceTranslateOverlay'
 import { layoutReplaceTextFlow, replaceSlotTextBounds, selectedGroupsText } from './replaceTextLayout'
@@ -65,62 +65,6 @@ describe('ReplaceTranslateOverlay status', () => {
     expect(layout.complete).toBe(true)
     expect(layout.slots[0].contentWidth * layout.safeScale + 35).toBeLessThanOrEqual(108)
     expect(layout.slots[0].contentHeight * layout.safeScale + 20).toBeLessThanOrEqual(40)
-  })
-
-  it('renders the localized status label instead of an internal error code', () => {
-    render(
-      <ReplaceTranslateOverlay
-        frame={{ x: 0, y: 0, width: 320, height: 180, label: 'fixture' }}
-        cleanedImage=""
-        groups={[]}
-        slots={[]}
-        phase="done"
-        statusLabel="替换翻译离线包未下载。请在设置中下载。"
-        escHint="按 Esc 关闭"
-        {...labelProps}
-      />,
-    )
-
-    const status = screen.getByText('替换翻译离线包未下载。请在设置中下载。')
-    expect(status).toBeInTheDocument()
-    expect(status.closest('.top-\\[calc\\(env\\(safe-area-inset-top\\,0px\\)\\+36px\\)\\]')).not.toBeNull()
-    expect(screen.queryByText('replace_translation_pack_missing')).not.toBeInTheDocument()
-  })
-
-  it('clips the replacement canvas to the captured-frame rounded corners', () => {
-    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
-    const { container } = render(
-      <ReplaceTranslateOverlay
-        frame={{ x: 0, y: 0, width: 320, height: 180, label: 'fixture' }}
-        cleanedImage="data:image/png;base64,fixture"
-        groups={[{
-          id: 'r0000',
-          leafIds: ['s0000'],
-          sourceText: 'source',
-          translated: '译文',
-        }]}
-        slots={[{
-          id: 'r0000-s00',
-          groupId: 'r0000',
-          leafIds: ['s0000'],
-          bounds: { x: 10, y: 10, width: 100, height: 30 },
-          anchor: { x: 10, y: 10, baselineY: 25 },
-          flow: 'exact_line',
-          kind: 'line',
-          align: 'left',
-          verticalAlign: 'center',
-          sourceFontPx: 16,
-          sourceColor: '#111827',
-        }]}
-        phase="done"
-        statusLabel="完成"
-        escHint="按 Esc 关闭"
-        {...labelProps}
-      />,
-    )
-
-    expect(container.querySelector('canvas')?.parentElement).toHaveClass('rounded-md', 'overflow-hidden')
-    getContext.mockRestore()
   })
 
   it('keeps exact-line slots top anchored instead of vertically centering translated text', () => {

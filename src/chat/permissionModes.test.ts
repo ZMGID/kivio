@@ -45,23 +45,23 @@ const agents: DetectedExternalAgent[] = [
 ]
 
 describe('derivePermissionModes（底栏模式胶囊）', () => {
-  it('claude 会话给它自己的四档', () => {
+  it('maps detected Claude sandbox options', () => {
     const { options } = derivePermissionModes({
       target: 'composer',
       agentRuntime: externalRuntime('claude'),
       agents,
     })
-    expect(options.map((o) => o.value)).toEqual(['plan', 'default', 'acceptEdits', 'bypassPermissions'])
-    expect(options.map((o) => o.label)).toEqual(['计划 (只读)', '每次确认', '接受编辑', '完全 (默认)'])
+    expect(options.map((o) => o.value)).toEqual(agents[0].sandboxOptions!.map((o) => o.id))
+    expect(options.map((o) => o.label)).toEqual(agents[0].sandboxOptions!.map((o) => o.label))
   })
 
-  it('codex 会话给它自己的三档', () => {
+  it('maps detected Codex sandbox options', () => {
     const { options } = derivePermissionModes({
       target: 'composer',
       agentRuntime: externalRuntime('codex'),
       agents,
     })
-    expect(options.map((o) => o.value)).toEqual(['read-only', 'workspace-write', 'danger-full-access'])
+    expect(options.map((o) => o.value)).toEqual(agents[1].sandboxOptions!.map((o) => o.id))
   })
 
   it('opencode uses build by default and the same read-only eye and neutral tone as Claude plan', () => {
@@ -72,10 +72,9 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
     })
     const claude = derivePermissionModes({ target: 'composer', agentRuntime: externalRuntime('claude'), agents })
     expect(current).toBe('build')
-    expect(options.map(({ value, label }) => ({ value, label }))).toEqual([
-      { value: 'build', label: '构建 (默认)' },
-      { value: 'plan', label: '计划 (只读)' },
-    ])
+    expect(options.map(({ value, label }) => ({ value, label }))).toEqual(
+      agents[2].sandboxOptions!.map(({ id, label }) => ({ value: id, label })),
+    )
     expect(options[0].icon).toBe(ShieldCheck)
     expect(options[1].icon).toBe(Eye)
     expect(options[1].tone).toBe(claude.options[0].tone)
@@ -194,13 +193,7 @@ describe('derivePermissionModes（顶栏权限按钮）', () => {
 })
 
 describe('deriveDshPresetModes（底栏 Agent 模式胶囊）', () => {
-  it('dsh 会话给出四档 Agent 模式，未选时回落 standard', () => {
-    expect(deriveDshPresetModes(externalRuntime('dsh')).options.map((o) => o.value)).toEqual([
-      'standard',
-      'code',
-      'minimal',
-      'cordis',
-    ])
+  it('uses the default preset unless a preset is selected', () => {
     expect(deriveDshPresetModes(externalRuntime('dsh')).current).toBe('standard')
     expect(deriveDshPresetModes({
       kind: 'external',
@@ -209,16 +202,14 @@ describe('deriveDshPresetModes（底栏 Agent 模式胶囊）', () => {
     }).current).toBe('minimal')
   })
 
-  it('把用户自定义 preset 接到官方四档后面', () => {
+  it('appends a custom preset and skips a duplicate built-in preset', () => {
+    const builtins = deriveDshPresetModes(externalRuntime('dsh')).options
     const modes = deriveDshPresetModes(externalRuntime('dsh'), [
       { id: 'code-review', label: '代码审查', description: '只读评审' },
-      { id: 'standard', label: '应被跳过' },
+      { id: builtins[0].value, label: '应被跳过' },
     ])
     expect(modes.options.map((o) => o.value)).toEqual([
-      'standard',
-      'code',
-      'minimal',
-      'cordis',
+      ...builtins.map((o) => o.value),
       'code-review',
     ])
     expect(modes.options.at(-1)).toMatchObject({

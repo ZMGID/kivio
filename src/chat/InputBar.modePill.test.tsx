@@ -153,13 +153,11 @@ describe('InputBar 底栏模式胶囊', () => {
     }))
     openModeMenu('Act')
     const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      'Act普通模式 · Normal',
-      'Goal持续执行一个目标 · Persistent execution',
-      'Plan生成计划文档 · Plan document',
-      'Orchestrate主代理统筹并行协作 · Parallel collaboration',
-    ])
-    expect(items[0]).toHaveAttribute('aria-checked', 'true')
+    expect(items).toHaveLength(4)
+    for (const name of ['Act', 'Goal', 'Plan', 'Orchestrate']) {
+      expect(screen.getByRole('menuitemradio', { name: new RegExp(`^${name}`) })).toBeInTheDocument()
+    }
+    expect(screen.getByRole('menuitemradio', { name: /^Act/ })).toHaveAttribute('aria-checked', 'true')
   })
 
 
@@ -176,12 +174,7 @@ describe('InputBar 底栏模式胶囊', () => {
     }))
     openModeMenu('计划 (只读)')
     const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      '计划 (只读)',
-      '每次确认',
-      '接受编辑',
-      '完全 (默认)',
-    ])
+    expect(items.map((item) => item.textContent)).toEqual(claudeAgents[0]!.sandboxOptions!.map((option) => option.label))
     expect(items[0]).toHaveAttribute('aria-checked', 'true')
 
     act(() => {
@@ -190,18 +183,16 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(onModeChange).toHaveBeenCalledWith('acceptEdits')
   })
 
-  it('renders the OpenCode plan capsule with the read-only eye and sends the selected mode', () => {
+  it('renders the OpenCode plan capsule and sends the selected mode', () => {
     const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode', externalSandbox: 'plan' }
     const agents: DetectedExternalAgent[] = [{
       id: 'opencode', name: 'OpenCode', available: true, models: [],
       sandboxOptions: [{ id: 'build', label: '构建 (默认)' }, { id: 'plan', label: '计划 (只读)' }],
     }]
     const onModeChange = renderComposer(derivePermissionModes({ target: 'composer', agentRuntime: runtime, agents }))
-    expect(screen.getByTitle('切换模式').querySelector('.lucide-eye')).toBeInTheDocument()
     openModeMenu('计划 (只读)')
     const plan = screen.getByRole('menuitemradio', { name: /计划 \(只读\)/ })
     expect(plan).toHaveAttribute('aria-checked', 'true')
-    expect(plan.querySelector('.lucide-eye')).toBeInTheDocument()
     act(() => { fireEvent.click(screen.getByRole('menuitemradio', { name: /构建 \(默认\)/ })) })
     expect(onModeChange).toHaveBeenCalledWith('build')
   })
@@ -254,19 +245,12 @@ describe('InputBar 底栏模式胶囊', () => {
     act(() => {
       fireEvent.click(screen.getByTitle('切换 Agent 模式'))
     })
-    const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual([
-      '标准模式完整编码 Agent · Full coding agent',
-      'PTC 模式Code Mode SDK · 多步工具写成一个程序',
-      '极简模式仅 bash + 编辑器 · Bash and editor only',
-      '创造模式编写 Agent preset · Author presets',
-    ])
     const custom = deriveDshPresetModes(runtime, [
       { id: 'code-review', label: '代码审查', description: '只读评审' },
     ])
     expect(custom.options.map((option) => option.value)).toContain('code-review')
     act(() => {
-      fireEvent.click(items[2])
+      fireEvent.click(screen.getByRole('menuitemradio', { name: /^极简模式/ }))
     })
     expect(onPresetChange).toHaveBeenCalledWith('minimal')
   })

@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Lens from './Lens'
 import { StrictMode } from 'react'
+import { i18n } from './components/i18n'
 
 const mocks = vi.hoisted(() => ({
   takeReset: vi.fn(),
@@ -79,7 +80,7 @@ describe('Lens selection during cold initialization', () => {
     await act(async () => { fireEvent.mouseUp(root, { clientX: 200, clientY: 180 }) })
     vi.useFakeTimers()
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 16))
-    await act(async () => { fireEvent.click(container.querySelector('button[title="复制"]')!) })
+    await act(async () => { fireEvent.click(within(container).getByRole('button', { name: i18n.zh.annotateCopy })) })
     expect(mocks.copyImage).toHaveBeenCalledOnce()
     if (scenario !== 'same-opening') {
       await act(async () => { window.dispatchEvent(new CustomEvent('lens:reset')) })
@@ -191,7 +192,7 @@ describe('Lens selection during cold initialization', () => {
     await act(async () => {
       deliver(JSON.stringify({ frame: { x: 0, y: 0, width: 1280, height: 800 }, freezeFrameImageId: 'freeze' }))
     })
-    await waitFor(() => expect(container.querySelector('button[title="复制"]')).not.toBeNull())
+    await waitFor(() => expect(within(container).queryByRole('button', { name: i18n.zh.annotateCopy })).not.toBeNull())
     expect(mocks.capture).toHaveBeenCalledTimes(1)
   })
 
@@ -209,7 +210,7 @@ describe('Lens selection during cold initialization', () => {
     })
     expect(mocks.capture).not.toHaveBeenCalled()
     expect(mocks.readFrame).not.toHaveBeenCalled()
-    expect(container.querySelector('button[title="复制"]')).toBeNull()
+    expect(within(container).queryByRole('button', { name: i18n.zh.annotateCopy })).toBeNull()
   })
 
   it('ignores capture completion after Escape', async () => {
@@ -268,7 +269,7 @@ describe('Lens selection during cold initialization', () => {
     fireEvent.mouseMove(root, { clientX: 200, clientY: 180 })
     await act(async () => { fireEvent.mouseUp(root, { clientX: 200, clientY: 180 }) })
     expect(mocks.capture).toHaveBeenCalledWith(expect.objectContaining({ freezeFrameImageId: 'freeze' }))
-    expect(container.querySelector('button[title="复制"]')).not.toBeNull()
+    expect(within(container).queryByRole('button', { name: i18n.zh.annotateCopy })).not.toBeNull()
     expect(mocks.readImage).toHaveBeenCalledWith('cropped')
     expect(mocks.readBase64).not.toHaveBeenCalled()
     expect(container.querySelector('canvas')).not.toBeNull()
