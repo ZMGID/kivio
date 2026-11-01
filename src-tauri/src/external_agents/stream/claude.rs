@@ -62,6 +62,45 @@ fn usage_parts_all_zero(parts: &CliUsageParts) -> bool {
     parts.input == 0 && parts.output == 0 && parts.cache_read == 0 && parts.cache_creation == 0
 }
 
+fn replace_usage_parts(
+    total: &mut CliUsageParts,
+    previous: Option<&CliUsageParts>,
+    next: &CliUsageParts,
+) {
+    let previous = previous.cloned().unwrap_or_default();
+    total.input = total
+        .input
+        .saturating_sub(previous.input)
+        .saturating_add(next.input);
+    total.output = total
+        .output
+        .saturating_sub(previous.output)
+        .saturating_add(next.output);
+    total.cache_read = total
+        .cache_read
+        .saturating_sub(previous.cache_read)
+        .saturating_add(next.cache_read);
+    total.cache_creation = total
+        .cache_creation
+        .saturating_sub(previous.cache_creation)
+        .saturating_add(next.cache_creation);
+}
+
+fn claude_usage_has_input(usage: &Value, zero_is_known: bool) -> bool {
+    [
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ]
+    .iter()
+    .any(|key| {
+        usage
+            .get(*key)
+            .and_then(Value::as_u64)
+            .is_some_and(|value| zero_is_known || value > 0)
+    })
+}
+
 /// 从 `result.usage` 里选出代表**当前上下文占用**的那份快照。
 ///
 /// `usage.iterations[]` 是一轮内多次 LLM 往返的序列，每一项都是**独立快照**（不是增量）：
@@ -376,14 +415,36 @@ pub fn is_task_notification_result(value: &Value) -> bool {
             == Some("task-notification")
 }
 
-/// `result` 帧顶层的 `usage` → `ModelUsage`。唤醒消息落地时附上真实用量——
-/// 不带的话前端只能显示估算的「~N tokens」，看着像脚本拼的而不是模型产出。
+/// 没有流式快照时使用 `result.usage` 的既有回退。
 pub fn result_usage(value: &Value) -> Option<crate::chat::model::ModelUsage> {
     let usage = value.get("usage")?;
     if !usage.is_object() {
         return None;
     }
-    Some(super::usage_from_parts(claude_usage_parts(usage)))
+    let snapshot = claude_result_usage_snapshot(usage, false)?;
+    let mut parts = CliUsageParts::default();
+    let context = if let Some(iterations) = usage
+        .get("iterations")
+        .and_then(Value::as_array)
+        .filter(|items| items.iter().any(Value::is_object))
+    {
+        for item in iterations.iter().filter(|item| item.is_object()) {
+            replace_usage_parts(&mut parts, None, &claude_usage_parts(item));
+        }
+        let latest = claude_usage_parts(snapshot);
+        (!usage_parts_all_zero(&latest))
+            .then(|| usage_from_parts(latest).total_tokens)
+            .flatten()
+    } else {
+        parts = claude_usage_parts(snapshot);
+        None
+    };
+    if usage_parts_all_zero(&parts) {
+        return None;
+    }
+    let mut usage = usage_from_parts(parts);
+    usage.context_tokens = context;
+    Some(usage)
 }
 
 /// 从一帧顶层 JSON 提取后台任务生命周期事件（主线的 `system/task_started` /
@@ -810,15 +871,9 @@ struct LaneState {
     current_message_id: Option<String>,
     /// 本车道进行中的内容块（`{message_id}:{index}` → 累积状态）。
     blocks: HashMap<String, PendingContentBlock>,
-    /// **当前这次请求**的输入侧用量快照（`message_start.message.usage`）。
-    ///
-    /// 输出侧是边生成边报的（`message_delta.usage.output_tokens`），而它**只带输出**——
-    /// 要得到「此刻已用」必须把它接到这份输入侧快照上（见 `message_delta_usage`）。
-    ///
-    /// 复位语义（spec 第 3 条）：常驻进程下解析器跨轮存活，所以这份快照必须在**新一次请求
-    /// 开始**（`message_start`）时整体替换、而不是累加；轮次边界（`result`）清空整条车道时
-    /// 一并消失，不会把上一轮的输入侧带进下一轮。
+    /// 本车道当前请求的最新快照；新请求开始时，旧快照已留在整轮总量中。
     request_input: Option<CliUsageParts>,
+    request_context_known: bool,
 }
 
 impl LaneState {
@@ -859,6 +914,10 @@ pub struct ClaudeStreamState {
     /// `result` 顶层那份「计费总量」只在它为 `false` 时才可当分子——见
     /// `claude_result_usage_snapshot`。在 `result`（轮次边界）复位。
     per_request_usage_seen: bool,
+    /// 已结束和仍在进行的各请求之和；不包含前一轮。
+    turn_usage: CliUsageParts,
+    /// 最近一次主线请求的占用，子代理只计费、不改变它。
+    context_tokens: Option<u64>,
     /// 最近一个 `result` 是否是**用户中断**的收尾（`terminal_reason == "aborted_streaming"`）。
     /// 常驻会话据此把这一轮送去「已取消」出口而不是错误出口（见 `result_is_user_abort`）。
     last_result_aborted: bool,
@@ -893,6 +952,35 @@ impl ClaudeStreamState {
         self.lanes
             .entry(lane.unwrap_or_default().to_string())
             .or_default()
+    }
+
+    fn record_request_usage(
+        &mut self,
+        lane: Option<&str>,
+        parts: CliUsageParts,
+        input_known: bool,
+        sink: &mut dyn FnMut(UnifiedAgentEvent),
+    ) {
+        let (previous, context_known) = {
+            let state = self.lane(lane);
+            state.request_context_known |= input_known;
+            (
+                state.request_input.replace(parts.clone()),
+                state.request_context_known,
+            )
+        };
+        replace_usage_parts(&mut self.turn_usage, previous.as_ref(), &parts);
+        if lane.is_none() {
+            self.context_tokens = if context_known {
+                usage_from_parts(parts).total_tokens
+            } else {
+                None
+            };
+        }
+        self.per_request_usage_seen = true;
+        let mut usage = usage_from_parts(self.turn_usage.clone());
+        usage.context_tokens = self.context_tokens;
+        sink(UnifiedAgentEvent::Usage { usage });
     }
 
     /// 发一段**正文**（模型回答 / 本地命令输出），并置位 per-turn 的 `any_text_emitted`。
@@ -1367,22 +1455,20 @@ impl ClaudeStreamState {
                 // 再叠一个假错误气泡。豁免只看 `terminal_reason`，不削弱 spec 第 20 条。
                 let aborted = result_is_user_abort(value);
                 self.last_result_aborted = aborted;
-                // usage 解析**先于**错误分支——失败轮次的用量同样要计入用量条。
-                //
-                // 分子：`iterations` 末项（多次往返的独立快照），顶层回退带「本轮还没收到过
-                // per-request 快照」闸门（见 `claude_result_usage_snapshot`）。
-                // 分母：`modelUsage[当前模型].contextWindow`（CLI 唯一权威的窗口来源，A8）。
+                // 有逐请求快照时，result 顶层可能包含恢复前的历史，不能覆盖本轮总量。
+                // 没有快照时保留既有回退；iterations 有值时计费求和、占用取末项。
                 let context_window = obj.get("modelUsage").and_then(|mu| {
                     context_window_from_model_usage(mu, self.resolved_model.as_deref())
                 });
-                let mut parts = obj
-                    .get("usage")
-                    .and_then(|usage| {
-                        claude_result_usage_snapshot(usage, self.per_request_usage_seen)
+                let usage = if self.per_request_usage_seen {
+                    context_window.map(|_| {
+                        let mut usage = usage_from_parts(self.turn_usage.clone());
+                        usage.context_tokens = self.context_tokens;
+                        usage
                     })
-                    .map(claude_usage_parts)
-                    .unwrap_or_default();
-                parts.context_window = context_window;
+                } else {
+                    result_usage(value)
+                };
                 // **全零守卫**：没有 LLM 往返的轮次（未登录 / `/help` / 未知斜杠命令 /
                 // 我们自己发的 `/compact`）返回 `iterations: []` + 顶层四字段全 0。
                 // 不守就会产出 `total_tokens: Some(0)` 并落盘到那条 assistant 消息上，
@@ -1392,10 +1478,11 @@ impl ClaudeStreamState {
                 // 窗口是**静态属性**，即使本轮零用量也值得上报（它是分母、与分子无关），
                 // 所以「全零但拿到窗口」仍然发；分子不被清零由 `run.rs::merge_cli_usage`
                 // 的全零不覆盖规则保证。
-                if !usage_parts_all_zero(&parts) || parts.context_window.is_some() {
-                    sink(UnifiedAgentEvent::Usage {
-                        usage: usage_from_parts(parts),
-                    });
+                if usage.is_some() || context_window.is_some() {
+                    let mut usage =
+                        usage.unwrap_or_else(|| usage_from_parts(CliUsageParts::default()));
+                    usage.context_window_tokens = context_window;
+                    sink(UnifiedAgentEvent::Usage { usage });
                 }
                 // 被权限规则拒掉的工具调用（R4）：无论本轮成功与否都提示。
                 if let Some(note) = permission_denials_note(obj) {
@@ -1438,6 +1525,8 @@ impl ClaudeStreamState {
                 self.completed_result_turns = self.completed_result_turns.saturating_add(1);
                 self.any_text_emitted = false;
                 self.per_request_usage_seen = false;
+                self.turn_usage = CliUsageParts::default();
+                self.context_tokens = None;
                 self.reported_assistant_errors.clear();
                 self.retry_status_seen = false;
                 // 车道是 per-turn 的：sidechain 随它的 `Task` 一起结束，主线的消息状态也会由
@@ -1512,50 +1601,43 @@ impl ClaudeStreamState {
                 let state = self.lane(lane);
                 state.text_streamed = false;
                 state.current_message_id = message_id;
-                // 新一次请求 ⇒ 输入侧快照整体替换（不累加到上一次的数上，spec 第 3 条）。
+                // 旧请求已计入整轮总量；只复位本车道的当前快照。
                 state.request_input = None;
-                // `message.usage` 是服务端算出的本次请求真实上下文占用（系统提示 + 工具定义 +
-                // 全历史 + cache），且在**回答开始前**就到——用它让用量条在生成过程中就准确,
-                // 而不是等 turn 结束的 `result`。一轮内会多次 message_start,
-                // `run.rs` 后到覆盖先到 = 取最新快照,正是所需语义。
-                //
-                // **子会话的用量不是主线的用量**：子 agent 有自己独立的上下文窗口，把它的占用
-                // 报上来会让用量条在派子任务时跳到一个与主对话无关的数字。
-                if sidechain {
-                    return;
-                }
+                state.request_context_known = false;
+                let clear_context = !sidechain && self.context_tokens.take().is_some();
+                let mut reported = false;
                 if let Some(usage) = event.get("message").and_then(|v| v.get("usage")) {
                     let parts = claude_usage_parts(usage);
-                    // 存下输入侧快照供 `message_delta` 的输出侧接上（见 `message_delta_usage`）。
-                    self.lane(lane).request_input = Some(parts.clone());
-                    if !usage_parts_all_zero(&parts) {
-                        self.per_request_usage_seen = true;
-                        sink(UnifiedAgentEvent::Usage {
-                            usage: usage_from_parts(parts),
-                        });
+                    let input_known = claude_usage_has_input(usage, true);
+                    if usage_parts_all_zero(&parts) {
+                        let state = self.lane(lane);
+                        state.request_input = Some(parts);
+                        state.request_context_known = input_known;
+                    } else {
+                        self.record_request_usage(lane, parts, input_known, sink);
+                        reported = true;
                     }
                 }
-            }
-            // **输出侧用量**：claude 边生成边报本条消息已产出的 token（Anthropic 流协议的
-            // `message_delta.usage`）。与输入侧快照相加得到本次请求的已用量，汇入本轮的
-            // 合并用量（`merge_cli_usage`）。
-            //
-            // 用户点停止的那种轮次**没有 `result` 帧**，这里攒下的就是落盘用量的唯一来源
-            // —— 所以别因为「实时用量条已经删了」就把这段也删掉。
-            // 子会话同样不进主线（它有自己的上下文窗口）。
-            "message_delta" => {
-                if sidechain {
-                    return;
+                if clear_context && !reported {
+                    sink(UnifiedAgentEvent::Usage {
+                        usage: usage_from_parts(self.turn_usage.clone()),
+                    });
                 }
+            }
+            // 输出是同一请求的更新快照，不是增量；子代理计费但不改变主线占用。
+            "message_delta" => {
                 let Some(usage) = event.get("usage") else {
                     return;
                 };
                 let request_input = self.lane(lane).request_input.clone();
+                // delta 里的零输入可能只是占位，不能据此推断完整上下文。
                 if let Some(parts) = message_delta_usage(request_input.as_ref(), usage) {
-                    self.per_request_usage_seen = true;
-                    sink(UnifiedAgentEvent::Usage {
-                        usage: usage_from_parts(parts),
-                    });
+                    self.record_request_usage(
+                        lane,
+                        parts,
+                        claude_usage_has_input(usage, false),
+                        sink,
+                    );
                 }
             }
             "content_block_start" => {
@@ -1940,6 +2022,7 @@ mod tests {
             .expect("压缩后应有新的用量上报");
         // 900 + 8000 = 8900，远低于压缩前的 152340 —— 说明分母/分子已跟上压缩。
         assert_eq!(usage.total_tokens, Some(8_900));
+        assert_eq!(usage.context_tokens, Some(8_900));
     }
 
     // ---- usage：cache 计入 + iterations 末项 + message_start 实时上报 ----
@@ -1989,45 +2072,63 @@ mod tests {
         assert!(reported[2].total_tokens > reported[1].total_tokens);
     }
 
-    /// 一轮里有多次 LLM 往返（每调一次工具就再来一次请求）。输入侧快照必须在**新一次请求
-    /// 开始**时整体替换，不能累加到上一次的数上（spec 第 3 条的复位语义）。
     #[test]
-    fn a_new_request_replaces_the_input_snapshot_instead_of_accumulating() {
+    fn turn_usage_sums_requests_and_sidechain_but_context_tracks_latest_main_request() {
         let events = run(&[
-            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-1","usage":{"input_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}}"#,
-            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":50}}}"#,
-            // 第二次请求：服务端报的 input 已含第一条消息的输出（1000 + 50 + 工具结果）。
-            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-2","usage":{"input_tokens":1200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"previous","usage":{"input_tokens":9000,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":99}}}"#,
+            r#"{"type":"result","usage":{"input_tokens":999999,"output_tokens":999}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-1","usage":{"input_tokens":100,"cache_read_input_tokens":200,"cache_creation_input_tokens":30,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":10}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-2","usage":{"input_tokens":120,"cache_read_input_tokens":300,"cache_creation_input_tokens":40,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"agent-1","event":{"type":"message_start","message":{"id":"s-1","usage":{"input_tokens":50,"cache_read_input_tokens":60,"cache_creation_input_tokens":5,"output_tokens":0}}}}"#,
             r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":20}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"agent-1","event":{"type":"message_delta","usage":{"output_tokens":7}}}"#,
+            r#"{"type":"result","modelUsage":{"model":{"contextWindow":200000}},"usage":{"input_tokens":999999,"output_tokens":999,"iterations":[{"input_tokens":888888,"output_tokens":888}]}}"#,
         ]);
         let reported = usages(&events);
-        // 1220，不是 1000+50+1200+20 的累加值 2270。
-        assert_eq!(reported.last().unwrap().total_tokens, Some(1_220));
+        assert_eq!(reported.len(), 9);
+        assert_eq!(reported[2].total_tokens, Some(330));
+        assert_eq!(reported[4].total_tokens, Some(800));
+        assert_eq!(reported[5].total_tokens, Some(915));
+        assert_eq!(reported[5].context_tokens, Some(460));
+        let usage = reported.last().unwrap();
+        assert_eq!(usage.input_tokens, Some(270));
+        assert_eq!(usage.output_tokens, Some(37));
+        assert_eq!(usage.cached_input_tokens, Some(560));
+        assert_eq!(usage.cache_creation_input_tokens, Some(75));
+        assert_eq!(usage.total_tokens, Some(942));
+        assert_eq!(usage.context_tokens, Some(480));
+        assert_eq!(usage.context_window_tokens, Some(200_000));
     }
 
-    /// **子任务的用量绝不能混进主对话**：子 agent 有自己独立的上下文窗口，且常用便宜的小模型
-    /// （窗口小 5 倍）。分流（按帧上的 `parent_tool_use_id` 分车道）必须在用量汇入主线**之前**，
-    /// 否则派了子任务的那一轮，落盘用量和轮末的用量条都会带上一段与主对话无关的数字。
+    /// 子任务计入消费，但它有自己的窗口，不改变主线上下文。
     #[test]
-    fn sidechain_usage_never_reaches_the_main_conversation_realtime_value() {
+    fn sidechain_usage_adds_to_billing_without_changing_main_context() {
         let events = run(&[
             r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-1","usage":{"input_tokens":40000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}}"#,
             r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":100}}}"#,
             // 子会话（Task 内部）的请求与增量：帧顶层带 parent_tool_use_id。
             r#"{"type":"stream_event","parent_tool_use_id":"toolu_sub_1","event":{"type":"message_start","message":{"id":"s-1","usage":{"input_tokens":800,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}}"#,
             r#"{"type":"stream_event","parent_tool_use_id":"toolu_sub_1","event":{"type":"message_delta","usage":{"output_tokens":5000}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"toolu_sub_1","event":{"type":"message_start","message":{"id":"s-2","usage":{"input_tokens":20,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","parent_tool_use_id":"toolu_sub_1","event":{"type":"message_delta","usage":{"output_tokens":10}}}"#,
         ]);
         let reported = usages(&events);
-        assert_eq!(reported.len(), 2, "子会话的两条上报都不该产出 Usage 事件");
+        assert_eq!(reported.len(), 6);
         assert_eq!(reported[0].total_tokens, Some(40_000));
         assert_eq!(reported[1].total_tokens, Some(40_100));
-        // 子会话那条若漏进来，最后一个值会是 5800（或 45100），用量条当场乱跳。
-        assert!(
-            reported
-                .iter()
-                .all(|usage| usage.total_tokens.unwrap_or(0) >= 40_000),
-            "主对话的分子不得被子任务的小数字盖掉：{reported:?}"
-        );
+        assert_eq!(reported[2].total_tokens, Some(40_900));
+        assert_eq!(reported[3].total_tokens, Some(45_900));
+        assert_eq!(reported[2].context_tokens, Some(40_100));
+        assert_eq!(reported[3].context_tokens, Some(40_100));
+        assert_eq!(reported[5].total_tokens, Some(45_930));
+        assert_eq!(reported[5].context_tokens, Some(40_100));
+        let only_sidechain = usages(&run(&[
+            r#"{"type":"stream_event","parent_tool_use_id":"toolu_sub_1","event":{"type":"message_start","message":{"id":"s-1","usage":{"input_tokens":800,"output_tokens":0}}}}"#,
+        ]));
+        assert_eq!(only_sidechain[0].total_tokens, Some(800));
+        assert_eq!(only_sidechain[0].context_tokens, None);
     }
 
     /// 全零的 `message_delta`（刚开始生成、还没产出 token）不产出上报——推出去会让用量条闪 0。
@@ -2037,6 +2138,20 @@ mod tests {
             r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":0}}}"#,
         ]);
         assert!(usages(&events).is_empty());
+        let output_only = usages(&run(&[
+            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":0,"output_tokens":5}}}"#,
+        ]));
+        assert_eq!(output_only[0].output_tokens, Some(5));
+        assert_eq!(output_only[0].context_tokens, None);
+        let unknown_main = usages(&run(&[
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":0}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":0,"output_tokens":5}}}"#,
+        ]));
+        assert_eq!(unknown_main[1].total_tokens, Some(25));
+        assert_eq!(unknown_main[1].context_tokens, None);
+        assert_eq!(unknown_main[2].total_tokens, Some(30));
+        assert_eq!(unknown_main[2].context_tokens, None);
     }
 
     #[test]
@@ -2057,7 +2172,7 @@ mod tests {
     }
 
     #[test]
-    fn result_usage_takes_last_iteration_not_first_nor_sum() {
+    fn result_usage_sums_iterations_but_uses_last_as_context() {
         // iterations[] 是一轮内多次 LLM 往返的**独立快照**序列，当前上下文占用 = 末项。
         let events = run(&[
             r#"{"type":"result","usage":{"input_tokens":1,"output_tokens":1,
@@ -2069,11 +2184,11 @@ mod tests {
                 ]}}"#,
         ]);
         let usage = usages(&events).pop().expect("result 应产出 Usage");
-        assert_eq!(usage.input_tokens, Some(900), "取末项，不是首项(100)");
-        assert_eq!(usage.output_tokens, Some(30));
+        assert_eq!(usage.input_tokens, Some(1500));
+        assert_eq!(usage.output_tokens, Some(60));
         assert_eq!(usage.cached_input_tokens, Some(2000));
-        // 末项 900+30+2000=2930；累加三项会是 1500+60+2000=3560（计费口径，不是上下文占用）。
-        assert_eq!(usage.total_tokens, Some(2930));
+        assert_eq!(usage.total_tokens, Some(3560));
+        assert_eq!(usage.context_tokens, Some(2930));
     }
 
     #[test]
@@ -2752,7 +2867,7 @@ mod tests {
             "本轮有过 per-request 快照 ⇒ 顶层是计费总量，不是上下文快照"
         );
 
-        // iterations 非空时不受闸门影响——那才是真正的快照序列。
+        // 快照选择仍能识别 iterations；有流式快照时 result 不覆盖已累计的计费。
         let with_iterations = serde_json::json!({
             "input_tokens": 1,
             "iterations": [{"input_tokens": 900, "output_tokens": 30}]
@@ -2790,12 +2905,15 @@ mod tests {
             "顶层计费总量（927,511）被当成了上下文占用：{totals:?}"
         );
         assert_eq!(totals.last().copied(), Some(196_283));
+        assert_eq!(
+            usages(&events).last().and_then(|u| u.context_tokens),
+            Some(196_283)
+        );
     }
 
-    /// 端到端形态：同一个 state 连跑两轮，第二轮的空 `iterations` 不再产出 usage
-    /// （分子交给该轮的 message_start）。
+    /// 轮次复位后，下一轮没有 per-request 快照时仍保留原有回退。
     #[test]
-    fn second_result_in_one_session_does_not_report_top_level_usage() {
+    fn next_turn_without_request_snapshots_reopens_top_level_fallback() {
         let events = run(&[
             r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-0",
                "usage":{"input_tokens":90,"output_tokens":1}}}}"#,
@@ -2803,11 +2921,7 @@ mod tests {
             r#"{"type":"result","subtype":"success","usage":{"input_tokens":900,"output_tokens":40,"iterations":[]}}"#,
         ]);
         let all = usages(&events);
-        assert_eq!(
-            all.len(),
-            2,
-            "本轮有 per-request 快照 ⇒ 两个 result 都不该报顶层用量：{events:?}"
-        );
+        assert_eq!(all.len(), 2, "第一轮跳过顶层用量，第二轮回退：{events:?}");
         assert_eq!(all[0].total_tokens, Some(91), "message_start 那条");
         assert_eq!(
             all[1].total_tokens,
@@ -2820,11 +2934,9 @@ mod tests {
     /// `iterations` 依然是 `[]`，而顶层是两次相加的**计费总量**
     /// （`cache_creation 41939 = 41791 + 148`）。
     ///
-    /// 这条钉住的是**数量级**：顶层若被当成分子 ⇒ 4+115+41939+41791 = 83,849，
-    /// 而真实占用只有最后一次往返的 ~42,054，接近翻倍。所以两轮下来只能有一条 usage
-    /// （来自最后一条 `message_start`），且必须是 4 万量级、不是 8 万。
+    /// 两次往返计入消费，当前窗口占用仍只取最后一次。
     #[test]
-    fn tool_calling_second_turn_never_reports_the_billing_total() {
+    fn tool_calling_second_turn_keeps_billing_and_context_separate() {
         let events = run(&[
             r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m-1",
                "usage":{"input_tokens":2,"cache_creation_input_tokens":39010,
@@ -2845,17 +2957,9 @@ mod tests {
         ]);
         let all = usages(&events);
         let totals: Vec<_> = all.iter().filter_map(|u| u.total_tokens).collect();
-        // 每一轮的分子都只来自 message_start：第一轮 39013，第二轮两次往返 41795 / 41942。
-        // 两轮的 result 顶层都被闸门拦住（本轮已有 per-request 快照）—— 首轮那次顶层回退
-        // （2+7+39010 = 39019）虽然数值上也对，但它与 39013 是同一份占用的两种算法,
-        // 放行它只是给用量条多一次无意义的抖动，而在恢复的会话里同一条路会给出 927,511。
-        assert_eq!(totals, vec![39_013, 41_795, 41_942], "得到：{all:?}");
-        // 收尾值必须是最后一次往返的占用，而不是两次相加的计费总量。
-        assert_eq!(totals.last(), Some(&41_942));
-        assert!(
-            !totals.contains(&83_849),
-            "顶层计费总量泄漏成了分子（会让进度条接近翻倍）：{all:?}"
-        );
+        let contexts: Vec<_> = all.iter().filter_map(|u| u.context_tokens).collect();
+        assert_eq!(totals, vec![39_013, 41_795, 83_737], "得到：{all:?}");
+        assert_eq!(contexts, vec![39_013, 41_795, 41_942], "得到：{all:?}");
     }
 
     // ---- A8：分母来自 CLI 实报的 modelUsage.contextWindow ----
@@ -3099,7 +3203,7 @@ mod tests {
         // 两轮的分子都只来自 message_start（100 / 8900）：两轮的 result 顶层都被闸门拦住。
         assert_eq!(all.len(), 2, "result 不该再报顶层计费总量：{events:?}");
         assert_eq!(
-            all.last().and_then(|u| u.total_tokens),
+            all.last().and_then(|u| u.context_tokens),
             Some(8_900),
             "第 2 轮分子必须来自 message_start（--include-partial-messages 必须常开）"
         );
@@ -3387,8 +3491,7 @@ mod tests {
         );
     }
 
-    /// 子会话有**自己独立的上下文窗口**：把它的 `message_start.usage` 报上来，用量条会在
-    /// 派子任务的瞬间跳到一个与主对话无关的数字。
+    /// 子会话的消费计入总量，但不能替换主线的上下文占用。
     #[test]
     fn sidechain_usage_does_not_move_the_main_context_bar() {
         let events = run(&[
@@ -3396,8 +3499,9 @@ mod tests {
             r#"{"type":"stream_event","parent_tool_use_id":"toolu-task-a","event":{"type":"message_start","message":{"id":"m-a","usage":{"input_tokens":900,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0,"output_tokens":0}}}}"#,
         ]);
         let all = usages(&events);
-        assert_eq!(all.len(), 1, "子会话的用量被当成主线上报了：{events:?}");
-        assert_eq!(all[0].total_tokens, Some(46_500));
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1].total_tokens, Some(55_400));
+        assert_eq!(all[1].context_tokens, Some(46_500));
     }
 
     /// `system` 帧实测恒为主线；真出现带 parent 的也不能照主线处理——子 agent 常跑 haiku，
@@ -3854,7 +3958,12 @@ mod live_tests {
         let numerator = usages
             .iter()
             .rev()
-            .find_map(|usage| usage.total_tokens.filter(|value| *value > 0))
+            .find_map(|usage| {
+                usage
+                    .context_tokens
+                    .or(usage.total_tokens)
+                    .filter(|value| *value > 0)
+            })
             .expect("应有非零分子");
         let cumulative: u64 = entries
             .values()

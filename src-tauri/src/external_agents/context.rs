@@ -197,6 +197,13 @@ pub fn collect_external_session_usage(
 ) -> ExternalSessionUsage {
     let mut latest: Option<&ModelUsage> = None;
     let mut latest_index: Option<usize> = None;
+    // 新版适配器把计费（整轮累计）与占用（context_tokens）分开存；某轮占用未知时 total 是累计，
+    // 当分子会虚高。会话里出现过 context_tokens 就只认带它的消息；纯旧会话仍退回 total。
+    let has_context_snapshots = conversation
+        .messages
+        .iter()
+        .filter_map(|message| message.usage.as_ref())
+        .any(|usage| usage.context_tokens.is_some());
     for (index, message) in conversation.messages.iter().enumerate().rev() {
         if message.role != "assistant" {
             continue;
@@ -215,6 +222,9 @@ pub fn collect_external_session_usage(
             // `Some(0)` 会命中 ⇒ 挑到这条 ⇒ 用量条从 47K 掉到 0，直到下一轮真实回复才恢复。
             // 窗口（分母）不参与这个判断——它是静态属性，缺分子的那条上报不该被当分子来源。
             if usage_has_token_numbers(usage) {
+                if has_context_snapshots && usage.context_tokens.is_none() {
+                    continue;
+                }
                 latest = Some(usage);
                 latest_index = Some(index);
                 break;
@@ -933,6 +943,34 @@ mod tests {
         );
         assert!(state.summary.is_none());
         assert!(state.usage_ratio.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn turn_billing_without_context_snapshot_is_not_used_as_occupancy() {
+        let mut conversation = empty_conversation();
+        conversation.messages.push(message(
+            "a1",
+            "assistant",
+            "first",
+            Some(ModelUsage {
+                total_tokens: Some(50_000),
+                context_tokens: Some(20_000),
+                ..Default::default()
+            }),
+        ));
+        // 这一轮占用未知，total 是整轮累计（多次请求之和），不能当上下文占用。
+        conversation.messages.push(message(
+            "a2",
+            "assistant",
+            "second",
+            Some(ModelUsage {
+                input_tokens: Some(300_000),
+                total_tokens: Some(310_000),
+                ..Default::default()
+            }),
+        ));
+        let usage = collect_external_session_usage(&conversation, "claude", None);
+        assert_eq!(usage.input_tokens, 20_000);
     }
 
     #[test]

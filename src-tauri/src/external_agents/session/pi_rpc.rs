@@ -1196,7 +1196,12 @@ where
                 continue;
             }
             if value.get("type").and_then(Value::as_str) != Some("response") {
-                map_pi_rpc_event(&value, sink);
+                map_pi_rpc_event(&value, &mut |event| {
+                    // 设置发生在本次 prompt 之前，迟到的旧轮次用量不能记入本轮。
+                    if !matches!(&event, UnifiedAgentEvent::Usage { .. }) {
+                        sink(event);
+                    }
+                });
             }
         }
     };
@@ -1445,6 +1450,35 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    // 每次 drain 对应一次 Kivio prompt；Pi 的 turn_end 则对应单次模型请求。
+    let mut turn_usage = crate::chat::model::ModelUsage::default();
+    let mut sink = |event| match event {
+        UnifiedAgentEvent::Usage { usage } if usage.total_tokens.is_some() => {
+            for (total, request) in [
+                (&mut turn_usage.input_tokens, usage.input_tokens),
+                (&mut turn_usage.output_tokens, usage.output_tokens),
+                (&mut turn_usage.total_tokens, usage.total_tokens),
+                (
+                    &mut turn_usage.cached_input_tokens,
+                    usage.cached_input_tokens,
+                ),
+                (
+                    &mut turn_usage.cache_creation_input_tokens,
+                    usage.cache_creation_input_tokens,
+                ),
+                (&mut turn_usage.reasoning_tokens, usage.reasoning_tokens),
+            ] {
+                if let Some(request) = request {
+                    *total = Some(total.unwrap_or(0).saturating_add(request));
+                }
+            }
+            turn_usage.context_tokens = usage.total_tokens;
+            sink(UnifiedAgentEvent::Usage {
+                usage: turn_usage.clone(),
+            });
+        }
+        event => sink(event),
+    };
     let mut agent_ended = false;
     let mut btw_entries_requested = false;
     let mut btw_entry_emitted = false;
@@ -1576,7 +1610,7 @@ where
         if handle_pi_auxiliary_event(
             &value,
             stdin,
-            sink,
+            &mut sink,
             approvals.as_deref_mut(),
             pending_controls,
             &cancel_check,
@@ -1615,7 +1649,7 @@ where
                         if collect_pi_context_stats(
                             reader,
                             stdin,
-                            sink,
+                            &mut sink,
                             approvals.as_deref_mut(),
                             waiters,
                             &cancel_check,
@@ -1701,6 +1735,14 @@ where
             pending_error = None;
         }
 
+        // 旧轮次的迟到事件可能留在复用的 stdout 中，不能计入尚未开始的 prompt。
+        if persistent
+            && !run_started
+            && value.get("type").and_then(Value::as_str) == Some("turn_end")
+        {
+            continue;
+        }
+
         let outcome = map_pi_rpc_event(&value, &mut |event| match event {
             UnifiedAgentEvent::Error { message } => {
                 if pending_error.is_none() {
@@ -1735,7 +1777,7 @@ where
                         if collect_pi_context_stats(
                             reader,
                             stdin,
-                            sink,
+                            &mut sink,
                             approvals.as_deref_mut(),
                             waiters,
                             &cancel_check,
@@ -2674,6 +2716,7 @@ mod tests {
             for response in [
                 json!({"type":"response","id":"kivio-control-2","command":"steer","success":true}),
                 json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"notice"}}),
+                json!({"type":"turn_end","message":{"usage":{"input":999,"output":1}}}),
                 json!({"type":"response","id":setting["id"],"success":true}),
             ] {
                 server_stdout
@@ -2702,6 +2745,9 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event, UnifiedAgentEvent::TextDelta { delta } if delta == "notice")
         ));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, UnifiedAgentEvent::Usage { .. })));
         server.await.unwrap();
     }
 
@@ -2834,6 +2880,10 @@ mod tests {
                 serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
             for event in [
                 json!({"type":"response","id":prompt["id"],"command":"prompt","success":true}),
+                json!({"type":"agent_start"}),
+                json!({"type":"turn_start"}),
+                json!({"type":"turn_end","message":{"usage":{"input":10,"output":1}}}),
+                json!({"type":"agent_end"}),
                 json!({"type":"agent_settled","aborted":false}),
             ] {
                 server_stdout
@@ -2847,6 +2897,9 @@ mod tests {
                 json!({"type":"agent_start"}),
                 json!({"type":"response","id":first["id"],"success":false}),
                 json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"continued"}}),
+                json!({"type":"turn_start"}),
+                json!({"type":"turn_end","message":{"usage":{"input":20,"output":2}}}),
+                json!({"type":"agent_end"}),
                 json!({"type":"agent_settled","aborted":false}),
             ] {
                 server_stdout
@@ -2883,6 +2936,11 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event, UnifiedAgentEvent::TextDelta { delta } if delta == "continued")
         ));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, UnifiedAgentEvent::Usage { usage }
+            if usage.input_tokens == Some(30) && usage.output_tokens == Some(3)
+                && usage.total_tokens == Some(33) && usage.context_tokens == Some(22))));
         assert!(events.iter().any(|event| matches!(event, UnifiedAgentEvent::Usage { usage } if usage.context_tokens == Some(55))));
         server.await.unwrap();
     }
@@ -3645,6 +3703,127 @@ mod tests {
             r#"{"type":"turn_end","message":{"usage":{"input":0,"output":0,"cacheRead":4096}}}"#,
         );
         assert_eq!(usage.total_tokens, Some(4096));
+    }
+
+    #[tokio::test]
+    async fn pi_turn_usage_sums_requests_and_resets_for_the_next_prompt() {
+        let (client_stdin, server_stdin) = duplex(4096);
+        let (client_stdout, mut server_stdout) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut commands = BufReader::new(server_stdin).lines();
+            for turn in 0..2 {
+                let prompt: Value =
+                    serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(prompt["type"], "prompt");
+                let mut events = Vec::new();
+                if turn == 1 {
+                    events.push(json!({"type":"agent_settled","aborted":false}));
+                }
+                events.push(
+                    json!({"type":"response","id":prompt["id"],"command":"prompt","success":true}),
+                );
+                if turn == 1 {
+                    events.push(json!({"type":"turn_end","message":{"usage":{
+                        "input":100,"output":20,"cacheRead":30,"cacheWrite":5
+                    }}}));
+                }
+                events.extend([json!({"type":"agent_start"}), json!({"type":"turn_start"})]);
+                if turn == 0 {
+                    events.extend([
+                        json!({"type":"turn_end","message":{"usage":{
+                            "input":100,"output":20,"cacheRead":30,"cacheWrite":5,
+                            "reasoning":4,"totalTokens":155
+                        }}}),
+                        json!({"type":"turn_start"}),
+                        json!({"type":"turn_end","message":{"usage":{
+                            "input":200,"output":40,"cacheRead":60,"cacheWrite":0,
+                            "reasoning":8,"totalTokens":300
+                        }}}),
+                    ]);
+                } else {
+                    events.push(json!({"type":"turn_end","message":{"usage":{
+                        "input":5,"output":6,"cacheRead":0,"cacheWrite":7
+                    }}}));
+                }
+                events.extend([
+                    json!({"type":"agent_end"}),
+                    json!({"type":"agent_settled","aborted":false}),
+                ]);
+                for event in events {
+                    server_stdout
+                        .write_all(format!("{event}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                let stats: Value =
+                    serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(stats["type"], "get_session_stats");
+                let context = if turn == 0 { 302 } else { 17 };
+                let response = json!({
+                    "type":"response","id":stats["id"],"success":true,
+                    "data":{"contextUsage":{"tokens":context,"contextWindow":1000},
+                            "tokens":{"input":9999,"output":8888}}
+                });
+                server_stdout
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+        let stdin = Arc::new(Mutex::new(client_stdin));
+        let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+        let mut reader = BufReader::new(client_stdout).lines();
+        for turn in 0..2 {
+            let mut usages = Vec::new();
+            timeout(
+                Duration::from_secs(5),
+                run_pi_rpc_io(
+                    &mut reader,
+                    &stdin,
+                    "prompt",
+                    &[],
+                    &mut |event| {
+                        if let UnifiedAgentEvent::Usage { usage } = event {
+                            usages.push(usage);
+                        }
+                    },
+                    None,
+                    Some(&waiters),
+                    || false,
+                    true,
+                ),
+            )
+            .await
+            .expect("prompt must settle")
+            .expect("prompt succeeded");
+            if turn == 0 {
+                assert_eq!(usages.len(), 3);
+                assert_eq!(usages[0].total_tokens, Some(155));
+                assert_eq!(usages[0].context_tokens, Some(155));
+                assert_eq!(usages[1].input_tokens, Some(300));
+                assert_eq!(usages[1].output_tokens, Some(60));
+                assert_eq!(usages[1].cached_input_tokens, Some(90));
+                assert_eq!(usages[1].cache_creation_input_tokens, Some(5));
+                assert_eq!(usages[1].reasoning_tokens, None);
+                assert_eq!(usages[1].total_tokens, Some(455));
+                assert_eq!(usages[1].context_tokens, Some(300));
+            } else {
+                assert_eq!(usages.len(), 2);
+                assert_eq!(usages[0].input_tokens, Some(5));
+                assert_eq!(usages[0].output_tokens, Some(6));
+                assert_eq!(usages[0].cached_input_tokens, None);
+                assert_eq!(usages[0].cache_creation_input_tokens, Some(7));
+                assert_eq!(usages[0].total_tokens, Some(18));
+                assert_eq!(usages[0].context_tokens, Some(18));
+            }
+            let stats = usages.last().unwrap();
+            assert_eq!(stats.context_tokens, Some(if turn == 0 { 302 } else { 17 }));
+            assert_eq!(stats.context_window_tokens, Some(1000));
+            assert_eq!(stats.input_tokens, None);
+            assert_eq!(stats.output_tokens, None);
+            assert_eq!(stats.total_tokens, None);
+        }
+        server.await.unwrap();
     }
 
     #[tokio::test]

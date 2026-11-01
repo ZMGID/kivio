@@ -2742,6 +2742,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         apiFormats={providerApiFormats}
         defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
         cacheIncludedInInput={usesExternalRuntime ? activeAgentRuntime.externalAgentId === 'codex' : undefined}
+        hideCost={usesExternalRuntime}
       />
     ),
     gitWorkdir: usesChatRuntime ? null : dockWorkdir || null,

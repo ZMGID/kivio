@@ -116,6 +116,52 @@ struct MapSessionState {
     streamed_text: String,
     streamed_reasoning: String,
     streamed_usage: bool,
+    completed_usage: Option<ModelUsage>,
+    step_usage: Option<ModelUsage>,
+}
+
+impl MapSessionState {
+    fn reset_usage(&mut self) {
+        self.completed_usage = None;
+        self.step_usage = None;
+        self.streamed_usage = false;
+    }
+
+    fn start_usage_step(&mut self, sink: &mut dyn FnMut(UnifiedAgentEvent)) {
+        if let Some(step) = self.step_usage.take() {
+            self.completed_usage = Some(add_dsh_usage(self.completed_usage.as_ref(), &step));
+        }
+        self.streamed_usage = false;
+        if let Some(mut usage) = self.completed_usage.clone() {
+            usage.context_tokens = None;
+            usage.context_window_tokens = self.context_window;
+            sink(UnifiedAgentEvent::Usage { usage });
+        }
+    }
+
+    fn record_step_usage(&mut self, step: ModelUsage, sink: &mut dyn FnMut(UnifiedAgentEvent)) {
+        let usage = add_dsh_usage(self.completed_usage.as_ref(), &step);
+        self.step_usage = Some(step);
+        self.streamed_usage = true;
+        sink(UnifiedAgentEvent::Usage { usage });
+    }
+
+    fn record_summary_usage(
+        &mut self,
+        summary: ModelUsage,
+        sink: &mut dyn FnMut(UnifiedAgentEvent),
+    ) {
+        self.completed_usage = Some(add_dsh_usage(self.completed_usage.as_ref(), &summary));
+        let mut usage = if let Some(step) = &self.step_usage {
+            add_dsh_usage(self.completed_usage.as_ref(), step)
+        } else {
+            let mut usage = self.completed_usage.clone().expect("summary just recorded");
+            usage.context_tokens = None;
+            usage
+        };
+        usage.context_window_tokens = self.context_window;
+        sink(UnifiedAgentEvent::Usage { usage });
+    }
 }
 
 #[derive(Default)]
@@ -492,6 +538,8 @@ impl DshJsonRpcSession {
         self.emit_slash_commands(events).await;
 
         self.idle_wake = IdleWakeState::default();
+        // 一个 Kivio 回复可能包含多个原生 follow-up 轮次，只在回复边界清零。
+        self.map_state.reset_usage();
         let prompt_id = self.next_id;
         self.next_id += 1;
         let is_slash = is_cli_slash_input(prompt);
@@ -1782,7 +1830,7 @@ fn map_session_event(
         "step/start" => {
             state.streamed_text.clear();
             state.streamed_reasoning.clear();
-            state.streamed_usage = false;
+            state.start_usage_step(sink);
         }
         "request/context" => {
             if let Some(window) = data.get("contextWindow").and_then(Value::as_u64) {
@@ -1814,8 +1862,7 @@ fn map_session_event(
                 }
                 "usage" => {
                     if let Some(usage) = parse_usage(chunk.get("usage"), state.context_window) {
-                        state.streamed_usage = true;
-                        sink(UnifiedAgentEvent::Usage { usage });
+                        state.record_step_usage(usage, sink);
                     }
                 }
                 // block-start / block-end / tool-call-delta / finish 都有更权威的独立事件或
@@ -1848,9 +1895,19 @@ fn map_session_event(
             state.streamed_text = text;
 
             if !state.streamed_usage {
-                if let Some(usage) = parse_usage(data.get("usage"), state.context_window) {
-                    sink(UnifiedAgentEvent::Usage { usage });
-                    state.streamed_usage = true;
+                let value = data
+                    .get("usage")
+                    .filter(|value| value.is_object())
+                    .or_else(|| last_stream_usage(data));
+                if let Some(usage) = parse_usage(value, state.context_window) {
+                    state.record_step_usage(usage, sink);
+                }
+            }
+        }
+        "assistant/attempt" => {
+            if !state.streamed_usage {
+                if let Some(usage) = parse_usage(last_stream_usage(data), state.context_window) {
+                    state.record_step_usage(usage, sink);
                 }
             }
         }
@@ -1907,6 +1964,9 @@ fn map_session_event(
             });
         }
         "compaction/summary" => {
+            if let Some(usage) = parse_usage(data.get("usage"), state.context_window) {
+                state.record_summary_usage(usage, sink);
+            }
             let trigger = compact_trigger(data);
             let dropped = data.get("shadowedTokenCount").and_then(Value::as_u64);
             if let Some(pending) = state.compact.as_mut() {
@@ -1963,6 +2023,7 @@ fn map_session_event(
             });
         }
         "llm/retry-started" => {
+            state.start_usage_step(sink);
             sink(UnifiedAgentEvent::StatusNote {
                 text: "retry".to_string(),
             });
@@ -2271,6 +2332,7 @@ fn fold_idle_parent_session(
     wake: &mut IdleWakeState,
 ) -> IdleParentFold {
     if event_type == "turn/start" {
+        map_state.reset_usage();
         wake.collecting = true;
         wake.text.clear();
         wake.usage = None;
@@ -2495,8 +2557,46 @@ pub(crate) fn todo_state_from_write(data: &Value) -> Option<crate::chat::types::
     })
 }
 
+fn add_dsh_usage(previous: Option<&ModelUsage>, current: &ModelUsage) -> ModelUsage {
+    let mut usage = current.clone();
+    if let Some(previous) = previous {
+        let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+        };
+        usage.input_tokens = sum(previous.input_tokens, current.input_tokens);
+        usage.output_tokens = sum(previous.output_tokens, current.output_tokens);
+        usage.total_tokens = sum(previous.total_tokens, current.total_tokens);
+        usage.cached_input_tokens = sum(previous.cached_input_tokens, current.cached_input_tokens);
+        usage.cache_creation_input_tokens = sum(
+            previous.cache_creation_input_tokens,
+            current.cache_creation_input_tokens,
+        );
+        usage.reasoning_tokens = sum(previous.reasoning_tokens, current.reasoning_tokens);
+    }
+    usage
+}
+
+fn last_stream_usage(data: &Value) -> Option<&Value> {
+    data.get("stream")?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|record| {
+            if record.get("type").and_then(Value::as_str) != Some("chunk") {
+                return None;
+            }
+            let chunk = record.get("chunk")?;
+            if chunk.get("type").and_then(Value::as_str) == Some("usage") {
+                chunk.get("usage").filter(|usage| usage.is_object())
+            } else {
+                None
+            }
+        })
+}
+
 fn parse_usage(value: Option<&Value>, context_window: Option<u64>) -> Option<ModelUsage> {
-    let usage = value?;
+    let usage = value?.as_object()?;
     let input = usage
         .get("inputTokens")
         .and_then(Value::as_u64)
@@ -2520,20 +2620,19 @@ fn parse_usage(value: Option<&Value>, context_window: Option<u64>) -> Option<Mod
 
     // dsh 的 TokenUsage 已把 cache hit 从 inputTokens 里减掉（translate.ts::mapUsage）。
     // outputTokens 是 provider completion_tokens，已含 reasoning；total 不再加 reasoning。
+    let total = input
+        .saturating_add(output)
+        .saturating_add(cache_read)
+        .saturating_add(cache_write);
     Some(ModelUsage {
         input_tokens: Some(input),
         output_tokens: Some(output),
-        total_tokens: Some(
-            input
-                .saturating_add(output)
-                .saturating_add(cache_read)
-                .saturating_add(cache_write),
-        ),
+        total_tokens: Some(total),
         cached_input_tokens: (cache_read > 0).then_some(cache_read),
         cache_creation_input_tokens: (cache_write > 0).then_some(cache_write),
         reasoning_tokens: (reasoning > 0).then_some(reasoning),
         context_window_tokens: context_window,
-        context_tokens: None,
+        context_tokens: Some(total),
     })
 }
 
@@ -2881,7 +2980,210 @@ mod tests {
         assert_eq!(usage.reasoning_tokens, Some(49));
         // reasoning 是 output 的子集，不能再加一次：166 + 184 + 1152 = 1502。
         assert_eq!(usage.total_tokens, Some(1502));
+        assert_eq!(usage.context_tokens, Some(1502));
         assert_eq!(usage.context_window_tokens, Some(1_000_000));
+    }
+
+    #[test]
+    fn sums_steps_and_followups_per_reply_with_latest_request_context() {
+        let mut state = MapSessionState::default();
+        map_events_in_state(
+            &mut state,
+            &[
+                ("step/start", json!({})),
+                (
+                    "assistant/message",
+                    json!({ "usage": { "inputTokens": 999, "outputTokens": 1 } }),
+                ),
+            ],
+        );
+        state.reset_usage();
+        let events = map_events_in_state(
+            &mut state,
+            &[
+                ("turn/start", json!({ "turn": 2 })),
+                ("request/context", json!({ "contextWindow": 1000 })),
+                ("step/start", json!({ "turn": 2, "step": 1 })),
+                (
+                    "assistant/chunk",
+                    json!({ "chunk": { "type": "usage", "usage": {
+                    "inputTokens": 9, "outputTokens": 2, "cacheReadTokens": 20,
+                    "cacheWriteTokens": 4, "reasoningTokens": 1
+                } } }),
+                ),
+                (
+                    "assistant/chunk",
+                    json!({ "chunk": { "type": "usage", "usage": {
+                    "inputTokens": 10, "outputTokens": 3, "cacheReadTokens": 20,
+                    "cacheWriteTokens": 4, "reasoningTokens": 2
+                } } }),
+                ),
+                (
+                    "assistant/message",
+                    json!({ "usage": {
+                    "inputTokens": 10, "outputTokens": 3, "cacheReadTokens": 20,
+                    "cacheWriteTokens": 4, "reasoningTokens": 2
+                } }),
+                ),
+                ("step/start", json!({ "turn": 2, "step": 2 })),
+                (
+                    "assistant/chunk",
+                    json!({ "chunk": { "type": "usage", "usage": null } }),
+                ),
+                (
+                    "assistant/message",
+                    json!({ "usage": {
+                    "inputTokens": 30, "outputTokens": 5, "cacheWriteTokens": 6,
+                    "reasoningTokens": 3
+                } }),
+                ),
+                ("turn/end", json!({ "reason": { "kind": "completed" } })),
+                ("turn/start", json!({ "turn": 3 })),
+                ("step/start", json!({ "turn": 3, "step": 1 })),
+                (
+                    "assistant/message",
+                    json!({ "usage": { "inputTokens": 7, "outputTokens": 2 } }),
+                ),
+            ],
+        );
+        let usages: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 6);
+        assert_eq!(usages[0].total_tokens, Some(35));
+        assert_eq!(usages[1].total_tokens, Some(37));
+        assert_eq!(usages[2].context_tokens, None);
+        assert_eq!(usages[3].input_tokens, Some(40));
+        assert_eq!(usages[3].output_tokens, Some(8));
+        assert_eq!(usages[3].cached_input_tokens, Some(20));
+        assert_eq!(usages[3].cache_creation_input_tokens, Some(10));
+        assert_eq!(usages[3].reasoning_tokens, Some(5));
+        assert_eq!(usages[3].total_tokens, Some(78));
+        assert_eq!(usages[3].context_tokens, Some(41));
+        assert_eq!(usages[4].context_tokens, None);
+        assert_eq!(usages[5].total_tokens, Some(87));
+        assert_eq!(usages[5].context_tokens, Some(9));
+        assert_eq!(usages[5].context_window_tokens, Some(1000));
+
+        let missing = map_events_in_state(&mut state, &[("step/start", json!({}))]);
+        assert!(matches!(
+            &missing[0],
+            UnifiedAgentEvent::Usage { usage } if usage.total_tokens == Some(87)
+                && usage.context_tokens.is_none()
+        ));
+        state.reset_usage();
+        let next = map_events_in_state(
+            &mut state,
+            &[
+                ("turn/start", json!({ "turn": 4 })),
+                ("step/start", json!({ "turn": 4, "step": 1 })),
+                (
+                    "assistant/message",
+                    json!({ "usage": { "inputTokens": 2, "outputTokens": 1 } }),
+                ),
+            ],
+        );
+        assert!(matches!(
+            &next[..],
+            [UnifiedAgentEvent::Usage { usage }] if usage.total_tokens == Some(3)
+                && usage.context_tokens == Some(3) && usage.context_window_tokens == Some(1000)
+        ));
+    }
+
+    #[test]
+    fn counts_retry_attempts_and_compaction_without_replacing_request_context() {
+        let events = map_events(&[
+            ("turn/start", json!({ "turn": 1 })),
+            ("step/start", json!({ "turn": 1, "step": 1 })),
+            (
+                "assistant/chunk",
+                json!({ "chunk": { "type": "usage", "usage": {
+                "inputTokens": 10, "outputTokens": 1, "cacheReadTokens": 3,
+                "cacheWriteTokens": 2, "reasoningTokens": 1
+            } } }),
+            ),
+            (
+                "assistant/attempt",
+                json!({ "stream": [{ "type": "chunk", "time": 1,
+                "chunk": { "type": "usage", "usage": {
+                    "inputTokens": 10, "outputTokens": 1, "cacheReadTokens": 3,
+                    "cacheWriteTokens": 2, "reasoningTokens": 1
+                } }
+            }] }),
+            ),
+            ("llm/retry-started", json!({})),
+            (
+                "assistant/attempt",
+                json!({ "stream": [
+                { "type": "chunk", "time": 2, "chunk": { "type": "usage",
+                    "usage": { "inputTokens": 1, "outputTokens": 1 } } },
+                { "type": "chunk", "time": 3, "chunk": { "type": "usage", "usage": {
+                    "inputTokens": 12, "outputTokens": 2, "cacheReadTokens": 4,
+                    "cacheWriteTokens": 1, "reasoningTokens": 2
+                } } }
+            ] }),
+            ),
+            ("llm/retry-started", json!({})),
+            (
+                "assistant/message",
+                json!({ "usage": {
+                "inputTokens": 20, "outputTokens": 3, "cacheReadTokens": 5,
+                "reasoningTokens": 1
+            } }),
+            ),
+            (
+                "compaction/summary",
+                json!({ "usage": {
+                "inputTokens": 5, "outputTokens": 1, "cacheReadTokens": 1,
+                "cacheWriteTokens": 2
+            } }),
+            ),
+            ("step/start", json!({ "turn": 1, "step": 2 })),
+            (
+                "assistant/message",
+                json!({ "stream": [
+                { "type": "chunk", "time": 4, "chunk": { "type": "usage",
+                    "usage": { "inputTokens": 2, "outputTokens": 1 } } }
+            ] }),
+            ),
+        ]);
+        let usages: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 8);
+        assert_eq!(usages[0].total_tokens, Some(16));
+        assert_eq!(usages[2].total_tokens, Some(35));
+        assert_eq!(usages[4].total_tokens, Some(63));
+        assert_eq!(usages[5].total_tokens, Some(72));
+        assert_eq!(usages[5].context_tokens, Some(28));
+        assert_eq!(usages[6].context_tokens, None);
+        assert_eq!(usages[7].input_tokens, Some(49));
+        assert_eq!(usages[7].output_tokens, Some(8));
+        assert_eq!(usages[7].cached_input_tokens, Some(13));
+        assert_eq!(usages[7].cache_creation_input_tokens, Some(5));
+        assert_eq!(usages[7].reasoning_tokens, Some(4));
+        assert_eq!(usages[7].total_tokens, Some(75));
+        assert_eq!(usages[7].context_tokens, Some(3));
+        let summary_only = map_events(&[(
+            "compaction/summary",
+            json!({ "usage": {
+            "inputTokens": 5, "outputTokens": 1, "cacheReadTokens": 1,
+            "cacheWriteTokens": 2
+        } }),
+        )]);
+        assert!(matches!(
+            &summary_only[..],
+            [UnifiedAgentEvent::Usage { usage }] if usage.total_tokens == Some(9)
+                && usage.context_tokens.is_none()
+        ));
     }
 
     #[test]
@@ -3061,12 +3363,16 @@ mod tests {
     }
 
     fn map_events(pairs: &[(&str, Value)]) -> Vec<UnifiedAgentEvent> {
+        map_events_in_state(&mut MapSessionState::default(), pairs)
+    }
+
+    fn map_events_in_state(
+        state: &mut MapSessionState,
+        pairs: &[(&str, Value)],
+    ) -> Vec<UnifiedAgentEvent> {
         let mut emitted = Vec::new();
-        let mut state = MapSessionState::default();
         for (event_type, data) in pairs {
-            map_session_event(event_type, data, &mut state, &mut |event| {
-                emitted.push(event)
-            });
+            map_session_event(event_type, data, state, &mut |event| emitted.push(event));
         }
         emitted
     }
@@ -3421,6 +3727,15 @@ mod tests {
     #[test]
     fn idle_parent_wake_turn_keeps_the_assistant_reply() {
         let mut map_state = MapSessionState::default();
+        map_events_in_state(
+            &mut map_state,
+            &[(
+                "assistant/message",
+                json!({ "usage": {
+                "inputTokens": 999, "outputTokens": 1
+            } }),
+            )],
+        );
         let mut wake = IdleWakeState::default();
         assert!(matches!(
             fold_idle_parent_session(
@@ -3449,6 +3764,36 @@ mod tests {
             IdleParentFold::Event(UnifiedAgentEvent::BackgroundTask { task_id, status, .. })
                 if task_id == "subagent-1" && status == "completed"
         ));
+        for (event_type, data) in [
+            ("step/start", json!({ "turn": 2, "step": 1 })),
+            (
+                "assistant/chunk",
+                json!({ "chunk": { "type": "usage", "usage": {
+                "inputTokens": 4, "outputTokens": 2, "cacheReadTokens": 10,
+                "cacheWriteTokens": 3, "reasoningTokens": 1
+            } } }),
+            ),
+            (
+                "assistant/message",
+                json!({ "usage": {
+                "inputTokens": 4, "outputTokens": 2, "cacheReadTokens": 10,
+                "cacheWriteTokens": 3, "reasoningTokens": 1
+            } }),
+            ),
+            ("step/start", json!({ "turn": 2, "step": 2 })),
+            (
+                "assistant/message",
+                json!({ "usage": {
+                "inputTokens": 7, "outputTokens": 3, "cacheReadTokens": 20,
+                "cacheWriteTokens": 1, "reasoningTokens": 2
+            } }),
+            ),
+        ] {
+            assert!(matches!(
+                fold_idle_parent_session(event_type, &data, &mut map_state, &mut wake),
+                IdleParentFold::Quiet
+            ));
+        }
         assert!(matches!(
             fold_idle_parent_session(
                 "assistant/chunk",
@@ -3465,7 +3810,12 @@ mod tests {
                 &mut map_state,
                 &mut wake,
             ),
-            IdleParentFold::Wake { text, .. } if text == "12 条资讯"
+            IdleParentFold::Wake { text, usage: Some(usage) }
+                if text == "12 条资讯" && usage.input_tokens == Some(11)
+                    && usage.output_tokens == Some(5) && usage.cached_input_tokens == Some(30)
+                    && usage.cache_creation_input_tokens == Some(4)
+                    && usage.reasoning_tokens == Some(3) && usage.total_tokens == Some(50)
+                    && usage.context_tokens == Some(31)
         ));
     }
 

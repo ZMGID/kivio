@@ -914,9 +914,8 @@ fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
         cache_read: field("cachedReadTokens"),
         cache_creation: field("cachedWriteTokens"),
         reasoning: field("thoughtTokens"),
-        // ACP 的 `cachedReadTokens` 与 `inputTokens` **不相交**（Anthropic 口径）：
-        // opencode 实测 11685 + 4 + 11 + 1792 = 13492 = 其自报的 totalTokens，
-        // 四者并列。这与 codex（cache ⊆ input）相反，别照抄那边。
+        // opencode 实测 `cachedReadTokens` 与 `inputTokens` 不相交；自报 total 优先。
+        // 其他 CLI 如 hermes 的 cache 可能是 input 子集，不能一概按分量重算。
         cache_included_in_input: false,
         // PromptResponse.usage 不带窗口——窗口只在 `usage_update.size` 里给。
         // 这里留 None 由 run.rs 的窗口粘滞保住先到的 usage_update.size。
@@ -939,40 +938,39 @@ fn format_acp_usage(usage: &Value) -> Option<crate::chat::model::ModelUsage> {
     }
 }
 
-/// 从 `session/prompt` 的 result 里取用量，两条路依次试：
-///
-/// 1. `result.usage` —— ACP 官方（UNSTABLE）字段，opencode 在发。
-/// 2. `result._meta` —— grok 私有位置。**grok 既不发 `usage_update`，也不填 `result.usage`**，
-///    只在 `_meta` 里给（2026-07-30 本机 grok 0.2.114 实测），所以少了这一路 grok 的分子
-///    恒为 0，用量条一路掉到字符估算兜底 —— 而 grok 空会话第一轮就是 14.8K（内置提示很长），
-///    估算差一个数量级。
-///
-/// 走 `_meta` 时用它显式给的 `totalTokens` 作上下文占用，**不自己按分量累加**：grok 的
-/// `cachedReadTokens` 是 `inputTokens` 的子集（实测 14870 含 128 cache，`totalTokens 14893
-/// = 14870 + 23 output`），与 `format_acp_usage` 假设的 opencode「四项并列」口径相反，
-/// 用那套 parser 会把 cache 双算。信它自报的 total 就绕开了整个口径分歧。
-///
-/// 取 `_meta` **顶层**而非 `_meta.usage`：带工具调用的一轮里顶层是**最后一次模型往返**
-/// （实测 15137），`_meta.usage` 是本 prompt 内所有往返的**累计**（30113 / `numTurns: 2`）。
-/// 上下文占用要前者，用累计值会随轮数虚涨。
-fn usage_from_prompt_result(result: &Value) -> Option<crate::chat::model::ModelUsage> {
-    if let Some(usage) = result.get("usage").and_then(format_acp_usage) {
+/// OpenCode v2 的 `result.usage` 按 prompt 累计；grok 的 `_meta` 顶层是末次上下文。
+/// https://opencode.ai/v2/docs/cli/acp/#usage
+/// shortcut: OpenCode 1.18.x 只报末次请求，升级 OpenCode v2 才能取得整轮计费。
+fn usage_from_prompt_result(
+    result: &Value,
+    latest_context: Option<u64>,
+) -> Option<crate::chat::model::ModelUsage> {
+    if let Some(mut usage) = result.get("usage").and_then(format_acp_usage) {
+        usage.context_tokens = latest_context;
         return Some(usage);
     }
     let meta = result.get("_meta")?;
-    let field = |key: &str| meta.get(key).and_then(|v| v.as_u64());
-    let total = field("totalTokens").filter(|v| *v > 0)?;
-    Some(crate::chat::model::ModelUsage {
+    let totals = meta.get("usage");
+    let field = |key: &str| totals.and_then(|v| v.get(key)).and_then(Value::as_u64);
+    let usage = crate::chat::model::ModelUsage {
         input_tokens: field("inputTokens"),
         output_tokens: field("outputTokens"),
-        total_tokens: Some(total),
+        total_tokens: field("totalTokens"),
         cached_input_tokens: field("cachedReadTokens").filter(|v| *v > 0),
-        cache_creation_input_tokens: field("cachedWriteTokens").filter(|v| *v > 0),
+        cache_creation_input_tokens: field("cacheCreationTokens")
+            .or_else(|| field("cachedWriteTokens"))
+            .filter(|v| *v > 0),
         reasoning_tokens: field("reasoningTokens").filter(|v| *v > 0),
-        // 窗口不在这里给（grok 在 session/new 的 `_meta.totalContextTokens`，已由模型探测读走）。
-        context_window_tokens: None,
-        context_tokens: None,
-    })
+        context_tokens: meta
+            .get("totalTokens")
+            .and_then(Value::as_u64)
+            .filter(|v| *v > 0)
+            .or(latest_context),
+        ..Default::default()
+    };
+    // grok 的缓存是 input 的子集，total 信其自报值，不用并列分量重新计算。
+    (usage.context_tokens.is_some() || !crate::external_agents::run::usage_tokens_all_zero(&usage))
+        .then_some(usage)
 }
 
 /// 解析 ACP `session/update` 的 `usage_update` 变体（官方 RFD「Session Usage and Context
@@ -983,11 +981,7 @@ fn usage_from_prompt_result(result: &Value) -> Option<crate::chat::model::ModelU
 ///  "cost":{"amount":0,"currency":"USD"}}
 /// ```
 ///
-/// `used` **不是** prompt input——它是「当前上下文里现有的全部 token」（已含 cache 与历史）。
-/// 之所以塞进 `input_tokens`，是因为下游 `external_agents::context::collect_external_session_usage`
-/// 读的就是这个字段来当分子。不要"修正"成 prompt input 语义。
-///
-/// `size` 是上下文窗口总大小，走 `context_window_tokens` 当分母。
+/// `used` 是当前上下文占用，不是计费输入；`size` 是上下文窗口总大小。
 /// `cost` 暂不解析——Kivio 目前没有成本展示位。
 ///
 /// `used`/`size` 都缺时返回 `None`（不是这个变体，或上游没给数据）。
@@ -1002,11 +996,11 @@ fn parse_acp_usage_update(
     if used.is_none() && size.is_none() {
         return None;
     }
-    Some(usage_from_parts(CliUsageParts {
-        input: used.unwrap_or(0),
-        context_window: size,
+    Some(crate::chat::model::ModelUsage {
+        context_tokens: used,
+        context_window_tokens: size,
         ..Default::default()
-    }))
+    })
 }
 
 fn acp_update_status(update: &serde_json::Map<String, Value>) -> Option<String> {
@@ -1193,8 +1187,7 @@ fn apply_acp_session_update_ex(
             true
         }
         "usage_update" => {
-            // ACP 官方 usage 通道（opencode 实测在发）。一次性驱动没有游标状态，
-            // 返回值无所谓；持久驱动那边会先单独匹配掉这个分支，不会走到这里。
+            // 有状态的分发器会先匹配 usage_update，以便保留本轮最近的上下文。
             if let Some(usage) = parse_acp_usage_update(update) {
                 sink(UnifiedAgentEvent::Usage { usage });
             }
@@ -1245,12 +1238,13 @@ impl AcpTextAssembler {
     }
 }
 
-/// 一次 ACP turn 的去重状态:正文与思考各持一个消息级游标 + 已发工具 id 集合。
+/// 一次 ACP turn 的文本游标、已发工具 id 和最近的上下文快照。
 #[derive(Default)]
 struct AcpUpdateState {
     text: AcpTextAssembler,
     thought: AcpTextAssembler,
     emitted_tools: HashSet<String>,
+    context_tokens: Option<u64>,
 }
 
 fn acp_update_text(update: &serde_json::Map<String, Value>) -> &str {
@@ -1290,8 +1284,7 @@ fn map_acp_plan_entries(raw: Option<&Value>) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// 把一条 ACP `session/update` 映射为事件(text / thought / tool),一次性驱动
-/// (`run_acp_session`)与持久驱动(`AcpSession::run_turn`)共用同一份去重逻辑。
+/// 把一条 ACP `session/update` 映射为事件并维护本轮去重与上下文状态。
 fn acp_apply_session_update(
     update: &serde_json::Map<String, Value>,
     state: &mut AcpUpdateState,
@@ -1359,7 +1352,12 @@ fn acp_apply_session_update_ex(
             // `apply_acp_session_update` 返回 true 会触发 text/thought 的 `on_boundary()`，
             // 正在流式的正文游标被重置后，后续累积快照的 starts_with 判断失效
             // → 整段正文重复发一遍。两处分发共用 `parse_acp_usage_update`（不是两份拷贝）。
-            if let Some(usage) = parse_acp_usage_update(update) {
+            if let Some(mut usage) = parse_acp_usage_update(update) {
+                if usage.context_tokens.is_some() {
+                    state.context_tokens = usage.context_tokens;
+                } else {
+                    usage.context_tokens = state.context_tokens;
+                }
                 sink(UnifiedAgentEvent::Usage { usage });
             }
         }
@@ -1423,8 +1421,7 @@ fn head_chars(s: &str, n: usize) -> String {
 }
 
 // ===========================================================================================
-// Persistent ACP session (Phase 2): keep the agent process alive across turns. Reuses the
-// same `apply_acp_session_update` mapping + permission/usage helpers as the one-shot driver.
+// Persistent ACP session: keep the agent process alive across turns.
 // ===========================================================================================
 
 /// A live ACP connection: one `session/new` (or `session/load`) + `set_model`, then many
@@ -2017,7 +2014,9 @@ impl AcpSession {
             }
 
             if value.get("id").and_then(|v| v.as_u64()) == Some(prompt_id) {
-                if let Some(usage) = value.get("result").and_then(usage_from_prompt_result) {
+                if let Some(usage) = value.get("result").and_then(|result| {
+                    usage_from_prompt_result(result, update_state.context_tokens)
+                }) {
                     let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
                 }
                 return Ok(());
@@ -3795,13 +3794,21 @@ mod tests {
     fn usage_update_tolerates_missing_fields() {
         let only_used = usage_update(json!({ "used": 42 }));
         let parsed = parse_acp_usage_update(&only_used).expect("只有 used 也该解析");
-        assert_eq!(parsed.input_tokens, Some(42));
+        assert_eq!(parsed.input_tokens, None);
+        assert_eq!(parsed.total_tokens, None);
+        assert_eq!(parsed.context_tokens, Some(42));
         assert_eq!(parsed.context_window_tokens, None);
 
         let only_size = usage_update(json!({ "size": 262144 }));
         let parsed = parse_acp_usage_update(&only_size).expect("只有 size 也该解析");
-        assert_eq!(parsed.input_tokens, Some(0));
+        assert_eq!(parsed.input_tokens, None);
+        assert_eq!(parsed.total_tokens, None);
+        assert_eq!(parsed.context_tokens, None);
         assert_eq!(parsed.context_window_tokens, Some(262_144));
+
+        let zero = parse_acp_usage_update(&usage_update(json!({ "used": 0 }))).unwrap();
+        assert_eq!(zero.context_tokens, Some(0));
+        assert_eq!(zero.input_tokens, None);
 
         // 两个都缺 → None，不 panic。
         assert!(parse_acp_usage_update(&usage_update(json!({}))).is_none());
@@ -3817,7 +3824,9 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             UnifiedAgentEvent::Usage { usage }
-                if usage.input_tokens == Some(13_477)
+                if usage.input_tokens.is_none()
+                    && usage.total_tokens.is_none()
+                    && usage.context_tokens == Some(13_477)
                     && usage.context_window_tokens == Some(200_000)
         )));
     }
@@ -3862,8 +3871,7 @@ mod tests {
     }
 
     #[test]
-    fn one_shot_driver_also_emits_usage_update() {
-        // 一次性驱动（run_acp_session）走 apply_acp_session_update，必须同样覆盖。
+    fn shared_update_mapper_also_emits_context_only_usage() {
         let update = usage_update(json!({ "used": 13477, "size": 200000 }));
         let mut emitted = HashSet::new();
         let mut events = Vec::new();
@@ -3873,7 +3881,9 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             UnifiedAgentEvent::Usage { usage }
-                if usage.input_tokens == Some(13_477)
+                if usage.input_tokens.is_none()
+                    && usage.total_tokens.is_none()
+                    && usage.context_tokens == Some(13_477)
                     && usage.context_window_tokens == Some(200_000)
         )));
     }
@@ -3896,6 +3906,7 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(13_492));
         // PromptResponse.usage 不带窗口——留 None 交给 run.rs 的窗口粘滞。
         assert_eq!(usage.context_window_tokens, None);
+        assert_eq!(usage.context_tokens, None);
     }
 
     /// hermes 0.21.3 本机实测（2026-10-13，`openai-codex:gpt-6.1-sol` 经 chatgpt codex 代理）：
@@ -3913,7 +3924,7 @@ mod tests {
         assert_eq!(
             usage.total_tokens,
             Some(197_530),
-            "分母口径归 CLI 自报，不再按并列分量累加"
+            "总量口径归 CLI 自报，不再按并列分量累加"
         );
         // 分量照实记录，成本面板还要用。
         assert_eq!(usage.input_tokens, Some(197_064));
@@ -3954,29 +3965,90 @@ mod tests {
                            "cachedReadTokens": 128, "reasoningTokens": 21, "numTurns": 1 }
             }
         });
-        let usage = usage_from_prompt_result(&result).expect("grok 的 _meta 必须被读到");
+        let usage = usage_from_prompt_result(&result, None).expect("grok 的 _meta 必须被读到");
         // 信 grok 自报的 total：它的 cachedRead ⊆ input（14870 + 23 = 14893），
         // 按 opencode 那套并列口径累加会变成 15021（cache 双算）。
         assert_eq!(usage.total_tokens, Some(14_893));
         assert_eq!(usage.input_tokens, Some(14_870));
         assert_eq!(usage.cached_input_tokens, Some(128));
+        assert_eq!(usage.context_tokens, Some(14_893));
     }
 
-    /// 带工具调用的一轮：`_meta` 顶层 = 最后一次模型往返，`_meta.usage` = 本 prompt 累计。
-    /// 上下文占用取前者，取后者会随 `numTurns` 虚涨（实测 15137 vs 30113）。
+    /// grok 在每个 prompt 返回累计计费，顶层仍是末次模型请求的上下文。
     #[test]
-    fn prompt_result_prefers_last_call_over_cumulative_usage() {
+    fn prompt_result_bills_grok_whole_turn_and_reports_last_request_context() {
+        let previous = json!({
+            "_meta": { "totalTokens": 22212, "usage": {
+                "inputTokens": 22168, "outputTokens": 36, "totalTokens": 22204
+            }}
+        });
+        let previous_usage = usage_from_prompt_result(&previous, None).unwrap();
+        assert_eq!(previous_usage.total_tokens, Some(22_204));
         let result = json!({
             "stopReason": "end_turn",
             "_meta": {
                 "totalTokens": 15137, "inputTokens": 15108, "outputTokens": 29,
                 "cachedReadTokens": 14848, "reasoningTokens": 24,
                 "usage": { "inputTokens": 30034, "outputTokens": 79, "totalTokens": 30113,
-                           "cachedReadTokens": 29696, "modelCalls": 2, "numTurns": 2 }
+                           "cachedReadTokens": 29696, "cacheCreationTokens": 16,
+                           "reasoningTokens": 50, "modelCalls": 2, "numTurns": 2 }
             }
         });
-        let usage = usage_from_prompt_result(&result).expect("应读到用量");
-        assert_eq!(usage.total_tokens, Some(15_137));
+        let usage = usage_from_prompt_result(&result, Some(12_000)).expect("应读到用量");
+        assert_eq!(usage.input_tokens, Some(30_034));
+        assert_eq!(usage.output_tokens, Some(79));
+        assert_eq!(usage.total_tokens, Some(30_113));
+        assert_eq!(usage.cached_input_tokens, Some(29_696));
+        assert_eq!(usage.cache_creation_input_tokens, Some(16));
+        assert_eq!(usage.reasoning_tokens, Some(50));
+        assert_eq!(usage.context_tokens, Some(15_137));
+    }
+
+    #[test]
+    fn opencode_prompt_uses_turn_totals_and_latest_context_without_previous_turn() {
+        let mut previous_state = AcpUpdateState::default();
+        acp_apply_session_update(
+            &usage_update(json!({ "used": 9000 })),
+            &mut previous_state,
+            &mut |_| {},
+        );
+        let previous = usage_from_prompt_result(
+            &json!({ "usage": { "inputTokens": 8000, "outputTokens": 5, "totalTokens": 8005 } }),
+            previous_state.context_tokens,
+        )
+        .unwrap();
+        assert_eq!(previous.context_tokens, Some(9000));
+
+        let mut state = AcpUpdateState::default();
+        let mut events = Vec::new();
+        for update in [
+            usage_update(json!({ "used": 156, "size": 200000 })),
+            usage_update(json!({ "used": 178 })),
+            usage_update(json!({ "size": 200000 })),
+        ] {
+            acp_apply_session_update(&update, &mut state, &mut |event| events.push(event));
+        }
+        assert!(matches!(
+            events.last(),
+            Some(UnifiedAgentEvent::Usage { usage }) if usage.context_tokens == Some(178)
+        ));
+        // 两次请求的 input 100+120、output 4+5、cache 40+50 与 10+0。
+        let result = json!({ "usage": {
+            "inputTokens": 220, "outputTokens": 9, "cachedReadTokens": 90,
+            "cachedWriteTokens": 10, "thoughtTokens": 5, "totalTokens": 334
+        }});
+        let usage = usage_from_prompt_result(&result, state.context_tokens).unwrap();
+        assert_eq!(usage.input_tokens, Some(220));
+        assert_eq!(usage.output_tokens, Some(9));
+        assert_eq!(usage.cached_input_tokens, Some(90));
+        assert_eq!(usage.cache_creation_input_tokens, Some(10));
+        assert_eq!(usage.reasoning_tokens, Some(5));
+        assert_eq!(usage.total_tokens, Some(334));
+        assert_eq!(usage.context_tokens, Some(178));
+
+        let next_state = AcpUpdateState::default();
+        let without_update = usage_from_prompt_result(&result, next_state.context_tokens).unwrap();
+        assert_eq!(without_update.context_tokens, None);
     }
 
     /// 官方 `result.usage` 优先于 `_meta`：opencode 那条路不能被 grok 分支改口径。
@@ -3987,20 +4059,45 @@ mod tests {
                        "thoughtTokens": 11, "cachedReadTokens": 1792 },
             "_meta": { "totalTokens": 999_999 }
         });
-        let usage = usage_from_prompt_result(&result).expect("应读官方字段");
+        let usage = usage_from_prompt_result(&result, Some(12_345)).expect("应读官方字段");
         assert_eq!(usage.total_tokens, Some(13_492)); // 四项并列相加，不是 _meta 的 999999
+        assert_eq!(usage.context_tokens, Some(12_345));
     }
 
     #[test]
     fn prompt_result_without_usage_anywhere_is_none() {
-        assert!(usage_from_prompt_result(&json!({ "stopReason": "end_turn" })).is_none());
+        assert!(usage_from_prompt_result(&json!({ "stopReason": "end_turn" }), None).is_none());
         // `_meta` 存在但只有非用量字段（cursor/opencode 的 result 形状）——不得造出假用量。
-        assert!(usage_from_prompt_result(&json!({
-            "stopReason": "end_turn", "_meta": { "sessionId": "s1" }
-        }))
+        assert!(usage_from_prompt_result(
+            &json!({
+                "stopReason": "end_turn", "_meta": { "sessionId": "s1" }
+            }),
+            None
+        )
         .is_none());
         // totalTokens 为 0 的空轮（斜杠命令）：不得覆盖真实值。
-        assert!(usage_from_prompt_result(&json!({ "_meta": { "totalTokens": 0 } })).is_none());
+        assert!(
+            usage_from_prompt_result(&json!({ "_meta": { "totalTokens": 0 } }), None).is_none()
+        );
+        let snapshot = usage_from_prompt_result(
+            &json!({ "_meta": {
+                "totalTokens": 120, "inputTokens": 110, "outputTokens": 10
+            }}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(snapshot.context_tokens, Some(120));
+        assert_eq!(snapshot.input_tokens, None);
+        assert_eq!(snapshot.total_tokens, None);
+        let billing = usage_from_prompt_result(
+            &json!({ "_meta": {
+                "usage": { "inputTokens": 200, "outputTokens": 20, "totalTokens": 220 }
+            }}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(billing.total_tokens, Some(220));
+        assert_eq!(billing.context_tokens, None);
     }
 
     #[test]
@@ -4423,12 +4520,8 @@ mod tests {
 
     /// Live end-to-end proof that the ACP usage channel (L1/L2) works against a real CLI.
     ///
-    /// opencode 是实测唯一会发 `usage_update` 的已装 CLI（kimi/cursor 均不发），所以它是
-    /// 这条链路唯一能真机验证的入口。断言两件单测无法覆盖的事：
-    /// 1. **分母真的来自 CLI**——`context_window_tokens` 非空（`usage_update.size`）。
-    /// 2. **分子计入了 cache**——`total_tokens > input + output`，即 `cachedReadTokens`
-    ///    确实被 `format_acp_usage` 读到了（旧代码只读 input/output，实测偏低 13%）。
-    /// 同时打印真实数字，供人工对照 `research/cli-wire-facts.md` 里记录的样本。
+    /// opencode 会发 `usage_update`。分母来自 size，轮末计费事件也必须保留最近的上下文。
+    /// 计费 total 仍遵守 opencode 的 cache 口径。
     #[tokio::test]
     #[ignore = "requires live opencode login + network"]
     async fn opencode_acp_reports_usage_and_context_window() {
@@ -4499,12 +4592,13 @@ mod tests {
         for u in &usages {
             eprintln!(
                 "opencode usage: input={:?} output={:?} cache_read={:?} reasoning={:?} \
-                 total={:?} window={:?}",
+                 total={:?} context={:?} window={:?}",
                 u.input_tokens,
                 u.output_tokens,
                 u.cached_input_tokens,
                 u.reasoning_tokens,
                 u.total_tokens,
+                u.context_tokens,
                 u.context_window_tokens,
             );
         }
@@ -4521,7 +4615,17 @@ mod tests {
             "no context window from usage_update.size; usages={usages:?}"
         );
 
-        // 分子：cache token 必须计入 total，否则就是修复前那个低估的老口径。
+        let final_billing = usages
+            .iter()
+            .rev()
+            .find(|usage| usage.total_tokens.is_some())
+            .expect("no prompt billing usage");
+        assert!(
+            final_billing.context_tokens.is_some_and(|used| used > 0),
+            "prompt billing lost the context snapshot: {final_billing:?}"
+        );
+
+        // 计费 total 仍须保留 opencode 自报的 cache。
         let counts_cache = usages.iter().any(|u| {
             let cache = u.cached_input_tokens.unwrap_or(0);
             let plain = u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);

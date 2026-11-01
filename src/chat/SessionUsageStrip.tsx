@@ -21,6 +21,8 @@ interface SessionUsageStripProps {
    * 不传则仍按 apiFormat 判断（Anthropic 不减，其余减）。
    */
   cacheIncludedInInput?: boolean
+  /** 外部 CLI 会话：多走订阅额度，按 API 价估出的美元与实际花费无关，且账本不记录其调用。 */
+  hideCost?: boolean
 }
 
 /** 缓存命中率：命中缓存的 token 占输入总量（新鲜 + 缓存）的比例。 */
@@ -45,6 +47,7 @@ export function SessionUsageStrip({
   apiFormats = {},
   defaultApiFormat = '',
   cacheIncludedInInput,
+  hideCost = false,
 }: SessionUsageStripProps) {
   const totals = useMemo(() => {
     let input = 0
@@ -93,7 +96,7 @@ export function SessionUsageStrip({
     return `${child.id}:${run?.id}:${run?.status}`
   }).join('|')
   useEffect(() => {
-    if (!conversationId) return
+    if (!conversationId || hideCost) return
     let cancelled = false
     // Refresh on reopening and completed usage/run changes, not on text deltas.
     void api.usageGetConversationCost(conversationId).then((value) => {
@@ -102,7 +105,7 @@ export function SessionUsageStrip({
       if (!cancelled) setCostSnapshot({ id: conversationId, value: null })
     })
     return () => { cancelled = true }
-  }, [conversationId, generating, totals.input, totals.cached, totals.output, childExecutions])
+  }, [conversationId, hideCost, generating, totals.input, totals.cached, totals.output, childExecutions])
   const cost = costSnapshot?.id === conversationId ? costSnapshot?.value : null
   const amount = cost?.costUsd
   const knownCost = amount != null && Number.isFinite(amount) && amount >= 0
@@ -127,7 +130,7 @@ export function SessionUsageStrip({
   return (
     <div className="chat-session-usage flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] leading-5 tabular-nums text-[var(--text-muted)]"
       data-tauri-drag-region="false">
-      {conversationId && (
+      {conversationId && !hideCost && (
         <span className="whitespace-nowrap" title={`${costHint}${partialCost ? ` ${partialHint}` : ''}`}>
           <span>{costText}</span>{partialCost ? '*' : ''}
         </span>

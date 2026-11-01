@@ -729,6 +729,7 @@ export function usePopoutComposer({
         apiFormats={providerApiFormats}
         defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}
         cacheIncludedInInput={usesExternalRuntime ? runtime.externalAgentId === 'codex' : undefined}
+        hideCost={usesExternalRuntime}
       />
     ),
     gitWorkdir: usesChatRuntime ? null : gitWorkdir || null,

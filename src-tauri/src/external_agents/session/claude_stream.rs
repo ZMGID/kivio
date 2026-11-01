@@ -667,13 +667,7 @@ pub struct ClaudeStreamJsonSession {
     child: Child,
     stdin: ChildStdin,
     reader: Lines<BufReader<ChildStdout>>,
-    /// **跨轮存活**的解析器。绝不能每轮新建（spec 第 3 条 / 第 14h 条）：
-    /// - `completed_result_turns` 是 per-session 计数，给顶层 usage 回退开闸门 —— 每轮新建
-    ///   会让它恒为 0，闸门永久失效，第 2 轮起把「本轮计费总量」当成上下文快照；
-    /// - `resolved_model` 要跨轮记住最近一次 `system/init` 报的模型，`modelUsage` 才能精确
-    ///   定位当前模型的 `contextWindow`（分母）；
-    /// - per-turn 的 `any_text_emitted` / `reported_assistant_errors` 由解析器自己在 `result`
-    ///   帧复位，不需要外部干预。
+    /// 跨轮存活：保留完成计数和 resolved model；逐请求用量在真正的 result 边界复位。
     handler: StreamHandler,
     /// claude 原生 session id：启动参数里的 `--session-id` / `--resume` 值，第一轮被
     /// `system/init` / `result` 实报的 `session_id` 覆盖（实测两者一致，覆盖只是求稳）。
@@ -702,11 +696,10 @@ pub struct ClaudeStreamJsonSession {
     /// 无从分辨。`result` 帧上的 `user_message_uuid` 能直接回答「这条 result 属于哪条用户
     /// 消息」，那才是这个竞态的根治办法；它落地之后这一层可以简化掉。
     stale_frames_left: u32,
-    /// 唤醒轮正文的收集窗口是否打开（轮间见到 `system/init` 开、见到 origin 为
-    /// task-notification 的 `result` 关）。窗口外的空闲帧是取消残留，直接丢。
-    idle_collecting: bool,
-    /// 收集窗口内攒下的唤醒轮正文（TextDelta 累积），收尾时整段落成一条助手消息。
+    /// 唤醒轮独立解析，避免其请求用量混入下一轮用户消息。
+    idle_handler: Option<StreamHandler>,
     idle_wake_text: String,
+    idle_wake_usage: Option<crate::chat::model::ModelUsage>,
 }
 
 impl ClaudeStreamJsonSession {
@@ -766,8 +759,9 @@ impl ClaudeStreamJsonSession {
                 active_model: crate::external_agents::defs::claude::claude_model_from_args(args),
                 stderr_tail: Some(stderr_tail),
                 stale_frames_left: 0,
-                idle_collecting: false,
+                idle_handler: None,
                 idle_wake_text: String::new(),
+                idle_wake_usage: None,
             }),
             (pipes, exited) => {
                 let msg = exited
@@ -1270,11 +1264,7 @@ impl ClaudeStreamJsonSession {
                 );
             if value["type"] == "result" && (old_result || steering_abort) {
                 pending_segment_aborts = pending_segment_aborts.saturating_sub(1);
-                // This is a segment boundary, not the end of the host run. Keep its actual
-                // usage while allowing the replacement generation and next normal turn.
-                if let Some(usage) = crate::external_agents::stream::claude::result_usage(&value) {
-                    let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
-                }
+                // 转向只结束片段；逐请求用量已在解析器里累计，顶层可能含历史且不能覆盖它。
                 continue;
             }
             // 切档位请求的回执。失败必须说出来 —— 用户刚点了「批准计划」，而 claude 还在
@@ -1505,8 +1495,7 @@ impl ClaudeStreamJsonSession {
     /// `next_line` 之后没有任何 await，分类一定跑完。
     ///
     /// **唤醒轮正文收集**：唤醒轮以自己的 `system/init` 开场、以带
-    /// `origin.kind=="task-notification"` 的 `result` 收尾。init 打开收集窗口，
-    /// 窗口内的内容帧喂共享解析器攒 TextDelta（复用它的流式/整块去重），收尾时整段
+    /// `origin.kind=="task-notification"` 的 `result` 收尾。独立解析器复用正文去重且隔离本轮用量，
     /// 交给 sink 落成一条助手消息。窗口外的杂帧（取消残留等）直接丢弃——它们属于
     /// 已收尾的轮次，攒进正文会污染唤醒消息。
     async fn read_idle_frame(&mut self) -> IdlePump {
@@ -1541,17 +1530,21 @@ impl ClaudeStreamJsonSession {
         use crate::external_agents::stream::claude as claude_stream;
         // 唤醒轮收尾：把窗口里攒下的正文整段交出去，附上模型与真实用量（出处证明）。
         if claude_stream::is_task_notification_result(value) {
+            let model = self
+                .idle_handler
+                .take()
+                .and_then(|handler| handler.resolved_model().map(str::to_string))
+                .or_else(|| self.handler.resolved_model().map(str::to_string));
             let text = std::mem::take(&mut self.idle_wake_text);
-            self.idle_collecting = false;
+            let usage = self
+                .idle_wake_usage
+                .take()
+                .or_else(|| claude_stream::result_usage(value));
             let text = text.trim().to_string();
             if text.is_empty() {
                 return IdlePump::Quiet;
             }
-            return IdlePump::Side(IdleSideEffect::WakeMessage {
-                text,
-                model: self.handler.resolved_model().map(str::to_string),
-                usage: claude_stream::result_usage(value),
-            });
+            return IdlePump::Side(IdleSideEffect::WakeMessage { text, model, usage });
         }
         // 任务生命周期帧：入面板注册表（与收集窗口无关，started 帧也可能出现在唤醒轮里
         // ——唤醒轮的模型可以再派新的后台任务）。
@@ -1569,22 +1562,20 @@ impl ClaudeStreamJsonSession {
             .unwrap_or_default();
         // 唤醒轮开场：打开收集窗口。init 每轮都发且先于任何正文（实测，见模块头）。
         if kind == "system" && subtype == "init" {
-            self.idle_collecting = true;
+            let mut handler = create_stream_handler(StreamFormat::ClaudeStreamJson);
+            handler.handle_value(value, &mut |_| {});
+            self.idle_handler = Some(handler);
             self.idle_wake_text.clear();
+            self.idle_wake_usage = None;
             return IdlePump::Quiet;
         }
-        if self.idle_collecting {
-            // 喂共享解析器攒正文：复用它的「流式 delta vs 整块 assistant 帧」去重。
-            // 只收 TextDelta；唤醒轮的工具调用/思考在轮间没有承载位，作为 v1 边界丢弃。
-            let ClaudeStreamJsonSession {
-                handler,
-                idle_wake_text,
-                ..
-            } = self;
-            handler.handle_value(value, &mut |event| {
-                if let UnifiedAgentEvent::TextDelta { delta } = event {
-                    idle_wake_text.push_str(&delta);
-                }
+        if let Some(handler) = self.idle_handler.as_mut() {
+            let text = &mut self.idle_wake_text;
+            let usage = &mut self.idle_wake_usage;
+            handler.handle_value(value, &mut |event| match event {
+                UnifiedAgentEvent::TextDelta { delta } => text.push_str(&delta),
+                UnifiedAgentEvent::Usage { usage: current } => *usage = Some(current),
+                _ => {}
             });
         }
         // 窗口外的杂帧（取消残留的迟到帧等）：属于已收尾的轮次，丢弃。
@@ -1595,7 +1586,8 @@ impl ClaudeStreamJsonSession {
     /// 新轮次，半截唤醒正文没有完整的收尾信号，落一半的消息比不落更糟。
     fn reset_idle_collector(&mut self) {
         self.idle_wake_text.clear();
-        self.idle_collecting = false;
+        self.idle_handler = None;
+        self.idle_wake_usage = None;
     }
 
     /// 关停 = **关 stdin 然后 `wait()`**，不是 kill。
@@ -1797,6 +1789,12 @@ mod tests {
             json!({"type":"assistant","uuid":"agent-start","message":{"id":"agent-call","content":[{"type":"tool_use","id":"foreground-agent","name":"Agent","input":{"prompt":"work","run_in_background":false}}]}}),
         );
         emit(
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m-before","usage":{"input_tokens":100,"cache_read_input_tokens":20,"output_tokens":0}}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":5}}}),
+        );
+        emit(
             json!({"type":"assistant","uuid":"first-answer","message":{"id":"a1","content":[{"type":"text","text":"before"}]}}),
         );
         let background: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
@@ -1825,7 +1823,13 @@ mod tests {
         assert_eq!(steer["priority"], "now");
         emit(steer.clone());
         emit(
-            json!({"type":"result","subtype":"success","is_error":false,"terminal_reason":"aborted_streaming","user_message_uuid":first["uuid"]}),
+            json!({"type":"result","subtype":"success","is_error":false,"terminal_reason":"aborted_streaming","user_message_uuid":first["uuid"],"usage":{"input_tokens":99999,"output_tokens":999}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m-after","usage":{"input_tokens":200,"cache_read_input_tokens":30,"output_tokens":0}}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":7}}}),
         );
         emit(
             json!({"type":"assistant","uuid":"second-answer","message":{"id":"a2","content":[{"type":"text","text":"after"}]}}),
@@ -1833,7 +1837,32 @@ mod tests {
         emit(
             json!({"type":"result","subtype":"success","is_error":false,"result":"after","user_message_uuid":steer["uuid"]}),
         );
+        emit(json!({"type":"system","subtype":"init","model":"wake-model"}));
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"wake-1","usage":{"input_tokens":31,"output_tokens":0}}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":3}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"wake-2","usage":{"input_tokens":45,"output_tokens":0}}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":4}}}),
+        );
+        emit(
+            json!({"type":"assistant","message":{"id":"wake-2","content":[{"type":"text","text":"background done"}]}}),
+        );
+        emit(
+            json!({"type":"result","origin":{"kind":"task-notification"},"usage":{"input_tokens":99999,"output_tokens":999}}),
+        );
         let next: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m-next","usage":{"input_tokens":13,"output_tokens":0}}}}),
+        );
+        emit(
+            json!({"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":2}}}),
+        );
         emit(
             json!({"type":"result","subtype":"success","is_error":false,"result":"next","user_message_uuid":next["uuid"]}),
         );
@@ -1852,7 +1881,11 @@ mod tests {
         let session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
             .await
             .unwrap();
-        let actor = spawn_claude_stream_session_actor(session);
+        let (wake_tx, mut wake_rx) = mpsc::unbounded_channel();
+        let sink: BackgroundTaskSink = std::sync::Arc::new(move |effect| {
+            let _ = wake_tx.send(effect);
+        });
+        let actor = spawn_claude_stream_session_actor_with_sink(session, Some(sink));
         let (events, mut output) = mpsc::channel(64);
         let (done, completion) = oneshot::channel();
         actor
@@ -1902,16 +1935,37 @@ mod tests {
             .is_ok());
         let mut saw_after = false;
         let mut steer_count = 0;
+        let mut last_usage = None;
         while let Ok(event) = output.try_recv() {
             if matches!(&event, UnifiedAgentEvent::TextDelta { delta } if delta == "after") {
                 saw_after = true;
             }
-            if matches!(event, UnifiedAgentEvent::UserSteer { .. }) {
+            if matches!(&event, UnifiedAgentEvent::UserSteer { .. }) {
                 steer_count += 1;
+            }
+            if let UnifiedAgentEvent::Usage { usage } = event {
+                last_usage = Some(usage);
             }
         }
         assert!(saw_after, "superseded result ended the replacement turn");
         assert_eq!(steer_count, 1);
+        let usage = last_usage.expect("转向后的累计用量");
+        assert_eq!(usage.total_tokens, Some(362));
+        assert_eq!(usage.context_tokens, Some(237));
+        let wake = timeout(Duration::from_secs(5), wake_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match wake {
+            IdleSideEffect::WakeMessage { text, model, usage } => {
+                assert_eq!(text, "background done");
+                assert_eq!(model.as_deref(), Some("wake-model"));
+                let usage = usage.expect("唤醒轮用量");
+                assert_eq!(usage.total_tokens, Some(83));
+                assert_eq!(usage.context_tokens, Some(49));
+            }
+            _ => panic!("缺少唤醒消息"),
+        }
         let (done, completion) = oneshot::channel();
         actor
             .send(SessionCommand::RunTurn {
@@ -1931,6 +1985,15 @@ mod tests {
             .unwrap()
             .unwrap()
             .is_ok());
+        let mut next_usage = None;
+        while let Ok(event) = output.try_recv() {
+            if let UnifiedAgentEvent::Usage { usage } = event {
+                next_usage = Some(usage);
+            }
+        }
+        let usage = next_usage.expect("下一轮用量");
+        assert_eq!(usage.total_tokens, Some(15));
+        assert_eq!(usage.context_tokens, Some(15));
         actor.send(SessionCommand::Close).await.unwrap();
     }
 
