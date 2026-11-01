@@ -1243,8 +1243,18 @@ mod tests {
         use serde_json::json;
 
         let cases = [
-            (native_kivio_list_agents_tool(), "kivio_list_agents", json!({}), json!([])),
-            (native_kivio_list_projects_tool(), "kivio_list_projects", json!({}), json!([])),
+            (
+                native_kivio_list_agents_tool(),
+                "kivio_list_agents",
+                json!({}),
+                json!([]),
+            ),
+            (
+                native_kivio_list_projects_tool(),
+                "kivio_list_projects",
+                json!({}),
+                json!([]),
+            ),
             (
                 native_kivio_list_conversations_tool(),
                 "kivio_list_conversations",
@@ -1290,15 +1300,24 @@ mod tests {
             let expected = properties.as_object().unwrap();
             assert_eq!(actual.len(), expected.len(), "{name}");
             for (property, expected_type) in expected {
-                assert_eq!(&actual.get(property).unwrap()["type"], expected_type, "{name}.{property}");
+                assert_eq!(
+                    &actual.get(property).unwrap()["type"],
+                    expected_type,
+                    "{name}.{property}"
+                );
             }
             assert_eq!(
-                tool.input_schema.get("required").cloned().unwrap_or(json!([])),
+                tool.input_schema
+                    .get("required")
+                    .cloned()
+                    .unwrap_or(json!([])),
                 required,
                 "{name}"
             );
             match name {
-                "kivio_list_conversations" => assert_eq!(actual.get("limit").unwrap()["default"], 20),
+                "kivio_list_conversations" => {
+                    assert_eq!(actual.get("limit").unwrap()["default"], 20)
+                }
                 "kivio_read_conversation" => assert_eq!(actual.get("limit").unwrap()["default"], 6),
                 "kivio_create_conversation" | "kivio_send_message" => {
                     assert_eq!(actual.get("wait").unwrap()["default"], false);

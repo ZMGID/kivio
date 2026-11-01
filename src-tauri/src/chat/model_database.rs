@@ -363,7 +363,10 @@ mod tests {
         for context in [300, 0] {
             let mut data: Value = serde_json::from_str(&database("2026-10-13.1", context)).unwrap();
             data["sample-1"]["maxOutput"] = Value::from(300);
-            assert_eq!(validate(&data.to_string()).unwrap()["sample-1"]["maxOutput"], 300);
+            assert_eq!(
+                validate(&data.to_string()).unwrap()["sample-1"]["maxOutput"],
+                300
+            );
         }
     }
     #[test]

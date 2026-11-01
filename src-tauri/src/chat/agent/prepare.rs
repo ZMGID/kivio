@@ -1482,7 +1482,11 @@ mod tests {
         assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf"));
         let mut brain = test_assistant_snapshot(vec![], vec![]);
         brain.id = "asst_voice_orchestrator".into();
-        assert!(skill_allowed_for_conversation(&chat_tools, Some(&brain), "pdf"));
+        assert!(skill_allowed_for_conversation(
+            &chat_tools,
+            Some(&brain),
+            "pdf"
+        ));
     }
 
     #[test]

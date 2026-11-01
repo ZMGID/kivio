@@ -1207,7 +1207,10 @@ mod tests {
             crate::chat::voice_orchestrator::is_brain_conversation(&conversation),
         );
         assert_eq!(
-            tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
             [
                 "web_fetch",
                 "kivio_list_agents",

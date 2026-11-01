@@ -80,11 +80,13 @@ fn version_at_least(version: &str, minimum: (u64, u64, u64)) -> bool {
 fn read_manifest(path: &Path) -> std::io::Result<Value> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
-    file.take((MAX_MANIFEST + 1) as u64).read_to_end(&mut bytes)?;
+    file.take((MAX_MANIFEST + 1) as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_MANIFEST {
         return Err(Error::new(ErrorKind::InvalidData, "manifest too large"));
     }
-    serde_json::from_slice(&bytes).map_err(|_| Error::new(ErrorKind::InvalidData, "invalid manifest"))
+    serde_json::from_slice(&bytes)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "invalid manifest"))
 }
 
 fn executable(path: &Path) -> bool {
@@ -130,15 +132,30 @@ fn installed(binary: &Path) -> Option<(PathBuf, PathBuf)> {
     if manifest.get("layoutVersion")?.as_u64()? != 1
         || !version_at_least(manifest.get("version")?.as_str()?, (0, 159, 0))
         || manifest.get("entrypoint").is_some_and(|value| {
-            value.as_str() != Some(if cfg!(windows) { "bin/codex.exe" } else { "bin/codex" })
+            value.as_str()
+                != Some(if cfg!(windows) {
+                    "bin/codex.exe"
+                } else {
+                    "bin/codex"
+                })
         })
-        || manifest.get("variant").is_some_and(|value| value.as_str() != Some("codex"))
-        || manifest.get("resourcesDir").is_some_and(|value| value.as_str() != Some("codex-resources"))
-        || manifest.get("target").is_some_and(|value| !value.as_str().is_some_and(target_matches))
+        || manifest
+            .get("variant")
+            .is_some_and(|value| value.as_str() != Some("codex"))
+        || manifest
+            .get("resourcesDir")
+            .is_some_and(|value| value.as_str() != Some("codex-resources"))
+        || manifest
+            .get("target")
+            .is_some_and(|value| !value.as_str().is_some_and(target_matches))
     {
         return None;
     }
-    let helper = root.join("codex-resources").join("voice").join("bin").join(HELPER);
+    let helper = root
+        .join("codex-resources")
+        .join("voice")
+        .join("bin")
+        .join(HELPER);
     if helper.canonicalize().ok().as_ref() != Some(&helper) || !executable(&helper) {
         return None;
     }
@@ -177,7 +194,10 @@ fn device_selection(helper: &Path) -> Result<bool, String> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
         Err(_) => return Err(UNAVAILABLE.into()),
     };
-    let version = manifest.get("appVersion").and_then(Value::as_str).ok_or(UNAVAILABLE)?;
+    let version = manifest
+        .get("appVersion")
+        .and_then(Value::as_str)
+        .ok_or(UNAVAILABLE)?;
     if !version_at_least(version, (0, 0, 0)) {
         return Err(UNAVAILABLE.into());
     }
@@ -190,20 +210,45 @@ fn helper_command(path: &Path) -> Command {
     for (key, value) in std::env::vars_os() {
         if matches!(
             key.to_string_lossy().to_ascii_uppercase().as_str(),
-            "SYSTEMROOT" | "WINDIR" | "HOME" | "USERPROFILE" | "LOCALAPPDATA" | "APPDATA"
-                | "TEMP" | "TMP" | "TMPDIR" | "XDG_RUNTIME_DIR" | "PULSE_SERVER"
-                | "PULSE_COOKIE" | "PIPEWIRE_REMOTE" | "DBUS_SESSION_BUS_ADDRESS"
-                | "HTTP_PROXY" | "HTTPS_PROXY" | "ALL_PROXY" | "NO_PROXY" | "SSL_CERT_FILE"
-                | "SSL_CERT_DIR" | "REQUESTS_CA_BUNDLE" | "CURL_CA_BUNDLE"
+            "SYSTEMROOT"
+                | "WINDIR"
+                | "HOME"
+                | "USERPROFILE"
+                | "LOCALAPPDATA"
+                | "APPDATA"
+                | "TEMP"
+                | "TMP"
+                | "TMPDIR"
+                | "XDG_RUNTIME_DIR"
+                | "PULSE_SERVER"
+                | "PULSE_COOKIE"
+                | "PIPEWIRE_REMOTE"
+                | "DBUS_SESSION_BUS_ADDRESS"
+                | "HTTP_PROXY"
+                | "HTTPS_PROXY"
+                | "ALL_PROXY"
+                | "NO_PROXY"
+                | "SSL_CERT_FILE"
+                | "SSL_CERT_DIR"
+                | "REQUESTS_CA_BUNDLE"
+                | "CURL_CA_BUNDLE"
         ) {
             command.env(key, value);
         }
     }
-    for key in ["GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"] {
+    for key in [
+        "GST_PLUGIN_PATH",
+        "GST_PLUGIN_PATH_1_0",
+        "GST_PLUGIN_SYSTEM_PATH",
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+    ] {
         command.env(key, "");
     }
     command
-        .env("GST_REGISTRY", if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .env(
+            "GST_REGISTRY",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
         .env("GST_REGISTRY_UPDATE", "no")
         .env("GST_REGISTRY_FORK", "no");
     #[cfg(target_os = "linux")]
@@ -221,7 +266,10 @@ fn helper_command(path: &Path) -> Command {
     if let Some(parent) = path.parent() {
         command.current_dir(parent);
     }
-    command.stderr(Stdio::null()).kill_on_drop(true).no_console_window();
+    command
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .no_console_window();
     command
 }
 
@@ -235,7 +283,11 @@ async fn build_commit(helper: &Path) -> Result<String, String> {
     let stdout = child.stdout.take().ok_or(UNAVAILABLE)?;
     timeout(Duration::from_secs(5), async {
         let mut bytes = Vec::new();
-        stdout.take((MAX_COMMIT + 3) as u64).read_to_end(&mut bytes).await.map_err(|_| UNAVAILABLE)?;
+        stdout
+            .take((MAX_COMMIT + 3) as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| UNAVAILABLE)?;
         if bytes.len() > MAX_COMMIT + 2 {
             return Err(UNAVAILABLE);
         }
@@ -244,7 +296,9 @@ async fn build_commit(helper: &Path) -> Result<String, String> {
         if !status.success()
             || commit.is_empty()
             || commit.len() > MAX_COMMIT
-            || !commit.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            || !commit
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
         {
             return Err(UNAVAILABLE);
         }
@@ -264,15 +318,27 @@ async fn framed_exchange<W: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
     if bytes.is_empty() || bytes.len() > MAX_FRAME {
         return Err("invalid request size".into());
     }
-    input.write_u32(bytes.len() as u32).await.map_err(|_| "could not write frame header")?;
-    input.write_all(&bytes).await.map_err(|_| "could not write frame payload")?;
+    input
+        .write_u32(bytes.len() as u32)
+        .await
+        .map_err(|_| "could not write frame header")?;
+    input
+        .write_all(&bytes)
+        .await
+        .map_err(|_| "could not write frame payload")?;
     input.flush().await.map_err(|_| "could not flush frame")?;
-    let length = output.read_u32().await.map_err(|_| "could not read frame header")? as usize;
+    let length = output
+        .read_u32()
+        .await
+        .map_err(|_| "could not read frame header")? as usize;
     if length == 0 || length > MAX_FRAME {
         return Err("invalid response size".into());
     }
     let mut bytes = vec![0; length];
-    output.read_exact(&mut bytes).await.map_err(|_| "could not read frame payload")?;
+    output
+        .read_exact(&mut bytes)
+        .await
+        .map_err(|_| "could not read frame payload")?;
     serde_json::from_slice(&bytes).map_err(|_| "invalid response JSON".into())
 }
 
@@ -329,9 +395,21 @@ impl NativeHost {
             .map_err(|_| UNAVAILABLE)?;
         let input = child.stdin.take().ok_or(UNAVAILABLE)?;
         let output = child.stdout.take().ok_or(UNAVAILABLE)?;
-        let mut host = Self { child: Some(child), retiring: None, input, output, device_selection };
-        host.expect(json!({"type":"hello","protocol":1,"buildCommit":commit}), "ready", 30).await?;
-        host.expect(json!({"type":"initializeRuntime"}), "runtimeReady", 30).await?;
+        let mut host = Self {
+            child: Some(child),
+            retiring: None,
+            input,
+            output,
+            device_selection,
+        };
+        host.expect(
+            json!({"type":"hello","protocol":1,"buildCommit":commit}),
+            "ready",
+            30,
+        )
+        .await?;
+        host.expect(json!({"type":"initializeRuntime"}), "runtimeReady", 30)
+            .await?;
         Ok(host)
     }
 
@@ -341,11 +419,17 @@ impl NativeHost {
         }
         let operation = operation(&message);
         // Dropping a partially completed exchange must not leave the microphone live.
-        let mut guard = KillOnCancel { child: &mut self.child, retiring: &mut self.retiring, armed: true };
+        let mut guard = KillOnCancel {
+            child: &mut self.child,
+            retiring: &mut self.retiring,
+            armed: true,
+        };
         let error = match timeout(
             Duration::from_secs(seconds),
             framed_exchange(&mut self.input, &mut self.output, &message),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(response)) => {
                 guard.armed = false;
                 return Ok(response);
@@ -355,13 +439,18 @@ impl NativeHost {
         };
         // The helper closes stdout before its fixed, non-sensitive exit code is observable.
         let code = if let Some(child) = guard.child.as_mut() {
-            timeout(Duration::from_millis(250), child.wait()).await.ok()
-                .and_then(Result::ok).and_then(|status| status.code())
+            timeout(Duration::from_millis(250), child.wait())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|status| status.code())
         } else {
             None
         };
         match code {
-            Some(code) => Err(format!("Codex voice helper {operation}: {error} (exit code {code})")),
+            Some(code) => Err(format!(
+                "Codex voice helper {operation}: {error} (exit code {code})"
+            )),
             None => Err(format!("Codex voice helper {operation}: {error}")),
         }
     }
@@ -369,20 +458,26 @@ impl NativeHost {
     async fn expect(&mut self, message: Value, expected: &str, seconds: u64) -> Result<(), String> {
         let operation = operation(&message);
         let response = self.exchange(message, seconds).await?;
-        if operation == "transport answer" && response.get("type").and_then(Value::as_str) == Some("transportTimedOut") {
+        if operation == "transport answer"
+            && response.get("type").and_then(Value::as_str) == Some("transportTimedOut")
+        {
             self.close();
             return Err("Codex voice helper transport answer timed out".into());
         }
         if response.get("type").and_then(Value::as_str) != Some(expected) {
             self.close();
-            return Err(format!("Codex voice helper {operation}: unexpected response"));
+            return Err(format!(
+                "Codex voice helper {operation}: unexpected response"
+            ));
         }
         Ok(())
     }
 
     pub(super) async fn offer(&mut self) -> Result<String, String> {
         let response = self.exchange(json!({"type":"startTransport"}), 20).await?;
-        let sdp = response.get("sdp").and_then(Value::as_str)
+        let sdp = response
+            .get("sdp")
+            .and_then(Value::as_str)
             .filter(|sdp| valid_sdp(sdp));
         if response.get("type").and_then(Value::as_str) != Some("offer") || sdp.is_none() {
             self.close();
@@ -391,12 +486,21 @@ impl NativeHost {
         Ok(sdp.unwrap().to_owned())
     }
 
-    pub(super) async fn answer(&mut self, sdp: &str, cancel: &CancellationToken) -> Result<(), String> {
+    pub(super) async fn answer(
+        &mut self,
+        sdp: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(), String> {
         if !valid_sdp(sdp) {
             self.close();
             return Err("Invalid Codex voice SDP".into());
         }
-        self.expect(json!({"type":"applyAnswer","sdp":sdp}), "transportReady", 20).await?;
+        self.expect(
+            json!({"type":"applyAnswer","sdp":sdp}),
+            "transportReady",
+            20,
+        )
+        .await?;
         if cancel.is_cancelled() {
             self.close();
             return Err(super::CANCELLED.into());
@@ -419,12 +523,22 @@ impl NativeHost {
 
     pub(super) async fn levels(&mut self) -> Result<(f64, f64), String> {
         let response = self.exchange(json!({"type":"inspectAudio"}), 5).await?;
-        let peak = |name| response.get("state").and_then(|state| state.get(name))
-            .and_then(Value::as_u64).and_then(|value| u16::try_from(value).ok());
-        match (response.get("type").and_then(Value::as_str), peak("microphonePeak"), peak("speakerPeak")) {
-            (Some("audioState"), Some(mic), Some(speaker)) => {
-                Ok((f64::from(mic) / f64::from(u16::MAX), f64::from(speaker) / f64::from(u16::MAX)))
-            }
+        let peak = |name| {
+            response
+                .get("state")
+                .and_then(|state| state.get(name))
+                .and_then(Value::as_u64)
+                .and_then(|value| u16::try_from(value).ok())
+        };
+        match (
+            response.get("type").and_then(Value::as_str),
+            peak("microphonePeak"),
+            peak("speakerPeak"),
+        ) {
+            (Some("audioState"), Some(mic), Some(speaker)) => Ok((
+                f64::from(mic) / f64::from(u16::MAX),
+                f64::from(speaker) / f64::from(u16::MAX),
+            )),
             _ => {
                 self.close();
                 Err("Codex voice helper audio inspection: invalid response".into())
@@ -439,7 +553,10 @@ impl NativeHost {
     pub(super) async fn shutdown(&mut self) -> Result<(), String> {
         self.close();
         if let Some(child) = self.retiring.as_mut() {
-            child.wait().await.map_err(|_| "Could not confirm Codex voice helper cleanup".to_string())?;
+            child
+                .wait()
+                .await
+                .map_err(|_| "Could not confirm Codex voice helper cleanup".to_string())?;
         }
         self.retiring.take();
         Ok(())
@@ -467,7 +584,11 @@ mod tests {
         std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"fixture").unwrap();
         std::fs::write(&helper, b"fixture").unwrap();
-        std::fs::write(root.join("codex-package.json"), json!({"layoutVersion":1,"version":version}).to_string()).unwrap();
+        std::fs::write(
+            root.join("codex-package.json"),
+            json!({"layoutVersion":1,"version":version}).to_string(),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -482,7 +603,17 @@ mod tests {
         for version in ["0.159.0", "0.159.0+vendor.1", "0.160.0-rc.1", "1.0.0"] {
             assert!(version_at_least(version, (0, 159, 0)), "{version}");
         }
-        for version in ["0.158.9", "0.159.0-rc.1", "0.159", "0.159.0-", "0.159.0+", "0.159.0+one+two", "00.159.0", "0.159.0-01", "garbage"] {
+        for version in [
+            "0.158.9",
+            "0.159.0-rc.1",
+            "0.159",
+            "0.159.0-",
+            "0.159.0+",
+            "0.159.0+one+two",
+            "00.159.0",
+            "0.159.0-01",
+            "garbage",
+        ] {
             assert!(!version_at_least(version, (0, 159, 0)), "{version}");
         }
         assert!(!version_at_least("0.161.0-rc.1", (0, 161, 0)));
@@ -494,20 +625,47 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join(".codex/packages/standalone/current");
         let (binary, helper) = package(&root, "0.161.0");
-        let expected = (binary.canonicalize().unwrap(), helper.canonicalize().unwrap());
+        let expected = (
+            binary.canonicalize().unwrap(),
+            helper.canonicalize().unwrap(),
+        );
         assert_eq!(discover_in_home(&binary, None).unwrap(), expected);
-        assert_eq!(discover_in_home(Path::new(""), Some(temp.path())).unwrap(), expected);
+        assert_eq!(
+            discover_in_home(Path::new(""), Some(temp.path())).unwrap(),
+            expected
+        );
         let shim = temp.path().join("npm/codex");
         std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
         std::fs::write(&shim, "npm shim").unwrap();
-        assert_eq!(discover_in_home(&shim, Some(temp.path())).unwrap(), expected);
-        std::fs::write(root.join("codex-package.json"), r#"{"layoutVersion":1,"version":"0.158.9"}"#).unwrap();
-        assert!(discover_in_home(&binary, None).unwrap_err().starts_with("unavailable: "));
-        std::fs::write(root.join("codex-package.json"), r#"{"layoutVersion":2,"version":"0.161.0"}"#).unwrap();
+        assert_eq!(
+            discover_in_home(&shim, Some(temp.path())).unwrap(),
+            expected
+        );
+        std::fs::write(
+            root.join("codex-package.json"),
+            r#"{"layoutVersion":1,"version":"0.158.9"}"#,
+        )
+        .unwrap();
+        assert!(discover_in_home(&binary, None)
+            .unwrap_err()
+            .starts_with("unavailable: "));
+        std::fs::write(
+            root.join("codex-package.json"),
+            r#"{"layoutVersion":2,"version":"0.161.0"}"#,
+        )
+        .unwrap();
         assert!(installed(&binary).is_none());
-        std::fs::write(root.join("codex-package.json"), r#"{"layoutVersion":1,"version":"0.161.0","entrypoint":"../codex"}"#).unwrap();
+        std::fs::write(
+            root.join("codex-package.json"),
+            r#"{"layoutVersion":1,"version":"0.161.0","entrypoint":"../codex"}"#,
+        )
+        .unwrap();
         assert!(installed(&binary).is_none());
-        std::fs::write(root.join("codex-package.json"), r#"{"layoutVersion":1,"version":"0.161.0"}"#).unwrap();
+        std::fs::write(
+            root.join("codex-package.json"),
+            r#"{"layoutVersion":1,"version":"0.161.0"}"#,
+        )
+        .unwrap();
         std::fs::remove_file(helper).unwrap();
         assert!(installed(&binary).is_none());
     }
@@ -516,15 +674,28 @@ mod tests {
     fn voice_manifest_selects_the_right_device_protocol() {
         let temp = tempfile::tempdir().unwrap();
         let (_, helper) = package(temp.path(), "0.161.0");
-        let manifest = helper.parent().unwrap().parent().unwrap().join("manifest.json");
+        let manifest = helper
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("manifest.json");
         assert!(!device_selection(&helper).unwrap());
-        for (version, selected) in [("0.159.0", false), ("0.160.0", false), ("0.161.0-rc.1", false), ("0.161.0", true), ("1.0.0", true)] {
+        for (version, selected) in [
+            ("0.159.0", false),
+            ("0.160.0", false),
+            ("0.161.0-rc.1", false),
+            ("0.161.0", true),
+            ("1.0.0", true),
+        ] {
             std::fs::write(&manifest, json!({"appVersion":version}).to_string()).unwrap();
             assert_eq!(device_selection(&helper).unwrap(), selected);
         }
         for contents in ["{", "{}", r#"{"appVersion":"bogus"}"#] {
             std::fs::write(&manifest, contents).unwrap();
-            assert!(device_selection(&helper).unwrap_err().starts_with("unavailable: "));
+            assert!(device_selection(&helper)
+                .unwrap_err()
+                .starts_with("unavailable: "));
         }
     }
 
@@ -534,8 +705,18 @@ mod tests {
         assert!(valid_sdp(&"x".repeat(MAX_SDP)));
         assert!(!valid_sdp(&"x".repeat(MAX_SDP + 1)));
         let command = helper_command(Path::new("/tmp/codex-voice-host"));
-        let keys: Vec<_> = command.as_std().get_envs().map(|(key, _)| key.to_string_lossy().to_ascii_uppercase()).collect();
-        for secret in ["OPENAI_API_KEY", "CODEX_API_KEY", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"] {
+        let keys: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, _)| key.to_string_lossy().to_ascii_uppercase())
+            .collect();
+        for secret in [
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+        ] {
             assert!(!keys.iter().any(|key| key == secret));
         }
         assert!(keys.iter().any(|key| key == "GST_PLUGIN_PATH"));
@@ -549,12 +730,20 @@ mod tests {
             let length = server.read_u32().await.unwrap() as usize;
             let mut request = vec![0; length];
             server.read_exact(&mut request).await.unwrap();
-            assert_eq!(serde_json::from_slice::<Value>(&request).unwrap(), json!({"type":"inspectAudio"}));
+            assert_eq!(
+                serde_json::from_slice::<Value>(&request).unwrap(),
+                json!({"type":"inspectAudio"})
+            );
             let reply = br#"{"type":"audioState"}"#;
             server.write_u32(reply.len() as u32).await.unwrap();
             server.write_all(reply).await.unwrap();
         });
-        assert_eq!(framed_exchange(&mut writer, &mut reader, &json!({"type":"inspectAudio"})).await.unwrap()["type"], "audioState");
+        assert_eq!(
+            framed_exchange(&mut writer, &mut reader, &json!({"type":"inspectAudio"}))
+                .await
+                .unwrap()["type"],
+            "audioState"
+        );
         peer.await.unwrap();
 
         let (client, mut server) = tokio::io::duplex(1024);
@@ -565,7 +754,9 @@ mod tests {
             server.read_exact(&mut request).await.unwrap();
             server.write_u32((MAX_FRAME + 1) as u32).await.unwrap();
         });
-        let error = framed_exchange(&mut writer, &mut reader, &json!({"type":"secret"})).await.unwrap_err();
+        let error = framed_exchange(&mut writer, &mut reader, &json!({"type":"secret"}))
+            .await
+            .unwrap_err();
         assert!(!error.contains("secret"));
         peer.await.unwrap();
     }
@@ -670,11 +861,18 @@ while True:
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_before_answer_completion_never_opens_devices() {
-        if !Path::new("/usr/bin/python3").is_file() { return; }
+        if !Path::new("/usr/bin/python3").is_file() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let (_, helper) = package(temp.path(), "0.161.0");
         std::fs::write(&helper, FAKE_HELPER).unwrap();
-        let manifest = helper.parent().unwrap().parent().unwrap().join("manifest.json");
+        let manifest = helper
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("manifest.json");
         std::fs::write(manifest, json!({"appVersion":"0.161.0"}).to_string()).unwrap();
         std::fs::write(temp.path().join("stall-answer"), "stall").unwrap();
         let mut host = NativeHost::open(&helper).await.unwrap();
@@ -707,11 +905,18 @@ while True:
             let temp = tempfile::tempdir().unwrap();
             let (_, helper) = package(temp.path(), version);
             std::fs::write(&helper, FAKE_HELPER).unwrap();
-            let manifest = helper.parent().unwrap().parent().unwrap().join("manifest.json");
+            let manifest = helper
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("manifest.json");
             std::fs::write(manifest, json!({"appVersion":version}).to_string()).unwrap();
             let mut host = NativeHost::open(&helper).await.unwrap();
             assert_eq!(host.offer().await.unwrap(), "fixture-offer");
-            host.answer("fixture-answer", &CancellationToken::new()).await.unwrap();
+            host.answer("fixture-answer", &CancellationToken::new())
+                .await
+                .unwrap();
             host.controls(false).await.unwrap();
             assert_eq!(host.levels().await.unwrap(), (1.0, 32768.0 / 65535.0));
             std::fs::write(temp.path().join("stall-controls"), partial_bytes).unwrap();
@@ -725,7 +930,9 @@ while True:
                         }
                     }
                 }
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
             drop(operation);
             assert!(host.child.is_none());
             assert!(host.controls(false).await.is_err());
@@ -738,7 +945,9 @@ while True:
     #[cfg(unix)]
     #[tokio::test]
     async fn helper_failures_report_operation_and_exit_code() {
-        if !Path::new("/usr/bin/python3").is_file() { return; }
+        if !Path::new("/usr/bin/python3").is_file() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let (_, helper) = package(temp.path(), "0.161.0");
         std::fs::write(&helper, FAKE_HELPER).unwrap();
@@ -756,7 +965,12 @@ while True:
         std::fs::remove_file(temp.path().join("fail-controls")).unwrap();
         let mut host = NativeHost::open(&helper).await.unwrap();
         std::fs::write(temp.path().join("timeout-answer"), "timeout").unwrap();
-        assert_eq!(host.answer("fixture-answer", &CancellationToken::new()).await.unwrap_err(), "Codex voice helper transport answer timed out");
+        assert_eq!(
+            host.answer("fixture-answer", &CancellationToken::new())
+                .await
+                .unwrap_err(),
+            "Codex voice helper transport answer timed out"
+        );
         assert!(host.child.is_none());
         std::fs::remove_file(temp.path().join("timeout-answer")).unwrap();
         let mut host = NativeHost::open(&helper).await.unwrap();

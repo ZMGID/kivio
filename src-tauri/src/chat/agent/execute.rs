@@ -989,7 +989,10 @@ fn effective_tool_timeout_ms(
     }
     // The orchestration tools bound their own wait and detach the target reply on timeout.
     if tool.source == "native"
-        && matches!(tool.name.as_str(), "kivio_create_conversation" | "kivio_send_message")
+        && matches!(
+            tool.name.as_str(),
+            "kivio_create_conversation" | "kivio_send_message"
+        )
     {
         return NO_OUTER_TOOL_TIMEOUT;
     }
@@ -2000,7 +2003,11 @@ mod tests {
         let mut tool = crate::mcp::types::native_save_assistant_tool();
         tool.name = "kivio_send_message".into();
         assert_eq!(
-            effective_tool_timeout_ms(&Settings::default(), &tool, &serde_json::json!({"wait": true})),
+            effective_tool_timeout_ms(
+                &Settings::default(),
+                &tool,
+                &serde_json::json!({"wait": true})
+            ),
             NO_OUTER_TOOL_TIMEOUT
         );
     }

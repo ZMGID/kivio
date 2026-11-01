@@ -64,7 +64,9 @@ fn select_live_provider(settings: &Settings) -> Result<&ModelProvider, String> {
                         .ok()
                         .is_some_and(|url| url.host_str() == Some("api.openai.com"))
             })
-            .ok_or("未找到已配置 API 密钥的 OpenAI 语音提供商，请在设置中选择提供商或配置 API 密钥。")?
+            .ok_or(
+                "未找到已配置 API 密钥的 OpenAI 语音提供商，请在设置中选择提供商或配置 API 密钥。",
+            )?
     };
     if provider.preferred_api_key().is_none() {
         return Err("所选语音提供商未配置 API 密钥。".into());
@@ -161,7 +163,9 @@ pub(crate) async fn voice_live_start(
         let settings = state.settings_read();
         let provider = select_live_provider(&settings)?;
         let url = live_session_url(&provider.base_url)?;
-        let key = provider.preferred_api_key().ok_or("所选语音提供商未配置 API 密钥。")?;
+        let key = provider
+            .preferred_api_key()
+            .ok_or("所选语音提供商未配置 API 密钥。")?;
         let request = crate::api::with_standard_request_timeout(
             state
                 .client_for(provider)
@@ -173,11 +177,10 @@ pub(crate) async fn voice_live_start(
         (request, provider_id, model)
     };
 
-    let conversation_id = crate::chat::voice_orchestrator::ensure_brain_conversation(
-        &app, provider_id, model,
-    )
-    .await
-    .map_err(|error| format!("准备语音编排对话失败：{error}"))?;
+    let conversation_id =
+        crate::chat::voice_orchestrator::ensure_brain_conversation(&app, provider_id, model)
+            .await
+            .map_err(|error| format!("准备语音编排对话失败：{error}"))?;
     let response = request.send().await.map_err(|error| {
         if error.is_timeout() {
             "连接语音服务超时，请检查网络和代理设置。"
@@ -191,7 +194,10 @@ pub(crate) async fn voice_live_start(
     let status = response.status();
     if status != reqwest::StatusCode::CREATED {
         return Err(if matches!(status.as_u16(), 401 | 403) {
-            format!("语音服务认证失败，请检查 API 密钥和权限（HTTP {}）。", status.as_u16())
+            format!(
+                "语音服务认证失败，请检查 API 密钥和权限（HTTP {}）。",
+                status.as_u16()
+            )
         } else {
             format!("创建语音会话失败（HTTP {}）。", status.as_u16())
         });
@@ -233,16 +239,27 @@ mod tests {
         let mut settings = Settings::default();
         settings.providers = vec![
             provider("spoof", "https://api.openai.com.evil.test/v1", &["secret"]),
-            provider("userinfo", "https://api.openai.com@evil.test/v1", &["secret"]),
+            provider(
+                "userinfo",
+                "https://api.openai.com@evil.test/v1",
+                &["secret"],
+            ),
             provider("missing-key", "https://api.openai.com/v1", &[" "]),
-            provider("openai", "https://API.OPENAI.COM:443/v1", &["first", "second"]),
+            provider(
+                "openai",
+                "https://API.OPENAI.COM:443/v1",
+                &["first", "second"],
+            ),
             provider("later", "https://api.openai.com/v1", &["secret"]),
             provider("custom", "https://example.test/v1", &["secret"]),
         ];
         settings.providers[3].enabled = false;
         settings.providers[3].active_key_index = 1;
         assert_eq!(select_live_provider(&settings).unwrap().id, "openai");
-        assert_eq!(select_live_provider(&settings).unwrap().preferred_api_key(), Some("second"));
+        assert_eq!(
+            select_live_provider(&settings).unwrap().preferred_api_key(),
+            Some("second")
+        );
 
         settings.providers[5].enabled = false;
         settings.providers[5].api_format = "anthropic_messages".into();
@@ -252,9 +269,13 @@ mod tests {
         });
         assert_eq!(select_live_provider(&settings).unwrap().id, "custom");
         settings.voice.as_mut().unwrap().live_provider_id = Some("missing-key".into());
-        assert!(select_live_provider(&settings).unwrap_err().contains("密钥"));
+        assert!(select_live_provider(&settings)
+            .unwrap_err()
+            .contains("密钥"));
         settings.voice.as_mut().unwrap().live_provider_id = Some("missing-provider".into());
-        assert!(select_live_provider(&settings).unwrap_err().contains("不存在"));
+        assert!(select_live_provider(&settings)
+            .unwrap_err()
+            .contains("不存在"));
         settings.voice = None;
         settings.providers.truncate(3);
         assert!(select_live_provider(&settings).is_err());
@@ -263,15 +284,23 @@ mod tests {
     #[test]
     fn live_request_has_exact_client_delegation_and_webrtc_body() {
         let body = serde_json::to_value(live_request_body("v=0\r\n")).unwrap();
-        assert_eq!(body, json!({
-            "session": {
-                "model": "gpt-live-1",
-                "instructions": "You are Kivio's voice assistant. Speak concisely in the user's language. Delegate requests about Kivio conversations, coding agents, projects, and tasks to the client. Never claim an action is complete before the backend confirms it.",
-                "delegation": {"type": "client"}
-            },
-            "transport": {"type": "webrtc", "sdp": "v=0\r\n"}
-        }));
-        assert_eq!(live_session_url("https://example.test/v1/").unwrap().as_str(), "https://example.test/v1/live/sessions");
+        assert_eq!(
+            body,
+            json!({
+                "session": {
+                    "model": "gpt-live-1",
+                    "instructions": "You are Kivio's voice assistant. Speak concisely in the user's language. Delegate requests about Kivio conversations, coding agents, projects, and tasks to the client. Never claim an action is complete before the backend confirms it.",
+                    "delegation": {"type": "client"}
+                },
+                "transport": {"type": "webrtc", "sdp": "v=0\r\n"}
+            })
+        );
+        assert_eq!(
+            live_session_url("https://example.test/v1/")
+                .unwrap()
+                .as_str(),
+            "https://example.test/v1/live/sessions"
+        );
         assert!(live_session_url("not a URL").is_err());
     }
 
@@ -283,9 +312,17 @@ mod tests {
             orchestrator_model: Some(" model ".into()),
             ..Default::default()
         });
-        let composer = || (Some("composer".to_string()), Some("composer-model".to_string()));
+        let composer = || {
+            (
+                Some("composer".to_string()),
+                Some("composer-model".to_string()),
+            )
+        };
         let (provider, model) = composer();
-        assert_eq!(brain_selection(&settings, provider, model), (Some("brain".into()), Some("model".into())));
+        assert_eq!(
+            brain_selection(&settings, provider, model),
+            (Some("brain".into()), Some("model".into()))
+        );
         settings.voice.as_mut().unwrap().orchestrator_model = Some(" ".into());
         let (provider, model) = composer();
         assert_eq!(brain_selection(&settings, provider, model), composer());
@@ -298,18 +335,24 @@ mod tests {
         assert!(validate_offer(&"中".repeat(21_846)).is_err());
         let response: LiveResponse = serde_json::from_value(json!({
             "session": {"id": "session-1"}, "transport": {"sdp": "answer\r\n"}
-        })).unwrap();
+        }))
+        .unwrap();
         let start = response.into_start("conversation-1".into()).unwrap();
-        assert_eq!(serde_json::to_value(start).unwrap(), json!({
-            "sessionId": "session-1", "answerSdp": "answer\r\n", "conversationId": "conversation-1"
-        }));
+        assert_eq!(
+            serde_json::to_value(start).unwrap(),
+            json!({
+                "sessionId": "session-1", "answerSdp": "answer\r\n", "conversationId": "conversation-1"
+            })
+        );
         let response: LiveResponse = serde_json::from_value(json!({
             "session": {"id": " "}, "transport": {"sdp": "answer"}
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(response.into_start("conversation-1".into()).is_err());
         let response: LiveResponse = serde_json::from_value(json!({
             "session": {"id": "session-1"}, "transport": {"sdp": "\r\n"}
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(response.into_start("conversation-1".into()).is_err());
         assert!(serde_json::from_value::<LiveResponse>(json!({"session": {"id": "x"}})).is_err());
     }
