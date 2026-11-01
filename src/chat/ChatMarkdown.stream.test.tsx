@@ -166,7 +166,7 @@ describe('ChatMarkdown streaming stability', () => {
     expect(island?.getAttribute('data-chat-heavy-hydrated')).toBe('false')
     unmount()
 
-    beginConversationTransition('conv-open', { messageCount: 20 })
+    beginConversationTransition('conv-open')
     const opening = render(
       <ChatMarkdown content={'```ts\nconst y = 2\n```'} />,
     )

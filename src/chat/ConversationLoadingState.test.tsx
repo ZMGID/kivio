@@ -2,10 +2,6 @@ import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationLoadingState } from './ConversationLoadingState'
 
-function hasLogo(container: HTMLElement): boolean {
-  return container.querySelector('.kv-stream-dot-logo') !== null
-}
-
 describe('ConversationLoadingState', () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -14,30 +10,18 @@ describe('ConversationLoadingState', () => {
     vi.useRealTimers()
   })
 
-  it('shows the dot logo immediately when predicted heavy', () => {
-    const { container } = render(<ConversationLoadingState showAnimation />)
-    expect(hasLogo(container)).toBe(true)
+  it('keeps the previous conversation visible for fast loads, then covers it with the logo', () => {
+    const { container } = render(<ConversationLoadingState />)
+    act(() => { vi.advanceTimersByTime(399) })
+    expect(container.querySelector('.chat-conversation-loading')).toBeNull()
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(container.querySelector('.chat-conversation-loading .kv-stream-dot-logo')).not.toBeNull()
   })
 
-  it('falls back to the dot logo when a "small" conversation is still loading after the delay', () => {
-    const { container } = render(<ConversationLoadingState showAnimation={false} />)
-    expect(hasLogo(container)).toBe(false)
-    act(() => {
-      vi.advanceTimersByTime(149)
-    })
-    expect(hasLogo(container)).toBe(false)
-    act(() => {
-      vi.advanceTimersByTime(1)
-    })
-    expect(hasLogo(container)).toBe(true)
-  })
-
-  it('never shows the logo when the overlay unmounts before the delay elapses', () => {
-    const { container, unmount } = render(<ConversationLoadingState showAnimation={false} />)
+  it('never covers the list when the load finishes before the delay', () => {
+    const { container, unmount } = render(<ConversationLoadingState />)
     unmount()
-    act(() => {
-      vi.advanceTimersByTime(300)
-    })
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(container.querySelector('.chat-conversation-loading')).toBeNull()
   })
 })

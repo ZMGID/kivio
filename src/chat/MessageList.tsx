@@ -7,6 +7,7 @@ import {
   useVirtualizer,
   type Range,
   type ReactVirtualizerOptions,
+  type Virtualizer,
 } from '@tanstack/react-virtual'
 import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, ConversationContextState, DegradedAnswer } from './types'
 import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
@@ -429,13 +430,19 @@ function MessageListBase({
       // 虚拟列表总高是估算值；相邻行一增一减、宽度重排、滚动补偿都可能
       // 不改变 scrollHeight。检查已挂载行的实际尺寸/位置以及视口，直到
       // ResizeObserver → virtualizer → React 的纠正连续多帧安静下来。
+      // 只比较整像素、且不受 transform 影响的几何：进场动画（如 chat-motion-pane-in）会逐帧
+      // 平移 rect.top，并让行高在 88.37/88.38 这类亚像素值间抖动；计入签名的话，动画播完前
+      // 永远判不稳定。
       const bounds = viewportEl.getBoundingClientRect()
       const layout = JSON.stringify([
-        viewportEl.scrollTop, viewportEl.scrollHeight, bounds.top, bounds.width, bounds.height,
+        Math.round(viewportEl.scrollTop), viewportEl.scrollHeight, viewportEl.clientWidth, viewportEl.clientHeight,
         contentEl.scrollHeight, contentEl.clientWidth,
         ...[...contentEl.querySelectorAll<HTMLElement>('[data-chat-reading-row]')].map(row => {
           const rect = row.getBoundingClientRect()
-          return [row.dataset.messageId ?? row.dataset.chatRowIndex, rect.top - bounds.top, rect.width, rect.height]
+          return [
+            row.dataset.messageId ?? row.dataset.chatRowIndex,
+            Math.round(rect.top - bounds.top), Math.round(rect.width), Math.round(rect.height),
+          ]
         }),
       ])
       if (layout === previousLayout) stableFrames += 1
@@ -491,8 +498,7 @@ function MessageListBase({
     return finish
   }, [conversationId, contentEl])
 
-  const prevMessageCountRef = useRef(messages.length)
-  const prevLastMessageIdRef = useRef(messages[messages.length - 1]?.id)
+  const prevMessagesRef = useRef({ conversationId, count: messages.length, lastId: messages[messages.length - 1]?.id })
   const [activeNavigatorNodeId, setActiveNavigatorNodeId] = useState<string | null>(null)
   const [visibleNavigatorNodeIds, setVisibleNavigatorNodeIds] = useState<string[]>([])
   const [outlineSources, setOutlineSources] = useState<Map<string, OutlineSourceRecord>>(() => new Map())
@@ -883,6 +889,20 @@ function MessageListBase({
   // Live is not a virtualizer row — chrome tail below carries live +
   // status/error/send-reserve, so token growth never remeasures a combined tail.
   const itemCount = historyItems.length
+  // 列表跨会话复用（不按会话 key 重建）。切换的渲染里先保存已提交会话的阅读位置和测量，
+  // 再把 virtualizer 换成目标会话的行尺寸。两件事都必须在 useVirtualizer → setOptions 之前：
+  // setOptions 会立刻按新行计算位置（贴底时的 end 锚点路径）。
+  // 保存每个已提交会话只做一次：被中断/丢弃的渲染（startTransition、StrictMode）已经改过
+  // virtualizer，之后再存会把别的会话的行记到已提交会话名下。
+  const saveMeasurementSnapshotRef = useRef<() => void>(() => {})
+  const committedConversationRef = useRef(conversationId)
+  const committedSavedRef = useRef(false)
+  const virtualizerConversationRef = useRef(conversationId)
+  const virtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null)
+  if (conversationId !== committedConversationRef.current && !committedSavedRef.current) {
+    committedSavedRef.current = true
+    saveMeasurementSnapshotRef.current()
+  }
   const historyItemsRef = useRef<HistoryRenderItem[]>(historyItems)
   historyItemsRef.current = historyItems
   const itemAt = useCallback((index: number) => historyItemsRef.current[index], [])
@@ -899,6 +919,20 @@ function MessageListBase({
     () => restoreMeasurementSnapshot(conversationId, layoutKey, measurementRevision),
     [conversationId, layoutKey, measurementRevision],
   )
+  const switchingVirtualizer = virtualizerRef.current
+  if (switchingVirtualizer && virtualizerConversationRef.current !== conversationId) {
+    virtualizerConversationRef.current = conversationId
+    // measure() 清空尺寸缓存、pendingMin 并递增版本号，保证随后的 getMeasurements 真正重算；
+    // 渲染期不能 notify，临时屏蔽 onChange（同 measureHistoryRow）。
+    const onChange = switchingVirtualizer.options.onChange
+    switchingVirtualizer.options.onChange = () => {}
+    try {
+      switchingVirtualizer.measure()
+    } finally {
+      switchingVirtualizer.options.onChange = onChange
+    }
+    for (const item of initialMeasurementsCache) switchingVirtualizer.itemSizeCache.set(item.key, item.size)
+  }
   const widthAnchorIndex = widthAnchorRef.current?.index ?? null
   const viewportHeight = viewportEl?.clientHeight || 800
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -1008,6 +1042,7 @@ function MessageListBase({
     // Commit the new visible range before a fast scroll can paint an empty frame.
     useFlushSync: true,
   })
+  virtualizerRef.current = virtualizer
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     // 导航 prepare/hold 期间禁止测高改 scrollTop：那是点导航后上下抽的主因。
     if (navigationLockRef.current || widthAnchorRef.current) return false
@@ -1045,29 +1080,32 @@ function MessageListBase({
   // Avoid a blanket measure(): it clears the virtualizer's measured cache and makes
   // detached readers pay the estimate-to-real-height correction for every row.
 
-  const saveMeasurementSnapshotRef = useRef<() => void>(() => {})
-  saveMeasurementSnapshotRef.current = () => {
-    if (!viewportEl) return
-    if (conversationId) {
-      const scrollTop = viewportEl.scrollTop
-      const anchor = virtualizer.getVirtualItems().find((row) => row.end > scrollTop && itemAt(row.index)?.kind !== 'spacer')
-      const item = anchor ? itemAt(anchor.index) : null
-      rememberChatReadingPosition(conversationId, {
-        following: followHandle.isFollowing(),
-        rowKey: item?.key ?? null,
-        rowRevision: item ? measurementKey(item) : null,
-        rowOffset: anchor ? scrollTop - anchor.start : 0,
-        scrollTop,
+  useLayoutEffect(() => {
+    committedConversationRef.current = conversationId
+    committedSavedRef.current = false
+    saveMeasurementSnapshotRef.current = () => {
+      if (!viewportEl) return
+      if (conversationId) {
+        const scrollTop = viewportEl.scrollTop
+        const anchor = virtualizer.getVirtualItems().find((row) => row.end > scrollTop && itemAt(row.index)?.kind !== 'spacer')
+        const item = anchor ? itemAt(anchor.index) : null
+        rememberChatReadingPosition(conversationId, {
+          following: followHandle.isFollowing(),
+          rowKey: item?.key ?? null,
+          rowRevision: item ? measurementKey(item) : null,
+          rowOffset: anchor ? scrollTop - anchor.start : 0,
+          scrollTop,
+          layoutKey,
+        })
+      }
+      saveMeasurementSnapshot(
+        conversationId,
         layoutKey,
-      })
+        measurementRevision,
+        virtualizer.takeSnapshot(),
+      )
     }
-    saveMeasurementSnapshot(
-      conversationId,
-      layoutKey,
-      measurementRevision,
-      virtualizer.takeSnapshot(),
-    )
-  }
+  })
   // Passive unmount cleanup runs after the viewport is detached, when browsers
   // report scrollTop = 0. Capture while the old DOM still has valid geometry.
   useLayoutEffect(() => () => saveMeasurementSnapshotRef.current(), [])
@@ -1603,15 +1641,19 @@ function MessageListBase({
     resetMessageNavigationStore()
   }, [clearNavigatorPrepare])
 
-  useEffect(() => {
-    // 切换会话时清掉上一会话未完成的 settle，避免 eager / force-mount 残留。
+  useLayoutEffect(() => {
+    // 切换会话时清掉上一会话未完成的 settle，避免 eager / force-mount 残留；在 paint 前完成，
+    // 新会话首帧不带旧会话的导航高亮、强制挂载行或右键菜单。
     clearNavigatorPrepare()
     resetMessageNavigationStore()
     headingNavigationTargetRef.current = null
+    updateActiveNavigatorNode(null)
+    updateVisibleNavigatorNodes([])
     setOutlineSources(new Map())
     setActiveOutlineOwnerId(null)
     setActiveOutlineAnchorId(null)
-  }, [clearNavigatorPrepare, conversationId])
+    setMsgMenu(null)
+  }, [clearNavigatorPrepare, conversationId, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
   // 全局搜索：打开会话后滚到命中消息，并短暂闪一下高亮。
   // 「已处理 id」ref：effect deps 里有 historyItems——处理完到父级清 focusMessageId
@@ -2083,29 +2125,32 @@ function MessageListBase({
   // New user messages force follow; committed answers keep an existing follow intent.
   useLayoutEffect(() => {
     const count = messages.length
+    const previous = prevMessagesRef.current
+    prevMessagesRef.current = { conversationId, count, lastId: messages[count - 1]?.id }
+    // 切到另一个会话不是新消息：位置由上面的会话恢复决定。
+    if (previous.conversationId !== conversationId) return
 
-    if (count > prevMessageCountRef.current
-      && messages[count - 1]?.id !== prevLastMessageIdRef.current) {
+    if (count > previous.count && messages[count - 1]?.id !== previous.lastId) {
       const lastRole = messages[count - 1]?.role
       if (lastRole === 'user') cancelHistoryNavigation()
       if (lastRole === 'user' || (lastRole === 'assistant' && followHandle.isFollowing())) {
         followHandle.stickToBottom()
       }
     }
-    prevMessageCountRef.current = count
-    prevLastMessageIdRef.current = messages[count - 1]?.id
-  }, [messages, followHandle, cancelHistoryNavigation])
+  }, [conversationId, messages, followHandle, cancelHistoryNavigation])
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
-  const liveScrollHandoffRef = useRef(liveRowActive)
+  const liveScrollHandoffRef = useRef({ conversationId, live: liveRowActive })
   // WebKit can reset scrollTop when the live row leaves normal flow, before
   // layout effects run. Snapshot the detached reader before that DOM commit.
-  const handoffReadingOffset = liveScrollHandoffRef.current && !liveRowActive
+  const handoffReadingOffset = liveScrollHandoffRef.current.live && !liveRowActive
+    && liveScrollHandoffRef.current.conversationId === conversationId
     && !followHandle.isFollowing() ? viewportEl?.scrollTop ?? null : null
   useLayoutEffect(() => {
-    const wasLive = liveScrollHandoffRef.current
-    liveScrollHandoffRef.current = liveRowActive
-    if (!wasLive || liveRowActive) return
+    const previous = liveScrollHandoffRef.current
+    liveScrollHandoffRef.current = { conversationId, live: liveRowActive }
+    // 切换会话不是本会话的流式交接。
+    if (previous.conversationId !== conversationId || !previous.live || liveRowActive) return
     if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
       if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
       beginStreamSettleEagerHydrate()
@@ -2135,6 +2180,7 @@ function MessageListBase({
     setBottomHoldEpoch((value) => value + 1)
   }, [
     cancelNavigatorSettle,
+    conversationId,
     followHandle,
     historyItems.length,
     handoffReadingOffset,
@@ -2146,13 +2192,18 @@ function MessageListBase({
   // On settle transfer the same reserve to the spacer before paint. Ordinary
   // conversation opens do not inherit this send-time whitespace.
   const reserveTurnRef = useRef<string | null>(null)
-  useLayoutEffect(() => {
-    reserveTurnRef.current = null
-  }, [conversationId])
+  const reserveConversationRef = useRef(conversationId)
   useLayoutEffect(() => {
     const wrap = tailWrapRef.current
     const spacer = tailSpacerRef.current
     if (!wrap || !spacer || !viewportEl) return
+    // 列表跨会话复用：上一会话留下的 minHeight 和跟随意图不属于这个会话，清掉但不贴底。
+    const switched = reserveConversationRef.current !== conversationId
+    reserveConversationRef.current = conversationId
+    if (switched) {
+      reserveTurnRef.current = null
+      wrap.style.minHeight = ''
+    }
     const lastUser = [...messages].reverse().find((message) => message.role === 'user')
     // Whitespace belongs to the sent turn, not to the lifetime of this list.
     // Rewind/delete must never transfer it to an earlier question.
@@ -2197,7 +2248,7 @@ function MessageListBase({
     const observer = new ResizeObserver(apply)
     observer.observe(viewportEl)
     return () => observer.disconnect()
-  }, [streaming, streamFrozen, messages, historyItems, viewportEl, reserveEpoch, followHandle, virtualizer, historySize])
+  }, [conversationId, streaming, streamFrozen, messages, historyItems, viewportEl, reserveEpoch, followHandle, virtualizer, historySize])
 
   const renderItem = useCallback(
     (item: RenderItem) => {
@@ -2471,7 +2522,8 @@ function MessageListBase({
         onMouseOverCapture={(event) => {
           if (event.target instanceof Element && event.target.closest('.chat-message-group-col')) scheduleNavigatorSync()
         }}
-        className={`chat-scroll-viewport chat-motion-view-in custom-scrollbar flex-1 overflow-y-auto ${navigatorLockActive ? 'is-navigator-locking' : ''}`}
+        // 不加进场动画：列表按会话 key 重建，每次切换都会重播，看起来就是「刷新了一下」。
+        className={`chat-scroll-viewport custom-scrollbar flex-1 overflow-y-auto ${navigatorLockActive ? 'is-navigator-locking' : ''}`}
 
 
       >

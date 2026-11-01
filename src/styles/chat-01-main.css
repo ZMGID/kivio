@@ -1868,14 +1868,6 @@ button.chat-composer-status-item:hover {
   animation: chat-motion-view-in 260ms var(--kv-ease-standard) backwards;
 }
 
-/* 会话正文切换是高频交互，不需要整页 280ms 的入场动画。
-   保留极短的位移让交接不生硬，但把主区可交互时间提前，避免出现
-   Logo 已结束、正文还在慢慢淡入的拖尾感。 */
-.chat-message-list-switch-in {
-  animation-duration: 120ms;
-  animation-timing-function: var(--kv-ease-out);
-}
-
 /* 设置页入场：从底部轻微上浮。位移用固定 px 而非 %（% 是元素自身高度，整页高度下会变成
    100px+ 的长距离平移，读起来像"整页在挪"而不是 sheet 抬起）。
    opacity 起点不为 0：全透明阶段的位移是看不见的，给 0.2 让上浮过程可感。

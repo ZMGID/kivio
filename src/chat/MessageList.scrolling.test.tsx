@@ -325,3 +325,65 @@ it.each([0, 40])('keeps reserve independent of mounted history and clears it on 
   rerender(<MessageList conversationId="reserve-rewind" messages={earlier} />)
   expect(spacer.style.height).toBe('16px')
 })
+
+it('reuses the list across conversations and restores each one\'s own reading position', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  const startOf = (key: string) => {
+    const index = Array.from({ length: list.options.count }, (_, value) => value)
+      .find((value) => String(list.options.getItemKey(value)).endsWith(`:${key}`))!
+    return (list.measurementsCache[index]?.start ?? list.getOffsetForIndex(index, 'start')?.[0])!
+  }
+  rememberChatReadingPosition('reuse-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  const { container, rerender } = render(<MessageList conversationId="reuse-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  rerender(<MessageList conversationId="reuse-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  // Same DOM node: no unmount/remount flash between conversations.
+  expect(container.querySelector('.chat-scroll-viewport')).toBe(viewport)
+  expect(container.querySelector('[data-message-id^="a-"]')).toBeNull()
+  expect(viewport.scrollTop).toBe(startOf('b-10') + 5)
+})
+
+it('saves the outgoing conversation with its measured rows and restores them on return', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  const { container, rerender } = render(<MessageList conversationId="measured-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  // Real heights differ from estimates; B's restore must use them, not a fresh estimate.
+  act(() => { for (let index = 0; index < rowsB.length; index += 1) list.resizeItem(index, 300) })
+  // A follows the bottom, which drives TanStack's end-anchor path during the switch render.
+  rerender(<MessageList conversationId="measured-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  rememberChatReadingPosition('measured-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  rerender(<MessageList conversationId="measured-b" messages={rowsB} />)
+  await act(async () => { await Promise.resolve() })
+  const index = Array.from({ length: list.options.count }, (_, value) => value)
+    .find((value) => String(list.options.getItemKey(value)).endsWith(':b-10'))!
+  // Measured 300px rows, not ~88px estimates: the snapshot survived the switch away and back.
+  expect(list.measurementsCache[index].size).toBe(300)
+  expect(viewport.scrollTop).toBe(list.measurementsCache[index].start + 5)
+})
+
+it('does not pull a detached conversation to the bottom when leaving a streaming one', async () => {
+  const [rowsA, rowsB] = ['a', 'b'].map((prefix) => Array.from({ length: 40 }, (_, index) => ({
+    id: `${prefix}-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+  })))
+  rememberChatReadingPosition('detached-b', { following: false, rowKey: 'b-10', rowOffset: 5, scrollTop: 0, layoutKey: 'x' })
+  act(() => setCoarse({ streaming: true }))
+  const { container, rerender } = render(<MessageList conversationId="live-a" messages={rowsA} />)
+  await act(async () => { await Promise.resolve() })
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  act(() => {
+    setCoarse({ streaming: false })
+    rerender(<MessageList conversationId="detached-b" messages={rowsB} />)
+  })
+  await act(async () => { await Promise.resolve() })
+  const index = Array.from({ length: list.options.count }, (_, value) => value)
+    .find((value) => String(list.options.getItemKey(value)).endsWith(':b-10'))!
+  expect(viewport.scrollTop).toBe((list.measurementsCache[index]?.start ?? list.getOffsetForIndex(index, 'start')?.[0])! + 5)
+})

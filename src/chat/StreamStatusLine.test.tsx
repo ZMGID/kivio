@@ -6,7 +6,7 @@ import { patchSnapshot, reset, setCoarse } from './streamingStore'
 import type { ToolCallRecord } from './types'
 
 vi.mock('./conversationTransitionStore', () => ({
-  useConversationTransition: () => ({ loading: false, showLoading: false }),
+  useConversationTransition: () => ({ loading: false }),
 }))
 
 const moodProbe = vi.fn()

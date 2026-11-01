@@ -2450,7 +2450,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         return
       }
       void handleSelectConversation(id, {
-        messageCount: conversation?.message_count,
         focusMessageId: focusMessageId || undefined,
       })
     }, { restoreCurrentRoute: false })

@@ -145,7 +145,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onRender,
 }: ChatConversationPaneProps) {
   const transition = useConversationTransition()
-  const conversationLoading = transition.loading
+  // 目标会话的数据到达前才遮挡；到达后同一个 MessageList 直接换内容，不再铺底色等排版稳定。
+  const awaitingConversation = transition.loading && transition.targetConversationId !== currentConversationId
   return (
     <div className="chat-motion-pane-in chat-main-pane relative flex min-w-0 flex-1 flex-col">
       {usesNativeTitlebar && (
@@ -245,7 +246,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
-                <MessageList key={messageListProps.conversationId ?? 'empty'} {...messageListProps} pendingInjections={queuedMessages} />
+                {/* 不按会话 key 重建：切换时复用同一列表，避免整块卸载重挂造成的闪烁。 */}
+                <MessageList {...messageListProps} pendingInjections={queuedMessages} />
               </Profiler>
             </Suspense>
 
@@ -268,9 +270,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             <InputBar {...inputBarProps} goalSlot={goalSlot} subAgentSlot={subAgentSlot} />
           </>
         )}
-        {conversationLoading && (
-          <ConversationLoadingState showAnimation={transition.showLoading} />
-        )}
+        {awaitingConversation && <ConversationLoadingState />}
       </div>
 
       {imageViewerItem && (

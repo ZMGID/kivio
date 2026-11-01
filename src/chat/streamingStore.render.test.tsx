@@ -481,7 +481,7 @@ describe('MessageList ← streamingStore 集成', () => {
     )
     await flush()
 
-    const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar') as HTMLDivElement
+    const scroller = container.querySelector('.chat-scroll-viewport') as HTMLDivElement
     Object.defineProperties(scroller, {
       scrollHeight: { configurable: true, get: () => 2400 },
       scrollTop: { configurable: true, writable: true, value: 400 },
@@ -522,7 +522,7 @@ describe('MessageList ← streamingStore 集成', () => {
     )
     await flush()
 
-    const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar') as HTMLDivElement
+    const scroller = container.querySelector('.chat-scroll-viewport') as HTMLDivElement
     let scrollTop = 120
     let writes = 0
     Object.defineProperties(scroller, {
@@ -581,7 +581,7 @@ describe('MessageList ← streamingStore 集成', () => {
     })
     await flush()
 
-    const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar') as HTMLDivElement
+    const scroller = container.querySelector('.chat-scroll-viewport') as HTMLDivElement
     const scrollHeight = 3000
     let scrollTop = 0
     let writes = 0
@@ -697,7 +697,7 @@ describe('MessageList ← streamingStore 集成', () => {
       )
       await flush()
 
-      const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar') as HTMLDivElement
+      const scroller = container.querySelector('.chat-scroll-viewport') as HTMLDivElement
       let scrollTop = 0
       let writes = 0
       Object.defineProperties(scroller, {
@@ -732,7 +732,7 @@ describe('MessageList ← streamingStore 集成', () => {
     )
     await flush()
 
-    const scroller = container.querySelector('.chat-motion-view-in.custom-scrollbar')
+    const scroller = container.querySelector('.chat-scroll-viewport')
     expect(scroller).not.toBeNull()
     expect(screen.queryByRole('button', { name: '回到底部' })).not.toBeInTheDocument()
 

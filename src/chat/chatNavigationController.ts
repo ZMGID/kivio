@@ -309,7 +309,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
       syncConversationRoute(conversationId)
       return
     }
-    const requestId = beginConversationTransition(conversationId, hint)
+    const requestId = beginConversationTransition(conversationId)
     const ownership = await awaitCurrentConversationNavigation(
       ports.listPopouts(),
       () => isCurrentConversationTransition(requestId, conversationId),

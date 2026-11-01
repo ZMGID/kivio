@@ -58,6 +58,28 @@ describe('MessageList opening mask readiness', () => {
     expect(ready).toHaveBeenCalledWith('opening-layout', 1)
   })
 
+  it('reveals while the entrance animation only shifts the viewport and jitters sub-pixels', async () => {
+    const { ready, row, viewport } = await mount()
+    // An entrance transform shifts the whole viewport; rows report 200 / 200.004 alternately.
+    let shift = 8
+    let tick = 0
+    vi.spyOn(viewport, 'getBoundingClientRect').mockImplementation(() => ({
+      top: shift, bottom: shift + 500, height: 500, width: 600, left: 0, right: 600,
+    }) as DOMRect)
+    vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => {
+      const height = tick % 2 ? 200.004 : 200
+      return { top: shift, bottom: shift + height, height, width: 600, left: 0, right: 600 } as DOMRect
+    })
+    // Jitter never stops during this window: only a whole-pixel signature can settle.
+    for (let index = 0; index < 24 && !ready.mock.calls.length; index += 1) {
+      shift = Math.max(0, shift - 1)
+      tick += 1
+      await frame()
+    }
+    // 24 frames ≈ 384ms, far before the 2s deadline.
+    expect(ready).toHaveBeenCalledOnce()
+  })
+
   it('waits for image loading and the resulting layout to settle', async () => {
     const { ready, row, move } = await mount()
     const image = document.createElement('img')
@@ -203,7 +225,7 @@ describe('MessageList opening mask readiness', () => {
         <MessageList conversationId="slow-image" renderRequestId={transition.requestId}
           onInitialRender={completeConversationTransition}
           messages={[{ id: 'answer', role: 'assistant', content: 'History already loaded', timestamp: 1 }]} />
-        {transition.loading && <ConversationLoadingState showAnimation />}
+        {transition.loading && <ConversationLoadingState />}
       </>
     }
     beginConversationTransition('slow-image')

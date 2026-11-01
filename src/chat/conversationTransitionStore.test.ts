@@ -41,19 +41,6 @@ describe('conversationTransitionStore', () => {
     })
   })
 
-  it('only shows the loading shell for larger conversations', () => {
-    // threshold is exclusive: ≤12 messages skip the logo shell so small opens feel instant
-    beginConversationTransition('small', { messageCount: 12 })
-    expect(getConversationTransitionSnapshot().showLoading).toBe(false)
-
-    beginConversationTransition('large', { messageCount: 13 })
-    expect(getConversationTransitionSnapshot().showLoading).toBe(true)
-
-    // unknown size stays conservative
-    beginConversationTransition('unknown')
-    expect(getConversationTransitionSnapshot().showLoading).toBe(true)
-  })
-
   it('marks an ownership lookup stale when navigation changes while its promise is pending', async () => {
     const requestId = beginConversationTransition('conversation-a')
     let finish: ((ids: ReadonlySet<string>) => void) | undefined
