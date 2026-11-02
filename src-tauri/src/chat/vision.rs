@@ -6,7 +6,7 @@ use std::{
 
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::chat::agent::stop as agent_stop;
@@ -179,7 +179,7 @@ fn last_user_question(conversation: &super::Conversation) -> Option<&str> {
 }
 
 pub(super) async fn analyze_chat_images_with_auxiliary_model(
-    state: &State<'_, AppState>,
+    state: &AppState,
     settings: &Settings,
     auxiliary_model: &AuxiliaryVisionModel,
     conversation_id: &str,
@@ -224,7 +224,7 @@ pub(super) async fn analyze_chat_images_with_auxiliary_model(
     // 走流式（见 planning.rs 上 call_chat_completion_output_with_usage / *_streamed 的注释）：
     // 非流式在部分 openai_responses 代理上直接报 "Unknown Responses API error"。
     let message = crate::chat::agent::planning::call_chat_completion_message_streamed(
-        state.inner(),
+        state,
         &provider,
         &auxiliary_model.model,
         messages,
@@ -528,7 +528,33 @@ pub(super) async fn attach_image_artifacts_for_model(
     settings: &Settings,
     conversation_id: &str,
     message_id: &str,
+    provider: &ModelProvider,
+    model: &str,
     result: &mut mcp::types::McpToolCallResult,
+) {
+    let state = app.state::<AppState>();
+    attach_image_artifacts_for_model_with_context(
+        state.inner(),
+        settings,
+        conversation_id,
+        message_id,
+        provider,
+        model,
+        result,
+        || load_conversation(app, conversation_id),
+    )
+    .await;
+}
+
+pub(super) async fn attach_image_artifacts_for_model_with_context(
+    state: &AppState,
+    settings: &Settings,
+    conversation_id: &str,
+    message_id: &str,
+    provider: &ModelProvider,
+    model: &str,
+    result: &mut mcp::types::McpToolCallResult,
+    load_context: impl FnOnce() -> Result<super::Conversation, String>,
 ) {
     // 单图 8MB / 单结果 4 张，见 PRD R1 护栏约束。
     const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -543,17 +569,15 @@ pub(super) async fn attach_image_artifacts_for_model(
         return;
     }
 
-    let conversation = match load_conversation(app, conversation_id) {
+    let conversation = match load_context() {
         Ok(conversation) => conversation,
         Err(_) => return, // 拿不到会话上下文，静默保留占位符
     };
-    let provider = settings.get_provider(&conversation.provider_id);
-    let model = conversation.model.as_str();
 
     // ① 主模型支持视觉 → 直喂原图（工具结果只能回文本，图片作为紧随其后的 user
     // 消息追加；rounds::push_tool_execution_result 负责排序，Anthropic 侧会与
     // tool_result 合并进同一 user turn，与 read 工具走的管子完全一致）。
-    if model_supports_vision(provider, model) == Some(true) {
+    if model_supports_vision(Some(provider), model) == Some(true) {
         let mut parts = Vec::new();
         let mut errors = Vec::new();
         for (artifact, bytes) in &accepted {
@@ -602,10 +626,13 @@ pub(super) async fn attach_image_artifacts_for_model(
 
     let Some(aux) = auxiliary_vision_model_for_images(
         settings,
-        provider,
+        Some(provider),
         model,
         &temp_paths,
-        Some(session_model_for_conversation(&conversation)),
+        Some(SessionModel {
+            provider_id: &provider.id,
+            model,
+        }),
     ) else {
         cleanup_temp_paths(&temp_paths);
         if let Some(note) = guard_note {
@@ -614,7 +641,6 @@ pub(super) async fn attach_image_artifacts_for_model(
         return;
     };
 
-    let state = app.state::<AppState>();
     let language = crate::settings::resolve_chat_language(settings);
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
@@ -622,7 +648,7 @@ pub(super) async fn attach_image_artifacts_for_model(
         1
     };
     let analysis = analyze_chat_images_with_auxiliary_model(
-        &state,
+        state,
         settings,
         &aux,
         conversation_id,
@@ -804,6 +830,49 @@ mod tests {
             compress_request_body: false,
             request: Default::default(),
             active_key_index: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn image_feedback_preserves_placeholder_without_context_or_auxiliary_model() {
+        use base64::{engine::general_purpose, Engine as _};
+        use crate::settings::{ModelCapabilities, ModelInfo};
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let wire = serde_json::json!({
+            "content": [
+                {"type": "text", "text": "Preview captured."},
+                {"type": "image", "mimeType": "image/png", "data": general_purpose::STANDARD.encode(png.into_inner())}
+            ]
+        });
+        let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_test", "title": "Test", "provider_id": "saved",
+            "model": "saved-model", "messages": [], "created_at": 1, "updated_at": 1
+        })).unwrap();
+        let mut provider = test_provider("run", "Run", Vec::new());
+        for (model, vision) in [("vision-model", true), ("text-model", false)] {
+            provider.model_overrides.insert(model.into(), ModelInfo {
+                capabilities: Some(ModelCapabilities {
+                    vision: Some(vision),
+                    ..ModelCapabilities::default()
+                }),
+                ..ModelInfo::default()
+            });
+        }
+        let state = crate::state::test_app_state();
+        let settings = Settings::default();
+        for (model, context_exists) in [("vision-model", false), ("text-model", true)] {
+            let mut result = crate::mcp::result::parse_tool_result(wire.clone());
+            super::attach_image_artifacts_for_model_with_context(
+                &state, &settings, "conv_test", "message", &provider, model, &mut result,
+                || if context_exists { Ok(conversation.clone()) } else { Err("missing".into()) },
+            ).await;
+            assert_eq!(result.content, "Preview captured.\n[image: image/png]");
+            assert_eq!(result.artifacts.len(), 1);
+            assert!(result.follow_up_user_messages.is_empty());
         }
     }
 

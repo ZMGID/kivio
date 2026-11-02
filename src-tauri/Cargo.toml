@@ -82,7 +82,7 @@ rcgen = "0.13"
 
 # HTTP 客户端与异步运行时
 reqwest = { version = "0.13", features = ["json", "rustls", "multipart", "form", "stream"] }
-tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["time", "process", "io-util", "net", "sync", "rt-multi-thread", "macros", "fs"] }
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 quick-xml = { version = "0.41", features = ["serialize"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -175,10 +175,13 @@ windows = { version = "0.61.3", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
+  "Win32_Security",
   "Win32_System_Com",
   "Win32_System_Console",
   "Win32_System_DataExchange",
   "Win32_System_LibraryLoader",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_System_WinRT",

@@ -448,15 +448,7 @@ impl ToolExecutor for SubAgentToolExecutor {
             if let Some((conversation, id, run)) = &self.managed {
                 control::runtime(&self.app)?.tool_record(conversation, id, run, serde_json::json!({"id":ctx.tool_call_id,"name":tool.name,"source":tool.source,"server_id":tool.server_id,"server_name":tool.server_name,"arguments":arguments,"status":"unknown"}))?;
             }
-            let native_ctx = crate::mcp::registry::NativeToolContext {
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             let result = crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),
@@ -758,7 +750,7 @@ async fn run_sub_agent(app: AppHandle, req: SubAgentRequest) -> Result<AgentRunR
 pub struct SubAgentCallCtx<'a> {
     pub app: &'a AppHandle,
     pub state: &'a AppState,
-    pub native_ctx: &'a crate::mcp::registry::NativeToolContext,
+    pub native_ctx: &'a crate::mcp::registry::NativeToolContext<'a>,
     pub arguments: &'a Value,
 }
 

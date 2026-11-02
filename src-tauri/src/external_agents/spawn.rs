@@ -11,6 +11,26 @@ use tokio::time::timeout;
 use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
 use crate::proc::NoConsoleWindow;
 
+pub(crate) fn bypass_loopback_proxy(command: &mut Command) {
+    let mut no_proxy = String::new();
+    for name in ["NO_PROXY", "no_proxy"] {
+        if let Ok(value) = std::env::var(name) {
+            no_proxy.push_str(&value);
+            no_proxy.push(',');
+        }
+    }
+    for (key, value) in command.as_std().get_envs() {
+        if key.to_string_lossy().eq_ignore_ascii_case("no_proxy") {
+            if let Some(value) = value {
+                no_proxy.push_str(&value.to_string_lossy());
+                no_proxy.push(',');
+            }
+        }
+    }
+    no_proxy.push_str("127.0.0.1,localhost,::1");
+    command.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
+}
+
 /// Owns the Unix CLI process group through normal exit, error and cancellation.
 /// On Windows, taskkill /T is best effort while the leader is still live;
 /// descendants surviving a normal leader exit need a separately validated Job
@@ -785,6 +805,25 @@ pub fn parse_json_line(line: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_bypasses_proxy_without_discarding_command_settings() {
+        let mut command = Command::new("agent");
+        command.env("NO_PROXY", "internal.example");
+        bypass_loopback_proxy(&mut command);
+        let vars: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .filter(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("no_proxy"))
+            .collect();
+        assert!(!vars.is_empty());
+        for (_, value) in vars {
+            let value = value.unwrap().to_string_lossy();
+            assert!(value.contains("internal.example"));
+            assert!(value.contains("127.0.0.1"));
+            assert!(value.contains("localhost"));
+        }
+    }
 
     #[cfg(windows)]
     #[tokio::test]

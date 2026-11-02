@@ -805,7 +805,6 @@ pub(crate) async fn run_external_cli_reply_in(
         .map(|spawned| drain_stderr(&mut spawned.child));
 
     let read_result = if persistent {
-        let persistent_mcp: Vec<AcpMcpServer> = vec![];
         // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
         // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
         let mut launch_config = launch_config_for_turn(
@@ -844,7 +843,6 @@ pub(crate) async fn run_external_cli_reply_in(
             conversation.agent_runtime.external_reasoning.clone(),
             conversation.agent_runtime.external_sandbox.clone(),
             conversation.agent_runtime.external_agent_preset.clone(),
-            persistent_mcp,
             &launch_config,
             rewind_first_prompt
                 .as_ref()
@@ -1362,7 +1360,6 @@ async fn run_persistent_turn<E, C>(
     reasoning: Option<String>,
     sandbox: Option<String>,
     preset: Option<String>,
-    mcp_servers: Vec<AcpMcpServer>,
     launch_config: &LaunchConfig,
     first_prompt: &str,
     reuse_prompt: &str,
@@ -1474,6 +1471,7 @@ where
             conversation_id.to_string(),
             LiveSession {
                 control: control.clone(),
+                _chat_credential: None,
                 agent_id: agent_id.to_string(),
                 cwd: cwd_str.clone(),
                 launch_config: launch_config.clone(),
@@ -1499,6 +1497,8 @@ where
                 // is lost and the user must be told (R4) rather than silently getting a blank slate.
                 let mut intended_resume = resume_native.is_some();
                 let connected = match connect_persistent_session(
+                    app,
+                    conversation_id,
                     protocol,
                     resolved_bin,
                     &turn_args,
@@ -1507,7 +1507,6 @@ where
                     reasoning.as_deref(),
                     sandbox.as_deref(),
                     preset.as_deref(),
-                    &mcp_servers,
                     resume_native.clone(),
                     additional_directories,
                     Some(background_task_sink(app, conversation_id)),
@@ -1531,6 +1530,8 @@ where
                             &turn_args,
                         );
                         connect_persistent_session(
+                            app,
+                            conversation_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -1539,7 +1540,6 @@ where
                             reasoning.as_deref(),
                             sandbox.as_deref(),
                             preset.as_deref(),
-                            &mcp_servers,
                             None,
                             additional_directories,
                             Some(background_task_sink(app, conversation_id)),
@@ -1557,6 +1557,8 @@ where
                         intended_resume = false;
                         crate::external_agents::session::clear_live_handle(app, conversation_id);
                         connect_persistent_session(
+                            app,
+                            conversation_id,
                             protocol,
                             resolved_bin,
                             &turn_args,
@@ -1565,7 +1567,6 @@ where
                             reasoning.as_deref(),
                             sandbox.as_deref(),
                             preset.as_deref(),
-                            &mcp_servers,
                             None,
                             additional_directories,
                             Some(background_task_sink(app, conversation_id)),
@@ -1582,6 +1583,7 @@ where
                     native_id,
                     resumed,
                     child_pid,
+                    chat_credential,
                 } = connected;
                 // 轮内重连要续的是**这个**会话，不是 handle 里那个（首连开了新会话时两者不同）。
                 resumable_native = Some(native_id.clone()).filter(|id| !id.trim().is_empty());
@@ -1600,6 +1602,7 @@ where
                     conversation_id.to_string(),
                     LiveSession {
                         control: control.clone(),
+                        _chat_credential: chat_credential,
                         agent_id: agent_id.to_string(),
                         cwd: cwd_str.clone(),
                         launch_config: launch_config.clone(),
@@ -1732,7 +1735,6 @@ where
             reasoning.as_deref(),
             sandbox.as_deref(),
             preset.as_deref(),
-            &mcp_servers,
             launch_config,
             resumable_native.clone(),
             additional_directories,
@@ -1798,7 +1800,6 @@ async fn reconnect_fresh(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    mcp_servers: &[AcpMcpServer],
     launch_config: &LaunchConfig,
     resume_native: Option<String>,
     additional_directories: &[String],
@@ -1818,7 +1819,10 @@ async fn reconnect_fresh(
         native_id,
         resumed,
         child_pid,
+        chat_credential,
     } = connect_persistent_session(
+        app,
+        conversation_id,
         protocol,
         resolved_bin,
         args,
@@ -1827,7 +1831,6 @@ async fn reconnect_fresh(
         reasoning,
         sandbox,
         preset,
-        mcp_servers,
         resume_native,
         additional_directories,
         Some(background_task_sink(app, conversation_id)),
@@ -1851,6 +1854,7 @@ async fn reconnect_fresh(
         conversation_id.to_string(),
         LiveSession {
             control: control.clone(),
+            _chat_credential: chat_credential,
             agent_id: agent_id.to_string(),
             cwd: cwd_str.to_string(),
             launch_config: launch_config.clone(),
@@ -2747,6 +2751,7 @@ struct PersistentConnection {
     native_id: String,
     resumed: bool,
     child_pid: Option<u32>,
+    chat_credential: Option<crate::app_mcp::McpCredential>,
 }
 
 /// claude 轮间空闲读的副作用旁路：会话层没有（也不该有）`AppHandle`，
@@ -3151,6 +3156,8 @@ async fn append_wake_turn_message(
 /// `dsh_idle_sink`：dsh 轮间的任务边沿 + 子代理进度 + 唤醒轮正文。
 #[allow(clippy::too_many_arguments)]
 async fn connect_persistent_session(
+    app: &AppHandle,
+    conversation_id: &str,
     protocol: StreamFormat,
     resolved_bin: &std::path::Path,
     args: &[String],
@@ -3159,7 +3166,6 @@ async fn connect_persistent_session(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    mcp_servers: &[AcpMcpServer],
     resume_native: Option<String>,
     additional_directories: &[String],
     background_task_sink: Option<
@@ -3182,6 +3188,17 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
+    // WSL loopback may not reach the Windows-hosted MCP server.
+    let chat_credential = if matches!(
+        protocol,
+        StreamFormat::ClaudeStreamJson | StreamFormat::CodexAppServer | StreamFormat::AcpJsonRpc
+    ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
+    {
+        Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+    } else {
+        None
+    };
+
     match protocol {
         StreamFormat::AntigravityStreamJson => {
             use crate::external_agents::session::antigravity::{
@@ -3197,6 +3214,7 @@ async fn connect_persistent_session(
                 native_id,
                 resumed: resume_native.is_some(),
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::ClaudeStreamJson => {
@@ -3215,7 +3233,7 @@ async fn connect_persistent_session(
             //
             // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
             // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
-            let (effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
+            let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
                 (args.to_vec(), true)
             } else if args.iter().any(|arg| arg == "--session-id") {
                 (args.to_vec(), false)
@@ -3231,8 +3249,20 @@ async fn connect_persistent_session(
             } else {
                 (args.to_vec(), false)
             };
-            let session =
+            let chat_mcp_config = if let Some(credential) = &chat_credential {
+                Some(crate::external_agents::defs::claude::append_chat_mcp_args(
+                    &mut effective_args,
+                    &credential.url,
+                    &credential.authorization,
+                )?)
+            } else {
+                None
+            };
+            let mut session =
                 ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd).await?;
+            if let Some(file) = chat_mcp_config {
+                session.hold_chat_mcp_config(file);
+            }
             let id = session.session_id().to_string();
             let child_pid = session.child_pid();
             Ok(PersistentConnection {
@@ -3240,9 +3270,13 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::CodexAppServer => {
+            let mcp = chat_credential.as_ref().map(|credential| {
+                (credential.url.as_str(), credential.authorization.as_str())
+            });
             if let Some(tid) = resume_native
                 .as_deref()
                 .map(str::trim)
@@ -3260,6 +3294,7 @@ async fn connect_persistent_session(
                     model,
                     sandbox,
                     Some(tid),
+                    mcp,
                 )
                 .await
                 .map_err(|err| {
@@ -3280,10 +3315,11 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None)
+                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
                     .await?;
             let id = session.thread_id().to_string();
             let child_pid = session.child_pid();
@@ -3292,9 +3328,22 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed: false,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::AcpJsonRpc => {
+            let mcp_servers: Vec<AcpMcpServer> = chat_credential
+                .as_ref()
+                .map(|credential| AcpMcpServer::Http {
+                    name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
+                    url: credential.url.clone(),
+                    headers: vec![(
+                        "Authorization".to_string(),
+                        credential.authorization.clone(),
+                    )],
+                })
+                .into_iter()
+                .collect();
             if let Some(sid) = resume_native
                 .as_deref()
                 .map(str::trim)
@@ -3309,7 +3358,7 @@ async fn connect_persistent_session(
                     model,
                     reasoning,
                     sandbox,
-                    mcp_servers,
+                    &mcp_servers,
                     Some(sid),
                     additional_directories,
                 )
@@ -3325,6 +3374,7 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session = AcpSession::connect(
@@ -3334,7 +3384,7 @@ async fn connect_persistent_session(
                 model,
                 reasoning,
                 sandbox,
-                mcp_servers,
+                &mcp_servers,
                 None,
                 additional_directories,
             )
@@ -3346,6 +3396,7 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed: false,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::DshJsonRpc => {
@@ -3383,6 +3434,7 @@ async fn connect_persistent_session(
                     native_id: id,
                     resumed: true,
                     child_pid,
+                    chat_credential,
                 });
             }
             let session = DshJsonRpcSession::connect(
@@ -3408,6 +3460,7 @@ async fn connect_persistent_session(
                 native_id: id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
         StreamFormat::PiRpc => {
@@ -3428,6 +3481,7 @@ async fn connect_persistent_session(
                 native_id,
                 resumed,
                 child_pid,
+                chat_credential,
             })
         }
     }
@@ -3680,6 +3734,12 @@ fn apply_unified_event(
             emit_chat_stream_delta(app, run_id, "", Some(&delta), Some(&segment));
         }
         UnifiedAgentEvent::ToolUse { id, name, input } => {
+            if let Some(record) = tool_map.get(&id).and_then(|idx| tool_calls.get_mut(*idx)) {
+                if update_existing_acp_tool(record, &name, &input) {
+                    emit_chat_tool_record(app, run_id, record);
+                }
+                return;
+            }
             segment_tracker.reset_text();
             segment_tracker.reset_reasoning();
             let segment = push_tool_segment(segments, segment_order, &id);
@@ -3728,6 +3788,7 @@ fn apply_unified_event(
             if let Some(idx) = tool_map.get(&tool_use_id).copied() {
                 if let Some(record) = tool_calls.get_mut(idx) {
                     apply_external_tool_result(record, &result_content, is_error, now);
+                    attach_external_html_render(record, conversation_id, &result_content, is_error);
                     // 问用户答完时留下的 `askUser` 载荷（问题 + 用户选的答案）在这里落进记录，
                     // 覆盖流解析层塞的原始入参 —— 否则消息流里那块刷新一次就只剩一行灰字。
                     if let Some(answered) = app
@@ -3996,6 +4057,114 @@ fn apply_unified_event(
             });
         }
         _ => {}
+    }
+}
+
+fn update_existing_acp_tool(
+    record: &mut ToolCallRecord,
+    name: &str,
+    input: &serde_json::Value,
+) -> bool {
+    if input.get("sessionUpdate").and_then(serde_json::Value::as_str) != Some("tool_call_update")
+        || !matches!(
+            record.status,
+            ToolCallStatus::Pending | ToolCallStatus::Running
+        )
+    {
+        return false;
+    }
+    if name.contains("html_render") {
+        record.name = name.to_string();
+    }
+    if let Some(payload) = record
+        .structured_content
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let mut changed = false;
+        for key in ["rawInput", "name", "toolName"] {
+            if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
+                payload.insert(key.to_string(), value.clone());
+                changed = true;
+            }
+        }
+        if changed {
+            record.arguments = serde_json::to_string(payload).expect("ACP JSON input serializes");
+        }
+    }
+    true
+}
+
+fn is_qualified_html_render_name(tool_name: &str) -> bool {
+    [
+        "mcp__kivio__html_render",
+        "kivio.html_render",
+        "kivio/html_render",
+        "kivio__html_render",
+    ]
+    .iter()
+    .any(|name| {
+        tool_name.match_indices(*name).any(|(start, matched)| {
+            let is_name_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            !tool_name[..start]
+                .chars()
+                .next_back()
+                .is_some_and(is_name_char)
+                && !tool_name[start + matched.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_name_char)
+        })
+    })
+}
+
+fn render_attachment_id(result: &str) -> Option<&str> {
+    const PREFIX: &str = "htmlrender-";
+    result.match_indices(PREFIX).find_map(|(start, _)| {
+        let candidate = result.get(start..start.checked_add(PREFIX.len() + 36)?)?;
+        candidate[PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte) || byte == b'-')
+            .then_some(candidate)
+    })
+}
+
+fn attach_external_html_render(
+    record: &mut ToolCallRecord,
+    conversation_id: &str,
+    result_content: &str,
+    is_error: bool,
+) {
+    if is_error {
+        return;
+    }
+    let Some(input) = record.structured_content.as_ref() else {
+        return;
+    };
+    let acp = input
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind == "tool_call" || kind == "tool_call_update");
+    let acp_title = acp
+        && record.name
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|part| part == "html_render");
+    let acp_name = acp
+        && ["name", "toolName"].iter().any(|key| {
+            input
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| name == "html_render" || is_qualified_html_render_name(name))
+        });
+    if !is_qualified_html_render_name(&record.name) && !acp_title && !acp_name {
+        return;
+    }
+    if let Some(reference) = render_attachment_id(result_content)
+        .and_then(|id| crate::html_render::take_pending_render(conversation_id, id))
+    {
+        if let Ok(reference) = serde_json::to_value(reference) {
+            record.structured_content = Some(reference);
+        }
     }
 }
 
@@ -4309,6 +4478,178 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render_test_record(name: &str, input: serde_json::Value) -> ToolCallRecord {
+        ToolCallRecord {
+            id: "tool-1".into(),
+            name: name.into(),
+            source: "external_cli".into(),
+            server_id: None,
+            arguments: input.to_string(),
+            status: ToolCallStatus::Running,
+            result_preview: None,
+            error: None,
+            duration_ms: None,
+            started_at: Some(1),
+            completed_at: None,
+            round: 1,
+            sensitive: false,
+            artifacts: vec![],
+            trace_id: None,
+            span_id: None,
+            structured_content: Some(input),
+        }
+    }
+
+    fn queue_render(conversation_id: &str) -> serde_json::Value {
+        let reference = serde_json::json!({
+            "type": "html_render",
+            "attachmentId": format!("htmlrender-{}", Uuid::new_v4()),
+            "title": "Chart",
+            "height": 480
+        });
+        crate::html_render::record_pending_render(
+            conversation_id,
+            serde_json::from_value(reference.clone()).unwrap(),
+        );
+        reference
+    }
+
+    fn render_result(reference: &serde_json::Value) -> String {
+        format!(
+            "Rendered page {}.",
+            reference["attachmentId"].as_str().unwrap()
+        )
+    }
+
+    #[test]
+    fn external_render_results_replace_input_for_all_supported_names() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        for name in [
+            "mcp__kivio__html_render",
+            "kivio.html_render",
+            "kivio/html_render",
+            "kivio__html_render",
+        ] {
+            let reference = queue_render(&conversation);
+            let result = render_result(&reference);
+            let mut record = render_test_record(name, serde_json::json!({"title": "Chart"}));
+            apply_external_tool_result(&mut record, &result, false, 2);
+            attach_external_html_render(&mut record, &conversation, &result, false);
+            assert_eq!(record.structured_content, Some(reference), "{name}");
+            assert_eq!(record.status, ToolCallStatus::Success);
+        }
+        for name in ["Call html_render", "Calling kivio.html_render (MCP)"] {
+            let reference = queue_render(&conversation);
+            let mut record = render_test_record(name, serde_json::json!({
+                "sessionUpdate": "tool_call", "title": name, "rawInput": {"title": "Chart"}
+            }));
+            attach_external_html_render(
+                &mut record, &conversation, &render_result(&reference), false,
+            );
+            assert_eq!(record.structured_content, Some(reference), "{name}");
+        }
+        for key in ["name", "toolName"] {
+            let reference = queue_render(&conversation);
+            let mut record = render_test_record("Rendering chart", serde_json::json!({
+                "sessionUpdate": "tool_call", "title": "Rendering chart",
+                (key): "kivio/html_render", "rawInput": {"title": "Chart"}
+            }));
+            attach_external_html_render(
+                &mut record, &conversation, &render_result(&reference), false,
+            );
+            assert_eq!(record.structured_content, Some(reference), "{key}");
+        }
+    }
+
+    #[test]
+    fn external_render_errors_and_other_tools_do_not_consume_pending_renders() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        for (name, is_error) in [
+            ("mcp__kivio__html_render", true),
+            ("mcp__other__html_render", false),
+            ("otherkivio.html_render", false),
+            ("kivio.html_renderer", false),
+            ("kivio.html_preview", false),
+        ] {
+            let reference = queue_render(&conversation);
+            let result = render_result(&reference);
+            let input = serde_json::json!({"title": "Chart"});
+            let mut record = render_test_record(name, input.clone());
+            apply_external_tool_result(&mut record, &result, is_error, 2);
+            attach_external_html_render(&mut record, &conversation, &result, is_error);
+            assert_eq!(record.structured_content, Some(input), "{name}");
+            let id = reference["attachmentId"].as_str().unwrap();
+            let pending = crate::html_render::take_pending_render(&conversation, id).unwrap();
+            assert_eq!(serde_json::to_value(pending).unwrap(), reference);
+        }
+    }
+
+    #[test]
+    fn acp_updates_keep_non_null_input_and_programmatic_name() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let reference = queue_render(&conversation);
+        let mut record = render_test_record("Rendering chart", serde_json::json!({
+            "sessionUpdate": "tool_call", "title": "Rendering chart", "rawInput": {"title": "Chart"}
+        }));
+        let update = serde_json::json!({
+            "sessionUpdate": "tool_call_update", "title": "Rendering chart",
+            "toolName": "kivio/html_render", "rawInput": null
+        });
+        assert!(update_existing_acp_tool(&mut record, "Rendering chart", &update));
+        assert_eq!(
+            record.structured_content.as_ref().unwrap()["rawInput"]["title"],
+            "Chart"
+        );
+        let arguments: serde_json::Value = serde_json::from_str(&record.arguments).unwrap();
+        assert_eq!(arguments["rawInput"]["title"], "Chart");
+        attach_external_html_render(&mut record, &conversation, &render_result(&reference), false);
+        assert_eq!(record.structured_content, Some(reference));
+    }
+
+    #[test]
+    fn render_results_select_their_own_attachment_not_an_abandoned_same_title() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let abandoned = queue_render(&conversation);
+        let current = queue_render(&conversation);
+        let mut record =
+            render_test_record("kivio.html_render", serde_json::json!({"title": "Chart"}));
+        attach_external_html_render(&mut record, &conversation, &render_result(&current), false);
+        assert_eq!(record.structured_content, Some(current));
+        let abandoned_id = abandoned["attachmentId"].as_str().unwrap();
+        let pending = crate::html_render::take_pending_render(&conversation, abandoned_id).unwrap();
+        assert_eq!(serde_json::to_value(pending).unwrap(), abandoned);
+    }
+
+    #[test]
+    fn missing_and_other_conversation_ids_do_not_consume_a_render() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let other = format!("conv_{}", Uuid::new_v4());
+        let reference = queue_render(&conversation);
+        let input = serde_json::json!({"title": "Chart"});
+        let mut record = render_test_record("kivio.html_render", input.clone());
+        attach_external_html_render(&mut record, &conversation, "no render id", false);
+        attach_external_html_render(&mut record, &other, &render_result(&reference), false);
+        assert_eq!(record.structured_content, Some(input));
+        let id = reference["attachmentId"].as_str().unwrap();
+        assert!(crate::html_render::take_pending_render(&conversation, id).is_some());
+    }
+
+    #[test]
+    fn render_id_parser_rejects_missing_and_malformed_ids() {
+        let id = "htmlrender-12345678-1234-1234-1234-123456789abc";
+        assert_eq!(
+            render_attachment_id(&format!("bad htmlrender-zz then {id}.")),
+            Some(id)
+        );
+        assert_eq!(render_attachment_id("Rendered page htmlrender-123."), None);
+        assert_eq!(render_attachment_id("nothing rendered"), None);
+        assert_eq!(
+            render_attachment_id("htmlrender-12345678-1234-1234-1234-123456789abC"),
+            None
+        );
+    }
+
     #[test]
     fn claude_rewind_resumes_at_the_entry_before_the_first_removed_prompt() {
         use crate::external_agents::import::ClaudeTranscriptPrompt;

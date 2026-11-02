@@ -2386,3 +2386,7 @@ button.chat-composer-status-item:hover {
 [data-chat-density='compact'] .chat-markdown table { min-width: 0; }
 [data-chat-density='compact'] .chat-markdown :is(th, td) { padding-inline: 8px; }
 [data-chat-density='compact'] .chat-markdown a[href^='#reading-page-'] { white-space: nowrap; }
+
+/* HTML 预览全屏：沿用 kv-modal 外观，只放大尺寸。 */
+.kv-modal.kv-html-preview-full { display: none; flex-direction: column; gap: 6px; width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; padding: 8px 12px 12px; }
+.kv-modal.kv-html-preview-full[open] { display: flex; }

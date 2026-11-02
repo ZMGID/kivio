@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod api;
+mod app_mcp;
 pub mod app_data;
 pub mod automation;
 pub mod backup;
@@ -18,6 +19,7 @@ mod extensions;
 pub mod external_agents;
 pub mod fonts;
 mod html_preview;
+mod html_render;
 pub mod lens;
 pub mod lens_commands;
 #[cfg(any(target_os = "macos", test))]
@@ -181,7 +183,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
-        .register_uri_scheme_protocol("kivio-preview", |_context, request| html_preview::serve(request))
+        .register_uri_scheme_protocol("kivio-preview", |context, request| html_preview::serve(context.app_handle(), request))
         .plugin(init_single_instance(|app, _args, _cwd| {
             if let Err(err) = open_settings_window_for_activation(app) {
                 eprintln!("Single-instance activation failed: {err}");
@@ -624,6 +626,7 @@ pub fn run() {
             commands::open_local_file,
             commands::open_data_url_file,
             commands::open_html_preview,
+            html_preview::open_html_render,
             lens_commands::explain_read_image,
             lens_commands::lens_read_freeze_frame,
             lens_commands::lens_read_image,

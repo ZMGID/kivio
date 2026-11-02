@@ -667,6 +667,7 @@ pub struct ClaudeStreamJsonSession {
     child: Child,
     stdin: ChildStdin,
     reader: Lines<BufReader<ChildStdout>>,
+    chat_mcp_config: Option<tempfile::NamedTempFile>,
     /// 跨轮存活：保留完成计数和 resolved model；逐请求用量在真正的 result 边界复位。
     handler: StreamHandler,
     /// claude 原生 session id：启动参数里的 `--session-id` / `--resume` 值，第一轮被
@@ -715,7 +716,9 @@ impl ClaudeStreamJsonSession {
     pub async fn connect(resolved_bin: &Path, args: &[String], cwd: &Path) -> Result<Self, String> {
         // spec 第 16 条：必须走 `cli_command` 剥掉父会话身份/宿主代管凭据标记，
         // 否则 Kivio 从某个 CLI 会话里启动时子进程会拒绝启动或报「未登录」。
-        let mut child = cli_command(resolved_bin)
+        let mut command = cli_command(resolved_bin);
+        crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
@@ -753,6 +756,7 @@ impl ClaudeStreamJsonSession {
                 child,
                 stdin,
                 reader: BufReader::new(stdout).lines(),
+                chat_mcp_config: None,
                 handler: create_stream_handler(StreamFormat::ClaudeStreamJson),
                 session_id: crate::external_agents::defs::claude::claude_session_id_from_args(args)
                     .unwrap_or_default(),
@@ -772,6 +776,10 @@ impl ClaudeStreamJsonSession {
                 Err(fold_stderr(msg, &tail))
             }
         }
+    }
+
+    pub(crate) fn hold_chat_mcp_config(&mut self, file: tempfile::NamedTempFile) {
+        self.chat_mcp_config = Some(file);
     }
 
     pub fn session_id(&self) -> &str {
@@ -1605,6 +1613,7 @@ impl ClaudeStreamJsonSession {
             mut child,
             mut stdin,
             stderr_tail,
+            chat_mcp_config,
             ..
         } = self;
         let _ = stdin.shutdown().await;
@@ -1619,6 +1628,7 @@ impl ClaudeStreamJsonSession {
         if let Some(handle) = stderr_tail {
             let _ = handle.await;
         }
+        drop(chat_mcp_config);
     }
 }
 
@@ -1878,9 +1888,18 @@ mod tests {
             "external_agents::session::claude_stream::tests::priority_steer_peer".into(),
             "--nocapture".into(),
         ];
-        let session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
+        let mut session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
             .await
             .unwrap();
+        let config = crate::external_agents::defs::claude::append_chat_mcp_args(
+            &mut Vec::new(),
+            "http://127.0.0.1:1234/mcp",
+            "Bearer secret",
+        )
+        .unwrap();
+        let config_path = config.path().to_path_buf();
+        session.hold_chat_mcp_config(config);
+        assert!(config_path.exists());
         let (wake_tx, mut wake_rx) = mpsc::unbounded_channel();
         let sink: BackgroundTaskSink = std::sync::Arc::new(move |effect| {
             let _ = wake_tx.send(effect);
@@ -1995,6 +2014,8 @@ mod tests {
         assert_eq!(usage.total_tokens, Some(15));
         assert_eq!(usage.context_tokens, Some(15));
         actor.send(SessionCommand::Close).await.unwrap();
+        actor.closed().await;
+        assert!(!config_path.exists());
     }
 
     use super::*;

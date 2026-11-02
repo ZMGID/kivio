@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   artifactId,
   artifactPresentationFromToolCall,
-  isArtifactPresentationToolCall,
-  isVisibleArtifactPresentation,
+  htmlRenderReferenceFromToolCall,
+  isPresentationToolCall,
+  isVisiblePresentation,
 } from './artifactPresentation'
 import type { ToolCallRecord } from './types'
 
@@ -12,9 +13,9 @@ describe('artifact presentation protocol', () => {
     const call: ToolCallRecord = { id: 'prepare', name: 'present_artifacts', source: 'native',
       structured_content: { type: 'artifact_presentation', artifactIds: ['art_a'], mode: 'prepare' } }
     expect(artifactPresentationFromToolCall(call)?.mode).toBe('prepare')
-    expect(isVisibleArtifactPresentation(call)).toBe(false)
+    expect(isVisiblePresentation(call)).toBe(false)
     for (const mode of ['preview', undefined]) {
-      expect(isVisibleArtifactPresentation({ ...call, structured_content: {
+      expect(isVisiblePresentation({ ...call, structured_content: {
         type: 'artifact_presentation', artifactIds: ['art_a'], mode,
       } })).toBe(true)
     }
@@ -70,8 +71,24 @@ describe('artifact presentation protocol', () => {
       name: 'present_artifacts',
       status: 'running',
     }
-    expect(isArtifactPresentationToolCall(toolCall)).toBe(true)
-    expect(isArtifactPresentationToolCall({ ...toolCall, source: 'mcp' })).toBe(false)
+    expect(isPresentationToolCall(toolCall)).toBe(true)
+    expect(isPresentationToolCall({ ...toolCall, source: 'mcp' })).toBe(false)
+  })
+
+  it('recognizes completed HTML results from external tools without promoting preview calls', () => {
+    const call: ToolCallRecord = {
+      id: 'render', source: 'external_cli', name: 'mcp__kivio__html_render', status: 'completed',
+      structured_content: { type: 'html_render', attachmentId: 'htmlrender-12345678-1234-1234-1234-123456789abc', title: ' Chart ', height: 480 },
+    }
+    expect(isPresentationToolCall(call)).toBe(true)
+    expect(isVisiblePresentation(call)).toBe(true)
+    expect(isVisiblePresentation({ ...call, source: 'native', name: 'html_render' })).toBe(true)
+    expect(htmlRenderReferenceFromToolCall(call)).toEqual({
+      attachmentId: 'htmlrender-12345678-1234-1234-1234-123456789abc', title: 'Chart', height: 480,
+    })
+    expect(isVisiblePresentation({ ...call, status: 'running' })).toBe(false)
+    expect(isVisiblePresentation({ ...call, structured_content: { type: 'html_preview' } })).toBe(false)
+    expect(htmlRenderReferenceFromToolCall({ ...call, structured_content: { type: 'html_render', height: Infinity } })).toBeNull()
   })
 
   it('normalizes optional artifact IDs', () => {

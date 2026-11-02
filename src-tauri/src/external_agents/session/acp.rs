@@ -43,29 +43,58 @@ const ACP_SESSION_NEW_TIMEOUT: Duration = Duration::from_secs(30);
 use crate::external_agents::spawn::{fold_stderr, join_stderr_tail as join_tail};
 
 #[derive(Debug, Clone)]
-pub struct AcpMcpServer {
-    pub server_type: String,
-    pub name: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
+pub enum AcpMcpServer {
+    Stdio {
+        name: String,
+        command: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    Http {
+        name: String,
+        url: String,
+        headers: Vec<(String, String)>,
+    },
+}
+
+fn supported_mcp_servers<'a>(
+    servers: &'a [AcpMcpServer],
+    initialize_result: &Value,
+    is_wsl: bool,
+) -> Vec<&'a AcpMcpServer> {
+    let http = !is_wsl
+        && initialize_result
+            .pointer("/agentCapabilities/mcpCapabilities/http")
+            .and_then(Value::as_bool)
+            == Some(true);
+    // WSL loopback may not reach the Windows-hosted server.
+    servers
+        .iter()
+        .filter(|server| http || matches!(server, AcpMcpServer::Stdio { .. }))
+        .collect()
 }
 
 fn build_session_new_params(
     cwd: &Path,
-    mcp_servers: &[AcpMcpServer],
+    mcp_servers: &[&AcpMcpServer],
     additional_directories: Option<&[String]>,
 ) -> Value {
     let servers: Vec<Value> = mcp_servers
         .iter()
-        .map(|s| {
-            json!({
-                "type": s.server_type,
-                "name": s.name,
-                "command": s.command,
-                "args": s.args,
-                "env": s.env.iter().map(|(name, value)| json!({ "name": name, "value": value })).collect::<Vec<_>>(),
-            })
+        .map(|server| match server {
+            AcpMcpServer::Stdio { name, command, args, env } => json!({
+                "type": "stdio",
+                "name": name,
+                "command": command,
+                "args": args,
+                "env": env.iter().map(|(name, value)| json!({ "name": name, "value": value })).collect::<Vec<_>>(),
+            }),
+            AcpMcpServer::Http { name, url, headers } => json!({
+                "type": "http",
+                "name": name,
+                "url": url,
+                "headers": headers.iter().map(|(name, value)| json!({ "name": name, "value": value })).collect::<Vec<_>>(),
+            }),
         })
         .collect();
     let mut params = json!({
@@ -81,7 +110,7 @@ fn build_session_new_params(
 fn build_session_load_params(
     cwd: &Path,
     session_id: &str,
-    mcp_servers: &[AcpMcpServer],
+    mcp_servers: &[&AcpMcpServer],
     additional_directories: Option<&[String]>,
 ) -> Value {
     let mut params = build_session_new_params(cwd, mcp_servers, additional_directories);
@@ -1162,7 +1191,15 @@ fn apply_acp_session_update_ex(
             let Some(id) = acp_tool_call_id(update) else {
                 return true;
             };
-            if emitted_tool_ids.insert(id.clone()) {
+            if emitted_tool_ids.insert(id.clone())
+                || update.get("rawInput").is_some_and(|input| !input.is_null())
+                || ["title", "toolName", "name"].iter().any(|key| {
+                    update
+                        .get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| name.contains("html_render"))
+                })
+            {
                 sink(UnifiedAgentEvent::ToolUse {
                     id: id.clone(),
                     name: acp_tool_name(update),
@@ -1603,7 +1640,9 @@ impl AcpSession {
         resume_session: Option<&str>,
         additional_directories: &[String],
     ) -> Result<Self, String> {
-        let mut child = crate::external_agents::spawn::cli_command(resolved_bin)
+        let mut command = crate::external_agents::spawn::cli_command(resolved_bin);
+        crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
@@ -1647,6 +1686,11 @@ impl AcpSession {
             )
             .await
             .map_err(|e| format!("initialize: {e}"))?;
+            let mcp_servers = supported_mcp_servers(
+                mcp_servers,
+                &init_result,
+                crate::external_agents::wsl::is_wsl_target(resolved_bin),
+            );
             let additional_directories = agent_supports_additional_directories(&init_result)
                 .then_some(additional_directories);
 
@@ -1664,7 +1708,7 @@ impl AcpSession {
                         let params = build_session_load_params(
                             &cwd_try,
                             sid,
-                            mcp_servers,
+                            &mcp_servers,
                             additional_directories,
                         );
                         write_rpc(&mut stdin, next_id, "session/load", params)
@@ -1705,7 +1749,7 @@ impl AcpSession {
                         "session/new",
                         build_session_new_params(
                             &cli_protocol_cwd(resolved_bin, cwd),
-                            mcp_servers,
+                            &mcp_servers,
                             additional_directories,
                         ),
                     )
@@ -3103,6 +3147,54 @@ mod tests {
     }
 
     #[test]
+    fn http_mcp_requires_capability_and_native_loopback() {
+        let servers = vec![
+            AcpMcpServer::Stdio {
+                name: "existing".into(),
+                command: "server".into(),
+                args: vec![],
+                env: vec![],
+            },
+            AcpMcpServer::Http {
+                name: "kivio".into(),
+                url: "http://127.0.0.1:1234/mcp".into(),
+                headers: vec![("Authorization".into(), "Bearer secret".into())],
+            },
+        ];
+        let capable = json!({"agentCapabilities":{"mcpCapabilities":{"http":true}}});
+        let wsl = crate::external_agents::wsl::is_wsl_target(Path::new(
+            r"\\wsl$\Ubuntu\usr\bin\kimi",
+        ));
+        assert!(wsl);
+        for (init, wsl, include_http) in [
+            (capable.clone(), false, true),
+            (capable, wsl, false),
+            (
+                json!({"agentCapabilities":{"mcpCapabilities":{"http":false}}}),
+                false,
+                false,
+            ),
+            (json!({}), false, false),
+        ] {
+            let accepted = supported_mcp_servers(&servers, &init, wsl);
+            let new = build_session_new_params(Path::new("/project"), &accepted, None);
+            let load = build_session_load_params(Path::new("/project"), "session", &accepted, None);
+            assert_eq!(new["mcpServers"], load["mcpServers"]);
+            assert_eq!(new["mcpServers"][0]["type"], "stdio");
+            assert_eq!(
+                new["mcpServers"].as_array().unwrap().len(),
+                if include_http { 2 } else { 1 }
+            );
+            if include_http {
+                assert_eq!(new["mcpServers"][1], json!({
+                    "type": "http", "name": "kivio", "url": "http://127.0.0.1:1234/mcp",
+                    "headers": [{"name": "Authorization", "value": "Bearer secret"}]
+                }));
+            }
+        }
+    }
+
+    #[test]
     fn session_new_omits_additional_directories_unless_advertised() {
         let params = build_session_new_params(Path::new("/tmp"), &[], None);
         assert!(params.get("additionalDirectories").is_none());
@@ -3452,6 +3544,49 @@ mod tests {
             UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error }
                 if tool_use_id == "acp-1" && content == "done" && !*is_error
         )));
+    }
+
+    #[test]
+    fn acp_forwards_late_render_input_before_its_terminal_result() {
+        let mut emitted = HashSet::new();
+        let mut events = Vec::new();
+        for update in [
+            json!({"sessionUpdate": "tool_call", "toolCallId": "a", "title": "tool"}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "a",
+                "title": "Call html_render", "rawInput": {"title": "Chart"},
+                "status": "completed", "content": "published"}),
+        ] {
+            apply_acp_session_update(update.as_object().unwrap(), &mut emitted, &mut |event| {
+                events.push(event)
+            });
+        }
+        assert!(matches!(events.as_slice(), [
+            UnifiedAgentEvent::ToolUse { .. },
+            UnifiedAgentEvent::ToolUse { name, input, .. },
+            UnifiedAgentEvent::ToolResult { is_error: false, .. }
+        ] if name == "Call html_render" && input["rawInput"]["title"] == "Chart"));
+    }
+
+    #[test]
+    fn acp_forwards_programmatic_name_even_with_a_different_title() {
+        let mut emitted = HashSet::new();
+        let mut events = Vec::new();
+        for update in [
+            json!({"sessionUpdate": "tool_call", "toolCallId": "a",
+                "title": "Rendering chart", "rawInput": {"title": "Chart"}}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "a",
+                "title": "Rendering chart", "name": "kivio/html_render",
+                "rawInput": null, "status": "completed", "content": "published"}),
+        ] {
+            apply_acp_session_update(update.as_object().unwrap(), &mut emitted, &mut |event| {
+                events.push(event)
+            });
+        }
+        assert!(matches!(events.as_slice(), [
+            UnifiedAgentEvent::ToolUse { .. },
+            UnifiedAgentEvent::ToolUse { name, input, .. },
+            UnifiedAgentEvent::ToolResult { is_error: false, .. }
+        ] if name == "Rendering chart" && input["name"] == "kivio/html_render"));
     }
 
     #[test]

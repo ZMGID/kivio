@@ -1903,6 +1903,10 @@ export const api = {
     const id = await invoke<string>('create_html_preview', { html })
     return { id, url: convertFileSrc(id, 'kivio-preview') }
   },
+  htmlRenderUrl: (conversationId: string, attachmentId: string): string | null => {
+    if (!/^conv_[a-zA-Z0-9_-]+$/.test(conversationId) || !/^htmlrender-[0-9a-f-]{36}$/.test(attachmentId)) return null
+    return convertFileSrc(`render/${conversationId}/${attachmentId}`, 'kivio-preview')
+  },
   releaseHtmlPreview: (id: string) => invoke<void>('release_html_preview', { id }),
   webdavLoad: () => invoke<WebDavConfig>('webdav_load'),
   webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
@@ -1970,6 +1974,8 @@ export const api = {
   openLocalFile: (href: string, conversationId?: string | null) =>
     invoke<void>('open_local_file', { href, conversationId: conversationId ?? null }),
   openHtmlPreview: (html: string) => invoke<void>('open_html_preview', { html }),
+  openHtmlRender: (conversationId: string, attachmentId: string, themeCss: string) =>
+    invoke<void>('open_html_render', { conversationId, attachmentId, themeCss }),
 
   // 连接器 OAuth：GitHub 内置设备授权；其他服务使用已注册应用或 DCR + PKCE + loopback。
   // 返回物化好的 ChatMcpServer（不写 settings，由前端合并进 chatTools.servers 并保存）。

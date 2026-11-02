@@ -632,18 +632,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
                     .call(&self.app, self.state, ctx, &arguments)
                     .await;
             }
-            let native_ctx = mcp::registry::NativeToolContext {
-                // Conversation-scoped tools (todo / native workspace) target the
-                // tool conversation, which equals the run conversation for a
-                // top-level run and the PARENT conversation for a sub-agent run.
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx);
             let result = mcp::registry::call_tool(
                 &self.app,
                 self.state,

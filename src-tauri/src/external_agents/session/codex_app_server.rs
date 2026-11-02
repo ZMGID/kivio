@@ -129,11 +129,12 @@ fn build_codex_thread_params(
     approval_policy: &str,
     model: Option<&str>,
     resume_thread: Option<&str>,
+    mcp: Option<(&str, &str)>,
 ) -> (&'static str, Value) {
     if let Some(tid) = resume_thread.filter(|tid| !tid.is_empty()) {
         return (
             "thread/resume",
-            json!({ "threadId": tid, "excludeTurns": true, "config": codex_thread_config() }),
+            json!({ "threadId": tid, "excludeTurns": true, "config": codex_thread_config(mcp) }),
         );
     }
     let cwd_abs = absolute_workspace_path(cwd);
@@ -143,7 +144,7 @@ fn build_codex_thread_params(
         params["runtimeWorkspaceRoots"] = json!([cwd_abs]);
     }
     params["sandbox"] = json!(sandbox_mode);
-    params["config"] = codex_thread_config();
+    params["config"] = codex_thread_config(mcp);
     params["approvalPolicy"] = json!(approval_policy);
     if let Some(model) = model {
         params["model"] = json!(model);
@@ -154,8 +155,14 @@ fn build_codex_thread_params(
 /// Per-thread config overrides (T3 Code `CODEX_THREAD_CONFIG`): explicitly enable the
 /// `update_plan` tool that feeds `turn/plan/updated` → todo card, and give cold npx/uvx MCP
 /// servers 10 s instead of the 1 s default before the first model request.
-fn codex_thread_config() -> Value {
-    json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 })
+fn codex_thread_config(mcp: Option<(&str, &str)>) -> Value {
+    let mut config =
+        json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 });
+    if let Some((url, authorization)) = mcp {
+        config[format!("mcp_servers.{}", crate::app_mcp::CHAT_MCP_SERVER_NAME)] =
+            json!({ "url": url, "http_headers": { "Authorization": authorization } });
+    }
+    config
 }
 
 /// JSON-RPC notification (no `id`). Required after `initialize` — newer app-server rejects
@@ -1580,11 +1587,14 @@ impl CodexAppServerSession {
         model: Option<&str>,
         sandbox: Option<&str>,
         resume_thread: Option<&str>,
+        mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         let tier = normalize_codex_sandbox(sandbox);
         let sandbox_mode = codex_thread_sandbox(tier);
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
-        let mut child = codex_cli_command(resolved_bin)
+        let mut command = codex_cli_command(resolved_bin);
+        crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
+        let mut child = command
             .args(args)
             // Resume must stay narrow, but its config must use the selected capsule rather
             // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
@@ -1644,6 +1654,7 @@ impl CodexAppServerSession {
                 approval_policy,
                 chosen_model,
                 resume_thread.filter(|t| !t.is_empty()),
+                mcp,
             );
             let thread_rpc_id = next_id;
             next_id += 1;
@@ -3899,6 +3910,7 @@ mod tests {
             None,
             Some("workspace-write"),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -3961,6 +3973,7 @@ mod tests {
             None,
             Some(CODEX_PLAN_MODE),
             Some(&native_id),
+            None,
         )
         .await
         .unwrap();
@@ -4008,6 +4021,7 @@ mod tests {
                 None,
                 Some(tier),
                 Some(&native_id),
+                None,
             )
             .await
             .unwrap();
@@ -4049,6 +4063,7 @@ mod tests {
             &bin,
             &["app-server".to_string()],
             &cwd,
+            None,
             None,
             None,
             None,
@@ -4563,6 +4578,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .await
         {
@@ -4631,6 +4647,7 @@ mod tests {
             &bin,
             &["app-server".to_string()],
             &cwd,
+            None,
             None,
             None,
             None,
@@ -4924,6 +4941,7 @@ mod tests {
             "on-request",
             Some("gpt-5.6-sol"),
             None,
+            Some(("http://127.0.0.1:1234/mcp", "Bearer secret")),
         );
         assert_eq!(method, "thread/start");
         assert_eq!(params["cwd"], json!("/work"));
@@ -4933,6 +4951,13 @@ mod tests {
         assert_eq!(params["runtimeWorkspaceRoots"], json!(["/work"]));
         assert!(params.get("threadId").is_none());
         assert_eq!(params["config"]["tools.update_plan.enabled"], json!(true));
+        assert_eq!(
+            params["config"]["mcp_servers.kivio"],
+            json!({
+                "url": "http://127.0.0.1:1234/mcp",
+                "http_headers": {"Authorization": "Bearer secret"}
+            })
+        );
     }
 
     #[test]
@@ -4943,12 +4968,29 @@ mod tests {
             "on-request",
             Some("gpt-5.6-sol"),
             Some("thr_1"),
+            Some(("http://127.0.0.1:1234/mcp", "Bearer secret")),
         );
         assert_eq!(method, "thread/resume");
         assert_eq!(
-            params,
-            json!({ "threadId": "thr_1", "excludeTurns": true, "config": codex_thread_config() })
+            params["config"]["mcp_servers.kivio"],
+            json!({
+                "url": "http://127.0.0.1:1234/mcp",
+                "http_headers": {"Authorization": "Bearer secret"}
+            })
         );
+        assert_eq!(
+            params,
+            json!({
+                "threadId": "thr_1",
+                "excludeTurns": true,
+                "config": codex_thread_config(Some(("http://127.0.0.1:1234/mcp", "Bearer secret")))
+            })
+        );
+    }
+
+    #[test]
+    fn codex_thread_config_omits_chat_server_without_credential() {
+        assert!(codex_thread_config(None).get("mcp_servers.kivio").is_none());
     }
 
     #[test]

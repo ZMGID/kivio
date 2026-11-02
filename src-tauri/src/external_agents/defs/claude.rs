@@ -97,6 +97,44 @@ pub fn ephemeral_probe_args(args: &[String]) -> Vec<String> {
 
 const NO_SESSION_PERSISTENCE: &str = "--no-session-persistence";
 
+pub(crate) fn append_chat_mcp_args(
+    args: &mut Vec<String>,
+    url: &str,
+    authorization: &str,
+) -> Result<tempfile::NamedTempFile, String> {
+    let config = serde_json::json!({
+        "mcpServers": {
+            (crate::app_mcp::CHAT_MCP_SERVER_NAME): {
+                "type": "http",
+                "url": url,
+                "headers": { "Authorization": authorization }
+            }
+        }
+    });
+    use std::io::Write;
+    // NamedTempFile is created owner-only (0600 on Unix) and unlinked on drop.
+    let mut file = tempfile::Builder::new()
+        .prefix("kivio-claude-mcp-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|error| format!("Cannot create Claude MCP config: {error}"))?;
+    serde_json::to_writer(&mut file, &config)
+        .map_err(|error| format!("Cannot write Claude MCP config: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("Cannot flush Claude MCP config: {error}"))?;
+    let path = file
+        .path()
+        .to_str()
+        .ok_or_else(|| "Claude MCP config path is not valid UTF-8".to_string())?;
+    args.extend([
+        "--mcp-config".to_string(),
+        path.to_string(),
+        "--allowedTools".to_string(),
+        "mcp__kivio__html_render mcp__kivio__html_preview".to_string(),
+    ]);
+    Ok(file)
+}
+
 pub fn build_claude_args(
     ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
@@ -479,6 +517,41 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_mcp_args_preserve_other_servers_and_allow_both_tools() {
+        let mut args = vec!["--permission-mode".to_string(), "plan".to_string()];
+        let file = append_chat_mcp_args(&mut args, "http://127.0.0.1:1234/mcp", "Bearer secret")
+            .unwrap();
+        assert!(args.iter().all(|arg| !arg.contains("Bearer secret")));
+        let config = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        let path = std::path::PathBuf::from(&args[config + 1]);
+        assert_eq!(path.as_path(), file.path());
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value, serde_json::json!({
+            "mcpServers": {"kivio": {
+                "type": "http", "url": "http://127.0.0.1:1234/mcp",
+                "headers": {"Authorization": "Bearer secret"}
+            }}
+        }));
+        let allowed = args.iter().position(|arg| arg == "--allowedTools").unwrap();
+        assert_eq!(
+            args[allowed + 1].split_whitespace().collect::<Vec<_>>(),
+            ["mcp__kivio__html_render", "mcp__kivio__html_preview"]
+        );
+        assert!(!args.iter().any(|arg| arg == "--strict-mcp-config"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(file);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn claude_build_args_includes_resume_and_add_dir() {

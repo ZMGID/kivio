@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
@@ -605,7 +607,7 @@ pub(crate) async fn chat_delete_message(
     );
 
     // 删消息是附件引用真正消失的时机：清掉不再被任何消息引用的 GC 托管附件
-    // （`msgimg-*` / `artifact-*`）。用户上传的 `att_*` 永不自动删。
+    // （`msgimg-*` / `artifact-*` / `htmlrender-*.html`）。用户上传的 `att_*` 永不自动删。
     // 传 id 不传对象：GC 自己从磁盘重读完整转录算引用集合，不受下面 strip 的影响。
     let (removed_files, freed) =
         crate::chat::gc::sweep_conversation_attachments(&app, &conversation_id);
@@ -626,8 +628,8 @@ pub(crate) async fn chat_delete_message(
 /// 一键 rewind（「回到这里」）：删掉这条用户提问**及其之后**的所有消息，把原文回传给前端塞进输入框。
 /// 与 `chat_regenerate_message` 的区别：不自动重生成，用户可以改完再自己发。
 /// ponytail: 用户上传的附件（`att_*`）留在会话附件目录里 —— 原文回输入框但附件不回，
-/// 删掉就找不回来了，清理留给会话删除时的整目录清空。GC 托管的图（`msgimg-*` /
-/// `artifact-*`）在下面按引用对账回收。
+/// 删掉就找不回来了，清理留给会话删除时的整目录清空。GC 托管的 `msgimg-*`、
+/// `artifact-*` 和 `htmlrender-*.html` 在下面按引用对账回收。
 #[tauri::command]
 pub(crate) async fn chat_rewind_to_message(
     app: AppHandle,
@@ -713,8 +715,8 @@ pub(crate) async fn chat_rewind_to_message(
         }
     };
 
-    // rewind 一次砍掉一整段历史，是孤儿附件最容易堆积的地方。GC 托管的图（`msgimg-*` /
-    // `artifact-*`）没人引用就回收；用户上传的 `att_*` 一律保留（原文回输入框但附件不回，
+    // rewind 一次砍掉一整段历史，是孤儿附件最容易堆积的地方。GC 托管的文件
+    // 没人引用就回收；用户上传的 `att_*` 一律保留（原文回输入框但附件不回，
     // 删掉就找不回来了）。传 id 不传对象：GC 自己从磁盘重读完整转录算引用集合。
     let (removed_files, freed) =
         crate::chat::gc::sweep_conversation_attachments(&app, &conversation_id);
@@ -812,7 +814,7 @@ pub(crate) async fn chat_fork_conversation(
         build_fork_messages(&source.messages, anchor_idx)
     };
 
-    // 深拷被复制消息引用的附件 / 图片 artifact 文件到新对话目录（裸文件名同名拷贝，路径保持有效）。
+    // 深拷被复制消息引用的附件、artifact 和 HTML render 文件到新对话目录。
     // Missing attachment files are warnings rather than fork blockers. Workbench outputs are not copied when forking.
     copy_forked_conversation_files(&app, &conversation_id, &new_id, &messages);
     crate::reading::chat::fork_sources(&app, &conversation_id, &new_id, &messages)?;
@@ -887,40 +889,17 @@ pub(crate) async fn chat_fork_conversation(
     }))
 }
 
-/// 深拷分叉消息引用的对话目录文件（附件 + 图片 artifact）到新对话附件目录。
-/// path 为裸文件名（相对源对话附件目录），同名拷贝到新目录后引用保持有效。
+/// 深拷分叉消息引用的对话目录文件到新对话附件目录。
 fn copy_forked_conversation_files(
     app: &AppHandle,
     source_id: &str,
     new_id: &str,
     messages: &[ChatMessage],
 ) {
-    // 收集所有被引用的裸文件名（附件 + 消息级 artifact + 各 tool_call 内 artifact）。
-    let mut names: Vec<&str> = Vec::new();
-    for message in messages {
-        for att in &message.attachments {
-            if !att.path.is_empty() {
-                names.push(att.path.as_str());
-            }
-        }
-        for artifact in &message.artifacts {
-            if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
-                names.push(p);
-            }
-        }
-        for tool_call in &message.tool_calls {
-            for artifact in &tool_call.artifacts {
-                if let Some(p) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
-                    names.push(p);
-                }
-            }
-        }
-    }
+    let names = forked_conversation_file_names(messages);
     if names.is_empty() {
         return;
     }
-    names.sort_unstable();
-    names.dedup();
 
     let (Ok(src_dir), Ok(dst_dir)) = (
         conversation_attachments_dir(app, source_id),
@@ -930,9 +909,68 @@ fn copy_forked_conversation_files(
         return;
     };
 
+    copy_forked_files(&src_dir, &dst_dir, &names);
+}
+
+// A render filename is copied only from a validated structured tool reference.
+fn is_ordinary_fork_attachment(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    !path.is_empty()
+        && !(bytes
+            .get(..11)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"htmlrender-"))
+            && bytes
+                .get(bytes.len().saturating_sub(5)..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(b".html")))
+}
+
+fn forked_conversation_file_names(messages: &[ChatMessage]) -> Vec<Cow<'_, str>> {
+    // 收集所有被引用的裸文件名（附件、artifact 和结构化 HTML render）。
+    let mut names: Vec<Cow<'_, str>> = Vec::new();
+    for message in messages {
+        for att in &message.attachments {
+            if is_ordinary_fork_attachment(&att.path) {
+                names.push(att.path.as_str().into());
+            }
+        }
+        for artifact in &message.artifacts {
+            if let Some(p) = artifact
+                .path
+                .as_deref()
+                .filter(|p| is_ordinary_fork_attachment(p))
+            {
+                names.push(p.into());
+            }
+        }
+        for tool_call in &message.tool_calls {
+            for artifact in &tool_call.artifacts {
+                if let Some(p) = artifact
+                    .path
+                    .as_deref()
+                    .filter(|p| is_ordinary_fork_attachment(p))
+                {
+                    names.push(p.into());
+                }
+            }
+            if let Some(name) = super::super::gc::html_render_attachment_name(tool_call) {
+                names.push(name.into());
+            }
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+fn copy_forked_files(
+    src_dir: &std::path::Path,
+    dst_dir: &std::path::Path,
+    names: &[Cow<'_, str>],
+) {
     for name in names {
-        // 只接受裸文件名，拒绝任何路径分隔符（防越目录）。
-        if name.contains('/') || name.contains('\\') {
+        let name: &str = name;
+        // 只接受裸文件名，拒绝路径分隔符和 Windows 盘符（防越目录）。
+        if name.contains(['/', '\\', ':']) {
             eprintln!("fork: 跳过非法附件路径 {name}");
             continue;
         }
@@ -945,6 +983,125 @@ fn copy_forked_conversation_files(
         if let Err(e) = std::fs::copy(&src, &dst) {
             eprintln!("fork: 拷贝附件失败 {name}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod fork_file_tests {
+    use super::*;
+
+    fn render_message(id: &str, group: Option<&str>, reference: serde_json::Value) -> ChatMessage {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "role": "assistant", "content": "", "timestamp": 1, "group_id": group,
+            "tool_calls": [{
+                "id": format!("{id}-call"), "name": "html_render", "status": "success",
+                "structured_content": reference
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn fork_copies_only_valid_renders_from_retained_messages() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("source");
+        let dst = root.path().join("fork");
+        let before_dst = root.path().join("fork-before");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::create_dir(&before_dst).unwrap();
+
+        let retained = "htmlrender-12345678-1234-4234-8234-123456789abc";
+        let sibling = "htmlrender-12345678-1234-4234-8234-123456789abd";
+        let selected = "htmlrender-12345678-1234-4234-8234-123456789abe";
+        let later = "htmlrender-12345678-1234-4234-8234-123456789abf";
+        let unstructured = "htmlrender-12345678-1234-4234-8234-123456789ab0";
+        let render = |id: &str| serde_json::json!({"type": "html_render", "attachmentId": id});
+        let mut messages = vec![
+            render_message("retained", None, render(retained)),
+            render_message("sibling", Some("group"), render(sibling)),
+            render_message("selected", Some("group"), render(selected)),
+            render_message("later", None, render(later)),
+        ];
+        messages[0].attachments = serde_json::from_value(serde_json::json!([
+            {"id": "upload", "type": "file", "name": "upload.txt", "path": "att_upload.txt"},
+            {"id": "ordinary", "type": "file", "name": "render.html",
+             "path": format!("{unstructured}.html")},
+            {"id": "case", "type": "file", "name": "render.html",
+             "path": format!("{unstructured}.HTML").to_uppercase()},
+            {"id": "escape", "type": "file", "name": "secret.html", "path": "../secret.html"}
+        ]))
+        .unwrap();
+        messages[0].artifacts = serde_json::from_value(serde_json::json!([
+            {"name": "output.png", "mime_type": "image/png", "data_url": "",
+             "path": "artifact-output.png"},
+            {"name": "unstructured.html", "mime_type": "text/html", "data_url": "",
+             "path": format!("{unstructured}.html")}
+        ]))
+        .unwrap();
+        messages[0].tool_calls[0].artifacts = serde_json::from_value(serde_json::json!([
+            {"name": "unstructured.html", "mime_type": "text/html", "data_url": "",
+             "path": format!("{unstructured}.html")}
+        ]))
+        .unwrap();
+        let invalid: Vec<crate::chat::ToolCallRecord> =
+            serde_json::from_value(serde_json::json!([
+                {"id": "slash", "name": "html_render", "status": "success",
+                 "structured_content": {"type": "html_render", "attachmentId": "htmlrender-../../secret"}},
+                {"id": "backslash", "name": "html_render", "status": "success",
+                 "structured_content": {"type": "html_render", "attachmentId": format!("{retained}\\..\\secret")}},
+                {"id": "wrong-type", "name": "html_render", "status": "success",
+                 "structured_content": {"type": "other", "attachmentId": unstructured}},
+                {"id": "invalid-id", "name": "html_render", "status": "success",
+                 "structured_content": {"type": "html_render", "attachmentId": "htmlrender-not-a-uuid"}}
+            ]))
+            .unwrap();
+        messages[0].tool_calls.extend(invalid);
+
+        for name in [
+            format!("{retained}.html"),
+            format!("{sibling}.html"),
+            format!("{selected}.html"),
+            format!("{later}.html"),
+            format!("{unstructured}.html"),
+            "htmlrender-not-a-uuid.html".to_string(),
+            "att_upload.txt".to_string(),
+            "artifact-output.png".to_string(),
+        ] {
+            std::fs::write(src.join(&name), name.as_bytes()).unwrap();
+        }
+        std::fs::write(root.path().join("secret.html"), b"outside").unwrap();
+
+        let fork = build_fork_messages(&messages, 2);
+        let names = forked_conversation_file_names(&fork);
+        copy_forked_files(&src, &dst, &names);
+        for name in [
+            format!("{retained}.html"),
+            format!("{selected}.html"),
+            "att_upload.txt".to_string(),
+            "artifact-output.png".to_string(),
+        ] {
+            assert_eq!(
+                std::fs::read(dst.join(&name)).unwrap().as_slice(),
+                name.as_bytes()
+            );
+        }
+        for id in [sibling, later, unstructured] {
+            assert!(!dst.join(format!("{id}.html")).exists());
+        }
+        assert!(!dst.join("htmlrender-not-a-uuid.html").exists());
+        assert_eq!(
+            std::fs::read(root.path().join("secret.html")).unwrap(),
+            b"outside"
+        );
+
+        let before = build_fork_messages_before_anchor(&messages, 2);
+        let before_names = forked_conversation_file_names(&before);
+        copy_forked_files(&src, &before_dst, &before_names);
+        assert!(before_dst.join(format!("{retained}.html")).is_file());
+        assert!(before_dst.join(format!("{sibling}.html")).is_file());
+        assert!(!before_dst.join(format!("{selected}.html")).exists());
+        assert!(!before_dst.join(format!("{later}.html")).exists());
     }
 }
 

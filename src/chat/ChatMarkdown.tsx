@@ -31,10 +31,13 @@ import {
   parseMarkdownHeadingOutline,
 } from './markdownHeadingOutline'
 import { ChatHeavyIsland } from './ChatHeavyIsland'
+import { HtmlFrame } from './HtmlFrame'
+import { readThemeKey, readThemeToken, useThemeKey } from './chatTheme'
 import { useConversationTransition } from './conversationTransitionStore'
 import { api } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
 import { IconButton } from '../components/Button'
+import { notifyError } from '../components/appNoticeStore'
 import { CliCommandReport } from './CliCommandReport'
 import { normalizeLegacyCliReport, parseCliReport } from './cliCommandReportData'
 import { isSvgSource, readSvgPreview } from './svgPreview'
@@ -388,49 +391,6 @@ function ErrorDetails({ detail }: { detail: string }) {
   )
 }
 
-function readThemeToken(name: string, fallback: string): string {
-  if (typeof document === 'undefined') return fallback
-  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-  return value || fallback
-}
-
-// 图框跟文档根上的语义色板走。主题运行时改的是 html 的 style / class / data-theme-color，
-// 同一明暗模式换色板时 class 不一定变，所以不能只盯 .dark。
-const MERMAID_THEME_TOKENS = [
-  '--theme-surface',
-  '--theme-surface-soft',
-  '--theme-surface-muted',
-  '--theme-surface-border',
-  '--theme-surface-border-strong',
-  '--text',
-  '--text-muted',
-  '--accent',
-  '--accent-soft',
-] as const
-
-function mermaidThemeKey(): string {
-  if (typeof document === 'undefined') return ''
-  const style = getComputedStyle(document.documentElement)
-  return MERMAID_THEME_TOKENS.map((name) => style.getPropertyValue(name).trim()).join('|')
-}
-
-function useMermaidThemeKey(): string {
-  const [key, setKey] = useState(mermaidThemeKey)
-
-  useEffect(() => {
-    const root = document.documentElement
-    const sync = () => {
-      const next = mermaidThemeKey()
-      setKey((current) => (current === next ? current : next))
-    }
-    sync()
-    const observer = new MutationObserver(sync)
-    observer.observe(root, { attributes: true, attributeFilter: ['class', 'style', 'data-theme-color'] })
-    return () => observer.disconnect()
-  }, [])
-
-  return key
-}
 
 function mermaidThemeVariables() {
   const surface = readThemeToken('--theme-surface', '#fdfcfa')
@@ -578,7 +538,7 @@ function cacheMermaidSvg(key: string, svg: string) {
 
 function MermaidBlock({ code }: { code: string }) {
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
-  const themeKey = useMermaidThemeKey()
+  const themeKey = useThemeKey()
   const cacheKey = `${themeKey}\n${normalizedCode}`
   const renderBaseId = useRef('')
   const renderSeq = useRef(0)
@@ -637,7 +597,7 @@ function MermaidBlock({ code }: { code: string }) {
         if (cancelled) return
         if (valid) {
           const { svg: rendered } = await mermaid.render(renderId, normalizedCode)
-          if (cancelled || mermaidThemeKey() !== themeKey) return
+          if (cancelled || readThemeKey() !== themeKey) return
           cacheMermaidSvg(cacheKey, rendered)
           setSvg(rendered)
           setPaintedKey(themeKey)
@@ -760,97 +720,58 @@ function htmlPreviewSrcDoc(html: string): string {
   return html
 }
 
-// 流式期间 html 每来一个 delta 就变一次。srcDoc 一变 iframe 就整篇重载 —— 页面闪，
-// 而且重载那一下的高度重测会让虚拟列表把视口重新拽回底部（滚不上去）。
-// 对策：内容还在长的时候**根本不挂 iframe**，只显示源码；静默 SETTLE_MS 后才挂一次。
-const HTML_PREVIEW_SETTLE_MS = 600
-
-// assumeSettled=false（消息还在流式生成）时首帧不能把当前值当定稿 —— 那正是「边生成边挂 iframe」。
-function useSettled(value: string, delay: number, assumeSettled: boolean): string | null {
-  const [settled, setSettled] = useState<string | null>(assumeSettled ? value : null)
-  useEffect(() => {
-    if (value === settled) return
-    const timer = setTimeout(() => setSettled(value), delay)
-    return () => clearTimeout(timer)
-  }, [value, settled, delay])
-  return settled
-}
-
 function HtmlCodePreview({ html }: { html: string }) {
   const [view, setView] = useState<'preview' | 'source'>('preview')
-  const streaming = useContext(MarkdownStreamingContext)
-  const settledHtml = useSettled(html, HTML_PREVIEW_SETTLE_MS, !streaming)
-  // 一旦定稿过就不再退回源码：生成中途停顿超过 SETTLE_MS 会让预览/源码来回跳。
-  const readyRef = useRef(false)
-  if (settledHtml === html) readyRef.current = true
-  const showPreview = view === 'preview' && !streaming && readyRef.current
-  const previewHtml = useMemo(
-    () => htmlPreviewSrcDoc(streaming ? settledHtml ?? '' : html),
-    [html, settledHtml, streaming],
-  )
-
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  // Avoid reloading the frame on every streaming delta.
+  const streaming = useContext(MarkdownStreamingContext)
+  const showPreview = view === 'preview' && !streaming
+
   useEffect(() => {
-    if (!showPreview) return
+    if (!showPreview || !html) return
     let active = true
     let id: string | null = null
     setPreviewUrl(null)
-    void api.createHtmlPreview(previewHtml).then((preview) => {
+    setFailed(false)
+    void api.createHtmlPreview(html).then((preview) => {
       id = preview.id
       if (active) setPreviewUrl(preview.url)
       else void api.releaseHtmlPreview(preview.id).catch(() => {})
-    }).catch(() => { if (active) setPreviewUrl(null) })
+    }).catch(() => {
+      if (active) setFailed(true)
+    })
     return () => {
       active = false
       if (id) void api.releaseHtmlPreview(id).catch(() => {})
     }
-  }, [showPreview, previewHtml])
+  }, [html, showPreview])
 
   const openInBrowser = () => {
-    void api.openHtmlPreview(htmlPreviewSrcDoc(html)).catch((err) => {
-      console.error('Failed to open HTML preview:', err)
-    })
+    void api.openHtmlPreview(htmlPreviewSrcDoc(html)).catch((error) => notifyError(`打开页面失败：${String(error)}`))
   }
-
-  return (
-    <>
-      {showPreview && previewUrl ? (
-        <ChatHeavyIsland
-          minHeight={520}
-          fallback={<CodeBlock code={html} language="html" />}
-          eager
-        >
-          <div className="my-3 overflow-hidden rounded-lg border border-[var(--border-input)] bg-neutral-50">
-            <iframe
-              title="HTML 预览"
-              src={previewUrl}
-              // 模型输出是不可信输入。允许脚本用于交互式预览，但绝不允许 same-origin：
-              // 独立预览源不注入 Tauri IPC，响应 CSP 也禁止访问 IPC/本机服务。
-              sandbox="allow-scripts"
-              referrerPolicy="no-referrer"
-              className="h-[520px] w-full border-0 bg-neutral-50"
-            />
-          </div>
-        </ChatHeavyIsland>
-      ) : (
-        <CodeBlock code={html} language="html" />
-      )}
-      <div className="-mt-1 mb-2 flex justify-end gap-0.5">
-        {readyRef.current ? (
-          <IconButton
-            size="sm"
-            onClick={() => setView((current) => (current === 'preview' ? 'source' : 'preview'))}
-            label={view === 'preview' ? '查看源码' : '查看预览'}
-          >
-            {view === 'preview' ? <Code2 size={14} strokeWidth={2} /> : <Eye size={14} strokeWidth={2} />}
-          </IconButton>
-        ) : null}
-        <IconButton size="sm" onClick={openInBrowser} label="在浏览器打开">
-          <ExternalLink size={14} strokeWidth={2} />
-        </IconButton>
-      </div>
-    </>
+  const source = (canReturn: boolean) => (
+    <CodeBlock code={html} language="html" actions={<>
+      {canReturn && <IconButton size="sm" onClick={() => setView('preview')} label="查看预览">
+        <Eye size={14} strokeWidth={2} />
+      </IconButton>}
+      <IconButton size="sm" onClick={openInBrowser} label="在浏览器打开">
+        <ExternalLink size={14} strokeWidth={2} />
+      </IconButton>
+    </>} />
   )
+
+  if (streaming) {
+    return (
+      <div className="not-prose my-3 flex items-center gap-2 text-[13px] text-[var(--text-muted)]" role="status">
+        <Loader2 size={14} className="animate-spin" />
+        正在生成页面… {html.split('\n').length} 行
+      </div>
+    )
+  }
+  if (view === 'source') return source(true)
+  return <HtmlFrame src={previewUrl} fullscreenHtml={html} onSource={() => setView('source')} onOpenInBrowser={openInBrowser}
+    failed={failed} fallback={source(false)} />
 }
 
 /** Decode complete SVG snapshots offscreen; an unfinished delta never clears the last picture. */

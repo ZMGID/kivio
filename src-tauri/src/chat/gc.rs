@@ -7,8 +7,8 @@
 //!   （`workspace::ensure_effective_cwd`），这里负责清掉历史残留。
 //! - **孤儿工作区**：会话删了但目录还在。`delete_conversation` 会清，但它「尽力清、失败只
 //!   记警告」，且历史上有过删除中止的 bug（Windows 上跑着的 `npm run dev` 把 cwd 钉住）。
-//! - **孤儿附件**：消息被删/重新生成后，它引用的 `msgimg-*` / `artifact-*` 文件仍留在
-//!   `<conv_id>_attachments/` 里。
+//! - **孤儿附件**：消息被删/重新生成后，它引用的 `msgimg-*` / `artifact-*` /
+//!   `htmlrender-*.html` 文件仍留在 `<conv_id>_attachments/` 里。
 //!
 //! **共同的红线：只碰 Kivio 自己造的目录。** 绑定项目的会话工作目录指向**用户自己的项目根**，
 //! 那里可能是一整个 git 仓库；本模块所有扫描都锚定在 Kivio 数据目录下的 `chat-workspaces/`
@@ -228,18 +228,22 @@ fn dir_file_stats(dir: &Path) -> (usize, u64) {
     (files, bytes)
 }
 
-/// GC 自动生成的附件文件前缀。**只清这两类**：
-/// - `msgimg-` 模型看过的图（`attachments::externalize_model_message_images`）
-/// - `artifact-` 工具产出的图（`attachments::externalize_artifact`）
+/// GC 自动生成的附件：模型图片、工具产物，以及合法 ID 的 HTML render。
 ///
 /// 用户上传的附件是 `att_<uuid>-<原名>`，**永不自动删**：即使当前没有任何消息引用它
 /// （用户删了那条消息），那也是用户自己拖进来的文件，删掉是数据丢失。
 const GC_MANAGED_ATTACHMENT_PREFIXES: &[&str] = &["msgimg-", "artifact-"];
 
+fn is_gc_managed_html_render(name: &str) -> bool {
+    name.strip_suffix(".html")
+        .is_some_and(crate::html_render::is_valid_render_attachment_id)
+}
+
 fn is_gc_managed_attachment(name: &str) -> bool {
     GC_MANAGED_ATTACHMENT_PREFIXES
         .iter()
         .any(|prefix| name.starts_with(prefix))
+        || is_gc_managed_html_render(name)
 }
 
 /// 收集一个会话附件目录里**没有任何消息引用**的 GC 托管附件。
@@ -252,17 +256,33 @@ pub fn unreferenced_attachment_names(
     files_on_disk: &[String],
     referenced: &HashSet<String>,
 ) -> Vec<String> {
+    unreferenced_attachment_names_inner(attachment_dir, files_on_disk, referenced, false)
+}
+
+fn unreferenced_attachment_names_inner(
+    attachment_dir: &Path,
+    files_on_disk: &[String],
+    referenced: &HashSet<String>,
+    allow_empty_render: bool,
+) -> Vec<String> {
     let referenced: HashSet<&str> = referenced
         .iter()
         .filter_map(|path| attachment_reference_name(attachment_dir, path))
         .collect();
-    if referenced.is_empty() {
-        // 保守：一个都不删。宁可留垃圾，也不能误删还在用的图。
+    let has_references = !referenced.is_empty();
+    if !has_references && !allow_empty_render {
+        // 未确认引用来自完整会话时，一个都不删。
         return Vec::new();
     }
     files_on_disk
         .iter()
-        .filter(|name| is_gc_managed_attachment(name) && !referenced.contains(name.as_str()))
+        .filter(|name| {
+            if has_references {
+                is_gc_managed_attachment(name) && !referenced.contains(name.as_str())
+            } else {
+                is_gc_managed_html_render(name)
+            }
+        })
         .cloned()
         .collect()
 }
@@ -294,8 +314,17 @@ fn attachment_reference_name<'a>(attachment_dir: &Path, reference: &'a str) -> O
     Some(name)
 }
 
-/// 一条会话里被引用到的附件路径：消息附件、artifact 的 `path`、`model_messages` 里
-/// 媒体部件的 `path`，以及压缩快照的媒体引用。对账时统一解析裸文件名与托管绝对路径。
+pub(super) fn html_render_attachment_name(tool_call: &super::ToolCallRecord) -> Option<String> {
+    let content = tool_call.structured_content.as_ref()?;
+    if content.get("type")?.as_str()? != crate::html_render::HTML_RENDER_TOOL {
+        return None;
+    }
+    let id = content.get("attachmentId")?.as_str()?;
+    crate::html_render::is_valid_render_attachment_id(id).then(|| format!("{id}.html"))
+}
+
+/// 一条会话里被引用到的附件路径：消息附件、artifact 的 `path`、工具调用里的 HTML render、
+/// `model_messages` 的媒体部件，以及压缩快照的媒体引用。
 pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSet<String> {
     let mut referenced = HashSet::new();
     for message in &conversation.messages {
@@ -304,17 +333,19 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
                 referenced.insert(attachment.path.clone());
             }
         }
-        let mut push_artifact_path = |artifact: &crate::mcp::types::ChatToolArtifact| {
+        for artifact in message.artifacts.iter().chain(
+            message
+                .tool_calls
+                .iter()
+                .flat_map(|tool_call| tool_call.artifacts.iter()),
+        ) {
             if let Some(path) = artifact.path.as_deref().filter(|p| !p.is_empty()) {
                 referenced.insert(path.to_string());
             }
-        };
-        for artifact in &message.artifacts {
-            push_artifact_path(artifact);
         }
         for tool_call in &message.tool_calls {
-            for artifact in &tool_call.artifacts {
-                push_artifact_path(artifact);
+            if let Some(name) = html_render_attachment_name(tool_call) {
+                referenced.insert(name);
             }
         }
         for model_message in &message.model_messages {
@@ -401,7 +432,7 @@ fn attachment_uri_file_name(url: &str) -> Option<&str> {
 /// `Conversation` 对象：内存里的副本随时可能已经被 `strip_transcripts_for_frontend`
 /// 洗过（它把完成态消息的 `model_messages` / `api_messages` 整个清空），拿那种残缺副本
 /// 算引用集合，会把**还在被引用的图**判成孤儿删掉。磁盘上的副本永远是完整转录，
-/// 是唯一可信的引用来源。读盘失败就什么都不删。
+/// 是唯一可信的引用来源。读盘失败就什么都不删；完整会话没有有效引用时仅回收合法 HTML render。
 pub fn sweep_conversation_attachments(app: &AppHandle, conversation_id: &str) -> (usize, u64) {
     let Ok(conversations) = conversations_dir(app) else {
         return (0, 0);
@@ -426,7 +457,7 @@ pub fn sweep_conversation_attachments(app: &AppHandle, conversation_id: &str) ->
     };
     let mut removed = 0usize;
     let mut freed = 0u64;
-    for name in unreferenced_attachment_names(&dir, &files_on_disk, &referenced) {
+    for name in unreferenced_attachment_names_inner(&dir, &files_on_disk, &referenced, true) {
         let path = dir.join(&name);
         let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if fs::remove_file(&path).is_ok() {
@@ -535,6 +566,173 @@ mod tests {
             unreferenced_attachment_names(Path::new("attachments"), &files, &referenced);
         orphans.sort();
         assert_eq!(orphans, vec!["artifact-orphan.png", "msgimg-orphan.png"]);
+    }
+
+    #[test]
+    fn render_gc_keeps_retained_calls_and_collects_rewound_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let retained = "htmlrender-12345678-1234-4234-8234-123456789abc";
+        let rewound = "htmlrender-12345678-1234-4234-8234-123456789abd";
+        let unrelated = "htmlrender-12345678-1234-4234-8234-123456789abe";
+        let retained_file = format!("{retained}.html");
+        let rewound_file = format!("{rewound}.html");
+        let unrelated_file = format!("{unrelated}.html");
+        let malformed = "htmlrender-not-a-uuid.html".to_string();
+        let wrong_extension = format!("{rewound}.txt");
+        let upload = "att_uploaded.html".to_string();
+        let files = vec![
+            retained_file.clone(),
+            rewound_file.clone(),
+            unrelated_file.clone(),
+            malformed.clone(),
+            wrong_extension.clone(),
+            upload.clone(),
+        ];
+        for file in &files {
+            fs::write(dir.path().join(file), file.as_bytes()).unwrap();
+        }
+        let mut conversation: super::super::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
+            "created_at": 1, "updated_at": 2, "messages": [
+                {
+                    "id": "kept", "role": "assistant", "content": "", "timestamp": 1,
+                    "tool_calls": [
+                        {"id": "a", "name": "html_render", "status": "success",
+                         "structured_content": {"type": "html_render", "attachmentId": retained}},
+                        {"id": "b", "name": "html_render", "status": "success",
+                         "structured_content": {"type": "html_render", "attachmentId": retained}},
+                        {"id": "other", "name": "other", "status": "success",
+                         "structured_content": {"type": "other", "attachmentId": unrelated}}
+                    ]
+                },
+                {
+                    "id": "rewound", "role": "assistant", "content": "", "timestamp": 2,
+                    "tool_calls": [
+                        {"id": "c", "name": "html_render", "status": "success",
+                         "structured_content": {"type": "html_render", "attachmentId": rewound}}
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            referenced_attachment_names(&conversation),
+            HashSet::from([retained_file.clone(), rewound_file.clone()])
+        );
+
+        conversation.messages.truncate(1);
+        let referenced = referenced_attachment_names(&conversation);
+        let orphans = unreferenced_attachment_names(dir.path(), &files, &referenced);
+        assert_eq!(orphans, vec![rewound_file.clone(), unrelated_file.clone()]);
+        for file in &orphans {
+            fs::remove_file(dir.path().join(file)).unwrap();
+        }
+        assert_eq!(
+            fs::read(dir.path().join(&retained_file)).unwrap().as_slice(),
+            retained_file.as_bytes()
+        );
+        assert!(!dir.path().join(rewound_file).exists());
+        assert!(!dir.path().join(unrelated_file).exists());
+        for file in [malformed, wrong_extension, upload] {
+            assert!(dir.path().join(file).exists());
+        }
+    }
+
+    #[test]
+    fn last_render_is_collected_after_reload_without_deleting_legacy_attachments() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("conv_render_gc_attachments");
+        fs::create_dir(&dir).unwrap();
+        let id = "htmlrender-12345678-1234-4234-8234-123456789abc";
+        let last_render = format!("{id}.html");
+        let malformed = "htmlrender-not-a-uuid.html".to_string();
+        let legacy_image = "msgimg-orphan.png".to_string();
+        let legacy_artifact = "artifact-orphan.png".to_string();
+        let upload = "att_user.html".to_string();
+        let mut files = vec![
+            last_render.clone(),
+            malformed.clone(),
+            legacy_image.clone(),
+            legacy_artifact.clone(),
+            upload.clone(),
+        ];
+        for file in &files {
+            fs::write(dir.join(file), file.as_bytes()).unwrap();
+        }
+        let mut conversation: super::super::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
+            "created_at": 1, "updated_at": 1, "messages": [{
+                "id": "m", "role": "assistant", "content": "", "timestamp": 1,
+                "tool_calls": [{
+                    "id": "c", "name": "html_render", "status": "success",
+                    "structured_content": {"type": "html_render", "attachmentId": id}
+                }]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            referenced_attachment_names(&conversation),
+            HashSet::from([last_render.clone()])
+        );
+
+        conversation.messages.clear();
+        let history = root.path().join("conv_render_gc.json");
+        fs::write(&history, serde_json::to_vec(&conversation).unwrap()).unwrap();
+        let restored: super::super::Conversation =
+            serde_json::from_slice(&fs::read(history).unwrap()).unwrap();
+        let referenced = referenced_attachment_names(&restored);
+        assert!(referenced.is_empty());
+        files.push(format!("../{last_render}"));
+        files.push("htmlrender-../../secret.html".to_string());
+        assert!(unreferenced_attachment_names(&dir, &files, &referenced).is_empty());
+        let orphans = unreferenced_attachment_names_inner(&dir, &files, &referenced, true);
+        assert_eq!(orphans, vec![last_render.clone()]);
+        for name in orphans {
+            fs::remove_file(dir.join(name)).unwrap();
+        }
+        assert!(!dir.join(last_render).exists());
+        for name in [malformed, legacy_image, legacy_artifact, upload] {
+            assert!(dir.join(name).exists());
+        }
+    }
+
+    #[test]
+    fn invalid_render_references_do_not_enable_legacy_gc() {
+        let valid = "htmlrender-12345678-1234-4234-8234-123456789abc";
+        let values = [
+            serde_json::json!({"type": "html_render", "attachmentId": "../secret"}),
+            serde_json::json!({"type": "html_render", "attachmentId": "htmlrender-../../secret"}),
+            serde_json::json!({"type": "html_render", "attachmentId": format!("{valid}\\..\\secret")}),
+            serde_json::json!({"type": "html_render", "attachmentId": valid.to_uppercase()}),
+            serde_json::json!({"type": "html_render", "attachmentId": "htmlrender-not-a-uuid"}),
+            serde_json::json!({"type": "other", "attachmentId": valid}),
+            serde_json::json!({"type": "html_render"}),
+        ];
+        let calls: Vec<_> = values
+            .into_iter()
+            .enumerate()
+            .map(|(index, content)| serde_json::json!({
+                "id": format!("c{index}"), "name": "html_render", "status": "success",
+                "structured_content": content
+            }))
+            .collect();
+        let conversation: super::super::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
+            "created_at": 1, "updated_at": 1, "messages": [{
+                "id": "m", "role": "assistant", "content": "", "timestamp": 1, "tool_calls": calls
+            }]
+        }))
+        .unwrap();
+        let referenced = referenced_attachment_names(&conversation);
+        assert!(referenced.is_empty());
+        let files = vec![format!("{valid}.html"), "msgimg-orphan.png".to_string()];
+        assert!(
+            unreferenced_attachment_names(Path::new("attachments"), &files, &referenced).is_empty()
+        );
+        assert_eq!(
+            unreferenced_attachment_names_inner(Path::new("attachments"), &files, &referenced, true),
+            vec![format!("{valid}.html")]
+        );
     }
 
     /// **关键不变式**：引用集合为空时一个都不删。空引用集只可能来自上层的意外

@@ -656,6 +656,33 @@ pub fn native_kivio_interrupt_tool() -> ChatToolDefinition {
     )
 }
 
+fn native_html_tool(name: &str) -> ChatToolDefinition {
+    let mut definition = crate::html_render::tool_definitions()
+        .into_iter()
+        .find(|definition| definition["name"] == name)
+        .expect("registered HTML tool has a definition");
+    ChatToolDefinition {
+        id: format!("native__{name}"),
+        name: name.to_owned(),
+        description: definition["description"].as_str().unwrap_or_default().to_owned(),
+        source: "native".to_owned(),
+        server_id: None,
+        server_name: Some("Kivio".to_owned()),
+        input_schema: definition["inputSchema"].take(),
+        sensitive: false,
+        annotations: None,
+        output_schema: None,
+    }
+}
+
+pub fn native_html_render_tool() -> ChatToolDefinition {
+    native_html_tool(crate::html_render::HTML_RENDER_TOOL)
+}
+
+pub fn native_html_preview_tool() -> ChatToolDefinition {
+    native_html_tool(crate::html_render::HTML_PREVIEW_TOOL)
+}
+
 /// `present_artifacts` only takes id/path strings. Models sometimes dump
 /// base64 or file contents into the argument stream; abort past this.
 pub const PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS: usize = 8_192;

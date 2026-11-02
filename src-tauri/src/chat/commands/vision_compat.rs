@@ -4,7 +4,7 @@ use tauri::AppHandle;
 
 use crate::chat::vision;
 use crate::mcp;
-use crate::settings::Settings;
+use crate::settings::{ModelProvider, Settings};
 
 // 历史拼装的唯一入口：send 与 regenerate 都最终走这里。
 /// 失败/无视觉模型时逐级降级，始终返回一个可读的文本结果。
@@ -43,8 +43,12 @@ pub(crate) async fn attach_image_artifacts_for_model(
     settings: &Settings,
     conversation_id: &str,
     message_id: &str,
+    provider: &ModelProvider,
+    model: &str,
     result: &mut mcp::types::McpToolCallResult,
 ) {
-    vision::attach_image_artifacts_for_model(app, settings, conversation_id, message_id, result)
-        .await;
+    vision::attach_image_artifacts_for_model(
+        app, settings, conversation_id, message_id, provider, model, result,
+    )
+    .await;
 }

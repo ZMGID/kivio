@@ -47,7 +47,8 @@ use super::types::{
     native_kivio_list_projects_tool, native_kivio_read_conversation_tool,
     native_kivio_send_message_tool, native_knowledge_search_tool, native_list_dir_tool,
     native_memory_modify_tool, native_memory_read_tool, native_memory_search_tool,
-    native_present_artifacts_tool, native_read_file_tool, native_run_command_tool,
+    native_html_preview_tool, native_html_render_tool, native_present_artifacts_tool,
+    native_read_file_tool, native_run_command_tool,
     native_save_assistant_tool, native_search_files_tool, native_web_fetch_tool,
     native_web_search_tool, native_write_file_tool, ChatToolArtifact, ChatToolDefinition,
     McpToolCallResult, PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS,
@@ -69,7 +70,7 @@ pub struct NativeCallCtx<'a> {
     pub settings: &'a Settings,
     pub workspace: &'a NativeToolWorkspace,
     pub arguments: &'a Value,
-    pub native_ctx: Option<&'a NativeToolContext>,
+    pub native_ctx: Option<&'a NativeToolContext<'a>>,
 }
 
 /// How `call_native_tool` dispatches a registry entry. The blocking-vs-sync
@@ -91,7 +92,7 @@ pub enum NativeToolCall {
     /// legacy `RegistryToolExecutor` special case which never resolved a
     /// workspace for todo tools.
     Conversation(
-        for<'a> fn(&'a AppHandle, &'a NativeToolContext, &'a str, Value) -> NativeToolFuture<'a>,
+        for<'a> fn(&'a AppHandle, &'a NativeToolContext<'a>, &'a str, Value) -> NativeToolFuture<'a>,
     ),
     /// Host-mediated tool (ask_user): intercepted in
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
@@ -437,6 +438,26 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SyncResult(call_present_artifacts),
     },
     NativeToolEntry {
+        name: crate::html_render::HTML_RENDER_TOOL,
+        def: native_html_render_tool,
+        enabled: |_, _, _| true,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(call_html_tool),
+    },
+    NativeToolEntry {
+        name: crate::html_render::HTML_PREVIEW_TOOL,
+        def: native_html_preview_tool,
+        enabled: |_, _, _| true,
+        parallel_safe: false,
+        bypasses_approval: true,
+        read_only: true,
+        requires_session_consent: false,
+        call: NativeToolCall::Conversation(call_html_tool),
+    },
+    NativeToolEntry {
         name: "kivio_inspect",
         def: crate::self_config::inspect_definition,
         enabled: |native, _, _| native.read_file,
@@ -681,6 +702,30 @@ pub fn text_tool_result(content: String) -> McpToolCallResult {
         structured_content: None,
         follow_up_user_messages: Vec::new(),
     }
+}
+
+fn call_html_tool<'a>(
+    app: &'a AppHandle,
+    ctx: &'a NativeToolContext<'a>,
+    name: &'a str,
+    arguments: Value,
+) -> NativeToolFuture<'a> {
+    Box::pin(async move {
+        let result = crate::html_render::call_tool(app, &ctx.conversation_id, name, &arguments).await?;
+        Ok(html_tool_result(result))
+    })
+}
+
+fn html_tool_result(result: crate::html_render::HtmlToolResult) -> McpToolCallResult {
+    let mut content = vec![serde_json::json!({"type": "text", "text": result.text})];
+    if let Some(data) = result.image_png_base64 {
+        content.push(serde_json::json!({"type": "image", "data": data, "mimeType": "image/png"}));
+    }
+    let mut wire = serde_json::json!({"content": content});
+    if let Some(structured) = result.structured {
+        wire["structuredContent"] = structured;
+    }
+    super::result::parse_tool_result(wire)
 }
 
 fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
@@ -1516,6 +1561,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_html_tools_share_mcp_schemas_and_guides() {
+        let mcp = crate::html_render::tool_definitions();
+        for native in [native_html_render_tool(), native_html_preview_tool()] {
+            let shared = mcp.iter().find(|item| item["name"] == native.name).unwrap();
+            assert_eq!(native.input_schema, shared["inputSchema"]);
+            assert_eq!(native.description, shared["description"].as_str().unwrap());
+            assert!(find_entry(&native.name).unwrap().bypasses_approval);
+        }
+    }
+
+    #[test]
+    fn html_results_preserve_reference_and_use_mcp_image_artifacts() {
+        let reference = serde_json::json!({
+            "type": "html_render", "attachmentId": "htmlrender-a", "title": "Chart", "height": 480
+        });
+        let render = html_tool_result(crate::html_render::HtmlToolResult {
+            text: "Rendered".into(),
+            structured: Some(reference.clone()),
+            image_png_base64: None,
+        });
+        assert_eq!(render.structured_content, Some(reference));
+        assert!(render.artifacts.is_empty());
+        let preview = html_tool_result(crate::html_render::HtmlToolResult {
+            text: "Preview".into(),
+            structured: None,
+            image_png_base64: Some("aGVsbG8=".into()),
+        });
+        assert_eq!(preview.artifacts.len(), 1);
+        assert_eq!(preview.artifacts[0].data_url, "data:image/png;base64,aGVsbG8=");
+        assert_eq!(preview.artifacts[0].mime_type, "image/png");
+        assert!(preview.structured_content.is_none());
+    }
+
+    #[test]
     fn skill_backed_document_hint_routes_by_extension() {
         use std::path::Path;
         assert!(skill_backed_document_hint(Path::new("/a/report.pdf"))
@@ -1723,6 +1802,8 @@ mod tests {
         "kivio_send_message",
         "kivio_interrupt",
         "present_artifacts",
+        "html_render",
+        "html_preview",
         "kivio_inspect",
         "kivio_configure",
         "memory_read",
@@ -1847,6 +1928,8 @@ mod tests {
                 "kivio_send_message",
                 "kivio_interrupt",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
@@ -1893,6 +1976,8 @@ mod tests {
                 "kivio_list_conversations",
                 "kivio_read_conversation",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "kivio_inspect",
                 "memory_read",
                 "memory_search",
@@ -1920,7 +2005,7 @@ mod tests {
             workspace_roots: Vec::new(),
         };
         for entry in NATIVE_TOOLS {
-            if matches!(
+            if !matches!(entry.name, "html_render" | "html_preview") && matches!(
                 entry.call,
                 NativeToolCall::Conversation(_)
                     | NativeToolCall::HostMediated
@@ -1990,15 +2075,15 @@ mod tests {
             working_directory: String::new(),
             workspace_roots: Vec::new(),
         };
-        assert_eq!(names(&off, true, false), ["present_artifacts"]);
+        assert_eq!(names(&off, true, false), ["present_artifacts", "html_render", "html_preview"]);
 
         // web_search requires both the toggle and a configured provider key.
         let mut search_only = off.clone();
         search_only.web_search = true;
-        assert_eq!(names(&search_only, false, false), ["present_artifacts"]);
+        assert_eq!(names(&search_only, false, false), ["present_artifacts", "html_render", "html_preview"]);
         assert_eq!(
             names(&search_only, true, false),
-            ["web_search", "present_artifacts"]
+            ["web_search", "present_artifacts", "html_render", "html_preview"]
         );
 
         // read_file gate exposes the whole read-side group, in order.
@@ -2006,7 +2091,7 @@ mod tests {
         read_only.read_file = true;
         assert_eq!(
             names(&read_only, false, false),
-            ["read", "grep", "glob", "present_artifacts", "kivio_inspect"]
+            ["read", "grep", "glob", "present_artifacts", "html_render", "html_preview", "kivio_inspect"]
         );
 
         // The write gate exposes the whole-file write tool only. File cards are
@@ -2015,7 +2100,7 @@ mod tests {
         write_only.write_file = true;
         assert_eq!(
             names(&write_only, false, false),
-            ["write", "present_artifacts"]
+            ["write", "present_artifacts", "html_render", "html_preview"]
         );
 
         let mut automation_only = off.clone();
@@ -2031,6 +2116,8 @@ mod tests {
                 "automation_runs",
                 "automation_delete",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
             ]
         );
 
@@ -2039,6 +2126,8 @@ mod tests {
             names(&off, false, true),
             [
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "memory_read",
                 "memory_modify",
                 "memory_search",
@@ -2082,6 +2171,8 @@ mod tests {
                 "bash_output",
                 "kill_background",
                 "present_artifacts",
+                "html_render",
+                "html_preview",
                 "kivio_inspect",
                 "kivio_configure",
                 "memory_read",

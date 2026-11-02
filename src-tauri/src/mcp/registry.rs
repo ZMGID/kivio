@@ -17,10 +17,12 @@ use super::types::{
     tool_definition_from_mcp, ChatToolDefinition, McpToolCallResult,
 };
 
-#[derive(Debug, Clone)]
-pub struct NativeToolContext {
+#[derive(Clone)]
+pub struct NativeToolContext<'a> {
     pub conversation_id: String,
     pub message_id: String,
+    pub provider: &'a crate::settings::ModelProvider,
+    pub model: &'a str,
     pub tool_call_id: Option<String>,
     /// Parent run id of the agent loop issuing this call. Used by sub-agent
     /// management tools to address the parent tool card and cascade
@@ -33,6 +35,22 @@ pub struct NativeToolContext {
     pub round: u32,
     /// Sub-agent nesting depth of the issuing agent loop (0 = top-level).
     pub depth: u8,
+}
+
+impl<'a> NativeToolContext<'a> {
+    pub(crate) fn from_execution(ctx: &crate::chat::agent::ToolExecutionContext<'a>) -> Self {
+        Self {
+            conversation_id: ctx.tool_conversation_id.to_string(),
+            message_id: ctx.message_id.to_string(),
+            provider: ctx.provider,
+            model: ctx.model,
+            tool_call_id: Some(ctx.tool_call_id.to_string()),
+            run_id: ctx.run_id.to_string(),
+            generation: ctx.generation,
+            round: ctx.round,
+            depth: ctx.depth,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -765,7 +783,7 @@ pub async fn call_tool(
     tool: &ChatToolDefinition,
     arguments: Value,
     skill_context: Option<&mut crate::skills::SkillRunContext>,
-    native_ctx: Option<NativeToolContext>,
+    native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     if tool.source == "native" {
         return call_native_tool(app, state, tool, arguments, native_ctx).await;
@@ -805,6 +823,8 @@ pub async fn call_tool(
             &settings,
             &ctx.conversation_id,
             &ctx.message_id,
+            ctx.provider,
+            ctx.model,
             &mut result,
         )
         .await;
@@ -972,7 +992,7 @@ async fn call_mixer_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    native_ctx: Option<NativeToolContext>,
+    native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     match tool.name.as_str() {
         "mixer_generate_image" => {
@@ -1067,7 +1087,7 @@ async fn call_native_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    native_ctx: Option<NativeToolContext>,
+    native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     use super::native_registry::{find_entry, text_tool_result, NativeCallCtx, NativeToolCall};
 
@@ -1082,7 +1102,21 @@ async fn call_native_tool(
         let ctx = native_ctx
             .as_ref()
             .ok_or_else(|| format!("{} requires a conversation context", entry.name))?;
-        return handler(app, ctx, &tool.name, arguments).await;
+        let mut result = handler(app, ctx, &tool.name, arguments).await?;
+        if tool.name == crate::html_render::HTML_PREVIEW_TOOL && !result.artifacts.is_empty() {
+            let settings = state.settings_read().clone();
+            crate::chat::commands::attach_image_artifacts_for_model(
+                app,
+                &settings,
+                &ctx.conversation_id,
+                &ctx.message_id,
+                ctx.provider,
+                ctx.model,
+                &mut result,
+            )
+            .await;
+        }
+        return Ok(result);
     }
     if let NativeToolCall::SubAgent(handler) = &entry.call {
         // Sub-agent management tools manage agents, not files: dispatch before
@@ -1217,7 +1251,7 @@ pub fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCa
 fn delivery_artifact_for_write(
     workspace: &NativeToolWorkspace,
     arguments: &Value,
-    native_ctx: Option<&NativeToolContext>,
+    native_ctx: Option<&NativeToolContext<'_>>,
 ) -> Option<crate::mcp::types::ChatToolArtifact> {
     native_ctx?;
     let raw_path = arguments.get("path").and_then(|v| v.as_str())?;
@@ -1290,7 +1324,7 @@ fn read_continuation_footer(result: &ReadFileResult) -> String {
 async fn resolve_native_workspace(
     app: &AppHandle,
     working_directory: &str,
-    native_ctx: Option<&NativeToolContext>,
+    native_ctx: Option<&NativeToolContext<'_>>,
 ) -> Result<NativeToolWorkspace, String> {
     let Some(native_ctx) = native_ctx else {
         return Ok(NativeToolWorkspace::standalone());

@@ -12,16 +12,19 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
+import { notifyError } from '../components/appNoticeStore'
+import { api } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
 import { messageBodySegments, messageBodyText } from './messageBody'
 import { AssistantMessageMeta } from './AssistantMessageMeta'
 import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { ChatMarkdown, type ChatMarkdownOutlineSource, type MarkdownOutlineSourceUpdate } from './ChatMarkdown'
+import { HtmlFrame } from './HtmlFrame'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { MarkdownStreamingContext } from './markdownStreaming'
-import { artifactId, artifactPresentationFromToolCall, isArtifactPresentationToolCall, isVisibleArtifactPresentation } from './artifactPresentation'
+import { artifactId, artifactPresentationFromToolCall, htmlRenderReferenceFromToolCall, isPresentationToolCall, isVisiblePresentation } from './artifactPresentation'
 import { referencedArtifactIds } from './artifactReferences'
 import { hasAgentPlanText } from './agentPlan'
 import { artifactDataUrl, isImageArtifact } from './artifacts'
@@ -281,7 +284,7 @@ function GeneratedImageArtifacts({
   )
 }
 
-function ArtifactPresentationBlock({
+function ToolPresentationBlock({
   toolCall,
   artifacts,
   conversationId,
@@ -292,6 +295,17 @@ function ArtifactPresentationBlock({
   conversationId?: string | null
   excludedArtifactIds?: ReadonlySet<string>
 }) {
+  const structured = toolCall.structured_content ?? toolCall.structuredContent
+  if (structured && typeof structured === 'object' && 'type' in structured && structured.type === 'html_render') {
+    const reference = htmlRenderReferenceFromToolCall(toolCall)
+    if (!reference || !conversationId) return null
+    const src = api.htmlRenderUrl(conversationId, reference.attachmentId)
+    if (!src) return null
+    return <HtmlFrame src={src} title={reference.title} initialHeight={reference.height}
+      onOpenInBrowser={(themeCss) => void api.openHtmlRender(conversationId, reference.attachmentId, themeCss)
+        .catch((error) => notifyError(`打开页面失败：${String(error)}`))}
+      fallback={<div className="my-3 text-[13px] text-[var(--text-muted)]" role="status">页面不可用</div>} />
+  }
   const presentation = artifactPresentationFromToolCall(toolCall)
   if (!presentation) {
     return (
@@ -462,8 +476,8 @@ function ClusteredToolCalls({
           <div key={key} className={itemClassName}>
             {isUserInjectedToolCall(toolCall) ? (
               <UserSteerSegment toolCall={toolCall} />
-            ) : isArtifactPresentationToolCall(toolCall) ? (
-              <ArtifactPresentationBlock
+            ) : isPresentationToolCall(toolCall) ? (
+              <ToolPresentationBlock
                 toolCall={toolCall}
                 artifacts={artifacts}
                 conversationId={conversationId}
@@ -500,9 +514,9 @@ function TimelineToolSegment({
   if (isUserInjectedToolCall(toolCall)) {
     return <UserSteerSegment toolCall={toolCall} />
   }
-  if (isArtifactPresentationToolCall(toolCall)) {
+  if (isPresentationToolCall(toolCall)) {
     return (
-      <ArtifactPresentationBlock
+      <ToolPresentationBlock
         toolCall={toolCall}
         artifacts={artifacts}
         conversationId={conversationId}
@@ -616,7 +630,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   if (next.segment.kind === 'tool') {
     const tool = next.toolCall
     if (previous.toolCall !== tool) return false
-    if (!tool || !isArtifactPresentationToolCall(tool)) return true
+    if (!tool || !isPresentationToolCall(tool)) return true
   } else if (!citationMapsEqual(previous.citations, next.citations)) return false
   // Derived arrays can change on every delta. Records are immutable; a replaced
   // image or late citation must still invalidate only the leaves that use it.
@@ -709,7 +723,7 @@ function renderProcessSegments({
     return !isAskUserToolName(toolRecordRawName(tool))
       && !hasAskUserStructuredContent(tool.structured_content ?? tool.structuredContent)
       && !tool.requires_confirmation && !tool.requiresConfirmation
-      && !isArtifactPresentationToolCall(tool)
+      && !isPresentationToolCall(tool)
       && !isExternalSubagentToolCall(tool)
       && !['agent', 'agent_control'].includes(canonicalToolName(tool))
   }
@@ -972,7 +986,7 @@ function TimelineSegments({
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && (isVisibleArtifactPresentation(tool) || isUserInjectedToolCall(tool)
+        return Boolean(tool && (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
           || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
       },
     )

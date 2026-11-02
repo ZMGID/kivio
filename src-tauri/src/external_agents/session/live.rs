@@ -192,6 +192,7 @@ impl LaunchConfig {
 /// Registry entry: the control channel plus metadata used to decide reuse.
 pub struct LiveSession {
     pub control: mpsc::Sender<SessionCommand>,
+    pub(crate) _chat_credential: Option<crate::app_mcp::McpCredential>,
     pub agent_id: String,
     pub cwd: String,
     /// 会话建立时生效的启动配置。与本轮的指纹不符 ⇒ 不可复用（见 `LaunchConfig`）。
@@ -482,6 +483,7 @@ mod tests {
         (
             LiveSession {
                 control: tx,
+                _chat_credential: None,
                 agent_id: agent.to_string(),
                 cwd: cwd.to_string(),
                 launch_config: LaunchConfig::default(),
@@ -627,6 +629,41 @@ mod tests {
             .is_none());
         assert!(registry.control_any("conversation").is_none());
         assert!(receiver.is_closed());
+    }
+
+    #[tokio::test]
+    async fn closing_a_live_session_revokes_its_chat_credential() {
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let registry = LiveSessionRegistry::default();
+        let (mut session, _receiver) = make("claude", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("conversation".to_string(), session);
+        assert!(probe.is_active());
+        let control = registry
+            .reusable_control("conversation", "claude", "/project", &LaunchConfig::default())
+            .unwrap();
+        assert!(probe.is_active());
+        drop(control);
+        assert!(registry.remove("conversation"));
+        assert!(!probe.is_active());
+
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let (mut session, _receiver) = make("codex", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("idle".to_string(), session);
+        assert_eq!(registry.sweep_idle(Duration::ZERO), 1);
+        assert!(!probe.is_active());
+
+        let (credential, probe) = crate::app_mcp::issue_test_chat_credential().await.unwrap();
+        let (mut session, mut receiver) = make("claude", "/project");
+        session._chat_credential = Some(credential);
+        registry.register("shutdown".to_string(), session);
+        let actor = tokio::spawn(async move {
+            assert!(matches!(receiver.recv().await, Some(SessionCommand::Close)));
+        });
+        registry.close_all().await;
+        actor.await.unwrap();
+        assert!(!probe.is_active());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 
@@ -194,10 +194,29 @@ fn apply_message_mutation(
     Ok(())
 }
 
+fn commit_html_render(
+    conversation_file: &Path,
+    attachments: &Path,
+    attachment_id: &str,
+    html: &str,
+) -> Result<(), String> {
+    if !crate::html_render::is_valid_render_attachment_id(attachment_id) {
+        return Err("Invalid HTML render attachment ID.".into());
+    }
+    if !conversation_file.is_file() {
+        return Err("Conversation no longer exists.".into());
+    }
+    super::storage::atomic_write(
+        &attachments.join(format!("{attachment_id}.html")),
+        html,
+        "HTML render",
+    )
+}
+
 /// Process-local equivalent of Pi's keyed operation queue. The barrier is held
 /// read-only for single-session work and exclusively for list/bulk operations.
 pub struct ConversationRepository {
-    barrier: RwLock<()>,
+    barrier: Arc<RwLock<()>>,
     conversation_locks: StdMutex<HashMap<String, Weak<Mutex<()>>>>,
     index_lock: Mutex<()>,
     search_slots: Arc<tokio::sync::Semaphore>,
@@ -211,7 +230,7 @@ pub struct ConversationRepository {
 impl Default for ConversationRepository {
     fn default() -> Self {
         Self {
-            barrier: RwLock::new(()),
+            barrier: Arc::new(RwLock::new(())),
             conversation_locks: StdMutex::new(HashMap::new()),
             index_lock: Mutex::new(()),
             search_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -333,6 +352,52 @@ impl ConversationRepository {
         let lock = Arc::new(Mutex::new(()));
         locks.insert(id.to_string(), Arc::downgrade(&lock));
         lock
+    }
+
+    async fn with_conversation_storage<T, F>(
+        &self,
+        id: &str,
+        operation: F,
+        label: &'static str,
+    ) -> RepositoryResult<T>
+    where
+        F: FnOnce() -> Result<T, String> + Send + 'static,
+        T: Send + 'static,
+    {
+        let barrier = self.barrier.clone().read_owned().await;
+        let conversation = self.conversation_lock(id).lock_owned().await;
+        Self::spawn_storage(
+            move || {
+                let _guards = (barrier, conversation);
+                operation()
+            },
+            label,
+        )
+        .await
+    }
+
+    pub(crate) async fn store_html_render(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        attachment_id: &str,
+        html: String,
+    ) -> RepositoryResult<()> {
+        let app = app.clone();
+        let conversation_id = id.to_owned();
+        let attachment_id = attachment_id.to_owned();
+        self.with_conversation_storage(
+            id,
+            move || {
+                let conversation_path =
+                    super::storage::conversation_file_path(&app, &conversation_id)?;
+                let attachments_path =
+                    super::storage::conversation_attachments_path(&app, &conversation_id)?;
+                commit_html_render(&conversation_path, &attachments_path, &attachment_id, &html)
+            },
+            "publish HTML render",
+        )
+        .await
     }
 
     pub async fn get(&self, app: &AppHandle, id: &str) -> RepositoryResult<Conversation> {
@@ -1164,6 +1229,74 @@ mod tests {
         let other = repository.conversation_lock("conv_b");
         assert!(Arc::ptr_eq(&first, &same));
         assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[tokio::test]
+    async fn html_render_commit_after_deletion_does_not_recreate_attachments() {
+        let temp = tempfile::tempdir().unwrap();
+        let conversation = temp.path().join("conv_test.json");
+        let attachments = temp.path().join("conv_test_attachments");
+        let attachment_id = "htmlrender-12345678-1234-4234-9234-123456789abc";
+        std::fs::write(&conversation, "{}").unwrap();
+        commit_html_render(&conversation, &attachments, attachment_id, "<p>first</p>").unwrap();
+        assert!(attachments.join(format!("{attachment_id}.html")).is_file());
+        std::fs::remove_file(&conversation).unwrap();
+        std::fs::remove_dir_all(&attachments).unwrap();
+
+        let repository = ConversationRepository::default();
+        let deleted_path = conversation.clone();
+        let deleted_attachments = attachments.clone();
+        let error = repository.with_conversation_storage(
+            "conv_test",
+            move || commit_html_render(&deleted_path, &deleted_attachments, attachment_id, "<p>late</p>"),
+            "publish HTML render",
+        ).await.unwrap_err();
+        assert!(error.to_string().contains("no longer exists"));
+        assert!(!attachments.exists());
+    }
+
+    #[tokio::test]
+    async fn cancelled_render_keeps_lifecycle_lock_until_blocking_commit_finishes() {
+        let temp = tempfile::tempdir().unwrap();
+        let conversation = temp.path().join("conv_test.json");
+        let attachments = temp.path().join("conv_test_attachments");
+        std::fs::write(&conversation, "{}").unwrap();
+        let repository = Arc::new(ConversationRepository::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let render_repository = repository.clone();
+        let render_conversation = conversation.clone();
+        let render_attachments = attachments.clone();
+        let render = tokio::spawn(async move {
+            render_repository.with_conversation_storage("conv_test", move || {
+                let _ = started_tx.send(());
+                release_rx.recv().map_err(|error| error.to_string())?;
+                commit_html_render(
+                    &render_conversation, &render_attachments,
+                    "htmlrender-12345678-1234-4234-9234-123456789abc", "<p>late</p>",
+                )
+            }, "publish HTML render").await
+        });
+        started_rx.await.unwrap();
+        render.abort();
+        assert!(render.await.unwrap_err().is_cancelled());
+        let lock = repository.conversation_lock("conv_test");
+        assert!(lock.try_lock().is_err());
+
+        let delete_repository = repository.clone();
+        let delete_conversation = conversation.clone();
+        let delete_attachments = attachments.clone();
+        let delete = tokio::spawn(async move {
+            let _barrier = delete_repository.barrier.read().await;
+            let lock = delete_repository.conversation_lock("conv_test");
+            let _conversation = lock.lock().await;
+            std::fs::remove_file(delete_conversation).unwrap();
+            std::fs::remove_dir_all(delete_attachments).unwrap();
+        });
+        release_tx.send(()).unwrap();
+        delete.await.unwrap();
+        assert!(!conversation.exists());
+        assert!(!attachments.exists());
     }
 
     #[test]

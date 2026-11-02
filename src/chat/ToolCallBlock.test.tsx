@@ -45,6 +45,18 @@ function toolIndex(...calls: ToolCallRecord[]): ReadonlyMap<string, ToolCallReco
   return new Map(calls.map(call => [call.id, call]))
 }
 
+describe('HTML tool labels', () => {
+  it.each([
+    ['html_render', 'Render HTML'],
+    ['mcp__kivio__html_render', 'Render HTML'],
+    ['html_preview', 'Preview HTML'],
+    ['mcp__kivio__html_preview', 'Preview HTML'],
+  ])('shows a friendly name for %s', (name, label) => {
+    render(<ToolCallBlock toolCall={buildToolCall({ name, toolName: name, status: 'completed' })} />)
+    expect(screen.getByText(label)).toBeInTheDocument()
+  })
+})
+
 describe('ToolCallCluster', () => {
   it('prefers an older active tool over a later completed one', () => {
     const toolCalls = [

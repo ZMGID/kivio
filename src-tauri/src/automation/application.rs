@@ -298,15 +298,7 @@ impl ToolExecutor for WorkflowToolExecutor {
         skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext {
-                conversation_id: ctx.tool_conversation_id.to_string(),
-                message_id: ctx.message_id.to_string(),
-                tool_call_id: Some(ctx.tool_call_id.to_string()),
-                run_id: ctx.run_id.to_string(),
-                generation: ctx.generation,
-                round: ctx.round,
-                depth: ctx.depth,
-            };
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             crate::mcp::registry::call_tool(
                 &self.app,
                 &self.app.state::<AppState>(),

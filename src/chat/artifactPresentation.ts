@@ -1,4 +1,5 @@
 import type { ChatToolArtifact, ToolCallRecord } from './types'
+import { normalizeToolCallStatus } from './toolStatus'
 
 export interface ArtifactPresentation {
   artifactIds: string[]
@@ -44,10 +45,30 @@ export function artifactPresentationFromToolCall(
   return { artifactIds, ...(caption ? { caption } : {}), ...(mode ? { mode } : {}) }
 }
 
-export function isVisibleArtifactPresentation(toolCall: ToolCallRecord): boolean {
-  return isArtifactPresentationToolCall(toolCall) && artifactPresentationFromToolCall(toolCall)?.mode !== 'prepare'
+export interface HtmlRenderReference {
+  attachmentId: string
+  title: string
+  height: number
 }
 
-export function isArtifactPresentationToolCall(toolCall: ToolCallRecord): boolean {
-  return isNativePresentationTool(toolCall)
+export function htmlRenderReferenceFromToolCall(toolCall: ToolCallRecord): HtmlRenderReference | null {
+  if (normalizeToolCallStatus(toolCall.status) !== 'completed') return null
+  const structured = toolCall.structured_content ?? toolCall.structuredContent
+  if (!structured || typeof structured !== 'object'
+    || !('type' in structured) || structured.type !== 'html_render'
+    || !('attachmentId' in structured) || typeof structured.attachmentId !== 'string'
+    || !('title' in structured) || typeof structured.title !== 'string'
+    || !('height' in structured) || typeof structured.height !== 'number' || !Number.isFinite(structured.height)) return null
+  return { attachmentId: structured.attachmentId, title: structured.title.trim() || 'HTML', height: structured.height }
+}
+
+export function isPresentationToolCall(toolCall: ToolCallRecord): boolean {
+  if (isNativePresentationTool(toolCall)) return true
+  const structured = toolCall.structured_content ?? toolCall.structuredContent
+  return normalizeToolCallStatus(toolCall.status) === 'completed'
+    && !!structured && typeof structured === 'object' && 'type' in structured && structured.type === 'html_render'
+}
+
+export function isVisiblePresentation(toolCall: ToolCallRecord): boolean {
+  return isPresentationToolCall(toolCall) && artifactPresentationFromToolCall(toolCall)?.mode !== 'prepare'
 }

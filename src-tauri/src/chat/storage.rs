@@ -120,7 +120,7 @@ fn temporary_write_path(path: &Path) -> PathBuf {
         ))
 }
 
-fn validate_conversation_id(id: &str) -> Result<(), String> {
+pub(crate) fn validate_conversation_id(id: &str) -> Result<(), String> {
     let valid = id.starts_with("conv_")
         && id.len() > "conv_".len()
         && id
@@ -255,10 +255,14 @@ pub(crate) fn draft_journal_path(app: &AppHandle, id: &str) -> Result<PathBuf, S
     Ok(conversations_dir(app)?.join(format!("{id}.draft.jsonl")))
 }
 
+pub(crate) fn conversation_attachments_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    validate_conversation_id(id)?;
+    Ok(conversations_dir(app)?.join(format!("{id}_attachments")))
+}
+
 /// 获取对话附件目录
 pub fn conversation_attachments_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    validate_conversation_id(id)?;
-    let dir = conversations_dir(app)?.join(format!("{}_attachments", id));
+    let dir = conversation_attachments_path(app, id)?;
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| format!("create attachments dir: {e}"))?;
     }

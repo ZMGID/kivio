@@ -490,6 +490,45 @@ impl ToolExecutor for RecordingExecutor {
     }
 }
 
+struct PreviewFeedbackExecutor<'a> {
+    state: &'a AppState,
+    settings: &'a Settings,
+    conversation: crate::chat::Conversation,
+    png_base64: String,
+}
+
+impl ToolExecutor for PreviewFeedbackExecutor<'_> {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a ToolExecutionContext<'a>,
+        _tool: &'a ChatToolDefinition,
+        _arguments: Value,
+        _skill_context: Option<&'a mut skills::SkillRunContext>,
+    ) -> super::super::execute::ToolExecutorFuture<'a> {
+        Box::pin(async move {
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+            let mut result = crate::mcp::result::parse_tool_result(serde_json::json!({
+                "content": [
+                    {"type": "text", "text": "Preview captured."},
+                    {"type": "image", "mimeType": "image/png", "data": self.png_base64.as_str()}
+                ]
+            }));
+            crate::chat::vision::attach_image_artifacts_for_model_with_context(
+                self.state,
+                self.settings,
+                &native_ctx.conversation_id,
+                &native_ctx.message_id,
+                native_ctx.provider,
+                native_ctx.model,
+                &mut result,
+                || Ok(self.conversation.clone()),
+            )
+            .await;
+            Ok(result)
+        })
+    }
+}
+
 /// Tool executor that succeeds immediately and flips the shared cancel flag while
 /// executing, so cancellation deterministically lands between the tool round and
 /// the synthesis request (the executor branch wins the `tokio::select!` because it
@@ -852,6 +891,12 @@ fn test_round_context() -> ToolRoundContext<'static> {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
+        provider: {
+            static PROVIDER: std::sync::LazyLock<ModelProvider> =
+                std::sync::LazyLock::new(|| test_provider("http://127.0.0.1:9/v1"));
+            &PROVIDER
+        },
+        model: "test-model",
         generation: 1,
         round: 1,
         depth: 0,
@@ -2080,6 +2125,128 @@ async fn completed_stream_survives_proxy_disconnect_without_replay() {
         assert_eq!(server.captured_bodies().len(), 1, "{format}");
         assert!(host.discarded_attempts.lock().unwrap().is_empty(), "{format}");
         }
+    }
+}
+
+#[tokio::test]
+async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
+    use base64::{engine::general_purpose, Engine as _};
+    use crate::settings::{ModelCapabilities, ModelInfo};
+
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let png_base64 = general_purpose::STANDARD.encode(png.into_inner());
+
+    for saved_is_vision in [false, true] {
+        let arm_server = || {
+            MockModelServer::start(vec![
+                MockResponse::Sse(vec![
+                    serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                        "index":0, "id":"call_preview", "function":{
+                            "name":"html_preview", "arguments":"{\"html\":\"<p>Preview</p>\"}"
+                        }
+                    }]}}]}).to_string(),
+                    r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(),
+                    "[DONE]".into(),
+                ]),
+                MockResponse::Sse(vec![
+                    r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}"#.into(),
+                    "[DONE]".into(),
+                ]),
+            ])
+        };
+        let vision_server = arm_server();
+        let text_server = arm_server();
+        let aux_server = MockModelServer::start(vec![MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"auxiliary preview analysis"},"finish_reason":"stop"}]}"#.into(),
+            "[DONE]".into(),
+        ])]);
+
+        let model_info = |vision| ModelInfo {
+            capabilities: Some(ModelCapabilities {
+                vision: Some(vision),
+                ..ModelCapabilities::default()
+            }),
+            ..ModelInfo::default()
+        };
+        let mut vision_provider = test_provider(&vision_server.base_url);
+        vision_provider.id = "vision-provider".into();
+        vision_provider.model_overrides.insert("vision-model".into(), model_info(true));
+        vision_provider.model_overrides.insert("text-model".into(), model_info(saved_is_vision));
+        let mut text_provider = test_provider(&text_server.base_url);
+        text_provider.id = "text-provider".into();
+        text_provider.model_overrides.insert("text-model".into(), model_info(false));
+        text_provider.model_overrides.insert("vision-model".into(), model_info(saved_is_vision));
+        let mut auxiliary = test_provider(&aux_server.base_url);
+        auxiliary.id = "aux-provider".into();
+
+        let mut settings = Settings::default();
+        settings.retry_enabled = false;
+        settings.providers = vec![vision_provider.clone(), text_provider.clone(), auxiliary];
+        settings.default_models.vision.provider_id = "aux-provider".into();
+        settings.default_models.vision.model = "aux-model".into();
+        let (saved_provider, saved_model) = if saved_is_vision {
+            ("vision-provider", "vision-model")
+        } else {
+            ("text-provider", "text-model")
+        };
+        let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_multi", "title": "Multi-answer", "provider_id": saved_provider,
+            "model": saved_model, "messages": [], "created_at": 1, "updated_at": 1,
+            "reply_models": [
+                {"provider_id": "vision-provider", "model": "vision-model"},
+                {"provider_id": "text-provider", "model": "text-model"}
+            ]
+        })).unwrap();
+        let state = test_app_state();
+        let executor = PreviewFeedbackExecutor {
+            state: &state,
+            settings: &settings,
+            conversation,
+            png_base64: png_base64.clone(),
+        };
+        let mut vision = test_run_config(&state, &vision_server.base_url);
+        vision.conversation_id = "conv_multi".into();
+        vision.tool_conversation_id = "conv_multi".into();
+        vision.run_id = "vision-arm".into();
+        vision.message_id = "vision-answer".into();
+        vision.provider = vision_provider;
+        vision.model = "vision-model".into();
+        vision.settings = settings.clone();
+        vision.tools = vec![crate::mcp::types::native_html_preview_tool()];
+        let mut text = test_run_config(&state, &text_server.base_url);
+        text.conversation_id = "conv_multi".into();
+        text.tool_conversation_id = "conv_multi".into();
+        text.run_id = "text-arm".into();
+        text.message_id = "text-answer".into();
+        text.provider = text_provider;
+        text.model = "text-model".into();
+        text.settings = settings.clone();
+        text.tools = vec![crate::mcp::types::native_html_preview_tool()];
+        let vision_host = TestHost::default();
+        let text_host = TestHost::default();
+        let (vision_result, text_result) = tokio::join!(
+            run_agent_loop(vision, &vision_host, &executor),
+            run_agent_loop(text, &text_host, &executor),
+        );
+        let vision_result = vision_result.unwrap();
+        let text_result = text_result.unwrap();
+        assert_eq!(vision_result.tool_records[0].status, ToolCallStatus::Success);
+        assert_eq!(text_result.tool_records[0].status, ToolCallStatus::Success);
+        let has_image = |messages: &[Value]| messages.iter().any(|message| {
+            message["role"] == "user" && message["content"].to_string().contains("data:image/")
+        });
+        assert!(has_image(&vision_result.api_messages), "saved_is_vision={saved_is_vision}");
+        assert!(!has_image(&text_result.api_messages), "saved_is_vision={saved_is_vision}");
+        assert!(text_result.api_messages.iter().any(|message| {
+            message["role"] == "tool"
+                && message["content"].as_str().is_some_and(|text| text.contains("auxiliary preview analysis"))
+        }));
+        let requests = aux_server.captured_bodies();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].contains("data:image/"));
     }
 }
 

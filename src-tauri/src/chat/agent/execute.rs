@@ -48,6 +48,9 @@ pub struct ToolExecutionContext<'a> {
     pub conversation_id: &'a str,
     pub run_id: &'a str,
     pub message_id: &'a str,
+    /// Provider and model of the run executing this tool, including answer arms.
+    pub provider: &'a crate::settings::ModelProvider,
+    pub model: &'a str,
     pub generation: u64,
     pub round: u32,
     /// Sub-agent nesting depth: 0 for a top-level chat run, +1 per spawned
@@ -1291,6 +1294,17 @@ mod tests {
             conversation_id: "conversation",
             run_id: "run",
             message_id: "message",
+            provider: {
+                static PROVIDER: std::sync::LazyLock<crate::settings::ModelProvider> =
+                    std::sync::LazyLock::new(|| {
+                        serde_json::from_value(serde_json::json!({
+                            "id": "test-provider", "name": "Test", "baseUrl": ""
+                        }))
+                        .unwrap()
+                    });
+                &PROVIDER
+            },
+            model: "test-model",
             generation: 1,
             round: 2,
             depth: 0,
