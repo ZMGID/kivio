@@ -39,7 +39,8 @@ export function ReasoningBlock({ reasoning, defaultOpen = false, streaming = fal
   const { visibleReasoning, latestLine } = useMemo(() => {
     const text = reasoning.trimEnd()
     const lineStart = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r')) + 1
-    return { visibleReasoning: text, latestLine: text.slice(lineStart).trim() }
+    // Codex-style summaries title each step as **heading**; the one-line preview shows plain text.
+    return { visibleReasoning: text, latestLine: text.slice(lineStart).replace(/\*\*/g, '').trim() }
   }, [reasoning])
 
   // Remember only a preview shown in this mounted conversation. Loading old

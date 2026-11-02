@@ -535,16 +535,15 @@ function TimelineTextSegment({
   const text = segmentText(segment).trim()
   if (!text) return null
   return (
-    <div className={process ? 'text-neutral-600' : undefined}>
-      <ChatMarkdown
-        content={text}
-        artifacts={artifacts}
-        conversationId={conversationId}
-        citations={citations}
-        onImageClick={handleChatImageClick}
-        outlineSource={outlineSource}
-      />
-    </div>
+    <ChatMarkdown
+      content={text}
+      artifacts={artifacts}
+      conversationId={conversationId}
+      citations={citations}
+      onImageClick={handleChatImageClick}
+      outlineSource={outlineSource}
+      variant={process ? 'process' : undefined}
+    />
   )
 }
 

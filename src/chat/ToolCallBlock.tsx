@@ -1963,7 +1963,8 @@ export function ToolCallCluster({
     ? 'completed' : currentStatus
   const target = currentTool ? getToolTarget(t, currentTool) : ''
   const imageRead = currentTool && isImageReadToolCall(currentTool)
-  const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.trim()
+  // Codex-style summaries title each step as **heading**; the one-line preview shows plain text.
+  const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.replace(/\*\*/g, '').trim()
 
   return (
     <div className="not-prose mb-1 min-w-0 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
