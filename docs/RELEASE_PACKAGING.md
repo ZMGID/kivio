@@ -82,7 +82,8 @@ and removals. The cleanup does not touch user-installed skills or app data.
 Validate this behavior with `cargo test --test bundled-resources` (on Windows,
 use `scripts/win-cargo-test.ps1 --test bundled-resources`).
 
-At minimum, document Skill releases must include:
+Bundled skills are ordinary skill directories shipped as application resources;
+they need no separate installation or per-skill registration. Keep these mappings:
 
 ```json
 "resources": {
@@ -91,16 +92,9 @@ At minimum, document Skill releases must include:
 }
 ```
 
-The final installed app must contain:
-
-- `skills/pdf/SKILL.md`
-- `skills/docx/SKILL.md`
-- `skills/xlsx/SKILL.md`
-- `skills/obsidian-markdown/SKILL.md` (+ `references/`)
-- `skills/obsidian-bases/SKILL.md` (+ `references/`)
-- `skills/json-canvas/SKILL.md` (+ `references/`)
-- `skills/obsidian-cli/SKILL.md`
-- `licenses/` (all files from `docs/licenses/`)
+The final installed app must contain all files from every configured resource
+directory, including skill references and licenses. Validate against the source
+directories rather than maintaining a second list of skill names.
 
 `npm run package:check` checks all five release-version files (including the npm
 lockfile root package) and resource sources. `npm run test:packaging` covers version
@@ -122,9 +116,6 @@ source, including unexpected old files. Release jobs check extracted NSIS/DMG
 contents; portable packaging copies all configured resource mappings and checks
 the staged contents before compression. Portable packaging also rejects an EXE
 whose embedded product version differs from the requested ZIP version.
-
-> The four `obsidian-*` / `json-canvas` skills (adapted from kepano/obsidian-skills, MIT —
-> see `resources/skills/NOTICE.md`) follow the same skill enable settings and assistant allow-lists as other bundled skills.
 
 ## Release Verification
 
@@ -205,7 +196,8 @@ For GitHub Releases:
 gh release view vX.Y.Z --repo ZMGID/kivio --json url,assets
 ```
 
-The release is not complete until the final installer contains loose `Contents/Resources/skills/pdf|docx|xlsx` Skill files.
+The release is not complete until `check-desktop-package.mjs --resources-dir`
+confirms that the final installer's resource contents match the source directories.
 
 ## README format
 

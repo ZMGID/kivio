@@ -2,15 +2,16 @@
 
 普通扫描同 ID **第一份优先**，按以下顺序：
 
-1. 应用资源目录中的内置 `skills/`。
-2. 项目：从工作目录向上，每层先 `.kivio/skills` 再 `.agents/skills`，遇 `.git` 或家目录停止，最多 24 层。
-3. 已启用预设插件的技能根。
-4. `~/.kivio/skills`。
-5. 旧 `<app_data>/skills`。
-6. `~/.agents/skills`。
+1. 项目：从工作目录向上，每层先 `.kivio/skills` 再 `.agents/skills`，遇 `.git` 或家目录停止，最多 24 层。
+2. 已启用预设插件的技能根。
+3. `~/.kivio/skills`。
+4. 旧 `<app_data>/skills`。
+5. `~/.agents/skills`。
+6. 旧 `~/.cua-driver/skills`（兼容已安装内容）。
 7. `settings.chatTools.skillScanPaths`，按设置顺序。
+8. 应用安装包附带的 `skills/`。
 
-这里 `settings.` 指 `<app_data>/settings.json` 中的外层 Store 键。内置优先于项目，不能靠放同名个人技能覆盖内置。跨来源覆盖通常不报警，同来源重复 ID 才有 warning。通用插件的组件另外追加，ID 带包 UUID，显示名带 `<plugin>:<skill>`。
+这里 `settings.` 指 `<app_data>/settings.json` 中的外层 Store 键。内置只表示随包附带，无需另行安装；同 ID 的项目、个人或额外目录技能可以覆盖它。跨来源覆盖通常不报警，同来源重复 ID 才有 warning。通用插件的组件另外追加，ID 带包 UUID，显示名带 `<plugin>:<skill>`。
 
 每个根递归最多 6 层；到达包含 SKILL.md 的目录即记录该技能并停止向下扫描。忽略 `.git`、`node_modules`、`.svn`、`.hg`。额外扫描路径直接作为路径处理，不要假定会展开 `~` 或环境变量，填写已解析的绝对路径。
 

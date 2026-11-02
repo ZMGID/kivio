@@ -124,14 +124,11 @@ fn bundled_skills_dir(app: &AppHandle) -> Option<PathBuf> {
 }
 
 fn scan_root_entries(
-    app: &AppHandle,
     extra_paths: &[String],
     project_cwd: Option<&Path>,
+    bundled_dir: Option<PathBuf>,
 ) -> Result<Vec<SkillScanRoot>, String> {
     let mut roots = Vec::new();
-    if let Some(path) = bundled_skills_dir(app) {
-        push_root(&mut roots, path, "builtin");
-    }
     // 项目优先于全局（同 id 近处覆盖远处）：`.kivio/skills` 再 `.agents/skills`，cwd → git 根。
     if let Some(cwd) = project_cwd {
         for path in project_skill_dirs(cwd) {
@@ -155,6 +152,9 @@ fn scan_root_entries(
         push_root(&mut roots, path, "legacy-cua");
     }
     append_external_roots(&mut roots, extra_paths);
+    if let Some(path) = bundled_dir {
+        push_root(&mut roots, path, "builtin");
+    }
     Ok(roots)
 }
 
@@ -197,7 +197,7 @@ pub(crate) fn build_registry_with_plugins(
     project_cwd: Option<&Path>,
     plugins: &[crate::plugins::packages::Resolved],
 ) -> Result<SkillRegistry, String> {
-    let roots = scan_root_entries(app, extra_paths, project_cwd)?;
+    let roots = scan_root_entries(extra_paths, project_cwd, bundled_skills_dir(app))?;
     let mut registry = build_registry_from_roots(roots);
     for plugin in plugins {
         let mut bundled = SkillRegistry::default();
@@ -261,9 +261,7 @@ fn dedup_records(records: &mut Vec<super::types::SkillRecord>, warnings: &mut Ve
     for record in records.drain(..) {
         let key = record.meta.id.clone();
         if let Some(&index) = seen.get(&key) {
-            // 近处覆盖远处是扫描顺序的设计：内置 / 项目 / 插件 / 个人 / ~/.agents 同 id 只留一份。
-            // 跨源 overlay 不必报给用户（Cursor 的 frontend-design 与内置撞名是常态）。
-            // 同一源里出现两份才是真冲突。
+            // 同 ID 按扫描顺序取第一份；跨来源允许覆盖，同来源重复才报告冲突。
             if out[index].meta.source == record.meta.source {
                 warnings.push(format!(
                     "Skill {} shadowed duplicate id {}",
@@ -539,6 +537,41 @@ description: Test skill.
         );
 
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn bundled_skills_are_defaults_that_project_and_installed_skills_can_override() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("project");
+        let installed = base.path().join("installed");
+        let bundled = base.path().join("bundled");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        write_skill(&project.join(".kivio/skills/shared"), "shared");
+        write_skill(&installed.join("shared"), "shared");
+        write_skill(&installed.join("installed-only"), "installed-only");
+        for id in ["shared", "installed-only", "bundled-only"] {
+            write_skill(&bundled.join(id), id);
+        }
+        let roots = scan_root_entries(
+            &[installed.display().to_string()],
+            Some(&project),
+            Some(bundled),
+        )
+        .unwrap()
+        .into_iter()
+        .filter(|root| root.path.starts_with(base.path()))
+        .collect();
+        let registry = build_registry_from_roots(roots);
+        assert_eq!(registry.records.len(), 3);
+        assert_eq!(registry.find("shared").unwrap().meta.source, "project");
+        assert_eq!(
+            registry.find("installed-only").unwrap().meta.source,
+            "external"
+        );
+        let default = read_skill_record(registry.find("bundled-only").unwrap()).unwrap();
+        assert_eq!(default.meta.source, "builtin");
+        assert_eq!(default.meta.id, "bundled-only");
+        assert!(registry.warnings.is_empty());
     }
 
     #[test]

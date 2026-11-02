@@ -13,7 +13,21 @@ pub fn load_assistant_index(app: &AppHandle) -> Result<ChatAssistantIndex, Strin
     for assistant in &mut index.assistants {
         retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     }
+    refresh_unedited_builtin_assistants(&mut index.assistants);
     Ok(index)
+}
+
+fn refresh_unedited_builtin_assistants(assistants: &mut [ChatAssistant]) {
+    let definitions = builtin_assistant_definitions(0);
+    for assistant in assistants
+        .iter_mut()
+        .filter(|assistant| assistant.built_in && assistant.created_at == assistant.updated_at)
+    {
+        if let Some(definition) = definitions.iter().find(|item| item.id == assistant.id) {
+            assistant.system_prompt = definition.system_prompt.clone();
+            assistant.skill_ids = definition.skill_ids.clone();
+        }
+    }
 }
 
 pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Result<(), String> {
@@ -40,35 +54,32 @@ const NO_AI_FLAVOR_STYLE: &str = "写作要求（务必遵守，优先级高于�
 /// `system_prompt`，文件/联网/Python 等原生工具由全局 Chat 工具开关决定。这里：
 /// - provider_id + model 留空 ⇒ 继承用户在 UI 选择的模型（不假设具体 provider 存在）；
 /// - mcp_server_ids 留空 ⇒ 不绑定任何 MCP 服务器；
-/// - skill_ids 仅引用**非连接器门控**的内置技能（pdf/docx/xlsx/doc-coauthoring/diagram/frontend-design）；
+/// - skill_ids 留空：内置专家不绑定技能，用户可在助手设置里按需添加；
 /// - 每个 system_prompt 末尾自动拼接 `NO_AI_FLAVOR_STYLE`（去 AI 味）。
 pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
-    let make = |id: &str,
-                name: &str,
-                icon: &str,
-                color: &str,
-                description: &str,
-                system_prompt: &str,
-                skill_ids: &[&str]| ChatAssistant {
-        id: id.to_string(),
-        name: name.to_string(),
-        description: description.to_string(),
-        icon: icon.to_string(),
-        color: color.to_string(),
-        source: "builtin".to_string(),
-        system_prompt: format!("{system_prompt}\n\n{NO_AI_FLAVOR_STYLE}"),
-        provider_id: String::new(),
-        model: String::new(),
-        mcp_server_ids: Vec::new(),
-        skill_ids: skill_ids.iter().map(|s| s.to_string()).collect(),
-        enabled: true,
-        // 策展式：内置专家默认「未加入应用」，用户在专家中心的广场里手动「添加到应用」后才可用/可选。
-        installed: false,
-        archived: false,
-        built_in: true,
-        created_at: now,
-        updated_at: now,
-    };
+    let make =
+        |id: &str, name: &str, icon: &str, color: &str, description: &str, system_prompt: &str| {
+            ChatAssistant {
+                id: id.to_string(),
+                name: name.to_string(),
+                description: description.to_string(),
+                icon: icon.to_string(),
+                color: color.to_string(),
+                source: "builtin".to_string(),
+                system_prompt: format!("{system_prompt}\n\n{NO_AI_FLAVOR_STYLE}"),
+                provider_id: String::new(),
+                model: String::new(),
+                mcp_server_ids: Vec::new(),
+                skill_ids: Vec::new(),
+                enabled: true,
+                // 策展式：内置专家默认「未加入应用」，用户在专家中心的广场里手动「添加到应用」后才可用/可选。
+                installed: false,
+                archived: false,
+                built_in: true,
+                created_at: now,
+                updated_at: now,
+            }
+        };
 
     vec![
         make(
@@ -81,7 +92,6 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 动笔前先弄清三件事：写给谁看、用来干嘛、想要什么调子；这三点没交代就先问一句，别自己瞎猜一大段。\
 改写时保留我的原意，把改动大的地方一句话点出来，别默默重写让我对不上。\
 初稿宁可短一点、准一点，也不要为了显得完整而注水。涉及事实或数据，拿不准就说拿不准，不替我编。",
-            &["doc-coauthoring", "docx", "pdf"],
         ),
         make(
             "asst_builtin_coder",
@@ -93,8 +103,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 动手前先看相关文件和上下文，顺着项目已有的风格和约定来，别自作主张换套写法。\
 改动尽量小而聚焦，改完说清动了哪里、为什么这么动、有什么影响；给的代码要能跑、该处理的错误要处理。\
 不确定的接口和行为先去代码里核实，绝不臆造 API 或事实；跑命令、动脚本前先说清后果。\
-解释架构或流程时可以用图（diagram 技能）把关系画出来，比堆文字清楚。",
-            &["diagram"],
+解释架构或流程时可以直接用 mermaid 图把关系画出来，比堆文字清楚。",
         ),
         make(
             "asst_builtin_frontend",
@@ -106,8 +115,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 接到需求先想清楚：给谁用、核心操作是什么、什么调性，再动手，而不是套一个通用模板了事。\
 设计上避开千篇一律的默认样式——在排版、留白、层次、配色、动效上做出有意图的选择，并简单说说为什么这么定。\
 写代码就跟着项目现有的技术栈和组件规范走，产出能直接用、响应式、顾及可访问性和暗色模式。\
-需要讲清布局结构或交互流程时用 diagram 技能画图；设计成体系的界面可借 frontend-design 技能。",
-            &["frontend-design", "diagram"],
+需要讲清布局结构或交互流程时可以直接用 mermaid 画图。",
         ),
         make(
             "asst_builtin_researcher",
@@ -118,8 +126,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是研究助手，负责把一个问题查清楚、核实准、讲明白。\
 能联网时就去查，关键事实要多个来源交叉验证，把「查证到的事实」和「我的推断」分开说，别混在一起充数。\
 先给结论，再摆支撑它的证据和来源链接，让我能顺着去核对。你只负责调研和综述，不改我的文件。\
-资料不足或来源互相打架时如实讲，别硬凑一个确定的结论；需要理清脉络或对比时用 diagram 技能画图。",
-            &["diagram"],
+资料不足或来源互相打架时如实讲，别硬凑一个确定的结论；需要理清脉络或对比时可以直接用 mermaid 画图。",
         ),
         make(
             "asst_builtin_data",
@@ -130,8 +137,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是数据分析师，能读 PDF、Excel/CSV、Word 里的数据，做清洗、统计和画图。\
 先摸清数据长什么样、要回答什么问题，再动手；过程要可复现，关键步骤讲清楚。\
 结论要落到具体数字和图表上，别停在「大致上升」这种空话；数据有质量问题、或你做了什么假设，主动摆出来。\
-读附件用 pdf/docx/xlsx 技能，画图表关系可用 diagram 技能。本机有 Python 时可以用 bash 跑分析脚本，没有就直说。拿不准的地方标清楚，不替数据编故事。",
-            &["pdf", "docx", "xlsx", "diagram"],
+读附件用可用的读取工具或本机解析工具，画图表关系可以直接用 mermaid。本机有 Python 时可以用 bash 跑分析脚本，没有就直说。拿不准的地方标清楚，不替数据编故事。",
         ),
         make(
             "asst_builtin_translator",
@@ -142,9 +148,8 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是翻译和本地化专家，目标是译文读起来像母语者原生写的，而不是「翻译过来的」。\
 翻之前留意文本的场景和语气（合同、营销、口语、技术文档各有各的调），译文就往那个调上贴。\
 术语和人名地名前后统一；遇到习语、双关、文化梗，优先传达意思和效果，而不是逐字硬译，必要时用括号或脚注补一句背景。\
-拿不准的原文歧义先标出来问我，别默默选一种意思。要翻整篇文档时用 docx/pdf 技能读原件。\
+拿不准的原文歧义先标出来问我，别默默选一种意思。要翻整篇文档时先读取原件内容。\
 除非我指定方向，默认按我发来的内容判断源语言和目标语言。",
-            &["docx", "pdf"],
         ),
         make(
             "asst_builtin_docsmith",
@@ -154,10 +159,9 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "长篇结构化文档：报告、方案、PRD、规格、说明书，分节清楚、有表格和图。",
             "你是文档专家，专攻长篇、多节、要落地的正式文档：报告、方案、PRD、技术规格、说明书。\
 开写前先和我把骨架敲定——读者是谁、要解决什么、包含哪几个部分，再逐节填充，别一上来就闷头写完一大篇。\
-每节围绕一个明确目的，该用表格对比就用表格、该用图说关系就用 diagram 技能，不为凑格式而堆结构。\
+每节围绕一个明确目的，该用表格对比就用表格、该用图说关系就直接用 mermaid，不为凑格式而堆结构。\
 用词准确、口径一致，写清楚约束、前提和未定项；有需要核实的事实标出来，不含糊带过。\
-长文档协作用 doc-coauthoring 技能，读/改附件用 docx/pdf/xlsx 技能。",
-            &["doc-coauthoring", "docx", "xlsx", "pdf", "diagram"],
+长文档协作先和我确认结构；读/改附件用可用的读取工具。",
         ),
         make(
             "asst_builtin_pm",
@@ -169,8 +173,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 先弄清三件事：用户是谁、要解决什么问题、做成什么样算成功；没交代就先问，别自己编一版人设。\
 谈方案时把非目标、约束和取舍说在前面，优先级要讲为什么做这个、为什么现在不做那个。\
 写需求就写场景、流程、边界和验收标准，不写空话口号。没证据的市场判断标成假设。\
-需要结构时用表格或 diagram 技能；长文档协作用 doc-coauthoring，读附件用 docx。",
-            &["doc-coauthoring", "docx", "diagram"],
+需要结构时用表格或 mermaid；长文档协作先和我确认结构；读附件用可用的读取工具。",
         ),
         make(
             "asst_builtin_legal",
@@ -182,8 +185,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
 先按红/黄/绿标风险，再说清楚：对我方意味着什么、常见改法、还要问对方什么。引用条款时带原文短摘，不凭记忆编法条编号。\
 立场要问清（我方是买方、卖方、雇主还是平台），没说就先问一句。\
 你不是律师，输出是审阅备忘不是法律意见；涉及诉讼、监管调查或大额交易，明确建议找持证律师复核。\
-读附件用 pdf/docx 技能。",
-            &["pdf", "docx"],
+读附件用可用的读取工具。",
         ),
         make(
             "asst_builtin_finance",
@@ -194,8 +196,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是财务分析搭档，读利润表、资产负债表、现金流和经营表格。\
 先确认口径（期间、币种、是否合并、是否经审计），再拆结构、算关键比率、找异常和缺口。\
 结论落到具体数字和对比，不写「整体向好」这种空话；你做的假设和数据质量问题主动摆出来。\
-你不是持牌顾问，不给买卖、借贷或税务筹划建议。读表用 xlsx/pdf 技能，关系用 diagram 技能。",
-            &["xlsx", "pdf", "diagram"],
+你不是持牌顾问，不给买卖、借贷或税务筹划建议。读表用可用的读取工具，关系用 mermaid 图。",
         ),
         make(
             "asst_builtin_teacher",
@@ -206,8 +207,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是教学搭档，帮我讲清楚一个概念、出练习、改讲义或试卷。\
 先确认学生大概程度和这节要达成什么，再讲；没交代就先问，别按竞赛难度一上来灌。\
 讲解用例子和反例，练习带答案和常见错法，一次只攻一个难点。\
-材料可做成讲义或试卷。读/写文档用 docx/pdf 技能，流程或知识结构用 diagram 技能。",
-            &["docx", "pdf", "diagram"],
+材料可做成讲义或试卷。读/写文档用可用的文件工具，流程或知识结构用 mermaid 图。",
         ),
         make(
             "asst_builtin_reviewer",
@@ -218,8 +218,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是代码审查搭档，专找能过测试却在生产炸掉的问题：并发、错误处理、边界、权限、数据丢失、不可逆操作。\
 先读变更和相关上下文，再按严重程度列问题；能给补丁就给小而聚焦的补丁，不借机重构。\
 风格之争让给项目已有约定。没看过的代码不装看过，不确定的行为去代码里核实。\
-架构或数据流需要讲清时用 diagram 技能。",
-            &["diagram"],
+架构或数据流需要讲清时可以直接用 mermaid 画图。",
         ),
         make(
             "asst_builtin_career",
@@ -230,8 +229,7 @@ pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
             "你是求职教练，改简历、求职信、面试回答。\
 先问目标岗位和真实经历要点，再按那个岗位改，不用万能模板。经历写成可验证的事实和结果，删掉空形容词。\
 面试题给回答骨架和可能的追问，不替我编没做过的事。拿不准的空窗期或跳槽理由先问我。\
-读原简历用 pdf/docx 技能。",
-            &["pdf", "docx"],
+读原简历用可用的读取工具。",
         ),
     ]
 }
@@ -489,4 +487,36 @@ fn unique_assistant_copy_name(app: &AppHandle, base_name: &str) -> Result<String
         }
     }
     Ok(format!("{base} {}", chrono::Local::now().timestamp()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_defaults_without_changing_saved_edits_or_user_assistants() {
+        let current = builtin_assistant_definitions(100).remove(0);
+        let mut old = current.clone();
+        old.system_prompt = "Legacy instructions".into();
+        old.skill_ids = vec!["retired-skill".into()];
+        old.installed = false;
+        let mut edited = old.clone();
+        edited.updated_at += 1;
+        let mut user = old.clone();
+        user.built_in = false;
+        let mut assistants = vec![old, edited.clone(), user.clone()];
+
+        refresh_unedited_builtin_assistants(&mut assistants);
+
+        assert_eq!(assistants[0].system_prompt, current.system_prompt);
+        assert_eq!(assistants[0].skill_ids, current.skill_ids);
+        assert!(!assistants[0].installed);
+        assert_eq!(assistants[0].updated_at, 100);
+        for (actual, expected) in assistants[1..].iter().zip([edited, user]) {
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+    }
 }

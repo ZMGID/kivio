@@ -9,7 +9,7 @@
 | 查明的事实 | 实现依据（仓库相对路径） | 对技能设计的影响 |
 | --- | --- | --- |
 | 内置 skills 由 Tauri resources 分发并自动扫描 | `src-tauri/tauri.conf.json`；`src-tauri/src/skills/discover.rs` | 一个内置入口及随包参考文件，无额外安装器或个人目录硬编码 |
-| 普通 skill 内置优先、项目其次，同 ID 第一份生效 | `skills/discover.rs::{scan_root_entries,dedup_records}` | 不能建议通过同名个人副本覆盖内置技能 |
+| 普通 skill 按扫描顺序取同 ID 第一份；应用附带目录作为最后的默认来源 | `skills/discover.rs::{scan_root_entries,dedup_records}` | 内置无需另行安装，同名项目或个人副本可以覆盖；参见技能内的发现规则 |
 | frontmatter 是轻量解析，不是完整 YAML 语义 | `skills/parse.rs` | 单行 description；不把 allowed-tools 当权限配置 |
 | 模型原来只拿到 skill 加载器，没有通用配置操作工具 | `mcp/{types,native_registry}.rs` | 增加 kivio_inspect / kivio_configure，避免教模型调用不存在的 CLI 或把 Tauri IPC 当模型工具 |
 | settings.json 有 Store 外壳，设置同时存在内存中 | `settings.rs::{load_settings,persist_settings}`；`state.rs` | 修改在最新设置锁内合并、保存，再更新内存；不写运行中的裸 JSON |

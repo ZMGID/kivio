@@ -577,7 +577,7 @@ export function usePopoutComposer({
   const send = useCallback<InputBarProps['onSend']>((content, attachments, options) => onSend(
     content, attachments, {
       ...options,
-      attachmentSkillId: resolveSendSkillId(attachments, enabledSkills, storedActiveSkillId, usesChatRuntime),
+      attachmentSkillId: resolveSendSkillId(enabledSkills, storedActiveSkillId, usesChatRuntime),
     },
   ), [enabledSkills, onSend, storedActiveSkillId, usesChatRuntime])
   const slashSkills = useMemo(

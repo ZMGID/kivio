@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -88,6 +88,9 @@ test('packaged resources reject missing licenses, changed files and stale skills
   writeFileSync(path.join(packaged, 'skills', 'retired-skill.md'), 'old')
   assert.throws(() => checkResources(directory, packaged), /packaged files must match/)
   rmSync(path.join(packaged, 'skills', 'retired-skill.md'))
-  writeFileSync(path.join(packaged, 'skills', 'pdf', 'SKILL.md'), 'changed')
+  const skillFile = readdirSync(path.join(packaged, 'skills'), { recursive: true })
+    .find(file => path.basename(file) === 'SKILL.md')
+  assert.ok(skillFile, 'Fixture must include a skill')
+  writeFileSync(path.join(packaged, 'skills', skillFile), 'changed')
   assert.throws(() => checkResources(directory, packaged), /packaged files must match/)
 })

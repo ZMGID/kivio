@@ -14,13 +14,13 @@ use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use crate::settings::{ChatMcpServer, Settings};
 
 pub fn inspect_definition() -> ChatToolDefinition {
-    definition("kivio_inspect", "Read Kivio's current configuration, skills, plugin packages, MCP summaries or hook status without exposing credentials or connecting servers. Use the kivio-configuration-guide skill for self-configuration requests. Disk/registry presence does not prove a capability is usable in this conversation.", json!({
+    definition("kivio_inspect", "Read Kivio's current configuration, skills, plugin packages, MCP summaries or hook status without exposing credentials or connecting servers. Disk/registry presence does not prove a capability is usable in this conversation.", json!({
         "type":"object", "properties":{"topic":{"type":"string","enum":["status","skills","plugins","mcp","hooks"]}}, "additionalProperties":false
     }), false)
 }
 
 pub fn configure_definition() -> ChatToolDefinition {
-    definition("kivio_configure", "Install or configure Kivio extensions using live application services. First load the relevant kivio configuration skill and inspect current state. Acts on the user's requested resources only. New skills/plugins/MCP tools are usable on the next turn. MCP tests may launch a process/connect a service. Config JSON is read from config_path; no whole-settings replacement. Requires the host command tool toggle and normal session consent.", json!({
+    definition("kivio_configure", "Install or configure Kivio extensions using live application services. Inspect current state before making changes. Acts on the user's requested resources only. New skills/plugins/MCP tools are usable on the next turn. MCP tests may launch a process/connect a service. Config JSON is read from config_path; no whole-settings replacement. Requires the host command tool toggle and normal session consent.", json!({
         "type":"object", "properties":{
             "action":{"type":"string","enum":["skill_install","skill_set_enabled","skill_settings","playwright_extension_token","plugin_import","plugin_set_enabled","plugin_remove","mcp_upsert","mcp_remove","mcp_test","hooks_save"]},
             "token":{"type":"string","description":"playwright_extension_token only: user-provided extension token or PLAYWRIGHT_MCP_EXTENSION_TOKEN=... assignment. Empty string clears it. Never echo the credential."},

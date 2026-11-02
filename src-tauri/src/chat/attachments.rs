@@ -973,15 +973,6 @@ fn attachment_extension(name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn attachment_skill_for_name(name: &str) -> Option<&'static str> {
-    match attachment_extension(name).as_str() {
-        "pdf" => Some("pdf"),
-        "doc" | "docx" => Some("docx"),
-        "xls" | "xlsx" | "xlsm" | "csv" | "tsv" => Some("xlsx"),
-        _ => None,
-    }
-}
-
 fn attachment_format_label(attachment: &Attachment) -> &'static str {
     if attachment.attachment_type == "image" {
         return "图片";
@@ -1025,12 +1016,13 @@ fn attachment_processing_hint(attachment: &Attachment) -> String {
         return "图片附件会随本轮请求发送给视觉模型。".to_string();
     }
 
-    if let Some(skill) = attachment_skill_for_name(&attachment.name) {
-        format!(
-            "推荐复用现成 `{skill}` Skill：需要读取或分析该文件时，先调用 skill(name=\"{skill}\")，再按该 Skill 的 SKILL.md / reference / scripts 流程处理安全副本路径。"
-        )
+    if matches!(
+        attachment_extension(&attachment.name).as_str(),
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "xlsm"
+    ) {
+        "此文件已保存为 Kivio 安全副本；read 工具不解析此类二进制文档。需要读取正文时用 bash 或本机可用的解析工具处理该路径；没有可用工具时如实告诉用户，不要仅凭文件名臆测内容。".to_string()
     } else {
-        "此文件已保存为 Kivio 安全副本；仅在有可用读取工具或对应 Skill 时处理正文。".to_string()
+        "此文件已保存为 Kivio 安全副本；可直接用 read 工具查看正文，或用 bash 等工具处理该路径。".to_string()
     }
 }
 
@@ -1367,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_user_content_for_api_recommends_document_skill() {
+    fn compose_user_content_for_api_describes_document_without_skill() {
         let content = compose_user_content_for_api(
             "总结一下",
             &[Attachment {
@@ -1382,8 +1374,9 @@ mod tests {
 
         assert!(content.contains("report.PDF"));
         assert!(content.contains("PDF"));
-        assert!(content.contains("skill(name=\"pdf\")"));
         assert!(content.contains("Kivio 安全副本路径"));
+        assert!(content.contains("read 工具不解析此类二进制文档"));
+        assert!(!content.contains("skill(name="));
         assert!(content.contains("不要仅凭文件名臆测内容"));
     }
 

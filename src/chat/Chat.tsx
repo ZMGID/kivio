@@ -1922,7 +1922,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     options: SendMessageOptions = {},
   ) => {
     const attachmentSkillId = options.embedded ? null : resolveSendSkillId(
-      attachments,
       enabledSkills,
       options.skillId !== undefined ? options.skillId : options.forceNewConversation ? null : effectiveSkillId,
       usesChatRuntime,

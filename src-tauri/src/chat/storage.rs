@@ -612,14 +612,10 @@ mod builtin_assistant_tests {
     }
 
     #[test]
-    fn data_assistant_whitelists_document_skills() {
+    fn builtin_assistants_do_not_pin_skills() {
         let defs = builtin_assistant_definitions(1_700_000_000);
-        let data = defs.iter().find(|d| d.id == "asst_builtin_data").unwrap();
-        for skill in ["pdf", "docx", "xlsx"] {
-            assert!(
-                data.skill_ids.iter().any(|s| s == skill),
-                "missing skill {skill}"
-            );
+        for def in &defs {
+            assert!(def.skill_ids.is_empty(), "{} pins skills", def.id);
         }
         // v2/v3 新增的专家在册，且 id 唯一（数量断言在上一个测试）。
         for id in [

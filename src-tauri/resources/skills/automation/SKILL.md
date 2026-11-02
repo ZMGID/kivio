@@ -145,7 +145,7 @@ Slot node `data.agent`:
 **`agent.tool`** — `{ "agent": { "toolIds": ["web_search", "web_fetch"] } }`  
 Empty = read-only tools + skill loader. Never include `automation_*` or memory tools.
 
-**`agent.skill`** — `{ "agent": { "skillIds": ["pdf"] } }`
+**`agent.skill`** — `{ "agent": { "skillIds": ["<installed-skill-id>"] } }`（只写当前已启用技能的 id）
 
 ## Best practices
 

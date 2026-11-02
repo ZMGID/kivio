@@ -281,7 +281,7 @@ pub fn native_read_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__read_file".to_string(),
         name: "read".to_string(),
-        description: "Read a local file or directory. For a file: text is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Output is capped at 2000 lines or 50KB, whichever is hit first, so a single read can never flood the context; when the cap or your own limit stops the read early, the result ENDS with a notice like `[Showing lines X-Y of Z. Use offset=N to continue.]` — if the part you need is not in this window, call read again with that offset before moving on. Optional offset/limit select a 1-based line window (the cap still applies on top); an offset past the last line is an error. For a directory path: returns its entries (folded in the former `ls` tool); offset/limit are ignored. Image files (png/jpg/webp/…) are also supported: the image is shown to you directly when your model has vision, otherwise it is described or OCR'd to text. To inspect several images at once, pass `paths` (up to 12). Images are read individually by default — always do that for analysis, QA, spelling, logos, or any per-image detail. A numbered contact sheet is used only for a first-pass overview of 6–12 similar images when the user asked to skim the set, or when you set overview=true for that skim; never for analysis. Re-read a single path for fine text. For PDF/Word/Excel, use the matching skill instead.".to_string(),
+        description: "Read a local file or directory. For a file: text is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Output is capped at 2000 lines or 50KB, whichever is hit first, so a single read can never flood the context; when the cap or your own limit stops the read early, the result ENDS with a notice like `[Showing lines X-Y of Z. Use offset=N to continue.]` — if the part you need is not in this window, call read again with that offset before moving on. Optional offset/limit select a 1-based line window (the cap still applies on top); an offset past the last line is an error. For a directory path: returns its entries (folded in the former `ls` tool); offset/limit are ignored. Image files (png/jpg/webp/…) are also supported: the image is shown to you directly when your model has vision, otherwise it is described or OCR'd to text. To inspect several images at once, pass `paths` (up to 12). Images are read individually by default — always do that for analysis, QA, spelling, logos, or any per-image detail. A numbered contact sheet is used only for a first-pass overview of 6–12 similar images when the user asked to skim the set, or when you set overview=true for that skim; never for analysis. Re-read a single path for fine text. For PDF/Word/Excel, extract content with available host parsing tools; this tool does not parse binary documents.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -1007,13 +1007,13 @@ pub fn native_automation_get_tool() -> ChatToolDefinition {
 pub fn native_automation_upsert_tool() -> ChatToolDefinition {
     native_automation_tool(
         "automation_upsert",
-        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Activate the `automation` skill first for node types and examples. Do not glob the repo and do not dry_run-probe types. Validation errors return allowedNodeTypes and schemaHint.",
+        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Consult available workflow guidance for node types and examples. Validation errors return allowedNodeTypes and schemaHint.",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "automation": {
                     "type": "object",
-                    "description": "Complete graph: {name, enabled, nodes:[{id, type, data}], edges:[{id, source, target, sourceHandle?, targetHandle?}]}. schemaVersion is set by Kivio. Allowed node types are in the `automation` skill."
+                    "description": "Complete graph: {name, enabled, nodes:[{id, type, data}], edges:[{id, source, target, sourceHandle?, targetHandle?}]}. schemaVersion is set by Kivio. Validation errors return allowedNodeTypes and schemaHint."
                 },
                 "dry_run": {
                     "type": "boolean",
@@ -1420,7 +1420,7 @@ mod tests {
     fn automation_upsert_tool_description_stays_short() {
         let def = native_automation_upsert_tool();
         assert!(
-            def.description.contains("`automation` skill"),
+            def.description.contains("Validation errors return"),
             "{}",
             def.description
         );

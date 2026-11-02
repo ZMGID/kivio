@@ -814,8 +814,8 @@ fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                     )
                     .await;
                 }
-            } else if let Some(hint) = skill_backed_document_hint(&path) {
-                // PDF / Word / Excel 等二进制文档：read 不解析，引导走对应 skill。
+            } else if let Some(hint) = binary_document_read_hint(&path) {
+                // PDF / Word / Excel 等二进制文档：read 不解析，引导用主机工具提取。
                 return Ok(text_tool_result(hint));
             }
         }
@@ -884,7 +884,7 @@ fn read_non_image_paths(
                 if path.is_dir() {
                     return crate::native_tools::list_dir(workspace, &args);
                 }
-                if let Some(hint) = skill_backed_document_hint(&path) {
+                if let Some(hint) = binary_document_read_hint(&path) {
                     return Ok(hint);
                 }
             }
@@ -912,13 +912,13 @@ fn read_non_image_paths(
     Ok(content)
 }
 
-/// PDF/Word/Excel 由内置 skill + 主机命令解析；read 工具不读二进制文档；命中时返回引导提示而非 UTF-8 报错。
-fn skill_backed_document_hint(path: &std::path::Path) -> Option<String> {
+/// PDF/Word/Excel 是二进制文档；read 工具不解析它们，命中时返回引导提示而非 UTF-8 报错。
+fn binary_document_read_hint(path: &std::path::Path) -> Option<String> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    let (skill, kind) = match ext.as_str() {
-        "pdf" => ("pdf", "PDF"),
-        "doc" | "docx" => ("docx", "Word 文档"),
-        "xls" | "xlsx" | "xlsm" => ("xlsx", "Excel 表格"),
+    let kind = match ext.as_str() {
+        "pdf" => "PDF",
+        "doc" | "docx" => "Word 文档",
+        "xls" | "xlsx" | "xlsm" => "Excel 表格",
         _ => return None,
     };
     let name = path
@@ -926,7 +926,7 @@ fn skill_backed_document_hint(path: &std::path::Path) -> Option<String> {
         .and_then(|name| name.to_str())
         .unwrap_or("file");
     Some(format!(
-        "{name} 是{kind}，read 工具不解析此类文件。请改用「{skill}」skill：用 bash 在主机上提取内容（若本机有对应 CLI 或 Python）；没有可用工具时如实告诉用户。"
+        "{name} 是{kind}，read 工具不解析此类文件。需要读取正文时用 bash 或本机可用的解析工具处理该路径；没有可用工具时如实告诉用户，不要仅凭文件名臆测内容。"
     ))
 }
 
@@ -1595,21 +1595,21 @@ mod tests {
     }
 
     #[test]
-    fn skill_backed_document_hint_routes_by_extension() {
+    fn binary_document_read_hint_routes_by_extension() {
         use std::path::Path;
-        assert!(skill_backed_document_hint(Path::new("/a/report.pdf"))
+        assert!(binary_document_read_hint(Path::new("/a/report.pdf"))
             .unwrap()
-            .contains("pdf"));
-        assert!(skill_backed_document_hint(Path::new("/a/notes.docx"))
+            .contains("PDF"));
+        assert!(binary_document_read_hint(Path::new("/a/notes.docx"))
             .unwrap()
-            .contains("docx"));
+            .contains("Word 文档"));
         // Case-insensitive on extension.
-        assert!(skill_backed_document_hint(Path::new("/a/sheet.XLSX"))
+        assert!(binary_document_read_hint(Path::new("/a/sheet.XLSX"))
             .unwrap()
-            .contains("xlsx"));
+            .contains("Excel 表格"));
         // Text and image files are NOT routed to the document-skill hint.
-        assert!(skill_backed_document_hint(Path::new("/a/readme.txt")).is_none());
-        assert!(skill_backed_document_hint(Path::new("/a/shot.png")).is_none());
+        assert!(binary_document_read_hint(Path::new("/a/readme.txt")).is_none());
+        assert!(binary_document_read_hint(Path::new("/a/shot.png")).is_none());
     }
 
     #[test]

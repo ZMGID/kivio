@@ -5851,7 +5851,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_obsidian_skills_follow_normal_enable_rules() {
+    fn standalone_skills_follow_normal_enable_rules() {
         let mut legacy = serde_json::to_value(Settings::default()).unwrap();
         legacy["obsidianVaultPath"] = serde_json::json!("/old/vault");
         let restored: Settings = serde_json::from_value(legacy).unwrap();
@@ -5860,16 +5860,16 @@ mod tests {
             .get("obsidianVaultPath")
             .is_none());
         let mut config = restored.chat_tools;
-        assert!(skill_globally_available(&config, "obsidian-markdown"));
+        assert!(skill_globally_available(&config, "automation"));
         assert_eq!(
-            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian"),
+            skill_global_unavailable_error(&config, "automation", "Automation"),
             None
         );
-        config.disabled_skill_ids = vec!["obsidian-markdown".into()];
-        assert!(!skill_globally_available(&config, "obsidian-markdown"));
+        config.disabled_skill_ids = vec!["automation".into()];
+        assert!(!skill_globally_available(&config, "automation"));
         assert_eq!(
-            skill_global_unavailable_error(&config, "obsidian-markdown", "Obsidian").as_deref(),
-            Some("Skill is disabled in Settings: Obsidian")
+            skill_global_unavailable_error(&config, "automation", "Automation").as_deref(),
+            Some("Skill is disabled in Settings: Automation")
         );
     }
 

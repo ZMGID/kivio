@@ -15,7 +15,7 @@ release 构建里整套 probe 被 `#[cfg(debug_assertions)]` 编译掉，不存�
      "prompt": "用 glob 查找 src/native_tools/*.rs，报告有几个文件",
      "provider": "provider-xxxx",   // 可选；省略用默认 chat provider
      "model": "grok-composer-2.5-fast", // 可选；省略用默认 chat model
-     "skillId": "pdf",              // 可选
+     "skillId": "automation",       // 可选
      "cwd": "E:/path/to/repo"       // 可选；文件工具相对路径的根。省略 = 进程 cwd（dev 通常是 src-tauri）
    }
    ```
