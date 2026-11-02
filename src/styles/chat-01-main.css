@@ -2390,3 +2390,96 @@ button.chat-composer-status-item:hover {
 /* HTML 预览全屏：沿用 kv-modal 外观，只放大尺寸。 */
 .kv-modal.kv-html-preview-full { display: none; flex-direction: column; gap: 6px; width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; padding: 8px 12px 12px; }
 .kv-modal.kv-html-preview-full[open] { display: flex; }
+
+/* 输入框底栏的会话用量像素条：左侧 4 格费用量级柱 | 12×4 像素矩阵按比例显示 缓存 / 输入 / 输出。
+   不放可见文字；悬停或键盘聚焦时上方弹出信息卡。生成中像素逐列起伏如声波，数据变化时格子换色有过渡。 */
+.chat-session-usage {
+  position: relative;
+  --px: 3px;
+  --gap: 1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 3px 5px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--theme-surface-muted) 72%, transparent);
+  outline: none;
+  transition: border-color var(--kv-dur-slow) var(--kv-ease-out);
+}
+.chat-session-usage:is(:hover, :focus-visible) { border-color: var(--theme-surface-border-strong); }
+.chat-session-usage:focus-visible { box-shadow: 0 0 0 2px var(--accent-ring); }
+.chat-session-usage[data-live] { border-color: color-mix(in srgb, var(--accent) 40%, var(--theme-surface-border)); }
+.chat-session-usage :is(.chat-session-usage-cost, .chat-session-usage-grid) > i {
+  display: block;
+  width: var(--px);
+  height: var(--px);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  transition: background-color var(--kv-dur-slow) var(--kv-ease-out);
+}
+.chat-session-usage-cost { display: grid; gap: var(--gap); }
+.chat-session-usage-cost > i[data-on] { background: var(--text); }
+.chat-session-usage-cost[data-partial] > i[data-on]:first-of-type { background: var(--danger); }
+.chat-session-usage-grid {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(4, var(--px));
+  gap: var(--gap);
+}
+.chat-session-usage-grid > i { animation: chat-session-usage-in var(--kv-dur-slow) var(--kv-ease-standard) backwards; animation-delay: calc(var(--c) * 12ms); }
+.chat-session-usage-grid > i[data-k='cache'] { background: var(--accent); }
+.chat-session-usage-grid > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.chat-session-usage-grid > i[data-k='output'] { background: var(--text-muted); }
+.chat-session-usage[data-live] .chat-session-usage-grid > i {
+  animation: chat-session-usage-wave 1.2s ease-in-out infinite;
+  animation-delay: calc(var(--c) * 45ms);
+}
+@keyframes chat-session-usage-in { from { opacity: 0; transform: scale(0.2); } }
+@keyframes chat-session-usage-wave { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* 悬停信息卡：右对齐在条的正上方，避免在底栏右侧溢出窗口。 */
+.chat-session-usage-card {
+  position: absolute;
+  right: -1px;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 6px;
+  background: var(--theme-surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out), transform var(--kv-dur-fast) var(--kv-ease-out), visibility 0s linear var(--kv-dur-fast);
+}
+.chat-session-usage:is(:hover, :focus-visible) .chat-session-usage-card {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0s;
+}
+.chat-session-usage-card-cost { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.chat-session-usage-card-cost strong { color: var(--text); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.chat-session-usage-card-bar { display: flex; gap: 1px; height: 4px; margin-bottom: 8px; background: color-mix(in srgb, var(--text) 9%, transparent); }
+.chat-session-usage-card-bar > i { min-width: 2px; }
+.chat-session-usage-card-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.chat-session-usage-card-row > i { width: 6px; height: 6px; flex: none; }
+.chat-session-usage-card-row > :last-child { margin-left: auto; color: var(--text); font-weight: 500; }
+.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='cache'] { background: var(--accent); }
+.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='output'] { background: var(--text-muted); }
+.chat-session-usage-card p { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--theme-surface-border); color: var(--text-faint); font-size: 10.5px; }
+@media (prefers-reduced-motion: reduce) {
+  .chat-session-usage-grid > i, .chat-session-usage[data-live] .chat-session-usage-grid > i { animation: none; }
+  .chat-session-usage :is(.chat-session-usage-cost, .chat-session-usage-grid) > i, .chat-session-usage-card { transition: none; }
+}

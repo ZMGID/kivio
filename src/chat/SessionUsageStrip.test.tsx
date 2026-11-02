@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ConversationCost } from '../api/tauri'
-import { SessionUsageStrip } from './SessionUsageStrip'
+import { SessionUsageStrip, allocateCells } from './SessionUsageStrip'
 import type { ChatMessage, MessageUsage } from './types'
 import { useSubAgents } from './useSubAgents'
 
@@ -80,11 +80,11 @@ describe('SessionUsageStrip', () => {
     render(<SessionUsageStrip conversationId="cost-chat" lang="en" messages={[]} />)
     await act(async () => {})
     expect(screen.getByText(value)).toBeVisible()
-    const hint = screen.getByText(value).parentElement!
-    expect(hint).toHaveTextContent('*')
-    expect(hint.title).toContain('not an invoice')
-    expect(hint.title).toContain('Some requests lack pricing or usage')
-    expect(hint.title.includes('Only known costs are shown')).toBe(hasKnownCost)
+    expect(screen.getByText(value).parentElement!).toHaveTextContent('*')
+    const card = screen.getByRole('tooltip', { hidden: true })
+    expect(card).toHaveTextContent('not an invoice')
+    expect(card).toHaveTextContent('Some requests lack pricing or usage')
+    expect(card.textContent!.includes('Only known costs are shown')).toBe(hasKnownCost)
     if (!hasKnownCost) expect(screen.queryByText('0.00$')).not.toBeInTheDocument()
   })
 
@@ -193,7 +193,17 @@ describe('SessionUsageStrip', () => {
     render(<SessionUsageStrip lang="en" messages={[assistant({ input_tokens: 200 })]} />)
     expect(screen.getByLabelText('Input')).toHaveTextContent('↑200')
     expect(screen.getByLabelText('Output')).toHaveTextContent('↓—')
-    expect(screen.getByTitle('Cache hit rate for loaded messages')).toHaveTextContent('—')
+    expect(screen.getByLabelText('Cache hit')).toHaveTextContent('—')
+  })
+
+  it.each([
+    [[0, 0, 0], 10, [0, 0, 0]],
+    [[1, 1, 2], 8, [2, 2, 4]],
+    [[1_000_000, 1, 0], 112, [111, 1, 0]],
+    [[1, 1, 1], 10, [4, 3, 3]],
+  ])('allocates %j into %i pixels as %j', (parts, cells, expected) => {
+    const out = allocateCells(parts, cells)
+    expect(out).toEqual(expected)
   })
 
   it('renders nothing when no message carries usage', () => {

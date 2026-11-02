@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState, type CSSProperties } from 'react'
 import { api, type ConversationCost } from '../api/tauri'
 import { formatTokensK } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
@@ -35,6 +35,19 @@ function formatCachePercent(cached: number, input: number): string {
   return '0%'
 }
 
+const GRID_COLS = 12
+const GRID_ROWS = 4
+
+/** 按比例把 cells 格分给各部分；非零部分至少 1 格，舍入误差由最大部分吸收。 */
+export function allocateCells(parts: number[], cells: number): number[] {
+  const sum = parts.reduce((a, b) => a + b, 0)
+  if (sum <= 0) return parts.map(() => 0)
+  const out = parts.map(p => (p > 0 ? Math.max(1, Math.round((p / sum) * cells)) : 0))
+  const largest = out.indexOf(Math.max(...out))
+  out[largest] += cells - out.reduce((a, b) => a + b, 0)
+  return out
+}
+
 /**
  * 已加载消息的 provider 实报用量，以及独立于消息窗口的完整对话和子代理估算费用。
  * 输入排除缓存命中；缓存命中率以新鲜输入与缓存命中的总和为分母。
@@ -49,6 +62,7 @@ export function SessionUsageStrip({
   cacheIncludedInInput,
   hideCost = false,
 }: SessionUsageStripProps) {
+  const cardId = useId()
   const totals = useMemo(() => {
     let input = 0
     let cached = 0
@@ -123,30 +137,63 @@ export function SessionUsageStrip({
   if (!totals.hasAny && !conversationId) return null
 
   const t = i18n[lang]
-  const cachePercent = totals.hasInput && totals.hasCached
-    ? formatCachePercent(totals.cached, totals.input) || '—'
-    : '—'
+  const cacheKnown = totals.hasInput && totals.hasCached && totals.cached + totals.input > 0
+  const cachePercent = cacheKnown ? formatCachePercent(totals.cached, totals.input) : '—'
+  const inputText = totals.hasInput ? formatTokensK(totals.input) : '—'
+  const outputText = totals.hasOutput ? formatTokensK(totals.output) : '—'
+  const [cacheCells, inputCells, outputCells] = allocateCells([
+    totals.hasCached ? totals.cached : 0,
+    totals.hasInput ? totals.input : 0,
+    totals.hasOutput ? totals.output : 0,
+  ], GRID_COLS * GRID_ROWS)
+  const cells = [
+    ...Array<string>(cacheCells).fill('cache'),
+    ...Array<string>(inputCells).fill('input'),
+    ...Array<string>(outputCells).fill('output'),
+  ]
+  while (cells.length < GRID_COLS * GRID_ROWS) cells.push('empty')
+  // 每亮一格费用跨一个数量级：<$0.1 / <$1 / <$10 / ≥$10。
+  const costLevel = knownCost && amount > 0 ? Math.min(GRID_ROWS, Math.max(1, Math.floor(Math.log10(amount)) + 3)) : 0
+  const showCost = Boolean(conversationId) && !hideCost
+  const shares: Array<[string, number]> = [['cache', cacheCells], ['input', inputCells], ['output', outputCells]]
 
+  // 条本身只有像素；悬停或键盘聚焦时上方弹出信息卡，读屏通过 aria-describedby 读到同一份内容。
   return (
-    <div className="chat-session-usage flex max-w-full flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] leading-5 tabular-nums text-[var(--text-muted)]"
-      data-tauri-drag-region="false">
-      {conversationId && !hideCost && (
-        <span className="whitespace-nowrap" title={`${costHint}${partialCost ? ` ${partialHint}` : ''}`}>
-          <span>{costText}</span>{partialCost ? '*' : ''}
+    <div className="chat-session-usage" data-live={generating || undefined} data-tauri-drag-region="false"
+      tabIndex={0} aria-describedby={cardId}>
+      {showCost && (
+        <span className="chat-session-usage-cost" data-partial={partialCost || undefined} aria-hidden="true">
+          {Array.from({ length: GRID_ROWS }, (_, row) => (
+            <i key={row} data-on={GRID_ROWS - row <= costLevel || undefined} />
+          ))}
         </span>
       )}
-      <span className="whitespace-nowrap" aria-label={t.chatUsageCache}
-        title={lang === 'zh' ? '已加载消息的缓存命中率' : 'Cache hit rate for loaded messages'}>
-        <span>{cachePercent}</span>
+      <span className="chat-session-usage-grid" aria-hidden="true">
+        {cells.map((kind, index) => (
+          <i key={index} data-k={kind} style={{ '--c': Math.floor(index / GRID_ROWS) } as CSSProperties} />
+        ))}
       </span>
-      <span className="whitespace-nowrap" aria-label={t.chatUsageInput}
-        title={lang === 'zh' ? '已加载消息的输入 token，不含缓存命中' : 'Loaded input tokens, excluding cache hits'}>
-        ↑<span>{totals.hasInput ? formatTokensK(totals.input) : '—'}</span>
-      </span>
-      <span className="whitespace-nowrap" aria-label={t.chatUsageOutput}
-        title={lang === 'zh' ? '已加载消息的输出 token' : 'Loaded output tokens'}>
-        ↓<span>{totals.hasOutput ? formatTokensK(totals.output) : '—'}</span>
-      </span>
+      <div id={cardId} role="tooltip" className="chat-session-usage-card">
+        {showCost && (
+          <div className="chat-session-usage-card-cost">
+            <span>{lang === 'zh' ? '估算费用' : 'Estimated cost'}</span>
+            <strong><span>{costText}</span>{partialCost ? '*' : ''}</strong>
+          </div>
+        )}
+        <span className="chat-session-usage-card-bar" aria-hidden="true">
+          {shares.map(([kind, n]) => n > 0 && <i key={kind} data-k={kind} style={{ flexGrow: n }} />)}
+        </span>
+        <div className="chat-session-usage-card-row" aria-label={t.chatUsageCache}>
+          <i data-k="cache" />{t.chatUsageCache}<span>{cachePercent}</span>
+        </div>
+        <div className="chat-session-usage-card-row" aria-label={t.chatUsageInput}>
+          <i data-k="input" />{t.chatUsageInput}<b>↑<span>{inputText}</span></b>
+        </div>
+        <div className="chat-session-usage-card-row" aria-label={t.chatUsageOutput}>
+          <i data-k="output" />{t.chatUsageOutput}<b>↓<span>{outputText}</span></b>
+        </div>
+        {showCost && <p>{costHint}{partialCost ? ` ${partialHint}` : ''}</p>}
+      </div>
     </div>
   )
 }
