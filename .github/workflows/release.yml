@@ -35,7 +35,13 @@ jobs:
       - name: Resolve and validate latest compatible model database once
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/model-database.mjs --output "$RUNNER_TEMP/model-database/modelDatabase.json"
+        run: |
+          mkdir -p "$RUNNER_TEMP/model-database"
+          if ! node scripts/model-database.mjs --output "$RUNNER_TEMP/model-database/modelDatabase.json"; then
+            echo "::warning::Online model database is unavailable or incompatible; using the validated snapshot from $BUILD_REF."
+            node scripts/model-database.mjs --check
+            cp src/data/modelDatabase.json "$RUNNER_TEMP/model-database/modelDatabase.json"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: release-model-database
