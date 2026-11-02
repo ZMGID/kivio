@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ConversationCost } from '../api/tauri'
-import { SessionUsageStrip, allocateCells } from './SessionUsageStrip'
+import { SessionUsageStrip } from './SessionUsageStrip'
 import type { ChatMessage, MessageUsage } from './types'
 import { useSubAgents } from './useSubAgents'
 
@@ -197,13 +197,17 @@ describe('SessionUsageStrip', () => {
   })
 
   it.each([
-    [[0, 0, 0], 10, [0, 0, 0]],
-    [[1, 1, 2], 8, [2, 2, 4]],
-    [[1_000_000, 1, 0], 112, [111, 1, 0]],
-    [[1, 1, 1], 10, [4, 3, 3]],
-  ])('allocates %j into %i pixels as %j', (parts, cells, expected) => {
-    const out = allocateCells(parts, cells)
-    expect(out).toEqual(expected)
+    [[0, 0, 0], [0, 0, 0]],
+    [[1, 1, 2], [12, 12, 24]],
+    [[1_000_000, 1, 0], [47, 1, 0]],
+    [[1, 1, 1], [16, 16, 16]],
+  ])('renders usage %j as %j pixels', ([cached, input, output], expected) => {
+    const { container } = render(<SessionUsageStrip lang="en" cacheIncludedInInput={false}
+      messages={[assistant({ cached_input_tokens: cached, input_tokens: input, output_tokens: output })]} />)
+    const grid = container.querySelector('.chat-session-usage-grid')
+    expect(grid?.children).toHaveLength(48)
+    expect(['cache', 'input', 'output'].map(kind => grid?.querySelectorAll(`[data-k="${kind}"]`).length))
+      .toEqual(expected)
   })
 
   it('renders nothing when no message carries usage', () => {

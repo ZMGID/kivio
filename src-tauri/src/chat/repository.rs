@@ -1246,11 +1246,21 @@ mod tests {
         let repository = ConversationRepository::default();
         let deleted_path = conversation.clone();
         let deleted_attachments = attachments.clone();
-        let error = repository.with_conversation_storage(
-            "conv_test",
-            move || commit_html_render(&deleted_path, &deleted_attachments, attachment_id, "<p>late</p>"),
-            "publish HTML render",
-        ).await.unwrap_err();
+        let error = repository
+            .with_conversation_storage(
+                "conv_test",
+                move || {
+                    commit_html_render(
+                        &deleted_path,
+                        &deleted_attachments,
+                        attachment_id,
+                        "<p>late</p>",
+                    )
+                },
+                "publish HTML render",
+            )
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("no longer exists"));
         assert!(!attachments.exists());
     }
@@ -1268,14 +1278,22 @@ mod tests {
         let render_conversation = conversation.clone();
         let render_attachments = attachments.clone();
         let render = tokio::spawn(async move {
-            render_repository.with_conversation_storage("conv_test", move || {
-                let _ = started_tx.send(());
-                release_rx.recv().map_err(|error| error.to_string())?;
-                commit_html_render(
-                    &render_conversation, &render_attachments,
-                    "htmlrender-12345678-1234-4234-9234-123456789abc", "<p>late</p>",
+            render_repository
+                .with_conversation_storage(
+                    "conv_test",
+                    move || {
+                        let _ = started_tx.send(());
+                        release_rx.recv().map_err(|error| error.to_string())?;
+                        commit_html_render(
+                            &render_conversation,
+                            &render_attachments,
+                            "htmlrender-12345678-1234-4234-9234-123456789abc",
+                            "<p>late</p>",
+                        )
+                    },
+                    "publish HTML render",
                 )
-            }, "publish HTML render").await
+                .await
         });
         started_rx.await.unwrap();
         render.abort();

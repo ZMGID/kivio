@@ -41,17 +41,17 @@ use super::types::{
     native_advisor_tool, native_automation_delete_tool, native_automation_get_tool,
     native_automation_list_tool, native_automation_run_tool, native_automation_runs_tool,
     native_automation_set_enabled_tool, native_automation_upsert_tool, native_bash_output_tool,
-    native_edit_file_tool, native_glob_files_tool, native_kill_background_tool,
-    native_kivio_create_conversation_tool, native_kivio_interrupt_tool,
-    native_kivio_list_agents_tool, native_kivio_list_conversations_tool,
-    native_kivio_list_projects_tool, native_kivio_read_conversation_tool,
-    native_kivio_send_message_tool, native_knowledge_search_tool, native_list_dir_tool,
-    native_memory_modify_tool, native_memory_read_tool, native_memory_search_tool,
-    native_html_preview_tool, native_html_render_tool, native_present_artifacts_tool,
-    native_read_file_tool, native_run_command_tool,
-    native_save_assistant_tool, native_search_files_tool, native_web_fetch_tool,
-    native_web_search_tool, native_write_file_tool, ChatToolArtifact, ChatToolDefinition,
-    McpToolCallResult, PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS,
+    native_edit_file_tool, native_glob_files_tool, native_html_preview_tool,
+    native_html_render_tool, native_kill_background_tool, native_kivio_create_conversation_tool,
+    native_kivio_interrupt_tool, native_kivio_list_agents_tool,
+    native_kivio_list_conversations_tool, native_kivio_list_projects_tool,
+    native_kivio_read_conversation_tool, native_kivio_send_message_tool,
+    native_knowledge_search_tool, native_list_dir_tool, native_memory_modify_tool,
+    native_memory_read_tool, native_memory_search_tool, native_present_artifacts_tool,
+    native_read_file_tool, native_run_command_tool, native_save_assistant_tool,
+    native_search_files_tool, native_web_fetch_tool, native_web_search_tool,
+    native_write_file_tool, ChatToolArtifact, ChatToolDefinition, McpToolCallResult,
+    PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS,
 };
 
 /// Gate signature mirrors `list_native_builtin_tool_defs(native,
@@ -92,7 +92,12 @@ pub enum NativeToolCall {
     /// legacy `RegistryToolExecutor` special case which never resolved a
     /// workspace for todo tools.
     Conversation(
-        for<'a> fn(&'a AppHandle, &'a NativeToolContext<'a>, &'a str, Value) -> NativeToolFuture<'a>,
+        for<'a> fn(
+            &'a AppHandle,
+            &'a NativeToolContext<'a>,
+            &'a str,
+            Value,
+        ) -> NativeToolFuture<'a>,
     ),
     /// Host-mediated tool (ask_user): intercepted in
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
@@ -711,7 +716,8 @@ fn call_html_tool<'a>(
     arguments: Value,
 ) -> NativeToolFuture<'a> {
     Box::pin(async move {
-        let result = crate::html_render::call_tool(app, &ctx.conversation_id, name, &arguments).await?;
+        let result =
+            crate::html_render::call_tool(app, &ctx.conversation_id, name, &arguments).await?;
         Ok(html_tool_result(result))
     })
 }
@@ -1589,7 +1595,10 @@ mod tests {
             image_png_base64: Some("aGVsbG8=".into()),
         });
         assert_eq!(preview.artifacts.len(), 1);
-        assert_eq!(preview.artifacts[0].data_url, "data:image/png;base64,aGVsbG8=");
+        assert_eq!(
+            preview.artifacts[0].data_url,
+            "data:image/png;base64,aGVsbG8="
+        );
         assert_eq!(preview.artifacts[0].mime_type, "image/png");
         assert!(preview.structured_content.is_none());
     }
@@ -2005,12 +2014,14 @@ mod tests {
             workspace_roots: Vec::new(),
         };
         for entry in NATIVE_TOOLS {
-            if !matches!(entry.name, "html_render" | "html_preview") && matches!(
-                entry.call,
-                NativeToolCall::Conversation(_)
-                    | NativeToolCall::HostMediated
-                    | NativeToolCall::SubAgent(_)
-            ) {
+            if !matches!(entry.name, "html_render" | "html_preview")
+                && matches!(
+                    entry.call,
+                    NativeToolCall::Conversation(_)
+                        | NativeToolCall::HostMediated
+                        | NativeToolCall::SubAgent(_)
+                )
+            {
                 assert!(
                     !(entry.enabled)(&native, true, true),
                     "{} must be appended via chat/commands.rs, not listed here",
@@ -2075,15 +2086,26 @@ mod tests {
             working_directory: String::new(),
             workspace_roots: Vec::new(),
         };
-        assert_eq!(names(&off, true, false), ["present_artifacts", "html_render", "html_preview"]);
+        assert_eq!(
+            names(&off, true, false),
+            ["present_artifacts", "html_render", "html_preview"]
+        );
 
         // web_search requires both the toggle and a configured provider key.
         let mut search_only = off.clone();
         search_only.web_search = true;
-        assert_eq!(names(&search_only, false, false), ["present_artifacts", "html_render", "html_preview"]);
+        assert_eq!(
+            names(&search_only, false, false),
+            ["present_artifacts", "html_render", "html_preview"]
+        );
         assert_eq!(
             names(&search_only, true, false),
-            ["web_search", "present_artifacts", "html_render", "html_preview"]
+            [
+                "web_search",
+                "present_artifacts",
+                "html_render",
+                "html_preview"
+            ]
         );
 
         // read_file gate exposes the whole read-side group, in order.
@@ -2091,7 +2113,15 @@ mod tests {
         read_only.read_file = true;
         assert_eq!(
             names(&read_only, false, false),
-            ["read", "grep", "glob", "present_artifacts", "html_render", "html_preview", "kivio_inspect"]
+            [
+                "read",
+                "grep",
+                "glob",
+                "present_artifacts",
+                "html_render",
+                "html_preview",
+                "kivio_inspect"
+            ]
         );
 
         // The write gate exposes the whole-file write tool only. File cards are

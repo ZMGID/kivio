@@ -3274,9 +3274,9 @@ async fn connect_persistent_session(
             })
         }
         StreamFormat::CodexAppServer => {
-            let mcp = chat_credential.as_ref().map(|credential| {
-                (credential.url.as_str(), credential.authorization.as_str())
-            });
+            let mcp = chat_credential
+                .as_ref()
+                .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
             if let Some(tid) = resume_native
                 .as_deref()
                 .map(str::trim)
@@ -4065,7 +4065,10 @@ fn update_existing_acp_tool(
     name: &str,
     input: &serde_json::Value,
 ) -> bool {
-    if input.get("sessionUpdate").and_then(serde_json::Value::as_str) != Some("tool_call_update")
+    if input
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+        != Some("tool_call_update")
         || !matches!(
             record.status,
             ToolCallStatus::Pending | ToolCallStatus::Running
@@ -4146,7 +4149,8 @@ fn attach_external_html_render(
         .and_then(serde_json::Value::as_str)
         .is_some_and(|kind| kind == "tool_call" || kind == "tool_call_update");
     let acp_title = acp
-        && record.name
+        && record
+            .name
             .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
             .any(|part| part == "html_render");
     let acp_name = acp
@@ -4541,22 +4545,34 @@ mod tests {
         }
         for name in ["Call html_render", "Calling kivio.html_render (MCP)"] {
             let reference = queue_render(&conversation);
-            let mut record = render_test_record(name, serde_json::json!({
-                "sessionUpdate": "tool_call", "title": name, "rawInput": {"title": "Chart"}
-            }));
+            let mut record = render_test_record(
+                name,
+                serde_json::json!({
+                    "sessionUpdate": "tool_call", "title": name, "rawInput": {"title": "Chart"}
+                }),
+            );
             attach_external_html_render(
-                &mut record, &conversation, &render_result(&reference), false,
+                &mut record,
+                &conversation,
+                &render_result(&reference),
+                false,
             );
             assert_eq!(record.structured_content, Some(reference), "{name}");
         }
         for key in ["name", "toolName"] {
             let reference = queue_render(&conversation);
-            let mut record = render_test_record("Rendering chart", serde_json::json!({
-                "sessionUpdate": "tool_call", "title": "Rendering chart",
-                (key): "kivio/html_render", "rawInput": {"title": "Chart"}
-            }));
+            let mut record = render_test_record(
+                "Rendering chart",
+                serde_json::json!({
+                    "sessionUpdate": "tool_call", "title": "Rendering chart",
+                    (key): "kivio/html_render", "rawInput": {"title": "Chart"}
+                }),
+            );
             attach_external_html_render(
-                &mut record, &conversation, &render_result(&reference), false,
+                &mut record,
+                &conversation,
+                &render_result(&reference),
+                false,
             );
             assert_eq!(record.structured_content, Some(reference), "{key}");
         }
@@ -4589,21 +4605,33 @@ mod tests {
     fn acp_updates_keep_non_null_input_and_programmatic_name() {
         let conversation = format!("conv_{}", Uuid::new_v4());
         let reference = queue_render(&conversation);
-        let mut record = render_test_record("Rendering chart", serde_json::json!({
-            "sessionUpdate": "tool_call", "title": "Rendering chart", "rawInput": {"title": "Chart"}
-        }));
+        let mut record = render_test_record(
+            "Rendering chart",
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "title": "Rendering chart", "rawInput": {"title": "Chart"}
+            }),
+        );
         let update = serde_json::json!({
             "sessionUpdate": "tool_call_update", "title": "Rendering chart",
             "toolName": "kivio/html_render", "rawInput": null
         });
-        assert!(update_existing_acp_tool(&mut record, "Rendering chart", &update));
+        assert!(update_existing_acp_tool(
+            &mut record,
+            "Rendering chart",
+            &update
+        ));
         assert_eq!(
             record.structured_content.as_ref().unwrap()["rawInput"]["title"],
             "Chart"
         );
         let arguments: serde_json::Value = serde_json::from_str(&record.arguments).unwrap();
         assert_eq!(arguments["rawInput"]["title"], "Chart");
-        attach_external_html_render(&mut record, &conversation, &render_result(&reference), false);
+        attach_external_html_render(
+            &mut record,
+            &conversation,
+            &render_result(&reference),
+            false,
+        );
         assert_eq!(record.structured_content, Some(reference));
     }
 

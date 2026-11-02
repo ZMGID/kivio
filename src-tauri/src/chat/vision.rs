@@ -835,8 +835,8 @@ mod tests {
 
     #[tokio::test]
     async fn image_feedback_preserves_placeholder_without_context_or_auxiliary_model() {
-        use base64::{engine::general_purpose, Engine as _};
         use crate::settings::{ModelCapabilities, ModelInfo};
+        use base64::{engine::general_purpose, Engine as _};
 
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(2, 2)
@@ -851,25 +851,42 @@ mod tests {
         let conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
             "id": "conv_test", "title": "Test", "provider_id": "saved",
             "model": "saved-model", "messages": [], "created_at": 1, "updated_at": 1
-        })).unwrap();
+        }))
+        .unwrap();
         let mut provider = test_provider("run", "Run", Vec::new());
         for (model, vision) in [("vision-model", true), ("text-model", false)] {
-            provider.model_overrides.insert(model.into(), ModelInfo {
-                capabilities: Some(ModelCapabilities {
-                    vision: Some(vision),
-                    ..ModelCapabilities::default()
-                }),
-                ..ModelInfo::default()
-            });
+            provider.model_overrides.insert(
+                model.into(),
+                ModelInfo {
+                    capabilities: Some(ModelCapabilities {
+                        vision: Some(vision),
+                        ..ModelCapabilities::default()
+                    }),
+                    ..ModelInfo::default()
+                },
+            );
         }
         let state = crate::state::test_app_state();
         let settings = Settings::default();
         for (model, context_exists) in [("vision-model", false), ("text-model", true)] {
             let mut result = crate::mcp::result::parse_tool_result(wire.clone());
             super::attach_image_artifacts_for_model_with_context(
-                &state, &settings, "conv_test", "message", &provider, model, &mut result,
-                || if context_exists { Ok(conversation.clone()) } else { Err("missing".into()) },
-            ).await;
+                &state,
+                &settings,
+                "conv_test",
+                "message",
+                &provider,
+                model,
+                &mut result,
+                || {
+                    if context_exists {
+                        Ok(conversation.clone())
+                    } else {
+                        Err("missing".into())
+                    }
+                },
+            )
+            .await;
             assert_eq!(result.content, "Preview captured.\n[image: image/png]");
             assert_eq!(result.artifacts.len(), 1);
             assert!(result.follow_up_user_messages.is_empty());

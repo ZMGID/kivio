@@ -640,7 +640,12 @@ mod tests {
         registry.register("conversation".to_string(), session);
         assert!(probe.is_active());
         let control = registry
-            .reusable_control("conversation", "claude", "/project", &LaunchConfig::default())
+            .reusable_control(
+                "conversation",
+                "claude",
+                "/project",
+                &LaunchConfig::default(),
+            )
             .unwrap();
         assert!(probe.is_active());
         drop(control);

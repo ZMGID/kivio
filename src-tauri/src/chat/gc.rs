@@ -628,7 +628,9 @@ mod tests {
             fs::remove_file(dir.path().join(file)).unwrap();
         }
         assert_eq!(
-            fs::read(dir.path().join(&retained_file)).unwrap().as_slice(),
+            fs::read(dir.path().join(&retained_file))
+                .unwrap()
+                .as_slice(),
             retained_file.as_bytes()
         );
         assert!(!dir.path().join(rewound_file).exists());
@@ -659,17 +661,18 @@ mod tests {
         for file in &files {
             fs::write(dir.join(file), file.as_bytes()).unwrap();
         }
-        let mut conversation: super::super::Conversation = serde_json::from_value(serde_json::json!({
-            "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
-            "created_at": 1, "updated_at": 1, "messages": [{
-                "id": "m", "role": "assistant", "content": "", "timestamp": 1,
-                "tool_calls": [{
-                    "id": "c", "name": "html_render", "status": "success",
-                    "structured_content": {"type": "html_render", "attachmentId": id}
+        let mut conversation: super::super::Conversation =
+            serde_json::from_value(serde_json::json!({
+                "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
+                "created_at": 1, "updated_at": 1, "messages": [{
+                    "id": "m", "role": "assistant", "content": "", "timestamp": 1,
+                    "tool_calls": [{
+                        "id": "c", "name": "html_render", "status": "success",
+                        "structured_content": {"type": "html_render", "attachmentId": id}
+                    }]
                 }]
-            }]
-        }))
-        .unwrap();
+            }))
+            .unwrap();
         assert_eq!(
             referenced_attachment_names(&conversation),
             HashSet::from([last_render.clone()])
@@ -711,10 +714,12 @@ mod tests {
         let calls: Vec<_> = values
             .into_iter()
             .enumerate()
-            .map(|(index, content)| serde_json::json!({
-                "id": format!("c{index}"), "name": "html_render", "status": "success",
-                "structured_content": content
-            }))
+            .map(|(index, content)| {
+                serde_json::json!({
+                    "id": format!("c{index}"), "name": "html_render", "status": "success",
+                    "structured_content": content
+                })
+            })
             .collect();
         let conversation: super::super::Conversation = serde_json::from_value(serde_json::json!({
             "id": "conv_render_gc", "title": "test", "provider_id": "p", "model": "m",
@@ -730,7 +735,12 @@ mod tests {
             unreferenced_attachment_names(Path::new("attachments"), &files, &referenced).is_empty()
         );
         assert_eq!(
-            unreferenced_attachment_names_inner(Path::new("attachments"), &files, &referenced, true),
+            unreferenced_attachment_names_inner(
+                Path::new("attachments"),
+                &files,
+                &referenced,
+                true
+            ),
             vec![format!("{valid}.html")]
         );
     }

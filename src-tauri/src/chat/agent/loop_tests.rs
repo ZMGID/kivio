@@ -2130,8 +2130,8 @@ async fn completed_stream_survives_proxy_disconnect_without_replay() {
 
 #[tokio::test]
 async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
-    use base64::{engine::general_purpose, Engine as _};
     use crate::settings::{ModelCapabilities, ModelInfo};
+    use base64::{engine::general_purpose, Engine as _};
 
     let mut png = std::io::Cursor::new(Vec::new());
     image::DynamicImage::new_rgb8(2, 2)
@@ -2147,7 +2147,8 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
                         "index":0, "id":"call_preview", "function":{
                             "name":"html_preview", "arguments":"{\"html\":\"<p>Preview</p>\"}"
                         }
-                    }]}}]}).to_string(),
+                    }]}}]})
+                    .to_string(),
                     r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(),
                     "[DONE]".into(),
                 ]),
@@ -2173,12 +2174,20 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
         };
         let mut vision_provider = test_provider(&vision_server.base_url);
         vision_provider.id = "vision-provider".into();
-        vision_provider.model_overrides.insert("vision-model".into(), model_info(true));
-        vision_provider.model_overrides.insert("text-model".into(), model_info(saved_is_vision));
+        vision_provider
+            .model_overrides
+            .insert("vision-model".into(), model_info(true));
+        vision_provider
+            .model_overrides
+            .insert("text-model".into(), model_info(saved_is_vision));
         let mut text_provider = test_provider(&text_server.base_url);
         text_provider.id = "text-provider".into();
-        text_provider.model_overrides.insert("text-model".into(), model_info(false));
-        text_provider.model_overrides.insert("vision-model".into(), model_info(saved_is_vision));
+        text_provider
+            .model_overrides
+            .insert("text-model".into(), model_info(false));
+        text_provider
+            .model_overrides
+            .insert("vision-model".into(), model_info(saved_is_vision));
         let mut auxiliary = test_provider(&aux_server.base_url);
         auxiliary.id = "aux-provider".into();
 
@@ -2199,7 +2208,8 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
                 {"provider_id": "vision-provider", "model": "vision-model"},
                 {"provider_id": "text-provider", "model": "text-model"}
             ]
-        })).unwrap();
+        }))
+        .unwrap();
         let state = test_app_state();
         let executor = PreviewFeedbackExecutor {
             state: &state,
@@ -2233,16 +2243,29 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
         );
         let vision_result = vision_result.unwrap();
         let text_result = text_result.unwrap();
-        assert_eq!(vision_result.tool_records[0].status, ToolCallStatus::Success);
+        assert_eq!(
+            vision_result.tool_records[0].status,
+            ToolCallStatus::Success
+        );
         assert_eq!(text_result.tool_records[0].status, ToolCallStatus::Success);
-        let has_image = |messages: &[Value]| messages.iter().any(|message| {
-            message["role"] == "user" && message["content"].to_string().contains("data:image/")
-        });
-        assert!(has_image(&vision_result.api_messages), "saved_is_vision={saved_is_vision}");
-        assert!(!has_image(&text_result.api_messages), "saved_is_vision={saved_is_vision}");
+        let has_image = |messages: &[Value]| {
+            messages.iter().any(|message| {
+                message["role"] == "user" && message["content"].to_string().contains("data:image/")
+            })
+        };
+        assert!(
+            has_image(&vision_result.api_messages),
+            "saved_is_vision={saved_is_vision}"
+        );
+        assert!(
+            !has_image(&text_result.api_messages),
+            "saved_is_vision={saved_is_vision}"
+        );
         assert!(text_result.api_messages.iter().any(|message| {
             message["role"] == "tool"
-                && message["content"].as_str().is_some_and(|text| text.contains("auxiliary preview analysis"))
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("auxiliary preview analysis"))
         }));
         let requests = aux_server.captured_bodies();
         assert_eq!(requests.len(), 1);

@@ -3162,9 +3162,8 @@ mod tests {
             },
         ];
         let capable = json!({"agentCapabilities":{"mcpCapabilities":{"http":true}}});
-        let wsl = crate::external_agents::wsl::is_wsl_target(Path::new(
-            r"\\wsl$\Ubuntu\usr\bin\kimi",
-        ));
+        let wsl =
+            crate::external_agents::wsl::is_wsl_target(Path::new(r"\\wsl$\Ubuntu\usr\bin\kimi"));
         assert!(wsl);
         for (init, wsl, include_http) in [
             (capable.clone(), false, true),
@@ -3186,10 +3185,13 @@ mod tests {
                 if include_http { 2 } else { 1 }
             );
             if include_http {
-                assert_eq!(new["mcpServers"][1], json!({
-                    "type": "http", "name": "kivio", "url": "http://127.0.0.1:1234/mcp",
-                    "headers": [{"name": "Authorization", "value": "Bearer secret"}]
-                }));
+                assert_eq!(
+                    new["mcpServers"][1],
+                    json!({
+                        "type": "http", "name": "kivio", "url": "http://127.0.0.1:1234/mcp",
+                        "headers": [{"name": "Authorization", "value": "Bearer secret"}]
+                    })
+                );
             }
         }
     }

@@ -45,9 +45,10 @@ pub(crate) struct HtmlRenderReference {
 }
 
 pub(crate) fn is_valid_render_attachment_id(id: &str) -> bool {
-    let Some(uuid) = id.strip_prefix("htmlrender-") else { return false; };
-    uuid::Uuid::parse_str(uuid)
-        .is_ok_and(|parsed| parsed.hyphenated().to_string() == uuid)
+    let Some(uuid) = id.strip_prefix("htmlrender-") else {
+        return false;
+    };
+    uuid::Uuid::parse_str(uuid).is_ok_and(|parsed| parsed.hyphenated().to_string() == uuid)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,7 +70,9 @@ pub(crate) struct HtmlToolResult {
 
 fn validate_html(html: &str) -> Result<(), String> {
     if html.is_empty() || html.len() > MAX_HTML_INPUT {
-        return Err(format!("HTML must be between 1 and {MAX_HTML_INPUT} bytes."));
+        return Err(format!(
+            "HTML must be between 1 and {MAX_HTML_INPUT} bytes."
+        ));
     }
     Ok(())
 }
@@ -77,26 +80,34 @@ fn validate_html(html: &str) -> Result<(), String> {
 fn validate_render(html: &str, title: &str, height: u32) -> Result<(), String> {
     validate_html(html)?;
     if title.trim().is_empty() || title.chars().count() > MAX_TITLE {
-        return Err(format!("Title must be between 1 and {MAX_TITLE} characters."));
+        return Err(format!(
+            "Title must be between 1 and {MAX_TITLE} characters."
+        ));
     }
     if !(MIN_HEIGHT..=MAX_HEIGHT).contains(&height) {
-        return Err(format!("Height must be between {MIN_HEIGHT} and {MAX_HEIGHT} pixels."));
+        return Err(format!(
+            "Height must be between {MIN_HEIGHT} and {MAX_HEIGHT} pixels."
+        ));
     }
     Ok(())
 }
 
 // Match the same CSS sources as T3, including style attributes in script strings.
 fn css_sources() -> &'static Regex {
-    static SOURCES: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    static SOURCES: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
         r#"(?is)<!--(?:.*?-->|.*\z)|<style\b[^>]*(?:>|\z)(.*?)(?:</style\s*>|\z)|\sstyle\s*=\s*(?:"([^"]*)(?:"|\z)|'([^']*)(?:'|\z)|([^\s>]+))"#,
-    ).expect("valid CSS source pattern"));
+    ).expect("valid CSS source pattern")
+    });
     &SOURCES
 }
 
 fn css_tokens() -> &'static Regex {
-    static TOKENS: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    static TOKENS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
         r#"(?is)/\*(?:.*?\*/|.*\z)|<!--(?:.*?-->|.*\z)|data:[^\s"'()]*?;base64,[a-z0-9+/=]+|(?P<unit>(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)[sld]?vh)"#,
-    ).expect("valid CSS token pattern"));
+    ).expect("valid CSS token pattern")
+    });
     &TOKENS
 }
 
@@ -114,7 +125,10 @@ fn reject_viewport_height(html: &str) -> Result<(), String> {
             let Some(unit) = token.name("unit") else {
                 continue;
             };
-            let before = unit.start().checked_sub(1).and_then(|index| text.as_bytes().get(index));
+            let before = unit
+                .start()
+                .checked_sub(1)
+                .and_then(|index| text.as_bytes().get(index));
             let after = text.as_bytes().get(unit.end());
             if before.is_some_and(|byte| css_word(*byte) || matches!(*byte, b'.' | b'+' | b'/'))
                 || after.is_some_and(|byte| css_word(*byte) || *byte == b'-')
@@ -137,9 +151,11 @@ struct ImageReference<'a> {
 }
 
 fn local_image_pattern() -> &'static Regex {
-    static PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
         r#"(?i)"(/[^"\r\n]*|[a-z]:[\\/][^"\r\n]*|\\\\[^"\r\n]*)"|'(/[^'\r\n]*|[a-z]:[\\/][^'\r\n]*|\\\\[^'\r\n]*)'|`(/[^`\r\n]*|[a-z]:[\\/][^`\r\n]*|\\\\[^`\r\n]*)`|url\(\s*(/[^\s"'`()]*|[a-z]:[\\/][^\s"'()`]*|\\\\[^\s"'()`]*)\s*\)"#,
-    ).expect("valid local image pattern"));
+    ).expect("valid local image pattern")
+    });
     &PATTERN
 }
 
@@ -153,18 +169,27 @@ fn local_images(html: &str) -> impl Iterator<Item = ImageReference<'_>> + '_ {
                 return None;
             }
             let extension = value.rsplit_once('.')?.1;
-            if !["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg"]
-                .iter()
-                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+            if ![
+                "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif", "svg",
+            ]
+            .iter()
+            .any(|candidate| extension.eq_ignore_ascii_case(candidate))
             {
                 return None;
             }
-            Some(ImageReference { start: path.start(), end: path.end(), path: value })
+            Some(ImageReference {
+                start: path.start(),
+                end: path.end(),
+                path: value,
+            })
         })
 }
 
 fn after_token(bytes: &[u8], from: usize, token: &[u8]) -> Option<usize> {
-    bytes.get(from..)?.windows(token.len()).position(|part| part == token)
+    bytes
+        .get(from..)?
+        .windows(token.len())
+        .position(|part| part == token)
         .map(|index| from + index + token.len())
 }
 
@@ -183,8 +208,14 @@ fn after_doctype(bytes: &[u8], mut at: usize) -> Option<usize> {
                 at = after_token(bytes, at + 2, b"?>")?;
             }
             b'>' if !in_subset => return Some(at + 1),
-            b'[' => { in_subset = true; at += 1; }
-            b']' => { in_subset = false; at += 1; }
+            b'[' => {
+                in_subset = true;
+                at += 1;
+            }
+            b']' => {
+                in_subset = false;
+                at += 1;
+            }
             _ => at += 1,
         }
     }
@@ -193,25 +224,41 @@ fn after_doctype(bytes: &[u8], mut at: usize) -> Option<usize> {
 
 fn has_svg_root(bytes: &[u8]) -> bool {
     let bytes = &bytes[..bytes.len().min(4096)];
-    let mut at = if bytes.starts_with(b"\xef\xbb\xbf") { 3 } else { 0 };
+    let mut at = if bytes.starts_with(b"\xef\xbb\xbf") {
+        3
+    } else {
+        0
+    };
     while at < bytes.len() {
         while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
             at += 1;
         }
-        let Some(rest) = bytes.get(at..) else { return false; };
+        let Some(rest) = bytes.get(at..) else {
+            return false;
+        };
         if rest.starts_with(b"<?") {
-            let Some(end) = after_token(bytes, at + 2, b"?>") else { return false; };
+            let Some(end) = after_token(bytes, at + 2, b"?>") else {
+                return false;
+            };
             at = end;
         } else if rest.starts_with(b"<!--") {
-            let Some(end) = after_token(bytes, at + 4, b"-->") else { return false; };
+            let Some(end) = after_token(bytes, at + 4, b"-->") else {
+                return false;
+            };
             at = end;
-        } else if rest.get(..9).is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<!doctype")) {
-            let Some(end) = after_doctype(bytes, at + 9) else { return false; };
+        } else if rest
+            .get(..9)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<!doctype"))
+        {
+            let Some(end) = after_doctype(bytes, at + 9) else {
+                return false;
+            };
             at = end;
         } else {
-            return rest.starts_with(b"<svg") && rest.get(4).is_some_and(|byte| {
-                matches!(*byte, b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')
-            });
+            return rest.starts_with(b"<svg")
+                && rest.get(4).is_some_and(|byte| {
+                    matches!(*byte, b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')
+                });
         }
     }
     false
@@ -232,7 +279,9 @@ fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     } else if bytes.starts_with(b"\0\0\x01\0") {
         Some("image/x-icon")
     } else if bytes.get(4..8) == Some(&b"ftyp"[..])
-        && bytes.get(8..12).is_some_and(|brand| matches!(brand, b"avif" | b"avis" | b"mif1"))
+        && bytes
+            .get(8..12)
+            .is_some_and(|brand| matches!(brand, b"avif" | b"avis" | b"mif1"))
     {
         Some("image/avif")
     } else if has_svg_root(bytes) {
@@ -248,16 +297,19 @@ struct ImageRoot {
 }
 
 fn image_roots(paths: Vec<PathBuf>) -> Vec<ImageRoot> {
-    paths.into_iter().filter_map(|path| {
-        if !path.to_str().is_some_and(is_local_path) {
-            return None;
-        }
-        let (directory, canonical) = resolve_directory_root(&path)?;
-        Some(ImageRoot {
-            aliases: [path, canonical],
-            directory,
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            if !path.to_str().is_some_and(is_local_path) {
+                return None;
+            }
+            let (directory, canonical) = resolve_directory_root(&path)?;
+            Some(ImageRoot {
+                aliases: [path, canonical],
+                directory,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn relative_to_root(path: &Path, root: &Path) -> Option<(PathBuf, bool)> {
@@ -265,7 +317,9 @@ fn relative_to_root(path: &Path, root: &Path) -> Option<(PathBuf, bool)> {
     for expected in root.components() {
         let actual = components.next()?;
         #[cfg(windows)]
-        let equal = actual.as_os_str().to_string_lossy()
+        let equal = actual
+            .as_os_str()
+            .to_string_lossy()
             .eq_ignore_ascii_case(&expected.as_os_str().to_string_lossy());
         #[cfg(not(windows))]
         let equal = actual == expected;
@@ -295,18 +349,41 @@ fn relative_to_root(path: &Path, root: &Path) -> Option<(PathBuf, bool)> {
 }
 
 #[cfg(unix)]
-fn open_child(directory: &fs::File, name: &std::ffi::OsStr, is_directory: bool) -> Option<fs::File> {
-    use std::os::unix::{ffi::OsStrExt, io::{AsRawFd, FromRawFd}};
+fn open_child(
+    directory: &fs::File,
+    name: &std::ffi::OsStr,
+    is_directory: bool,
+) -> Option<fs::File> {
+    use std::os::unix::{
+        ffi::OsStrExt,
+        io::{AsRawFd, FromRawFd},
+    };
     let name = std::ffi::CString::new(name.as_bytes()).ok()?;
-    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK
-        | libc::O_NOCTTY | if is_directory { libc::O_DIRECTORY } else { 0 };
+    let flags = libc::O_RDONLY
+        | libc::O_CLOEXEC
+        | libc::O_NOFOLLOW
+        | libc::O_NONBLOCK
+        | libc::O_NOCTTY
+        | if is_directory { libc::O_DIRECTORY } else { 0 };
     let fd = unsafe { libc::openat(directory.as_raw_fd(), name.as_ptr(), flags) };
     (fd >= 0).then(|| unsafe { fs::File::from_raw_fd(fd) })
 }
 
 #[cfg(windows)]
-fn open_child_checked(directory: &fs::File, name: &std::ffi::OsStr, is_directory: bool, inspect_reparse: bool) -> Result<fs::File, i32> {
-    use std::{ffi::c_void, os::windows::{ffi::OsStrExt, fs::MetadataExt, io::{AsRawHandle, FromRawHandle}}};
+fn open_child_checked(
+    directory: &fs::File,
+    name: &std::ffi::OsStr,
+    is_directory: bool,
+    inspect_reparse: bool,
+) -> Result<fs::File, i32> {
+    use std::{
+        ffi::c_void,
+        os::windows::{
+            ffi::OsStrExt,
+            fs::MetadataExt,
+            io::{AsRawHandle, FromRawHandle},
+        },
+    };
     const READ_ATTRIBUTES_AND_DATA: u32 = 0x0010_0081;
     const FILE_TRAVERSE: u32 = 0x20;
     const OBJ_CASE_INSENSITIVE: u32 = 0x40;
@@ -360,7 +437,11 @@ fn open_child_checked(directory: &fs::File, name: &std::ffi::OsStr, is_directory
         return Err(i32::MIN);
     }
     let length = (name.len() * 2) as u16;
-    let mut object_name = UnicodeString { length, maximum_length: length, buffer: name.as_mut_ptr() };
+    let mut object_name = UnicodeString {
+        length,
+        maximum_length: length,
+        buffer: name.as_mut_ptr(),
+    };
     let mut attributes = ObjectAttributes {
         length: std::mem::size_of::<ObjectAttributes>() as u32,
         root_directory: directory.as_raw_handle(),
@@ -369,16 +450,33 @@ fn open_child_checked(directory: &fs::File, name: &std::ffi::OsStr, is_directory
         security_descriptor: std::ptr::null_mut(),
         security_quality_of_service: std::ptr::null_mut(),
     };
-    let mut status = IoStatusBlock { status: 0, information: 0 };
+    let mut status = IoStatusBlock {
+        status: 0,
+        information: 0,
+    };
     let mut handle = std::ptr::null_mut();
     // Open relative to the already-open parent and never traverse a reparse point.
     let result = unsafe {
         NtCreateFile(
-            &mut handle, READ_ATTRIBUTES_AND_DATA | if is_directory { FILE_TRAVERSE } else { 0 },
-            &mut attributes, &mut status, std::ptr::null(), 0, SHARE_ALL, FILE_OPEN,
-            OPEN_REPARSE_POINT | SYNCHRONOUS_IO_NONALERT
-                | if inspect_reparse { 0 } else if is_directory { DIRECTORY_FILE } else { NON_DIRECTORY_FILE },
-            std::ptr::null_mut(), 0,
+            &mut handle,
+            READ_ATTRIBUTES_AND_DATA | if is_directory { FILE_TRAVERSE } else { 0 },
+            &mut attributes,
+            &mut status,
+            std::ptr::null(),
+            0,
+            SHARE_ALL,
+            FILE_OPEN,
+            OPEN_REPARSE_POINT
+                | SYNCHRONOUS_IO_NONALERT
+                | if inspect_reparse {
+                    0
+                } else if is_directory {
+                    DIRECTORY_FILE
+                } else {
+                    NON_DIRECTORY_FILE
+                },
+            std::ptr::null_mut(),
+            0,
         )
     };
     if result < 0 {
@@ -398,32 +496,55 @@ fn open_child_checked(directory: &fs::File, name: &std::ffi::OsStr, is_directory
 }
 
 #[cfg(windows)]
-fn open_child(directory: &fs::File, name: &std::ffi::OsStr, is_directory: bool) -> Option<fs::File> {
+fn open_child(
+    directory: &fs::File,
+    name: &std::ffi::OsStr,
+    is_directory: bool,
+) -> Option<fs::File> {
     open_child_checked(directory, name, is_directory, false).ok()
 }
 
 #[cfg(unix)]
 fn read_link_at(directory: &fs::File, name: &std::ffi::OsStr) -> Option<PathBuf> {
-    use std::os::unix::{ffi::{OsStrExt, OsStringExt}, io::AsRawFd};
+    use std::os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        io::AsRawFd,
+    };
     let name = std::ffi::CString::new(name.as_bytes()).ok()?;
     let mut buffer = [0u8; 4096];
     let length = unsafe {
-        libc::readlinkat(directory.as_raw_fd(), name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len())
+        libc::readlinkat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+        )
     };
     if length < 0 || length as usize == buffer.len() {
         return None;
     }
-    Some(PathBuf::from(std::ffi::OsString::from_vec(buffer[..length as usize].to_vec())))
+    Some(PathBuf::from(std::ffi::OsString::from_vec(
+        buffer[..length as usize].to_vec(),
+    )))
 }
 
 #[cfg(windows)]
 fn read_link_at(directory: &fs::File, name: &std::ffi::OsStr) -> Option<PathBuf> {
-    use std::{ffi::c_void, os::windows::{fs::MetadataExt, io::AsRawHandle}};
+    use std::{
+        ffi::c_void,
+        os::windows::{fs::MetadataExt, io::AsRawHandle},
+    };
     #[link(name = "kernel32")]
     extern "system" {
         fn DeviceIoControl(
-            handle: *mut c_void, control: u32, input: *const c_void, input_len: u32,
-            output: *mut c_void, output_len: u32, returned: *mut u32, overlapped: *mut c_void,
+            handle: *mut c_void,
+            control: u32,
+            input: *const c_void,
+            input_len: u32,
+            output: *mut c_void,
+            output_len: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
         ) -> i32;
     }
     let file = open_child_checked(directory, name, false, true).ok()?;
@@ -433,8 +554,16 @@ fn read_link_at(directory: &fs::File, name: &std::ffi::OsStr) -> Option<PathBuf>
     let mut data = [0u8; 16 * 1024];
     let mut returned = 0;
     let ok = unsafe {
-        DeviceIoControl(file.as_raw_handle(), 0x0009_00a8, std::ptr::null(), 0,
-            data.as_mut_ptr().cast(), data.len() as u32, &mut returned, std::ptr::null_mut())
+        DeviceIoControl(
+            file.as_raw_handle(),
+            0x0009_00a8,
+            std::ptr::null(),
+            0,
+            data.as_mut_ptr().cast(),
+            data.len() as u32,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
     };
     if ok == 0 || returned < 16 || returned as usize > data.len() {
         return None;
@@ -451,7 +580,10 @@ fn decode_reparse_target(data: &[u8]) -> Option<PathBuf> {
         return None;
     }
     let (base, relative) = match tag {
-        0xa000_000c => (20, u32::from_le_bytes(data.get(16..20)?.try_into().ok()?) & 1 != 0),
+        0xa000_000c => (
+            20,
+            u32::from_le_bytes(data.get(16..20)?.try_into().ok()?) & 1 != 0,
+        ),
         0xa000_0003 => (16, false),
         _ => return None,
     };
@@ -462,8 +594,11 @@ fn decode_reparse_target(data: &[u8]) -> Option<PathBuf> {
     if offset % 2 != 0 || length % 2 != 0 || end > total {
         return None;
     }
-    let wide: Vec<u16> = data.get(start..end)?.chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    let wide: Vec<u16> = data
+        .get(start..end)?
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
     let target = std::ffi::OsString::from_wide(&wide);
     let target = PathBuf::from(target);
     if relative {
@@ -490,16 +625,22 @@ fn volume_root(path: &Path) -> Option<(fs::File, PathBuf, std::path::Components<
 fn volume_root(path: &Path) -> Option<(fs::File, PathBuf, std::path::Components<'_>)> {
     use std::{os::windows::fs::OpenOptionsExt, path::Prefix};
     let mut components = path.components();
-    let Component::Prefix(prefix) = components.next()? else { return None; };
-    let Prefix::Disk(drive) = prefix.kind() else { return None; };
+    let Component::Prefix(prefix) = components.next()? else {
+        return None;
+    };
+    let Prefix::Disk(drive) = prefix.kind() else {
+        return None;
+    };
     if components.next()? != Component::RootDir {
         return None;
     }
     let root = PathBuf::from(format!("{}:\\", drive as char));
-    let directory = fs::OpenOptions::new().read(true)
+    let directory = fs::OpenOptions::new()
+        .read(true)
         .access_mode(0x0010_00a1) // SYNCHRONIZE, READ_ATTRIBUTES, LIST_DIRECTORY, TRAVERSE
         .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
-        .open(&root).ok()?;
+        .open(&root)
+        .ok()?;
     Some((directory, root, components))
 }
 
@@ -523,7 +664,9 @@ fn resolve_directory_root(path: &Path) -> Option<(fs::File, PathBuf)> {
                         let target = read_link_at(&directory, name)?;
                         let mut next = if target.is_absolute() {
                             target
-                        } else if target.has_root() || matches!(target.components().next(), Some(Component::Prefix(_))) {
+                        } else if target.has_root()
+                            || matches!(target.components().next(), Some(Component::Prefix(_)))
+                        {
                             return None;
                         } else {
                             resolved.join(target)
@@ -559,18 +702,32 @@ fn open_directory_root(path: &Path) -> Option<fs::File> {
 
 #[cfg(windows)]
 fn canonical_directory_path(directory: &fs::File) -> Option<PathBuf> {
-    use std::{ffi::c_void, os::windows::{ffi::OsStringExt, io::AsRawHandle}};
+    use std::{
+        ffi::c_void,
+        os::windows::{ffi::OsStringExt, io::AsRawHandle},
+    };
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetFinalPathNameByHandleW(handle: *mut c_void, path: *mut u16, length: u32, flags: u32) -> u32;
+        fn GetFinalPathNameByHandleW(
+            handle: *mut c_void,
+            path: *mut u16,
+            length: u32,
+            flags: u32,
+        ) -> u32;
     }
-    let length = unsafe { GetFinalPathNameByHandleW(directory.as_raw_handle(), std::ptr::null_mut(), 0, 0) };
+    let length =
+        unsafe { GetFinalPathNameByHandleW(directory.as_raw_handle(), std::ptr::null_mut(), 0, 0) };
     if length == 0 {
         return None;
     }
     let mut path = vec![0u16; length as usize + 1];
     let written = unsafe {
-        GetFinalPathNameByHandleW(directory.as_raw_handle(), path.as_mut_ptr(), path.len() as u32, 0)
+        GetFinalPathNameByHandleW(
+            directory.as_raw_handle(),
+            path.as_mut_ptr(),
+            path.len() as u32,
+            0,
+        )
     };
     if written == 0 || written as usize >= path.len() {
         return None;
@@ -591,7 +748,8 @@ fn is_local_path(reference: &str) -> bool {
         return false;
     }
     #[cfg(windows)]
-    if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_))) {
+    if !matches!(path.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_)))
+    {
         return false;
     }
     true
@@ -611,19 +769,32 @@ fn open_local_image(reference: &str, roots: &[ImageRoot]) -> Option<fs::File> {
     'resolve: loop {
         for root in roots {
             'aliases: for alias in &root.aliases {
-                let Some((relative, has_parent)) = relative_to_root(&candidate, alias) else { continue; };
+                let Some((relative, has_parent)) = relative_to_root(&candidate, alias) else {
+                    continue;
+                };
                 let mut components = relative.components().peekable();
-                let Ok(mut directory) = root.directory.try_clone() else { continue; };
+                let Ok(mut directory) = root.directory.try_clone() else {
+                    continue;
+                };
                 let mut processed = 0;
                 let mut parents = Vec::new();
                 while let Some(component) = components.next() {
                     match component {
                         Component::Normal(name) => {
-                            let Some(next) = open_child(&directory, name, components.peek().is_some()) else {
-                                let Some(target) = read_link_at(&directory, name) else { continue 'aliases; };
+                            let Some(next) =
+                                open_child(&directory, name, components.peek().is_some())
+                            else {
+                                let Some(target) = read_link_at(&directory, name) else {
+                                    continue 'aliases;
+                                };
                                 let mut next = if target.is_absolute() {
                                     target
-                                } else if target.has_root() || matches!(target.components().next(), Some(Component::Prefix(_))) {
+                                } else if target.has_root()
+                                    || matches!(
+                                        target.components().next(),
+                                        Some(Component::Prefix(_))
+                                    )
+                                {
                                     return None;
                                 } else {
                                     let mut base = root.aliases[1].clone();
@@ -639,7 +810,9 @@ fn open_local_image(reference: &str, roots: &[ImageRoot]) -> Option<fs::File> {
                                         match component {
                                             Component::CurDir if leading => {}
                                             Component::ParentDir if leading => {
-                                                if !base.pop() { return None; }
+                                                if !base.pop() {
+                                                    return None;
+                                                }
                                             }
                                             _ => {
                                                 leading = false;
@@ -669,7 +842,9 @@ fn open_local_image(reference: &str, roots: &[ImageRoot]) -> Option<fs::File> {
                             }
                         }
                         Component::ParentDir => {
-                            let Some(parent) = parents.pop() else { continue 'aliases; };
+                            let Some(parent) = parents.pop() else {
+                                continue 'aliases;
+                            };
                             directory = parent;
                         }
                         _ => continue 'aliases,
@@ -684,8 +859,12 @@ fn open_local_image(reference: &str, roots: &[ImageRoot]) -> Option<fs::File> {
 }
 
 fn load_local_image(reference: &str, roots: &[ImageRoot]) -> Result<Option<String>, String> {
-    let Some(file) = open_local_image(reference, roots) else { return Ok(None); };
-    let Ok(metadata) = file.metadata() else { return Ok(None); };
+    let Some(file) = open_local_image(reference, roots) else {
+        return Ok(None);
+    };
+    let Ok(metadata) = file.metadata() else {
+        return Ok(None);
+    };
     if !metadata.is_file() {
         return Ok(None);
     }
@@ -693,13 +872,19 @@ fn load_local_image(reference: &str, roots: &[ImageRoot]) -> Result<Option<Strin
         return Err(format!("Local image {reference} exceeds the 10 MiB limit."));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    if file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).is_err() {
+    if file
+        .take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
         return Ok(None);
     }
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
         return Err(format!("Local image {reference} exceeds the 10 MiB limit."));
     }
-    let Some(mime) = image_mime(&bytes) else { return Ok(None); };
+    let Some(mime) = image_mime(&bytes) else {
+        return Ok(None);
+    };
     let mut data = String::with_capacity(5 + mime.len() + 8 + bytes.len().div_ceil(3) * 4);
     data.push_str("data:");
     data.push_str(mime);
@@ -736,7 +921,8 @@ fn inline_local_images(html: String, paths: Vec<PathBuf>) -> Result<(String, Vec
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let data = if is_local_path(reference.path) {
-                    let roots = roots.get_or_insert_with(|| image_roots(paths.take().unwrap_or_default()));
+                    let roots =
+                        roots.get_or_insert_with(|| image_roots(paths.take().unwrap_or_default()));
                     load_local_image(reference.path, roots)?
                 } else {
                     None
@@ -810,10 +996,16 @@ fn child_directory_exists(parent: &Path, child: &str) -> Option<bool> {
     let name = std::ffi::CString::new(std::ffi::OsStr::new(child).as_bytes()).ok()?;
     let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
     let result = unsafe {
-        libc::fstatat(directory.as_raw_fd(), name.as_ptr(), metadata.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW)
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
     };
     if result != 0 {
-        return (std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound).then_some(false);
+        return (std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound)
+            .then_some(false);
     }
     let kind = unsafe { metadata.assume_init() }.st_mode & libc::S_IFMT;
     if kind == libc::S_IFDIR {
@@ -830,7 +1022,9 @@ fn child_directory_exists(parent: &Path, child: &str) -> Option<bool> {
     let directory = open_directory_root(parent)?;
     match open_child_checked(&directory, std::ffi::OsStr::new(child), true, false) {
         Ok(_) => Some(true),
-        Err(status) if matches!(status as u32, 0xc000_000f | 0xc000_0034 | 0xc000_003a) => Some(false),
+        Err(status) if matches!(status as u32, 0xc000_000f | 0xc000_0034 | 0xc000_003a) => {
+            Some(false)
+        }
         Err(_) => resolve_directory_root(&parent.join(child)).map(|_| true),
     }
 }
@@ -860,10 +1054,14 @@ fn external_legacy_root(app: &AppHandle, conversation_id: &str) -> Option<Option
     }
 }
 
-fn conversation_image_paths(app: &AppHandle, conversation: &crate::chat::Conversation) -> Vec<PathBuf> {
+fn conversation_image_paths(
+    app: &AppHandle,
+    conversation: &crate::chat::Conversation,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let external = conversation.agent_runtime.is_external();
-    let cwd = external.then(|| crate::external_agents::session::load_live_handle(app, &conversation.id))
+    let cwd = external
+        .then(|| crate::external_agents::session::load_live_handle(app, &conversation.id))
         .flatten()
         .map(|handle| handle.cwd)
         .filter(|cwd| !cwd.trim().is_empty());
@@ -885,7 +1083,8 @@ fn conversation_image_paths(app: &AppHandle, conversation: &crate::chat::Convers
                 } else {
                     let settings = crate::settings::load_settings(app);
                     if let Some(root) = ordinary_image_root(
-                        &settings.chat_tools.native_tools.working_directory, &conversation.id,
+                        &settings.chat_tools.native_tools.working_directory,
+                        &conversation.id,
                     ) {
                         paths.push(root);
                     }
@@ -897,7 +1096,12 @@ fn conversation_image_paths(app: &AppHandle, conversation: &crate::chat::Convers
     if let Some(cwd) = cwd {
         paths.push(PathBuf::from(cwd));
     }
-    paths.extend(conversation.additional_directories.iter().map(|entry| PathBuf::from(&entry.path)));
+    paths.extend(
+        conversation
+            .additional_directories
+            .iter()
+            .map(|entry| PathBuf::from(&entry.path)),
+    );
     if let Ok(path) = crate::chat::storage::conversation_attachments_path(app, &conversation.id) {
         paths.push(path);
     }
@@ -913,16 +1117,24 @@ pub(crate) async fn publish(
 ) -> Result<HtmlRenderReference, String> {
     validate_render(html, title, height)?;
     let conversation = crate::chat::repository::repository(app)
-        .get(app, conversation_id).await.map_err(crate::chat::repository::repository_error)?;
+        .get(app, conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
     let input = html.to_owned();
     let app_for_prepare = app.clone();
     let html = tauri::async_runtime::spawn_blocking(move || {
-        prepare_render(input, conversation_image_paths(&app_for_prepare, &conversation))
-    }).await.map_err(|error| format!("HTML render task failed: {error}"))??;
+        prepare_render(
+            input,
+            conversation_image_paths(&app_for_prepare, &conversation),
+        )
+    })
+    .await
+    .map_err(|error| format!("HTML render task failed: {error}"))??;
     let attachment_id = format!("htmlrender-{}", uuid::Uuid::new_v4());
     crate::chat::repository::repository(app)
         .store_html_render(app, conversation_id, &attachment_id, html)
-        .await.map_err(crate::chat::repository::repository_error)?;
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
     Ok(HtmlRenderReference {
         kind: HTML_RENDER_TOOL.to_owned(),
         attachment_id,
@@ -933,7 +1145,10 @@ pub(crate) async fn publish(
 
 fn is_automation_preview(conversation_id: &str) -> bool {
     conversation_id.strip_prefix("auto_").is_some_and(|id| {
-        !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        !id.is_empty()
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     })
 }
 
@@ -950,23 +1165,30 @@ pub(crate) async fn preview(
         Some("light") => false,
         Some(_) => return Err("Appearance must be 'dark' or 'light'.".into()),
     };
-    let width = width.unwrap_or(COLUMN_WIDTH).clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
+    let width = width
+        .unwrap_or(COLUMN_WIDTH)
+        .clamp(MIN_PREVIEW_WIDTH, MAX_PREVIEW_WIDTH);
     let input = html.to_owned();
     let conversation = if is_automation_preview(conversation_id) {
         None
     } else {
-        Some(crate::chat::repository::repository(app)
-            .get(app, conversation_id).await.map_err(crate::chat::repository::repository_error)?)
+        Some(
+            crate::chat::repository::repository(app)
+                .get(app, conversation_id)
+                .await
+                .map_err(crate::chat::repository::repository_error)?,
+        )
     };
     let app_for_prepare = app.clone();
     let (html, missing_images) = tauri::async_runtime::spawn_blocking(move || {
-        let paths = conversation.as_ref()
+        let paths = conversation
+            .as_ref()
             .map(|conversation| conversation_image_paths(&app_for_prepare, conversation))
             .unwrap_or_default();
         prepare(input, paths)
     })
-        .await
-        .map_err(|error| format!("HTML preview task failed: {error}"))??;
+    .await
+    .map_err(|error| format!("HTML preview task failed: {error}"))??;
     let executable = browser::executable(app).await?;
     let captured = browser::capture(&executable, &html, width, dark).await?;
     Ok(HtmlPreviewOutput {
@@ -1012,22 +1234,34 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
 }
 
 fn string_arg<'a>(args: &'a Value, name: &str) -> Result<&'a str, String> {
-    args.get(name).and_then(Value::as_str).ok_or_else(|| format!("{name} must be a string."))
+    args.get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{name} must be a string."))
 }
 
 fn integer_arg(args: &Value, name: &str) -> Result<u32, String> {
-    args.get(name).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok())
+    args.get(name)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| format!("{name} must be a non-negative integer."))
 }
 
 fn render_args(args: &Value) -> Result<(&str, &str, u32), String> {
-    Ok((string_arg(args, "html")?, string_arg(args, "title")?, integer_arg(args, "height")?))
+    Ok((
+        string_arg(args, "html")?,
+        string_arg(args, "title")?,
+        integer_arg(args, "height")?,
+    ))
 }
 
 fn render_result(reference: HtmlRenderReference) -> Result<HtmlToolResult, String> {
     let text = format!("Rendered page {}.", reference.attachment_id);
     let structured = serde_json::to_value(reference).map_err(|error| error.to_string())?;
-    Ok(HtmlToolResult { text, structured: Some(structured), image_png_base64: None })
+    Ok(HtmlToolResult {
+        text,
+        structured: Some(structured),
+        image_png_base64: None,
+    })
 }
 
 #[cfg(test)]
@@ -1044,10 +1278,19 @@ pub(crate) async fn call_render_in_directory(
         let html = prepare_render(input, vec![directory.clone()])?;
         let attachment_id = format!("htmlrender-{}", uuid::Uuid::new_v4());
         crate::chat::storage::atomic_write(
-            &directory.join(format!("{attachment_id}.html")), &html, "HTML render",
+            &directory.join(format!("{attachment_id}.html")),
+            &html,
+            "HTML render",
         )?;
-        Ok::<_, String>(HtmlRenderReference { kind: HTML_RENDER_TOOL.to_owned(), attachment_id, title, height })
-    }).await.map_err(|error| format!("HTML render task failed: {error}"))??;
+        Ok::<_, String>(HtmlRenderReference {
+            kind: HTML_RENDER_TOOL.to_owned(),
+            attachment_id,
+            title,
+            height,
+        })
+    })
+    .await
+    .map_err(|error| format!("HTML render task failed: {error}"))??;
     render_result(reference)
 }
 
@@ -1064,9 +1307,24 @@ pub(crate) async fn call_tool(
             render_result(reference)
         }
         HTML_PREVIEW_TOOL => {
-            let width = if args.get("width").is_some() { Some(integer_arg(args, "width")?) } else { None };
-            let appearance = if args.get("appearance").is_some() { Some(string_arg(args, "appearance")?) } else { None };
-            let output = preview(app, conversation_id, string_arg(args, "html")?, width, appearance).await?;
+            let width = if args.get("width").is_some() {
+                Some(integer_arg(args, "width")?)
+            } else {
+                None
+            };
+            let appearance = if args.get("appearance").is_some() {
+                Some(string_arg(args, "appearance")?)
+            } else {
+                None
+            };
+            let output = preview(
+                app,
+                conversation_id,
+                string_arg(args, "html")?,
+                width,
+                appearance,
+            )
+            .await?;
             let metadata = json!({
                 "width": output.width,
                 "contentHeight": output.content_height,
@@ -1075,7 +1333,11 @@ pub(crate) async fn call_tool(
                 "missingImages": output.missing_images,
             });
             let text = serde_json::to_string(&metadata).map_err(|error| error.to_string())?;
-            Ok(HtmlToolResult { text, structured: Some(metadata), image_png_base64: Some(output.png_base64) })
+            Ok(HtmlToolResult {
+                text,
+                structured: Some(metadata),
+                image_png_base64: Some(output.png_base64),
+            })
         }
         _ => Err(format!("Unknown HTML tool: {name}")),
     }
@@ -1105,18 +1367,29 @@ pub(crate) fn record_pending_render(conversation_id: &str, reference: HtmlRender
     let now = Instant::now();
     let mut ledger = pending_renders().lock();
     prune_pending(&mut ledger, now);
-    ledger.entry(conversation_id.to_owned()).or_default().push_back(PendingRender { reference, created: now });
+    ledger
+        .entry(conversation_id.to_owned())
+        .or_default()
+        .push_back(PendingRender {
+            reference,
+            created: now,
+        });
 }
 
 pub(crate) fn clear_pending_renders(conversation_id: &str) {
     pending_renders().lock().remove(conversation_id);
 }
 
-pub(crate) fn take_pending_render(conversation_id: &str, attachment_id: &str) -> Option<HtmlRenderReference> {
+pub(crate) fn take_pending_render(
+    conversation_id: &str,
+    attachment_id: &str,
+) -> Option<HtmlRenderReference> {
     let mut ledger = pending_renders().lock();
     prune_pending(&mut ledger, Instant::now());
     let entries = ledger.get_mut(conversation_id)?;
-    let position = entries.iter().position(|entry| entry.reference.attachment_id == attachment_id)?;
+    let position = entries
+        .iter()
+        .position(|entry| entry.reference.attachment_id == attachment_id)?;
     let reference = entries.remove(position)?.reference;
     if entries.is_empty() {
         ledger.remove(conversation_id);
@@ -1127,7 +1400,10 @@ pub(crate) fn take_pending_render(conversation_id: &str, attachment_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs::File, io::{Seek, SeekFrom, Write}};
+    use std::{
+        fs::File,
+        io::{Seek, SeekFrom, Write},
+    };
 
     fn reference(title: &str, id: &str) -> HtmlRenderReference {
         HtmlRenderReference {
@@ -1142,8 +1418,14 @@ mod tests {
     fn reference_wire_shape_and_validation() {
         let render = reference("Chart", "htmlrender-12345678-1234-4234-9234-123456789abc");
         let wire = serde_json::to_value(&render).unwrap();
-        assert_eq!(wire, json!({"type":"html_render", "attachmentId":render.attachment_id.clone(), "title":"Chart", "height":480}));
-        assert_eq!(serde_json::from_value::<HtmlRenderReference>(wire).unwrap(), render);
+        assert_eq!(
+            wire,
+            json!({"type":"html_render", "attachmentId":render.attachment_id.clone(), "title":"Chart", "height":480})
+        );
+        assert_eq!(
+            serde_json::from_value::<HtmlRenderReference>(wire).unwrap(),
+            render
+        );
         assert!(is_valid_render_attachment_id(&render.attachment_id));
         for invalid in [
             "htmlrender-12345678-1234-4234-9234-123456789ABc",
@@ -1163,7 +1445,10 @@ mod tests {
         let definitions = tool_definitions();
         assert_eq!(definitions[0]["name"], HTML_RENDER_TOOL);
         assert_eq!(definitions[1]["name"], HTML_PREVIEW_TOOL);
-        assert!(definitions[0]["description"].as_str().unwrap().contains("--chart-6"));
+        assert!(definitions[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("--chart-6"));
     }
 
     #[test]
@@ -1187,7 +1472,10 @@ mod tests {
             assert!(reject_viewport_height(html).is_ok(), "{html}");
         }
         assert!(reject_viewport_height("<style>/* unclosed 50vh").is_ok());
-        assert!(reject_viewport_height("<style>background:url(data:image/png;base64,1vh==);height:10vh</style>").is_err());
+        assert!(reject_viewport_height(
+            "<style>background:url(data:image/png;base64,1vh==);height:10vh</style>"
+        )
+        .is_err());
     }
 
     #[test]
@@ -1205,7 +1493,13 @@ mod tests {
         for (bytes, mime) in examples {
             assert_eq!(image_mime(bytes), Some(*mime));
         }
-        for bytes in [b"secret <svg/>".as_slice(), b"<svgx/>".as_slice(), b"<!--<svg/>".as_slice(), b"GIF8secret".as_slice(), b"\x89PNGsecret".as_slice()] {
+        for bytes in [
+            b"secret <svg/>".as_slice(),
+            b"<svgx/>".as_slice(),
+            b"<!--<svg/>".as_slice(),
+            b"GIF8secret".as_slice(),
+            b"\x89PNGsecret".as_slice(),
+        ] {
             assert_eq!(image_mime(bytes), None);
         }
     }
@@ -1226,10 +1520,17 @@ mod tests {
         fs::write(&image, b"\x89PNG\r\n\x1a\nimage").unwrap();
         fs::write(&secret, b"private data, not an image").unwrap();
         let html = format!("<img src=\"{}\"><img src='{}'><img src='{}'><img src='{}'><img src='{}'><img src='/relative-without-extension'><img src='https://example.com/x.png'>", image.display(), image.display(), secret.display(), missing.display(), missing.display());
-        let (prepared, missing_images) = inline_local_images(html, vec![dir.path().to_path_buf()]).unwrap();
+        let (prepared, missing_images) =
+            inline_local_images(html, vec![dir.path().to_path_buf()]).unwrap();
         assert_eq!(prepared.matches("data:image/png;base64,").count(), 2);
         assert!(!prepared.contains("private data"));
-        assert_eq!(missing_images, vec![secret.to_string_lossy().to_string(), missing.to_string_lossy().to_string()]);
+        assert_eq!(
+            missing_images,
+            vec![
+                secret.to_string_lossy().to_string(),
+                missing.to_string_lossy().to_string()
+            ]
+        );
         assert!(prepared.contains("https://example.com/x.png"));
         assert!(prepared.contains(&secret.to_string_lossy().to_string()));
     }
@@ -1242,12 +1543,20 @@ mod tests {
         file.write_all(b"\x89PNG\r\n\x1a\n").unwrap();
         file.set_len(MAX_IMAGE_BYTES + 1).unwrap();
         let html = format!("<img src=\"{}\">", image.display());
-        assert!(inline_local_images(html.clone(), vec![dir.path().to_path_buf()]).unwrap_err().contains("10 MiB"));
+        assert!(
+            inline_local_images(html.clone(), vec![dir.path().to_path_buf()])
+                .unwrap_err()
+                .contains("10 MiB")
+        );
         file.set_len(MAX_IMAGE_BYTES).unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         file.write_all(b"\x89PNG\r\n\x1a\n").unwrap();
         drop(file);
-        assert!(inline_local_images(format!("{html}{html}"), vec![dir.path().to_path_buf()]).unwrap_err().contains("25 MiB"));
+        assert!(
+            inline_local_images(format!("{html}{html}"), vec![dir.path().to_path_buf()])
+                .unwrap_err()
+                .contains("25 MiB")
+        );
     }
 
     #[test]
@@ -1263,17 +1572,33 @@ mod tests {
         }
         fs::create_dir(working.join("subdir")).unwrap();
         let mut inside: Vec<_> = [&working, &additional, &attachments]
-            .iter().map(|path| path.join("image.png")).collect();
+            .iter()
+            .map(|path| path.join("image.png"))
+            .collect();
         inside.push(working.join("subdir").join("..").join("image.png"));
         let secret = outside.join("image.png");
-        File::options().write(true).open(&secret).unwrap().set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        File::options()
+            .write(true)
+            .open(&secret)
+            .unwrap()
+            .set_len(MAX_IMAGE_BYTES + 1)
+            .unwrap();
         let traversal = working.join("..").join("working-other").join("image.png");
-        let html = inside.iter().chain([&secret, &traversal])
-            .map(|path| format!("<img src='{}'>", path.display())).collect::<String>();
+        let html = inside
+            .iter()
+            .chain([&secret, &traversal])
+            .map(|path| format!("<img src='{}'>", path.display()))
+            .collect::<String>();
         let roots = vec![working, additional, attachments];
         let (preview, missing) = prepare(html.clone(), roots.clone()).unwrap();
         assert_eq!(preview.matches("data:image/png;base64,").count(), 4);
-        assert_eq!(missing, vec![secret.to_string_lossy().to_string(), traversal.to_string_lossy().to_string()]);
+        assert_eq!(
+            missing,
+            vec![
+                secret.to_string_lossy().to_string(),
+                traversal.to_string_lossy().to_string()
+            ]
+        );
         let error = prepare_render(html, roots).unwrap_err();
         assert!(error.contains(&secret.to_string_lossy().to_string()));
         assert!(error.contains(&traversal.to_string_lossy().to_string()));
@@ -1293,7 +1618,9 @@ mod tests {
             "title": "Chart", "height": 480
         });
         let output = call_render_in_directory(&root, &args).await.unwrap();
-        let id = output.structured.as_ref().unwrap()["attachmentId"].as_str().unwrap();
+        let id = output.structured.as_ref().unwrap()["attachmentId"]
+            .as_str()
+            .unwrap();
         assert_eq!(output.text, format!("Rendered page {id}."));
         let page = fs::read_to_string(root.join(format!("{id}.html"))).unwrap();
         assert!(page.contains("data:image/png;base64,"));
@@ -1301,7 +1628,10 @@ mod tests {
             "html": format!("<img src='{}'>", outside.display()),
             "title": "Chart", "height": 480
         });
-        let error = call_render_in_directory(&root, &denied).await.err().unwrap();
+        let error = call_render_in_directory(&root, &denied)
+            .await
+            .err()
+            .unwrap();
         assert!(error.contains(&outside.to_string_lossy().to_string()));
     }
 
@@ -1331,9 +1661,15 @@ mod tests {
         let home = crate::native_tools::user_home_dir().unwrap();
         let expected = home.join("kivio-root-test");
         if expected.to_str().is_some_and(is_local_path) {
-            assert_eq!(configured_working_path("~/kivio-root-test"), Some(expected.clone()));
+            assert_eq!(
+                configured_working_path("~/kivio-root-test"),
+                Some(expected.clone())
+            );
             #[cfg(windows)]
-            assert_eq!(configured_working_path("~\\kivio-root-test"), Some(expected));
+            assert_eq!(
+                configured_working_path("~\\kivio-root-test"),
+                Some(expected)
+            );
             assert_eq!(configured_working_path("a/b"), Some(home.join("a/b")));
         } else {
             assert!(configured_working_path("~/kivio-root-test").is_none());
@@ -1364,7 +1700,11 @@ mod tests {
         fs::create_dir(&outside).unwrap();
         fs::create_dir(root.join("nested")).unwrap();
         fs::write(root.join("inside.png"), b"\x89PNG\r\n\x1a\ninside").unwrap();
-        fs::write(root.join("nested").join("inside.png"), b"\x89PNG\r\n\x1a\nnested").unwrap();
+        fs::write(
+            root.join("nested").join("inside.png"),
+            b"\x89PNG\r\n\x1a\nnested",
+        )
+        .unwrap();
         fs::write(outside.join("secret.png"), b"\x89PNG\r\n\x1a\nsecret").unwrap();
         let alias = temp.path().join("root-alias");
         symlink(&root, &alias).unwrap();
@@ -1377,21 +1717,31 @@ mod tests {
         symlink("cycle-b.png", root.join("cycle-a.png")).unwrap();
         symlink("cycle-a.png", root.join("cycle-b.png")).unwrap();
         let good = [
-            alias.join("inside.png"), root.join("local.png"),
-            root.join("local-dir").join("inside.png"), root.join("absolute.png"),
+            alias.join("inside.png"),
+            root.join("local.png"),
+            root.join("local-dir").join("inside.png"),
+            root.join("absolute.png"),
         ];
         let through_dir = root.join("escape").join("secret.png");
         let through_parent = root.join("escape").join("..").join("inside.png");
         let through_file = root.join("escape.png");
         let cycle = root.join("cycle-a.png");
-        let html = good.iter().chain([&through_dir, &through_file, &through_parent, &cycle])
-            .map(|path| format!("<img src='{}'>", path.display())).collect::<String>();
+        let html = good
+            .iter()
+            .chain([&through_dir, &through_file, &through_parent, &cycle])
+            .map(|path| format!("<img src='{}'>", path.display()))
+            .collect::<String>();
         let (prepared, missing) = prepare(html, vec![alias, root.clone()]).unwrap();
         assert_eq!(prepared.matches("data:image/png;base64,").count(), 4);
-        assert_eq!(missing, vec![
-            through_dir.to_string_lossy().to_string(), through_file.to_string_lossy().to_string(),
-            through_parent.to_string_lossy().to_string(), cycle.to_string_lossy().to_string(),
-        ]);
+        assert_eq!(
+            missing,
+            vec![
+                through_dir.to_string_lossy().to_string(),
+                through_file.to_string_lossy().to_string(),
+                through_parent.to_string_lossy().to_string(),
+                cycle.to_string_lossy().to_string(),
+            ]
+        );
         let cross_root = root.join("other-root").join("secret.png");
         let html = format!("<img src='{}'>", cross_root.display());
         let (prepared, missing) = prepare(html, vec![root, outside]).unwrap();
@@ -1435,7 +1785,11 @@ mod tests {
         let allowed = root.join("allowed.png");
         let denied = root.join("denied.png");
         if symlink_file(&inside, &allowed).is_ok() && symlink_file(&outside, &denied).is_ok() {
-            let html = format!("<img src='{}'><img src='{}'>", allowed.display(), denied.display());
+            let html = format!(
+                "<img src='{}'><img src='{}'>",
+                allowed.display(),
+                denied.display()
+            );
             let (prepared, missing) = prepare(html, vec![root]).unwrap();
             assert_eq!(prepared.matches("data:image/png;base64,").count(), 1);
             assert_eq!(missing, vec![denied.to_string_lossy().to_string()]);
@@ -1486,15 +1840,26 @@ mod tests {
             r"\??\GLOBALROOT\Device\HarddiskVolume1\image.png",
             r"\Device\Mup\attacker.example\share\image.png",
         ] {
-            assert!(decode_reparse_target(&symlink_data(target, false)).is_none(), "{target}");
+            assert!(
+                decode_reparse_target(&symlink_data(target, false)).is_none(),
+                "{target}"
+            );
         }
-        assert!(decode_reparse_target(&symlink_data(r"\\attacker.example\share\image.png", true)).is_none());
+        assert!(
+            decode_reparse_target(&symlink_data(r"\\attacker.example\share\image.png", true))
+                .is_none()
+        );
     }
 
     #[test]
     fn automation_preview_has_no_local_image_roots() {
         assert!(is_automation_preview("auto_job-1"));
-        for invalid in ["auto_", "auto_../secret", "auto_job/secret", "conv_auto_job"] {
+        for invalid in [
+            "auto_",
+            "auto_../secret",
+            "auto_job/secret",
+            "conv_auto_job",
+        ] {
             assert!(!is_automation_preview(invalid), "{invalid}");
         }
         let html = "<p>safe preview</p>".to_owned();
@@ -1518,13 +1883,25 @@ mod tests {
         record_pending_render(&first, reference("other", "other"));
         record_pending_render(&first, reference("same", "second"));
         record_pending_render(&second, reference("same", "separate"));
-        assert_eq!(take_pending_render(&first, "second").unwrap().attachment_id, "second");
+        assert_eq!(
+            take_pending_render(&first, "second").unwrap().attachment_id,
+            "second"
+        );
         assert!(take_pending_render(&second, "first").is_none());
-        assert_eq!(take_pending_render(&second, "separate").unwrap().attachment_id, "separate");
-        assert_eq!(take_pending_render(&first, "first").unwrap().attachment_id, "first");
+        assert_eq!(
+            take_pending_render(&second, "separate")
+                .unwrap()
+                .attachment_id,
+            "separate"
+        );
+        assert_eq!(
+            take_pending_render(&first, "first").unwrap().attachment_id,
+            "first"
+        );
         {
             let mut ledger = pending_renders().lock();
-            ledger.get_mut(&first).unwrap().front_mut().unwrap().created = Instant::now() - PENDING_TTL;
+            ledger.get_mut(&first).unwrap().front_mut().unwrap().created =
+                Instant::now() - PENDING_TTL;
         }
         assert!(take_pending_render(&first, "other").is_none());
         assert!(!pending_renders().lock().contains_key(&first));
@@ -1540,6 +1917,11 @@ mod tests {
         clear_pending_renders(&first);
         assert!(take_pending_render(&first, "first").is_none());
         assert!(take_pending_render(&first, "other").is_none());
-        assert_eq!(take_pending_render(&second, "second").unwrap().attachment_id, "second");
+        assert_eq!(
+            take_pending_render(&second, "second")
+                .unwrap()
+                .attachment_id,
+            "second"
+        );
     }
 }

@@ -1022,7 +1022,8 @@ fn attachment_processing_hint(attachment: &Attachment) -> String {
     ) {
         "此文件已保存为 Kivio 安全副本；read 工具不解析此类二进制文档。需要读取正文时用 bash 或本机可用的解析工具处理该路径；没有可用工具时如实告诉用户，不要仅凭文件名臆测内容。".to_string()
     } else {
-        "此文件已保存为 Kivio 安全副本；可直接用 read 工具查看正文，或用 bash 等工具处理该路径。".to_string()
+        "此文件已保存为 Kivio 安全副本；可直接用 read 工具查看正文，或用 bash 等工具处理该路径。"
+            .to_string()
     }
 }
 

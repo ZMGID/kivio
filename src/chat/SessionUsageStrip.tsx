@@ -39,7 +39,7 @@ const GRID_COLS = 12
 const GRID_ROWS = 4
 
 /** 按比例把 cells 格分给各部分；非零部分至少 1 格，舍入误差由最大部分吸收。 */
-export function allocateCells(parts: number[], cells: number): number[] {
+function allocateCells(parts: number[], cells: number): number[] {
   const sum = parts.reduce((a, b) => a + b, 0)
   if (sum <= 0) return parts.map(() => 0)
   const out = parts.map(p => (p > 0 ? Math.max(1, Math.round((p / sum) * cells)) : 0))

@@ -664,7 +664,10 @@ fn native_html_tool(name: &str) -> ChatToolDefinition {
     ChatToolDefinition {
         id: format!("native__{name}"),
         name: name.to_owned(),
-        description: definition["description"].as_str().unwrap_or_default().to_owned(),
+        description: definition["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
         source: "native".to_owned(),
         server_id: None,
         server_name: Some("Kivio".to_owned()),

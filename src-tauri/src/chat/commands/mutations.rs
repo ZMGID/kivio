@@ -962,11 +962,7 @@ fn forked_conversation_file_names(messages: &[ChatMessage]) -> Vec<Cow<'_, str>>
     names
 }
 
-fn copy_forked_files(
-    src_dir: &std::path::Path,
-    dst_dir: &std::path::Path,
-    names: &[Cow<'_, str>],
-) {
+fn copy_forked_files(src_dir: &std::path::Path, dst_dir: &std::path::Path, names: &[Cow<'_, str>]) {
     for name in names {
         let name: &str = name;
         // 只接受裸文件名，拒绝路径分隔符和 Windows 盘符（防越目录）。

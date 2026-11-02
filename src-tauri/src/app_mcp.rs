@@ -51,7 +51,11 @@ pub(crate) struct ToolOutput {
 
 impl From<String> for ToolOutput {
     fn from(text: String) -> Self {
-        Self { text, structured: None, image_png_base64: None }
+        Self {
+            text,
+            structured: None,
+            image_png_base64: None,
+        }
     }
 }
 impl From<html_render::HtmlToolResult> for ToolOutput {
@@ -63,7 +67,6 @@ impl From<html_render::HtmlToolResult> for ToolOutput {
         }
     }
 }
-
 
 pub(crate) trait Backend: Clone + Send + Sync + 'static {
     fn call(
@@ -152,12 +155,16 @@ impl From<ServerCredential<ChatBackend>> for McpCredential {
 impl<B: Backend> Drop for CredentialLease<B> {
     fn drop(&mut self) {
         // The public authorization can be changed; revoke the originally issued session.
-        self.server.state.sessions
+        self.server
+            .state
+            .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .retain(|_, session| !Arc::ptr_eq(session, &self.session));
         // Completion records and revocation purge share this lock.
-        let _control = self.session.control
+        let _control = self
+            .session
+            .control
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         self.session.shutdown.send_replace(true);
@@ -167,14 +174,20 @@ impl<B: Backend> Drop for CredentialLease<B> {
 
 impl<B: Backend> Server<B> {
     pub(crate) fn issue(&self, backend: B) -> Result<ServerCredential<B>, String> {
-        let mut sessions = self.owner.state.sessions
+        let mut sessions = self
+            .owner
+            .state
+            .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         loop {
             let mut secret = [0u8; 32];
-            rand::rngs::OsRng
-                .try_fill_bytes(&mut secret)
-                .map_err(|_| format!("Failed to generate {} MCP credential", self.owner.state.label))?;
+            rand::rngs::OsRng.try_fill_bytes(&mut secret).map_err(|_| {
+                format!(
+                    "Failed to generate {} MCP credential",
+                    self.owner.state.label
+                )
+            })?;
             let authorization = format!("Bearer {}", URL_SAFE_NO_PAD.encode(secret));
             if sessions.contains_key(&authorization) {
                 continue;
@@ -235,16 +248,23 @@ pub(crate) async fn start_server<B: Backend>(
         slots: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         shutdown: shutdown.subscribe(),
     };
-    let router = Router::new().fallback(endpoint::<B>).with_state(state.clone());
+    let router = Router::new()
+        .fallback(endpoint::<B>)
+        .with_state(state.clone());
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    Ok(Server { owner: Arc::new(ServerOwner { state, task }) })
+    Ok(Server {
+        owner: Arc::new(ServerOwner { state, task }),
+    })
 }
 
 #[derive(Clone)]
 pub(crate) enum ChatBackend {
-    App { app: AppHandle, conversation_id: String },
+    App {
+        app: AppHandle,
+        conversation_id: String,
+    },
     #[cfg(test)]
     Test,
     #[cfg(test)]
@@ -256,30 +276,40 @@ pub(crate) enum ChatBackend {
 impl ChatBackend {
     fn conversation_id(&self) -> Option<&str> {
         match self {
-            Self::App { conversation_id, .. } => Some(conversation_id),
+            Self::App {
+                conversation_id, ..
+            } => Some(conversation_id),
             #[cfg(test)]
-            Self::TestRender { conversation_id, .. } => Some(conversation_id),
+            Self::TestRender {
+                conversation_id, ..
+            } => Some(conversation_id),
             #[cfg(test)]
             Self::Test => None,
         }
     }
 }
 
-
 impl Backend for ChatBackend {
     async fn call(&self, name: &str, arguments: &Value) -> Result<ToolOutput, String> {
         match self {
-            Self::App { app, conversation_id } => {
-                html_render::call_tool(app, conversation_id, name, arguments).await.map(Into::into)
-            }
+            Self::App {
+                app,
+                conversation_id,
+            } => html_render::call_tool(app, conversation_id, name, arguments)
+                .await
+                .map(Into::into),
             #[cfg(test)]
             Self::Test => Err("Test credential has no tool backend".to_string()),
             #[cfg(test)]
-            Self::TestRender { attachments_dir, .. } => {
+            Self::TestRender {
+                attachments_dir, ..
+            } => {
                 if name != html_render::HTML_RENDER_TOOL {
                     return Err(format!("Unknown HTML tool: {name}"));
                 }
-                html_render::call_render_in_directory(attachments_dir, arguments).await.map(Into::into)
+                html_render::call_render_in_directory(attachments_dir, arguments)
+                    .await
+                    .map(Into::into)
             }
         }
     }
@@ -304,7 +334,9 @@ fn chat_tool_output(
     result: ToolOutput,
 ) -> Result<ToolOutput, String> {
     if name == html_render::HTML_RENDER_TOOL {
-        let structured = result.structured.as_ref()
+        let structured = result
+            .structured
+            .as_ref()
             .ok_or_else(|| "HTML render returned no reference".to_string())?;
         let reference = html_render::HtmlRenderReference::deserialize(structured)
             .map_err(|error| format!("Invalid HTML render reference: {error}"))?;
@@ -318,7 +350,10 @@ fn complete_tool_call<B: Backend>(
     name: &str,
     output: ToolOutput,
 ) -> Option<Result<ToolOutput, String>> {
-    let _control = session.control.lock().unwrap_or_else(|error| error.into_inner());
+    let _control = session
+        .control
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if *session.shutdown.borrow() {
         return None;
     }
@@ -360,7 +395,9 @@ pub(crate) struct TestCredentialProbe {
 #[cfg(test)]
 impl TestCredentialProbe {
     pub(crate) fn is_active(&self) -> bool {
-        self.server.state.sessions
+        self.server
+            .state
+            .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains_key(&self.authorization)
@@ -368,7 +405,8 @@ impl TestCredentialProbe {
 }
 
 #[cfg(test)]
-pub(crate) async fn issue_test_chat_credential() -> Result<(McpCredential, TestCredentialProbe), String> {
+pub(crate) async fn issue_test_chat_credential(
+) -> Result<(McpCredential, TestCredentialProbe), String> {
     let server = start_server(
         html_render::tool_definitions(),
         CHAT_MCP_SERVER_NAME,
@@ -529,7 +567,10 @@ pub(crate) fn same_secret(actual: &str, expected: &str) -> bool {
             == 0
 }
 
-fn authorize<B>(state: &ServerState<B>, request: &Request<Body>) -> Result<Arc<Session<B>>, StatusCode> {
+fn authorize<B>(
+    state: &ServerState<B>,
+    request: &Request<Body>,
+) -> Result<Arc<Session<B>>, StatusCode> {
     let headers = request.headers();
     if one_header(headers, "host").ok().flatten() != Some(state.host.as_str())
         || request
@@ -548,7 +589,8 @@ fn authorize<B>(state: &ServerState<B>, request: &Request<Body>) -> Result<Arc<S
         .ok()
         .flatten()
         .ok_or(StatusCode::UNAUTHORIZED)?;
-    let session = state.sessions
+    let session = state
+        .sessions
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .iter()
@@ -911,7 +953,6 @@ impl<B: Backend> Drop for PendingCall<B> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,13 +986,17 @@ mod tests {
                 } else {
                     json!({"width": 728})
                 }),
-                image_png_base64: (name == html_render::HTML_PREVIEW_TOOL).then(|| "aGVsbG8=".to_string()),
+                image_png_base64: (name == html_render::HTML_PREVIEW_TOOL)
+                    .then(|| "aGVsbG8=".to_string()),
             })
         }
     }
 
     fn backend(conversation: &'static str) -> ScopedBackend {
-        ScopedBackend { conversation, started: Arc::new(Notify::new()) }
+        ScopedBackend {
+            conversation,
+            started: Arc::new(Notify::new()),
+        }
     }
 
     fn client() -> reqwest::Client {
@@ -963,28 +1008,50 @@ mod tests {
         credential: &ServerCredential<B>,
         message: Value,
     ) -> reqwest::RequestBuilder {
-        client.post(&credential.url)
+        client
+            .post(&credential.url)
             .header(header::AUTHORIZATION, &credential.authorization)
             .json(&message)
     }
 
     async fn initialize<B: Backend>(client: &reqwest::Client, credential: &ServerCredential<B>) {
-        let response = post(client, credential, json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25", "capabilities": {},
-                "clientInfo": {"name": "test", "version": "1"}}
-        })).send().await.unwrap();
+        let response = post(
+            client,
+            credential,
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"}}
+            }),
+        )
+        .send()
+        .await
+        .unwrap();
         let body: Value = response.json().await.unwrap();
         assert_eq!(body["result"]["serverInfo"]["name"], CHAT_MCP_SERVER_NAME);
-        let response = post(client, credential, json!({
-            "jsonrpc": "2.0", "method": "notifications/initialized"
-        })).send().await.unwrap();
+        let response = post(
+            client,
+            credential,
+            json!({
+                "jsonrpc": "2.0", "method": "notifications/initialized"
+            }),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
     }
 
     async fn server() -> Server<ScopedBackend> {
-        start_server(html_render::tool_definitions(), CHAT_MCP_SERVER_NAME, MAX_CHAT_BODY, "chat", CHAT_TIMEOUT_MESSAGE)
-            .await.unwrap()
+        start_server(
+            html_render::tool_definitions(),
+            CHAT_MCP_SERVER_NAME,
+            MAX_CHAT_BODY,
+            "chat",
+            CHAT_TIMEOUT_MESSAGE,
+        )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1002,31 +1069,52 @@ mod tests {
             MAX_CHAT_BODY,
             "chat",
             CHAT_TIMEOUT_MESSAGE,
-        ).await.unwrap();
-        let first = server.issue(ChatBackend::TestRender {
-            attachments_dir: first_dir.clone(),
-            conversation_id: first_conversation.clone(),
-        }).unwrap();
-        let second = server.issue(ChatBackend::TestRender {
-            attachments_dir: second_dir.clone(),
-            conversation_id: second_conversation.clone(),
-        }).unwrap();
+        )
+        .await
+        .unwrap();
+        let first = server
+            .issue(ChatBackend::TestRender {
+                attachments_dir: first_dir.clone(),
+                conversation_id: first_conversation.clone(),
+            })
+            .unwrap();
+        let second = server
+            .issue(ChatBackend::TestRender {
+                attachments_dir: second_dir.clone(),
+                conversation_id: second_conversation.clone(),
+            })
+            .unwrap();
         let other_server = start_server::<ChatBackend>(
             html_render::tool_definitions(),
             CHAT_MCP_SERVER_NAME,
             MAX_CHAT_BODY,
             "chat",
             CHAT_TIMEOUT_MESSAGE,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         let other_token = other_server.issue(ChatBackend::Test).unwrap();
         let client = client();
         initialize(&client, &first).await;
         initialize(&client, &second).await;
 
-        let listed: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/list"
-        })).send().await.unwrap().json().await.unwrap();
-        assert_eq!(listed["result"]["tools"], json!(html_render::tool_definitions()));
+        let listed: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(
+            listed["result"]["tools"],
+            json!(html_render::tool_definitions())
+        );
 
         let title = "HTTP render";
         let first_html = "<html><body><p>first conversation</p></body></html>";
@@ -1038,24 +1126,42 @@ mod tests {
                 "conversationId": &second_conversation
             }}
         });
-        let denied = client.post(&first.url)
+        let denied = client
+            .post(&first.url)
             .header(header::AUTHORIZATION, &other_token.authorization)
             .json(&first_call)
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
         assert!(std::fs::read_dir(&first_dir).unwrap().next().is_none());
 
-        let invalid: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
-                "html": first_html, "title": title, "height": 2001
-            }}
-        })).send().await.unwrap().json().await.unwrap();
+        let invalid: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
+                    "html": first_html, "title": title, "height": 2001
+                }}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
         assert_eq!(invalid["result"]["isError"], true);
         assert!(std::fs::read_dir(&first_dir).unwrap().next().is_none());
 
         let first_result: Value = post(&client, &first, first_call)
-            .send().await.unwrap().json().await.unwrap();
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(first_result["result"]["isError"], false);
         assert_eq!(first_result["result"]["content"][0]["type"], "text");
         let first_reference = first_result["result"]["structuredContent"].clone();
@@ -1063,7 +1169,9 @@ mod tests {
         assert_eq!(first_reference["title"], title);
         assert_eq!(first_reference["height"], 480);
         let first_id = first_reference["attachmentId"].as_str().unwrap();
-        assert!(first_result["result"]["content"][0]["text"].as_str().unwrap()
+        assert!(first_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
             .starts_with(&format!("Rendered page {first_id}.")));
         assert_eq!(
             std::fs::read_to_string(first_dir.join(format!("{first_id}.html"))).unwrap(),
@@ -1071,49 +1179,93 @@ mod tests {
         );
         assert!(html_render::take_pending_render(&second_conversation, first_id).is_none());
 
-        let current_result: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
-            "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
-                "html": "<p>new page with the same title</p>", "title": title, "height": 480
-            }}
-        })).send().await.unwrap().json().await.unwrap();
+        let current_result: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
+                    "html": "<p>new page with the same title</p>", "title": title, "height": 480
+                }}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
         assert_eq!(current_result["result"]["isError"], false);
         let current_reference = current_result["result"]["structuredContent"].clone();
         let current_id = current_reference["attachmentId"].as_str().unwrap();
         assert_ne!(first_id, current_id);
-        assert!(current_result["result"]["content"][0]["text"].as_str().unwrap()
+        assert!(current_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
             .starts_with(&format!("Rendered page {current_id}.")));
         assert_eq!(
-            serde_json::to_value(html_render::take_pending_render(&first_conversation, current_id).unwrap()).unwrap(),
+            serde_json::to_value(
+                html_render::take_pending_render(&first_conversation, current_id).unwrap()
+            )
+            .unwrap(),
             current_reference
         );
         assert_eq!(
-            serde_json::to_value(html_render::take_pending_render(&first_conversation, first_id).unwrap()).unwrap(),
+            serde_json::to_value(
+                html_render::take_pending_render(&first_conversation, first_id).unwrap()
+            )
+            .unwrap(),
             first_reference
         );
 
-        let abandoned_result: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-            "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
-                "html": "<p>abandoned on revoke</p>", "title": title, "height": 480
-            }}
-        })).send().await.unwrap().json().await.unwrap();
+        let abandoned_result: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
+                    "html": "<p>abandoned on revoke</p>", "title": title, "height": 480
+                }}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
         assert_eq!(abandoned_result["result"]["isError"], false);
-        let abandoned_id = abandoned_result["result"]["structuredContent"]["attachmentId"].as_str().unwrap();
-        assert!(abandoned_result["result"]["content"][0]["text"].as_str().unwrap()
+        let abandoned_id = abandoned_result["result"]["structuredContent"]["attachmentId"]
+            .as_str()
+            .unwrap();
+        assert!(abandoned_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
             .starts_with(&format!("Rendered page {abandoned_id}.")));
 
-        let second_result: Value = post(&client, &second, json!({
-            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
-                "html": second_html, "title": title, "height": 480,
-                "conversationId": &first_conversation
-            }}
-        })).send().await.unwrap().json().await.unwrap();
+        let second_result: Value = post(
+            &client,
+            &second,
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {
+                    "html": second_html, "title": title, "height": 480,
+                    "conversationId": &first_conversation
+                }}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
         assert_eq!(second_result["result"]["isError"], false);
         let second_reference = second_result["result"]["structuredContent"].clone();
         let second_id = second_reference["attachmentId"].as_str().unwrap();
-        assert!(second_result["result"]["content"][0]["text"].as_str().unwrap()
+        assert!(second_result["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
             .starts_with(&format!("Rendered page {second_id}.")));
         assert_ne!(first_id, second_id);
         assert_eq!(
@@ -1126,7 +1278,10 @@ mod tests {
         drop(first);
         assert!(html_render::take_pending_render(&first_conversation, abandoned_id).is_none());
         assert_eq!(
-            serde_json::to_value(html_render::take_pending_render(&second_conversation, second_id).unwrap()).unwrap(),
+            serde_json::to_value(
+                html_render::take_pending_render(&second_conversation, second_id).unwrap()
+            )
+            .unwrap(),
             second_reference
         );
     }
@@ -1142,49 +1297,126 @@ mod tests {
         assert!(!same_secret(&first.authorization, &second.authorization));
 
         initialize(&client, &first).await;
-        let before_init: Value = post(&client, &second, json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/list"
-        })).send().await.unwrap().json().await.unwrap();
+        let before_init: Value = post(
+            &client,
+            &second,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list"
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
         assert_eq!(before_init["error"]["code"], -32002);
         initialize(&client, &second).await;
 
-        let listed: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/list"
-        })).send().await.unwrap().json().await.unwrap();
-        assert_eq!(listed["result"]["tools"], json!(html_render::tool_definitions()));
+        let listed: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/list"
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(
+            listed["result"]["tools"],
+            json!(html_render::tool_definitions())
+        );
 
         for (credential, conversation) in [(&first, "first"), (&second, "second")] {
-            let render: Value = post(&client, credential, json!({
-                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {}}
-            })).send().await.unwrap().json().await.unwrap();
-            let id = render["result"]["structuredContent"]["attachmentId"].as_str().unwrap();
-            assert!(render["result"]["content"][0]["text"].as_str().unwrap()
+            let render: Value = post(
+                &client,
+                credential,
+                json!({
+                    "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                    "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {}}
+                }),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+            let id = render["result"]["structuredContent"]["attachmentId"]
+                .as_str()
+                .unwrap();
+            assert!(render["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
                 .starts_with(&format!("Rendered page {id}.")));
             assert_eq!(render["result"]["structuredContent"]["title"], conversation);
             assert_eq!(render["result"]["structuredContent"]["type"], "html_render");
             assert_eq!(render["result"]["isError"], false);
         }
-        let preview: Value = post(&client, &first, json!({
-            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": {"name": html_render::HTML_PREVIEW_TOOL, "arguments": {}}
-        })).send().await.unwrap().json().await.unwrap();
-        assert_eq!(preview["result"]["content"][1], json!({
-            "type": "image", "data": "aGVsbG8=", "mimeType": "image/png"
-        }));
+        let preview: Value = post(
+            &client,
+            &first,
+            json!({
+                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                "params": {"name": html_render::HTML_PREVIEW_TOOL, "arguments": {}}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(
+            preview["result"]["content"][1],
+            json!({
+                "type": "image", "data": "aGVsbG8=", "mimeType": "image/png"
+            })
+        );
         assert_eq!(preview["result"]["structuredContent"]["width"], 728);
 
         let ping = json!({"jsonrpc": "2.0", "id": 6, "method": "ping"});
-        assert_eq!(client.post(&first.url).json(&ping).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(post(&client, &first, ping.clone())
-            .header(header::AUTHORIZATION, &first.authorization)
-            .send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(post(&client, &first, ping.clone())
-            .header(header::ORIGIN, "https://evil.example")
-            .send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(post(&client, &first, ping)
-            .header(header::HOST, "evil.example")
-            .send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            client
+                .post(&first.url)
+                .json(&ping)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post(&client, &first, ping.clone())
+                .header(header::AUTHORIZATION, &first.authorization)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post(&client, &first, ping.clone())
+                .header(header::ORIGIN, "https://evil.example")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(&client, &first, ping)
+                .header(header::HOST, "evil.example")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]
@@ -1202,26 +1434,55 @@ mod tests {
             "params": {"name": html_render::HTML_PREVIEW_TOOL, "arguments": {"wait": true}}});
         let first_request = post(&client, &first, call.clone());
         let first_task = tokio::spawn(async move { first_request.send().await });
-        tokio::time::timeout(Duration::from_secs(3), first_backend.started.notified()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), first_backend.started.notified())
+            .await
+            .unwrap();
         let second_request = post(&client, &second, call);
         let second_task = tokio::spawn(async move { second_request.send().await });
-        tokio::time::timeout(Duration::from_secs(3), second_backend.started.notified()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), second_backend.started.notified())
+            .await
+            .unwrap();
 
-        let cancelled = post(&client, &second, json!({
-            "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 42}
-        })).send().await.unwrap();
+        let cancelled = post(
+            &client,
+            &second,
+            json!({
+                "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 42}
+            }),
+        )
+        .send()
+        .await
+        .unwrap();
         assert_eq!(cancelled.status(), StatusCode::ACCEPTED);
-        assert_eq!(second_task.await.unwrap().unwrap().status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            second_task.await.unwrap().unwrap().status(),
+            StatusCode::ACCEPTED
+        );
         assert!(!first_task.is_finished());
 
         let old_url = first.url.clone();
         let old_authorization = first.authorization.clone();
         drop(first);
-        assert_eq!(first_task.await.unwrap().unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            first_task.await.unwrap().unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
         let ping = json!({"jsonrpc": "2.0", "id": 9, "method": "ping"});
-        assert_eq!(client.post(old_url).header(header::AUTHORIZATION, old_authorization)
-            .json(&ping).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(post(&client, &second, ping).send().await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            client
+                .post(old_url)
+                .header(header::AUTHORIZATION, old_authorization)
+                .json(&ping)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post(&client, &second, ping).send().await.unwrap().status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
@@ -1236,12 +1497,18 @@ mod tests {
             "params": {"name": html_render::HTML_RENDER_TOOL, "arguments": {"html": "\0".repeat(512_000)}}
         })).send().await.unwrap();
         assert_eq!(accepted.status(), StatusCode::OK);
-        assert_eq!(accepted.json::<Value>().await.unwrap()["result"]["isError"], false);
-        let rejected = client.post(&credential.url)
+        assert_eq!(
+            accepted.json::<Value>().await.unwrap()["result"]["isError"],
+            false
+        );
+        let rejected = client
+            .post(&credential.url)
             .header(header::AUTHORIZATION, &credential.authorization)
             .header(header::CONTENT_TYPE, "application/json")
             .body(" ".repeat(MAX_CHAT_BODY + 1))
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
         assert_eq!(rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -1295,42 +1562,77 @@ mod tests {
             MAX_CHAT_BODY,
             "chat",
             CHAT_TIMEOUT_MESSAGE,
-        ).await.unwrap();
-        let old: McpCredential = server.issue(ChatBackend::TestRender {
-            attachments_dir: temp.path().to_path_buf(),
-            conversation_id: conversation.clone(),
-        }).unwrap().into();
+        )
+        .await
+        .unwrap();
+        let old: McpCredential = server
+            .issue(ChatBackend::TestRender {
+                attachments_dir: temp.path().to_path_buf(),
+                conversation_id: conversation.clone(),
+            })
+            .unwrap()
+            .into();
         let old_session = old._lease.session.clone();
         let (ready, published) = oneshot::channel();
         let (resume, release) = oneshot::channel();
         let late = tokio::spawn(async move {
-            let arguments = json!({"html": "<p>old page</p>", "title": "same title", "height": 480});
-            let output = old_session.backend.call(html_render::HTML_RENDER_TOOL, &arguments).await.unwrap();
-            let id = output.structured.as_ref().unwrap()["attachmentId"].as_str().unwrap().to_string();
+            let arguments =
+                json!({"html": "<p>old page</p>", "title": "same title", "height": 480});
+            let output = old_session
+                .backend
+                .call(html_render::HTML_RENDER_TOOL, &arguments)
+                .await
+                .unwrap();
+            let id = output.structured.as_ref().unwrap()["attachmentId"]
+                .as_str()
+                .unwrap()
+                .to_string();
             ready.send(id).unwrap();
             release.await.unwrap();
             complete_tool_call(&old_session, html_render::HTML_RENDER_TOOL, output)
         });
-        let old_id = tokio::time::timeout(Duration::from_secs(3), published).await.unwrap().unwrap();
+        let old_id = tokio::time::timeout(Duration::from_secs(3), published)
+            .await
+            .unwrap()
+            .unwrap();
         drop(old);
 
-        let current = server.issue(ChatBackend::TestRender {
-            attachments_dir: temp.path().to_path_buf(),
-            conversation_id: conversation.clone(),
-        }).unwrap();
+        let current = server
+            .issue(ChatBackend::TestRender {
+                attachments_dir: temp.path().to_path_buf(),
+                conversation_id: conversation.clone(),
+            })
+            .unwrap();
         let arguments = json!({"html": "<p>new page</p>", "title": "same title", "height": 480});
-        let output = current._lease.session.backend.call(html_render::HTML_RENDER_TOOL, &arguments).await.unwrap();
+        let output = current
+            ._lease
+            .session
+            .backend
+            .call(html_render::HTML_RENDER_TOOL, &arguments)
+            .await
+            .unwrap();
         let reference = output.structured.as_ref().unwrap().clone();
         let current_id = reference["attachmentId"].as_str().unwrap();
         assert_ne!(old_id, current_id);
-        assert!(output.text.starts_with(&format!("Rendered page {current_id}.")));
-        complete_tool_call(&current._lease.session, html_render::HTML_RENDER_TOOL, output).unwrap().unwrap();
+        assert!(output
+            .text
+            .starts_with(&format!("Rendered page {current_id}.")));
+        complete_tool_call(
+            &current._lease.session,
+            html_render::HTML_RENDER_TOOL,
+            output,
+        )
+        .unwrap()
+        .unwrap();
 
         resume.send(()).unwrap();
         assert!(late.await.unwrap().is_none());
         assert!(html_render::take_pending_render(&conversation, &old_id).is_none());
         assert_eq!(
-            serde_json::to_value(html_render::take_pending_render(&conversation, current_id).unwrap()).unwrap(),
+            serde_json::to_value(
+                html_render::take_pending_render(&conversation, current_id).unwrap()
+            )
+            .unwrap(),
             reference
         );
     }

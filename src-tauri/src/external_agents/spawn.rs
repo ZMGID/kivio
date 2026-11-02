@@ -28,7 +28,9 @@ pub(crate) fn bypass_loopback_proxy(command: &mut Command) {
         }
     }
     no_proxy.push_str("127.0.0.1,localhost,::1");
-    command.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
+    command
+        .env("NO_PROXY", &no_proxy)
+        .env("no_proxy", &no_proxy);
 }
 
 /// Owns the Unix CLI process group through normal exit, error and cancellation.

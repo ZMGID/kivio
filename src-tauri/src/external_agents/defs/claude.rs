@@ -521,20 +521,23 @@ mod tests {
     #[test]
     fn chat_mcp_args_preserve_other_servers_and_allow_both_tools() {
         let mut args = vec!["--permission-mode".to_string(), "plan".to_string()];
-        let file = append_chat_mcp_args(&mut args, "http://127.0.0.1:1234/mcp", "Bearer secret")
-            .unwrap();
+        let file =
+            append_chat_mcp_args(&mut args, "http://127.0.0.1:1234/mcp", "Bearer secret").unwrap();
         assert!(args.iter().all(|arg| !arg.contains("Bearer secret")));
         let config = args.iter().position(|arg| arg == "--mcp-config").unwrap();
         let path = std::path::PathBuf::from(&args[config + 1]);
         assert_eq!(path.as_path(), file.path());
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value, serde_json::json!({
-            "mcpServers": {"kivio": {
-                "type": "http", "url": "http://127.0.0.1:1234/mcp",
-                "headers": {"Authorization": "Bearer secret"}
-            }}
-        }));
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "mcpServers": {"kivio": {
+                    "type": "http", "url": "http://127.0.0.1:1234/mcp",
+                    "headers": {"Authorization": "Bearer secret"}
+                }}
+            })
+        );
         let allowed = args.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(
             args[allowed + 1].split_whitespace().collect::<Vec<_>>(),

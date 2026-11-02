@@ -2,8 +2,8 @@
 
 pub mod agents;
 pub mod api;
-mod app_mcp;
 pub mod app_data;
+mod app_mcp;
 pub mod automation;
 pub mod backup;
 pub mod capture_geometry;

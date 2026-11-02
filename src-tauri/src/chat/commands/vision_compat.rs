@@ -48,7 +48,13 @@ pub(crate) async fn attach_image_artifacts_for_model(
     result: &mut mcp::types::McpToolCallResult,
 ) {
     vision::attach_image_artifacts_for_model(
-        app, settings, conversation_id, message_id, provider, model, result,
+        app,
+        settings,
+        conversation_id,
+        message_id,
+        provider,
+        model,
+        result,
     )
     .await;
 }
