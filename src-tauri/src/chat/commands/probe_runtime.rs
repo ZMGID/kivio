@@ -127,6 +127,7 @@ pub(crate) async fn run_chat_probe(
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     };

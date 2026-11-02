@@ -16,6 +16,8 @@ interface AssistantMessageMetaProps {
   runEntry?: string | null
   streamOutcome?: string | null
   usage?: MessageUsage | null
+  servedVendor?: string | null
+  servedModel?: string | null
   onRegenerate?: () => void
   onReplyWithModel?: (providerId: string, model: string) => void
   replyOccupiedModels?: ModelRef[]
@@ -51,6 +53,8 @@ export function AssistantMessageMeta({
   runEntry,
   streamOutcome,
   usage,
+  servedVendor,
+  servedModel,
   onRegenerate,
   onReplyWithModel,
   replyOccupiedModels = [],
@@ -105,6 +109,11 @@ export function AssistantMessageMeta({
       className="msg-hover-reveal mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-neutral-400 opacity-0 transition-opacity duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] [will-change:opacity] focus-within:opacity-100 dark:text-neutral-500"
     >
       {timestamp > 0 && <span className="shrink-0">{formatAssistantMessageTime(timestamp)}</span>}
+      {servedVendor && servedModel && (
+        <span className="min-w-0 truncate" title={`${servedVendor} · ${servedModel}`}>
+          {servedVendor} · {servedModel}
+        </span>
+      )}
       {runEntryLabel && <span className="shrink-0">{runEntryLabel}</span>}
       {streamOutcomeLabel && <span className="shrink-0">{streamOutcomeLabel}</span>}
 

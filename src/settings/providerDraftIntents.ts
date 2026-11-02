@@ -1,4 +1,4 @@
-import type { ModelInfo, ModelProvider, Settings } from '../api/tauri'
+import { FREEROUTE_BASE_URL, type ModelInfo, type ModelProvider, type Settings } from '../api/tauri'
 import type { ProviderPreset } from './providerPresets'
 import { createProviderRequestDraft } from './public/providerDraft'
 import { isProviderEnabled } from './utils'
@@ -90,13 +90,14 @@ export function applyProviderDraftIntent(settings: Settings, intent: ProviderDra
     case 'add': {
       if (settings.providers.some((provider) => provider.id === intent.id)) return settings
       const preset = intent.preset
+      const isFreeRoutePreset = preset?.baseUrl === FREEROUTE_BASE_URL
       const provider: ModelProvider = {
         id: intent.id,
         name: preset?.name ?? 'New Provider',
         apiKeys: [],
         baseUrl: preset?.baseUrl ?? 'https://api.openai.com/v1',
-        availableModels: [],
-        enabledModels: [],
+        availableModels: isFreeRoutePreset ? ['auto'] : [],
+        enabledModels: isFreeRoutePreset ? ['auto'] : [],
         enabled: true,
         apiFormat: preset?.apiFormat ?? 'openai_chat',
         request: createProviderRequestDraft(preset?.oauth),

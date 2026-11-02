@@ -53,6 +53,23 @@ pub(crate) async fn generate_with_chat_provider(
     retry_attempts: usize,
     request: GenerateRequest,
 ) -> Result<GenerateOutput, ModelError> {
+    if crate::chat::freeroute::is_freeroute_url(&provider.base_url) {
+        crate::chat::video::validate_request(provider, &request)?;
+        return crate::chat::freeroute::generate(state, provider, request).await;
+    }
+    generate_with_vendor_provider(state, provider, retry_attempts, request).await
+}
+
+/// 具体供应商端点的协议分发，不含 FreeRoute。
+///
+/// FreeRoute 的 hop 必须走这里。回到 `generate_with_chat_provider` 会再进入
+/// `freeroute::generate`，async fn 环的 future 无限大（E0733）。
+pub(crate) async fn generate_with_vendor_provider(
+    state: &crate::state::AppState,
+    provider: &crate::settings::ModelProvider,
+    retry_attempts: usize,
+    request: GenerateRequest,
+) -> Result<GenerateOutput, ModelError> {
     crate::chat::video::validate_request(provider, &request)?;
     let resolved = crate::provider_oauth::resolve_provider(state, provider)
         .await
@@ -100,6 +117,21 @@ pub(crate) async fn generate_with_chat_provider(
 
 /// `generate_with_chat_provider` 的流式版本。同为全 crate 统一分发入口。
 pub(crate) async fn stream_with_chat_provider(
+    state: &crate::state::AppState,
+    provider: &crate::settings::ModelProvider,
+    retry_attempts: usize,
+    request: GenerateRequest,
+    sink: &mut (dyn StreamSink + Send),
+) -> Result<GenerateOutput, ModelError> {
+    if crate::chat::freeroute::is_freeroute_url(&provider.base_url) {
+        crate::chat::video::validate_request(provider, &request)?;
+        return crate::chat::freeroute::stream(state, provider, request, sink).await;
+    }
+    stream_with_vendor_provider(state, provider, retry_attempts, request, sink).await
+}
+
+/// `generate_with_vendor_provider` 的流式版本。FreeRoute hop 走这里，避免 async fn 环。
+pub(crate) async fn stream_with_vendor_provider(
     state: &crate::state::AppState,
     provider: &crate::settings::ModelProvider,
     retry_attempts: usize,

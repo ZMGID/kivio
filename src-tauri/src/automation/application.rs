@@ -723,6 +723,7 @@ fn workflow_user_message(content: String) -> ChatMessage {
         group_id: None,
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     }

@@ -61,6 +61,18 @@ describe('provider draft intents', () => {
     expect(next.providers[0].enabledModels).toEqual(['m1', 'm2', 'm4', 'm5'])
   })
 
+  it('adding FreeRoute seeds the auto model', () => {
+    const next = applyProviderDraftIntent(settings(), {
+      type: 'add',
+      id: 'fr',
+      preset: { name: 'FreeRoute', baseUrl: 'kivio://freeroute' as const },
+    })
+    const provider = next.providers.find((item) => item.id === 'fr')
+    expect(provider?.enabledModels).toEqual(['auto'])
+    expect(provider?.availableModels).toEqual(['auto'])
+    expect(provider?.apiKeys).toEqual([])
+  })
+
   it('ignores an edit to an unknown provider without creating a dirty draft', () => {
     const original = settings()
     expect(applyProviderDraftIntent(original, { type: 'update', id: 'missing', updates: { name: 'Absent' } })).toBe(original)

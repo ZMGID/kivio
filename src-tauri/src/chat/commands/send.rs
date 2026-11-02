@@ -329,6 +329,7 @@ async fn send_reserved(
         group_id: group_id.clone(),
         provider_id: None,
         model: None,
+        served_vendor: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     };

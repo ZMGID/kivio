@@ -125,6 +125,7 @@ impl Pending {
                 // 导入的消息不归属任何 Kivio provider——续聊由 CLI 承担（ADR-0001）。
                 provider_id: None,
                 model: None,
+                served_vendor: None,
                 // 毫秒 → 秒：`ChatMessage.timestamp` 与前端 `nowSeconds()` 对齐，
                 // 直接塞毫秒会让导入的消息显示成公元五万年。
                 timestamp: self.timestamp / 1000,

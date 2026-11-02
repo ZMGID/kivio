@@ -1,4 +1,4 @@
-import type { ProviderApiFormat } from '../api/tauri'
+import { FREEROUTE_BASE_URL, type ProviderApiFormat } from '../api/tauri'
 
 // Presets only prefill provider metadata. Models are fetched from the provider API
 // and explicitly enabled by the user.
@@ -22,6 +22,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { name: 'Kimi OAuth', baseUrl: 'https://api.kimi.com/coding/v1', oauth: 'kimi' },
   { name: 'Antigravity OAuth', baseUrl: 'https://daily-cloudcode-pa.googleapis.com', apiFormat: 'gemini', oauth: 'antigravity' },
   { name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1' },
+  { name: 'FreeRoute', baseUrl: FREEROUTE_BASE_URL },
   {
     name: 'Hezubus',
     baseUrl: 'https://hezubus.cc/',
