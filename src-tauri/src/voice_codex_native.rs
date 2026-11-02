@@ -805,11 +805,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    const FAKE_HELPER: &str = r##"#!/usr/bin/python3
+    const FAKE_HELPER: &str = r##"
 import json, os, pathlib, struct, sys, time
-if sys.argv[1:] == ['--build-commit']:
-    print('fixture-build')
-    sys.exit(0)
 root = pathlib.Path(__file__).resolve().parents[3]
 while True:
     header = sys.stdin.buffer.read(4)
@@ -859,6 +856,13 @@ while True:
 "##;
 
     #[cfg(unix)]
+    fn write_fake_helper(helper: &Path) {
+        // Build identity must not wait for a cold Python startup on CI.
+        std::fs::write(helper, "#!/bin/sh\nif [ \"$1\" = \"--build-commit\" ]; then\n  printf 'fixture-build\\n'\nelse\n  exec /usr/bin/python3 \"$0.py\"\nfi\n").unwrap();
+        std::fs::write(helper.with_extension("py"), FAKE_HELPER).unwrap();
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_before_answer_completion_never_opens_devices() {
         if !Path::new("/usr/bin/python3").is_file() {
@@ -866,7 +870,7 @@ while True:
         }
         let temp = tempfile::tempdir().unwrap();
         let (_, helper) = package(temp.path(), "0.161.0");
-        std::fs::write(&helper, FAKE_HELPER).unwrap();
+        write_fake_helper(&helper);
         let manifest = helper
             .parent()
             .unwrap()
@@ -904,7 +908,7 @@ while True:
         for (version, partial_bytes) in [("0.159.0", "2"), ("0.161.0", "6")] {
             let temp = tempfile::tempdir().unwrap();
             let (_, helper) = package(temp.path(), version);
-            std::fs::write(&helper, FAKE_HELPER).unwrap();
+            write_fake_helper(&helper);
             let manifest = helper
                 .parent()
                 .unwrap()
@@ -950,7 +954,7 @@ while True:
         }
         let temp = tempfile::tempdir().unwrap();
         let (_, helper) = package(temp.path(), "0.161.0");
-        std::fs::write(&helper, FAKE_HELPER).unwrap();
+        write_fake_helper(&helper);
         std::fs::write(temp.path().join("fail-runtime"), "fail").unwrap();
         let error = NativeHost::open(&helper).await.err().unwrap();
         assert!(error.contains("runtime initialization"));
