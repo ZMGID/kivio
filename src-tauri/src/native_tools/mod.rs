@@ -18,8 +18,8 @@ pub use sandbox_exports::{
     remove_sandbox_exports_for_conversation, resolve_sandbox_export_file_path,
     SandboxExportContext,
 };
-pub(crate) use shell::build_shell_command;
 pub use shell::run_command;
+pub(crate) use shell::{apply_plugin_bin_path, build_shell_command};
 pub use shell::{
     bash_foreground_timeout_ms, bash_output, kill_background, kill_process_group, list_background,
     run_captured_command, run_command_shell_hint, BackgroundCommand, BackgroundCommandStatus,
