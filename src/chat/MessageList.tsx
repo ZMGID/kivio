@@ -44,16 +44,19 @@ import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
 import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
 import {
   chatMessageLayoutRevision,
+  correctCachedChatRow,
   estimateMessageRenderHeight,
   estimateMessageRenderCost,
   getCachedRowMeasurement,
   layoutScopedVirtualKey,
   measureChatVirtualRow,
+  remeasureMountedChatRows,
   sendReserveHeight,
   restoreMeasurementSnapshot,
   saveMeasurementSnapshot,
   setCachedRowMeasurement,
   shouldAdjustChatItemSizeChange,
+  unobservedChatRowSize,
 } from './messageListVirtualization'
 import type { Lang } from '../components/i18n'
 import { measureChatSurface, recordChatPerfSample, useChatPerfRenderProbe } from './chatPerformanceProbe'
@@ -968,12 +971,19 @@ function MessageListBase({
       )
       const key = element.dataset.chatItemKey
       if (key) {
-        const size = Math.max(1, measured)
+        let size = Math.max(1, measured)
         const index = Number(element.dataset.index)
         const virtualKey = Number.isInteger(index) ? instance.options.getItemKey(index) : key
         const rowItem = Number.isInteger(index) ? itemAt(index) : undefined
         const logicalKey = rowItem?.key
         const previousSize = instance.itemSizeCache.get(virtualKey)
+        // No ResizeObserver entry: tables, code, and a reused row can already
+        // be taller than the cache, and nothing else will deliver an entry if
+        // the box does not change again. A 0 offset is not laid out — keep
+        // the cache so the caller cannot shrink the row onto the next one.
+        if (!entry && previousSize !== undefined && Number.isInteger(index)) {
+          size = unobservedChatRowSize(element, previousSize, instance.options.horizontal) ?? previousSize
+        }
         if (previousSize === undefined || Math.abs(previousSize - size) > 0.5) {
           // Remeasure compensation. External live never hits this for token growth.
           followHandle.markLayoutCompensation()
@@ -989,8 +999,9 @@ function MessageListBase({
         // positions together: scroll compensation is synchronous, so deferring
         // the transforms exposes a frame with the new scrollTop and old rows.
         // Ref measurements have no entry and must never flush inside React.
-        if (entry && previousSize !== size) {
-          flushSync(() => instance.resizeItem(index, size))
+        if (Number.isInteger(index) && previousSize !== size) {
+          if (entry) flushSync(() => instance.resizeItem(index, size))
+          else if (previousSize !== undefined) instance.resizeItem(index, size)
         }
         return size
       }
@@ -1075,10 +1086,98 @@ function MessageListBase({
       virtualizer.options.onChange = onChange
     }
   }, [measureRow, virtualizer])
+  const correctMountedRows = useCallback((rows: readonly HTMLDivElement[]) => {
+    const instance = virtualizerRef.current
+    if (!instance || rows.length === 0) return
+    const onChange = instance.options.onChange
+    instance.options.onChange = (next) => onChange(next, false)
+    try {
+      for (const row of rows) correctCachedChatRow(row, instance)
+    } finally {
+      instance.options.onChange = onChange
+    }
+  }, [])
+  const mountedVirtualRows = useCallback((): HTMLDivElement[] => {
+    const root = contentEl
+    if (!root) return []
+    return [...root.querySelectorAll<HTMLDivElement>('[data-index]')]
+  }, [contentEl])
+  // Conversation switches no longer remount the list, and a width bucket change
+  // reuses the same nodes. measure() drops sizes from the previous geometry;
+  // rows that are not mounted keep the snapshot instead of falling back to an estimate.
+  const layoutMeasureKeyRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    const instance = virtualizerRef.current
+    const key = `${conversationId ?? ''}:${contentWidth}`
+    const previous = layoutMeasureKeyRef.current
+    layoutMeasureKeyRef.current = key
+    if (!instance || !contentEl || previous === null || previous === key) return
+    const onChange = instance.options.onChange
+    instance.options.onChange = (next) => onChange(next, false)
+    try {
+      remeasureMountedChatRows(instance, mountedVirtualRows())
+    } finally {
+      instance.options.onChange = onChange
+    }
+  }, [contentEl, contentWidth, conversationId, mountedVirtualRows])
   useLayoutEffect(() => { restoreWidthAnchor(virtualizer) })
-  // Row ResizeObservers and TanStack's own viewport observer update mounted rows.
-  // Avoid a blanket measure(): it clears the virtualizer's measured cache and makes
-  // detached readers pay the estimate-to-real-height correction for every row.
+  // Late content (hydrated code, mermaid, images) grows a row without a new
+  // ResizeObserver entry when the box was already that tall at observe time,
+  // or when the entry never arrives. Re-read offsetHeight for that row only.
+  useEffect(() => {
+    const root = contentEl
+    if (!root) return
+    const remeasure = (target: EventTarget | Node | null) => {
+      const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null
+      const row = element?.closest<HTMLDivElement>('[data-index]')
+      if (row) correctMountedRows([row])
+    }
+    let frame = 0
+    const pendingLoads = new Set<EventTarget>()
+    const onLoad = (event: Event) => {
+      if (event.target) pendingLoads.add(event.target)
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        const targets = [...pendingLoads]
+        pendingLoads.clear()
+        for (const target of targets) remeasure(target)
+      })
+    }
+    root.addEventListener('load', onLoad, true)
+    const observer = new MutationObserver((mutations) => {
+      const rows = new Set<HTMLDivElement>()
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes') {
+          const row = (mutation.target instanceof Element ? mutation.target : null)?.closest<HTMLDivElement>('[data-index]')
+          if (row) rows.add(row)
+          continue
+        }
+        for (const node of mutation.addedNodes) {
+          const element = node instanceof Element ? node : null
+          if (!element) continue
+          // Live tokens sit outside virtual rows. Skip them before scanning
+          // descendants for a table or code block that just finished loading.
+          const row = element.closest<HTMLDivElement>('[data-index]')
+          if (!row) continue
+          if (!element.matches('table, pre, figure, img') && !element.querySelector('table, pre, figure, img')) continue
+          rows.add(row)
+        }
+      }
+      if (rows.size > 0) correctMountedRows([...rows])
+    })
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['data-chat-heavy-hydrated', 'data-chat-async-pending'],
+    })
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      root.removeEventListener('load', onLoad, true)
+      observer.disconnect()
+    }
+  }, [contentEl, correctMountedRows])
 
   useLayoutEffect(() => {
     committedConversationRef.current = conversationId
@@ -2146,11 +2245,17 @@ function MessageListBase({
   const handoffReadingOffset = liveScrollHandoffRef.current.live && !liveRowActive
     && liveScrollHandoffRef.current.conversationId === conversationId
     && !followHandle.isFollowing() ? viewportEl?.scrollTop ?? null : null
+  const pendingGenerationMeasureRef = useRef(false)
   useLayoutEffect(() => {
     const previous = liveScrollHandoffRef.current
     liveScrollHandoffRef.current = { conversationId, live: liveRowActive }
     // 切换会话不是本会话的流式交接。
-    if (previous.conversationId !== conversationId || !previous.live || liveRowActive) return
+    const generationEnded = previous.conversationId === conversationId && previous.live && !liveRowActive
+    pendingGenerationMeasureRef.current = generationEnded
+    // The settled row is in the DOM now, but tables and code often finish one
+    // effect later. Measure both before paint and after child effects.
+    if (generationEnded) correctMountedRows(mountedVirtualRows())
+    if (!generationEnded) return
     if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
       if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
       beginStreamSettleEagerHydrate()
@@ -2181,12 +2286,19 @@ function MessageListBase({
   }, [
     cancelNavigatorSettle,
     conversationId,
+    correctMountedRows,
     followHandle,
     historyItems.length,
     handoffReadingOffset,
     liveRowActive,
+    mountedVirtualRows,
     setNavigationLock,
   ])
+  useEffect(() => {
+    if (!pendingGenerationMeasureRef.current) return
+    pendingGenerationMeasureRef.current = false
+    correctMountedRows(mountedVirtualRows())
+  }, [conversationId, correctMountedRows, liveRowActive, mountedVirtualRows])
 
   // During generation minHeight reserves space below the latest user message.
   // On settle transfer the same reserve to the spacer before paint. Ordinary

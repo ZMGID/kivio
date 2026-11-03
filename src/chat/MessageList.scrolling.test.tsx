@@ -220,6 +220,44 @@ it('bounds offscreen rendering by viewport height while keeping short-message ov
   expect(list.options.rangeExtractor(range)).toEqual(Array.from({ length: 13 }, (_, index) => index + 14))
 })
 
+it('corrects a short cache when content grows without a ResizeObserver entry', async () => {
+  const { container } = render(<MessageList conversationId="stale-row-height" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: '```ts\nconst table = true\n```\n| a | b |\n| --- | --- |\n| 1 | 2 |', timestamp: 2 },
+    { id: 'next', role: 'user', content: 'Next question', timestamp: 3 },
+  ]} />)
+  await act(async () => { await Promise.resolve() })
+  const row = container.querySelector<HTMLElement>('[data-chat-row-index="2"]')!
+  const index = 2
+  Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 480 })
+  act(() => { list.resizeItem(index, 120) })
+  const before = list.getVirtualItems().find((item) => item.index === index + 1)!.start
+  let measured = 0
+  act(() => {
+    measured = list.options.measureElement(row as HTMLDivElement, undefined, list)
+  })
+  expect(measured).toBe(480)
+  expect(list.itemSizeCache.get(list.options.getItemKey(index))).toBe(480)
+  expect(list.getVirtualItems().find((item) => item.index === index + 1)!.start).toBe(before + 360)
+})
+
+it('keeps a measured row when a ref read happens before layout', async () => {
+  const { container } = render(<MessageList conversationId="unlaid-row-height" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: 'Answer', timestamp: 2 },
+  ]} />)
+  await act(async () => { await Promise.resolve() })
+  const row = container.querySelector<HTMLElement>('[data-chat-row-index="1"]')!
+  Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 0 })
+  act(() => { list.resizeItem(1, 300) })
+  let measured = 0
+  act(() => {
+    measured = list.options.measureElement(row as HTMLDivElement, undefined, list)
+  })
+  expect(measured).toBe(300)
+  expect(list.itemSizeCache.get(list.options.getItemKey(1))).toBe(300)
+})
+
 it('commits row positions in the same delivery as scroll compensation above the reader', async () => {
   const { container } = render(<MessageList conversationId="scroll-compensation" messages={[
     { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
