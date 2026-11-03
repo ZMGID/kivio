@@ -5,34 +5,17 @@ use tokio::time::timeout;
 
 use crate::chat::agent::{execute::truncate_chars, stop as agent_stop};
 use crate::chat::attachments::title_source_for_user_message;
-use crate::chat::model_metadata::model_can_generate_images_directly;
+use crate::chat::model::{
+    generate_request_from_openai_messages, GenerateOptions, GenerateRequestContext,
+};
+use crate::chat::model_metadata::{
+    chat_max_output_tokens_on_wire, model_can_generate_images_directly,
+    thinking_capabilities_for_model, ThinkingOffMode,
+};
 use crate::chat::repository::ConversationMetadataMutation;
 use crate::chat::{ChatMessage, Conversation};
 use crate::settings::{SessionModel, Settings};
 use crate::state::AppState;
-
-/// Wire-level contract for the title-summary model call.
-///
-/// Kept pure so unit tests can lock the two regressions that made titles fall
-/// back to the first user message forever:
-/// 1. must stream (`call_chat_completion_message_streamed`) — some Responses
-///    relays only serve stream reliably;
-/// 2. must NOT send an explicit thinking-off signal (`thinking_enabled=false`
-///    becomes `reasoning.effort:"none"`, which xAI 400s on).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct TitleModelCallSpec {
-    pub thinking_enabled: bool,
-    pub max_output_tokens: u32,
-    pub label: &'static str,
-}
-
-pub(super) const fn title_model_call_spec() -> TitleModelCallSpec {
-    TitleModelCallSpec {
-        thinking_enabled: true,
-        max_output_tokens: 2048,
-        label: "Chat title summary",
-    }
-}
 
 pub(super) async fn resolve_conversation_title(
     settings: &Settings,
@@ -170,6 +153,10 @@ fn apply_auto_title(
     Ok(())
 }
 
+/// Same request shape as a normal reply on the title model (output budget, first
+/// turn replayed as real user/assistant messages), but thinking is `low`: a title
+/// does not need deep reasoning. Must stream: some Responses relays only serve
+/// stream reliably.
 async fn generate_title_with_model(
     settings: &Settings,
     state: &AppState,
@@ -193,85 +180,87 @@ async fn generate_title_with_model(
     }
 
     let language = crate::settings::resolve_chat_language(settings);
-    let prompt = build_title_summary_prompt(user_content, assistant_content, &language);
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
         1
     };
-    let messages = vec![
-        serde_json::json!({
-            "role": "system",
-            "content": title_summary_system_prompt(&language),
-        }),
-        serde_json::json!({
-            "role": "user",
-            "content": prompt,
-        }),
-    ];
-    let spec = title_model_call_spec();
-    // **必须走流式**，不能用非流式 `generate`：部分 openai_responses 代理只可靠地服务流式
-    // 请求，非流式调用直接报 "Unknown Responses API error"。压缩的摘要调用早就因为同一个原因
-    // 改走流式了（见 planning.rs 上 call_chat_completion_message_streamed 的注释），当时的结论
-    // 是「压缩是 agent 里唯一的非流式调用」—— 标题生成在 commands/ 里、不在 agent/ 里，被漏了。
-    // 表现就是这类渠道上标题永远总结不出来，只能静默兜底成第一句用户消息。
-    let message = crate::chat::agent::planning::call_chat_completion_message_streamed(
+    // `low`, or the model's lowest level when it has no `low`. Models without an
+    // effort knob get no reasoning field, like a normal reply.
+    let capabilities = thinking_capabilities_for_model(Some(&provider), &model);
+    let thinking_level = (capabilities.off_mode != ThinkingOffMode::NotApplicable)
+        .then(|| {
+            capabilities
+                .levels
+                .iter()
+                .find(|level| *level == "low")
+                .or_else(|| capabilities.levels.first())
+                .cloned()
+        })
+        .flatten();
+    let thinking_enabled = true;
+    let request = generate_request_from_openai_messages(
+        &model,
+        title_summary_messages(user_content, assistant_content, &language),
+        None,
+        GenerateOptions {
+            thinking_enabled,
+            thinking_level,
+            // Same budget as a normal reply on this model, not a fixed 2048.
+            max_tokens: chat_max_output_tokens_on_wire(
+                Some(&provider),
+                &model,
+                settings.chat.max_output_tokens,
+            ),
+            ..GenerateOptions::default()
+        },
+        "Chat title summary",
+        GenerateRequestContext::new(Some(conversation_id), Some("")),
+    );
+    let output = crate::chat::agent::planning::generate_via_stream_collect(
         state,
         &provider,
-        &model,
-        messages,
-        None,
         retry_attempts,
-        // **不发 reasoning effort**（`thinking_enabled: true` + level 不设 = 两个适配器都不写
-        // 这个字段），交给端点自己的默认。
-        //
-        // 这里原来传 `false`，而 `false` 的语义是「显式下发关闭信号」：Responses 发
-        // `reasoning.effort:"none"`、Chat 发 `reasoning_effort:"none"`。xAI 的档位只有
-        // low/medium/high/xhigh，没有 none —— 实测两次真正发出去的标题请求全部失败
-        // （grok-4.5：http_400 / http_503，用量日志里带着 reasoningEffort:"none"）。
-        // 标题这种一次性小请求不值得为「关思考」去赌各家对 none 的支持度。
-        spec.thinking_enabled,
-        // 标题本身十几个字就够，但思考型模型的 reasoning token 也吃这个预算，留点余量。
-        spec.max_output_tokens,
-        conversation_id,
-        "",
-        spec.label,
+        request,
     )
     .await
-    .map_err(|err| {
-        eprintln!("[title] 模型请求失败: {err}");
-        err
-    })
+    .map_err(|err| eprintln!("[title] 模型请求失败: {err}"))
     .ok()?;
-    let raw = agent_stop::assistant_content_from_api_message(&message);
-
+    let raw =
+        agent_stop::assistant_content_from_api_message(&output.to_openai_compatible_message());
     sanitize_generated_title(&raw)
 }
 
-fn title_summary_system_prompt(language: &str) -> &'static str {
-    if language.starts_with("zh") {
-        "你只负责为对话生成简洁标题。只输出标题本身，不要解释。"
-    } else {
-        "You only generate concise conversation titles. Output only the title, with no explanation."
-    }
-}
-
-pub(super) fn build_title_summary_prompt(
+/// System instruction, then the first turn as real messages, then the ask.
+pub(super) fn title_summary_messages(
     user_content: &str,
     assistant_content: &str,
     language: &str,
-) -> String {
+) -> Vec<serde_json::Value> {
     let user = truncate_chars(user_content.trim(), 1200);
     let assistant = truncate_chars(assistant_content.trim(), 1200);
-    if language.starts_with("zh") {
-        format!(
-            "请根据下面的首轮对话生成一个简洁中文标题。\n要求：只输出标题本身；不要引号；不要句号；不超过 14 个汉字，最多 20 个字符。\n\n用户：{user}\n\n助手：{assistant}"
+    let (system, instruction) = if language.starts_with("zh") {
+        (
+            "你只负责为对话生成简洁标题。只输出标题本身，不要解释。",
+            "请为以上对话生成一个概括主题的简洁中文标题。要求：只输出标题本身；不要引号；不要句号；不超过 14 个汉字，最多 20 个字符。",
         )
     } else {
-        format!(
-            "Create a concise English title for this first chat turn.\nRules: output only the title; no quotes; no period; 3-6 words.\n\nUser: {user}\n\nAssistant: {assistant}"
+        (
+            "You only generate concise conversation titles. Output only the title, with no explanation.",
+            "Create a concise English title summarizing the conversation above. Rules: output only the title; no quotes; no period; 3-6 words.",
         )
+    };
+    let mut messages = vec![serde_json::json!({ "role": "system", "content": system })];
+    if assistant.is_empty() {
+        messages.push(
+            serde_json::json!({ "role": "user", "content": format!("{user}\n\n{instruction}") }),
+        );
+    } else {
+        messages.push(serde_json::json!({ "role": "user", "content": user }));
+        messages.push(serde_json::json!({ "role": "assistant", "content": assistant }));
+        messages.push(serde_json::json!({ "role": "user", "content": instruction }));
     }
+    messages
 }
 
 pub(super) fn sanitize_generated_title(raw: &str) -> Option<String> {
@@ -590,7 +579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn title_summary_streams_and_keeps_thinking_on() {
+    async fn title_summary_matches_normal_reply_request() {
         let (base_url, captured) = start_sse_mock(vec![
             r#"{"choices":[{"delta":{"content":"吉林天气查询"}}]}"#.to_string(),
             "[DONE]".to_string(),
@@ -598,41 +587,55 @@ mod tests {
 
         let state = test_app_state();
         let mut settings = Settings::default();
-        settings.providers = vec![test_provider(&base_url)];
-        settings.default_models.title_summary.provider_id = "title-provider".into();
-        settings.default_models.title_summary.model = "title-model".into();
+        let mut provider = test_provider(&base_url);
+        provider.model_overrides.insert(
+            "title-model".into(),
+            crate::settings::ModelInfo {
+                reasoning_efforts: Some(vec!["low".into(), "medium".into(), "high".into()]),
+                ..Default::default()
+            },
+        );
+        settings.providers = vec![provider.clone()];
         settings.retry_enabled = false;
+        let session = SessionModel {
+            provider_id: "title-provider",
+            model: "title-model",
+        };
 
         let title = generate_title_with_model(
             &settings,
             &state,
             "conv_title",
-            None,
+            Some(session),
             "今天下雨吗，吉林市",
             "吉林市今天有小雨",
         )
         .await
         .expect("title from streamed model");
-
         assert_eq!(title, "吉林天气查询");
 
         let bodies = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(bodies.len(), 1, "exactly one title request");
-        let body = &bodies[0];
-        assert!(
-            body.contains("\"stream\":true"),
-            "title summary must stream; body={body}"
+        let body: serde_json::Value = serde_json::from_str(&bodies[0]).expect("json body");
+        assert_eq!(body["stream"], true, "title summary must stream: {body}");
+        // Titles always ask for `low`, with the normal reply's output budget.
+        assert_eq!(body["reasoning_effort"], "low", "{body}");
+        assert_eq!(
+            body["max_tokens"],
+            chat_max_output_tokens_on_wire(
+                Some(&provider),
+                "title-model",
+                settings.chat.max_output_tokens
+            ),
+            "{body}"
         );
-        // thinking_enabled=true + no level ⇒ adapters omit reasoning_effort / effort:"none"
-        assert!(
-            !body.contains("\"reasoning_effort\":\"none\"")
-                && !body.contains("\"effort\":\"none\""),
-            "must not send explicit thinking-off; body={body}"
-        );
-        assert!(
-            body.contains("title-model"),
-            "title model missing; body={body}"
-        );
+        let roles: Vec<&str> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["system", "user", "assistant", "user"], "{body}");
     }
 
     fn test_chat_message(role: &str, content: &str) -> ChatMessage {
