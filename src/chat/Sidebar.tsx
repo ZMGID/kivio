@@ -434,7 +434,7 @@ function ExtensionsNav({
                 key={item.id}
                 type="button"
                 onClick={() => onSelectItem(item.id)}
-                className={`${item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
+                className={`kv-nav-motion ${item.id.startsWith('extension:') ? 'col-span-2 ' : ''}flex items-center gap-2 rounded-md py-1.5 pl-2 pr-1 text-left text-[13px] transition-colors ${
                   active
                     ? 'font-medium text-neutral-900'
                     : 'text-neutral-700 hover:bg-neutral-900/[0.04] hover:text-neutral-900'

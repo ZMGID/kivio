@@ -46,12 +46,13 @@ export function HotkeysIcon(props: IconProps) {
 }
 
 
-// 知识库：摊开的书（两页微弧 + 书脊）
+// 知识库：摊开的书；悬停时右页沿书脊翻到左侧
 export function KnowledgeIcon(props: IconProps) {
   return (
-    <svg {...svgProps(props)}>
-      <path d="M12 6.75 C10 5.25 7 4.75 3.5 5.25 V18.75 C7 18.25 10 18.75 12 20.25 C14 18.75 17 18.25 20.5 18.75 V5.25 C17 4.75 14 5.25 12 6.75 Z" />
-      <path d="M12 6.75 V20.25" />
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M12 6.5 C10 5 7 4.5 3.5 5 V18.5 C7 18 10 18.5 12 20 Z" />
+      <path d="M12 6.5 C14 5 17 4.5 20.5 5 V18.5 C17 18 14 18.5 12 20 Z" />
+      <path data-nav-motion="knowledge" d="M12 6.5 C14 5 17 4.5 20.5 5 V18.5 C17 18 14 18.5 12 20 Z" />
     </svg>
   )
 }
@@ -160,15 +161,14 @@ export function CliIcon(props: IconProps) {
 }
 
 
-// 助手：圆角机器人头（天线 + 胶囊眼 + 耳侧）
+// 助手：圆角机器人头（天线 + 双眼）；悬停眨眼
 export function AgentIcon(props: IconProps) {
   return (
-    <svg {...svgProps(props)}>
-      <rect x="4.5" y="7.5" width="15" height="12" rx="4" />
-      <path d="M12 7.5 V4.75" />
-      <circle cx="12" cy="3.75" r="1" fill="currentColor" stroke="none" />
-      <path d="M9.25 12.25 V14 M14.75 12.25 V14" />
-      <path d="M2.5 12 V15 M21.5 12 V15" />
+    <svg {...svgProps(props)} aria-hidden="true">
+      <rect x="4" y="7.5" width="16" height="12.5" rx="5" />
+      <path d="M12 7.5 V5" />
+      <circle cx="12" cy="3.75" r="1.25" fill="currentColor" stroke="none" />
+      <path data-nav-motion="agent" d="M9.5 12 V14.5 M14.5 12 V14.5" />
     </svg>
   )
 }
@@ -209,19 +209,6 @@ export function SessionsIcon(props: IconProps) {
 }
 
 
-// 插件：拼图块（与扩展中心里原 Puzzle 语义一致）
-export function PluginsIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)}>
-      <path d="M12 3.5 V6.5" />
-      <path d="M12 17.5 V20.5" />
-      <path d="M3.5 12 H6.5" />
-      <path d="M17.5 12 H20.5" />
-      <path d="M8.5 6.5 H11 A1.5 1.5 0 1 1 14 6.5 H15.5 A2 2 0 0 1 17.5 8.5 V11 A1.5 1.5 0 1 1 17.5 14 V15.5 A2 2 0 0 1 15.5 17.5 H14 A1.5 1.5 0 1 1 11 17.5 H8.5 A2 2 0 0 1 6.5 15.5 V14 A1.5 1.5 0 1 1 6.5 11 V8.5 A2 2 0 0 1 8.5 6.5 Z" />
-    </svg>
-  )
-}
-
 // Hooks：一枚鱼钩（环眼 + 钩身 + 倒刺）
 export function HooksIcon(props: IconProps) {
   return (
@@ -231,26 +218,25 @@ export function HooksIcon(props: IconProps) {
     </svg>
   )
 }
+// 新建聊天：缺一角的对话气泡 + 加号；悬停加号转一刻
 
 
-// 插件：主体模块右上留出接口，独立圆角模块嵌入。
+// 插件：底座右上切出一道大弧，弧外嵌一枚四分之一圆模块；悬停时不位移，模块由空心变实心，表示「已接入」
 export function PluginIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">
-      <path d="M10 4.5 H6 A2.5 2.5 0 0 0 3.5 7 V18 A2.5 2.5 0 0 0 6 20.5 H17 A2.5 2.5 0 0 0 19.5 18 V14 H12.5 A2.5 2.5 0 0 1 10 11.5 Z" />
-      <rect data-nav-motion="plugin" x="14" y="3.5" width="7" height="7" rx="1.75" />
+      <path d="M12.5 3.5 H6.5 A3 3 0 0 0 3.5 6.5 V17.5 A3 3 0 0 0 6.5 20.5 H17.5 A3 3 0 0 0 20.5 17.5 V11.5 A8 8 0 0 1 12.5 3.5 Z" />
+      <path data-nav-motion="plugin" d="M15 3.5 H18 A2.5 2.5 0 0 1 20.5 6 V9 A5.5 5.5 0 0 1 15 3.5 Z" fill="currentColor" fillOpacity={0} />
     </svg>
   )
 }
 
 export function ComposeIcon(props: IconProps) {
   return (
+        <path d="M7.5 9.5 A3.2 3.2 0 0 1 9.5 7.5" />
     <svg {...svgProps(props)} aria-hidden="true">
-      <path d="M10 4.5 H6 A2 2 0 0 0 4 6.5 V18 A2 2 0 0 0 6 20 H17.5 A2 2 0 0 0 19.5 18 V14" />
-      <g data-nav-motion="compose">
-        <path d="m10 11 7.5-7.5 a1.8 1.8 0 0 1 2.5 2.5 L12.5 13.5 9 14 Z" />
-        <path d="m16 5 2.5 2.5" />
-      </g>
+      <path d="M12 4 A8 8 0 0 0 5.1 16 L4 20 L8 18.9 A8 8 0 0 0 20 12" />
+      <path data-nav-motion="compose" d="M18 3.5 V8.5 M15.5 6 H20.5" />
     </svg>
   )
 }
@@ -284,8 +270,9 @@ export function ScheduleIcon(props: IconProps) {
     </svg>
   )
 }
+// 扩展：三块方格 + 一枚菱形；悬停菱形转四分之一圈
 
-// 任务：清单与完成标记，涵盖定时任务和自动化工作流。
+// 任务：剪贴板 + 勾；悬停重新勾一次
 export function TasksIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">
@@ -309,14 +296,10 @@ export function PortfolioIcon(props: IconProps) {
 export function ExtensionsIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">
-      <g data-nav-motion="extensions-a">
-        <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.5" />
-        <rect x="14" y="14" width="6.5" height="6.5" rx="1.5" />
-      </g>
-      <g data-nav-motion="extensions-b">
-        <rect x="14" y="3.5" width="6.5" height="6.5" rx="1.5" />
-        <rect x="3.5" y="14" width="6.5" height="6.5" rx="1.5" />
-      </g>
+      <rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+      <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+      <rect x="13.5" y="13.5" width="7" height="7" rx="2" />
+      <path data-nav-motion="extensions" d="M17 2.75 L21.25 7 L17 11.25 L12.75 7 Z" />
     </svg>
   )
 }
@@ -414,24 +397,25 @@ export function ComputerIcon(props: IconProps) {
   )
 }
 
-// 媒体站：后方一张相片，前方一块带播放键的画面
+// 媒体站：带播放键的画面 + 生成星芒；悬停星芒闪转
 export function MediaIcon(props: IconProps) {
   return (
-    <svg {...svgProps(props)}>
-      <path d="M7 6.5 V5.5 A2 2 0 0 1 9 3.5 H18.5 A2 2 0 0 1 20.5 5.5 V13 A2 2 0 0 1 18.5 15 H17.5" />
-      <rect x="3.5" y="8" width="14" height="12.5" rx="2.5" />
-      <path d="M9 11.75 V16.75 L13.25 14.25 Z" />
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M13 6 H6.5 A3 3 0 0 0 3.5 9 V17.5 A3 3 0 0 0 6.5 20.5 H15.5 A3 3 0 0 0 18.5 17.5 V10.5" />
+      <path d="M9.5 10.75 V15.75 L13.5 13.25 Z" />
+      <path data-nav-motion="media" d="M18.5 2.5 C18.8 4.2 19.3 4.7 21 5 C19.3 5.3 18.8 5.8 18.5 7.5 C18.2 5.8 17.7 5.3 16 5 C17.7 4.7 18.2 4.2 18.5 2.5 Z" />
     </svg>
   )
 }
 
-// 笔记：折角便签 + 两行字
+// 笔记：折角便签 + 两行字；悬停逐行书写
 export function NotesIcon(props: IconProps) {
   return (
-    <svg {...svgProps(props)}>
-      <path d="M14.5 20.5 H6.5 A2 2 0 0 1 4.5 18.5 V5.5 A2 2 0 0 1 6.5 3.5 H17.5 A2 2 0 0 1 19.5 5.5 V15.5 Z" />
-      <path d="M14.5 20.5 V17.5 A2 2 0 0 1 16.5 15.5 H19.5" />
-      <path d="M8 8.5 H16 M8 12 H13" />
+    <svg {...svgProps(props)} aria-hidden="true">
+      <path d="M14.5 20.5 H7 A3 3 0 0 1 4 17.5 V6.5 A3 3 0 0 1 7 3.5 H17 A3 3 0 0 1 20 6.5 V15 Z" />
+      <path d="M14.5 20.5 V17 A2 2 0 0 1 16.5 15 H20" />
+      <path data-nav-motion="notes-a" pathLength={1} d="M8 8.5 H16" />
+      <path data-nav-motion="notes-b" pathLength={1} d="M8 12 H12.5" />
     </svg>
   )
 }
