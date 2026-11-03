@@ -258,6 +258,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     { title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup', kind: 'warning' }),
     restart: () => api.restartAfterRestore(),
     pendingRestore: () => api.backupRestorePending(),
+    cancelRestore: () => api.cancelRestore(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { useSettingsBackupController, type SettingsBackupPort } from './useSettingsBackupController'
 
 const fullPort = {
-  pendingRestore: async () => false, importFull: async () => {}, confirmFullRestore: async () => true, restart: async () => {},
+  pendingRestore: async () => null, cancelRestore: async () => {}, importFull: async () => {}, confirmFullRestore: async () => true, restart: async () => {},
 }
 
 function deferred<T>() {
@@ -36,9 +36,9 @@ describe('useSettingsBackupController', () => {
     expect(result.current.status?.kind).toBe('ok')
   })
 
-  it('keeps import failure visible and allows a later retry', async () => {
+  it('shows structured settings errors as text and allows a later retry', async () => {
     const imported = vi.fn()
-      .mockRejectedValueOnce(new Error('version conflict'))
+      .mockRejectedValueOnce({ code: 'operationFailed', message: '不支持的配置备份格式或版本' })
       .mockResolvedValueOnce(undefined)
     const port: SettingsBackupPort = { ...fullPort,
       pickImport: async () => 'backup.json', pickExport: async () => null,
@@ -46,7 +46,8 @@ describe('useSettingsBackupController', () => {
     }
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     await act(async () => { await result.current.importBackup() })
-    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('version conflict') })
+    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('不支持的配置备份格式或版本') })
+    expect(result.current.status?.msg).not.toContain('object')
     await act(async () => { await result.current.importBackup() })
     expect(result.current.status?.kind).toBe('ok')
   })
@@ -88,12 +89,20 @@ describe('useSettingsBackupController', () => {
     expect(imported).toHaveBeenCalledWith('full.kivio', false)
   })
 
-  it('recovers a pending restore after leaving and reopening settings', async () => {
-    const port: SettingsBackupPort = { ...fullPort, pendingRestore: async () => true,
+  it('recovers a pending restore after reopening settings and cancels it without restarting', async () => {
+    let staged: { error: string | null } | null = { error: 'Access denied' }
+    const restart = vi.fn(async () => {})
+    const port: SettingsBackupPort = { ...fullPort, restart, pendingRestore: async () => staged,
+      cancelRestore: async () => { staged = null },
       pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {} }
     const { result } = renderHook(() => useSettingsBackupController(port, 'zh'))
     await act(async () => { await Promise.resolve() })
     expect(result.current.restartRequired).toBe(true)
+    expect(result.current.restoreError).toBe('Access denied')
+    await act(async () => { await result.current.cancelRestore() })
+    expect(result.current.restartRequired).toBe(false)
+    expect(result.current.restoreError).toBeNull()
+    expect(restart).not.toHaveBeenCalled()
   })
 
 })
@@ -158,7 +167,7 @@ describe('manual WebDAV backup lifecycle', () => {
       if (mode === 'local') await result.current.exportFullBackup()
       else await result.current.runWebDav({ type: 'upload', kind: 'full' })
     })
-    expect(result.current.status?.msg).toContain('已跳过 2 个问题链接')
+    expect(result.current.status?.msg).toContain('已跳过 2 个无法备份的路径')
     for (const path of paths) expect(result.current.status?.msg).toContain(path)
     expect(result.current.status?.kind).toBe(mode === 'refresh-failure' ? 'err' : 'ok')
   })

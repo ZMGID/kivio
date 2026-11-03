@@ -197,7 +197,8 @@ fn export_to(
         });
     }
     // Project folders are user-owned; capture their files without restoring over
-    // any existing project on the target machine.
+    // any existing project on the target machine. Missing folders are reported, not fatal.
+    let mut missing = Vec::new();
     let projects = root.join("conversations/projects.json");
     if projects.exists() {
         if let Some(projects) = read_json(&projects)?
@@ -212,7 +213,8 @@ fn export_to(
                 {
                     let path = PathBuf::from(path);
                     if !path.is_dir() {
-                        return Err(format!("项目目录不存在，无法完全备份：{}", path.display()));
+                        missing.push(path.to_string_lossy().into_owned());
+                        continue;
                     }
                     if !roots.iter().any(|r| path.starts_with(&r.source)) {
                         roots.push(BackupRoot {
@@ -251,7 +253,7 @@ fn export_to(
             roots,
             files: BTreeMap::new(),
         };
-        let mut skipped = Vec::new();
+        let mut skipped = std::mem::take(&mut missing);
         let mut total = 0u64;
         for r in &manifest.roots {
             let source = Path::new(&r.source);
@@ -414,9 +416,11 @@ fn stage_restore(
     local: &Settings,
 ) -> Result<(), String> {
     let stage = restore_dir(root);
-    if stage.exists() {
+    if pending_restore(root).is_some() {
         return Err("已有待恢复备份，请先重启 Kivio 完成恢复".into());
     }
+    // A stage without ready.json is leftover cleanup from a finished or cancelled restore.
+    cancel_pending(root)?;
     let work = stage.with_extension(format!("preparing-{}", uuid::Uuid::new_v4()));
     private_dir(&work)?;
     let result = (|| {
@@ -597,13 +601,14 @@ fn disable_enabled(value: &mut Value) {
 
 /// Startup recovery uses filesystem state as its journal. If interrupted between
 /// the two renames, the next launch completes the prepared swap or restores old data.
-pub(crate) fn apply_pending(root: &Path) -> Result<(), String> {
+fn apply_pending(root: &Path) -> Result<(), String> {
     let stage = restore_dir(root);
     let rollback = rollback_dir(root);
     if !stage.join("ready.json").exists() {
         if !root.exists() && rollback.exists() {
             fs::rename(&rollback, root).map_err(error)?;
         }
+        let _ = fs::remove_dir_all(&stage);
         return Ok(());
     }
     if stage.join("app").exists() {
@@ -631,8 +636,24 @@ pub(crate) fn apply_pending(root: &Path) -> Result<(), String> {
             return Err("恢复目录丢失，无法完成恢复".into());
         }
     }
-    fs::remove_dir_all(stage).map_err(error)?;
+    // The swap is committed; leftover stage files are cleanup, never a restore failure.
+    let _ = fs::remove_file(stage.join("ready.json"));
+    let _ = fs::remove_dir_all(stage);
     // Keep the previous installation as a recovery copy, never silently delete it.
+    Ok(())
+}
+
+/// A failed swap with intact current data must not brick startup: keep running on the
+/// current data and leave the staged restore for retry or cancellation from settings.
+pub(crate) fn recover_at_startup(root: &Path) -> Result<(), String> {
+    let Err(e) = apply_pending(root) else {
+        return Ok(());
+    };
+    if !root.exists() {
+        return Err(e);
+    }
+    eprintln!("Pending backup restore failed: {e}");
+    let _ = fs::write(restore_dir(root).join("error.txt"), &e);
     Ok(())
 }
 
@@ -688,19 +709,53 @@ pub(crate) fn backup_interface(app: AppHandle) -> Result<Option<Value>, String> 
         Ok(None)
     }
 }
-#[tauri::command]
-pub(crate) fn backup_restore_pending(app: AppHandle) -> Result<bool, String> {
-    Ok(restore_dir(&app.path().app_data_dir().map_err(error)?)
-        .join("ready.json")
-        .exists())
+#[derive(Serialize)]
+pub(crate) struct PendingRestore {
+    /// Last startup failure while applying this restore, if any.
+    error: Option<String>,
 }
+pub(crate) fn pending_restore(root: &Path) -> Option<PendingRestore> {
+    let stage = restore_dir(root);
+    stage.join("ready.json").exists().then(|| PendingRestore {
+        error: fs::read_to_string(stage.join("error.txt")).ok(),
+    })
+}
+#[tauri::command]
+pub(crate) fn backup_restore_pending(app: AppHandle) -> Result<Option<PendingRestore>, String> {
+    Ok(pending_restore(&app.path().app_data_dir().map_err(error)?))
+}
+#[tauri::command]
+pub(crate) fn cancel_restore(app: AppHandle) -> Result<(), String> {
+    let root = app.path().app_data_dir().map_err(error)?;
+    let _lock = OPERATION.try_lock().map_err(|_| "备份或恢复正在进行")?;
+    cancel_pending(&root)
+}
+fn cancel_pending(root: &Path) -> Result<(), String> {
+    let stage = restore_dir(root);
+    if !stage.exists() {
+        return Ok(());
+    }
+    // Rename first so a partially deleted stage can never look like a half-pending restore.
+    let trash = stage.with_extension(format!("cancelled-{}", uuid::Uuid::new_v4()));
+    fs::rename(&stage, &trash).map_err(error)?;
+    fs::remove_dir_all(&trash).map_err(|e| {
+        format!("恢复已取消，但临时备份数据未能删除，请手动删除 {}：{e}", trash.display())
+    })
+}
+/// Set by `restart_after_restore`; consumed when the app actually exits.
+pub(crate) static RESTART_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 #[tauri::command]
 pub(crate) fn restart_after_restore(app: AppHandle) -> Result<(), String> {
     let root = app.path().app_data_dir().map_err(error)?;
-    if !restore_dir(&root).join("ready.json").exists() {
+    if pending_restore(&root).is_none() {
         return Err("没有待恢复备份".into());
     }
-    app.restart();
+    // A normal exit runs child-process cleanup and may still be prevented when cleanup fails;
+    // Tauri's own restart code cannot be prevented. The relaunch happens in `RunEvent::Exit`.
+    RESTART_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1022,5 +1077,37 @@ mod tests {
         fs::write(root.join("conversations/projects.json"), b"invalid JSON").unwrap();
         assert!(export_to(&root, &workspace, &archive, &BTreeMap::new()).is_err());
         assert_eq!(fs::read(&archive).unwrap(), previous);
+    }
+    #[test]
+    fn missing_project_is_reported_and_cancel_discards_staged_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("app");
+        let workspace = temp.path().join("workspace");
+        fixture(&root, &workspace);
+        let gone = temp.path().join("deleted-project");
+        write_json(
+            &root.join("conversations/projects.json"),
+            &serde_json::json!({"projects":[{"id":"proj_gone","root_path":gone}]}),
+        )
+        .unwrap();
+        let archive = temp.path().join("backup.kivio");
+        let skipped = export_to(&root, &workspace, &archive, &BTreeMap::new()).unwrap();
+        assert_eq!(skipped, vec![gone.to_string_lossy().into_owned()]);
+        stage_restore(&root, &archive, false, &Settings::default()).unwrap();
+        assert!(pending_restore(&root).is_some_and(|p| p.error.is_none()));
+        fs::write(root.join("after-staging.txt"), "new data").unwrap();
+        cancel_pending(&root).unwrap();
+        assert!(pending_restore(&root).is_none());
+        recover_at_startup(&root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("after-staging.txt")).unwrap(),
+            "new data"
+        );
+        assert!(!rollback_dir(&root).exists());
+        // Leftover cleanup from a committed swap must not look pending or block a new restore.
+        private_dir(&restore_dir(&root).join("app")).unwrap();
+        assert!(pending_restore(&root).is_none());
+        stage_restore(&root, &archive, false, &Settings::default()).unwrap();
+        assert!(pending_restore(&root).is_some());
     }
 }

@@ -27,11 +27,19 @@ export interface SettingsBackupPort {
   importFull(path: string, trusted: boolean): Promise<void>
   confirmFullRestore(): Promise<boolean>
   restart(): Promise<void>
-  pendingRestore(): Promise<boolean>
+  /** null when nothing is staged; `error` is the last failed startup swap. */
+  pendingRestore(): Promise<{ error: string | null } | null>
+  cancelRestore(): Promise<void>
 }
-function skippedLinksMessage(paths: string[] | void, zh: boolean): string {
+function skippedPathsMessage(paths: string[] | void, zh: boolean): string {
   if (!paths?.length) return ''
-  return `\n${zh ? `已跳过 ${paths.length} 个问题链接（未包含在备份中）：` : `Skipped ${paths.length} problematic links (not included in the backup):`}\n${paths.join('\n')}`
+  return `\n${zh ? `已跳过 ${paths.length} 个无法备份的路径（链接异常或目录不存在）：` : `Skipped ${paths.length} paths that could not be backed up (broken links or missing folders):`}\n${paths.join('\n')}`
+}
+/** Tauri rejects with strings, Errors or structured `{ code, message }` payloads (settings commands). */
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') return error.message
+  return typeof error === 'string' ? error : JSON.stringify(error) ?? String(error)
 }
 
 type Status = { kind: 'ok' | 'err'; msg: string } | null
@@ -47,6 +55,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
   const [restartRequired, setRestartRequired] = useState(false)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
   const [webdavConfig, setWebdavConfig] = useState<WebDavConfig | null>(null)
   const [webdavFiles, setWebdavFiles] = useState<WebDavBackup[] | null>(null)
   const [webdavPhase, setWebdavPhase] = useState('')
@@ -68,7 +77,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       if (await portRef.current.pendingRestore()) {
         if (live.current) {
           setRestartRequired(true)
-          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复。' : 'Restart to finish the pending restore.' })
+          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复或取消恢复。' : 'A restore is pending. Restart to finish it, or cancel it.' })
         }
         return false
       }
@@ -96,13 +105,13 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         } finally {
           try { await remote.release(download.id) }
           catch (error) {
-            cleanupWarning = ` ${zh ? '临时备份文件清理失败：' : 'Temporary backup cleanup failed: '}${error instanceof Error ? error.message : String(error)}`
+            cleanupWarning = ` ${zh ? '临时备份文件清理失败：' : 'Temporary backup cleanup failed: '}${errorText(error)}`
           }
         }
       } else {
         if (action.type === 'upload') {
           phase(zh ? '正在生成并上传备份，请稍候…' : 'Creating and uploading backup…')
-          skippedWarning = skippedLinksMessage(await remote.upload(action.kind), zh)
+          skippedWarning = skippedPathsMessage(await remote.upload(action.kind), zh)
         } else if (action.type === 'delete') {
           if (!await remote.confirmDelete(action.name)) return false
           await remote.delete(action.name)
@@ -114,7 +123,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         } catch (error) {
           if (live.current) setWebdavFiles(null)
           if (action.type === 'upload' || action.type === 'delete') {
-            throw new Error(`${zh ? '操作已完成，但列表刷新失败，请重新刷新：' : 'Operation completed, but the list could not refresh. Refresh again: '}${String(error)}`)
+            throw new Error(`${zh ? '操作已完成，但列表刷新失败，请重新刷新：' : 'Operation completed, but the list could not refresh. Refresh again: '}${errorText(error)}`)
           }
           throw error
         }
@@ -130,7 +139,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning + skippedWarning })
       return true
     } catch (error) {
-      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}${cleanupWarning}${skippedWarning}` })
+      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${errorText(error)}${cleanupWarning}${skippedWarning}` })
       return false
     } finally {
       inFlight.current = false
@@ -138,7 +147,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     }
   }, [])
 
-  const run = useCallback(async (action: 'import' | 'restore' | BackupKind | 'restart'): Promise<void> => {
+  const run = useCallback(async (action: 'import' | 'restore' | BackupKind | 'restart' | 'cancel'): Promise<void> => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
@@ -147,10 +156,19 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     const zh = langRef.current === 'zh'
     try {
       if (action === 'restart') { await portRef.current.restart(); return }
+      if (action === 'cancel') {
+        await portRef.current.cancelRestore()
+        if (live.current) {
+          setRestartRequired(false)
+          setRestoreError(null)
+          setStatus({ kind: 'ok', msg: zh ? '已取消待恢复备份，当前数据未改变。' : 'Pending restore cancelled. Current data is unchanged.' })
+        }
+        return
+      }
       if (await portRef.current.pendingRestore()) {
         if (live.current) {
           setRestartRequired(true)
-          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复。' : 'A backup is ready to restore. Restart to finish.' })
+          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复或取消恢复。' : 'A restore is pending. Restart to finish it, or cancel it.' })
         }
         return
       }
@@ -166,7 +184,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
           await portRef.current.importFull(path, action === 'restore')
         } else if (action === 'restore') await portRef.current.import(path, true)
         else await portRef.current.import(path)
-      } else skippedWarning = skippedLinksMessage(await portRef.current.export(path, action), zh)
+      } else skippedWarning = skippedPathsMessage(await portRef.current.export(path, action), zh)
       if (!live.current) return
       if (fullRestore) setRestartRequired(true)
       setStatus({ kind: 'ok', msg: (fullRestore
@@ -181,7 +199,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       })
     } catch (error) {
       if (!live.current) return
-      setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${error instanceof Error ? error.message : String(error)}` })
+      setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${errorText(error)}` })
     } finally {
       inFlight.current = false
       if (live.current) setBusy(false)
@@ -191,9 +209,9 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     live.current = true
     let current = true
     void portRef.current.pendingRestore().then((pending) => {
-      if (current && pending) setRestartRequired(true)
+      if (current && pending) { setRestartRequired(true); setRestoreError(pending.error) }
     }).catch((error) => {
-      if (current) setStatus({ kind: 'err', msg: String(error) })
+      if (current) setStatus({ kind: 'err', msg: errorText(error) })
     })
     return () => { current = false; live.current = false }
   }, [])
@@ -202,5 +220,6 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   const exportBackup = useCallback(() => run('configuration'), [run])
   const exportFullBackup = useCallback(() => run('full'), [run])
   const restart = useCallback(() => run('restart'), [run])
-  return { busy, status, statusSource, restartRequired, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup, exportFullBackup, restart }
+  const cancelRestore = useCallback(() => run('cancel'), [run])
+  return { busy, status, statusSource, restartRequired, restoreError, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup, exportFullBackup, restart, cancelRestore }
 }

@@ -166,11 +166,11 @@ impl Dav {
             }
             segments.push("");
         }
+        // No total deadline: large full backups legitimately exceed an hour; stalls hit read_timeout.
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .read_timeout(Duration::from_secs(60))
-            .timeout(Duration::from_secs(3600))
             .build()
             .map_err(network_error)?;
         Ok(Self {
@@ -555,7 +555,7 @@ pub(crate) async fn webdav_upload(
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
-    if super::backup_restore_pending(app.clone())? {
+    if super::backup_restore_pending(app.clone())?.is_some() {
         return Err("请先重启完成恢复 / Restart to finish pending restore".into());
     }
     let dav = Dav::new(&load(&config_path(&app)?)?)?;
@@ -581,11 +581,7 @@ pub(crate) async fn webdav_upload(
     Ok(skipped)
 }
 #[tauri::command]
-pub(crate) async fn webdav_download(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<WebDavDownload, String> {
+pub(crate) async fn webdav_download(app: AppHandle, name: String) -> Result<WebDavDownload, String> {
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
@@ -595,16 +591,6 @@ pub(crate) async fn webdav_download(
     Dav::new(&load(&config_path(&app)?)?)?
         .download(&name, &path)
         .await?;
-    if matches!(backup_kind(&name), Some(WebDavBackupKind::Configuration)) {
-        let recovery = app
-            .path()
-            .app_data_dir()
-            .map_err(err)?
-            .join(".backup-webdav-recovery");
-        std::fs::create_dir_all(&recovery).map_err(err)?;
-        let previous = recovery.join(format!("configuration-{}.json", uuid::Uuid::new_v4()));
-        crate::commands::export_settings(app, state, previous.to_string_lossy().into(), None)?;
-    }
     let id = uuid::Uuid::new_v4().to_string();
     downloads()
         .lock()

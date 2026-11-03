@@ -18,7 +18,7 @@ describe('WebDAV configuration form', () => {
     const save = vi.fn().mockRejectedValueOnce(new Error('Disk full')).mockImplementationOnce(async (input) => ({ ...config, url: input.url }))
     const port: SettingsBackupPort = {
       pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {},
-      importFull: async () => {}, confirmFullRestore: async () => false, pendingRestore: async () => false, restart: async () => {},
+      importFull: async () => {}, confirmFullRestore: async () => false, pendingRestore: async () => null, cancelRestore: async () => {}, restart: async () => {},
       webdav: {
         load: async () => config, save, test: async () => {}, list: async () => [], upload: async () => [],
         download: async () => ({ id: '', path: '' }), release: async () => {}, delete: async () => {},

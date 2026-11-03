@@ -17,8 +17,14 @@ export function BackupSection({ controller, lang }: {
   const disabled = controller.busy || controller.restartRequired
   return <div className="backup-page">
     {controller.restartRequired && <div className="backup-row backup-restart">
-      <div className="backup-copy"><p className="kv-row-label">{zh ? '备份已就绪，重启后完成恢复' : 'Ready to restore after restart'}</p><p className="kv-row-desc">{zh ? '重启前，当前数据仍保持不变。' : 'Current data stays unchanged until restart.'}</p></div>
-      <Button size="sm" variant="primary" disabled={controller.busy} onClick={controller.restart}>{zh ? '重启并完成恢复' : 'Restart and restore'}</Button>
+      <div className="backup-copy"><p className="kv-row-label">{controller.restoreError ? (zh ? '上次启动时恢复未完成' : 'Restore did not finish at last startup') : (zh ? '备份已就绪，重启后完成恢复' : 'Ready to restore after restart')}</p>
+        <p className="kv-row-desc whitespace-pre-wrap [overflow-wrap:anywhere]">{controller.restoreError
+          ? `${zh ? '当前数据未改变。关闭占用 Kivio 数据目录的程序后重试，或取消恢复。' : 'Current data is unchanged. Close programs using the Kivio data folder and retry, or cancel.'}\n${controller.restoreError}`
+          : (zh ? '重启前，当前数据仍保持不变。' : 'Current data stays unchanged until restart.')}</p></div>
+      <div className="backup-actions">
+        <Button size="sm" disabled={controller.busy} onClick={controller.cancelRestore}>{zh ? '取消恢复' : 'Cancel restore'}</Button>
+        <Button size="sm" variant="primary" disabled={controller.busy} onClick={controller.restart}>{zh ? '重启并完成恢复' : 'Restart and restore'}</Button>
+      </div>
     </div>}
     <section className="backup-section"><h3 className="backup-section-title"><HardDrive size={16} />{zh ? '本地备份' : 'Local backup'}</h3><div className="backup-surface">
       <div className="backup-row">
