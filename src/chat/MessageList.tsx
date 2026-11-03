@@ -1102,6 +1102,10 @@ function MessageListBase({
     if (!root) return []
     return [...root.querySelectorAll<HTMLDivElement>('[data-index]')]
   }, [contentEl])
+  // Same as LegendList (T3code's list): re-read every mounted row after each
+  // commit, so a stale cache is fixed before paint instead of waiting for an
+  // observer delivery that may never come. Unchanged rows are a no-op.
+  useLayoutEffect(() => { correctMountedRows(mountedVirtualRows()) })
   // Conversation switches no longer remount the list, and a width bucket change
   // reuses the same nodes. measure() drops sizes from the previous geometry;
   // rows that are not mounted keep the snapshot instead of falling back to an estimate.
@@ -2245,17 +2249,11 @@ function MessageListBase({
   const handoffReadingOffset = liveScrollHandoffRef.current.live && !liveRowActive
     && liveScrollHandoffRef.current.conversationId === conversationId
     && !followHandle.isFollowing() ? viewportEl?.scrollTop ?? null : null
-  const pendingGenerationMeasureRef = useRef(false)
   useLayoutEffect(() => {
     const previous = liveScrollHandoffRef.current
     liveScrollHandoffRef.current = { conversationId, live: liveRowActive }
     // 切换会话不是本会话的流式交接。
-    const generationEnded = previous.conversationId === conversationId && previous.live && !liveRowActive
-    pendingGenerationMeasureRef.current = generationEnded
-    // The settled row is in the DOM now, but tables and code often finish one
-    // effect later. Measure both before paint and after child effects.
-    if (generationEnded) correctMountedRows(mountedVirtualRows())
-    if (!generationEnded) return
+    if (previous.conversationId !== conversationId || !previous.live || liveRowActive) return
     if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
       if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
       beginStreamSettleEagerHydrate()
@@ -2286,19 +2284,12 @@ function MessageListBase({
   }, [
     cancelNavigatorSettle,
     conversationId,
-    correctMountedRows,
     followHandle,
     historyItems.length,
     handoffReadingOffset,
     liveRowActive,
-    mountedVirtualRows,
     setNavigationLock,
   ])
-  useEffect(() => {
-    if (!pendingGenerationMeasureRef.current) return
-    pendingGenerationMeasureRef.current = false
-    correctMountedRows(mountedVirtualRows())
-  }, [conversationId, correctMountedRows, liveRowActive, mountedVirtualRows])
 
   // During generation minHeight reserves space below the latest user message.
   // On settle transfer the same reserve to the spacer before paint. Ordinary
@@ -2573,8 +2564,10 @@ function MessageListBase({
           data-chat-reading-row={item.kind !== 'spacer' ? '' : undefined}
           data-message-id={item.kind === 'message' || item.kind === 'streaming' ? item.message.id : undefined}
           data-chat-message-list-item={item.kind}
-          className={virtualItem ? 'absolute left-0 top-0 w-full pb-0.5' : 'w-full pb-0.5'}
-          style={virtualItem ? { transform: `translateY(${virtualItem.start}px)` } : undefined}
+          // `top`, not transform: layout positions snap to device pixels. A
+          // translateY at 125% scaling lands text between pixels and smears it.
+          className={virtualItem ? 'absolute left-0 w-full pb-0.5' : 'w-full pb-0.5'}
+          style={virtualItem ? { top: virtualItem.start } : undefined}
         >
           {item.kind === 'group' || item.kind === 'live-group'
             ? renderItem(item)

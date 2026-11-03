@@ -155,7 +155,7 @@ describe('MessageList disclosure scroll anchoring', () => {
     act(() => {
       list.options.measureElement(row, entry, list)
       // Assert inside the delivery, before act can flush a deferred render.
-      expect(next.style.transform).toBe(`translateY(${start + 400}px)`)
+      expect(next.style.top).toBe(`${start + 400}px`)
     })
   })
 })

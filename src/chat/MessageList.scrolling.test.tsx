@@ -230,15 +230,18 @@ it('corrects a short cache when content grows without a ResizeObserver entry', a
   const row = container.querySelector<HTMLElement>('[data-chat-row-index="2"]')!
   const index = 2
   Object.defineProperty(row, 'offsetHeight', { configurable: true, get: () => 480 })
+  // The stale 120 must not survive its own commit: the per-commit pass reads
+  // offsetHeight before paint, without waiting for a ResizeObserver entry.
   act(() => { list.resizeItem(index, 120) })
-  const before = list.getVirtualItems().find((item) => item.index === index + 1)!.start
+  expect(list.itemSizeCache.get(list.options.getItemKey(index))).toBe(480)
+  const items = list.getVirtualItems()
+  const start = items.find((item) => item.index === index)!.start
+  expect(items.find((item) => item.index === index + 1)!.start).toBe(start + 480)
   let measured = 0
   act(() => {
     measured = list.options.measureElement(row as HTMLDivElement, undefined, list)
   })
   expect(measured).toBe(480)
-  expect(list.itemSizeCache.get(list.options.getItemKey(index))).toBe(480)
-  expect(list.getVirtualItems().find((item) => item.index === index + 1)!.start).toBe(before + 360)
 })
 
 it('keeps a measured row when a ref read happens before layout', async () => {
@@ -288,10 +291,10 @@ it('commits row positions in the same delivery as scroll compensation above the 
     // end-of-delivery flush, just as a browser paint can observe the DOM.
     measure(350)
     expect(viewport.scrollTop).toBe(750)
-    expect(row.style.transform).toBe(`translateY(${start + 150}px)`)
+    expect(row.style.top).toBe(`${start + 150}px`)
     measure(180)
     expect(viewport.scrollTop).toBe(580)
-    expect(row.style.transform).toBe(`translateY(${start - 20}px)`)
+    expect(row.style.top).toBe(`${start - 20}px`)
   })
 })
 
