@@ -4,10 +4,15 @@ import type { ChatMessage, ToolCallRecord } from './types'
 const obj = (value: unknown): Record<string, unknown> => value != null && typeof value === 'object' ? value as Record<string, unknown> : {}
 const text = (value: unknown): string => typeof value === 'string' ? value : Array.isArray(value) ? value.map(part => obj(part).text).filter(part => typeof part === 'string').join('\n') : ''
 
+// System-injected model input (runtime snapshot, compaction, recovery); mirrors the Rust producers in
+// agent/prepare.rs, agent/compaction.rs and sub_agent/runtime.rs. Real prompts and parent messages stay visible.
+const INJECTED_PREFIXES = ['<kivio_runtime_context>\n', '[context summary]', 'Previously completed tool operations recovered from the durable tool ledger.', 'Previous execution was interrupted.']
+
 /** Adapt provider history to the same messages/segments used by ordinary chat. */
 export function subAgentMessages(child: SubAgentRecord): ChatMessage[] {
   const run = child.runs.at(-1)
-  const history = child.history.map(obj).filter(message => ['user', 'assistant', 'tool'].includes(String(message.role)))
+  const history = child.history.map(obj).filter(message => ['user', 'assistant', 'tool'].includes(String(message.role)) && !(message.role === 'user' && (
+    '_skill_reload' in message || '_compact_reminder' in message || INJECTED_PREFIXES.some(prefix => text(message.content).startsWith(prefix)))))
   if (!history.length) child.runs.forEach(item => {
     history.push({ role: 'user', content: item.prompt })
     if (item.result) history.push({ role: 'assistant', content: item.result })
