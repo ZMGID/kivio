@@ -1078,9 +1078,10 @@ pub fn handle_agent_spawn<'a>(
         }
         let available_builtin_tools = available_builtin_tool_names(&tools);
 
-        // Compose the sub-agent system prompt: persona prefix + base chat
-        // system prompt. No todo context is injected — the worker is not aware
-        // of and cannot touch the parent's todo list.
+        // Compose the sub-agent system prompt: the persona replaces the built-in
+        // Agent body (whose "ask the user" guidance conflicts with sub-agents);
+        // the trust policy and runtime context still apply. No todo context is
+        // injected — the worker is not aware of and cannot touch the parent's todo list.
         // Real skill registry (was `SkillRegistry::default()` — an empty catalog,
         // so the skill tools the filter deliberately keeps had nothing to find).
         // Always the FULL registry: `def.skills` is a preload list, not a

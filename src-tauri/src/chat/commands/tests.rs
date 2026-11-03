@@ -664,6 +664,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
         crate::mcp::types::native_memory_modify_tool(),
         crate::mcp::types::native_skill_activate_tool(),
         crate::chat::ask_user::ask_user_tool(),
+        crate::mcp::types::native_html_render_tool(),
+        crate::mcp::types::native_html_preview_tool(),
         crate::chat::todo::todo_write_tool(),
         readonly_mcp_tool,
         write_mcp_tool,
@@ -690,6 +692,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
     assert!(!names.contains(&"automation_run".to_string()));
     assert!(names.contains(&"memory_read".to_string()));
     assert!(names.contains(&"ask_user".to_string()));
+    assert!(names.contains(&"html_render".to_string()));
+    assert!(names.contains(&"html_preview".to_string()));
     assert!(names.contains(&"mcp__docs__search".to_string()));
     assert!(!names.contains(&"read".to_string()));
     assert!(!names.contains(&"write".to_string()));

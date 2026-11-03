@@ -69,7 +69,7 @@ pub fn format_prompt(state: &AgentPlanState) -> String {
 
     if state.mode == AgentPlanMode::Plan {
         format!(
-            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed. Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation belongs in Act or Orchestrate when the user asks to begin.\n\nCurrent plan context:\n{current_plan}"
+            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed. Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document; if save_plan is unavailable, write the plan in your reply. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation belongs in Act or Orchestrate when the user asks to begin.\n\nCurrent plan context:\n{current_plan}"
         )
     } else if state.mode == AgentPlanMode::Orchestrate {
         format!(

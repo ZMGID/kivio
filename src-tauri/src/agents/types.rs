@@ -2,8 +2,8 @@
 
 use serde::Serialize;
 
-/// A sub-agent persona. `system_prompt` is prepended to the base chat system
-/// prompt; `model` accepts @smol/@slow/@task or a concrete parent-provider model.
+/// A sub-agent persona. `system_prompt` replaces the built-in Agent body (the
+/// trust policy and runtime context still apply); `model` accepts @smol/@slow/@task or a concrete parent-provider model.
 /// Empty model follows TASK, then the parent. `tools` empty means
 /// "all tools available to the parent except the `agent` tool" (the allow-list
 /// is enforced at spawn time, see `chat::agent::filter::filter_tools_for_agent`).

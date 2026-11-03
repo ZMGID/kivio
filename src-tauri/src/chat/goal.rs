@@ -108,7 +108,7 @@ pub fn format_prompt(goal: Option<&GoalState>) -> Option<String> {
             .join("\n")
     };
     Some(format!(
-        "Goal mode is active. Keep working autonomously toward the objective; do not stop at a plan or partial result. Use the Goal tools to maintain criteria and evidence. Only goal_complete can finish the Goal. If user input or an external event is truly required, use goal_wait. Use goal_blocked only for a concrete impasse.\n\nGoal id: {}\nGoal version: {}\nObjective: {}\n\nAcceptance criteria:\n{}\n\nLatest progress: {}",
+        "Goal mode is active. Keep working autonomously toward the objective; do not stop at a plan or partial result. Use the Goal tools to maintain criteria and evidence. Only goal_complete can finish the Goal. For a blocking question the user can answer now, use ask_user and continue this run; use goal_wait only when work must pause for an approval or external event. Use goal_blocked only for a concrete impasse.\n\nGoal id: {}\nGoal version: {}\nObjective: {}\n\nAcceptance criteria:\n{}\n\nLatest progress: {}",
         goal.id, goal.version, goal.objective, criteria,
         goal.progress_summary.as_deref().unwrap_or("No progress reported yet.")
     ))

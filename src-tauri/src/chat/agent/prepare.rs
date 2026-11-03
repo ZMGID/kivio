@@ -407,9 +407,14 @@ fn build_chat_prompt_with_segments(
         );
     }
 
+    // The KB prompt directs the model to knowledge_search; skip it when that tool is not declared.
+    let knowledge_search_available = tools_available
+        && available_builtin_tools
+            .iter()
+            .any(|name| name == "knowledge_search");
     if let Some(kb) = knowledge_base_prompt
         .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.is_empty() && knowledge_search_available)
     {
         append_context_segment(
             &mut context,
@@ -1544,6 +1549,21 @@ mod tests {
             prompt.contains("This conversation has knowledge bases attached: Docs."),
             "{prompt}"
         );
+    }
+
+    #[test]
+    fn knowledge_base_prompt_requires_knowledge_search_tool() {
+        let registry = skills::SkillRegistry::default();
+        let chat_tools = crate::settings::ChatToolsConfig::default();
+        for (tools_available, names) in [(true, vec!["read".to_string()]), (false, vec![])] {
+            let prompt = build_chat_prompt(
+                "zh-CN", false, true, &registry, &chat_tools, tools_available, &names,
+                None, None, None, None, "", false, None, None, None, None, None,
+                Some("This conversation has knowledge bases attached: Docs."), &[],
+            );
+            let prompt = format!("{}\n{}", prompt.system, prompt.context);
+            assert!(!prompt.contains("knowledge bases attached"), "{prompt}");
+        }
     }
 
     #[test]

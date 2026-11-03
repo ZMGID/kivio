@@ -276,6 +276,8 @@ fn chat_mode_allows_tool(
         "web_fetch" => config.web_fetch,
         "knowledge_search" => config.knowledge_search,
         "automation_list" | "automation_get" | "automation_runs" => true,
+        // Display-only: writes just this conversation's own render attachments.
+        "html_render" | "html_preview" => true,
         "memory_read" | "memory_search" => config.memory_tools,
         _ => false,
     }
