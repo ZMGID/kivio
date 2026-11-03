@@ -273,6 +273,7 @@ pub fn provider_label(provider: WebSearchProvider) -> &'static str {
         WebSearchProvider::TinyfishMcp => "TinyFish MCP",
         WebSearchProvider::Searxng => "SearXNG",
         WebSearchProvider::Kimi => "Kimi",
+        WebSearchProvider::Keenable => "Keenable",
         WebSearchProvider::Unknown => "Web",
     }
 }
@@ -329,6 +330,7 @@ pub async fn search_web(
         WebSearchProvider::TinyfishMcp => search_tinyfish_mcp(state, config, query, app).await,
         WebSearchProvider::Searxng => search_searxng(state, config, query, retry_attempts).await,
         WebSearchProvider::Kimi => search_kimi(state, config, query, retry_attempts).await,
+        WebSearchProvider::Keenable => search_keenable(state, config, query, retry_attempts).await,
         WebSearchProvider::Unknown => {
             Err("Selected web search provider is not supported yet".to_string())
         }
@@ -617,6 +619,96 @@ async fn search_brave(
             }
         })
         .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct KeenableSearchResponse {
+    #[serde(default)]
+    results: Vec<KeenableSearchResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeenableSearchResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    snippet: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+/// Keenable snippets can hold a whole page; keep the excerpt short.
+const KEENABLE_MAX_CONTENT_CHARS: usize = 1000;
+
+fn keenable_endpoint(base: &str, api_key: &str) -> String {
+    if api_key.is_empty() {
+        format!("{base}/v1/search/public")
+    } else {
+        format!("{base}/v1/search")
+    }
+}
+
+fn keenable_web_results(
+    parsed: KeenableSearchResponse,
+    max_results: usize,
+) -> Vec<WebSearchResult> {
+    parsed
+        .results
+        .into_iter()
+        .filter(|result| !result.url.trim().is_empty())
+        .take(max_results)
+        .map(|result| {
+            let content = result
+                .description
+                .filter(|d| !d.trim().is_empty())
+                .or(result.snippet)
+                .unwrap_or_default();
+            WebSearchResult {
+                title: result.title.trim().to_string(),
+                url: result.url.trim().to_string(),
+                content: content
+                    .trim()
+                    .chars()
+                    .take(KEENABLE_MAX_CONTENT_CHARS)
+                    .collect(),
+                published_date: result.published_at.filter(|d| !d.trim().is_empty()),
+                score: None,
+            }
+        })
+        .collect()
+}
+
+/// Keenable Search：`POST {base}/v1/search/public`（无需 key），配置 key 时走
+/// `POST {base}/v1/search` + `X-API-Key`。请求体 `{query, max_results}`。
+async fn search_keenable(
+    state: &AppState,
+    config: &LensWebSearchConfig,
+    query: &str,
+    retry_attempts: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let api_key = config.keenable_api_key.trim();
+    let max_results = config.max_results.clamp(1, 10);
+    let base = normalized_base_url(&config.keenable_base_url, "https://api.keenable.ai");
+    let url = keenable_endpoint(base, api_key);
+    let body = serde_json::json!({ "query": query, "max_results": max_results });
+    let response = send_with_retry("Keenable search", retry_attempts, || {
+        let mut req = state
+            .http
+            .post(&url)
+            .header("X-Keenable-Title", "Kivio")
+            .json(&body);
+        if !api_key.is_empty() {
+            req = req.header("X-API-Key", api_key);
+        }
+        with_standard_request_timeout(req).send()
+    })
+    .await?;
+    let parsed: KeenableSearchResponse = read_search_json("Keenable search", response).await?;
+    Ok(keenable_web_results(parsed, max_results as usize))
 }
 
 /// TinyFish Search：`GET {base}?query=`，头 `X-API-Key`，结果在 `results[]`。
@@ -2026,6 +2118,30 @@ mod tests {
             parsed.search_result[0].publish_date.as_deref(),
             Some("2026-05-23")
         );
+    }
+
+    #[test]
+    fn keenable_picks_endpoint_and_parses_results() {
+        assert_eq!(
+            super::keenable_endpoint("https://api.keenable.ai", ""),
+            "https://api.keenable.ai/v1/search/public"
+        );
+        assert_eq!(
+            super::keenable_endpoint("https://api.keenable.ai", "k"),
+            "https://api.keenable.ai/v1/search"
+        );
+        let raw = r#"{"results":[
+            {"title":"A","url":"https://a.example","description":"","snippet":"snip a"},
+            {"title":"skip","url":""},
+            {"title":"B","url":"https://b.example","description":"desc b","published_at":"2026-01-01"}
+        ]}"#;
+        let parsed: super::KeenableSearchResponse =
+            serde_json::from_str(raw).expect("keenable json");
+        let results = super::keenable_web_results(parsed, 5);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].content, "snip a");
+        assert_eq!(results[1].content, "desc b");
+        assert_eq!(results[1].published_date.as_deref(), Some("2026-01-01"));
     }
 
     #[test]
