@@ -440,7 +440,9 @@ fn output_byte_limit(value: Option<&Value>) -> usize {
 /// Empty `args` plus a shell line (whitespace or metacharacters) must go
 /// through a shell. A real argv exec stays `Command::new(command).args(args)`.
 fn needs_shell(command: &str, args: &[String]) -> bool {
-    if !args.is_empty() {
+    // An existing file path (e.g. under `C:\Program Files`) is exec'd as-is,
+    // even with spaces; only non-path lines go through the shell.
+    if !args.is_empty() || std::path::Path::new(command).is_file() {
         return false;
     }
     command.contains(|c: char| {
@@ -780,6 +782,16 @@ mod tests {
                 "{command:?} with args is a direct command"
             );
         }
+        let spaced_dir = std::env::temp_dir().join(format!("kivio acp {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&spaced_dir).expect("create spaced dir");
+        let spaced_exe = spaced_dir.join("tool bin");
+        std::fs::write(&spaced_exe, b"").expect("create spaced file");
+        let spaced_text = spaced_exe.to_string_lossy().to_string();
+        assert!(
+            !needs_shell(&spaced_text, &[]),
+            "existing path with spaces must exec directly"
+        );
+        let _ = std::fs::remove_dir_all(&spaced_dir);
     }
 
     #[cfg(unix)]
