@@ -974,6 +974,8 @@ pub(crate) fn web_search_provider_configured(
         WebSearchProvider::TinyfishMcp => tinyfish_mcp_configured(settings),
         WebSearchProvider::Searxng => !settings.lens.web_search.searxng_base_url.trim().is_empty(),
         WebSearchProvider::Kimi => !settings.lens.web_search.kimi_api_key.trim().is_empty(),
+        // Keyless public endpoint: always usable.
+        WebSearchProvider::Keenable => true,
         WebSearchProvider::Unknown => false,
     }
 }
