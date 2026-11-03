@@ -46,6 +46,8 @@ const DEFAULT_WEB_SEARCH: WebSearchConfig = {
   searxngBaseUrl: '',
   kimiApiKey: '',
   kimiBaseUrl: 'https://api.kimi.com/coding/v1/search',
+  keenableApiKey: '',
+  keenableBaseUrl: 'https://api.keenable.ai',
   maxResults: 5,
   searchDepth: 'basic',
 }
@@ -68,6 +70,7 @@ type ProviderDef = {
     | 'zhipuApiKey'
     | 'tinyfishApiKey'
     | 'kimiApiKey'
+    | 'keenableApiKey'
   /** API Key 输入框占位符。 */
   keyPlaceholder?: string
   /** 可编辑的 API base 字段（代理/自建网关可改）；写入对应 *BaseUrl 设置。 */
@@ -84,6 +87,7 @@ type ProviderDef = {
     | 'grokBaseUrl'
     | 'deepseekBaseUrl'
     | 'kimiBaseUrl'
+    | 'keenableBaseUrl'
   /** base 输入框占位符（也是官方默认值）。 */
   baseUrlPlaceholder?: string
   /** 可编辑 MCP endpoint（写入 exaMcpUrl / tinyfishMcpUrl）。 */
@@ -171,6 +175,17 @@ const PROVIDERS: ProviderDef[] = [
     baseUrlPlaceholder: 'https://api.x.ai/v1',
     systemPromptField: 'grokSystemPrompt',
     icon: '/search-icons/grok.png',
+  },
+  {
+    id: 'keenable',
+    name: 'Keenable',
+    site: 'https://keenable.ai',
+    apiKeyUrl: 'https://keenable.ai',
+    // Works without a key (public endpoint); a key is optional.
+    keyField: 'keenableApiKey',
+    keyPlaceholder: 'optional',
+    baseUrlField: 'keenableBaseUrl',
+    baseUrlPlaceholder: 'https://api.keenable.ai',
   },
   {
     id: 'kimi',

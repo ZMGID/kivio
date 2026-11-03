@@ -60,6 +60,9 @@ export function isProviderConfigured(
       return (webSearch.searxngBaseUrl ?? '').trim() !== ''
     case 'kimi':
       return (webSearch.kimiApiKey ?? '').trim() !== ''
+    case 'keenable':
+      // Keyless public endpoint; the key is optional.
+      return true
     default:
       return false
   }
@@ -86,6 +89,7 @@ export function webSearchKeyField(
   | 'zhipuApiKey'
   | 'tinyfishApiKey'
   | 'kimiApiKey'
+  | 'keenableApiKey'
 > | null {
   switch (provider) {
     case 'tavily':
@@ -110,6 +114,8 @@ export function webSearchKeyField(
       return 'tinyfishApiKey'
     case 'kimi':
       return 'kimiApiKey'
+    case 'keenable':
+      return 'keenableApiKey'
     case 'exa_mcp':
     case 'tinyfish_mcp':
     case 'searxng':

@@ -1145,6 +1145,7 @@ export type WebSearchProviderId =
   | 'tinyfish_mcp'
   | 'searxng'
   | 'kimi'
+  | 'keenable'
 
 export type WebSearchMcpAuth = NonNullable<ChatMcpServer['auth']>
 
@@ -1181,6 +1182,8 @@ export type WebSearchConfig = {
   searxngBaseUrl?: string
   kimiApiKey?: string
   kimiBaseUrl?: string
+  keenableApiKey?: string
+  keenableBaseUrl?: string
   maxResults: number
   searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
 }
