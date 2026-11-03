@@ -22,7 +22,6 @@ import { Button, IconButton } from '../components/Button'
 import { isProviderEnabled } from '../settings/public/providers'
 import { Select } from '../settings/public/controls'
 import { useT } from '../components/i18n'
-import { builtinAssistantGlyph } from './assistantIcons'
 import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
 import type { ChatAssistant, SkillMeta } from './types'
@@ -50,7 +49,7 @@ interface AssistantCenterProps {
 
 type AssistantDraft = ChatAssistant
 type CenterView = 'list' | 'detail' | 'edit'
-type SuiteTab = 'plaza' | 'installed' | 'mine'
+type SuiteTab = 'installed' | 'mine'
 
 const assistantColors = ['#6A8FBD', '#2f6ff0', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
 
@@ -158,7 +157,7 @@ function AssistantSuiteCard({
             className="grid size-9 shrink-0 place-items-center rounded-lg border border-neutral-200 bg-neutral-50 text-[15px] font-semibold"
             style={{ color: assistant.color || '#6A8FBD' }}
           >
-            {builtinAssistantGlyph(assistant.id, 18) ?? (assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallback)}
+            {assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallback}
           </span>
           <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">
             {assistant.name}
@@ -307,10 +306,7 @@ export function AssistantCenter({
     const normalizedQuery = query.trim().toLowerCase()
     return assistants.filter((assistant) => {
       if (!assistantMatches(assistant, normalizedQuery)) return false
-      const builtIn = assistant.built_in ?? assistant.builtIn ?? false
-      if (tab === 'plaza' && !builtIn) return false
       if (tab === 'installed' && assistant.installed === false) return false
-      if (tab === 'mine' && builtIn) return false
       return true
     })
   }, [assistants, query, tab])
@@ -325,7 +321,6 @@ export function AssistantCenter({
   const draftMcpIds = assistantMcpIds(draft)
   const draftSkillIds = assistantSkillIds(draft)
   const canApplyCurrent = Boolean(onApplyAssistant)
-  const builtInCount = assistants.filter((assistant) => assistant.built_in ?? assistant.builtIn).length
   const installedCount = assistants.filter((assistant) => assistant.installed !== false).length
 
   const updateDraft = <K extends keyof AssistantDraft>(key: K, value: AssistantDraft[K]) => {
@@ -485,8 +480,7 @@ export function AssistantCenter({
       <div className="assistant-center-tabs flex min-w-0 items-center gap-1 border-b border-neutral-200 pb-2">
           {[
             ['installed', t.chatAssistantTabInstalled, installedCount],
-            ['plaza', t.chatAssistantTabPlaza, builtInCount],
-            ['mine', t.chatAssistantTabMine, assistants.length - builtInCount],
+            ['mine', t.chatAssistantTabMine, assistants.length],
           ].map(([value, label, count]) => (
             <button
               key={value}
@@ -596,7 +590,7 @@ export function AssistantCenter({
               className="grid size-16 shrink-0 place-items-center rounded-md text-[26px] font-semibold text-white"
               style={{ backgroundColor: assistant.color || '#6A8FBD' }}
             >
-              {builtinAssistantGlyph(assistant.id, 32) ?? (assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallbackDetail)}
+              {assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallbackDetail}
             </div>
             <div className="min-w-0">
               <h2 className="truncate text-[28px] font-semibold tracking-normal text-neutral-950">

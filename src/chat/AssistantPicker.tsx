@@ -6,7 +6,6 @@ import { Award, Check, CircleOff, Settings2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { chatApi } from './api'
 import { api } from '../api/tauri'
-import { builtinAssistantGlyph } from './assistantIcons'
 import { IconButton } from '../components/Button'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { ChatAssistant } from './types'
@@ -34,7 +33,7 @@ export function AssistantPicker({
 
   const load = useCallback(async () => {
     try {
-      // 对话栏只列「常用」专家（内置默认不在常用，需在专家中心的套件广场添加）。
+      // 对话栏只列「常用」专家，需在专家中心手动加入。
       const all = await chatApi.getAssistants()
       setAssistants(all.filter((a) => (a.installed ?? true) !== false))
     } catch {
@@ -104,9 +103,7 @@ export function AssistantPicker({
         label={assistantChipLabel}
         title={assistantChipLabel}
       >
-        {currentAssistant
-          ? builtinAssistantGlyph(currentAssistant.id, 18) ?? <Award size={18} strokeWidth={1.75} />
-          : <Award size={18} strokeWidth={1.75} />}
+        <Award size={18} strokeWidth={1.75} />
       </IconButton>
       {open && (
         <div
@@ -145,7 +142,7 @@ export function AssistantPicker({
                   }`}
                 >
                   <span className="grid size-4 shrink-0 place-items-center text-accent">
-                    {builtinAssistantGlyph(assistant.id, 14) ?? <Award size={13} strokeWidth={1.75} />}
+                    <Award size={13} strokeWidth={1.75} />
                   </span>
                   <span className="min-w-0 flex-1 truncate">{assistant.name}</span>
                   {active && <Check size={12} strokeWidth={2.5} className="shrink-0 text-accent" />}

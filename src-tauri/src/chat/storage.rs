@@ -33,13 +33,10 @@ mod projects;
 pub(crate) mod set_backup;
 mod sets;
 
-#[allow(unused_imports)]
-pub(crate) use assistants::merge_builtin_definitions;
 pub use assistants::{
-    archive_assistant, assistant_snapshot, builtin_assistant_definitions, create_assistant,
-    duplicate_assistant, get_assistant, get_assistants, load_assistant_index,
-    merge_builtin_assistants_v2, merge_builtin_assistants_v3, save_assistant_index,
-    seed_builtin_assistants_v1, update_assistant,
+    archive_assistant, assistant_snapshot, create_assistant, duplicate_assistant, get_assistant,
+    get_assistants, load_assistant_index, remove_builtin_assistants, save_assistant_index,
+    update_assistant,
 };
 pub use conversations::{
     conversation_pins_file_path, find_reusable_blank_conversation, get_conversations,
@@ -552,7 +549,7 @@ mod conversation_workspace_tests {
 }
 
 #[cfg(test)]
-mod builtin_assistant_tests {
+mod catalog_storage_tests {
     use super::*;
 
     #[test]
@@ -566,142 +563,22 @@ mod builtin_assistant_tests {
 
     #[test]
     fn set_name_normalization_trims_caps_and_rejects_empty() {
-        assert_eq!(normalize_set_name("  写作集  ").unwrap(), "写作集");
+        assert_eq!(normalize_set_name("  写作集 ").unwrap(), "写作集");
         assert!(normalize_set_name("   ").is_err());
         let long: String = "x".repeat(200);
         assert_eq!(normalize_set_name(&long).unwrap().chars().count(), 80);
     }
 
     #[test]
-    fn builtin_assistants_are_valid_built_in_personas() {
-        let defs = builtin_assistant_definitions(1_700_000_000);
-        assert_eq!(defs.len(), 13, "expected exactly 13 built-in assistants");
-
-        let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(
-            ids.len(),
-            defs.len(),
-            "built-in assistant ids must be unique"
-        );
-
-        for d in &defs {
-            // ids must satisfy validate_assistant_id (asst_ prefix + safe chars).
-            assert!(
-                d.id.starts_with("asst_") && d.id.len() > "asst_".len(),
-                "{}",
-                d.id
-            );
-            assert!(d.built_in, "{} must be built_in", d.id);
-            assert_eq!(d.source, "builtin", "{}", d.id);
-            // 策展式：内置默认启用但未加入应用（installed=false），用户手动添加后才可用。
-            assert!(d.enabled && !d.installed && !d.archived, "{}", d.id);
-            // Inherit the user's selected model — never pin a provider/model.
-            assert!(d.provider_id.is_empty() && d.model.is_empty(), "{}", d.id);
-            // Honor normalize_assistant constraints so a later edit won't reject them.
-            assert!(
-                !d.name.trim().is_empty() && d.name.chars().count() <= 64,
-                "{}",
-                d.id
-            );
-            assert!(d.description.chars().count() <= 240, "{}", d.id);
-            assert!(d.icon.chars().count() <= 8, "{}", d.id);
-            assert!(!d.system_prompt.trim().is_empty(), "{}", d.id);
-        }
-    }
-
-    #[test]
-    fn builtin_assistants_do_not_pin_skills() {
-        let defs = builtin_assistant_definitions(1_700_000_000);
-        for def in &defs {
-            assert!(def.skill_ids.is_empty(), "{} pins skills", def.id);
-        }
-        // v2/v3 新增的专家在册，且 id 唯一（数量断言在上一个测试）。
-        for id in [
-            "asst_builtin_frontend",
-            "asst_builtin_translator",
-            "asst_builtin_docsmith",
-            "asst_builtin_pm",
-            "asst_builtin_legal",
-            "asst_builtin_finance",
-            "asst_builtin_teacher",
-            "asst_builtin_reviewer",
-            "asst_builtin_career",
-        ] {
-            assert!(defs.iter().any(|d| d.id == id), "missing {id}");
-        }
-        // 每个专家都拼接了去 AI 味文风块。
-        for d in &defs {
-            assert!(
-                d.system_prompt.contains("像具体的人写的"),
-                "{} missing no-AI-flavor style block",
-                d.id
-            );
-        }
-        let legal = defs.iter().find(|d| d.id == "asst_builtin_legal").unwrap();
-        assert!(
-            legal.system_prompt.contains("不是律师"),
-            "legal persona must disclaim it is not a lawyer"
-        );
-        let finance = defs
-            .iter()
-            .find(|d| d.id == "asst_builtin_finance")
-            .unwrap();
-        assert!(
-            finance.system_prompt.contains("不是持牌顾问"),
-            "finance persona must disclaim it is not a licensed advisor"
-        );
-    }
-
-    #[test]
-    fn merge_v2_updates_builtins_and_preserves_user_assistants() {
-        let defs = builtin_assistant_definitions(1_700_000_000);
-        // 老装现状：一个旧版内置（同 id、旧 prompt）+ 一个用户自建。
-        let mut old_writer = defs
-            .iter()
-            .find(|d| d.id == "asst_builtin_writer")
-            .unwrap()
-            .clone();
-        old_writer.system_prompt = "旧版写作 prompt".to_string();
-        let mut user = defs[0].clone();
-        user.id = "asst_user_custom".to_string();
-        user.built_in = false;
-        user.source = "user".to_string();
-
-        let merged = merge_builtin_definitions(
-            vec![old_writer, user],
-            builtin_assistant_definitions(1_700_000_000),
-        );
-
-        // 用户自建保留。
-        assert!(
-            merged
-                .iter()
-                .any(|a| a.id == "asst_user_custom" && !a.built_in),
-            "user assistant must be preserved"
-        );
-        // 旧内置被新版覆盖（新版含文风块）。
-        let w = merged
-            .iter()
-            .find(|a| a.id == "asst_builtin_writer")
-            .unwrap();
-        assert!(w.system_prompt.contains("像具体的人写的"));
-        // 新增内置补齐。
-        assert!(merged.iter().any(|a| a.id == "asst_builtin_translator"));
-        assert!(merged.iter().any(|a| a.id == "asst_builtin_pm"));
-        // 13 内置 + 1 用户，无重复。
-        assert_eq!(merged.len(), 14);
-        assert_eq!(merged.iter().filter(|a| a.built_in).count(), 13);
-    }
-
-    #[test]
     fn legacy_disabled_assistant_remains_available_until_archived() {
-        let mut assistant = builtin_assistant_definitions(1_700_000_000)
-            .into_iter()
-            .next()
-            .unwrap();
-        assistant.enabled = false;
+        let mut assistant: ChatAssistant = serde_json::from_value(serde_json::json!({
+            "id": "asst_test",
+            "name": "测试助手",
+            "enabled": false,
+            "created_at": 1,
+            "updated_at": 1,
+        }))
+        .unwrap();
         assert!(assistant_is_available(&assistant));
 
         assistant.archived = true;

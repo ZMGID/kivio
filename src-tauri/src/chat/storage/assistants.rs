@@ -3,7 +3,7 @@ use super::*;
 pub fn load_assistant_index(app: &AppHandle) -> Result<ChatAssistantIndex, String> {
     let path = assistants_file_path(app)?;
     if !path.exists() {
-        // 重建后不再内置默认助手,启动为空,由用户自建。
+        // 内置专家已下线，启动为空，由用户自建。
         return Ok(ChatAssistantIndex::default());
     }
 
@@ -13,21 +13,7 @@ pub fn load_assistant_index(app: &AppHandle) -> Result<ChatAssistantIndex, Strin
     for assistant in &mut index.assistants {
         retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     }
-    refresh_unedited_builtin_assistants(&mut index.assistants);
     Ok(index)
-}
-
-fn refresh_unedited_builtin_assistants(assistants: &mut [ChatAssistant]) {
-    let definitions = builtin_assistant_definitions(0);
-    for assistant in assistants
-        .iter_mut()
-        .filter(|assistant| assistant.built_in && assistant.created_at == assistant.updated_at)
-    {
-        if let Some(definition) = definitions.iter().find(|item| item.id == assistant.id) {
-            assistant.system_prompt = definition.system_prompt.clone();
-            assistant.skill_ids = definition.skill_ids.clone();
-        }
-    }
 }
 
 pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Result<(), String> {
@@ -37,253 +23,52 @@ pub fn save_assistant_index(app: &AppHandle, index: &ChatAssistantIndex) -> Resu
     atomic_write(&path, &content, "assistants")
 }
 
-/// 反 AI 腔的共享文风块，拼接到每个内置专家 system_prompt 末尾（见任务 R6）。
-/// 单点维护，保证所有专家产出"像人写的"。
-const NO_AI_FLAVOR_STYLE: &str = "写作要求（务必遵守，优先级高于其它风格偏好）：产出要像具体的人写的，不是「AI 生成」的。\
-直给结论与内容，不复述我的问题，不写「当然/好的/很高兴为你」这类开场白。\
-不用套话和空转过渡（「综上所述」「总而言之」「在当今……的时代」「值得注意的是」，以及为凑数而写的「首先/其次/再次」）。\
-不无脑分点、不无脑加粗、不滥用 emoji——能用连贯段落表达就别拆成清单，清单只在内容真正并列时才用。\
-不堆形容词、不拔高升华、不写正确的废话，每句话都要有信息量。\
-不过度免责和模棱两可（少用「可能也许某种程度上或许」），有判断就直说，不确定就点明到底哪里不确定。\
-写中文就写地道中文，别带翻译腔和英式长句；句子长短交错，读起来像正常人说话。默认使用与用户相同的语言。";
+/// 删除随应用附带的内置专家（`built_in == true`）。
+/// 用户自建专家保留；集里指向已不存在助手的默认助手一并清空，避免留下悬空引用。
+/// 幂等，启动时运行；旧备份恢复后重新出现的条目也会再次被清理。
+pub fn remove_builtin_assistants(app: &AppHandle) -> Result<usize, String> {
+    let _catalog = catalog_mutation_lock();
+    let mut index = load_assistant_index(app)?;
+    let removed = remove_builtin_assistants_from(&mut index.assistants);
+    if removed > 0 {
+        save_assistant_index(app, &index)?;
+    }
+    clear_missing_default_assistants(app, &index.assistants)?;
+    Ok(removed)
+}
 
-/// 内置专家模板：写作 / 编程 / 前端设计 / 研究 / 数据分析 / 翻译 / 文档 /
-/// 产品 / 法务 / 财务 / 教学 / 代码审查 / 求职。
-///
-/// `ChatAssistant` 没有原生工具白名单（只有 mcp_server_ids + skill_ids），所以人设主要靠
-/// `system_prompt`，文件/联网/Python 等原生工具由全局 Chat 工具开关决定。这里：
-/// - provider_id + model 留空 ⇒ 继承用户在 UI 选择的模型（不假设具体 provider 存在）；
-/// - mcp_server_ids 留空 ⇒ 不绑定任何 MCP 服务器；
-/// - skill_ids 留空：内置专家不绑定技能，用户可在助手设置里按需添加；
-/// - 每个 system_prompt 末尾自动拼接 `NO_AI_FLAVOR_STYLE`（去 AI 味）。
-pub fn builtin_assistant_definitions(now: i64) -> Vec<ChatAssistant> {
-    let make =
-        |id: &str, name: &str, icon: &str, color: &str, description: &str, system_prompt: &str| {
-            ChatAssistant {
-                id: id.to_string(),
-                name: name.to_string(),
-                description: description.to_string(),
-                icon: icon.to_string(),
-                color: color.to_string(),
-                source: "builtin".to_string(),
-                system_prompt: format!("{system_prompt}\n\n{NO_AI_FLAVOR_STYLE}"),
-                provider_id: String::new(),
-                model: String::new(),
-                mcp_server_ids: Vec::new(),
-                skill_ids: Vec::new(),
-                enabled: true,
-                // 策展式：内置专家默认「未加入应用」，用户在专家中心的广场里手动「添加到应用」后才可用/可选。
-                installed: false,
-                archived: false,
-                built_in: true,
-                created_at: now,
-                updated_at: now,
+fn remove_builtin_assistants_from(assistants: &mut Vec<ChatAssistant>) -> usize {
+    let before = assistants.len();
+    assistants.retain(|assistant| !assistant.built_in);
+    before - assistants.len()
+}
+
+fn clear_missing_default_assistants(
+    app: &AppHandle,
+    assistants: &[ChatAssistant],
+) -> Result<(), String> {
+    let mut sets = super::sets::load_set_index(app)?;
+    if clear_missing_default_assistant_ids(&mut sets.sets, assistants) {
+        super::sets::save_set_index(app, &sets)?;
+    }
+    Ok(())
+}
+
+fn clear_missing_default_assistant_ids(sets: &mut [ChatSet], assistants: &[ChatAssistant]) -> bool {
+    let known: std::collections::HashSet<&str> = assistants
+        .iter()
+        .map(|assistant| assistant.id.as_str())
+        .collect();
+    let mut changed = false;
+    for set in sets {
+        if let Some(id) = set.default_assistant_id.as_deref() {
+            if !known.contains(id) {
+                set.default_assistant_id = None;
+                changed = true;
             }
-        };
-
-    vec![
-        make(
-            "asst_builtin_writer",
-            "写作助手",
-            "✍️",
-            "#C56646",
-            "文章、邮件、文案、演讲稿的起草、改写、润色与精简，按读者和用途调语气。",
-            "你是写作搭档，帮我把文章、邮件、文案、演讲稿写好、改好。\
-动笔前先弄清三件事：写给谁看、用来干嘛、想要什么调子；这三点没交代就先问一句，别自己瞎猜一大段。\
-改写时保留我的原意，把改动大的地方一句话点出来，别默默重写让我对不上。\
-初稿宁可短一点、准一点，也不要为了显得完整而注水。涉及事实或数据，拿不准就说拿不准，不替我编。",
-        ),
-        make(
-            "asst_builtin_coder",
-            "编程助手",
-            "💻",
-            "#4F8A8B",
-            "读写代码、调试、重构与解释，做最小聚焦的改动并说清改了什么、为什么。",
-            "你是干活踏实的编程搭档，擅长读代码、写代码、调 bug、重构和讲清原理。\
-动手前先看相关文件和上下文，顺着项目已有的风格和约定来，别自作主张换套写法。\
-改动尽量小而聚焦，改完说清动了哪里、为什么这么动、有什么影响；给的代码要能跑、该处理的错误要处理。\
-不确定的接口和行为先去代码里核实，绝不臆造 API 或事实；跑命令、动脚本前先说清后果。\
-解释架构或流程时可以直接用 mermaid 图把关系画出来，比堆文字清楚。",
-        ),
-        make(
-            "asst_builtin_frontend",
-            "前端设计师",
-            "🎨",
-            "#B5657E",
-            "既懂设计又能落地的前端：界面视觉、交互、组件实现，做出不像模板的东西。",
-            "你是前端设计师，既有设计品味又能亲手把界面做出来，覆盖视觉、布局、交互到组件实现。\
-接到需求先想清楚：给谁用、核心操作是什么、什么调性，再动手，而不是套一个通用模板了事。\
-设计上避开千篇一律的默认样式——在排版、留白、层次、配色、动效上做出有意图的选择，并简单说说为什么这么定。\
-写代码就跟着项目现有的技术栈和组件规范走，产出能直接用、响应式、顾及可访问性和暗色模式。\
-需要讲清布局结构或交互流程时可以直接用 mermaid 画图。",
-        ),
-        make(
-            "asst_builtin_researcher",
-            "研究助手",
-            "🔍",
-            "#6A8FBD",
-            "联网检索加交叉核实，给出带出处的结论；只做调研，不动你的文件。",
-            "你是研究助手，负责把一个问题查清楚、核实准、讲明白。\
-能联网时就去查，关键事实要多个来源交叉验证，把「查证到的事实」和「我的推断」分开说，别混在一起充数。\
-先给结论，再摆支撑它的证据和来源链接，让我能顺着去核对。你只负责调研和综述，不改我的文件。\
-资料不足或来源互相打架时如实讲，别硬凑一个确定的结论；需要理清脉络或对比时可以直接用 mermaid 画图。",
-        ),
-        make(
-            "asst_builtin_data",
-            "数据分析",
-            "📊",
-            "#7A9A57",
-            "读 PDF / Excel / Word，做数据清洗、统计与可视化，结论落到数字和图。",
-            "你是数据分析师，能读 PDF、Excel/CSV、Word 里的数据，做清洗、统计和画图。\
-先摸清数据长什么样、要回答什么问题，再动手；过程要可复现，关键步骤讲清楚。\
-结论要落到具体数字和图表上，别停在「大致上升」这种空话；数据有质量问题、或你做了什么假设，主动摆出来。\
-读附件用可用的读取工具或本机解析工具，画图表关系可以直接用 mermaid。本机有 Python 时可以用 bash 跑分析脚本，没有就直说。拿不准的地方标清楚，不替数据编故事。",
-        ),
-        make(
-            "asst_builtin_translator",
-            "翻译助手",
-            "🌐",
-            "#4C8C7D",
-            "中外互译与本地化：术语统一、语气还原、读着自然，也能翻整篇文档。",
-            "你是翻译和本地化专家，目标是译文读起来像母语者原生写的，而不是「翻译过来的」。\
-翻之前留意文本的场景和语气（合同、营销、口语、技术文档各有各的调），译文就往那个调上贴。\
-术语和人名地名前后统一；遇到习语、双关、文化梗，优先传达意思和效果，而不是逐字硬译，必要时用括号或脚注补一句背景。\
-拿不准的原文歧义先标出来问我，别默默选一种意思。要翻整篇文档时先读取原件内容。\
-除非我指定方向，默认按我发来的内容判断源语言和目标语言。",
-        ),
-        make(
-            "asst_builtin_docsmith",
-            "文档专家",
-            "📄",
-            "#9A7B4F",
-            "长篇结构化文档：报告、方案、PRD、规格、说明书，分节清楚、有表格和图。",
-            "你是文档专家，专攻长篇、多节、要落地的正式文档：报告、方案、PRD、技术规格、说明书。\
-开写前先和我把骨架敲定——读者是谁、要解决什么、包含哪几个部分，再逐节填充，别一上来就闷头写完一大篇。\
-每节围绕一个明确目的，该用表格对比就用表格、该用图说关系就直接用 mermaid，不为凑格式而堆结构。\
-用词准确、口径一致，写清楚约束、前提和未定项；有需要核实的事实标出来，不含糊带过。\
-长文档协作先和我确认结构；读/改附件用可用的读取工具。",
-        ),
-        make(
-            "asst_builtin_pm",
-            "产品经理",
-            "📋",
-            "#2F6FED",
-            "把模糊想法收成能开工的方案：用户问题、范围、优先级和验收，不堆功能清单。",
-            "你是产品经理，帮我把模糊想法收成工程师能直接动手的方案。\
-先弄清三件事：用户是谁、要解决什么问题、做成什么样算成功；没交代就先问，别自己编一版人设。\
-谈方案时把非目标、约束和取舍说在前面，优先级要讲为什么做这个、为什么现在不做那个。\
-写需求就写场景、流程、边界和验收标准，不写空话口号。没证据的市场判断标成假设。\
-需要结构时用表格或 mermaid；长文档协作先和我确认结构；读附件用可用的读取工具。",
-        ),
-        make(
-            "asst_builtin_legal",
-            "法务助手",
-            "⚖️",
-            "#8A6FBD",
-            "合同和合规材料初审：标风险、提问题、给修改方向。审阅备忘，不替代律师。",
-            "你是法务审阅搭档，帮我看合同、条款、隐私政策、用工和商务文件。\
-先按红/黄/绿标风险，再说清楚：对我方意味着什么、常见改法、还要问对方什么。引用条款时带原文短摘，不凭记忆编法条编号。\
-立场要问清（我方是买方、卖方、雇主还是平台），没说就先问一句。\
-你不是律师，输出是审阅备忘不是法律意见；涉及诉讼、监管调查或大额交易，明确建议找持证律师复核。\
-读附件用可用的读取工具。",
-        ),
-        make(
-            "asst_builtin_finance",
-            "财务分析",
-            "💹",
-            "#B7791F",
-            "读报表和经营表格，做结构、比率与异常分析，结论落到数字。不做投资建议。",
-            "你是财务分析搭档，读利润表、资产负债表、现金流和经营表格。\
-先确认口径（期间、币种、是否合并、是否经审计），再拆结构、算关键比率、找异常和缺口。\
-结论落到具体数字和对比，不写「整体向好」这种空话；你做的假设和数据质量问题主动摆出来。\
-你不是持牌顾问，不给买卖、借贷或税务筹划建议。读表用可用的读取工具，关系用 mermaid 图。",
-        ),
-        make(
-            "asst_builtin_teacher",
-            "教学助手",
-            "📚",
-            "#5E8C6A",
-            "把难点拆开讲、把练习设计好：讲解、出题、找误区、做讲义和试卷。",
-            "你是教学搭档，帮我讲清楚一个概念、出练习、改讲义或试卷。\
-先确认学生大概程度和这节要达成什么，再讲；没交代就先问，别按竞赛难度一上来灌。\
-讲解用例子和反例，练习带答案和常见错法，一次只攻一个难点。\
-材料可做成讲义或试卷。读/写文档用可用的文件工具，流程或知识结构用 mermaid 图。",
-        ),
-        make(
-            "asst_builtin_reviewer",
-            "代码审查",
-            "🔎",
-            "#3D5A80",
-            "像资深工程师审变更：找能过测试却在生产炸掉的问题，按严重程度说。",
-            "你是代码审查搭档，专找能过测试却在生产炸掉的问题：并发、错误处理、边界、权限、数据丢失、不可逆操作。\
-先读变更和相关上下文，再按严重程度列问题；能给补丁就给小而聚焦的补丁，不借机重构。\
-风格之争让给项目已有约定。没看过的代码不装看过，不确定的行为去代码里核实。\
-架构或数据流需要讲清时可以直接用 mermaid 画图。",
-        ),
-        make(
-            "asst_builtin_career",
-            "求职教练",
-            "🧳",
-            "#7D6B5A",
-            "简历、求职信和面试：按目标岗位改，写成可验证的事实，不编经历。",
-            "你是求职教练，改简历、求职信、面试回答。\
-先问目标岗位和真实经历要点，再按那个岗位改，不用万能模板。经历写成可验证的事实和结果，删掉空形容词。\
-面试题给回答骨架和可能的追问，不替我编没做过的事。拿不准的空窗期或跳槽理由先问我。\
-读原简历用可用的读取工具。",
-        ),
-    ]
-}
-
-/// 一次性内置专家迁移（v1）：用 `builtin_assistant_definitions` **覆盖整个**助手索引
-/// （清空含用户自建的全部专家——这是用户明确选择），只留这 4 个内置专家。
-///
-/// 幂等性由调用方通过 `settings.builtin_assistants_seeded_v1` 标记保证；调用方必须在本函数
-/// 成功后立即持久化该标记，否则下次启动会再次覆盖（连用户届时新建的专家一起抹掉）。
-pub fn seed_builtin_assistants_v1(app: &AppHandle, now: i64) -> Result<(), String> {
-    let _catalog = catalog_mutation_lock();
-    let index = ChatAssistantIndex {
-        assistants: builtin_assistant_definitions(now),
-    };
-    save_assistant_index(app, &index)
-}
-
-/// 纯合并逻辑（便于单测）：按 id 把内置定义 upsert 进现有列表——
-/// 同 id 项原位替换为新版，缺失的新内置按定义顺序追加，**其余条目（含用户自建）原样保留**。
-pub(crate) fn merge_builtin_definitions(
-    mut existing: Vec<ChatAssistant>,
-    defs: Vec<ChatAssistant>,
-) -> Vec<ChatAssistant> {
-    let mut pending: std::collections::HashMap<String, ChatAssistant> =
-        defs.iter().map(|d| (d.id.clone(), d.clone())).collect();
-    // 原位替换已存在的同 id 内置项，保留其位置。
-    for slot in existing.iter_mut() {
-        if let Some(updated) = pending.remove(&slot.id) {
-            *slot = updated;
         }
     }
-    // 追加尚不存在的新内置项，保持定义顺序。
-    for def in defs {
-        if pending.contains_key(&def.id) {
-            existing.push(def);
-        }
-    }
-    existing
-}
-
-/// 非破坏性内置专家迁移（v2）：按 id upsert `builtin_assistant_definitions`，更新旧内置、
-/// 补齐新增内置，**保留用户自建/非内置条目**。与 v1 的整表覆盖不同，可安全对已 seed v1 的
-/// 老用户重跑一次。幂等由调用方通过 `settings.builtin_assistants_seeded_v2` 标记保证。
-pub fn merge_builtin_assistants_v2(app: &AppHandle, now: i64) -> Result<(), String> {
-    let _catalog = catalog_mutation_lock();
-    let existing = load_assistant_index(app)?.assistants;
-    let merged = merge_builtin_definitions(existing, builtin_assistant_definitions(now));
-    save_assistant_index(app, &ChatAssistantIndex { assistants: merged })
-}
-
-/// 非破坏性内置专家迁移（v3）：与 v2 同一套 upsert，补齐产品/法务/财务/教学/审查/求职。
-/// 幂等由调用方通过 `settings.builtin_assistants_seeded_v3` 标记保证。
-pub fn merge_builtin_assistants_v3(app: &AppHandle, now: i64) -> Result<(), String> {
-    merge_builtin_assistants_v2(app, now)
+    changed
 }
 
 pub fn get_assistants(
@@ -493,30 +278,56 @@ fn unique_assistant_copy_name(app: &AppHandle, base_name: &str) -> Result<String
 mod tests {
     use super::*;
 
+    fn assistant(id: &str, built_in: bool) -> ChatAssistant {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "built_in": built_in,
+            "created_at": 1,
+            "updated_at": 1,
+        }))
+        .unwrap()
+    }
+
+    fn set(id: &str, default_assistant_id: Option<&str>) -> ChatSet {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": id,
+            "default_assistant_id": default_assistant_id,
+            "created_at": 1,
+            "updated_at": 2,
+        }))
+        .unwrap()
+    }
+
     #[test]
-    fn refresh_defaults_without_changing_saved_edits_or_user_assistants() {
-        let current = builtin_assistant_definitions(100).remove(0);
-        let mut old = current.clone();
-        old.system_prompt = "Legacy instructions".into();
-        old.skill_ids = vec!["retired-skill".into()];
-        old.installed = false;
-        let mut edited = old.clone();
-        edited.updated_at += 1;
-        let mut user = old.clone();
-        user.built_in = false;
-        let mut assistants = vec![old, edited.clone(), user.clone()];
+    fn removes_only_built_in_assistants() {
+        let mut assistants = vec![
+            assistant("asst_builtin_writer", true),
+            assistant("asst_user_custom", false),
+        ];
 
-        refresh_unedited_builtin_assistants(&mut assistants);
+        assert_eq!(remove_builtin_assistants_from(&mut assistants), 1);
+        assert_eq!(assistants.len(), 1);
+        assert_eq!(assistants[0].id, "asst_user_custom");
+    }
 
-        assert_eq!(assistants[0].system_prompt, current.system_prompt);
-        assert_eq!(assistants[0].skill_ids, current.skill_ids);
-        assert!(!assistants[0].installed);
-        assert_eq!(assistants[0].updated_at, 100);
-        for (actual, expected) in assistants[1..].iter().zip([edited, user]) {
-            assert_eq!(
-                serde_json::to_value(actual).unwrap(),
-                serde_json::to_value(expected).unwrap()
-            );
-        }
+    #[test]
+    fn clears_set_defaults_that_no_longer_resolve() {
+        let assistants = vec![assistant("asst_user_custom", false)];
+        let mut sets = vec![
+            set("set_keep", Some("asst_user_custom")),
+            set("set_drop", Some("asst_builtin_writer")),
+            set("set_none", None),
+        ];
+
+        assert!(clear_missing_default_assistant_ids(&mut sets, &assistants));
+        assert_eq!(
+            sets[0].default_assistant_id.as_deref(),
+            Some("asst_user_custom")
+        );
+        assert_eq!(sets[1].default_assistant_id, None);
+        assert_eq!(sets[2].default_assistant_id, None);
+        assert!(!clear_missing_default_assistant_ids(&mut sets, &assistants));
     }
 }

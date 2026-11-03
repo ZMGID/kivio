@@ -2015,19 +2015,6 @@ pub struct Settings {
     /// Total attempts, including the first request. UI shows this minus one.
     #[serde(default = "default_retry_attempts")]
     pub retry_attempts: u8,
-    /// 一次性迁移标记：内置专家（写作/编程/研究/数据）已 seed 进 assistants.json 后置 true。
-    /// 该迁移会清空整个助手索引（含用户自建——用户明确选择）再装入这 4 个内置专家，
-    /// 仅在首次启动跑一次；之后用户新建/删除专家不受影响。
-    #[serde(default)]
-    pub builtin_assistants_seeded_v1: bool,
-    /// 一次性迁移标记（v2，非破坏性）：按 id upsert 新一批内置专家（升级 4 个 + 新增前端/翻译/文档），
-    /// 更新旧内置、补齐新增，**保留用户自建**。已 seed v1 的老用户靠它拿到新专家；置 true 后不再跑。
-    #[serde(default)]
-    pub builtin_assistants_seeded_v2: bool,
-    /// 一次性迁移标记（v3，非破坏性）：按 id upsert 补齐产品/法务/财务/教学/审查/求职。
-    /// 已 seed v2 的老用户靠它拿到新专家；置 true 后不再跑。
-    #[serde(default)]
-    pub builtin_assistants_seeded_v3: bool,
     /// 一次性迁移标记：把 pre-green-light 安装（原生工具默认全关 + 旧 approval_policy）
     /// 带到新默认——原生文件/命令工具置 true，不改变已有审批策略（包括用户显式选择的 auto）。
     /// 幂等：置 true 后不再翻转，尊重用户此后手动关闭某工具或改 policy 的选择。
@@ -2202,9 +2189,6 @@ impl Default for Settings {
             settings_language: Some("zh".to_string()),
             retry_enabled: default_retry_enabled(),
             retry_attempts: default_retry_attempts(),
-            builtin_assistants_seeded_v1: false,
-            builtin_assistants_seeded_v2: false,
-            builtin_assistants_seeded_v3: false,
             chat_tools_greenlit_v1: false,
             onboarding_status: default_onboarding_status(),
             auto_check_update: !crate::app_data::is_dev(),
@@ -3463,7 +3447,6 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
     )?;
 
     // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
-    // 首次启动的内置专家迁移会在 AppState manage 之前保存设置，此时还没有缓存可清。
     if let Some(state) = app.try_state::<crate::state::AppState>() {
         state
             .external_discovery()

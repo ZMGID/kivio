@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { Bot, Check, Layers, X } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
-import { builtinAssistantGlyph } from './assistantIcons'
 import type { ChatAssistant, ChatSet } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
 
@@ -197,9 +196,7 @@ export function SetDialog({
               title={t.chatSetDefaultAssistantHint}
             >
               <span className="grid size-4 shrink-0 place-items-center text-neutral-400 dark:text-neutral-500">
-                {selectedAssistant
-                  ? builtinAssistantGlyph(selectedAssistant.id, 13) ?? <Bot size={13} strokeWidth={1.75} />
-                  : <Bot size={13} strokeWidth={1.75} />}
+                <Bot size={13} strokeWidth={1.75} />
               </span>
               <span className="min-w-0 truncate">
                 {selectedAssistant ? selectedAssistant.name : t.chatSetDefaultAssistantNone}
@@ -240,7 +237,7 @@ export function SetDialog({
                       className="kv-menu-item"
                     >
                       <span className="grid size-4 shrink-0 place-items-center">
-                        {builtinAssistantGlyph(assistant.id, 13) ?? <Bot size={13} strokeWidth={1.75} />}
+                        <Bot size={13} strokeWidth={1.75} />
                       </span>
                       <span className="min-w-0 flex-1 truncate">{assistant.name}</span>
                       {active && <Check size={12} strokeWidth={2.5} />}
