@@ -140,6 +140,8 @@ function ChatPopoutBody({
       onExternalModelChange={session.handleExternalModelChange}
       onThinkingLevelChange={session.handleThinkingLevelChange}
       onApprovalPolicyChange={session.handleApprovalPolicyChange}
+      onSandboxChange={session.handleSandboxChange}
+      busy={Boolean(session.inputBarProps.disabled)}
     />
   )
   const pane = session.loadError ? (

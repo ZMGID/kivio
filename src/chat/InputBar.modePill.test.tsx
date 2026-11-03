@@ -3,10 +3,10 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { deriveDshPresetModes, derivePermissionModes } from './permissionModes'
-import type { AgentRuntimeConfig, DetectedExternalAgent } from './types'
+import type { AgentRuntimeConfig } from './types'
 import { useState } from 'react'
 import { setGoalDraftMode, useGoalDraft } from './goalPresentation'
-import { getComposerDraft, setComposerDraft } from './composerDraft'
+import { setComposerDraft } from './composerDraft'
 import type { AgentPlanMode } from './types'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
@@ -23,21 +23,6 @@ vi.mock('./api', () => ({
     listExternalCliSlashCommands: () => Promise.resolve({ commands: [] }),
   },
 }))
-
-const claudeAgents: DetectedExternalAgent[] = [
-  {
-    id: 'claude',
-    name: 'Claude Code',
-    available: true,
-    models: [],
-    sandboxOptions: [
-      { id: 'plan', label: '计划 (只读)' },
-      { id: 'default', label: '每次确认' },
-      { id: 'acceptEdits', label: '接受编辑' },
-      { id: 'bypassPermissions', label: '完全 (默认)' },
-    ],
-  },
-]
 
 function renderComposer(modes: { options: ReturnType<typeof derivePermissionModes>['options']; current: string }, onModeChange = vi.fn()) {
   render(
@@ -63,12 +48,6 @@ function GoalDraftComposer({ conversationId }: { conversationId: string }) {
       setGoalDraftMode(conversationId, value === 'goal')
       if (value !== 'goal') setMode(value as AgentPlanMode)
     }} />
-}
-function openModeMenu(pillLabel: string) {
-  act(() => {
-    fireEvent.click(screen.getByTitle('切换模式'))
-  })
-  expect(screen.getByTitle('切换模式')).toHaveTextContent(pillLabel)
 }
 
 describe('InputBar 底栏模式胶囊', () => {
@@ -117,23 +96,13 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
   })
 
-  it.each(['mouse', 'keyboard'])('selects Goal once via %s and leaves it without losing the objective', async (method) => {
-    const key = `goal-${method}`
+  it('selects Goal via Shift+Tab and leaves it without losing the objective', async () => {
+    const key = 'goal-keyboard'
     setComposerDraft(key, { input: '检查商品', quotes: [], attachments: [] })
     render(<GoalDraftComposer conversationId={key} />)
-    if (method === 'mouse') {
-      openModeMenu('Act')
-      await act(async () => { fireEvent.click(screen.getByRole('menuitemradio', { name: /Goal/ })) })
-    } else {
-      await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab', shiftKey: true }) })
-    }
-    expect(screen.getByTitle('切换模式')).toHaveTextContent('Goal')
-    expect(screen.getByRole('textbox')).toHaveValue('/goal 检查商品')
-    openModeMenu('Goal')
-    await act(async () => { fireEvent.click(screen.getByRole('menuitemradio', { name: /Goal/ })) })
-    expect(getComposerDraft(key)?.input).toBe('/goal 检查商品')
     await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab', shiftKey: true }) })
-    expect(screen.getByTitle('切换模式')).toHaveTextContent('Plan')
+    expect(screen.getByRole('textbox')).toHaveValue('/goal 检查商品')
+    await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab', shiftKey: true }) })
     expect(screen.getByRole('textbox')).toHaveValue('检查商品')
   })
 
@@ -144,68 +113,15 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(screen.queryByText('Todo')).not.toBeInTheDocument()
   })
 
-  it('内置模型会话显示 Act / Goal / Plan / Orchestrate 四档', () => {
-    const runtime: AgentRuntimeConfig = { kind: 'builtin' }
+  it('内置模型会话不显示模式胶囊，模式靠 Shift+Tab 和斜杠命令切换', () => {
     renderComposer(derivePermissionModes({
       target: 'composer',
-      agentRuntime: runtime,
+      agentRuntime: { kind: 'builtin' },
       agentPlanMode: 'act',
-    }))
-    openModeMenu('Act')
-    const items = screen.getAllByRole('menuitemradio')
-    expect(items).toHaveLength(4)
-    for (const name of ['Act', 'Goal', 'Plan', 'Orchestrate']) {
-      expect(screen.getByRole('menuitemradio', { name: new RegExp(`^${name}`) })).toBeInTheDocument()
-    }
-    expect(screen.getByRole('menuitemradio', { name: /^Act/ })).toHaveAttribute('aria-checked', 'true')
-  })
-
-
-  it('本地 CLI 会话显示该 CLI 的档位，点选回传档位 id', () => {
-    const runtime: AgentRuntimeConfig = {
-      kind: 'external',
-      externalAgentId: 'claude',
-      externalSandbox: 'plan',
-    }
-    const onModeChange = renderComposer(derivePermissionModes({
-      target: 'composer',
-      agentRuntime: runtime,
-      agents: claudeAgents,
-    }))
-    openModeMenu('计划 (只读)')
-    const items = screen.getAllByRole('menuitemradio')
-    expect(items.map((item) => item.textContent)).toEqual(claudeAgents[0]!.sandboxOptions!.map((option) => option.label))
-    expect(items[0]).toHaveAttribute('aria-checked', 'true')
-
-    act(() => {
-      fireEvent.click(items[2])
-    })
-    expect(onModeChange).toHaveBeenCalledWith('acceptEdits')
-  })
-
-  it('renders the OpenCode plan capsule and sends the selected mode', () => {
-    const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode', externalSandbox: 'plan' }
-    const agents: DetectedExternalAgent[] = [{
-      id: 'opencode', name: 'OpenCode', available: true, models: [],
-      sandboxOptions: [{ id: 'build', label: '构建 (默认)' }, { id: 'plan', label: '计划 (只读)' }],
-    }]
-    const onModeChange = renderComposer(derivePermissionModes({ target: 'composer', agentRuntime: runtime, agents }))
-    openModeMenu('计划 (只读)')
-    const plan = screen.getByRole('menuitemradio', { name: /计划 \(只读\)/ })
-    expect(plan).toHaveAttribute('aria-checked', 'true')
-    act(() => { fireEvent.click(screen.getByRole('menuitemradio', { name: /构建 \(默认\)/ })) })
-    expect(onModeChange).toHaveBeenCalledWith('build')
-  })
-
-  it('该 CLI 没有档位时胶囊整个不渲染', () => {
-    const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode' }
-    renderComposer(derivePermissionModes({
-      target: 'composer',
-      agentRuntime: runtime,
-      agents: [{ id: 'opencode', name: 'OpenCode', available: true, models: [], sandboxOptions: [] }],
     }))
     expect(screen.queryByTitle('切换模式')).not.toBeInTheDocument()
   })
+
 
   it('dsh 会话在权限胶囊左边显示 Agent 模式胶囊', () => {
     const runtime: AgentRuntimeConfig = {
@@ -215,32 +131,16 @@ describe('InputBar 底栏模式胶囊', () => {
       externalAgentPreset: 'standard',
     }
     const onPresetChange = vi.fn()
-    const agents: DetectedExternalAgent[] = [{
-      id: 'dsh',
-      name: 'DeepSeek Harness',
-      available: true,
-      models: [],
-      sandboxOptions: [
-        { id: 'read-only', label: '只读' },
-        { id: 'workspace-write', label: '工作区写 (默认)' },
-        { id: 'danger-full-access', label: '完全' },
-      ],
-    }]
-    const modes = derivePermissionModes({ target: 'composer', agentRuntime: runtime, agents })
     const presets = deriveDshPresetModes(runtime)
     render(
       <InputBar
         onSend={() => {}}
-        modeOptions={modes.options}
-        modeValue={modes.current}
-        onModeChange={vi.fn()}
         presetOptions={presets.options}
         presetValue={presets.current}
         onPresetChange={onPresetChange}
       />,
     )
     expect(screen.getByTitle('切换 Agent 模式')).toHaveTextContent('标准模式')
-    expect(screen.getByTitle('切换模式')).toHaveTextContent('工作区写 (默认)')
 
     act(() => {
       fireEvent.click(screen.getByTitle('切换 Agent 模式'))

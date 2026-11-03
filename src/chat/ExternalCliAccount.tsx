@@ -7,6 +7,8 @@ import { externalCliSettingsApi, type ExternalCliAccount as Account } from '../a
 import { usePopoverMenu } from './usePopoverMenu'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 
+const SUPPORTED: Record<string, true> = { codex: true, claude: true, grok: true }
+
 /** One read-only account view shared by the main and independent chat titlebars. */
 export function ExternalCliAccount({ agentId, conversationId }: { agentId: string; conversationId?: string | null }) {
   const zh = useLang() === 'zh'
@@ -43,10 +45,10 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
   }
   // 圆环要有数据才能画：进会话 / 换 CLI 就读一次，不等用户点开。
   useEffect(() => {
-    if (agentId === 'codex' || agentId === 'claude') void refresh()
+    if (SUPPORTED[agentId]) void refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, conversationId])
-  if (agentId !== 'codex' && agentId !== 'claude') return null
+  if (!SUPPORTED[agentId]) return null
   // 非账号登录（API key 等）读不到额度：圆环没有可画的数据，整个不显示。
   if (!status?.windows.length) return null
   const resetLabel = (value: string | number | null) => {
@@ -56,7 +58,7 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
       : `${zh ? '重置于' : 'Resets'} ${date.toLocaleString()}`
   }
   const windowName = (name: string, mins: number | null) => {
-    const labels: Record<string, string> = zh ? { five_hour: '5 小时', seven_day: '7 天', seven_day_opus: 'Opus · 7 天', seven_day_sonnet: 'Sonnet · 7 天', seven_day_oauth_apps: 'OAuth 应用 · 7 天' } : {}
+    const labels: Record<string, string> = zh ? { five_hour: '5 小时', seven_day: '7 天', seven_day_opus: 'Opus · 7 天', seven_day_sonnet: 'Sonnet · 7 天', seven_day_oauth_apps: 'OAuth 应用 · 7 天', Weekly: '每周' } : {}
     return labels[name] ?? (mins ? `${name.replace(/primary|secondary/g, '').trim()} · ${mins < 1440 ? `${mins / 60}h` : `${mins / 1440}d`}` : name)
   }
   const remaining = (usedPercent: number) => Math.max(0, Math.min(100, 100 - usedPercent))
@@ -86,7 +88,7 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
       className="kv-menu custom-scrollbar fixed z-[1001] flex max-h-[70vh] w-[248px] max-w-[calc(100vw-32px)] flex-col gap-2.5 overflow-y-auto p-2.5 text-xs">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <strong className="text-[13px]">{agentId === 'codex' ? 'Codex' : 'Claude Code'}</strong>
+          <strong className="text-[13px]">{agentId === 'codex' ? 'Codex' : agentId === 'grok' ? 'Grok' : 'Claude Code'}</strong>
           <p className="truncate text-neutral-500 dark:text-neutral-400" title={status.account?.email ?? undefined}>
             {[status.account?.email, status.account?.plan].filter(Boolean).join(' · ') || (zh ? '账号信息未知' : 'Account unavailable')}
           </p>

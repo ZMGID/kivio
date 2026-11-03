@@ -152,6 +152,7 @@ function nextBlankProjectName(projects: ChatProject[], t: I18n): string {
 type SlashCommandId =
   | 'help'
   | 'goal'
+  | 'act'
   | 'plan'
   | 'orchestrate'
   | 'new'
@@ -187,6 +188,15 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
     category: 'Local',
     kind: 'action',
     keywords: ['goal', 'objective', '目标', '持续执行'],
+  },
+  {
+    id: 'act',
+    slash: '/act',
+    title: '/act',
+    description: 'Back to act mode',
+    category: 'Local',
+    kind: 'action',
+    keywords: ['act', 'mode', '普通', '模式', '切换'],
   },
   {
     id: 'plan',
@@ -515,11 +525,9 @@ export const InputBar = memo(function InputBar({
   const [editingAttachment, setEditingAttachment] = useState<PendingAttachment | null>(null)
   const [dragActive, setDragActive] = useState(false)
   const [toolPanelOpen, setToolPanelOpen] = useState(false)
-  const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
   const [projectMenuOpen, setProjectMenuOpen] = useState(false)
   const toolPanelRef = useRef<HTMLDivElement>(null)
-  const modeMenuRef = useRef<HTMLDivElement>(null)
   // 两处项目菜单（有项目的状态栏 / 无项目的工具栏）互斥渲染，共用一个 ref。
   const projectMenuRef = useRef<HTMLDivElement>(null)
   const [projectOptions, setProjectOptions] = useState<ChatProject[]>([])
@@ -635,17 +643,11 @@ export const InputBar = memo(function InputBar({
   const statusBarVisible = Boolean(
     (projectEntryEnabled && effectiveProject) || effectiveSet,
   )
-  const activeModeOption = modeOptions.find((option) => option.value === modeValue) ?? modeOptions[0]
-  const activeModePillClass = MODE_PILL_CLASS[activeModeOption?.tone ?? 'neutral']
   const activePresetOption = presetOptions.find((option) => option.value === presetValue) ?? presetOptions[0]
   const activePresetPillClass = MODE_PILL_CLASS[activePresetOption?.tone ?? 'neutral']
 
   const closeProjectMenu = useCallback(() => {
     setProjectMenuOpen(false)
-  }, [])
-
-  const closeModeMenu = useCallback(() => {
-    setModeMenuOpen(false)
   }, [])
 
   const closePresetMenu = useCallback(() => {
@@ -708,7 +710,6 @@ export const InputBar = memo(function InputBar({
     if (!projectEntryEnabled || disabled) return
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
-    setModeMenuOpen(false)
     setProjectMenuOpen((open) => {
       const nextOpen = !open
       if (nextOpen) {
@@ -842,7 +843,7 @@ export const InputBar = memo(function InputBar({
         return [...buildSlashCommands(reload, []), ...externalCliSlashCommands]
       }
       const local = usesChatRuntime
-        ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'plan' && command.id !== 'orchestrate')
+        ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'act' && command.id !== 'plan' && command.id !== 'orchestrate')
         : LOCAL_SLASH_COMMANDS
       return buildSlashCommands(local.map(command => command.id === 'reload'
         ? { ...command, description: t.chatSkillReloadDescription } : command), usesChatRuntime ? [] : enabledSkills)
@@ -988,14 +989,13 @@ export const InputBar = memo(function InputBar({
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
-    closeModeMenu()
     if (agentPlanMode !== mode) {
       await onAgentPlanModeChange(mode)
     }
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [agentPlanMode, closeModeMenu, closeProjectMenu, disabled, onAgentPlanModeChange])
+  }, [agentPlanMode, closeProjectMenu, disabled, onAgentPlanModeChange])
 
   // 模式胶囊选档：档位表由 Chat 决定（内置三档 / 本地 CLI 档位），这里只回传选中的 value。
   const pickMode = useCallback(async (value: string) => {
@@ -1003,7 +1003,6 @@ export const InputBar = memo(function InputBar({
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
-    closeModeMenu()
     closePresetMenu()
     if (value !== modeValue) {
       await onModeChange(value)
@@ -1011,23 +1010,13 @@ export const InputBar = memo(function InputBar({
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [closeModeMenu, closePresetMenu, closeProjectMenu, disabled, modeValue, onModeChange])
-
-  const toggleModeMenu = useCallback(() => {
-    if (disabled || !modeEntryEnabled) return
-    setSlashPanelOpen(false)
-    setToolPanelOpen(false)
-    closeProjectMenu()
-    closePresetMenu()
-    setModeMenuOpen((open) => !open)
-  }, [closePresetMenu, closeProjectMenu, disabled, modeEntryEnabled])
+  }, [closePresetMenu, closeProjectMenu, disabled, modeValue, onModeChange])
 
   const pickPreset = useCallback(async (value: string) => {
     if (disabled || presetLocked || !onPresetChange) return
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
-    closeModeMenu()
     closePresetMenu()
     if (value !== presetValue) {
       await onPresetChange(value)
@@ -1035,16 +1024,15 @@ export const InputBar = memo(function InputBar({
     requestAnimationFrame(() => {
       editorRef.current?.focus({ preventScroll: true })
     })
-  }, [closeModeMenu, closePresetMenu, closeProjectMenu, disabled, onPresetChange, presetLocked, presetValue])
+  }, [closePresetMenu, closeProjectMenu, disabled, onPresetChange, presetLocked, presetValue])
 
   const togglePresetMenu = useCallback(() => {
     if (disabled || !presetEntryEnabled) return
     setSlashPanelOpen(false)
     setToolPanelOpen(false)
     closeProjectMenu()
-    closeModeMenu()
     setPresetMenuOpen((open) => !open)
-  }, [closeModeMenu, closeProjectMenu, disabled, presetEntryEnabled])
+  }, [closeProjectMenu, disabled, presetEntryEnabled])
 
   // Shift+Tab 在胶囊当前那套档位里循环，跟看得见的控件保持一致。
   const cycleMode = useCallback(async () => {
@@ -1093,6 +1081,9 @@ export const InputBar = memo(function InputBar({
       case 'help':
         editorRef.current?.replaceText(start, start, '/')
         syncSlashToken(editorRef.current?.value ?? '/', start + 1)
+        return
+      case 'act':
+        await pickMode('act')
         return
       case 'plan':
         await setAgentPlanMode('plan')
@@ -1671,7 +1662,6 @@ export const InputBar = memo(function InputBar({
   }, [autoFocus, disabled])
 
   usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
-  usePopoverMenu(modeMenuOpen, closeModeMenu, modeMenuRef)
   usePopoverMenu(projectMenuOpen, closeProjectMenu, projectMenuRef)
 
   useEffect(() => {
@@ -2106,7 +2096,7 @@ export const InputBar = memo(function InputBar({
 
         <div
           data-chat-composer="true"
-          className={`chat-composer-shell relative select-none ${modeMenuOpen ? 'z-30' : 'z-10'} rounded-2xl border px-3 pb-2 pt-4 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
+          className={`chat-composer-shell relative select-none z-10 rounded-2xl border px-3 pb-2 pt-4 transition-[box-shadow,border-color] duration-[var(--kv-dur-normal)] ease-[var(--kv-ease-out)] ${
             dragActive
               ? 'border-accent shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[var(--accent)]/25 dark:shadow-none'
               : agentPlanActive
@@ -2210,7 +2200,6 @@ export const InputBar = memo(function InputBar({
                 setSlashPanelOpen(false)
                 setToolPanelOpen(false)
                 closeProjectMenu()
-                closeModeMenu()
                 closePresetMenu()
               }}
               sourcesPanel={
@@ -2370,86 +2359,6 @@ export const InputBar = memo(function InputBar({
                                 : 'text-neutral-800 hover:bg-neutral-100'
                             } disabled:cursor-default disabled:opacity-50`}
                           >
-                            <span className="min-w-0 flex-1 leading-tight">
-                              <span className="block truncate text-[12px] font-semibold">{option.label}</span>
-                              {option.description && (
-                                <span className="block truncate text-[10px] font-medium text-neutral-400 dark:text-neutral-500">
-                                  {option.description}
-                                </span>
-                              )}
-                            </span>
-                            {active && (
-                              <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />
-                            )}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            {modeEntryEnabled && activeModeOption && (
-              <div className="relative min-w-0 max-w-full shrink-0 self-center">
-                <button
-                  type="button"
-                  onClick={toggleModeMenu}
-                  onMouseDown={(event) => event.preventDefault()}
-                  disabled={disabled}
-                  className={`inline-flex h-[26px] max-w-full items-center gap-0.5 rounded-full px-1.5 text-left text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300/60 dark:focus-visible:ring-neutral-600 ${
-                    modeMenuOpen
-                      ? 'bg-neutral-200 text-neutral-800'
-                      : activeModePillClass.idle
-                  } disabled:cursor-default disabled:opacity-50`}
-                  aria-expanded={modeMenuOpen}
-                  aria-haspopup="menu"
-                  title={t.chatSwitchMode}
-                >
-                  <activeModeOption.icon
-                    size={13}
-                    strokeWidth={1.9}
-                    className={`shrink-0 ${activeModePillClass.iconColor}`}
-                  />
-                  <span className="min-w-0 truncate">{activeModeOption.label}</span>
-                  <ChevronDown
-                    size={12}
-                    strokeWidth={2}
-                    className={`shrink-0 text-neutral-400 transition-transform ${
-                      modeMenuOpen ? 'rotate-180' : ''
-                    }`}
-                  />
-                </button>
-                {modeMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={closeModeMenu} aria-hidden />
-                    <div
-                      ref={modeMenuRef}
-                      className={`chat-motion-popover absolute right-0 z-40 w-[min(236px,calc(100vw-32px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
-                      style={{ ['--chat-popover-origin' as string]: modePanelOrigin }}
-                      data-tauri-drag-region="false"
-                      role="menu"
-                    >
-                      {modeOptions.map((option) => {
-                        const active = option.value === modeValue
-                        const Icon = option.icon
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={active}
-                            onClick={() => void pickMode(option.value)}
-                            className={`kv-menu-row transition-colors ${
-                              active
-                                ? 'bg-neutral-100 text-neutral-950'
-                                : 'text-neutral-800 hover:bg-neutral-100'
-                            }`}
-                          >
-                            <Icon
-                              size={14}
-                              strokeWidth={1.8}
-                              className={`shrink-0 ${MODE_PILL_CLASS[option.tone].iconColor}`}
-                            />
                             <span className="min-w-0 flex-1 leading-tight">
                               <span className="block truncate text-[12px] font-semibold">{option.label}</span>
                               {option.description && (

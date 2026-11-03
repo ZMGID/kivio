@@ -6,6 +6,7 @@ import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'
 import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
 import { ModelSelector } from './ModelSelector'
 import { PermissionPicker } from './PermissionPicker'
+import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
 import type { AgentRuntimeConfig, ThinkingLevel } from './types'
@@ -28,6 +29,9 @@ export interface ConversationTitlebarControlsProps {
   onModelChange: (providerId: string, model: string) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void
+  onSandboxChange: (value: string) => void | Promise<void>
+  /** 当前会话有运行中的回合：锁住 CLI 沙盒档位。 */
+  busy: boolean
   onOpenPopout: (conversationId: string) => void
   onOpenDockTasks: () => void
   onToggleDock: () => void
@@ -51,6 +55,8 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onModelChange,
   onThinkingLevelChange,
   onApprovalPolicyChange,
+  onSandboxChange,
+  busy,
   onOpenPopout,
   onOpenDockTasks,
   onToggleDock,
@@ -94,8 +100,11 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
         <div className="shrink-0" data-tauri-drag-region="false">
           <PermissionPicker
             agentRuntime={activeAgentRuntime}
+            conversationId={conversationId}
             approvalPolicy={approvalPolicy}
             onApprovalPolicyChange={onApprovalPolicyChange}
+            onSandboxChange={onSandboxChange}
+            sandboxLocked={busy}
           />
         </div>
         {!usesChatRuntime && (
@@ -104,6 +113,11 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               conversationId={conversationId}
               onOpen={onOpenDockTasks}
             />
+          </div>
+        )}
+        {usesExternalRuntime && (
+          <div className="shrink-0" data-tauri-drag-region="false">
+            <ExternalCliAccount agentId={activeAgentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
           </div>
         )}
       </div>

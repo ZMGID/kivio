@@ -40,6 +40,8 @@ describe('PopoutTitlebar', () => {
           onExternalModelChange={() => {}}
           onThinkingLevelChange={() => {}}
           onApprovalPolicyChange={() => {}}
+          onSandboxChange={() => {}}
+          busy={false}
         />
       </LangContext.Provider>,
     )

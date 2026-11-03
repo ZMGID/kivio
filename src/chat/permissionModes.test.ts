@@ -47,7 +47,7 @@ const agents: DetectedExternalAgent[] = [
 describe('derivePermissionModes（底栏模式胶囊）', () => {
   it('maps detected Claude sandbox options', () => {
     const { options } = derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('claude'),
       agents,
     })
@@ -57,7 +57,7 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
 
   it('maps detected Codex sandbox options', () => {
     const { options } = derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('codex'),
       agents,
     })
@@ -66,11 +66,11 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
 
   it('opencode uses build by default and the same read-only eye and neutral tone as Claude plan', () => {
     const { options, current } = derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('opencode'),
       agents,
     })
-    const claude = derivePermissionModes({ target: 'composer', agentRuntime: externalRuntime('claude'), agents })
+    const claude = derivePermissionModes({ target: 'titlebar', agentRuntime: externalRuntime('claude'), agents })
     expect(current).toBe('build')
     expect(options.map(({ value, label }) => ({ value, label }))).toEqual(
       agents[2].sandboxOptions!.map(({ id, label }) => ({ value: id, label })),
@@ -79,13 +79,13 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
     expect(options[1].icon).toBe(Eye)
     expect(options[1].tone).toBe(claude.options[0].tone)
     expect(derivePermissionModes({
-      target: 'composer', agentRuntime: externalRuntime('opencode', 'plan'), agents,
+      target: 'titlebar', agentRuntime: externalRuntime('opencode', 'plan'), agents,
     }).current).toBe('plan')
   })
 
   it('还没探测到 agent 列表时也是空表，不会退回 Kivio 三档', () => {
     const { options } = derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('claude'),
       agents: [],
     })
@@ -94,12 +94,12 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
 
   it('未显式选过档位时跟随 CLI 标了「默认」的那档', () => {
     expect(derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('claude'),
       agents,
     }).current).toBe('bypassPermissions')
     expect(derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('codex'),
       agents,
     }).current).toBe('workspace-write')
@@ -107,7 +107,7 @@ describe('derivePermissionModes（底栏模式胶囊）', () => {
 
   it('显式选过就用选中的那档', () => {
     expect(derivePermissionModes({
-      target: 'composer',
+      target: 'titlebar',
       agentRuntime: externalRuntime('claude', 'plan'),
       agents,
     }).current).toBe('plan')
@@ -174,10 +174,10 @@ describe('derivePermissionModes（顶栏权限按钮）', () => {
     }).current).toBe('readonly_auto_sensitive_confirm')
   })
 
-  it('本地 CLI 会话给空表（顶栏隐藏，档位归底栏胶囊一处管）', () => {
+  it('本地 CLI 会话底栏给空表（档位归顶栏权限按钮）', () => {
     for (const id of ['claude', 'codex', 'opencode']) {
       expect(derivePermissionModes({
-        target: 'titlebar',
+        target: 'composer',
         agentRuntime: externalRuntime(id),
         agents,
       }).options).toEqual([])

@@ -65,11 +65,12 @@ async fn exchange(
 }
 
 pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, String> {
-    if !matches!(agent_id, "codex" | "claude") {
+    if !matches!(agent_id, "codex" | "claude" | "grok") {
         return Err("此 CLI 未提供账号额度查询".into());
     }
     let def = get_agent_def(agent_id).ok_or("未知 CLI")?;
     let claude = agent_id == "claude";
+    let grok = agent_id == "grok";
     let mut command = agent_cli_command(def, bin);
     if claude {
         command.args([
@@ -81,6 +82,8 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
             "--verbose",
             "--replay-user-messages",
         ]);
+    } else if grok {
+        command.args(["--no-auto-update", "agent", "--no-leader", "stdio"]);
     } else {
         command.arg("app-server");
     }
@@ -101,17 +104,19 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
         let mut output = BufReader::new(child.stdout.take().ok_or("CLI stdout unavailable")?).lines();
         let init = if claude {
             json!({"type":"control_request","request_id":"account-init","request":{"subtype":"initialize"}})
+        } else if grok {
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}})
         } else {
             json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"kivio","version":env!("CARGO_PKG_VERSION")}}})
         };
         let init = exchange(&mut input, &mut output, init, claude).await?;
-        let account = if claude { init["account"].clone() } else {
+        let account = if claude { init["account"].clone() } else if grok { Value::Null } else {
             input.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n").await.map_err(|e| e.to_string())?;
             exchange(&mut input, &mut output, json!({"id":2,"method":"account/read","params":{"refreshToken":false}}), false).await?["account"].clone()
         };
         let request = if claude {
             json!({"type":"control_request","request_id":"account-usage","request":{"subtype":"get_usage","skip_behaviors":true}})
-        } else { json!({"id":3,"method":"account/rateLimits/read","params":{}}) };
+        } else if grok { json!({"jsonrpc":"2.0","id":2,"method":"_x.ai/billing","params":{}}) } else { json!({"id":3,"method":"account/rateLimits/read","params":{}}) };
         // Optional usage has its own budget; losing it must not discard a valid identity.
         let usage = tokio::time::timeout(Duration::from_secs(8), exchange(&mut input, &mut output, request, claude)).await;
         let (usage, unavailable) = match usage {
@@ -132,6 +137,7 @@ fn normalize(
     usage: &Value,
     mut unavailable: Option<String>,
 ) -> Value {
+    let account = if agent == "grok" { json!({"planType": usage["subscription_tier"]}) } else { account.clone() };
     let mut windows = Vec::new();
     let mut credits = Value::Null;
     let mut add_window = |name: String, window: &Value, claude: bool| {
@@ -143,7 +149,16 @@ fn normalize(
                 "windowDurationMins":window["windowDurationMins"].as_u64()}));
         }
     };
-    if agent == "claude" {
+    if agent == "grok" {
+        let config = &usage["config"];
+        let mins = |key: &str| chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok();
+        let duration = mins("billingPeriodStart").zip(mins("billingPeriodEnd")).map(|(start, end)| (end - start).num_minutes());
+        add_window(
+            "Weekly".into(),
+            &json!({"usedPercent":config["creditUsagePercent"],"resetsAt":config["billingPeriodEnd"],"windowDurationMins":duration}),
+            false,
+        );
+    } else if agent == "claude" {
         if let Some(limits) = usage["rate_limits"].as_object() {
             for (name, window) in limits {
                 if name != "extra_usage" {
@@ -219,6 +234,17 @@ mod tests {
         );
         assert_eq!(status["windows"].as_array().unwrap().len(), 2);
         assert_eq!(status["credits"]["used"], 7.0);
+        let grok = normalize(
+            "grok",
+            &Value::Null,
+            &json!({"config":{"creditUsagePercent":12.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"},
+                "billingPeriodStart":"2026-11-01T00:00:00+00:00","billingPeriodEnd":"2026-11-08T00:00:00+00:00"},
+                "subscription_tier":"SuperGrok Plus"}),
+            None,
+        );
+        assert_eq!(grok["windows"][0]["usedPercent"], 12.5);
+        assert_eq!(grok["windows"][0]["windowDurationMins"], 7 * 24 * 60);
+        assert_eq!(grok["account"]["plan"], "SuperGrok Plus");
         let unavailable = normalize("claude", &Value::Null, &Value::Null, None);
         assert!(unavailable["windows"].as_array().unwrap().is_empty());
         assert!(unavailable["unavailable"].is_string());

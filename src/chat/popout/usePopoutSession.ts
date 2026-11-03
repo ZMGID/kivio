@@ -405,6 +405,10 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     await handleRuntimeChange(withExternalModel(current, model, reasoning, serviceTier))
   }, [conversation, handleRuntimeChange])
 
+  const handleSandboxChange = useCallback(async (value: string) => {
+    await handleRuntimeChange({ ...normalizeAgentRuntime(conversation), kind: 'external', externalSandbox: value })
+  }, [conversation, handleRuntimeChange])
+
   const handleApprovalPolicyChange = useCallback(async (nextApprovalPolicy: string) => {
     setApprovalPolicy(nextApprovalPolicy)
     try {
@@ -501,6 +505,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     handleRuntimeChange,
     handleExternalModelChange,
     handleApprovalPolicyChange,
+    handleSandboxChange,
     editGoal: (objective: string) => runGoalMutation((id) => chatApi.editGoal(id, objective), true),
     pauseGoal: () => runGoalMutation(chatApi.pauseGoal),
     resumeGoal: () => runGoalMutation(chatApi.resumeGoal, true),

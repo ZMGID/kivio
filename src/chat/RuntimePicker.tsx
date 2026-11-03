@@ -10,7 +10,6 @@ import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
-import { ExternalCliAccount } from './ExternalCliAccount'
 import './runtimePicker.css'
 
 const KIVIO_LOGO_SRC = '/logo-mark.png'
@@ -668,8 +667,6 @@ function ExternalModelSelectorBase({
           <Zap size={15} fill={fastOn ? 'currentColor' : 'none'} />
         </button>
       )}
-
-      <ExternalCliAccount agentId={agentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
     </div>
   )
 }

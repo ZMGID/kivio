@@ -1,7 +1,7 @@
 import { memo, useMemo, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
 import { useT } from '../components/i18n'
-import { derivePermissionModes } from './permissionModes'
+import { derivePermissionModes, useDetectedExternalAgents } from './permissionModes'
 import { chatTitlebarIconButtonClass } from './platform'
 import { usePopoverMaxHeight } from './usePopoverMaxHeight'
 import type { AgentRuntimeConfig } from './types'
@@ -9,41 +9,51 @@ import { usePopoverMenu } from './usePopoverMenu'
 
 interface PermissionPickerProps {
   agentRuntime: AgentRuntimeConfig
+  conversationId?: string | null
   /** Built-in agent tool-approval policy. */
   approvalPolicy?: string
   onApprovalPolicyChange?: (policy: string) => void
+  /** Local-CLI sandbox level. */
+  onSandboxChange?: (value: string) => void | Promise<void>
+  /** A running CLI turn keeps the sandbox it started with, so changing it mid-run would only misreport. */
+  sandboxLocked?: boolean
 }
 
 /**
- * Tool-approval policy capsule shown next to the model pill. Built-in chat only: in a local-CLI
- * conversation the CLI's own permission levels are owned by the composer mode pill (single writer),
- * so `derivePermissionModes` returns an empty option list here and the button is hidden.
+ * Permission capsule next to the model pill. Built-in chat: tool-approval policy. Local-CLI
+ * conversation: that CLI's own sandbox/permission levels (the composer no longer has a mode pill).
  */
 function PermissionPickerBase({
   agentRuntime,
+  conversationId,
   approvalPolicy,
   onApprovalPolicyChange,
+  onSandboxChange,
+  sandboxLocked = false,
 }: PermissionPickerProps) {
+  const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const t = useT()
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   usePopoverMenu(open, () => setOpen(false), menuRef)
   const maxH = usePopoverMaxHeight(open, menuRef, 'down', 320)
 
+  const agents = useDetectedExternalAgents(usesExternal ? conversationId : null)
   const { options, current } = useMemo(
-    () => derivePermissionModes({ target: 'titlebar', agentRuntime, approvalPolicy }),
-    [agentRuntime, approvalPolicy],
+    () => derivePermissionModes({ target: 'titlebar', agentRuntime, agents, approvalPolicy }),
+    [agentRuntime, agents, approvalPolicy],
   )
 
   if (options.length === 0) return null
-  if (!onApprovalPolicyChange) return null
+  if (!(usesExternal ? onSandboxChange : onApprovalPolicyChange)) return null
 
   const activeOption = options.find((option) => option.value === current)
   const currentLabel = activeOption?.label ?? t.chatPermission
   const CurrentIcon = activeOption?.icon ?? options[0].icon
 
   const pick = (value: string) => {
-    onApprovalPolicyChange(value)
+    if (usesExternal) void onSandboxChange?.(value)
+    else onApprovalPolicyChange?.(value)
     setOpen(false)
   }
 
@@ -76,6 +86,7 @@ function PermissionPickerBase({
                   role="menuitemradio"
                   aria-checked={active}
                   type="button"
+                  disabled={usesExternal && sandboxLocked}
                   onClick={() => pick(option.value)}
                   className={`kv-menu-row justify-between transition-colors ${
                     active

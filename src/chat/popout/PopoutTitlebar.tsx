@@ -1,6 +1,7 @@
 import { ChatTitlebar } from '../ChatTitlebar'
 import { ModelSelector } from '../ModelSelector'
 import { PermissionPicker } from '../PermissionPicker'
+import { ExternalCliAccount } from '../ExternalCliAccount'
 import { ExternalModelSelector, RuntimePicker } from '../RuntimePicker'
 import { ThinkingLevelSelector } from '../ThinkingLevelSelector'
 import { conversationTitleSource, displayConversationTitle } from '../conversationTitle'
@@ -17,6 +18,8 @@ type PopoutTitlebarProps = {
   onExternalModelChange: (model: string, reasoning?: string | null, serviceTier?: string | null) => void | Promise<void>
   onThinkingLevelChange: (level: ThinkingLevel | null) => void | Promise<void>
   onApprovalPolicyChange: (policy: string) => void | Promise<void>
+  onSandboxChange: (value: string) => void | Promise<void>
+  busy: boolean
 }
 
 function TitlebarPills({
@@ -29,6 +32,8 @@ function TitlebarPills({
   onExternalModelChange,
   onThinkingLevelChange,
   onApprovalPolicyChange,
+  onSandboxChange,
+  busy,
 }: PopoutTitlebarProps) {
   const firstUser = conversation?.messages?.find((message) => message.role === 'user')
   const titleFallback = conversationTitleSource(
@@ -79,10 +84,18 @@ function TitlebarPills({
         <div className="shrink-0" data-tauri-drag-region="false">
           <PermissionPicker
             agentRuntime={runtime}
+            conversationId={conversation?.id}
             approvalPolicy={approvalPolicy}
             onApprovalPolicyChange={onApprovalPolicyChange}
+            onSandboxChange={onSandboxChange}
+            sandboxLocked={busy}
           />
         </div>
+        {usesExternalRuntime && (
+          <div className="shrink-0" data-tauri-drag-region="false">
+            <ExternalCliAccount agentId={runtime.externalAgentId ?? ''} conversationId={conversation?.id} />
+          </div>
+        )}
       </div>
       <div className="min-w-4 flex-1 self-stretch" data-tauri-drag-region />
       <div
