@@ -182,9 +182,14 @@ impl AcpTerminalHost {
         let limit = output_byte_limit(params.get("outputByteLimit"));
         let env = parse_env(params.get("env"));
 
-        let mut cmd = Command::new(command);
-        cmd.args(&args)
-            .current_dir(&cwd)
+        let mut cmd = if needs_shell(command, &args) {
+            shell_line_command(command)
+        } else {
+            let mut cmd = Command::new(command);
+            cmd.args(&args);
+            cmd
+        };
+        cmd.current_dir(&cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -193,6 +198,10 @@ impl AcpTerminalHost {
             .env("NO_COLOR", "1")
             .env("FORCE_COLOR", "0")
             .env("PAGER", "cat");
+        // Process PATH is already enriched with the macOS login-shell PATH at
+        // startup (path_env::enrich_path_macos), and `-l` adds the login profile
+        // too. Plugin bins are merged first so agent-provided env still wins.
+        crate::native_tools::apply_plugin_bin_path(&mut cmd);
         for (name, value) in env {
             cmd.env(name, value);
         }
@@ -203,7 +212,10 @@ impl AcpTerminalHost {
             Err(err) => {
                 return TerminalReply::Error {
                     code: -32603,
-                    message: format!("Failed to start command: {err}"),
+                    message: format!(
+                        "Failed to start command `{command}` (cwd: {}): {err}",
+                        cwd.display()
+                    ),
                 };
             }
         };
@@ -319,12 +331,21 @@ impl AcpTerminalHost {
     }
 
     fn resolve_cwd(&self, requested: Option<&str>) -> Result<PathBuf, String> {
-        let Some(requested) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
-            return Ok(self.session_cwd.clone());
+        let path = match requested.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(requested) => {
+                let path = PathBuf::from(requested);
+                if !path.is_absolute() {
+                    return Err("cwd must be an absolute path".to_string());
+                }
+                path
+            }
+            None => self.session_cwd.clone(),
         };
-        let path = PathBuf::from(requested);
-        if !path.is_absolute() {
-            return Err("cwd must be an absolute path".to_string());
+        if !path.is_dir() {
+            return Err(format!(
+                "cwd does not exist or is not a directory: {}",
+                path.display()
+            ));
         }
         Ok(path)
     }
@@ -413,6 +434,63 @@ fn output_byte_limit(value: Option<&Value>) -> usize {
         // runaway command cannot grow the buffer without bound.
         None => MAX_OUTPUT_BYTE_LIMIT,
         Some(n) => (n as usize).min(MAX_OUTPUT_BYTE_LIMIT),
+    }
+}
+
+/// Empty `args` plus a shell line (whitespace or metacharacters) must go
+/// through a shell. A real argv exec stays `Command::new(command).args(args)`.
+fn needs_shell(command: &str, args: &[String]) -> bool {
+    // An existing file path (e.g. under `C:\Program Files`) is exec'd as-is,
+    // even with spaces; only non-path lines go through the shell.
+    if !args.is_empty() || std::path::Path::new(command).is_file() {
+        return false;
+    }
+    command.contains(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '|' | '&'
+                    | ';'
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '$'
+                    | '`'
+                    | '"'
+                    | '\''
+                    | '*'
+                    | '?'
+                    | '~'
+                    | '\n'
+            )
+    })
+}
+
+/// Shell-line spawn. Windows reuses native `build_shell_command` (Git Bash or
+/// PowerShell). Elsewhere: `$SHELL -lc <command>`, or `/bin/sh -c` when
+/// `SHELL` is unset, empty, or not an existing file.
+fn shell_line_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        crate::native_tools::build_shell_command(command)
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var_os("SHELL")
+            .filter(|value| !value.is_empty() && std::path::Path::new(value).is_file());
+        match shell {
+            Some(shell) => {
+                let mut cmd = Command::new(shell);
+                cmd.args(["-lc", command]);
+                cmd
+            }
+            None => {
+                let mut cmd = Command::new("/bin/sh");
+                cmd.args(["-c", command]);
+                cmd
+            }
+        }
     }
 }
 
@@ -663,6 +741,138 @@ mod tests {
             &json!({ "terminalId": terminal_id }),
             &json!(3),
         );
+    }
+
+    #[test]
+    fn needs_shell_only_for_shell_lines_without_args() {
+        let shell_lines = [
+            "echo hi",
+            "echo hi && echo there",
+            "foo|bar",
+            "foo&bar",
+            "foo;bar",
+            "foo<bar",
+            "foo>bar",
+            "foo(bar",
+            "foo)bar",
+            "foo$bar",
+            "foo`bar",
+            "foo\"bar",
+            "foo'bar",
+            "foo*bar",
+            "foo?bar",
+            "foo~bar",
+            "foo\nbar",
+            "foo\tbar",
+        ];
+        for line in shell_lines {
+            assert!(needs_shell(line, &[]), "{line:?} should use the shell");
+            assert!(
+                !needs_shell(line, &["arg".to_string()]),
+                "{line:?} with args should exec directly"
+            );
+        }
+        for command in ["echo", "rg", "/usr/bin/git", r"C:\Windows\System32\cmd.exe"] {
+            assert!(
+                !needs_shell(command, &[]),
+                "{command:?} is a direct command"
+            );
+            assert!(
+                !needs_shell(command, &["status".to_string()]),
+                "{command:?} with args is a direct command"
+            );
+        }
+        let spaced_dir = std::env::temp_dir().join(format!("kivio acp {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&spaced_dir).expect("create spaced dir");
+        let spaced_exe = spaced_dir.join("tool bin");
+        std::fs::write(&spaced_exe, b"").expect("create spaced file");
+        let spaced_text = spaced_exe.to_string_lossy().to_string();
+        assert!(
+            !needs_shell(&spaced_text, &[]),
+            "existing path with spaces must exec directly"
+        );
+        let _ = std::fs::remove_dir_all(&spaced_dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_runs_a_shell_line_without_args() {
+        let cwd = std::env::temp_dir();
+        let mut host = AcpTerminalHost::new(cwd.clone());
+        let created = host.handle(
+            "terminal/create",
+            &json!({
+                "command": "echo hi && echo there",
+                "cwd": cwd.to_string_lossy(),
+            }),
+            &json!(1),
+        );
+        let terminal_id = match created {
+            TerminalReply::Result(value) => value["terminalId"]
+                .as_str()
+                .expect("terminalId")
+                .to_string(),
+            other => panic!("create failed: {other:?}"),
+        };
+
+        let exit = tokio::time::timeout(Duration::from_secs(5), host.exit_rx().recv())
+            .await
+            .expect("exit event")
+            .expect("terminal exit");
+        assert_eq!(exit.0, terminal_id);
+        host.on_exit(exit.0, exit.1);
+
+        match host.handle(
+            "terminal/output",
+            &json!({ "terminalId": terminal_id }),
+            &json!(2),
+        ) {
+            TerminalReply::Result(value) => {
+                let output = value["output"].as_str().unwrap_or("");
+                assert!(output.contains("hi"), "output={output:?}");
+                assert!(output.contains("there"), "output={output:?}");
+                assert_eq!(value["exitStatus"]["exitCode"], json!(0));
+            }
+            other => panic!("output failed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_cwd_that_does_not_exist() {
+        let missing =
+            std::env::temp_dir().join(format!("kivio-acp-missing-cwd-{}", uuid::Uuid::new_v4()));
+        let missing_text = missing.display().to_string();
+
+        let mut host = AcpTerminalHost::new(std::env::temp_dir());
+        match host.handle(
+            "terminal/create",
+            &json!({
+                "command": "echo",
+                "cwd": &missing_text,
+            }),
+            &json!(1),
+        ) {
+            TerminalReply::Error { code, message } => {
+                assert_eq!(code, -32602);
+                assert!(
+                    message.contains(&missing_text),
+                    "message should mention the path: {message}"
+                );
+            }
+            other => panic!("expected missing cwd rejection, got {other:?}"),
+        }
+
+        let mut host = AcpTerminalHost::new(missing);
+        match host.handle("terminal/create", &json!({ "command": "echo" }), &json!(1)) {
+            TerminalReply::Error { code, message } => {
+                assert_eq!(code, -32602);
+                assert!(
+                    message.contains(&missing_text),
+                    "session cwd message should mention the path: {message}"
+                );
+            }
+            other => panic!("expected missing session cwd rejection, got {other:?}"),
+        }
     }
 
     #[test]

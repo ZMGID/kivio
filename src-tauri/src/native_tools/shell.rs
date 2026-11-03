@@ -76,33 +76,42 @@ fn apply_shell_tool_env(cmd: &mut Command, state: Option<&AppState>) {
         }
     }
     // PATH 合并：启用插件 bin 目录，再接系统 Path。
-    let plugin_dirs = crate::plugins::enabled_bin_dirs();
-    if !plugin_dirs.is_empty() {
-        #[cfg(windows)]
-        let sep = ";";
-        #[cfg(not(windows))]
-        let sep = ":";
-        #[cfg(windows)]
-        let key = "Path";
-        #[cfg(not(windows))]
-        let key = "PATH";
+    apply_plugin_bin_path(cmd);
+}
 
-        let mut next = std::ffi::OsString::new();
-        for dir in &plugin_dirs {
-            if !next.is_empty() {
-                next.push(sep);
-            }
-            next.push(dir.as_os_str());
-        }
-        let existing = std::env::var_os(key).unwrap_or_default();
-        if !existing.is_empty() {
-            if !next.is_empty() {
-                next.push(sep);
-            }
-            next.push(existing);
-        }
-        cmd.env(key, next);
+/// Prepend enabled plugin `bin` directories to the command `PATH`.
+///
+/// Does not need [`AppState`]: directories come from
+/// [`crate::plugins::enabled_bin_dirs`]. No-op when no plugin bins are enabled.
+pub(crate) fn apply_plugin_bin_path(cmd: &mut Command) {
+    let plugin_dirs = crate::plugins::enabled_bin_dirs();
+    if plugin_dirs.is_empty() {
+        return;
     }
+    #[cfg(windows)]
+    let sep = ";";
+    #[cfg(not(windows))]
+    let sep = ":";
+    #[cfg(windows)]
+    let key = "Path";
+    #[cfg(not(windows))]
+    let key = "PATH";
+
+    let mut next = std::ffi::OsString::new();
+    for dir in &plugin_dirs {
+        if !next.is_empty() {
+            next.push(sep);
+        }
+        next.push(dir.as_os_str());
+    }
+    let existing = std::env::var_os(key).unwrap_or_default();
+    if !existing.is_empty() {
+        if !next.is_empty() {
+            next.push(sep);
+        }
+        next.push(existing);
+    }
+    cmd.env(key, next);
 }
 
 /// Playwright lists its extension connection URL, including the token, in CLI output.
