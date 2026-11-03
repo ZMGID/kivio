@@ -8,9 +8,12 @@ import {
   estimateMessageRenderCost,
   estimateRenderCost,
   getCachedRowMeasurement,
+  correctCachedChatRow,
   layoutScopedVirtualKey,
   measureChatVirtualRow,
   measureSettledChatRow,
+  remeasureMountedChatRows,
+  unobservedChatRowSize,
   restoreMeasurementSnapshot,
   saveMeasurementSnapshot,
   sendReserveHeight,
@@ -155,6 +158,88 @@ describe('virtual row measurement', () => {
       borderBoxSize: [{ blockSize: 252, inlineSize: 640 }],
     } as unknown as ResizeObserverEntry
     expect(measureChatVirtualRow(element, entry)).toBe(252)
+  })
+
+  it('空的 border box 退回 offsetHeight，避免把行高记成 0', () => {
+    const element = { offsetHeight: 252, offsetWidth: 640 } as HTMLElement
+    const entry = {
+      borderBoxSize: [{ blockSize: 0, inlineSize: 640 }],
+    } as unknown as ResizeObserverEntry
+    expect(measureChatVirtualRow(element, entry)).toBe(252)
+  })
+})
+
+describe('unobserved row correction', () => {
+  const elementWith = (offsetHeight: number) => ({ offsetHeight }) as HTMLElement
+
+  it('没有 entry 时，缓存偏小要改成实测高度', () => {
+    expect(unobservedChatRowSize(elementWith(480), 120)).toBe(480)
+  })
+
+  it('缓存与实测一致、或还没布局时不改', () => {
+    expect(unobservedChatRowSize(elementWith(480), 480)).toBeUndefined()
+    expect(unobservedChatRowSize(elementWith(480.4), 480)).toBeUndefined()
+    expect(unobservedChatRowSize(elementWith(0), 120)).toBeUndefined()
+    expect(unobservedChatRowSize(elementWith(Number.NaN), 120)).toBeUndefined()
+  })
+
+  it('还没有缓存时返回实测高度，让调用方写入', () => {
+    expect(unobservedChatRowSize(elementWith(480), undefined)).toBe(480)
+  })
+
+  function list() {
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 3,
+      getScrollElement: () => null,
+      estimateSize: () => 100,
+      getItemKey: (index) => `row-${index}`,
+      initialRect: { width: 848, height: 663 },
+      observeElementRect: () => undefined,
+      observeElementOffset: () => undefined,
+      scrollToFn: () => undefined,
+      measureElement: (node, entry) => measureChatVirtualRow(node, entry),
+    })
+    instance.getTotalSize()
+    return instance
+  }
+
+  const row = (index: number, offsetHeight: number) => ({
+    offsetHeight,
+    isConnected: true,
+    getAttribute: () => String(index),
+  }) as unknown as HTMLDivElement
+
+  it('滚动中 TanStack 跳过 ref 测量时，仍用 offsetHeight 纠正偏小缓存', () => {
+    const instance = list()
+    instance.resizeItem(1, 120)
+    instance.isScrolling = true
+    instance.measureElement(row(1, 480))
+    expect(instance.itemSizeCache.get('row-1')).toBe(120)
+
+    expect(correctCachedChatRow(row(1, 480), instance)).toBe(true)
+    expect(instance.itemSizeCache.get('row-1')).toBe(480)
+    expect(instance.getVirtualItems().find((item) => item.index === 2)?.start).toBe(100 + 480)
+  })
+
+  it('measure() 之后重测已挂载行，未挂载行保留快照高度', () => {
+    const instance = list()
+    instance.resizeItem(0, 300)
+    instance.resizeItem(1, 120)
+    instance.resizeItem(2, 300)
+    remeasureMountedChatRows(instance, [row(1, 480)])
+    expect(instance.itemSizeCache.get('row-0')).toBe(300)
+    expect(instance.itemSizeCache.get('row-1')).toBe(480)
+    expect(instance.itemSizeCache.get('row-2')).toBe(300)
+    expect(instance.measurementsCache[2]?.start).toBe(300 + 480)
+  })
+
+  it('未布局的已挂载行不会把快照高度写成 0', () => {
+    const instance = list()
+    instance.resizeItem(0, 300)
+    instance.resizeItem(1, 300)
+    remeasureMountedChatRows(instance, [row(1, 0)])
+    expect(instance.itemSizeCache.get('row-0')).toBe(300)
+    expect(instance.itemSizeCache.get('row-1')).toBe(300)
   })
 })
 

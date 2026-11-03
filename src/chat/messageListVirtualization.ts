@@ -177,9 +177,72 @@ export function measureChatVirtualRow(
 ): number {
   if (entry?.borderBoxSize) {
     const box = entry.borderBoxSize[0]
-    if (box) return Math.round(box[horizontal ? 'inlineSize' : 'blockSize'])
+    if (box) {
+      const size = Math.round(box[horizontal ? 'inlineSize' : 'blockSize'])
+      // An empty border box is not a measurement. Fall through to the live
+      // offset so a 0 entry cannot pin the row and overlap the next one.
+      if (size > 0) return size
+    }
   }
   return element[horizontal ? 'offsetWidth' : 'offsetHeight']
+}
+
+/**
+ * Ref reads have no ResizeObserver entry. Return the live offset when it
+ * disagrees with the cache. A 0 read means the row is not laid out yet —
+ * callers must keep the cache instead of shrinking a real row to nothing.
+ * Returns undefined when the cache is already correct or the box is unusable.
+ */
+export function unobservedChatRowSize(
+  element: HTMLElement,
+  cachedSize: number | undefined,
+  horizontal = false,
+): number | undefined {
+  const measured = element[horizontal ? 'offsetWidth' : 'offsetHeight']
+  if (!Number.isFinite(measured) || measured <= 0) return undefined
+  if (cachedSize !== undefined && Math.abs(cachedSize - measured) <= 0.5) return undefined
+  return measured
+}
+
+/**
+ * Apply a ref measurement even while TanStack is deferring measureElement
+ * (isScrolling, or a box that will not deliver another ResizeObserver entry).
+ */
+export function correctCachedChatRow(
+  element: HTMLDivElement,
+  instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+): boolean {
+  const index = instance.indexFromElement(element)
+  if (index < 0 || index >= instance.options.count) return false
+  const cached = instance.itemSizeCache.get(instance.options.getItemKey(index))
+  const next = unobservedChatRowSize(element, cached, instance.options.horizontal)
+  if (next === undefined) return false
+  instance.measureElement(element)
+  instance.resizeItem(index, next)
+  return true
+}
+
+/**
+ * Conversation switches and width changes reuse mounted rows. measure() drops
+ * stale sizes and bumps the measurement version; sizes for rows that are not
+ * in `rows` are put back so an offscreen snapshot is not replaced by an estimate.
+ * Mounted rows then take their live offset.
+ */
+export function remeasureMountedChatRows(
+  instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  rows: readonly HTMLDivElement[],
+): void {
+  const preserved = [...instance.itemSizeCache]
+  instance.measure()
+  for (const [key, size] of preserved) instance.itemSizeCache.set(key, size)
+  // measure() leaves pendingMin null. Rebuild now, while a resize below has
+  // not yet narrowed the invalidation to a single index.
+  instance.getTotalSize()
+  for (const row of rows) {
+    if (row.isConnected === false) continue
+    correctCachedChatRow(row, instance)
+  }
+  instance.getTotalSize()
 }
 
 /**
