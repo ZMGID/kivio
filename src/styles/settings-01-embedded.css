@@ -47,11 +47,6 @@
   padding-top: 49px;
 }
 
-/* 折叠后标题行顶到窗口顶，同样给红绿灯让位。 */
-.settings-embedded--traffic-safe.settings-embedded--nav-collapsed .settings-embedded-header {
-  padding-top: 49px;
-}
-
 .settings-embedded-nav-list {
   display: flex;
   flex-direction: column;
