@@ -124,7 +124,7 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 pdf-extract = "0.12.1"
 lopdf = { version = "0.42.0", default-features = false }
 # 知识库 xlsx 解析（docx 复用已有 zip + 手写 w:t 抽取；html 复用 native_tools::fetch 的 scraper）。
-calamine = "0.37.0"
+calamine = "0.38.0"
 # 知识库存储：SQLite 单文件（bundled 自带 FTS5）+ sqlite-vec 向量扩展（编译期静态链接，无 native 库分发）。
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
