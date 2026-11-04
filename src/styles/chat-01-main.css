@@ -1284,7 +1284,8 @@ button.chat-composer-status-item:hover {
   width: 2px;
   height: 100%;
   border-radius: 1px;
-  background: var(--theme-surface-active);
+  /* 文字色而非 surface 色：surface-active 与选中行底色相同，竖线会被吞掉 */
+  background: var(--text-muted);
   transform-origin: center;
   animation: chat-gen-wave 1.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
 }
