@@ -2391,15 +2391,15 @@ button.chat-composer-status-item:hover {
 .kv-modal.kv-html-preview-full { display: none; flex-direction: column; gap: 6px; width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; padding: 8px 12px 12px; }
 .kv-modal.kv-html-preview-full[open] { display: flex; }
 
-/* 输入框底栏的会话用量像素条：左侧 4 格费用量级柱 | 12×4 像素矩阵按比例显示 缓存 / 输入 / 输出。
+/* 输入框底栏的会话用量像素条：左侧 4 格费用量级柱与 6×4 像素矩阵无缝拼成一块，矩阵按比例显示 缓存 / 输入 / 输出。
    不放可见文字；悬停或键盘聚焦时上方弹出信息卡。生成中像素逐列起伏如声波，数据变化时格子换色有过渡。 */
 .chat-session-usage {
   position: relative;
-  --px: 3px;
-  --gap: 1px;
+  --px: 4px;
+  --gap: 0px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--gap);
   flex: none;
   padding: 3px 5px;
   border: 1px solid var(--theme-surface-border);

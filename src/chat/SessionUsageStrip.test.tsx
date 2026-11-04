@@ -198,14 +198,14 @@ describe('SessionUsageStrip', () => {
 
   it.each([
     [[0, 0, 0], [0, 0, 0]],
-    [[1, 1, 2], [12, 12, 24]],
-    [[1_000_000, 1, 0], [47, 1, 0]],
-    [[1, 1, 1], [16, 16, 16]],
+    [[1, 1, 2], [6, 6, 12]],
+    [[1_000_000, 1, 0], [23, 1, 0]],
+    [[1, 1, 1], [8, 8, 8]],
   ])('renders usage %j as %j pixels', ([cached, input, output], expected) => {
     const { container } = render(<SessionUsageStrip lang="en" cacheIncludedInInput={false}
       messages={[assistant({ cached_input_tokens: cached, input_tokens: input, output_tokens: output })]} />)
     const grid = container.querySelector('.chat-session-usage-grid')
-    expect(grid?.children).toHaveLength(48)
+    expect(grid?.children).toHaveLength(24)
     expect(['cache', 'input', 'output'].map(kind => grid?.querySelectorAll(`[data-k="${kind}"]`).length))
       .toEqual(expected)
   })

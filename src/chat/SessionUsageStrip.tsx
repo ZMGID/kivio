@@ -35,7 +35,7 @@ function formatCachePercent(cached: number, input: number): string {
   return '0%'
 }
 
-const GRID_COLS = 12
+const GRID_COLS = 6
 const GRID_ROWS = 4
 
 /** 按比例把 cells 格分给各部分；非零部分至少 1 格，舍入误差由最大部分吸收。 */
