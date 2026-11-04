@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded_by: 0007
 ---
 
 # 子代理保留身份与历史，任务执行独立于派工回执
