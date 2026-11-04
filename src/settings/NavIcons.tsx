@@ -185,18 +185,6 @@ export function McpIcon(props: IconProps) {
   )
 }
 
-// 作品：扁封套，口里露出折角 / 方片 / 圆片
-export function WorksIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)}>
-      <path d="M4 9.2 H20 A1.4 1.4 0 0 1 21.4 10.6 V18.6 A1.6 1.6 0 0 1 19.8 20.2 H4.2 A1.6 1.6 0 0 1 2.6 18.6 V10.6 A1.4 1.4 0 0 1 4 9.2 Z" />
-      <path d="M7.2 9.2 V6.4 A1.5 1.5 0 0 1 8.7 4.9 H11.1" />
-      <rect x="12.2" y="3.6" width="4.6" height="5.6" rx="1.3" />
-      <circle cx="18.8" cy="6.2" r="1.35" />
-    </svg>
-  )
-}
-
 // 对话库：前景气泡带尾巴，后面一枚气泡露出右上角
 export function SessionsIcon(props: IconProps) {
   return (
@@ -218,7 +206,6 @@ export function HooksIcon(props: IconProps) {
     </svg>
   )
 }
-// 新建聊天：缺一角的对话气泡 + 加号；悬停加号转一刻
 
 
 // 插件：底座右上切出一道大弧，弧外嵌一枚四分之一圆模块；悬停时不位移，模块由空心变实心，表示「已接入」
@@ -231,9 +218,9 @@ export function PluginIcon(props: IconProps) {
   )
 }
 
+// 新建聊天：缺一角的对话气泡 + 加号；悬停加号转一刻
 export function ComposeIcon(props: IconProps) {
   return (
-        <path d="M7.5 9.5 A3.2 3.2 0 0 1 9.5 7.5" />
     <svg {...svgProps(props)} aria-hidden="true">
       <path d="M12 4 A8 8 0 0 0 5.1 16 L4 20 L8 18.9 A8 8 0 0 0 20 12" />
       <path data-nav-motion="compose" d="M18 3.5 V8.5 M15.5 6 H20.5" />
@@ -246,6 +233,7 @@ export function SearchNavIcon(props: IconProps) {
     <svg {...svgProps(props)} aria-hidden="true">
       <g data-nav-motion="search">
         <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="M7.5 9.5 A3.2 3.2 0 0 1 9.5 7.5" />
         <path d="m15.2 15.2 4.8 4.8" />
       </g>
     </svg>
@@ -270,29 +258,19 @@ export function ScheduleIcon(props: IconProps) {
     </svg>
   )
 }
-// 扩展：三块方格 + 一枚菱形；悬停菱形转四分之一圈
 
 // 任务：剪贴板 + 勾；悬停重新勾一次
 export function TasksIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">
-      <rect x="5" y="4" width="14" height="17" rx="2.5" />
-      <path d="M9 3.5 H15 V6.5 H9 Z" />
-      <path d="M8.5 12 L10 13.5 L12.5 10.5 M14.5 12 H16 M8.5 17 H16" />
+      <rect x="5" y="4.5" width="14" height="16.5" rx="3" />
+      <path d="M9.5 3 H14.5 A1 1 0 0 1 15.5 4 V5.5 A1 1 0 0 1 14.5 6.5 H9.5 A1 1 0 0 1 8.5 5.5 V4 A1 1 0 0 1 9.5 3 Z" />
+      <path data-nav-motion="tasks" pathLength={1} d="M8.75 13 L11 15.25 L15.25 11" />
     </svg>
   )
 }
 
-export function PortfolioIcon(props: IconProps) {
-  return (
-    <svg {...svgProps(props)} aria-hidden="true">
-      <path data-nav-motion="portfolio-back" d="M7 3.5 H17" />
-      <path data-nav-motion="portfolio-middle" d="M5 7 H19" />
-      <rect data-nav-motion="portfolio-front" x="3.5" y="10.5" width="17" height="10" rx="2" />
-    </svg>
-  )
-}
-
+// 扩展：三块方格 + 一枚菱形；悬停菱形转四分之一圈
 export function ExtensionsIcon(props: IconProps) {
   return (
     <svg {...svgProps(props)} aria-hidden="true">

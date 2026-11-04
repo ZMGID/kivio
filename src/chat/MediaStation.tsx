@@ -406,7 +406,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
     const flags = unique.map((id) => `delete:${id}`)
     void runMedia(`delete:${[...unique].sort().join(',')}`, flags, async () => {
       const confirmed = await confirmDialog({
-        message: text(`永久删除 ${unique.length} 条创作记录及其本机源文件？作品库中的关联作品也会移除。此操作无法撤销，已导出的副本不受影响。其他位置使用这些源文件的参考图可能失效。`, `Permanently delete ${unique.length} creation record(s) and their local source files? Linked Works entries will also be removed. This cannot be undone. Exported copies are safe. References to these source files elsewhere may become invalid.`),
+        message: text(`永久删除 ${unique.length} 条创作记录及其本机源文件？此操作无法撤销，已导出的副本不受影响。其他位置使用这些源文件的参考图可能失效。`, `Permanently delete ${unique.length} creation record(s) and their local source files? This cannot be undone. Exported copies are safe. References to these source files elsewhere may become invalid.`),
         confirmLabel: text('永久删除', 'Delete permanently'), danger: true,
       })
       if (!confirmed) return

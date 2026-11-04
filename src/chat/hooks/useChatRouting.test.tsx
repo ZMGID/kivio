@@ -99,7 +99,6 @@ describe('useChatRouting 分支顺序', () => {
     ['#chat/mcp', 'mcp'],
     ['#chat/knowledge', 'knowledge'],
     ['#chat/notes', 'notes'],
-    ['#chat/artifacts', 'artifacts'],
     ['#chat/media', 'media'],
     ['#chat/automations', 'automations'],
     ['#chat/automations/a%2Fb', 'automations'],
@@ -115,6 +114,14 @@ describe('useChatRouting 分支顺序', () => {
       expect(onResetConversation).not.toHaveBeenCalled()
     })
   }
+
+  it.each(['#chat/artifacts', '#chat/artifacts/old-item?tab=files'])('removed Works route %s returns to an empty chat', (hash) => {
+    const { onViewChange, onLoadConversation, onResetConversation } = setup(hash)
+    expect(window.location.hash).toBe('#chat')
+    expect(onViewChange).toHaveBeenCalledWith('conversation')
+    expect(onResetConversation).toHaveBeenCalledOnce()
+    expect(onLoadConversation).not.toHaveBeenCalled()
+  })
 
   it('#chat/automations/id → view=automations，不当作会话加载', () => {
     const { onViewChange, onLoadConversation } = setup('#chat/automations/auto-1')

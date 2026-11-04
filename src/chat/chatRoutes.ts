@@ -72,6 +72,7 @@ export function isChatMediaPath(path: string): boolean {
   return chatRouteKind(path) === 'media'
 }
 
+/** 已移除的作品页：仅保留旧链接识别，回退到聊天。 */
 export function isChatArtifactsPath(path: string): boolean {
   return chatRouteKind(path) === 'artifacts'
 }
@@ -96,11 +97,10 @@ export function setHash(next: string): void {
 }
 
 /** 扩展中心页导航高亮：只跟当前 view 走，设置页不算。 */
-export type ChatExtensionsNavItem = 'extensions' | `extension:${string}` | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'reading' | 'tasks' | 'artifacts' | 'plugins' | 'media'
+export type ChatExtensionsNavItem = 'extensions' | `extension:${string}` | 'assistants' | 'skill' | 'mcp' | 'knowledge' | 'notes' | 'reading' | 'tasks' | 'plugins' | 'media'
 
 export function extensionsNavItemForView(chatView: string): ChatExtensionsNavItem | null {
   if (chatView === 'media') return 'media'
-  if (chatView === 'artifacts') return 'artifacts'
   if (chatView === 'plugins') return 'plugins'
   if (chatView === 'assistants') return 'assistants'
   if (chatView === 'skill') return 'plugins'

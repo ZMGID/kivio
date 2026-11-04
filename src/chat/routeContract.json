@@ -29,7 +29,6 @@
     "knowledge",
     "notes",
     "reading",
-    "artifacts",
     "media",
     "extensions"
   ],
@@ -62,13 +61,13 @@
       "restorable": true
     },
     {
-      "name": "works library",
+      "name": "removed works library",
       "raw": "#chat/artifacts",
       "path": "chat/artifacts",
       "kind": "artifacts",
       "decodedConversationId": null,
-      "rememberable": true,
-      "restorable": true
+      "rememberable": false,
+      "restorable": false
     },
     {
       "name": "root",

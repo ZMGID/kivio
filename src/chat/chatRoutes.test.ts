@@ -152,5 +152,6 @@ describe('extensionsNavItemForView', () => {
     expect(extensionsNavItemForView('settings')).toBeNull()
     expect(extensionsNavItemForView('conversation')).toBeNull()
     expect(extensionsNavItemForView('onboarding')).toBeNull()
+    expect(extensionsNavItemForView('artifacts')).toBeNull()
   })
 })

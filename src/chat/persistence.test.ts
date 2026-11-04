@@ -58,6 +58,7 @@ describe('normalizeStoredChatRoute', () => {
     expect(normalizeStoredChatRoute('#chat/settings')).toBeNull()
     expect(normalizeStoredChatRoute('#chat/settings?tab=general')).toBeNull()
     expect(normalizeStoredChatRoute('#chat/onboarding')).toBeNull()
+    expect(normalizeStoredChatRoute('#chat/artifacts')).toBeNull()
     expect(normalizeStoredChatRoute('#lens')).toBeNull()
     expect(normalizeStoredChatRoute(null)).toBeNull()
   })

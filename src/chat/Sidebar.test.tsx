@@ -430,6 +430,15 @@ describe('Sidebar refresh lifecycle', () => {
     }
   })
 
+  it('keeps Plugins and Tasks navigation without the removed Works entry', async () => {
+    const { props } = setup()
+    render(<Sidebar {...props} />)
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: '插件' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '任务' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '作品' })).not.toBeInTheDocument()
+  })
+
   it('honors disabled auto checks while accepting update notifications and disposing the listener', async () => {
     const { props } = setup()
     vi.mocked(getSettingsCached).mockResolvedValue({ chat: {}, autoCheckUpdate: false } as Awaited<ReturnType<typeof getSettingsCached>>)

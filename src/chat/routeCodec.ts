@@ -22,7 +22,7 @@ export type ChatRouteKind =
   | 'other'
 
 type ChatCenterRouteKind = Exclude<ChatRouteKind, 'root' | 'conversation' | 'other'>
-export type ChatView = Exclude<ChatRouteKind, 'root' | 'sessions' | 'popout' | 'other'>
+export type ChatView = Exclude<ChatRouteKind, 'root' | 'sessions' | 'artifacts' | 'popout' | 'other'>
 export type TasksTab = Extract<ChatView, 'schedules' | 'automations'>
 
 /**

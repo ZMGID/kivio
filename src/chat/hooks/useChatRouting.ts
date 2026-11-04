@@ -135,11 +135,6 @@ export function useChatRouting({
         onViewChange('media')
         return
       }
-      if (isChatArtifactsPath(path)) {
-        onLeaveConversation()
-        onViewChange('artifacts')
-        return
-      }
       if (isChatAutomationsPath(path)) {
         rememberTasksTab('automations')
         onLeaveConversation()
@@ -168,6 +163,7 @@ export function useChatRouting({
         onLeaveConversation()
         onViewChange('conversation')
         onResetConversation()
+        if (isChatArtifactsPath(path)) setHash('#chat')
         return
       }
       onViewChange('conversation')
@@ -294,11 +290,6 @@ export function useChatRouting({
     if (item === 'media') {
       onViewChange('media')
       syncNonConversationRoute('#chat/media')
-      return
-    }
-    if (item === 'artifacts') {
-      onViewChange('artifacts')
-      syncNonConversationRoute('#chat/artifacts')
       return
     }
     if (item === 'plugins') {
