@@ -126,6 +126,9 @@
    和导航跳转的 paint 前钉住打架，表现为落地后上下抽一下。 */
 .chat-scroll-viewport {
   overflow-anchor: none;
+  /* Same as T3code's timeline: a scrollbar appearing must not narrow the rows,
+     or row heights feed back into scrollHeight and never settle. */
+  scrollbar-gutter: stable;
 }
 .kv-sidebar-groups {
   overflow-anchor: none;

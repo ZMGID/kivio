@@ -244,6 +244,22 @@ it('corrects a short cache when content grows without a ResizeObserver entry', a
   expect(measured).toBe(480)
 })
 
+it('does not recurse before paint when a row height never settles', async () => {
+  const { container, rerender } = render(<MessageList conversationId="unsettled-row" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: 'Answer', timestamp: 2 },
+  ]} />)
+  await act(async () => { await Promise.resolve() })
+  const row = container.querySelector<HTMLElement>('[data-chat-row-index="2"]')!
+  // Layout feedback (e.g. a scrollbar toggling the width): every read disagrees with the cache.
+  Object.defineProperty(row, 'offsetHeight', { configurable: true,
+    get: () => list.itemSizeCache.get(list.options.getItemKey(2)) === 200 ? 300 : 200 })
+  expect(() => rerender(<MessageList conversationId="unsettled-row" messages={[
+    { id: 'question', role: 'user', content: 'Question', timestamp: 1 },
+    { id: 'answer', role: 'assistant', content: 'Answer', timestamp: 2 },
+  ]} />)).not.toThrow()
+})
+
 it('keeps a measured row when a ref read happens before layout', async () => {
   const { container } = render(<MessageList conversationId="unlaid-row-height" messages={[
     { id: 'question', role: 'user', content: 'Question', timestamp: 1 },

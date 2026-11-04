@@ -134,6 +134,8 @@ export interface MessageListProps {
 }
 
 const LIST_EDGE_PADDING_PX = 16
+// Per-frame cap on pre-paint row corrections; React's own limit is 50 nested updates.
+const MAX_COMMIT_ROW_CORRECTIONS = 4
 const MESSAGE_NAVIGATOR_MIN_TURNS = 2
 
 // 导航器高亮同步的最小间隔。这趟同步是 querySelectorAll + 逐行 getBoundingClientRect，
@@ -1086,16 +1088,18 @@ function MessageListBase({
       virtualizer.options.onChange = onChange
     }
   }, [measureRow, virtualizer])
-  const correctMountedRows = useCallback((rows: readonly HTMLDivElement[]) => {
+  const correctMountedRows = useCallback((rows: readonly HTMLDivElement[]): boolean => {
     const instance = virtualizerRef.current
-    if (!instance || rows.length === 0) return
+    if (!instance || rows.length === 0) return false
     const onChange = instance.options.onChange
     instance.options.onChange = (next) => onChange(next, false)
+    let changed = false
     try {
-      for (const row of rows) correctCachedChatRow(row, instance)
+      for (const row of rows) changed = correctCachedChatRow(row, instance) || changed
     } finally {
       instance.options.onChange = onChange
     }
+    return changed
   }, [])
   const mountedVirtualRows = useCallback((): HTMLDivElement[] => {
     const root = contentEl
@@ -1105,7 +1109,21 @@ function MessageListBase({
   // Same as LegendList (T3code's list): re-read every mounted row after each
   // commit, so a stale cache is fixed before paint instead of waiting for an
   // observer delivery that may never come. Unchanged rows are a no-op.
-  useLayoutEffect(() => { correctMountedRows(mountedVirtualRows()) })
+  // A correction re-renders before paint; a row whose height depends on layout
+  // never converges and React aborts after 50 nested updates (#185). Cap the
+  // chain per frame; ResizeObserver still delivers the final box after layout.
+  const commitCorrectionRef = useRef({ passes: 0, frame: 0 })
+  useLayoutEffect(() => {
+    const chain = commitCorrectionRef.current
+    if (chain.passes >= MAX_COMMIT_ROW_CORRECTIONS) return
+    if (!correctMountedRows(mountedVirtualRows())) {
+      chain.passes = 0
+      return
+    }
+    chain.passes += 1
+    if (!chain.frame) chain.frame = requestAnimationFrame(() => { chain.passes = 0; chain.frame = 0 })
+  })
+  useEffect(() => () => cancelAnimationFrame(commitCorrectionRef.current.frame), [])
   // Conversation switches no longer remount the list, and a width bucket change
   // reuses the same nodes. measure() drops sizes from the previous geometry;
   // rows that are not mounted keep the snapshot instead of falling back to an estimate.
