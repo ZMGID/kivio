@@ -1035,6 +1035,15 @@ button.chat-composer-status-item:hover {
   background: color-mix(in srgb, var(--theme-surface-soft) 76%, transparent);
 }
 
+/* 设置页导航和聊天侧栏一样透出材质：去掉路由常驻层的实色底，改由设置主区自己铺不透明阅读底。
+   代价：设置页进出场淡入淡出的那 ~300ms 里，主区会短暂透出材质。 */
+.chat-window-host--native-effect .chat-themed-surface:has(> :not([hidden]) .settings-embedded-nav) {
+  background: transparent;
+}
+.chat-window-host--native-effect .settings-embedded-main {
+  background: var(--theme-surface);
+}
+
 /* 原生控件的暗色方案只挂在不透明阅读面上，绝不挂 html：
    WebView2 会给 color-scheme:dark 的根节点铺一层不透明深色 canvas，挡住 Mica。 */
 .chat-main-pane,
@@ -1324,8 +1333,10 @@ button.chat-composer-status-item:hover {
 .kv-conv-age {
   visibility: visible;
 }
+/* :has(:focus-visible) 而非 :focus-within：鼠标点击后焦点留在行内按钮上，
+   不能让按钮常驻、盖住慢波；键盘 Tab 进入时仍显示。 */
 .kv-conv-row:hover .kv-conv-age,
-.kv-conv-row:focus-within .kv-conv-age,
+.kv-conv-row:has(:focus-visible) .kv-conv-age,
 .kv-conv-trailing[data-busy] > .kv-conv-age {
   visibility: hidden;
 }
@@ -1336,11 +1347,11 @@ button.chat-composer-status-item:hover {
   visibility: hidden;
 }
 .kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-wave,
-.kv-conv-row:focus-within .kv-conv-trailing[data-busy] > .kv-conv-wave {
+.kv-conv-row:has(:focus-visible) .kv-conv-trailing[data-busy] > .kv-conv-wave {
   visibility: hidden;
 }
 .kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-actions,
-.kv-conv-row:focus-within .kv-conv-trailing[data-busy] > .kv-conv-actions {
+.kv-conv-row:has(:focus-visible) .kv-conv-trailing[data-busy] > .kv-conv-actions {
   visibility: visible;
 }
 

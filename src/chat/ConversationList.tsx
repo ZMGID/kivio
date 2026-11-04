@@ -525,7 +525,7 @@ export const ConversationList = memo(function ConversationList({
                     className={`shrink-0 rounded-md p-0.5 transition-opacity hover:bg-neutral-900/[0.06] ${
                       conv.pinned
                         ? 'text-neutral-700 opacity-100'
-                        : `${cardLayout ? 'text-neutral-500' : 'text-neutral-400'} hover:text-neutral-600 ${isGenerating ? '' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`
+                        : `${cardLayout ? 'text-neutral-500' : 'text-neutral-400'} hover:text-neutral-600 ${isGenerating ? '' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`
                     }`}
                     aria-label={conv.pinned ? t.chatUnpin : t.chatPin}
                     title={conv.pinned ? t.chatUnpin : t.chatPin}
@@ -542,7 +542,7 @@ export const ConversationList = memo(function ConversationList({
                     className={`shrink-0 rounded-md p-0.5 ${cardLayout ? 'text-neutral-500' : 'text-neutral-400'} transition-opacity hover:bg-neutral-900/[0.06] hover:text-neutral-600 ${
                       isGenerating && !conv.pinned
                         ? ''
-                        : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                        : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'
                     }`}
                     aria-label={t.chatLibArchive}
                     title={t.chatLibArchive}
