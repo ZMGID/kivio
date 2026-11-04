@@ -233,6 +233,25 @@ describe('summarizeToolGroup', () => {
     expect(summary.categories).toEqual(['codeSearch'])
   })
 
+  it.each([
+    { name: 'task', source: 'native' },
+    { name: 'wait', source: 'native' },
+    { name: 'native__task', source: 'native' },
+    { name: 'native__wait', source: 'native' },
+    { name: 'Agent', source: 'external_cli' },
+    { name: 'Task', source: 'external_cli' },
+    { name: 'subagent_fork', source: 'external_cli' },
+  ])('classifies $source $name as a sub-agent operation', ({ name, source }) => {
+    const summary = summarizeToolGroup([toolSegment('t1', 1, 'c1')], [tool({ id: 'c1', name, source })])
+    expect(summary.text).toBe('调度 Subagent')
+    expect(summary.icon).toBe('subAgent')
+  })
+
+  it.each(['task', 'wait'])('does not classify an MCP %s as a native task', name => {
+    const summary = summarizeToolGroup([toolSegment('t1', 1, 'c1')], [tool({ id: 'c1', name, source: 'mcp' })])
+    expect(summary.categories).not.toContain('subAgent')
+  })
+
   it('joins two categories with 和 (each keeping its own count)', () => {
     const segments = [
       toolSegment('t1', 1, 'c1'),

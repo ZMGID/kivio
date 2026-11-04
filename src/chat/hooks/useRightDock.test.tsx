@@ -7,7 +7,6 @@ import {
   requestDockDiffPreview,
   requestDockMarkdownPreview,
   requestDockPreview,
-  requestDockSubAgent,
 } from '../dock/dockPreview'
 import { insertTextIntoComposer } from '../composerInsert'
 import { useRightDock } from './useRightDock'
@@ -27,7 +26,6 @@ vi.mock('../composerInsert', () => ({
 const mockResolveCwd = vi.mocked(dockApi.resolveCwd)
 
 function setup(overrides: Partial<Parameters<typeof useRightDock>[0]> = {}) {
-  const currentConversationIdRef = { current: overrides.conversationId ?? 'c1' }
   return renderHook(
     (props: Parameters<typeof useRightDock>[0]) => useRightDock(props),
     {
@@ -35,7 +33,6 @@ function setup(overrides: Partial<Parameters<typeof useRightDock>[0]> = {}) {
         conversationId: 'c1',
         projectId: null,
         agentRuntimeKind: 'builtin',
-        currentConversationIdRef,
         ...overrides,
       },
     },
@@ -58,7 +55,6 @@ describe('useRightDock: workdir', () => {
     mockResolveCwd.mockResolvedValue('/default/work')
     rerender({
       conversationId: null, projectId: null, agentRuntimeKind: 'builtin',
-      currentConversationIdRef: { current: null },
     })
     await act(async () => {})
     expect(result.current.workdir).toBe('/default/work')
@@ -91,7 +87,6 @@ describe('useRightDock: workdir', () => {
     mockResolveCwd.mockResolvedValue('C:/work/external')
     rerender({
       conversationId: 'c1', projectId: null, agentRuntimeKind: 'external',
-      currentConversationIdRef: { current: 'c1' },
     })
     await act(async () => {})
     expect(mockResolveCwd).toHaveBeenCalledTimes(2)
@@ -104,7 +99,6 @@ describe('useRightDock: workdir', () => {
     mockResolveCwd.mockResolvedValueOnce('C:/second')
     rerender({
       conversationId: 'c2', projectId: null, agentRuntimeKind: 'builtin',
-      currentConversationIdRef: { current: 'c2' },
     })
     await act(async () => {})
     expect(result.current.workdir).toBe('C:/second')
@@ -168,7 +162,6 @@ describe('useRightDock: persisted UI state', () => {
     mockResolveCwd.mockResolvedValue('C:/other')
     rerender({
       conversationId: 'c2', projectId: null, agentRuntimeKind: 'builtin',
-      currentConversationIdRef: { current: 'c2' },
     })
     await act(async () => {})
     expect(result.current.treeExpanded).toEqual([])
@@ -176,7 +169,6 @@ describe('useRightDock: persisted UI state', () => {
     mockResolveCwd.mockResolvedValue('C:/work/proj')
     rerender({
       conversationId: 'c1', projectId: null, agentRuntimeKind: 'builtin',
-      currentConversationIdRef: { current: 'c1' },
     })
     await act(async () => {})
     expect(result.current.treeExpanded).toEqual(['src', 'src/chat'])
@@ -209,16 +201,6 @@ describe('useRightDock: preview channels', () => {
     expect(result.current.preview).toMatchObject({ kind: 'diff', title: 't', patch: 'p', nonce: 2 })
     act(() => requestDockMarkdownPreview({ title: '计划', text: '# plan' }))
     expect(result.current.preview).toMatchObject({ kind: 'markdown', title: '计划', text: '# plan', nonce: 3 })
-  })
-
-  it('sub-agent requests only apply to the current conversation and open the tasks tab', () => {
-    const currentConversationIdRef = { current: 'c1' }
-    const { result } = setup({ currentConversationIdRef })
-    act(() => requestDockSubAgent({ conversationId: 'other', agentId: 'a' }))
-    expect(result.current.subAgentRequest).toBeNull()
-    act(() => requestDockSubAgent({ conversationId: 'c1', agentId: 'a' }))
-    expect(result.current.subAgentRequest).toMatchObject({ conversationId: 'c1', agentId: 'a', nonce: 1 })
-    expect(result.current.tab).toBe('tasks')
   })
 
   it('revealInTree and insertMention plumb to the tree / composer', () => {

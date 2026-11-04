@@ -2,100 +2,75 @@
 
 use serde::Serialize;
 
-/// A sub-agent persona. `system_prompt` replaces the built-in Agent body (the
-/// trust policy and runtime context still apply); `model` accepts @smol/@slow/@task or a concrete parent-provider model.
-/// Empty model follows TASK, then the parent. `tools` empty means
-/// "all tools available to the parent except the `agent` tool" (the allow-list
-/// is enforced at spawn time, see `chat::agent::filter::filter_tools_for_agent`).
-///
-/// `disallowed_tools` is the denylist counterpart (industry convention:
-/// `disallowedTools`), applied BEFORE `tools` so "inherit everything except X"
-/// is expressible. `skills` is a preload list: the listed skills' full bodies
-/// are injected into the sub-agent's launch context — it does NOT narrow which
-/// skills the sub-agent may activate later.
+/// A subagent persona. An omitted tool list inherits the default toolset;
+/// an explicitly empty list grants no tools. `skills` are autoloaded.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
     pub system_prompt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub disallowed_tools: Vec<String>,
-    #[serde(default)]
+    pub thinking_level: Option<String>,
+    pub tools: Option<Vec<String>>,
+    pub spawns: Option<String>,
     pub skills: Vec<String>,
     pub source: String,
 }
 
-/// The built-in agent types, ported from clawspring's `subagent.py` (general /
-/// researcher / coder / reviewer). Prompts are concise and bilingual-neutral
-/// (English persona text the model adapts to the conversation language). The
-/// `general-purpose` type is the default: empty prompt, no tool restriction.
+/// Built-in OMP agent personas, with tool names mapped to Kivio's registry.
 pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
+    use crate::chat::sub_agent::prompts::{AGENT_REVIEWER, AGENT_SCOUT, AGENT_TASK};
+
     vec![
         AgentDefinition {
-            id: "general-purpose".to_string(),
-            name: "general-purpose".to_string(),
-            description: "General-purpose agent for researching complex questions and executing multi-step tasks.".to_string(),
-            system_prompt: String::new(),
+            id: "task".into(),
+            name: "task".into(),
+            description: "General-purpose subagent with full capabilities for delegated multi-step tasks".into(),
+            system_prompt: AGENT_TASK.into(),
             model: Some("@task".into()),
-            tools: Vec::new(),
-            disallowed_tools: Vec::new(),
+            thinking_level: None,
+            tools: None,
+            spawns: Some("*".into()),
             skills: Vec::new(),
-            source: "builtin".to_string(),
+            source: "builtin".into(),
         },
         AgentDefinition {
-            id: "researcher".to_string(),
-            name: "researcher".to_string(),
-            description: "Read-only research agent: searches the web and reads files to gather and synthesize information. Cannot modify files.".to_string(),
-            system_prompt: "You are a research sub-agent. Focus on the assigned question, follow the relevant evidence, and batch related searches. Return concise findings with useful references once you can answer; mention remaining uncertainty. Do not modify files or run commands.".to_string(),
+            id: "sonic".into(),
+            name: "sonic".into(),
+            description: "Low-reasoning agent for strictly mechanical updates or data collection only".into(),
+            system_prompt: AGENT_TASK.into(),
             model: Some("@smol".into()),
-            tools: vec![
-                "read".to_string(),
-                "grep".to_string(),
-                "glob".to_string(),
-                "web_search".to_string(),
-                "web_fetch".to_string(),
-            ],
-            disallowed_tools: Vec::new(),
+            thinking_level: Some("medium".into()),
+            tools: None,
+            spawns: None,
             skills: Vec::new(),
-            source: "builtin".to_string(),
+            source: "builtin".into(),
         },
         AgentDefinition {
-            id: "coder".to_string(),
-            name: "coder".to_string(),
-            description: "Implementation agent: reads, edits, and writes code to complete a focused engineering task.".to_string(),
-            system_prompt: "You are a coding sub-agent. Implement the requested change precisely. Read the relevant files first, make targeted edits, and report exactly what you changed. Keep the change scoped to the task you were given.".to_string(),
-            model: Some("@task".into()),
-            tools: vec![
-                "read".to_string(),
-                "grep".to_string(),
-                "glob".to_string(),
-                "edit".to_string(),
-                "write".to_string(),
-            ],
-            disallowed_tools: Vec::new(),
+            id: "scout".into(),
+            name: "scout".into(),
+            description: "MUST be used for exploratory codebase research, rapid code analysis, and broad pattern searches. Fast read-only scout returning compressed context for handoff.".into(),
+            system_prompt: AGENT_SCOUT.into(),
+            model: Some("@smol".into()),
+            thinking_level: Some("medium".into()),
+            tools: Some(["read", "glob", "grep", "web_search"].into_iter().map(String::from).collect()),
+            spawns: None,
             skills: Vec::new(),
-            source: "builtin".to_string(),
+            source: "builtin".into(),
         },
         AgentDefinition {
-            id: "reviewer".to_string(),
-            name: "reviewer".to_string(),
-            description: "Read-only review agent: inspects code for correctness, clarity, and risk, then reports findings. Cannot modify files.".to_string(),
-            system_prompt: "You are a code-review sub-agent. Inspect the relevant code using read-only tools and report concrete findings: bugs, risks, and concise improvement suggestions with file references. Do not modify files.".to_string(),
+            id: "reviewer".into(),
+            name: "reviewer".into(),
+            description: "Code review specialist for quality/security analysis".into(),
+            system_prompt: AGENT_REVIEWER.into(),
             model: Some("@slow".into()),
-            tools: vec![
-                "read".to_string(),
-                "grep".to_string(),
-                "glob".to_string(),
-            ],
-            disallowed_tools: Vec::new(),
+            thinking_level: None,
+            tools: Some(["read", "glob", "grep", "bash", "web_search"].into_iter().map(String::from).collect()),
+            spawns: Some("scout".into()),
             skills: Vec::new(),
-            source: "builtin".to_string(),
+            source: "builtin".into(),
         },
     ]
 }
@@ -105,30 +80,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtins_have_unique_ids_and_general_purpose_first() {
+    fn builtins_expose_omp_personas_and_spawn_policies() {
         let defs = builtin_agent_definitions();
-        assert_eq!(defs[0].id, "general-purpose");
-        let mut ids: Vec<&str> = defs.iter().map(|d| d.id.as_str()).collect();
-        ids.sort();
-        ids.dedup();
-        assert_eq!(ids.len(), defs.len(), "built-in agent ids must be unique");
-    }
-
-    #[test]
-    fn general_purpose_has_no_tool_restriction() {
-        let defs = builtin_agent_definitions();
-        let gp = defs.iter().find(|d| d.id == "general-purpose").unwrap();
-        assert!(gp.tools.is_empty());
-        assert!(gp.system_prompt.is_empty());
-    }
-
-    #[test]
-    fn researcher_is_read_only_set() {
-        let defs = builtin_agent_definitions();
-        let r = defs.iter().find(|d| d.id == "researcher").unwrap();
-        assert!(r.tools.contains(&"read".to_string()));
-        assert!(r.tools.contains(&"web_search".to_string()));
-        assert!(!r.tools.contains(&"write".to_string()));
-        assert!(!r.tools.contains(&"edit".to_string()));
+        assert_eq!(defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["task", "sonic", "scout", "reviewer"]);
+        assert_eq!(defs[0].spawns.as_deref(), Some("*"));
+        assert!(defs[0].tools.is_none());
+        assert_eq!(defs[1].system_prompt, defs[0].system_prompt);
+        assert!(defs[1].spawns.is_none());
+        assert_eq!(defs[2].model.as_deref(), Some("@smol"));
+        assert_eq!(defs[2].thinking_level.as_deref(), Some("medium"));
+        let scout_tools = defs[2].tools.as_ref().unwrap();
+        assert!(scout_tools.iter().any(|tool| tool == "glob"));
+        assert!(!scout_tools.iter().any(|tool| tool == "write"));
+        assert_eq!(defs[3].spawns.as_deref(), Some("scout"));
+        assert!(defs[3].tools.as_ref().unwrap().iter().any(|tool| tool == "bash"));
     }
 }

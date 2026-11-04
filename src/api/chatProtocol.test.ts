@@ -176,6 +176,24 @@ describe('chat protocol sequencing', () => {
     expect(seen).toEqual(['run_started', 'run_completed', 'hook_failed', 'hook_failed'])
   })
 
+  it('delivers unsequenced live worker progress after the spawning run ends', () => {
+    const seen: ChatRunEventEnvelope[] = []
+    chatProtocolTesting.subscribe((item) => { if (item.scope === 'run') seen.push(item) })
+    chatProtocolTesting.ingest(event(1))
+    chatProtocolTesting.ingest(event(2, 'run_completed'))
+    const progress: ChatRunEventEnvelope = {
+      protocolVersion: 1, scope: 'run', conversationId: 'conversation',
+      runId: '', messageId: '', seq: 0, baseRevision: 0, type: 'subagent_updated',
+      parentToolCallId: 'spawn', taskId: 'worker', name: 'Worker', model: null,
+      depth: 1, status: 'running', preview: 'working', steps: [],
+    }
+    expect(chatProtocolTesting.validate(progress)).toBe(true)
+    chatProtocolTesting.ingest(progress)
+    chatProtocolTesting.ingest({ ...progress, runId: 'run', seq: 3 })
+    expect(seen).toEqual([event(1), event(2, 'run_completed'), progress])
+    expect(invokeMock).not.toHaveBeenCalled()
+  })
+
   it('commits a buffered terminal only after the sequence gap closes', async () => {
     const seen: number[] = []
     chatProtocolTesting.subscribe((item) => {

@@ -3,7 +3,6 @@ import { api, type ConversationCost } from '../api/tauri'
 import { formatTokensK } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
 import type { ChatMessage } from './types'
-import { useSubAgents } from './useSubAgents'
 
 interface SessionUsageStripProps {
   conversationId?: string
@@ -103,23 +102,19 @@ export function SessionUsageStrip({
   }, [apiFormats, cacheIncludedInInput, defaultApiFormat, messages])
 
   const [costSnapshot, setCostSnapshot] = useState<{ id: string; value: ConversationCost | null } | null>(null)
-  const { agents } = useSubAgents(conversationId ?? null)
-  // Reuse the existing child subscription. Progress text must not trigger cost reads.
-  const childExecutions = agents.map(child => {
-    const run = child.runs.at(-1)
-    return `${child.id}:${run?.id}:${run?.status}`
-  }).join('|')
+  const messageCount = messages.length
+  const lastMessageId = messages.at(-1)?.id
   useEffect(() => {
     if (!conversationId || hideCost) return
     let cancelled = false
-    // Refresh on reopening and completed usage/run changes, not on text deltas.
+    // Refresh on message, usage and run changes, not on text deltas.
     void api.usageGetConversationCost(conversationId).then((value) => {
       if (!cancelled) setCostSnapshot({ id: conversationId, value })
     }).catch(() => {
       if (!cancelled) setCostSnapshot({ id: conversationId, value: null })
     })
     return () => { cancelled = true }
-  }, [conversationId, hideCost, generating, totals.input, totals.cached, totals.output, childExecutions])
+  }, [conversationId, hideCost, generating, totals.input, totals.cached, totals.output, messageCount, lastMessageId])
   const cost = costSnapshot?.id === conversationId ? costSnapshot?.value : null
   const amount = cost?.costUsd
   const knownCost = amount != null && Number.isFinite(amount) && amount >= 0

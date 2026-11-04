@@ -17,9 +17,7 @@ use super::planning::PlannedToolRound;
 use super::stop::assistant_api_message_for_tool_calls;
 use super::types::AgentRunResult;
 
-/// 单回合内并行工具调用的批宽上限。与 `SubAgentManager` 的默认并发(12)对齐,
-/// 使一回合 fan-out 多个 subagent 时信号量成为真正的瓶颈而非这里。批内用
-/// `join_all` 并发执行,故任意 ≤ 此值的批宽都安全。
+/// Maximum number of eligible tool calls executed concurrently in one batch.
 pub(crate) const MAX_PARALLEL_TOOL_CALLS_PER_ROUND: usize = 12;
 
 pub(crate) enum ToolRoundOutcome {

@@ -410,13 +410,7 @@ pub fn run() {
                 app.handle().clone(),
             )));
 
-            // Apply the stored sub-agent concurrency cap (default sizes the gate
-            // to DEFAULT_SUB_AGENT_CONCURRENCY; reconcile to the user's setting).
-            {
-                let state: State<AppState> = app.state();
-                let n = state.settings_read().chat_tools.sub_agent_concurrency;
-                state.sub_agents.set_concurrency(n);
-            }
+            crate::chat::sub_agent::delivery::install(app.handle());
 
             if let Err(err) = register_hotkeys(&app.handle()) {
                 eprintln!(
@@ -687,7 +681,6 @@ pub fn run() {
             chat::commands::send::chat_continue_goal,
             chat::commands::send::chat_send_message,
             chat::commands::interaction::chat_cancel_stream,
-            chat::sub_agent::control::chat_subagent_control,
             chat::commands::interaction::chat_confirm_tool_call,
             chat::commands::interaction::chat_respond_session_consent,
             chat::commands::interaction::chat_submit_user_choice,
@@ -905,17 +898,6 @@ pub fn run() {
                         backup::RESTART_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
                         api.prevent_exit();
                         return;
-                    }
-                    if let Ok(runtime) = chat::sub_agent::control::runtime(app_handle) {
-                        let stopped = tauri::async_runtime::block_on(async {
-                            tokio::time::timeout(std::time::Duration::from_secs(5), runtime.shutdown()).await
-                        });
-                        if !matches!(stopped, Ok(Ok(()))) {
-                            eprintln!("Child cleanup has not completed; keeping the application alive.");
-                            backup::RESTART_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
-                            api.prevent_exit();
-                            return;
-                        }
                     }
                     tauri::async_runtime::block_on(extensions::shutdown());
                     // 自动化先于 MCP：运行中的图可能正跑 agent loop（依赖 MCP/供应商）或

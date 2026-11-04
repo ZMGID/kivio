@@ -10,16 +10,9 @@
 //! - native read-only arm in `types.rs::ChatToolDefinition::is_read_only_tool`
 //!
 //! Contract notes:
-//! - The `parallel_safe` set is intentionally narrow: web_search/web_fetch/
-//!   read plus the read-side project tools (ls/grep/find), and only when
-//!   approval-free. Do not widen or narrow it here without a spec change.
-//!   memory_read is read-only and approval-free but deliberately NOT
-//!   parallel-safe. `agent` is also parallel-safe (multi-agent fan-out): each
-//!   spawn runs isolated and is capped by the SubAgentManager semaphore
-//!   (default `DEFAULT_SUB_AGENT_CONCURRENCY` = 12, user-configurable). Each
-//!   `agent` call blocks until its sub-agent finishes and returns the result
-//!   inline; parallelism comes from the model emitting several `agent` calls in
-//!   one round.
+//! - `parallel_safe` is intentionally narrow and still requires approval-free
+//!   execution. `task` submissions can run concurrently; `wait` is serial.
+//!   memory_read is read-only and approval-free but deliberately not parallel-safe.
 //! - Table order is the model-facing tool list order; keep it stable.
 
 use std::future::Future;
@@ -103,10 +96,8 @@ pub enum NativeToolCall {
     /// `chat/agent/execute.rs::execute_ask_user_call` and must never reach
     /// the registry dispatcher.
     HostMediated,
-    /// Sub-agent spawn tool (`agent`): dispatched before workspace resolution
-    /// (it manages agents, not files) with the parent run context from
-    /// `NativeToolContext` (depth, run_id, generation, parent conversation/
-    /// tool-call id).
+    /// Sub-agent tools (`task` and `wait`) dispatch before workspace resolution
+    /// with the parent run context from `NativeToolContext`.
     SubAgent(for<'a> fn(crate::chat::sub_agent::SubAgentCallCtx<'a>) -> NativeToolFuture<'a>),
 }
 
@@ -654,33 +645,27 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         requires_session_consent: false,
         call: NativeToolCall::HostMediated,
     },
-    // Sub-agent spawn tool (P3). Appended in chat/commands.rs (via
-    // `sub_agent::append_tool_definitions`) when the multi-agent toggle is on, so
-    // enabled = false here. bypasses_approval = true: spawning sub-agents is
-    // governed by depth + concurrency caps, not per-call approval prompts.
+    // Sub-agent tools are appended per request by chat/commands/reply.rs.
     NativeToolEntry {
-        name: crate::chat::sub_agent::AGENT_TOOL_NAME,
-        // The real schema is built per-request with the loaded role registry
-        // (`sub_agent::append_tool_definitions`); the registry only needs the
-        // name/shape here, so an empty role list is correct.
-        def: || crate::chat::sub_agent::agent_tool(&[]),
+        name: crate::chat::sub_agent::TASK_TOOL_NAME,
+        // The request-specific schema uses the loaded roles and actual settings.
+        def: || crate::chat::sub_agent::task::tool_definition(&[], &Settings::default()),
         enabled: |_, _, _| false,
-        // Independent durable admissions can be submitted concurrently.
         parallel_safe: true,
         bypasses_approval: true,
         read_only: false,
         requires_session_consent: false,
-        call: NativeToolCall::SubAgent(crate::chat::sub_agent::dispatch_agent_spawn),
+        call: NativeToolCall::SubAgent(crate::chat::sub_agent::task::dispatch),
     },
     NativeToolEntry {
-        name: "agent_control",
-        def: crate::chat::sub_agent::control::definition,
+        name: crate::chat::sub_agent::WAIT_TOOL_NAME,
+        def: crate::chat::sub_agent::wait::definition,
         enabled: |_, _, _| false,
         parallel_safe: false,
         bypasses_approval: true,
-        read_only: false,
+        read_only: true,
         requires_session_consent: false,
-        call: NativeToolCall::SubAgent(crate::chat::sub_agent::control::dispatch),
+        call: NativeToolCall::SubAgent(crate::chat::sub_agent::wait::dispatch),
     },
 ];
 
@@ -1831,8 +1816,8 @@ mod tests {
         "schedule_update",
         "schedule_delete",
         "ask_user",
-        "agent",
-        "agent_control",
+        "task",
+        "wait",
     ];
 
     #[test]
@@ -1871,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_order_and_names_match_legacy_exposure_order() {
+    fn registry_order_and_names_match_exposure_order() {
         let names: Vec<&str> = NATIVE_TOOLS.iter().map(|entry| entry.name).collect();
         assert_eq!(names, EXPECTED_ORDER);
     }
@@ -1886,7 +1871,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_safe_set_is_exactly_the_narrow_read_whitelist() {
+    fn parallel_safe_set_matches_registry_contract() {
         let parallel: Vec<&str> = NATIVE_TOOLS
             .iter()
             .filter(|entry| entry.parallel_safe)
@@ -1907,19 +1892,14 @@ mod tests {
                 "grep",
                 "glob",
                 "bash_output",
-                "agent",
+                "task",
             ],
-            "parallel-safe set is intentionally narrow per agent-runtime spec; \
-             bash_output joins it because it is a pure read-only registry/log read \
-             (and lists jobs when given no job_id); `agent` joins it because each \
-             spawn runs in isolation (own conversation/generation/message history), \
-             bypasses approval, and is capped by atomic runtime admission \
-             (default 12), making concurrent fan-out the core multi-agent value"
+            "parallel-safe set is intentionally narrow; task submissions are independent"
         );
     }
 
     #[test]
-    fn approval_bypass_set_matches_legacy_list() {
+    fn approval_bypass_set_matches_registry_contract() {
         let bypass: Vec<&str> = NATIVE_TOOLS
             .iter()
             .filter(|entry| entry.bypasses_approval)
@@ -1952,14 +1932,14 @@ mod tests {
                 "goal_wait",
                 "schedule_list",
                 "ask_user",
-                "agent",
-                "agent_control",
+                "task",
+                "wait",
             ]
         );
     }
 
     #[test]
-    fn read_only_set_matches_legacy_is_read_only_tool_arm() {
+    fn read_only_set_matches_registry_contract() {
         let read_only: Vec<&str> = NATIVE_TOOLS
             .iter()
             .filter(|entry| entry.read_only)
@@ -1992,9 +1972,25 @@ mod tests {
                 "memory_search",
                 "get_goal",
                 "schedule_list",
+                "wait",
             ],
             "memory_read/memory_search are read-only but deliberately not parallel-safe"
         );
+    }
+
+    #[test]
+    fn subagent_tools_use_native_dispatch_and_request_scoped_exposure() {
+        let native = ChatNativeToolsConfig::default();
+        for (name, parallel_safe, read_only) in [("task", true, false), ("wait", false, true)] {
+            let entry = find_entry(name).unwrap();
+            assert!(!(entry.enabled)(&native, false, false), "{name}");
+            assert!(!(entry.enabled)(&native, true, true), "{name}");
+            assert_eq!(entry.parallel_safe, parallel_safe, "{name}");
+            assert!(entry.bypasses_approval, "{name}");
+            assert_eq!(entry.read_only, read_only, "{name}");
+            assert!(!entry.requires_session_consent, "{name}");
+            assert!(matches!(entry.call, NativeToolCall::SubAgent(_)), "{name}");
+        }
     }
 
     #[test]

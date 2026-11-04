@@ -1377,8 +1377,16 @@ fn default_chat_tool_timeout_ms() -> u64 {
     60_000
 }
 
-fn default_sub_agent_concurrency() -> usize {
-    crate::chat::sub_agent::DEFAULT_SUB_AGENT_CONCURRENCY
+fn default_task_max_concurrency() -> usize {
+    32
+}
+
+fn default_task_max_recursion_depth() -> i32 {
+    2
+}
+
+fn default_task_soft_request_budget() -> u32 {
+    200
 }
 
 fn default_mcp_idle_timeout_ms() -> u64 {
@@ -1530,9 +1538,15 @@ pub struct ChatToolsConfig {
     pub max_tool_output_chars: Option<usize>,
     #[serde(default = "default_chat_approval_policy")]
     pub approval_policy: String,
-    /// 同一时刻最多并行运行的子 agent 数。受 [`SUB_AGENT_CONCURRENCY_MIN`]..[`MAX`] 钳制。
-    #[serde(default = "default_sub_agent_concurrency")]
-    pub sub_agent_concurrency: usize,
+    /// Maximum concurrent tasks per conversation; 0 means unlimited.
+    #[serde(default = "default_task_max_concurrency")]
+    pub task_max_concurrency: usize,
+    /// Maximum task nesting depth; -1 removes the limit and 0 prevents spawning.
+    #[serde(default = "default_task_max_recursion_depth")]
+    pub task_max_recursion_depth: i32,
+    /// Soft request budget per subagent run; 0 disables the budget.
+    #[serde(default = "default_task_soft_request_budget")]
+    pub task_soft_request_budget: u32,
     /// Legacy global override, consumed into sub_agent_models.task during normalization.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub_agent_provider_id: String,
@@ -1571,7 +1585,9 @@ impl Default for ChatToolsConfig {
             mcp_idle_timeout_ms: default_mcp_idle_timeout_ms(),
             max_tool_output_chars: default_max_tool_output_chars(),
             approval_policy: default_chat_approval_policy(),
-            sub_agent_concurrency: default_sub_agent_concurrency(),
+            task_max_concurrency: default_task_max_concurrency(),
+            task_max_recursion_depth: default_task_max_recursion_depth(),
+            task_soft_request_budget: default_task_soft_request_budget(),
             sub_agent_provider_id: String::new(),
             sub_agent_model: String::new(),
             sub_agent_models: Default::default(),
@@ -2881,10 +2897,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         .chat_tools
         .tool_timeout_ms
         .clamp(CHAT_TOOL_MIN_TIMEOUT_MS, CHAT_TOOL_MAX_TIMEOUT_MS);
-    settings.chat_tools.sub_agent_concurrency = settings.chat_tools.sub_agent_concurrency.clamp(
-        crate::chat::sub_agent::SUB_AGENT_CONCURRENCY_MIN,
-        crate::chat::sub_agent::SUB_AGENT_CONCURRENCY_MAX,
-    );
+    settings.chat_tools.task_max_concurrency =
+        settings.chat_tools.task_max_concurrency.clamp(0, 256);
+    settings.chat_tools.task_max_recursion_depth =
+        settings.chat_tools.task_max_recursion_depth.clamp(-1, 8);
+    settings.chat_tools.task_soft_request_budget =
+        settings.chat_tools.task_soft_request_budget.clamp(0, 10_000);
     settings.chat_tools.mcp_idle_timeout_ms = settings
         .chat_tools
         .mcp_idle_timeout_ms
@@ -3899,6 +3917,77 @@ mod tests {
     }
 
     #[test]
+    fn task_settings_default_and_ignore_legacy_concurrency() {
+        let defaults = Settings::default();
+        assert_eq!(defaults.chat_tools.task_max_concurrency, 32);
+        assert_eq!(defaults.chat_tools.task_max_recursion_depth, 2);
+        assert_eq!(defaults.chat_tools.task_soft_request_budget, 200);
+
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"chatTools": {}}),
+            serde_json::json!({"chatTools": {"subAgentConcurrency": 0}}),
+            serde_json::json!({"chatTools": {"subAgentConcurrency": 9}}),
+            serde_json::json!({"chatTools": {"subAgentConcurrency": null}}),
+            serde_json::json!({"chatTools": {"subAgentConcurrency": "invalid"}}),
+        ] {
+            let settings: Settings = serde_json::from_value(value).unwrap();
+            let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
+            assert_eq!(saved["chatTools"]["taskMaxConcurrency"], 32);
+            assert_eq!(saved["chatTools"]["taskMaxRecursionDepth"], 2);
+            assert_eq!(saved["chatTools"]["taskSoftRequestBudget"], 200);
+            assert!(saved["chatTools"].get("subAgentConcurrency").is_none());
+        }
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "chatTools": {
+                "subAgentConcurrency": 99,
+                "taskMaxConcurrency": 7,
+                "taskMaxRecursionDepth": -1,
+                "taskSoftRequestBudget": 0
+            }
+        }))
+        .unwrap();
+        let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
+        assert_eq!(saved["chatTools"]["taskMaxConcurrency"], 7);
+        assert_eq!(saved["chatTools"]["taskMaxRecursionDepth"], -1);
+        assert_eq!(saved["chatTools"]["taskSoftRequestBudget"], 0);
+        assert!(saved["chatTools"].get("subAgentConcurrency").is_none());
+        let restored = sanitize_settings(serde_json::from_value(saved).unwrap());
+        assert_eq!(restored.chat_tools.task_max_concurrency, 7);
+        assert_eq!(restored.chat_tools.task_max_recursion_depth, -1);
+        assert_eq!(restored.chat_tools.task_soft_request_budget, 0);
+    }
+
+    #[test]
+    fn sanitize_settings_clamps_task_limits() {
+        for (concurrency, depth, budget, expected) in [
+            (0, -2, 0, (0, -1, 0)),
+            (1, -1, 1, (1, -1, 1)),
+            (32, 0, 200, (32, 0, 200)),
+            (255, 1, 9_999, (255, 1, 9_999)),
+            (256, 8, 10_000, (256, 8, 10_000)),
+            (257, 9, 10_001, (256, 8, 10_000)),
+            (usize::MAX, i32::MIN, u32::MAX, (256, -1, 10_000)),
+            (12, i32::MAX, 0, (12, 8, 0)),
+        ] {
+            let mut settings = Settings::default();
+            settings.chat_tools.task_max_concurrency = concurrency;
+            settings.chat_tools.task_max_recursion_depth = depth;
+            settings.chat_tools.task_soft_request_budget = budget;
+            let settings = sanitize_settings(settings);
+            assert_eq!(
+                (
+                    settings.chat_tools.task_max_concurrency,
+                    settings.chat_tools.task_max_recursion_depth,
+                    settings.chat_tools.task_soft_request_budget,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn mixer_roles_migrate_legacy_selection_once_and_keep_effort_with_model() {
         let mut settings = Settings::default();
         let provider: ModelProvider = serde_json::from_value(serde_json::json!({
@@ -3908,6 +3997,16 @@ mod tests {
         }))
         .unwrap();
         settings.providers = vec![provider];
+        for role in ["smol", "slow"] {
+            settings.chat_tools.sub_agent_models.insert(
+                role.into(),
+                SubAgentModelSelection {
+                    provider_id: "worker".into(),
+                    model: "worker-model".into(),
+                    thinking_level: Some("medium".into()),
+                },
+            );
+        }
         settings.chat_tools.sub_agent_provider_id = "worker".into();
         settings.chat_tools.sub_agent_model = "worker-model".into();
         let mut settings = sanitize_settings(settings);
@@ -3937,6 +4036,12 @@ mod tests {
                 .as_deref(),
             Some("medium")
         );
+        for role in ["smol", "slow"] {
+            let selection = &restored.chat_tools.sub_agent_models[role];
+            assert_eq!(selection.provider_id, "worker");
+            assert_eq!(selection.model, "worker-model");
+            assert_eq!(selection.thinking_level.as_deref(), Some("medium"));
+        }
     }
 
     #[test]

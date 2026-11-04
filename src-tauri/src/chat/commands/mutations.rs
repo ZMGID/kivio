@@ -1101,6 +1101,99 @@ mod fork_file_tests {
     }
 }
 
+fn forget_subagents(
+    manager: &crate::chat::sub_agent::SubAgentManager,
+    conversation_id: &str,
+    artifacts_dir: impl FnOnce() -> Result<std::path::PathBuf, String>,
+) -> Result<(), String> {
+    crate::chat::storage::validate_conversation_id(conversation_id)?;
+    let dir = artifacts_dir()?;
+    manager.forget_conversation(conversation_id);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove sub-agent artifacts {}: {error}", dir.display())),
+    }
+}
+
+#[cfg(test)]
+mod subagent_cleanup_tests {
+    use super::forget_subagents;
+    use crate::chat::sub_agent::{
+        registry::{AgentRecord, AgentStatus},
+        SubAgentManager, MAIN_AGENT_ID,
+    };
+    use std::path::Path;
+
+    fn register_agent(manager: &SubAgentManager, root: &str, id: &str, dir: &Path) {
+        manager.registry.register(AgentRecord {
+            id: id.into(),
+            root: root.into(),
+            parent_id: MAIN_AGENT_ID.into(),
+            generation: 0,
+            display_name: id.into(),
+            agent_type: "task".into(),
+            status: AgentStatus::Running,
+            depth: 1,
+            child_conversation_id: format!("subagent-{root}-{id}"),
+            run_id: Some(format!("run-{id}")),
+            session_file: dir.join(format!("{id}.jsonl")),
+            output_file: dir.join(format!("{id}.md")),
+            last_activity: 0,
+            activity: None,
+        });
+    }
+
+    #[test]
+    fn deletion_forgets_only_the_root_and_removes_its_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("conv_a");
+        let other = dir.path().join("conv_ab");
+        std::fs::create_dir_all(target.join("nested")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(target.join("nested/session.jsonl"), "target").unwrap();
+        std::fs::write(other.join("session.jsonl"), "other").unwrap();
+        let manager = SubAgentManager::default();
+        register_agent(&manager, "conv_a", "agent-a", &target);
+        register_agent(&manager, "conv_ab", "agent-b", &other);
+        let (job, cancelled) = manager.jobs.register("conv_a", MAIN_AGENT_ID, "agent-a", "task");
+        let (other_job, other_cancelled) =
+            manager.jobs.register("conv_ab", MAIN_AGENT_ID, "agent-b", "task");
+        manager.set_user_interrupted("conv_a", true);
+        manager.set_user_interrupted("conv_ab", true);
+
+        for invalid in ["", ".", "..", "../conv_ab", "conv_../conv_ab"] {
+            assert!(forget_subagents(&manager, invalid, || {
+                panic!("invalid id reached the artifact resolver")
+            })
+            .is_err());
+        }
+        assert!(forget_subagents(&manager, "conv_ab", || Err("path unavailable".into())).is_err());
+        assert!(manager.registry.get("conv_ab", "agent-b").is_some());
+        assert!(other.join("session.jsonl").is_file());
+
+        forget_subagents(&manager, "conv_a", || Ok(target.clone())).unwrap();
+        assert!(!target.exists());
+        assert_eq!(std::fs::read(other.join("session.jsonl")).unwrap().as_slice(), b"other");
+        assert!(manager.registry.get("conv_a", "agent-a").is_none());
+        assert!(manager.registry.get("conv_ab", "agent-b").is_some());
+        assert!(manager.jobs.get(&job).is_none());
+        assert!(manager.jobs.get(&other_job).is_some());
+        assert!(*cancelled.borrow());
+        assert!(!*other_cancelled.borrow());
+        assert!(!manager.user_interrupted("conv_a"));
+        assert!(manager.user_interrupted("conv_ab"));
+        forget_subagents(&manager, "conv_a", || Ok(target.clone())).unwrap();
+
+        let file = dir.path().join("conv_bad");
+        std::fs::write(&file, "keep").unwrap();
+        let error = forget_subagents(&manager, "conv_bad", || Ok(file.clone())).unwrap_err();
+        assert!(error.contains("remove sub-agent artifacts"), "{error}");
+        assert_eq!(std::fs::read(&file).unwrap().as_slice(), b"keep");
+        assert!(other.join("session.jsonl").is_file());
+    }
+}
+
 /// 删除对话
 #[tauri::command]
 pub(crate) async fn chat_delete_conversation(
@@ -1108,15 +1201,9 @@ pub(crate) async fn chat_delete_conversation(
     state: tauri::State<'_, crate::state::AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
-    let runtime = crate::chat::sub_agent::control::runtime(&app)?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.delete_conversation(&conversation_id),
-    )
-    .await
-    .map_err(|_| {
-        "Sub-agent cleanup is still pending; retry deletion after it ends".to_string()
-    })??;
+    forget_subagents(&state.sub_agents, &conversation_id, || {
+        crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)
+    })?;
     // 删对话即终止其持久外部 CLI 会话（actor 关闭子进程）并清掉跨重启 resume 句柄。
     state.external_live_sessions().remove(&conversation_id);
     crate::external_agents::session::clear_live_handle(&app, &conversation_id);
@@ -1481,18 +1568,10 @@ pub(crate) async fn chat_bulk_delete_conversations(
     let mut deleted = 0usize;
     let mut warnings: Vec<String> = Vec::new();
     for conversation_id in ids {
-        let runtime = crate::chat::sub_agent::control::runtime(&app)?;
-        if !matches!(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                runtime.delete_conversation(&conversation_id)
-            )
-            .await,
-            Ok(Ok(()))
-        ) {
-            warnings.push(format!(
-                "{conversation_id}: sub-agent cleanup is still pending"
-            ));
+        if let Err(error) = forget_subagents(&state.sub_agents, &conversation_id, || {
+            crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)
+        }) {
+            warnings.push(format!("{conversation_id}: {error}"));
             continue;
         }
         // 与单条删除一致：外部 CLI 会话 / 后台命令 / 运行态小 map 都先清，

@@ -1,16 +1,5 @@
-//! Agent type definitions for the multi-agent / sub-agent system (P3).
-//!
-//! An `AgentDefinition` is the sub-agent counterpart of `ChatAssistantSnapshot`:
-//! a named persona with an optional system-prompt prefix, an optional model
-//! override, and an allow-list of tools. Definitions load in three layers
-//! (built-in → user `~/<app_data>/agents/*.md` → project `.kivio/agents/*.md`),
-//! later layers overriding earlier ones by id, mirroring the Skill loader and
-//! Claude Code's `agents/` convention.
-//!
-//! Unlike clawspring's reference implementation (whose `tools` field was never
-//! enforced), Kivio enforces the tool allow-list at spawn time via
-//! `chat::agent::filter::filter_tools_for_agent`, which also strips the `agent`
-//! tool itself so a sub-agent can never recursively spawn.
+//! Agent definitions loaded from built-ins, plugins, user and project layers.
+//! Later layers override earlier definitions with the same id.
 
 pub mod parse;
 pub mod types;
@@ -55,16 +44,11 @@ pub fn load_agent_definitions(
                 ) {
                     def.id = format!("pkg-{}-{}", plugin.package.id, def.id);
                     def.system_prompt = plugin.expand_body(&def.system_prompt);
-                    def.tools = def
-                        .tools
-                        .iter()
-                        .map(|name| plugin_tool_name(name))
-                        .collect();
-                    def.disallowed_tools = def
-                        .disallowed_tools
-                        .iter()
-                        .map(|name| plugin_tool_name(name))
-                        .collect();
+                    if let Some(tools) = &mut def.tools {
+                        for name in tools {
+                            *name = plugin_tool_name(name);
+                        }
+                    }
                     if def.model.as_deref() == Some("inherit") {
                         def.model = None;
                     }
@@ -92,7 +76,7 @@ fn plugin_tool_name(name: &str) -> String {
         "Edit" => "edit",
         "Glob" => "glob",
         "Grep" => "grep",
-        "Agent" | "Task" => "agent",
+        "Agent" | "Task" => "task",
         other => other,
     }
     .into()
@@ -142,5 +126,34 @@ fn upsert(defs: &mut Vec<AgentDefinition>, def: AgentDefinition) {
         *existing = def;
     } else {
         defs.push(def);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_overrides_user_and_builtin_definitions() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("user");
+        let project = root.path().join("project");
+        let project_agents = project.join(".kivio").join("agents");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&project_agents).unwrap();
+        std::fs::write(user.join("scout.md"), "---\nname: scout\n---\nuser").unwrap();
+        std::fs::write(project_agents.join("scout.md"), "---\nname: scout\n---\nproject").unwrap();
+        let defs = load_agent_definitions(Some(&user), Some(&project), &[]);
+        let scout = find_definition(&defs, "scout").unwrap();
+        assert_eq!(scout.system_prompt, "project");
+        assert_eq!(scout.source, "project");
+        assert_eq!(defs.iter().filter(|d| d.id == "scout").count(), 1);
+    }
+
+    #[test]
+    fn plugin_tool_names_use_current_native_names() {
+        assert_eq!(plugin_tool_name("Read"), "read");
+        assert_eq!(plugin_tool_name("Task"), "task");
+        assert_eq!(plugin_tool_name("custom_tool"), "custom_tool");
     }
 }

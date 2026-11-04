@@ -88,6 +88,7 @@ pub(crate) async fn chat_send_message(
             "error": CHAT_REPLY_BUSY_ERROR,
         }));
     };
+    state.sub_agents.set_user_interrupted(&conversation_id, false);
     send_reserved(
         app,
         state,
@@ -165,6 +166,34 @@ pub(crate) async fn send_user_message_when_idle(
             .unwrap_or("发送失败")
             .to_string())
     }
+}
+
+/// Resume an idle parent with persisted background results, without a user message.
+pub(crate) async fn resume_subagents_when_idle(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
+    let incoming = crate::chat::sub_agent::delivery::collect_for_main(app, conversation_id, "").await?;
+    if incoming.is_empty() || state.sub_agents.user_interrupted(conversation_id) {
+        return Ok(());
+    }
+    let mut conversation = load_conversation(app, conversation_id)?;
+    if state.sub_agents.user_interrupted(conversation_id) {
+        return Ok(());
+    }
+    complete_assistant_reply(
+        app,
+        &state,
+        &mut conversation,
+        None,
+        None,
+        &[],
+        None,
+        crate::chat::agent::AgentRunEntry::Send,
+    )
+    .await
 }
 
 /// The send transaction; the caller already holds the conversation's send reservation.

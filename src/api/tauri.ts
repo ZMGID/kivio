@@ -331,7 +331,7 @@ export type ChatSubagentPayload = {
   /** 子代理实际运行的模型（含全局 Subagent 模型覆盖后的结果）。 */
   model?: string
   depth: number
-  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'aborted'
   preview?: string
   steps?: string[]
 }
@@ -684,8 +684,12 @@ export type ChatToolsConfig = {
   /** MCP 持久连接空闲超时（ms）：会话空闲超过此值后被回收，下次调用透明重连。 */
   mcpIdleTimeoutMs?: number
   approvalPolicy: 'readonly_auto_sensitive_confirm' | 'always_confirm' | 'auto' | string
-  /** 同一时刻最多并行运行的子 agent 数（后端钳制 1..64，默认 12）。 */
-  subAgentConcurrency?: number
+  /** Maximum concurrent tasks per conversation (0 = unlimited; default 32). */
+  taskMaxConcurrency?: number
+  /** Maximum task nesting depth (negative = unlimited, 0 = no spawning; default 2). */
+  taskMaxRecursionDepth?: number
+  /** Soft request budget per task run (0 = disabled; default 200). */
+  taskSoftRequestBudget?: number
   /** 子代理角色的模型与推理强度；SMOL/SLOW 未配置时跟随 TASK，TASK 跟随主对话。 */
   subAgentModels?: Record<string, SubAgentModelSelection>
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */
@@ -1791,30 +1795,6 @@ async function onChatProtocol(
 
 // ========== API 导出 ==========
 
-export type SubAgentExecution = {
-  startedAt?: number | null; finishedAt?: number | null
-  id: string; status: string; prompt: string; result?: string; error?: string; usage?: unknown
-  outputAvailable?: boolean
-  recovery?: { outcome?: string; degraded?: { kind?: string; reason?: string; detail?: string } | null } | null
-}
-export type SubAgentRecord = {
-  id: string; name: string; sequence: number
-  profile: { model: string; agentType: string }
-  runs: SubAgentExecution[]
-  messages: { id: string; sender: string; text: string; consumedBy?: string }[]
-  history: unknown[]; tools: unknown[]; preview?: string; steps?: string[]
-}
-export type SubAgentSnapshot = { sequence: number; agents: SubAgentRecord[] }
-export type SubAgentListRequest = { operation: 'list' | 'wait'; id?: string; cursor?: number; timeout_ms?: number }
-export type SubAgentRecordRequest =
-  | { operation: 'get' | 'message' | 'continue' | 'stop'; id: string; execution_id?: string; message_id?: string; message?: string }
-export type SubAgentControlRequest = SubAgentListRequest | SubAgentRecordRequest
-function chatSubagentControl(conversationId: string, args: SubAgentListRequest): Promise<SubAgentSnapshot>
-function chatSubagentControl(conversationId: string, args: SubAgentRecordRequest): Promise<SubAgentRecord>
-function chatSubagentControl(conversationId: string, args: SubAgentControlRequest): Promise<SubAgentSnapshot | SubAgentRecord>
-function chatSubagentControl(conversationId: string, args: SubAgentControlRequest): Promise<SubAgentSnapshot | SubAgentRecord> {
-  return invoke('chat_subagent_control', { conversationId, arguments: args })
-}
 export type VoiceLiveStart = {
   sessionId: string
   answerSdp: string
@@ -1843,7 +1823,6 @@ export const api = {
   voiceCodexMute: (sessionId: string, muted: boolean) => invoke<void>('voice_codex_mute', { sessionId, muted }),
   onVoiceCodexEvent: (listener: (event: VoiceCodexEvent) => void): Promise<() => void> =>
     isTauriRuntime() ? on<VoiceCodexEvent>('voice-codex-event', listener) : Promise.resolve(() => {}),
-  chatSubagentControl,
   /** 一次状态扫描可选附带行数统计，供同工作目录的 Git 徽标共享。 */
   async dockGitSnapshot(workdir: string, includeDiffStat = false): Promise<GitSnapshot> {
     const raw = await invoke<{ state: unknown; diffStat?: unknown }>('dock_git_snapshot', { workdir, includeDiffStat })

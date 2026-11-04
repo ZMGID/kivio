@@ -75,7 +75,7 @@ pub struct AppState {
     /// RapidOCR 离线 OCR 客户端。模型 + onnxruntime dylib 都由用户在设置页面下载到 app data 目录,
     /// 安装包不带任何 ONNX Runtime 二进制。`status()` 检查 4 个文件齐不齐, 不齐让前端引导下载。
     pub rapidocr: std::sync::Arc<RapidOcrClient>,
-    /// 多 agent / 子 agent 任务表（P3）：spawn 的子 agent 状态、按名寻址、并发上限。
+    /// OMP 子 agent 注册表、作业和并发准入状态。
     pub sub_agents: crate::chat::sub_agent::SubAgentManager,
     /// 后台 run_command 进程注册表：job_id → 跟踪中的后台命令。
     /// 与后台 subagent 不同：这些命令**跨 turn 存活**，只由显式 `kill_background`
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn cancel_is_per_conversation() {
-        // 取消 conv-1 不影响 conv-2（含 sub-agent 用独立合成 conversation_id 的级联语义）。
+        // 取消 conv-1 不影响 conv-2。
         let st = test_state();
         let gen1 = st.chat_runtime().begin_generation("conv-1");
         let gen2 = st.chat_runtime().begin_generation("conv-2");

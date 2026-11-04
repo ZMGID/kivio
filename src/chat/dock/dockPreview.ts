@@ -50,11 +50,3 @@ export function onDockMarkdownPreviewRequest(cb: MarkdownListener): () => void {
 export function requestDockMarkdownPreview(payload: DockMarkdownPayload): void {
   markdownListener?.(payload)
 }
-
-export type DockSubAgentTarget = { conversationId: string; agentId: string }
-let subAgentListener: ((target: DockSubAgentTarget) => void) | null = null
-export function onDockSubAgentRequest(cb: (target: DockSubAgentTarget) => void): () => void {
-  subAgentListener = cb
-  return () => { if (subAgentListener === cb) subAgentListener = null }
-}
-export function requestDockSubAgent(target: DockSubAgentTarget): void { subAgentListener?.(target) }

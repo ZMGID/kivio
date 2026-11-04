@@ -3,10 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ConversationCost } from '../api/tauri'
 import { SessionUsageStrip } from './SessionUsageStrip'
 import type { ChatMessage, MessageUsage } from './types'
-import { useSubAgents } from './useSubAgents'
 
 vi.mock('../api/tauri', () => ({ api: { usageGetConversationCost: vi.fn() } }))
-vi.mock('./useSubAgents', () => ({ useSubAgents: vi.fn(() => ({ agents: [], error: '' })) }))
 
 let seq = 0
 
@@ -25,25 +23,22 @@ function assistant(usage: MessageUsage, providerId?: string): ChatMessage {
 describe('SessionUsageStrip', () => {
   beforeEach(() => {
     vi.mocked(api.usageGetConversationCost).mockReset()
-    vi.mocked(useSubAgents).mockReturnValue({ agents: [], error: '' })
   })
 
-  it('refreshes cost when a child finishes without a parent message update', async () => {
-    const child = { id: 'child', name: 'Worker', sequence: 1,
-      profile: { model: 'test', agentType: 'researcher' },
-      runs: [{ id: 'run', status: 'running', prompt: '' }], messages: [], history: [], tools: [] }
-    vi.mocked(useSubAgents).mockReturnValue({ agents: [child], error: '' })
+  it('refreshes the backend cost when a result is added, but not on text updates', async () => {
     vi.mocked(api.usageGetConversationCost)
       .mockResolvedValueOnce({ costUsd: 0.25, unpricedRequests: 0, skippedRecords: 0 })
       .mockResolvedValueOnce({ costUsd: 0.75, unpricedRequests: 0, skippedRecords: 0 })
-    const { rerender } = render(<SessionUsageStrip conversationId="parent" lang="zh" messages={[]} />)
+    const message: ChatMessage = { id: 'parent-message', role: 'assistant', content: 'Working', timestamp: 1 }
+    const { rerender } = render(<SessionUsageStrip conversationId="parent" lang="zh" messages={[message]} />)
     expect(await screen.findByText('0.25$')).toBeTruthy()
-    vi.mocked(useSubAgents).mockReturnValue({ agents: [{ ...child, preview: 'working' }], error: '' })
-    rerender(<SessionUsageStrip conversationId="parent" lang="zh" messages={[]} />)
+    rerender(<SessionUsageStrip conversationId="parent" lang="zh" messages={[{ ...message, content: 'Still working' }]} />)
     expect(api.usageGetConversationCost).toHaveBeenCalledTimes(1)
-    vi.mocked(useSubAgents).mockReturnValue({ agents: [{ ...child, runs: [{ ...child.runs[0], status: 'returned' }] }], error: '' })
-    rerender(<SessionUsageStrip conversationId="parent" lang="zh" messages={[]} />)
+    rerender(<SessionUsageStrip conversationId="parent" lang="zh" messages={[
+      { id: 'subagent-result-job', role: 'assistant', content: 'Done', timestamp: 2 }, message,
+    ]} />)
     expect(await screen.findByText('0.75$')).toBeTruthy()
+    expect(api.usageGetConversationCost).toHaveBeenLastCalledWith('parent')
   })
 
   it('shows every metric immediately without a disclosure control', async () => {

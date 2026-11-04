@@ -357,7 +357,6 @@ export interface InputBarProps {
   agentPlanState?: AgentPlanState | null
   agentTodoState?: AgentTodoState | null
   goalSlot?: ReactNode
-  subAgentSlot?: ReactNode
   onAgentPlanModeChange?: (mode: AgentPlanMode) => void | Promise<void>
   enabledSkills?: SlashSkill[]
   onOpenSkillSettings?: () => void
@@ -453,7 +452,6 @@ export const InputBar = memo(function InputBar({
   agentPlanState = null,
   agentTodoState = null,
   goalSlot,
-  subAgentSlot,
   onAgentPlanModeChange,
   enabledSkills = [],
   onOpenSkillSettings,
@@ -2011,7 +2009,7 @@ export const InputBar = memo(function InputBar({
           </div>
         )}
         {/* 状态条：项目/集、Git 分支及按需显示的任务和改动。 */}
-        {(statusBarVisible || todoBarVisible || goalSlot || subAgentSlot || gitStatusEnabled) && (
+        {(statusBarVisible || todoBarVisible || goalSlot || gitStatusEnabled) && (
           <div className="chat-composer-status" data-tauri-drag-region="false">
             {(statusBarVisible || gitStatusEnabled) && (
               <div className="chat-composer-environment">
@@ -2090,7 +2088,6 @@ export const InputBar = memo(function InputBar({
                 onOpenGitPanel={onOpenGitPanel}
               />
             )}
-            {subAgentSlot}
           </div>
         )}
 

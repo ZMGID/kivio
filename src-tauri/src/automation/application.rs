@@ -1054,12 +1054,17 @@ mod tests {
     }
 
     #[test]
-    fn sub_agent_tool_is_stripped_even_when_selected() {
-        let mut tools = vec![tool("native__read", "read"), tool("native__agent", "agent")];
-        apply_agent_tool_whitelist(&mut tools, &["agent".into()]).unwrap();
-        strip_workflow_forbidden_tools(&mut tools);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "read");
+    fn sub_agent_tools_are_stripped_even_when_selected() {
+        for name in ["task", "wait"] {
+            let mut tools = vec![
+                tool("native__read", "read"),
+                tool(&format!("native__{name}"), name),
+            ];
+            apply_agent_tool_whitelist(&mut tools, &[name.into()]).unwrap();
+            strip_workflow_forbidden_tools(&mut tools);
+            assert_eq!(tools.len(), 1);
+            assert_eq!(tools[0].name, "read");
+        }
     }
 
     #[test]

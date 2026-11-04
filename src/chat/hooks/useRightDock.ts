@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { peekSettings, subscribeSettings } from '../../api/settingsCache'
 import type { AgentRuntimeConfig } from '../api'
 import { dockApi } from '../dock/api'
@@ -6,7 +6,6 @@ import {
   onDockDiffPreviewRequest,
   onDockMarkdownPreviewRequest,
   onDockPreviewRequest,
-  onDockSubAgentRequest,
 } from '../dock/dockPreview'
 import { resolveDockPreviewTarget } from '../dock/dockPreviewTarget'
 import type { DockOpenTabRequest, DockPreviewRequest, DockRevealRequest, DockTab } from '../dock/RightDock'
@@ -22,27 +21,22 @@ import {
 } from '../persistence'
 import { insertTextIntoComposer } from '../composerInsert'
 
-export type DockSubAgentRequest = { conversationId: string; agentId: string; nonce: number } | null
-
 export interface UseRightDockOptions {
   conversationId: string | null
   projectId: string | null
   /** 外部 agent 与内置 runtime 的实际写入目录不同，runtime 切换必须重解析 workdir。 */
   agentRuntimeKind: AgentRuntimeConfig['kind']
-  /** 子代理面板请求只对当前会话生效；读 ref 而不是值，避免会话切换重订阅信道。 */
-  currentConversationIdRef: MutableRefObject<string | null>
 }
 
 /**
  * 右侧 IDE dock 的页面级 owner：开合 / 宽度 / 页签 / 文件树展开态（均带 localStorage
- * 持久化）、跟随会话解析的 workdir，以及来自消息区工具卡片的预览 / 定位 / 子代理请求。
+ * 持久化）、跟随会话解析的 workdir，以及来自消息区工具卡片的预览 / 定位请求。
  * 工具卡片经 dockPreview 单监听信道到这里，再转成 RightDock 认得的请求对象。
  */
 export function useRightDock({
   conversationId,
   projectId,
   agentRuntimeKind,
-  currentConversationIdRef,
 }: UseRightDockOptions) {
   const [open, setOpen] = useState(() => getRememberedDockOpen())
   const [width, setWidthState] = useState(() => getRememberedDockWidth())
@@ -57,7 +51,6 @@ export function useRightDock({
   }), [])
   const [treeExpanded, setTreeExpandedState] = useState<string[]>([])
   const [reveal, setReveal] = useState<DockRevealRequest>(null)
-  const [subAgentRequest, setSubAgentRequest] = useState<DockSubAgentRequest>(null)
   const [preview, setPreview] = useState<DockPreviewRequest>(null)
 
   // 工作目录跟随当前会话 / 选中项目 / agent runtime 变化，由后端 dock_resolve_cwd 解析。
@@ -110,14 +103,8 @@ export function useRightDock({
 
   /** 输入栏 Git 胶囊「在 Git 面板中打开」。 */
   const openGit = useCallback(() => showTab('git'), [showTab])
-  /** 标题栏后台任务状态灯 / 子代理指示器。 */
+  /** 标题栏后台任务状态灯。 */
   const openTasks = useCallback(() => showTab('tasks'), [showTab])
-
-  useEffect(() => onDockSubAgentRequest((target) => {
-    if (target.conversationId !== currentConversationIdRef.current) return
-    openTasks()
-    setSubAgentRequest((previous) => ({ ...target, nonce: (previous?.nonce ?? 0) + 1 }))
-  }), [currentConversationIdRef, openTasks])
 
   const setWidth = useCallback((nextWidth: number) => {
     setWidthState(nextWidth)
@@ -181,7 +168,6 @@ export function useRightDock({
     treeExpanded,
     reveal,
     preview,
-    subAgentRequest,
     toggle,
     close,
     openGit,

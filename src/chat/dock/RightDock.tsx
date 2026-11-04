@@ -9,7 +9,6 @@ import { FileTreePanel } from './FileTreePanel'
 import { GitPanel } from './GitPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
-import { SubAgentPanel } from '../SubAgentPanel'
 import { SidebarToggleIcon } from '../SidebarToggleIcon'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
@@ -50,7 +49,6 @@ type RightDockProps = {
   lang: Lang
   /** 当前对话 id（任务页按对话隔离）。null = 还没有对话。 */
   conversationId: string | null
-  subAgentRequest?: { conversationId: string; agentId: string; nonce: number } | null
   treeExpanded: string[]
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
@@ -72,7 +70,6 @@ export const RightDock = memo(function RightDock({
   workdir,
   lang,
   conversationId,
-  subAgentRequest,
   treeExpanded,
   revealRequest,
   previewRequest,
@@ -258,7 +255,7 @@ export const RightDock = memo(function RightDock({
         </div>
       )}
 
-      {/* 文件 / Git / 终端保留面板；子代理详情仅在任务页可见时读取。 */}
+      {/* 文件 / Git / 终端保留面板；后台任务仅在任务页可见时读取。 */}
       <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'files'}>
         <FileTreePanel
           workdir={workdir}
@@ -281,15 +278,11 @@ export const RightDock = memo(function RightDock({
         )}
       </div>
       <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={shown !== 'tasks'}>
-        {open && shown === 'tasks' && conversationId && (
-          <SubAgentPanel key={conversationId} conversationId={conversationId} lang={lang} revealAgent={subAgentRequest?.conversationId === conversationId ? subAgentRequest : null}
-            listFooter={<BackgroundTasksPanel hideEmpty active lang={lang} conversationId={conversationId} />} />
-        )}
-        {!conversationId && <BackgroundTasksPanel
+        <BackgroundTasksPanel
           active={open && shown === 'tasks'}
           lang={lang}
           conversationId={conversationId}
-        />}
+        />
       </div>
     </aside>
   )

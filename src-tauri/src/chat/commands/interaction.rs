@@ -129,6 +129,7 @@ pub(crate) async fn chat_cancel_stream(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<(), String> {
+    state.sub_agents.set_user_interrupted(&conversation_id, true);
     cancel_stream(&app, state.inner(), &conversation_id).await
 }
 

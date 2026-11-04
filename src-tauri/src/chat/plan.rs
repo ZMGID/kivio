@@ -73,7 +73,7 @@ pub fn format_prompt(state: &AgentPlanState) -> String {
         )
     } else if state.mode == AgentPlanMode::Orchestrate {
         format!(
-            "Agent orchestrate mode: proactively delegate useful independent work to sub-agents in parallel while you advance the main task yourself. Keep dispatches concise: goal, necessary context, and scope; avoid duplicate investigation or concurrent edits to the same files. Steer agents as work develops, reuse the relevant agent for follow-ups, and read or wait for the specific results you need. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself. Handle simple or tightly coupled work directly. If a branch encounters a runtime issue, adjust that branch and keep independent work moving. Follow the user's latest request; use the saved plan as context when relevant.\n\nCurrent saved plan:\n{current_plan}"
+            "Agent orchestrate mode: Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad, serialize independent work, or spawn then idle. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Spawn → keep working → read the auto-delivered result; use `wait` only when completely blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself. Follow the user's latest request; use the saved plan as context when relevant.\n\nCurrent saved plan:\n{current_plan}"
         )
     } else {
         format!(
@@ -145,8 +145,9 @@ mod tests {
         assert_eq!(state.plan, draft.plan);
         let prompt = format_prompt(&state);
         assert!(prompt.contains(current_plan_text(&draft).unwrap()));
-        assert!(prompt.contains("advance the main task yourself"));
-        assert!(prompt.contains("reuse the relevant agent"));
+        assert!(prompt.contains("fan substantial work to `task`"));
+        assert!(prompt.contains("use `wait` only when completely blocked"));
+        assert!(prompt.contains("Agents lack conversation"));
         assert!(!prompt.contains("Plan mode is read-only"));
         assert!(!prompt.contains("Required flow"));
         assert!(!prompt.contains("todo_write"));
