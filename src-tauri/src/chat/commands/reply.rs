@@ -701,7 +701,9 @@ pub(super) async fn complete_assistant_reply_inner(
     if let Some(goal_prompt) = crate::chat::goal::format_prompt(conversation.goal_state.as_ref())
         .filter(|_| goal_tools_available)
     {
-        prepared_prompt.context.push_str(&format!("\n\n{goal_prompt}"));
+        prepared_prompt
+            .context
+            .push_str(&format!("\n\n{goal_prompt}"));
     }
 
     let mut runtime_messages = match build_chat_api_messages_with_video(

@@ -739,7 +739,10 @@ fn cancel_pending(root: &Path) -> Result<(), String> {
     let trash = stage.with_extension(format!("cancelled-{}", uuid::Uuid::new_v4()));
     fs::rename(&stage, &trash).map_err(error)?;
     fs::remove_dir_all(&trash).map_err(|e| {
-        format!("恢复已取消，但临时备份数据未能删除，请手动删除 {}：{e}", trash.display())
+        format!(
+            "恢复已取消，但临时备份数据未能删除，请手动删除 {}：{e}",
+            trash.display()
+        )
     })
 }
 /// Set by `restart_after_restore`; consumed when the app actually exits.

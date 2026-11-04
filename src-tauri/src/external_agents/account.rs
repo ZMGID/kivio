@@ -137,7 +137,11 @@ fn normalize(
     usage: &Value,
     mut unavailable: Option<String>,
 ) -> Value {
-    let account = if agent == "grok" { json!({"planType": usage["subscription_tier"]}) } else { account.clone() };
+    let account = if agent == "grok" {
+        json!({"planType": usage["subscription_tier"]})
+    } else {
+        account.clone()
+    };
     let mut windows = Vec::new();
     let mut credits = Value::Null;
     let mut add_window = |name: String, window: &Value, claude: bool| {
@@ -151,8 +155,12 @@ fn normalize(
     };
     if agent == "grok" {
         let config = &usage["config"];
-        let mins = |key: &str| chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok();
-        let duration = mins("billingPeriodStart").zip(mins("billingPeriodEnd")).map(|(start, end)| (end - start).num_minutes());
+        let mins = |key: &str| {
+            chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok()
+        };
+        let duration = mins("billingPeriodStart")
+            .zip(mins("billingPeriodEnd"))
+            .map(|(start, end)| (end - start).num_minutes());
         add_window(
             "Weekly".into(),
             &json!({"usedPercent":config["creditUsagePercent"],"resetsAt":config["billingPeriodEnd"],"windowDurationMins":duration}),

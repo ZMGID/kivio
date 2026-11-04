@@ -1557,9 +1557,26 @@ mod tests {
         let chat_tools = crate::settings::ChatToolsConfig::default();
         for (tools_available, names) in [(true, vec!["read".to_string()]), (false, vec![])] {
             let prompt = build_chat_prompt(
-                "zh-CN", false, true, &registry, &chat_tools, tools_available, &names,
-                None, None, None, None, "", false, None, None, None, None, None,
-                Some("This conversation has knowledge bases attached: Docs."), &[],
+                "zh-CN",
+                false,
+                true,
+                &registry,
+                &chat_tools,
+                tools_available,
+                &names,
+                None,
+                None,
+                None,
+                None,
+                "",
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some("This conversation has knowledge bases attached: Docs."),
+                &[],
             );
             let prompt = format!("{}\n{}", prompt.system, prompt.context);
             assert!(!prompt.contains("knowledge bases attached"), "{prompt}");

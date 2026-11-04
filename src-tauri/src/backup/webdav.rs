@@ -581,7 +581,10 @@ pub(crate) async fn webdav_upload(
     Ok(skipped)
 }
 #[tauri::command]
-pub(crate) async fn webdav_download(app: AppHandle, name: String) -> Result<WebDavDownload, String> {
+pub(crate) async fn webdav_download(
+    app: AppHandle,
+    name: String,
+) -> Result<WebDavDownload, String> {
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
