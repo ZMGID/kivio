@@ -10,6 +10,7 @@ pub use files::{
     edit_file, glob_files, list_dir, read_file, search_files, write_file, FileMutationResult,
     ReadFileResult,
 };
+pub(crate) use files::read_text_content;
 pub(crate) use sandbox_exports::preflight_directory_merge;
 pub use sandbox_exports::{
     build_delivery_artifact_for_path, cleanup_stale_sandbox_exports, export_sandbox_artifacts,

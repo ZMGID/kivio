@@ -138,12 +138,13 @@ fn apply_context_state_update(
 }
 
 fn apply_upserts(conversation: &mut Conversation, messages: Vec<ChatMessage>) {
-    for message in messages {
+    for mut message in messages {
         if let Some(position) = conversation
             .messages
             .iter()
             .position(|item| item.id == message.id)
         {
+            crate::chat::sub_agent::progress::merge_message(&conversation.messages[position], &mut message);
             conversation.messages[position] = message;
         } else {
             conversation.messages.push(message);
@@ -1197,6 +1198,36 @@ mod tests {
         assert_eq!(current.messages.len(), 1);
         assert_eq!(current.messages[0].content, "final");
         assert_eq!(current.agent_todo_state, todo_before);
+    }
+
+    #[test]
+    fn final_assistant_upsert_retains_persisted_terminal_task_results() {
+        let mut current = conversation();
+        let old: ChatMessage = serde_json::from_value(serde_json::json!({
+            "id":"msg_run", "role":"assistant", "content":"draft", "timestamp":1,
+            "tool_calls":[{
+                "id":"call", "name":"task", "source":"native", "status":"success",
+                "structured_content":{"agents":[{"agentId":"a"},{"agentId":"b"}],
+                    "subagentProgressByTask":{"a":{"status":"completed","preview":"A final"},
+                                              "b":{"status":"running","preview":"B working"}}}
+            }]
+        })).unwrap();
+        let mut next = old.clone();
+        next.content = "final answer".into();
+        next.tool_calls[0].structured_content = Some(serde_json::json!({
+            "agents":[{"agentId":"a"},{"agentId":"b"}],
+            "subagentProgressByTask":{"a":{"status":"pending","preview":"stale"},
+                                      "b":{"status":"completed","preview":"B final"}}
+        }));
+        apply_message_mutation(&mut current, MessageMutation::Upsert(vec![old])).unwrap();
+        apply_message_mutation(&mut current, MessageMutation::Upsert(vec![next])).unwrap();
+        let reloaded: Conversation = serde_json::from_str(&serde_json::to_string(&current).unwrap()).unwrap();
+        let progress = &reloaded.messages[0].tool_calls[0].structured_content.as_ref().unwrap()["subagentProgressByTask"];
+        assert_eq!(reloaded.messages[0].content, "final answer");
+        assert_eq!(progress["a"]["status"], "completed");
+        assert_eq!(progress["a"]["preview"], "A final");
+        assert_eq!(progress["b"]["status"], "completed");
+        assert_eq!(progress["b"]["preview"], "B final");
     }
 
     #[test]

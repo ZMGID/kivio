@@ -665,6 +665,10 @@ impl OpenAiChatProvider<'_> {
                 body[key] = value.clone();
             }
         }
+        if request.options.tool_choice == crate::chat::model::ToolChoice::None {
+            body.as_object_mut().unwrap().remove("tools");
+            body["tool_choice"] = Value::String("none".to_string());
+        }
         body
     }
 

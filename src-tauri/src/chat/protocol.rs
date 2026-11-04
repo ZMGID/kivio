@@ -1804,16 +1804,24 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 preview: preview.clone(),
                 steps: steps.clone(),
             };
+            let native_task = snapshot.tools.iter().any(|tool| {
+                tool.id == *parent_tool_call_id && tool.source == "native"
+                    && matches!(tool.name.as_str(), "task" | "native__task")
+            });
             if let Some(existing) = snapshot.subagents.iter_mut().find(|pending| {
                 matches!(
                     pending,
                     ChatSubagentSnapshot::SubagentUpdated {
+                        parent_tool_call_id: pending_tool_id,
                         task_id: pending_id,
                         ..
-                    } if pending_id == task_id
+                    } if pending_id == task_id && pending_tool_id == parent_tool_call_id
                 )
             }) {
-                *existing = update;
+                let ChatSubagentSnapshot::SubagentUpdated { status: previous, .. } = &*existing;
+                if !native_task || !matches!(previous.as_str(), "completed" | "failed" | "aborted" | "cancelled") {
+                    *existing = update;
+                }
             } else {
                 snapshot.subagents.push(update);
             }
@@ -2252,6 +2260,90 @@ pub fn emit_run_event_or_live(
     run_id: &str,
     event: ChatRunEvent,
 ) {
+    if let ChatRunEvent::SubagentUpdated { task_id, status, .. } = &event {
+        if app.state::<AppState>().sub_agents.registry.get(conversation_id, task_id)
+            .is_some_and(|record| !record.published) { return; }
+        if matches!(status.as_str(), "completed" | "failed" | "aborted" | "cancelled") {
+            let app = app.clone();
+            let conversation_id = conversation_id.to_string();
+            let run_id = run_id.to_string();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = emit_run_event_or_live_durable(&app, &conversation_id, &run_id, event).await {
+                    eprintln!("Cannot persist subagent progress for {conversation_id}: {error}");
+                }
+            });
+            return;
+        }
+    }
+    emit_run_event_or_live_now(app, conversation_id, run_id, event);
+}
+
+pub async fn emit_run_event_or_live_durable(
+    app: &AppHandle,
+    conversation_id: &str,
+    run_id: &str,
+    mut event: ChatRunEvent,
+) -> Result<(), String> {
+    let progress = if let ChatRunEvent::SubagentUpdated {
+        parent_tool_call_id, task_id, name, model, depth, status, preview, steps,
+    } = &event {
+        let state = app.state::<AppState>();
+        match state.sub_agents.registry.get(conversation_id, task_id) {
+            Some(record) if !record.published => return Ok(()),
+            Some(record) if record.parent_id == crate::chat::sub_agent::MAIN_AGENT_ID
+                && matches!(status.as_str(), "completed" | "failed" | "aborted" | "cancelled") => {
+                let message_id = state.chat_protocol().hub().runs.get(run_id)
+                    .filter(|run| run.snapshot.conversation_id == conversation_id)
+                    .map(|run| run.snapshot.message_id.clone());
+                Some(crate::chat::sub_agent::progress::TerminalProgress {
+                    message_id,
+                    tool_call_id: parent_tool_call_id.clone(),
+                    task_id: task_id.clone(),
+                    name: name.clone(),
+                    model: model.clone(),
+                    depth: *depth,
+                    status: status.clone(),
+                    preview: preview.clone(),
+                    steps: steps.clone(),
+                })
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let result = if let Some(progress) = progress {
+        if progress.tool_call_id.is_empty() {
+            Err("missing parent task tool-call identity".to_string())
+        } else {
+            crate::chat::repository::repository(app)
+                .mutate(app, conversation_id, |_| {
+                    crate::chat::sub_agent::progress::append(app, conversation_id, &progress)
+                })
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &result {
+        if let ChatRunEvent::SubagentUpdated { preview, .. } = &mut event {
+            let text = preview.get_or_insert_with(String::new);
+            if !text.is_empty() { text.push_str("\n\n"); }
+            text.push_str(&format!("Task progress save could not be confirmed: {error}"));
+        }
+    }
+    emit_run_event_or_live_now(app, conversation_id, run_id, event);
+    result
+}
+
+fn emit_run_event_or_live_now(
+    app: &AppHandle,
+    conversation_id: &str,
+    run_id: &str,
+    event: ChatRunEvent,
+) {
     let state = app.state::<AppState>();
     let mut hub = state.chat_protocol().hub();
     if let Some(envelope) = hub.flush_pending_delta(run_id) {
@@ -2464,6 +2556,35 @@ mod tests {
         assert!(protocol
             .running_snapshot("conversation", "run", "wrong-message")
             .is_none());
+    }
+
+    #[test]
+    fn sync_snapshot_keeps_terminal_task_progress_when_a_stale_event_arrives() {
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "run", "message", 0).unwrap();
+        let tool: ChatRunEvent = serde_json::from_value(serde_json::json!({
+            "type":"tool_updated",
+            "tool":{"id":"call","name":"task","source":"native","serverId":null,"status":"running",
+                "argumentsPreview":"{}","resultPreview":null,"error":null,"startedAt":null,
+                "completedAt":null,"durationMs":null,"round":1,"sensitive":false,"artifacts":[],
+                "traceId":null,"spanId":null,"structuredContent":null}
+        })).unwrap();
+        hub.push("run", tool).unwrap();
+        let update = |id: &str, status: &str, preview: &str| -> ChatRunEvent {
+            serde_json::from_value(serde_json::json!({
+                "type":"subagent_updated", "parentToolCallId":"call", "taskId":id,
+                "name":id, "model":null, "depth":1, "status":status, "preview":preview, "steps":[]
+            })).unwrap()
+        };
+        hub.push("run", update("a", "completed", "A final")).unwrap();
+        hub.push("run", update("b", "running", "B working")).unwrap();
+        hub.push("run", update("a", "running", "A stale")).unwrap();
+        let snapshot = &hub.runs.get("run").unwrap().snapshot;
+        let progress = serde_json::to_value(&snapshot.subagents).unwrap();
+        assert_eq!(progress[0]["status"], "completed");
+        assert_eq!(progress[0]["preview"], "A final");
+        assert_eq!(progress[1]["status"], "running");
+        assert_eq!(progress[1]["preview"], "B working");
     }
 
     #[test]

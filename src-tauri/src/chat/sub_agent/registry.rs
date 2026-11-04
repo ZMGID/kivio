@@ -38,6 +38,8 @@ pub struct AgentRecord {
     pub output_file: PathBuf,
     pub last_activity: i64,
     pub activity: Option<String>,
+    /// Speculative runs are not shown until the final task call adopts them.
+    pub published: bool,
 }
 
 #[derive(Default)]
@@ -131,7 +133,7 @@ impl AgentRegistry {
         self.list(root)
             .into_iter()
             .filter(|agent| {
-                agent.id != id && matches!(agent.status, AgentStatus::Running | AgentStatus::Idle)
+                agent.published && agent.id != id && matches!(agent.status, AgentStatus::Running | AgentStatus::Idle)
             })
             .collect()
     }
@@ -207,6 +209,7 @@ mod tests {
             output_file: PathBuf::new(),
             last_activity: 0,
             activity: None,
+            published: true,
         }
     }
 

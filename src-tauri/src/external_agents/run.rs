@@ -666,7 +666,8 @@ pub(crate) async fn run_external_cli_reply_in(
             .unwrap_or_else(|| composed.full_prompt.clone()),
     });
 
-    let run_generation = state.chat_runtime().begin_generation(&conversation.id);
+    let run_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
+        .ok_or_else(|| "cancelled".to_string())?;
     let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     crate::chat::protocol::register_run(

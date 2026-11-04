@@ -346,6 +346,8 @@ pub async fn run_agent_loop(
     host: &dyn AgentHost,
     executor: &dyn ToolExecutor,
 ) -> Result<AgentRunResult, String> {
+    config.settings.chat_tools.approval_policy
+        .clone_from(&config.effective_chat_tools.approval_policy);
     let mut state = RunState {
         runtime_messages: std::mem::take(&mut config.runtime_messages),
         tools: std::mem::take(&mut config.tools),

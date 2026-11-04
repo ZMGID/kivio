@@ -525,12 +525,14 @@ async fn run_builtin_agent_node(
     };
     let max_output_tokens = settings.chat.max_output_tokens;
     let web_search_mode = WebSearchMode::resolve(None, &settings);
+    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
 
     let config = AgentRunConfig {
         provider_runtime: state,
         conversation_id: conversation_id.clone(),
         tool_conversation_id: conversation_id.clone(),
         depth: 0,
+        interactive_host: false,
         run_id: format!("auto-run-{run_id}"),
         message_id,
         generation,
@@ -540,6 +542,9 @@ async fn run_builtin_agent_node(
         runtime_context: Some(system_prompt.context.clone()),
         tools,
         blocked_tool_calls: Vec::new(),
+        plan_state: Default::default(),
+        mcp_tool_ids,
+        mcp_server_ids,
         settings,
         effective_chat_tools,
         language,

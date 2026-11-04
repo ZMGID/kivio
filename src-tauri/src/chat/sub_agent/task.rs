@@ -23,6 +23,11 @@ pub(crate) struct Admission {
 struct RootAdmission {
     // Covers identity allocation and registration as one operation per root.
     allocation: Mutex<bool>,
+    sessions: Mutex<HashMap<String, Arc<SessionAdmission>>>,
+}
+
+#[derive(Default)]
+struct SessionAdmission {
     state: Mutex<AdmissionState>,
 }
 
@@ -32,7 +37,7 @@ struct AdmissionState {
     active: usize,
     next_ticket: u64,
     retired: bool,
-    queue: VecDeque<(u64, oneshot::Sender<Permit>)>,
+    queue: VecDeque<(u64, oneshot::Sender<Permit>, Option<tauri::AppHandle>)>,
 }
 
 impl Admission {
@@ -49,14 +54,25 @@ impl Admission {
         let admission = self.root(root);
         let mut retired = admission.allocation.lock().unwrap_or_else(|e| e.into_inner());
         *retired = true;
-        let mut state = admission.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.retired = true;
-        state.queue.clear();
+        for session in admission.sessions.lock().unwrap_or_else(|e| e.into_inner()).values() {
+            let mut state = session.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.retired = true;
+            state.queue.clear();
+        }
     }
 }
 
 impl RootAdmission {
-    fn enqueue(self: &Arc<Self>, max: usize) -> Ticket {
+    fn session(&self, owner: &str) -> Arc<SessionAdmission> {
+        self.sessions.lock().unwrap_or_else(|e| e.into_inner())
+            .entry(owner.to_string())
+            .or_default()
+            .clone()
+    }
+}
+
+impl SessionAdmission {
+    fn enqueue_with_app(self: &Arc<Self>, max: usize, app: Option<&tauri::AppHandle>) -> Ticket {
         let (sender, receiver) = oneshot::channel();
         let (id, grants) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -64,7 +80,7 @@ impl RootAdmission {
             state.next_ticket += 1;
             let id = state.next_ticket;
             if !state.retired {
-                state.queue.push_back((id, sender));
+                state.queue.push_back((id, sender, app.cloned()));
             }
             (id, state.grants())
         };
@@ -72,16 +88,22 @@ impl RootAdmission {
         Ticket { root: self.clone(), id, receiver }
     }
 
-    fn send_grants(self: &Arc<Self>, grants: Vec<oneshot::Sender<Permit>>) {
+    #[cfg(test)]
+    fn enqueue(self: &Arc<Self>, max: usize) -> Ticket {
+        self.enqueue_with_app(max, None)
+    }
+
+    fn send_grants(self: &Arc<Self>, grants: Vec<(oneshot::Sender<Permit>, Option<tauri::AppHandle>)>) {
         // Send after unlocking: a closed receiver drops its permit immediately.
-        for sender in grants {
-            let _ = sender.send(Permit { root: self.clone() });
+        for (sender, app) in grants {
+            let _ = sender.send(Permit { root: self.clone(), app });
         }
     }
 
-    fn release(self: &Arc<Self>) {
+    fn release(self: &Arc<Self>, max: Option<usize>) {
         let grants = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(max) = max { state.max = max; }
             state.active -= 1;
             state.grants()
         };
@@ -90,13 +112,13 @@ impl RootAdmission {
 }
 
 impl AdmissionState {
-    fn grants(&mut self) -> Vec<oneshot::Sender<Permit>> {
+    fn grants(&mut self) -> Vec<(oneshot::Sender<Permit>, Option<tauri::AppHandle>)> {
         let mut grants = Vec::new();
         while self.max == 0 || self.active < self.max {
-            let Some((_, sender)) = self.queue.pop_front() else { break };
+            let Some((_, sender, app)) = self.queue.pop_front() else { break };
             if !sender.is_closed() {
                 self.active += 1;
-                grants.push(sender);
+                grants.push((sender, app));
             }
         }
         grants
@@ -104,7 +126,7 @@ impl AdmissionState {
 }
 
 struct Ticket {
-    root: Arc<RootAdmission>,
+    root: Arc<SessionAdmission>,
     id: u64,
     receiver: oneshot::Receiver<Permit>,
 }
@@ -132,7 +154,7 @@ impl Ticket {
 impl Drop for Ticket {
     fn drop(&mut self) {
         let mut state = self.root.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(index) = state.queue.iter().position(|(id, _)| *id == self.id) {
+        if let Some(index) = state.queue.iter().position(|(id, _, _)| *id == self.id) {
             state.queue.remove(index);
         }
     }
@@ -140,33 +162,19 @@ impl Drop for Ticket {
 
 /// One running subagent. Dropping it transfers capacity to the oldest waiter.
 pub(crate) struct Permit {
-    root: Arc<RootAdmission>,
+    root: Arc<SessionAdmission>,
+    app: Option<tauri::AppHandle>,
 }
 
-/// A subagent waiting for its children does not count against the running limit.
-pub(crate) struct SuspendedPermit {
-    root: Arc<RootAdmission>,
-}
-
-impl Permit {
-    pub(crate) fn release(self) -> SuspendedPermit {
-        let root = self.root.clone();
-        drop(self);
-        SuspendedPermit { root }
-    }
-}
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.root.release();
+        let max = self.app.as_ref().map(|app|
+            app.state::<crate::state::AppState>().settings_read().chat_tools.task_max_concurrency);
+        self.root.release(max);
     }
 }
 
-impl SuspendedPermit {
-    pub(crate) async fn reacquire(self, max: usize, cancel: &mut watch::Receiver<bool>) -> Option<Permit> {
-        self.root.enqueue(max).wait(cancel).await
-    }
-}
 
 struct SpawnPolicy<'a> {
     allowed: Option<Vec<&'a str>>,
@@ -205,21 +213,22 @@ pub fn tool_definition(defs: &[AgentDefinition], settings: &Settings) -> ChatToo
 
 pub(crate) fn tool_definition_with_policy(
     defs: &[AgentDefinition],
-    _settings: &Settings,
+    settings: &Settings,
     spawns: Option<&str>,
 ) -> ChatToolDefinition {
     let policy = SpawnPolicy::new(spawns);
-    let available: Vec<_> = defs.iter().filter(|def| policy.allows(def)).collect();
+    let available: Vec<_> = defs.iter().filter(|def| policy.allows(def) && def.unsupported.is_empty()).collect();
     let agent_list = available.iter()
         .map(|def| {
             let read_only = def.tools.as_ref().is_some_and(|tools| {
                 !tools.is_empty() && tools.iter().all(|tool| matches!(tool.as_str(),
                     "read" | "wait" | "grep" | "glob" | "find" | "web_search" | "ast_grep" |
                     "yield" | "ask" | "todo" | "recall" | "reflect" | "retain" | "memory_edit" |
-                    "checkpoint" | "rewind"))
+                    "checkpoint" | "rewind" | "lsp"))
             });
             let label = if read_only { " (READ-ONLY; investigation only, no edits)" } else { "" };
-            format!("- `{}`{}: {}\n", def.name, label, def.description)
+            let blocking = if def.blocking { " (BLOCKING; inline result)" } else { "" };
+            format!("- `{}`{}{}: {}\n", def.name, label, blocking, def.description)
         })
         .collect::<String>();
     let async_guidance = prompts::render(prompts::TASK_ASYNC_CONTRACT, &json!({
@@ -227,6 +236,8 @@ pub(crate) fn tool_definition_with_policy(
     }));
     let description = prompts::render(prompts::TASK_TOOL, &json!({
         "asyncGuidance": async_guidance,
+        "asyncEnabled": settings.chat_tools.task_async_enabled,
+        "hasBlockingAgents": available.iter().any(|def| def.blocking),
         "defaultAgent": policy.default_agent(),
         "scoutAvailable": available.iter().any(|def| def.name.eq_ignore_ascii_case("scout")),
         "spawningDisabled": policy.allowed.as_ref().is_some_and(Vec::is_empty),
@@ -266,11 +277,12 @@ pub(crate) fn tool_definition_with_policy(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PlannedTask {
     name: Option<String>,
     definition: AgentDefinition,
     task: String,
+    solution_space: String,
 }
 
 pub(crate) fn valid_agent_id(id: &str) -> bool {
@@ -299,9 +311,6 @@ fn preflight(
     depth: u8,
     max_depth: i32,
 ) -> Result<(String, Vec<PlannedTask>), String> {
-    if (max_depth >= 0 && i32::from(depth) >= max_depth) || depth == u8::MAX {
-        return Err(format!("Task recursion depth limit reached (depth {depth}, maximum {max_depth})."));
-    }
     let obj = args.as_object().ok_or("Expected an object with `context` and `tasks`.")?;
     if obj.contains_key("agent") {
         return Err("Top-level `agent` is not part of the batch shape. Set `tasks[].agent` instead.".into());
@@ -312,44 +321,53 @@ fn preflight(
     if let Some(key) = obj.keys().find(|key| !matches!(key.as_str(), "context" | "tasks")) {
         return Err(format!("Unexpected top-level field `{key}`."));
     }
-    let context = obj.get("context").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-        .ok_or("Missing `context`. Provide shared background for this batch.")?;
     let tasks = obj.get("tasks").and_then(Value::as_array).filter(|items| !items.is_empty())
         .ok_or("Missing `tasks`. Provide at least one task item.")?;
-    let policy = SpawnPolicy::new(spawns);
-    let mut seen = HashSet::new();
-    let mut planned = Vec::with_capacity(tasks.len());
     for (index, item) in tasks.iter().enumerate() {
         let label = format!("Task {}", index + 1);
         let item = item.as_object().ok_or_else(|| format!("{label} must be an object."))?;
         if let Some(key) = item.keys().find(|key| !matches!(key.as_str(), "name" | "agent" | "task" | "solutionSpace")) {
             return Err(format!("{label} has unexpected field `{key}`."));
         }
-        let name = match item.get("name") {
-            None => None,
-            Some(Value::String(name)) if name.trim().is_empty() => None,
-            Some(Value::String(name)) => {
-                let name = name.trim();
-                if !valid_agent_id(name) {
-                    return Err(format!("{label} has an unsafe name `{name}`. Use a valid filename without path separators or reserved device names."));
-                }
-                if !seen.insert(name.to_lowercase()) {
-                    return Err(format!("Duplicate task name `{name}`. Provided names must be unique within a call (case-insensitive)."));
-                }
-                Some(name.to_string())
-            }
-            Some(_) => return Err(format!("{label} `name` must be a string.")),
-        };
-        let task = item.get("task").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| format!("{label} is missing non-empty `task` instructions."))?;
+        if item.get("task").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
+            return Err(format!("{label} is missing non-empty `task` instructions."));
+        }
         if item.get("solutionSpace").and_then(Value::as_str).is_none() {
             return Err(format!("{label} requires a string `solutionSpace`."));
         }
-        let agent = match item.get("agent") {
-            None => policy.default_agent(),
-            Some(Value::String(agent)) if !agent.trim().is_empty() => agent.trim(),
-            Some(_) => return Err(format!("{label} `agent` must be a non-empty string.")),
-        };
+        if item.get("agent").is_some_and(|value| value.as_str().is_none_or(|s| s.trim().is_empty())) {
+            return Err(format!("{label} `agent` must be a non-empty string."));
+        }
+        if let Some(name) = item.get("name") {
+            let name = name.as_str().ok_or_else(|| format!("{label} `name` must be a string."))?.trim();
+            if !name.is_empty() {
+                if !valid_agent_id(name) {
+                    return Err(format!("{label} has an unsafe name `{name}`. Use a valid filename without path separators or reserved device names."));
+                }
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    for item in tasks {
+        if let Some(name) = item.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()) {
+            if !seen.insert(name.to_lowercase()) {
+                return Err(format!("Duplicate task name `{name}`. Provided names must be unique within a call (case-insensitive)."));
+            }
+        }
+    }
+    let context = obj.get("context").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+        .ok_or("Missing `context`. Provide shared background for this batch.")?;
+    if (max_depth >= 0 && i32::from(depth) >= max_depth) || depth == u8::MAX {
+        return Err(format!("Task recursion depth limit reached (depth {depth}, maximum {max_depth})."));
+    }
+    let policy = SpawnPolicy::new(spawns);
+    let mut planned = Vec::with_capacity(tasks.len());
+    for (index, item) in tasks.iter().enumerate() {
+        let label = format!("Task {}", index + 1);
+        let name = item.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string);
+        let task = item["task"].as_str().expect("validated task");
+        let solution_space = item["solutionSpace"].as_str().expect("validated solutionSpace");
+        let agent = item.get("agent").and_then(Value::as_str).map(str::trim).unwrap_or_else(|| policy.default_agent());
         let definition = find_definition(defs, agent).ok_or_else(|| {
             let available = defs.iter().filter(|def| policy.allows(def)).map(|def| def.name.as_str()).collect::<Vec<_>>().join(", ");
             format!("{label}: unknown agent `{agent}`. Available agents: {}.", if available.is_empty() { "none" } else { &available })
@@ -357,7 +375,13 @@ fn preflight(
         if !policy.allows(definition) {
             return Err(format!("{label}: agent `{}` is not allowed. Allowed agents: {}.", definition.name, policy.description()));
         }
-        planned.push(PlannedTask { name, definition: definition.clone(), task: task.trim().to_string() });
+        if !definition.unsupported.is_empty() {
+            return Err(format!("{label}: agent `{}` requires unavailable capabilities: {}.", definition.name, definition.unsupported.join(", ")));
+        }
+        planned.push(PlannedTask {
+            name, definition: definition.clone(), task: task.trim().to_string(),
+            solution_space: solution_space.to_string(),
+        });
     }
     Ok((context.to_string(), planned))
 }
@@ -378,163 +402,319 @@ fn soft_error(content: String) -> McpToolCallResult {
     McpToolCallResult { content, is_error: true, ..Default::default() }
 }
 
+async fn prepare(ctx: &SubAgentCallCtx<'_>) -> Result<(Settings, String, String, Vec<PlannedTask>), String> {
+    if ctx.native_ctx.depth > 0 && crate::chat::plan::is_plan_mode(ctx.native_ctx.plan_state) {
+        return Err("Plan-mode subagents cannot spawn additional agents.".into());
+    }
+    let root = &ctx.native_ctx.conversation_id;
+    let admission = ctx.state.sub_agents.admission.root(root);
+    if *admission.allocation.lock().unwrap_or_else(|e| e.into_inner()) {
+        return Err("The conversation was deleted.".into());
+    }
+    let settings = ctx.state.settings_read().clone();
+    let conversation = crate::chat::storage::load_conversation(ctx.app, root)?;
+    let cwd = crate::chat::storage::resolve_conversation_working_directory(
+        ctx.app, &conversation, &settings.chat_tools.native_tools.working_directory,
+    )?;
+    let catalog = ctx.state.chat_runtime().resource_catalog(
+        ctx.app, root, &settings.chat_tools.skill_scan_paths, Some(&cwd), false,
+    ).await?;
+    let owner = ctx.state.sub_agents.owner_for_run(&ctx.native_ctx.run_id);
+    let parent = if owner == MAIN_AGENT_ID {
+        if ctx.native_ctx.depth != 0 {
+            return Err("Cannot determine the spawning agent's policy.".into());
+        }
+        None
+    } else {
+        let record = ctx.state.sub_agents.registry.get(root, &owner)
+            .ok_or("The spawning agent is no longer registered.")?;
+        Some(find_definition(&catalog.agents, &record.agent_type)
+            .ok_or_else(|| format!("The spawning agent definition `{}` is unavailable.", record.agent_type))?)
+    };
+    let (context, planned) = preflight(
+        ctx.arguments, &catalog.agents, parent.and_then(|def| def.spawns.as_deref()),
+        ctx.native_ctx.depth, settings.chat_tools.task_max_recursion_depth,
+    )?;
+    Ok((settings, owner, context, planned))
+}
+
+fn disk_names(artifacts: &std::path::Path, taken: &mut HashSet<String>) -> Result<(), String> {
+    std::fs::create_dir_all(artifacts).map_err(|e| format!("Creating subagent artifact directory failed: {e}"))?;
+    for entry in std::fs::read_dir(artifacts).map_err(|e| format!("Reading subagent artifacts failed: {e}"))? {
+        let path = entry.map_err(|e| format!("Reading subagent artifact entry failed: {e}"))?.path();
+        if matches!(path.extension().and_then(|s| s.to_str()), Some("jsonl" | "md")) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                taken.insert(stem.to_lowercase());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reserve(
+    ctx: &SubAgentCallCtx<'_>, owner: &str, planned: &[PlannedTask],
+    adopted: &[Option<SpeculativeRun>], published: bool,
+) -> Result<Vec<registry::AgentRecord>, String> {
+    let root = &ctx.native_ctx.conversation_id;
+    let admission = ctx.state.sub_agents.admission.root(root);
+    let allocation = admission.allocation.lock().unwrap_or_else(|e| e.into_inner());
+    if *allocation { return Err("The conversation was deleted.".into()); }
+    let artifacts = registry::artifacts_dir(ctx.app, root)?;
+    let mut taken: HashSet<String> = ctx.state.sub_agents.registry.list(root).into_iter()
+        .map(|record| record.id.to_lowercase()).collect();
+    taken.extend([MAIN_AGENT_ID.to_lowercase(), "all".into()]);
+    disk_names(&artifacts, &mut taken)?;
+    let mut records = Vec::with_capacity(planned.len());
+    for (index, item) in planned.iter().enumerate() {
+        if let Some(run) = adopted.get(index).and_then(Option::as_ref) {
+            records.push(run.record.clone());
+            continue;
+        }
+        let name = item.name.clone().unwrap_or_else(names::generate_task_name);
+        let id = allocate_id(owner, &name, &mut taken);
+        if !valid_agent_id(&id) { return Err("Agent id is too long or unsafe for an artifact filename.".into()); }
+        records.push(registry::AgentRecord {
+            id: id.clone(), root: root.clone(), parent_id: owner.to_string(), generation: 0,
+            display_name: name, agent_type: item.definition.name.clone(),
+            status: registry::AgentStatus::Running, depth: ctx.native_ctx.depth + 1,
+            child_conversation_id: format!("subagent-{root}-{id}"), run_id: None,
+            session_file: artifacts.join(format!("{id}.jsonl")), output_file: artifacts.join(format!("{id}.md")),
+            last_activity: 0, activity: None, published,
+        });
+    }
+    for (index, record) in records.iter_mut().enumerate() {
+        if adopted.get(index).and_then(Option::as_ref).is_none() {
+            *record = ctx.state.sub_agents.registry.register(record.clone());
+        }
+    }
+    Ok(records)
+}
+
+/// An unadopted run owns cancellation; dropping it never publishes its result.
+pub(crate) struct SpeculativeRun {
+    app: tauri::AppHandle,
+    record: registry::AgentRecord,
+    job_id: String,
+    definition_key: String,
+    async_enabled: bool,
+    handle: Option<tauri::async_runtime::JoinHandle<()>>,
+    adopted: bool,
+}
+
+impl Drop for SpeculativeRun {
+    fn drop(&mut self) {
+        if !self.adopted {
+            self.app.state::<crate::state::AppState>().sub_agents.jobs.discard_inline(&self.record.root, &self.job_id);
+        }
+    }
+}
+
+fn launch(
+    ctx: &SubAgentCallCtx<'_>, owner: &str, context: &str, item: PlannedTask,
+    record: registry::AgentRecord, index: usize, settings: &Settings,
+) -> Result<SpeculativeRun, String> {
+    let admission = ctx.state.sub_agents.admission.root(&record.root);
+    let allocation = admission.allocation.lock().unwrap_or_else(|e| e.into_inner());
+    if *allocation { return Err("The conversation was deleted.".into()); }
+    let (job_id, mut cancel_rx) = ctx.state.sub_agents.jobs.register_inline(
+        &record.root, owner, &record.id, &item.task,
+    );
+    let ticket = admission.session(owner)
+        .enqueue_with_app(ctx.state.settings_read().chat_tools.task_max_concurrency, Some(ctx.app));
+    drop(allocation);
+    let app = ctx.app.clone();
+    let parent_run_id = ctx.native_ctx.run_id.clone();
+    let parent_tool_call_id = ctx.native_ctx.tool_call_id.clone().unwrap_or_default();
+    let parent_provider_id = ctx.native_ctx.provider.id.clone();
+    let parent_model = ctx.native_ctx.model.to_string();
+    let plan_state = ctx.native_ctx.plan_state.clone();
+    let approval_policy = ctx.native_ctx.approval_policy.to_string();
+    let interactive_host = ctx.native_ctx.interactive_host;
+    let mcp_tool_ids = ctx.native_ctx.mcp_tool_ids.to_vec();
+    let mcp_server_ids = ctx.native_ctx.mcp_server_ids.to_vec();
+    let context = context.to_string();
+    let definition_key = if record.published { String::new() } else {
+        serde_json::to_string(&item.definition).expect("agent definition serializes")
+    };
+    let run_record = record.clone();
+    let run_job = job_id.clone();
+    emit_progress(ctx.app, &parent_run_id, &parent_tool_call_id, &record, "pending");
+    let handle = tauri::async_runtime::spawn(async move {
+        let Some(permit) = ticket.wait(&mut cancel_rx).await else {
+            let state = app.state::<crate::state::AppState>();
+            state.sub_agents.registry.update(&run_record.root, &run_record.id, |current| {
+                if current.generation == run_record.generation {
+                    current.status = registry::AgentStatus::Idle;
+                    current.run_id = None;
+                    current.activity = None;
+                }
+            });
+            state.sub_agents.jobs.settle(&run_job, Err("Task cancelled before execution.".into()));
+            if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
+                &app, &run_record.root, &parent_run_id, progress_event(&parent_tool_call_id, &run_record, "aborted"),
+            ).await {
+                eprintln!("Could not persist cancelled task progress: {error}");
+            }
+            return;
+        };
+        executor::run(app, executor::Request {
+            record: run_record, job_id: run_job, index, definition: item.definition,
+            task: item.task, solution_space: item.solution_space, context,
+            parent_run_id, parent_tool_call_id, parent_provider_id, parent_model,
+            plan_state, mcp_tool_ids, mcp_server_ids, approval_policy, interactive_host, cancel_rx, permit,
+        }).await;
+    });
+    Ok(SpeculativeRun { app: ctx.app.clone(), record, job_id, definition_key,
+        async_enabled: settings.chat_tools.task_async_enabled, handle: Some(handle), adopted: false })
+}
+
+pub(crate) async fn start_speculative(
+    app: &tauri::AppHandle, native_ctx: &crate::mcp::registry::NativeToolContext<'_>,
+    prefix_args: &Value, index: usize,
+) -> Option<SpeculativeRun> {
+    let state = app.state::<crate::state::AppState>();
+    let ctx = SubAgentCallCtx { app, state: &state, native_ctx, arguments: prefix_args };
+    let (settings, owner, context, planned) = prepare(&ctx).await.ok()?;
+    if !settings.chat_tools.task_speculative_launch { return None; }
+    let item = planned.get(index)?.clone();
+    let record = reserve(&ctx, &owner, std::slice::from_ref(&item), &[], false).ok()?.pop()?;
+    launch(&ctx, &owner, &context, item, record, index, &settings).ok()
+}
+
 pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
-        let root = &ctx.native_ctx.conversation_id;
-        let admission = ctx.state.sub_agents.admission.root(root);
-        if *admission.allocation.lock().unwrap_or_else(|e| e.into_inner()) {
-            return Ok(soft_error("The conversation was deleted.".into()));
-        }
-        let settings = ctx.state.settings_read().clone();
-        let cwd = crate::chat::storage::load_conversation(ctx.app, root).ok().and_then(|conversation| {
-            crate::chat::storage::resolve_conversation_working_directory(
-                ctx.app, &conversation, &settings.chat_tools.native_tools.working_directory,
-            ).ok()
-        });
-        let catalog = ctx.state.chat_runtime().resource_catalog(
-            ctx.app, root, &settings.chat_tools.skill_scan_paths, cwd.as_deref(), false,
-        ).await;
-        if *admission.allocation.lock().unwrap_or_else(|e| e.into_inner()) {
-            return Ok(soft_error("The conversation was deleted.".into()));
-        }
-        let catalog = catalog?;
-        let owner = ctx.state.sub_agents.owner_for_run(&ctx.native_ctx.run_id);
-        let parent = if owner == MAIN_AGENT_ID {
-            if ctx.native_ctx.depth != 0 {
-                return Ok(soft_error("Cannot determine the spawning agent's policy.".into()));
+        let (settings, owner, context, planned) = match prepare(&ctx).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                ctx.state.sub_agents.speculative.discard(ctx.native_ctx);
+                return Ok(soft_error(error));
             }
-            None
-        } else {
-            let Some(record) = ctx.state.sub_agents.registry.get(root, &owner) else {
-                return Ok(soft_error("The spawning agent is no longer registered.".into()));
-            };
-            let Some(definition) = find_definition(&catalog.agents, &record.agent_type) else {
-                return Ok(soft_error(format!("The spawning agent definition `{}` is unavailable.", record.agent_type)));
-            };
-            Some(definition)
         };
-        let spawns = parent.and_then(|def| def.spawns.as_deref());
-        let (context, planned) = match preflight(
-            ctx.arguments, &catalog.agents, spawns, ctx.native_ctx.depth,
-            settings.chat_tools.task_max_recursion_depth,
-        ) {
-            Ok(plan) => plan,
-            Err(error) => return Ok(soft_error(error)),
-        };
-        let artifacts = registry::artifacts_dir(ctx.app, root)?;
-        let mut started = Vec::with_capacity(planned.len());
-        let mut launches = Vec::with_capacity(planned.len());
-        {
-            let _allocation = admission.allocation.lock().unwrap_or_else(|e| e.into_inner());
-            if *_allocation {
-                return Ok(soft_error("The conversation was deleted.".into()));
+        let mut adopted = ctx.state.sub_agents.speculative.adopt(ctx.native_ctx, ctx.arguments).await;
+        if adopted.iter().enumerate().any(|(index, run)| run.as_ref().is_some_and(|run| {
+            run.async_enabled != settings.chat_tools.task_async_enabled
+                || planned.get(index).is_none_or(|item| serde_json::to_string(&item.definition).ok().as_deref() != Some(run.definition_key.as_str()))
+        })) { adopted.clear(); }
+        let records = reserve(&ctx, &owner, &planned, &adopted, true)?;
+        let mut all = Vec::with_capacity(planned.len());
+        let mut started = Vec::new();
+        let mut inline = Vec::new();
+        for (index, (item, record)) in planned.into_iter().zip(records).enumerate() {
+            let background = settings.chat_tools.task_async_enabled && !item.definition.blocking;
+            let mut run = match adopted.get_mut(index).and_then(Option::take) {
+                Some(run) => run,
+                None => launch(&ctx, &owner, &context, item, record, index, &settings)?,
+            };
+            ctx.state.sub_agents.registry.update(&run.record.root, &run.record.id, |r| r.published = true);
+            if !run.record.published {
+                replay_progress(ctx.app, &ctx.native_ctx.run_id,
+                    ctx.native_ctx.tool_call_id.as_deref().unwrap_or_default(), &run).await;
             }
-            let mut taken: HashSet<String> = ctx.state.sub_agents.registry.list(root).into_iter()
-                .map(|record| record.id.to_lowercase()).collect();
-            taken.insert(MAIN_AGENT_ID.to_lowercase());
-            taken.insert("all".into());
-            let mut identities = Vec::with_capacity(planned.len());
-            for item in &planned {
-                let name = item.name.clone().unwrap_or_else(names::generate_task_name);
-                let id = allocate_id(&owner, &name, &mut taken);
-                if id.len() > 249 {
-                    return Ok(soft_error("Agent id is too long for an artifact filename.".into()));
+            let entry = json!({"agentId": run.record.id, "jobId": run.job_id,
+                "agent": run.record.agent_type, "name": run.record.display_name});
+            all.push(entry.clone());
+            if background {
+                ctx.state.sub_agents.jobs.promote_inline(&run.record.root, &run.job_id);
+                run.adopted = true;
+                started.push(entry);
+            } else {
+                inline.push(run);
+            }
+        }
+        let mut results = Vec::new();
+        for mut run in inline {
+            if let Some(handle) = run.handle.take() {
+                if let Err(error) = handle.await {
+                    ctx.state.sub_agents.jobs.settle(&run.job_id, Err(format!("Task execution failed: {error}")));
                 }
-                identities.push((name, id));
             }
-            std::fs::create_dir_all(&artifacts)
-                .map_err(|e| format!("Creating subagent artifact directory failed: {e}"))?;
-            for (index, (item, (name, id))) in planned.into_iter().zip(identities).enumerate() {
-                let record = ctx.state.sub_agents.registry.register(registry::AgentRecord {
-                    id: id.clone(),
-                    root: root.clone(),
-                    parent_id: owner.clone(),
-                    generation: 0,
-                    display_name: name.clone(),
-                    agent_type: item.definition.name.clone(),
-                    status: registry::AgentStatus::Running,
-                    depth: ctx.native_ctx.depth + 1,
-                    child_conversation_id: format!("subagent-{root}-{id}"),
-                    run_id: None,
-                    session_file: artifacts.join(format!("{id}.jsonl")),
-                    output_file: artifacts.join(format!("{id}.md")),
-                    last_activity: 0,
-                    activity: None,
-                });
-                let (job_id, cancel_rx) = ctx.state.sub_agents.jobs.register(root, &owner, &id, &item.task);
-                let max = ctx.state.settings_read().chat_tools.task_max_concurrency;
-                let ticket = admission.enqueue(max);
-                started.push(json!({"agentId": id, "jobId": job_id, "agent": item.definition.name, "name": name}));
-                launches.push((record, job_id, cancel_rx, ticket, item.definition, item.task, index));
-            }
+            let result = ctx.state.sub_agents.jobs.take_inline(&run.record.root, &run.job_id)
+                .ok_or_else(|| format!("Inline task `{}` ended without a retained result.", run.record.id))?;
+            results.push(result);
+            run.adopted = true;
         }
-        let parent_run_id = ctx.native_ctx.run_id.clone();
-        let parent_tool_call_id = ctx.native_ctx.tool_call_id.clone().unwrap_or_default();
-        let parent_provider_id = ctx.native_ctx.provider.id.clone();
-        let parent_model = ctx.native_ctx.model.to_string();
-        for (record, job_id, mut cancel_rx, ticket, definition, task, index) in launches {
-            emit_progress(ctx.app, &parent_run_id, &parent_tool_call_id, &record, "pending");
-            let app = ctx.app.clone();
-            let context = context.clone();
-            let parent_run_id = parent_run_id.clone();
-            let parent_tool_call_id = parent_tool_call_id.clone();
-            let parent_provider_id = parent_provider_id.clone();
-            let parent_model = parent_model.clone();
-            tauri::async_runtime::spawn(async move {
-                let Some(permit) = ticket.wait(&mut cancel_rx).await else {
-                    let state = app.state::<crate::state::AppState>();
-                    state.sub_agents.registry.update(&record.root, &record.id, |current| {
-                        if current.generation == record.generation {
-                            current.status = registry::AgentStatus::Idle;
-                            current.run_id = None;
-                            current.activity = None;
-                        }
-                    });
-                    emit_progress(&app, &parent_run_id, &parent_tool_call_id, &record, "aborted");
-                    return;
+        let mut progress = serde_json::Map::new();
+        for entry in &all {
+            let id = entry["agentId"].as_str().unwrap_or_default();
+            let job_id = entry["jobId"].as_str().unwrap_or_default();
+            let snapshot = results.iter().find(|r| r.id == job_id).cloned()
+                .or_else(|| ctx.state.sub_agents.jobs.get(job_id));
+            if let Some(snapshot) = snapshot {
+                let status = match snapshot.status {
+                    super::jobs::JobStatus::Running => "running",
+                    super::jobs::JobStatus::Completed => "completed",
+                    super::jobs::JobStatus::Failed => "failed",
+                    super::jobs::JobStatus::Cancelled => "aborted",
                 };
-                executor::run(app, executor::Request {
-                    record, job_id, index, definition, task, context,
-                    parent_run_id, parent_tool_call_id, parent_provider_id, parent_model,
-                    cancel_rx, permit,
-                }).await;
-            });
+                let mut item = snapshot.progress.unwrap_or_else(|| json!({}));
+                item["taskId"] = json!(id);
+                item["name"] = entry["name"].clone();
+                item["status"] = json!(status);
+                if item.get("preview").and_then(Value::as_str).is_none() {
+                    if let Some(result) = snapshot.result { item["preview"] = json!(result); }
+                }
+                progress.insert(id.to_string(), item);
+            }
         }
-        let mut labels = Vec::new();
-        for item in &started {
-            let label = item["agent"].as_str().unwrap_or_default();
-            if !labels.contains(&label) { labels.push(label); }
+        let mut content = results.iter().map(|r| r.result.as_deref()
+            .unwrap_or("Task was cancelled before a result was available.")).collect::<Vec<_>>().join("\n\n");
+        if !started.is_empty() {
+            let labels = started.iter().filter_map(|v| v["agent"].as_str()).collect::<Vec<_>>().join(", ");
+            let receipt = prompts::render(prompts::TASK_SPAWN_FEEDBACK, &json!({
+                "count": started.len(), "mixed": !results.is_empty(),
+                "singular": started.len() == 1, "singleCall": all.len() == 1,
+                "agentId": started[0]["agentId"], "jobId": started[0]["jobId"],
+                "agentLabel": labels, "scheduleFailureSummary": "",
+                "showListing": started.len() > 1, "started": started,
+            }));
+            if !content.is_empty() { content.push_str("\n\n"); }
+            content.push_str(receipt.trim());
         }
-        let content = prompts::render(prompts::TASK_SPAWN_FEEDBACK, &json!({
-            "count": started.len(),
-            "mixed": false,
-            "singular": started.len() == 1,
-            "singleCall": started.len() == 1,
-            "agentId": started[0]["agentId"],
-            "jobId": started[0]["jobId"],
-            "agentLabel": labels.join(", "),
-            "scheduleFailureSummary": "",
-            "showListing": started.len() > 1,
-            "started": started,
-        })).trim().to_string();
-        let structured = json!({"agents": started});
-        Ok(McpToolCallResult {
-            content, raw: structured.clone(), structured_content: Some(structured), ..Default::default()
-        })
+        let failed = results.iter().any(|r| r.status != super::jobs::JobStatus::Completed);
+        let structured = json!({"agents": all, "results": results,
+            "subagentProgressByTask": progress,
+            "async": {"state": if started.is_empty() { if failed { "failed" } else { "completed" } } else { "running" }}});
+        Ok(McpToolCallResult { content, is_error: failed, raw: structured.clone(), structured_content: Some(structured), ..Default::default() })
     })
 }
 
-fn emit_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &str, record: &registry::AgentRecord, status: &str) {
-    crate::chat::protocol::emit_run_event_or_live(app, &record.root, run_id, crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+fn progress_event(tool_call_id: &str, record: &registry::AgentRecord, status: &str) -> crate::chat::protocol::ChatRunEvent {
+    crate::chat::protocol::ChatRunEvent::SubagentUpdated {
         parent_tool_call_id: tool_call_id.into(),
         task_id: record.id.clone(),
         name: record.display_name.clone(),
         model: None,
         depth: record.depth,
         status: status.into(),
-        preview: None,
+        preview: (status == "aborted").then(|| "Task cancelled before execution.".into()),
         steps: Vec::new(),
-    });
+    }
+}
+
+fn emit_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &str, record: &registry::AgentRecord, status: &str) {
+    crate::chat::protocol::emit_run_event_or_live(app, &record.root, run_id, progress_event(tool_call_id, record, status));
+}
+
+async fn replay_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &str, run: &SpeculativeRun) {
+    let state = app.state::<crate::state::AppState>();
+    let Some(snapshot) = state.sub_agents.jobs.get(&run.job_id) else { return };
+    let status = match snapshot.status {
+        super::jobs::JobStatus::Running => "running",
+        super::jobs::JobStatus::Completed => "completed",
+        super::jobs::JobStatus::Failed => "failed",
+        super::jobs::JobStatus::Cancelled => "aborted",
+    };
+    let preview = snapshot.progress.as_ref().and_then(|p| p["preview"].as_str()).map(str::to_string)
+        .or(snapshot.result)
+        .or_else(|| snapshot.progress.as_ref().and_then(|p| p["recentOutput"].as_array())
+            .map(|lines| lines.iter().rev().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")));
+    let mut event = progress_event(tool_call_id, &run.record, status);
+    if let crate::chat::protocol::ChatRunEvent::SubagentUpdated { preview: target, .. } = &mut event {
+        *target = preview;
+    }
+    if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(app, &run.record.root, run_id, event).await {
+        eprintln!("Could not persist adopted task progress: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -584,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_defaults_depth_and_tool_description_match() {
+    fn policy_enforces_role_and_depth_limits() {
         let defs = crate::agents::builtin_agent_definitions();
         let no_agent = batch(json!([{"task": "x", "solutionSpace": "x"}]));
         assert_eq!(preflight(&no_agent, &defs, Some("scout, task"), 1, 2).unwrap().1[0].definition.name, "scout");
@@ -592,12 +772,6 @@ mod tests {
         assert!(preflight(&no_agent, &defs, Some(""), 0, 2).is_err());
         assert!(preflight(&no_agent, &defs, None, 2, 2).is_err());
         assert!(preflight(&no_agent, &defs, None, 8, -1).is_ok());
-        let def = tool_definition_with_policy(&defs, &Settings::default(), Some("scout"));
-        assert!(def.description.contains("default (`scout`)"));
-        assert!(def.description.contains("- `scout` (READ-ONLY; investigation only, no edits):"));
-        assert!(!def.description.contains("- `task`:"));
-        assert_eq!(def.input_schema["additionalProperties"], false);
-        assert_eq!(def.input_schema["properties"]["tasks"]["items"]["required"], json!(["task", "solutionSpace"]));
     }
 
     #[test]
@@ -617,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn admission_is_fifo_and_removes_cancelled_waiters() {
         let admission = Admission::default();
-        let root = admission.root("root");
+        let root = admission.root("root").session(MAIN_AGENT_ID);
         let (_tx, mut cancel) = watch::channel(false);
         let first = root.enqueue(1).wait(&mut cancel).await.unwrap();
         let (cancel_tx, mut canceled) = watch::channel(false);
@@ -638,67 +812,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_resizes_live_and_suspended_permits_rejoin_fifo() {
-        let admission = Admission::default();
-        let root = admission.root("root");
+    async fn admission_resize_preserves_fifo_and_unlimited_semantics() {
+        let root = SessionAdmission::default();
+        let root = Arc::new(root);
         let (_tx, mut cancel) = watch::channel(false);
         let first = root.enqueue(1).wait(&mut cancel).await.unwrap();
         let mut second = root.enqueue(1);
-        let mut third = root.enqueue(1);
-        let mut fourth = root.enqueue(2);
+        let mut third = root.enqueue(2);
         let second_permit = second.receiver.try_recv().unwrap();
         assert!(third.receiver.try_recv().is_err());
-        assert!(fourth.receiver.try_recv().is_err());
-        let suspended = first.release();
-        let third_permit = third.receiver.try_recv().unwrap();
-        let mut unlimited = root.enqueue(0);
-        let fourth_permit = fourth.receiver.try_recv().unwrap();
-        let unlimited_permit = unlimited.receiver.try_recv().unwrap();
-        let mut resumed = root.enqueue(1);
+        let mut fourth = root.enqueue(1);
+        drop(first);
+        assert!(third.receiver.try_recv().is_err(), "shrinking must not grant while at capacity");
         drop(second_permit);
+        let third_permit = third.receiver.try_recv().unwrap();
+        assert!(fourth.receiver.try_recv().is_err());
+        let mut fifth = root.enqueue(0);
+        drop(fourth.receiver.try_recv().unwrap());
+        drop(fifth.receiver.try_recv().unwrap());
         drop(third_permit);
-        drop(fourth_permit);
-        assert!(resumed.receiver.try_recv().is_err());
-        drop(unlimited_permit);
-        let resumed_permit = resumed.receiver.try_recv().unwrap();
-        drop(resumed_permit);
-        let reacquired = suspended.reacquire(1, &mut cancel).await.unwrap();
-        drop(reacquired);
         assert_eq!(root.state.lock().unwrap().active, 0);
     }
 
     #[tokio::test]
-    async fn suspended_permit_rejoins_behind_existing_waiters() {
+    async fn descendant_can_run_while_parent_holds_its_session_permit() {
         let admission = Admission::default();
         let root = admission.root("root");
+        let main = root.session(MAIN_AGENT_ID);
+        let child = root.session("Child");
         let (_tx, mut cancel) = watch::channel(false);
-        let first = root.enqueue(1).wait(&mut cancel).await.unwrap();
-        let mut older = root.enqueue(1);
-        let suspended = first.release();
-        let older_permit = older.receiver.try_recv().unwrap();
-        let resume = suspended.reacquire(1, &mut cancel);
-        tokio::pin!(resume);
-        assert!(futures::poll!(&mut resume).is_pending());
-        let mut newer = root.enqueue(1);
-        drop(older_permit);
-        let resumed_permit = resume.await.unwrap();
-        assert!(newer.receiver.try_recv().is_err());
-        drop(resumed_permit);
-        drop(newer.receiver.try_recv().unwrap());
-        assert_eq!(root.state.lock().unwrap().active, 0);
+        let parent = main.enqueue(1).wait(&mut cancel).await.unwrap();
+        let mut sibling = main.enqueue(1);
+        let mut descendant = child.enqueue(1);
+        let descendant = descendant.receiver.try_recv().expect("child session has its own capacity");
+        assert!(sibling.receiver.try_recv().is_err(), "parent retains its permit while waiting");
+        drop(descendant);
+        assert!(sibling.receiver.try_recv().is_err());
+        drop(parent);
+        drop(sibling.receiver.try_recv().unwrap());
+    }
+
+    #[test]
+    fn old_transcript_and_output_names_are_not_reused_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Alpha.jsonl"), "old transcript").unwrap();
+        std::fs::write(dir.path().join("Alpha-2.md"), "old output").unwrap();
+        let mut taken = HashSet::new();
+        disk_names(dir.path(), &mut taken).unwrap();
+        assert_eq!(allocate_id(MAIN_AGENT_ID, "alpha", &mut taken), "alpha-3");
+        assert_eq!(std::fs::read_to_string(dir.path().join("Alpha.jsonl")).unwrap(), "old transcript");
     }
 
     #[tokio::test]
     async fn deletion_tombstones_root_and_cancels_queued_and_future_waiters() {
         let admission = Admission::default();
-        let root = admission.root("root");
+        let root = admission.root("root").session(MAIN_AGENT_ID);
         let (_tx, mut cancel) = watch::channel(false);
         let running = root.enqueue(1).wait(&mut cancel).await.unwrap();
         let queued = root.enqueue(1);
         admission.remove_root("root");
         assert!(queued.wait(&mut cancel).await.is_none());
         assert!(*admission.root("root").allocation.lock().unwrap());
-        assert!(admission.root("root").enqueue(0).wait(&mut cancel).await.is_none());
+        assert!(root.enqueue(0).wait(&mut cancel).await.is_none());
         drop(running);
         assert_eq!(root.state.lock().unwrap().active, 0);
     }
@@ -706,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_after_grant_releases_capacity() {
         let admission = Admission::default();
-        let root = admission.root("root");
+        let root = admission.root("root").session(MAIN_AGENT_ID);
         let (tx, mut cancel) = watch::channel(false);
         let ticket = root.enqueue(1);
         tx.send(true).unwrap();

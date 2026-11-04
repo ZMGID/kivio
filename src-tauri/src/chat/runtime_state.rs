@@ -25,6 +25,7 @@ pub(crate) struct ChatRuntimeState {
     reply_idle: tokio::sync::Notify,
     /// Generation ownership still rejects late writes; this only wakes I/O waits.
     generation_retired: tokio::sync::Notify,
+    steering_arrived: tokio::sync::Notify,
     popout_create_lock: tokio::sync::Mutex<()>,
     conversation_create_lock: tokio::sync::Mutex<()>,
 }
@@ -33,6 +34,7 @@ pub(crate) struct ChatRuntimeState {
 struct ChatRunIndexes {
     active_generations: HashMap<String, HashSet<u64>>,
     active_replies: HashMap<String, HashSet<String>>,
+    send_reservations: HashMap<String, (String, bool)>,
     pending_steering: HashMap<String, Vec<SteeringMessage>>,
     pending_follow_up: HashMap<String, Vec<SteeringMessage>>,
     pending_goal_user_queue: HashSet<String>,
@@ -89,8 +91,22 @@ impl ChatRuntimeState {
         generation
     }
 
+    /// Admit a reply only while its send reservation has not been cancelled.
+    pub(crate) fn begin_reply_generation(&self, conversation_id: &str) -> Option<u64> {
+        let mut indexes = self.indexes();
+        if indexes.send_reservations.get(conversation_id).is_some_and(|(_, cancelled)| *cancelled) {
+            return None;
+        }
+        let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        indexes.active_generations.entry(conversation_id.to_string()).or_default().insert(generation);
+        Some(generation)
+    }
+
     pub(crate) fn cancel_conversation(&self, conversation_id: &str) {
         let mut indexes = self.indexes();
+        if let Some((_, cancelled)) = indexes.send_reservations.get_mut(conversation_id) {
+            *cancelled = true;
+        }
         indexes.active_generations.remove(conversation_id);
         indexes.pending_steering.remove(conversation_id);
         indexes.pending_follow_up.remove(conversation_id);
@@ -165,7 +181,21 @@ impl ChatRuntimeState {
             .entry(conversation_id.to_string())
             .or_default()
             .push(message);
+        drop(indexes);
+        self.steering_arrived.notify_waiters();
         true
+    }
+
+    pub(crate) async fn wait_for_steering(&self, conversation_id: &str) {
+        loop {
+            let notified = self.steering_arrived.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.indexes().pending_steering.get(conversation_id).is_some_and(|messages| !messages.is_empty()) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     pub(crate) fn take_steering(&self, conversation_id: &str) -> Vec<SteeringMessage> {
@@ -230,6 +260,7 @@ impl ChatRuntimeState {
             let mut indexes = self.indexes();
             indexes.active_generations.remove(conversation_id);
             indexes.active_replies.remove(conversation_id);
+            indexes.send_reservations.remove(conversation_id);
             indexes.pending_steering.remove(conversation_id);
             indexes.pending_follow_up.remove(conversation_id);
             indexes.pending_goal_user_queue.remove(conversation_id);
@@ -435,6 +466,7 @@ impl ChatRuntimeState {
             return false;
         }
         runs.insert(run_id.to_string());
+        indexes.send_reservations.insert(conversation_id.to_string(), (run_id.to_string(), false));
         true
     }
 
@@ -459,13 +491,13 @@ impl ChatRuntimeState {
     /// atomic send reservation as `try_reserve_send`. Waiters re-check after
     /// every idle signal, so a user send that wins the race simply queues this
     /// one behind it again.
-    pub(crate) async fn reserve_send_when_idle(&self, conversation_id: &str, run_id: &str) {
+    pub(crate) async fn reserve_send_when_idle<T>(&self, mut try_reserve: impl FnMut() -> Option<T>) -> T {
         loop {
             let notified = self.reply_idle.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.try_reserve_send(conversation_id, run_id) {
-                return;
+            if let Some(reservation) = try_reserve() {
+                return reservation;
             }
             notified.await;
         }
@@ -504,6 +536,9 @@ fn retire_generation(indexes: &mut ChatRunIndexes, conversation_id: &str, genera
 
 /// Returns true when this retired the conversation's last reply slot.
 fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &str) -> bool {
+    if indexes.send_reservations.get(conversation_id).is_some_and(|(id, _)| id == run_id) {
+        indexes.send_reservations.remove(conversation_id);
+    }
     if let Some(runs) = indexes.active_replies.get_mut(conversation_id) {
         if !runs.remove(run_id) {
             return false;
@@ -585,7 +620,7 @@ mod tests {
 
         let waiter = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.reserve_send_when_idle("a", "queued").await }
+            async move { runtime.reserve_send_when_idle(|| runtime.try_reserve_send("a", "queued").then_some(())).await }
         });
         tokio::task::yield_now().await;
         runtime.end_reply("a", "run-1");
@@ -650,6 +685,21 @@ mod tests {
         ));
         runtime.begin_generation("conversation");
         assert!(runtime.take_steering("conversation").is_empty());
+    }
+
+    #[tokio::test]
+    async fn steering_wakes_waiters_without_consuming_or_confusing_follow_up() {
+        let runtime = ChatRuntimeState::default();
+        runtime.begin_generation("conversation");
+        let waiting = runtime.wait_for_steering("conversation");
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert!(runtime.push_follow_up("conversation", SteeringMessage { id: "follow".into(), text: "later".into() }));
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert!(runtime.push_steering("conversation", SteeringMessage { id: "steer".into(), text: "now".into() }));
+        waiting.await;
+        assert_eq!(runtime.take_steering("conversation")[0].id, "steer");
+        assert_eq!(runtime.take_follow_up("conversation")[0].id, "follow");
     }
 
     #[test]

@@ -462,12 +462,13 @@ pub(crate) async fn push_assistant_message(
 /// writes a draft assistant message under the run's `message_id`; both that
 /// draft path and the final write go through here so a completed run cleanly
 /// overwrites its own draft instead of appending a duplicate.
-pub(super) fn upsert_assistant_message(conversation: &mut Conversation, message: ChatMessage) {
+pub(super) fn upsert_assistant_message(conversation: &mut Conversation, mut message: ChatMessage) {
     if let Some(pos) = conversation
         .messages
         .iter()
         .position(|existing| existing.id == message.id)
     {
+        crate::chat::sub_agent::progress::merge_message(&conversation.messages[pos], &mut message);
         conversation.messages[pos] = message;
     } else {
         conversation.messages.push(message);

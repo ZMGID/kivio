@@ -18,6 +18,7 @@ pub const WORKBENCH_LOCATION_PROMPT_HEAD: &str = "Current default workbench:";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelRole {
+    Developer,
     User,
     Assistant,
     Tool,
@@ -26,6 +27,7 @@ pub enum ModelRole {
 impl ModelRole {
     pub fn as_str(self) -> &'static str {
         match self {
+            ModelRole::Developer => "developer",
             ModelRole::User => "user",
             ModelRole::Assistant => "assistant",
             ModelRole::Tool => "tool",
@@ -214,6 +216,14 @@ impl From<&ChatToolDefinition> for ModelTool {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoice {
+    #[default]
+    Auto,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOptions {
     /// 显式的单次请求覆盖；None 时由 provider/model 元数据解析，仍缺省则不发送。
@@ -243,6 +253,8 @@ pub struct GenerateOptions {
     #[serde(default)]
     pub builtin_web_search: bool,
     #[serde(default)]
+    pub tool_choice: ToolChoice,
+    #[serde(default)]
     pub provider_options: Value,
 }
 
@@ -254,6 +266,7 @@ impl Default for GenerateOptions {
             thinking_enabled: true,
             thinking_level: None,
             builtin_web_search: false,
+            tool_choice: ToolChoice::Auto,
             provider_options: Value::Object(Default::default()),
         }
     }
@@ -470,7 +483,11 @@ impl GenerateOutput {
             }
         }
         if let Some(message) = self.provider_messages.first() {
-            return message.clone();
+            let mut message = message.clone();
+            if let (Some(reason), Some(object)) = (&self.finish_reason, message.as_object_mut()) {
+                object.insert("finish_reason".into(), Value::String(reason.clone()));
+            }
+            return message;
         }
         let mut message = serde_json::json!({
             "role": "assistant",
@@ -504,6 +521,9 @@ impl GenerateOutput {
             if let Ok(items) = serde_json::to_value(&self.reasoning_items) {
                 message["reasoning_items"] = items;
             }
+        }
+        if let Some(reason) = &self.finish_reason {
+            message["finish_reason"] = Value::String(reason.clone());
         }
         message
     }
@@ -924,7 +944,7 @@ pub(crate) fn paired_model_messages(
                 }
                 true
             }
-            ModelRole::User => pending.is_empty(),
+            ModelRole::User | ModelRole::Developer => pending.is_empty(),
             ModelRole::Tool => !message.content.is_empty() && message.content.iter().all(|part| {
                 matches!(part, MessagePart::ToolResult { tool_call_id, .. } if pending.remove(tool_call_id.as_str()))
             }),
@@ -1081,6 +1101,7 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
         "assistant" => ModelRole::Assistant,
         "tool" => ModelRole::Tool,
         "user" => ModelRole::User,
+        "developer" => ModelRole::Developer,
         _ => return None,
     };
     let mut parts = Vec::new();
@@ -1767,6 +1788,26 @@ MCP note after the path.";
         assert_eq!(items[5]["role"], "user");
         assert_eq!(items[6]["role"], "assistant");
         assert_eq!(items[7]["content"][0]["text"], "你回答用的是英文。为啥");
+    }
+
+    #[test]
+    fn developer_delivery_stays_after_paired_tool_results() {
+        let request = generate_request_from_openai_messages(
+            "m",
+            vec![
+                serde_json::json!({"role":"assistant","tool_calls":[
+                    {"id":"call_1","type":"function","function":{"name":"read","arguments":"{}"}}
+                ]}),
+                serde_json::json!({"role":"developer","content":"<async-result>done</async-result>"}),
+                serde_json::json!({"role":"tool","tool_call_id":"call_1","content":"read output"}),
+            ],
+            None, Default::default(), "test", Default::default(),
+        );
+        let messages = openai_messages_from_generate_request(&request);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[2]["role"], "developer");
+        assert_eq!(messages[2]["content"], "<async-result>done</async-result>");
     }
 
     #[test]

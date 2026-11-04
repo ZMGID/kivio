@@ -143,6 +143,10 @@ impl HookDispatcher {
             .any(|hook| hook.enabled && HookEvent::parse(&hook.event).is_some())
     }
 
+    pub(crate) fn handles(&self, event: HookEvent) -> bool {
+        self.shared.by_event.contains_key(event.as_str())
+    }
+
     /// 无启用 Hook 时返回 `None` —— 调用侧零开销（不构造载荷、不进队列）。
     pub fn new(
         app: AppHandle,
@@ -319,7 +323,7 @@ impl HookDispatcher {
         round: Option<u32>,
         tool_call_id: Option<&str>,
     ) {
-        if !self.shared.by_event.contains_key(event.as_str()) {
+        if !self.handles(event) {
             return;
         }
         // 流水记在入队处（而非 worker 里）：断言的是 loop 的派发顺序，不是执行调度。

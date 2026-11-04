@@ -772,6 +772,10 @@ impl AnthropicMessagesProvider<'_> {
                 body[key] = value.clone();
             }
         }
+        if request.options.tool_choice == crate::chat::model::ToolChoice::None {
+            body.as_object_mut().unwrap().remove("tools");
+            body["tool_choice"] = serde_json::json!({ "type": "none" });
+        }
         if crate::provider_request::is_claude_code_identity(self.provider) {
             rename_tools_for_claude_code(&mut body);
         }
@@ -1224,7 +1228,7 @@ fn anthropic_messages_with_unsigned_thinking(
     let mut messages: Vec<Value> = Vec::new();
     for message in super::types::paired_model_messages(&request.messages).iter() {
         match message.role {
-            ModelRole::User => messages.push(serde_json::json!({
+            ModelRole::User | ModelRole::Developer => messages.push(serde_json::json!({
                 "role": "user",
                 "content": anthropic_content_blocks(message, ModelRole::User, allow_unsigned, &request.model, provider_id),
             })),

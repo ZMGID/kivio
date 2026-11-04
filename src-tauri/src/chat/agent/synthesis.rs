@@ -42,7 +42,7 @@ pub(crate) async fn synthesis_step(
         AgentPhase::Synthesis
     };
     // 循环内上下文治理：超限时先 snip / 摘要（与 planning_step 相同的发送视图）。
-    let send_messages = super::compaction::maybe_compact_send_view(env, state, &[]).await;
+    let send_messages = super::compaction::maybe_compact_send_view(env, state, &[]).await?;
     if state.compaction_blocked {
         let content = recovery::assemble_results_from_tool_records(
             &state.tool_records,
@@ -117,6 +117,7 @@ pub(crate) async fn synthesis_step(
             model: &config.model,
             messages: send_messages,
             tools: None,
+            tool_choice: crate::chat::model::ToolChoice::Auto,
             retry_attempts: config.retry_attempts,
             thinking_enabled: config.thinking_enabled,
             thinking_level: config.thinking_level.clone(),
@@ -140,7 +141,7 @@ pub(crate) async fn synthesis_step(
         Ok(stream) => stream,
         Err(err) if !state.tool_records.is_empty() => {
             eprintln!("Chat synthesis stream failed after tool records; recovering: {err}");
-            let recovered = recover_synthesis(env, state, &err).await;
+            let recovered = recover_synthesis(env, state, &err).await?;
             let content = if recovered.trim().is_empty() {
                 synthesis_failed_fallback_response(&config.language)
             } else {
@@ -212,7 +213,7 @@ pub(crate) async fn synthesis_step(
     let (response, reasoning, response_reasoning) = if response.trim().is_empty() {
         if !state.tool_records.is_empty() {
             log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
-            let recovered = recover_synthesis(env, state, "").await;
+            let recovered = recover_synthesis(env, state, "").await?;
             let content = if recovered.trim().is_empty() {
                 empty_synthesis_fallback_response(&config.language)
             } else {
@@ -324,13 +325,13 @@ pub(crate) async fn recover_synthesis(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     failure_message: &str,
-) -> String {
+) -> Result<String, String> {
     let config = env.config;
     let kind = silent_overflow_aware_kind(env, state, recovery::classify(failure_message));
     let has_results = !state.tool_records.is_empty();
     // 恢复中枢只在此处被调用一次/次失败,故 already_remediated / overflow_recovery_attempted
     // 都从 false 起算;真正的「只重试一次」守门在各分支内部用本地标志实现。
-    match recovery::decide(kind, has_results, false, false) {
+    Ok(match recovery::decide(kind, has_results, false, false) {
         RecoveryAction::Surface => String::new(),
         RecoveryAction::DegradeToGathered => {
             // 结构化留存一份供前端渲染成独立卡片；返回值仍是同样的纯文本，
@@ -348,9 +349,9 @@ pub(crate) async fn recover_synthesis(
             state.degraded = degraded;
             text
         }
-        RecoveryAction::CompactAndRetry => recover_overflow_compact_and_retry(env, state).await,
+        RecoveryAction::CompactAndRetry => recover_overflow_compact_and_retry(env, state).await?,
         RecoveryAction::Remediate => recover_remediate(env, state, kind, failure_message).await,
-    }
+    })
 }
 
 /// 把 `Empty` 在**有用量证据**时改判成 `ContextOverflow`（pi `isContextOverflow`
@@ -391,16 +392,16 @@ fn silent_overflow_aware_kind(
 
 /// CompactAndRetry 执行:压缩一次历史 → 用压缩后的发送视图重发一次合成。/// 成功 → 用其结果;仍失败 → 降级到确定性兜底(对应 decide 的 overflow_recovery_attempted 臂)。
 /// 单次守门:本函数只压缩-重试一次,绝不递归,杜绝「压完仍超 → 再压」死循环。
-async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunState) -> String {
+async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunState) -> Result<String, String> {
     let config = env.config;
     // 压缩一次(L1 snip → L2 摘要);返回压缩后的发送视图,并已写回 state.runtime_messages。
-    let compacted = super::compaction::compact_send_view(env, state, true, &[]).await;
+    let compacted = super::compaction::compact_send_view(env, state, true, &[]).await?;
     if state.compaction_blocked {
-        return recovery::assemble_results_from_tool_records(
+        return Ok(recovery::assemble_results_from_tool_records(
             &state.tool_records,
             &config.language,
             recovery::FailureKind::ContextOverflow,
-        );
+        ));
     }
     if config.depth == 0 {
         env.host.begin_context_request(
@@ -418,6 +419,7 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
             provider: &config.provider,
             model: &config.model,
             messages: compacted,
+            tool_choice: crate::chat::model::ToolChoice::Auto,
             retry_attempts: config.retry_attempts,
             thinking_enabled: config.thinking_enabled,
             thinking_level: config.thinking_level.clone(),
@@ -449,7 +451,7 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
             String::new()
         }
     };
-    if !text.trim().is_empty() {
+    Ok(if !text.trim().is_empty() {
         text
     } else {
         // 压缩重试仍失败 → 确定性兜底(decide 的 overflow_recovery_attempted=true 臂)。
@@ -465,7 +467,7 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
             .unwrap_or_default();
         state.degraded = degraded;
         text
-    }
+    })
 }
 
 /// Remediate 执行:用「用户问题 + 工具产出摘要 + 中立指令」去敏精简后重做一次合成。
@@ -484,6 +486,7 @@ async fn recover_remediate(
             provider: &config.provider,
             model: &config.model,
             messages: reduced,
+            tool_choice: crate::chat::model::ToolChoice::Auto,
             retry_attempts: config.retry_attempts,
             thinking_enabled: config.thinking_enabled,
             thinking_level: config.thinking_level.clone(),

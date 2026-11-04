@@ -26,14 +26,19 @@ pub(crate) async fn chat_continue_goal(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
-    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    let Some(send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
     else {
         return Ok(serde_json::json!({ "success": false, "error": CHAT_REPLY_BUSY_ERROR }));
     };
+    let interruption_epoch = send_reservation.interruption_epoch();
     let mut conversation = load_conversation(&app, &conversation_id)?;
     let goal = conversation.goal_state.as_ref().ok_or("No Goal exists")?;
     if !crate::chat::goal::is_running(goal.status) {
         return Err("Goal is not active".into());
+    }
+    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
     let outcome = complete_assistant_reply(
         &app,
@@ -81,14 +86,13 @@ pub(crate) async fn chat_send_message(
     // 用原子的哨兵预留替代「先 check 后 register」，关闭并发发送同时通过 busy 检查的 TOCTOU 窗口。
     // 哨兵在本命令返回前一直存活；实际的 per-run 槽位 / generation 在 `complete_assistant_reply`
     // 内 run_id 生成处额外注册，与哨兵按不同 run_id 共存。
-    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    let Some(send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
     else {
         return Ok(serde_json::json!({
             "success": false,
             "error": CHAT_REPLY_BUSY_ERROR,
         }));
     };
-    state.sub_agents.set_user_interrupted(&conversation_id, false);
     send_reserved(
         app,
         state,
@@ -99,6 +103,7 @@ pub(crate) async fn chat_send_message(
         active_skill_id,
         plan_message_id,
         user_message_id,
+        send_reservation.interruption_epoch(),
         None,
     )
     .await
@@ -132,7 +137,7 @@ pub(crate) async fn send_user_message_when_idle(
     on_send_finished: &(dyn Fn() + Send + Sync),
 ) -> Result<QueuedSendOutcome, String> {
     let state = app.state::<AppState>();
-    let _send_reservation = tokio::select! {
+    let send_reservation = tokio::select! {
         biased;
         _ = cancelled.wait_for(|value| *value) => return Ok(QueuedSendOutcome::Cancelled),
         reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id) => reservation,
@@ -154,6 +159,7 @@ pub(crate) async fn send_user_message_when_idle(
         None,
         None,
         Some(user_message_id.clone()),
+        send_reservation.interruption_epoch(),
         Some(on_user_message_saved),
     )
     .await?;
@@ -175,7 +181,7 @@ pub(crate) async fn resume_subagents_when_idle(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
-    let incoming = crate::chat::sub_agent::delivery::collect_for_main(app, conversation_id, "").await?;
+    let incoming = crate::chat::sub_agent::delivery::collect_for_main(app, conversation_id, "", &[]).await?;
     if incoming.is_empty() || state.sub_agents.user_interrupted(conversation_id) {
         return Ok(());
     }
@@ -208,6 +214,7 @@ async fn send_reserved(
     active_skill_id: Option<String>,
     plan_message_id: Option<String>,
     user_message_id: Option<String>,
+    interruption_epoch: u64,
     on_user_message_saved: Option<&(dyn Fn() + Send + Sync)>,
 ) -> Result<serde_json::Value, String> {
     let user_message_id = match user_message_id {
@@ -428,11 +435,16 @@ async fn send_reserved(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
+    let resumed = state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch);
     if goal_started.is_some() || resumed_waiting_goal {
         crate::chat::goal::emit_goal_state(&app, &conversation);
     }
     if let Some(on_user_message_saved) = on_user_message_saved {
         on_user_message_saved();
+    }
+    if !resumed {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
 
     match compute_context_state(
@@ -471,6 +483,11 @@ async fn send_reserved(
         .map(str::trim)
         .filter(|id| !id.is_empty())
         .map(str::to_string);
+
+    if state.sub_agents.user_interrupted(&conversation_id) {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+    }
 
     if fan_out {
         let group_id = group_id.expect("fan_out implies group_id set");

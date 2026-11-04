@@ -34,6 +34,28 @@ export function acceptStreamRun(
   return true
 }
 
+export function isTerminalSubagentStatus(status: unknown): boolean {
+  return status === 'completed' || status === 'failed' || status === 'aborted' || status === 'cancelled'
+}
+
+function progressEntries(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function mergeSubagentEntries(previous: unknown, next: unknown): Record<string, unknown> {
+  const merged = { ...progressEntries(previous) }
+  for (const [id, value] of Object.entries(progressEntries(next))) {
+    const before = progressEntries(merged[id])
+    const after = progressEntries(value)
+    const beforeStatus = before.status
+    const afterStatus = after.status
+    const stale = isTerminalSubagentStatus(beforeStatus)
+      || (beforeStatus === 'running' && (afterStatus === 'pending' || afterStatus === 'queued'))
+    merged[id] = stale ? before : { ...before, ...after }
+  }
+  return merged
+}
+
 /** 后到的 tool record 覆盖已有的，但**不许用「没有」覆盖「有」**（目前只针对
  *  `structured_content`：那是各类专属卡片的载荷）。
  *
@@ -51,11 +73,16 @@ export function mergeToolRecord(
   const previousStructured = previous.structured_content ?? previous.structuredContent
   const nextStructured = next.structured_content ?? next.structuredContent
   let structured = nextStructured ?? previousStructured
-  if (previousStructured && typeof previousStructured === 'object'
+  if (previousStructured && typeof previousStructured === 'object' && !Array.isArray(previousStructured)
     && 'subagentProgressByTask' in previousStructured
-    && nextStructured && typeof nextStructured === 'object' && !Array.isArray(nextStructured)
-    && !('subagentProgressByTask' in nextStructured)) {
-    structured = { ...nextStructured, subagentProgressByTask: previousStructured.subagentProgressByTask }
+    && nextStructured && typeof nextStructured === 'object' && !Array.isArray(nextStructured)) {
+    structured = {
+      ...nextStructured,
+      subagentProgressByTask: mergeSubagentEntries(
+        previousStructured.subagentProgressByTask,
+        'subagentProgressByTask' in nextStructured ? nextStructured.subagentProgressByTask : undefined,
+      ),
+    }
   }
   if (structured !== undefined) {
     merged.structured_content = structured

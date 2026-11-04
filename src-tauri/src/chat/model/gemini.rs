@@ -459,6 +459,10 @@ impl GeminiProvider<'_> {
                 body[key] = value.clone();
             }
         }
+        if request.options.tool_choice == crate::chat::model::ToolChoice::None {
+            body.as_object_mut().unwrap().remove("tools");
+            body["toolConfig"] = serde_json::json!({ "functionCallingConfig": { "mode": "NONE" } });
+        }
         if antigravity::is_provider(self.provider) {
             antigravity::wrap_request(self.provider, &request.model, body)
         } else {
@@ -685,8 +689,8 @@ fn contents_with_tool_ids(request: &GenerateRequest, include_ids: bool) -> Vec<V
     for message in super::types::paired_model_messages(&request.messages).iter() {
         let role = match message.role {
             ModelRole::Assistant => "model",
-            // Gemini contents 只有 user/model；Tool 结果作为 user 载体。
-            ModelRole::User | ModelRole::Tool => "user",
+            // Gemini contents only support user/model; tool and developer messages use user.
+            ModelRole::User | ModelRole::Developer | ModelRole::Tool => "user",
         };
         let parts = gemini_parts_from_message(message, &id_to_name, include_ids);
         if parts.is_empty() {
@@ -745,7 +749,7 @@ fn gemini_parts_from_message(
             MessagePart::Image {
                 mime_type, data, ..
             } => {
-                if matches!(message.role, ModelRole::User) {
+                if matches!(message.role, ModelRole::User | ModelRole::Developer) {
                     if data.is_empty() {
                         parts.push(serde_json::json!({
                             "text": crate::chat::model::MISSING_IMAGE_PLACEHOLDER
@@ -758,7 +762,7 @@ fn gemini_parts_from_message(
                 }
             }
             MessagePart::ImageUrl { url, .. } => {
-                if matches!(message.role, ModelRole::User) {
+                if matches!(message.role, ModelRole::User | ModelRole::Developer) {
                     parts.push(serde_json::json!({ "fileData": { "fileUri": url } }));
                 }
             }

@@ -2030,7 +2030,7 @@ fn build_chat_api_messages_replays_saved_child_report_as_external_input() {
         1,
     )];
     let messages = build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap();
-    assert_eq!(messages[1]["role"], "user");
+    assert_eq!(messages[1]["role"], "developer");
     assert!(messages[1]["content"]
         .as_str()
         .unwrap()
@@ -2421,6 +2421,29 @@ fn regenerate_truncation_edits_user_content_and_truncates_after() {
 }
 
 #[test]
+fn regenerate_preserves_folded_reports_for_the_current_turn() {
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.context_state = Default::default();
+    conversation.messages.push(test_chat_message(
+        "subagent-result-unique", "assistant", "background findings", 10,
+    ));
+    let mut retry_answer = conversation.clone();
+    apply_regenerate_truncation(&mut retry_answer, 3, None).unwrap();
+    assert_eq!(retry_answer.messages.last().unwrap().id, "subagent-result-unique");
+    let replay = build_chat_api_messages(None, "system", &retry_answer, None, None, &[]).unwrap();
+    assert!(replay.iter().any(|message| message["role"] == "developer"
+        && message["content"].as_str().is_some_and(|text| text.contains("background findings"))));
+
+    let mut retry_user = conversation.clone();
+    apply_regenerate_truncation(&mut retry_user, 2, Some("revised question".into())).unwrap();
+    assert_eq!(retry_user.messages[2].content, "revised question");
+    assert_eq!(retry_user.messages.last().unwrap().id, "subagent-result-unique");
+
+    apply_regenerate_truncation(&mut conversation, 0, None).unwrap();
+    assert!(!conversation.messages.iter().any(|message| message.id == "subagent-result-unique"));
+}
+
+#[test]
 fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
     use crate::chat::types::{AgentTodoItem, AgentTodoStatus, ToolCallRecord};
     fn snapshot(content: &str) -> AgentTodoState {
@@ -2530,6 +2553,23 @@ fn prepare_reply_with_model_tags_last_turn_and_rejects_duplicates() {
     )
     .expect_err("external");
     assert!(err.contains("Kivio Agent"));
+}
+
+#[test]
+fn reply_with_model_ignores_folded_reports_as_answers() {
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.context_state.summary = None;
+    conversation.messages.push(test_chat_message(
+        "subagent-result-work", "assistant", "background report", 10,
+    ));
+    let prep = prepare_reply_with_model(
+        &conversation, "msg_assistant_2", "other-provider", "other-model", None,
+    ).unwrap();
+    assert_eq!(prep.sibling_ids, vec!["msg_assistant_2"]);
+    assert_eq!(prep.user_index, 2);
+    assert!(prepare_reply_with_model(
+        &conversation, "subagent-result-work", "other-provider", "other-model", None,
+    ).is_err());
 }
 
 #[test]
