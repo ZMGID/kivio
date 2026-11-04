@@ -2243,6 +2243,29 @@ pub fn emit_run_event(app: &AppHandle, run_id: &str, event: ChatRunEvent) {
     }
 }
 
+/// Non-delta event for a run that may already be terminal or never registered
+/// (subagent progress outliving its spawning turn): record it when the hub still
+/// accepts the run, otherwise emit it live only. One lock, so never sent twice.
+pub fn emit_run_event_or_live(
+    app: &AppHandle,
+    conversation_id: &str,
+    run_id: &str,
+    event: ChatRunEvent,
+) {
+    let state = app.state::<AppState>();
+    let mut hub = state.chat_protocol().hub();
+    if let Some(envelope) = hub.flush_pending_delta(run_id) {
+        emit_protocol(app, ChatProtocolEvent::Run(envelope));
+    }
+    match hub.push(run_id, event.clone()) {
+        Ok(envelope) => emit_protocol(app, ChatProtocolEvent::Run(envelope)),
+        Err(_) => {
+            drop(hub);
+            emit_live_run_event(app, conversation_id, event);
+        }
+    }
+}
+
 /// Hook 失败警告。run 还在 hub 里就入 replay；已被 prune 则只走直播（黄条仍能出）。
 pub fn emit_hook_failed(
     app: &AppHandle,

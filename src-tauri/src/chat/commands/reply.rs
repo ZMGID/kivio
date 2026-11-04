@@ -627,11 +627,9 @@ pub(super) async fn complete_assistant_reply_inner(
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
     let project_prompt_context = project_prompt_context_for(app, conversation);
-    // Multi-agent spawn tool (P3): exposure is mode-controlled. Act and
-    // Orchestrate both expose the `agent` tool; Plan / Chat exclude it (spawn is a
-    // side-effecting, non-read-only capability).
+    // Act and Orchestrate expose subagent tools; Plan, Chat, and builder do not.
     if !plan_mode && !chat_mode && !builder_mode {
-        crate::chat::sub_agent::append_tool_definitions(&mut tools, true, &resources.agents);
+        crate::chat::sub_agent::append_tool_definitions(&mut tools, &settings, &resources.agents);
     }
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);

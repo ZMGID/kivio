@@ -53,16 +53,10 @@ pub struct ToolExecutionContext<'a> {
     pub model: &'a str,
     pub generation: u64,
     pub round: u32,
-    /// Sub-agent nesting depth: 0 for a top-level chat run, +1 per spawned
-    /// sub-agent. Used to gate `agent` spawns (`MAX_SUB_AGENT_DEPTH`) and to
-    /// reject sensitive tools inside sub-agents.
+    /// Sub-agent nesting depth: 0 for a top-level run; used to limit task recursion.
     pub depth: u8,
-    /// Conversation that conversation-scoped tools (todo, native file
-    /// workspace) operate on. Equals `conversation_id` for a top-level run; for
-    /// a sub-agent it is the PARENT conversation so the sub-agent can claim the
-    /// parent's todos and resolve the parent's project workspace, while
-    /// `conversation_id` stays a synthetic id used only for generation/streaming
-    /// isolation.
+    /// Conversation used by conversation-scoped tools; it can differ from
+    /// `conversation_id` in a sub-agent run.
     pub tool_conversation_id: &'a str,
     /// The model-issued tool_call id of the call currently executing. Sub-agent
     /// progress is reported back onto the parent tool card addressed by this id.
@@ -970,7 +964,7 @@ fn tool_content_with_structured_output(output: &McpToolCallResult, source: &str)
     content
 }
 
-/// 外层 `tokio::time::timeout` 的哨兵：bash 等到进程退出（或它自己的 timeout_ms）。
+/// Sentinel for tools that enforce their own wait or timeout.
 const NO_OUTER_TOOL_TIMEOUT: u64 = u64::MAX;
 
 fn effective_tool_timeout_ms(
@@ -988,6 +982,10 @@ fn effective_tool_timeout_ms(
     // 前台 bash 自己等到退出；显式 timeout_ms 由 shell 杀掉进程。外层 60s
     // 工具超时不能再套一层，否则有限长任务会被误杀、逼进 background。
     if tool.source == "native" && tool.name == "bash" {
+        return NO_OUTER_TOOL_TIMEOUT;
+    }
+    // The subagent wait tool owns its escalating deadline and collection window.
+    if tool.source == "native" && tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME {
         return NO_OUTER_TOOL_TIMEOUT;
     }
     // The orchestration tools bound their own wait and detach the target reply on timeout.
@@ -2027,12 +2025,34 @@ mod tests {
     }
 
     #[test]
-    fn asynchronous_agent_admission_uses_normal_tool_timeout() {
+    fn native_subagent_wait_owns_its_timeout() {
+        let mut settings = Settings::default();
+        settings.chat_tools.tool_timeout_ms = 1_000;
+        let mut tool = crate::chat::sub_agent::wait::definition();
+        let arguments = serde_json::json!({});
+
+        assert_eq!(
+            effective_tool_timeout_ms(&settings, &tool, &arguments),
+            NO_OUTER_TOOL_TIMEOUT
+        );
+        tool.source = "mcp".into();
+        assert_eq!(
+            effective_tool_timeout_ms(&settings, &tool, &arguments),
+            1_000
+        );
+    }
+
+    #[test]
+    fn asynchronous_task_admission_uses_normal_tool_timeout() {
         let mut settings = Settings::default();
         settings.chat_tools.tool_timeout_ms = 120_000;
-        let tool = crate::chat::sub_agent::agent_tool(&[]);
+        let tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
         assert_eq!(
-            effective_tool_timeout_ms(&settings, &tool, &serde_json::json!({"prompt":"inspect"})),
+            effective_tool_timeout_ms(
+                &settings,
+                &tool,
+                &serde_json::json!({"tasks": [{"task": "inspect", "solutionSpace": "code"}]})
+            ),
             120_000
         );
     }

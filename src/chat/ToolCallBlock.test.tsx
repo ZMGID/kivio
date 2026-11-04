@@ -26,6 +26,7 @@ import { ImageReadCluster, ToolCallBlock, ToolCallCluster } from './ToolCallBloc
 import type { ChatMessageSegment, ToolCallRecord } from './types'
 import { i18n, LangContext } from '../components/i18n'
 import { ReasoningPreviewContext } from './reasoningPreview'
+import { mergeSubagentProgress } from './streamApply'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -450,24 +451,20 @@ describe('ToolCallBlock', () => {
     expect(within(button).queryByText(/exit_code/)).not.toBeInTheDocument()
   })
 
-  it('renders a legacy native subagent result in the current card without losing its task', async () => {
+  it('updates an external CLI Task card from live subagent events through completion', async () => {
     const user = userEvent.setup()
-    render(
-      <ToolCallBlock
-        toolCall={buildToolCall({
-          toolName: 'agent',
-          source: 'native',
-          status: 'success',
-          structured_content: { type: 'subagent', agentType: 'researcher', result: '调查结论' },
-          arguments: { subagent_type: 'researcher', prompt: '去调查一下这个问题' },
-        })}
-      />,
-    )
-    expect(screen.queryByText('SUBAGENT')).toBeNull()
-    expect(screen.getByText('子代理 · researcher')).toBeInTheDocument()
+    const call = buildToolCall({ toolName: 'Task', source: 'external_cli', status: 'running', result_preview: '', arguments: { description: 'Inspect source', prompt: 'Read the code' } })
+    const event = { parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: call.id, taskId: 'child', name: 'Worker', depth: 1 }
+    const { rerender } = render(<ToolCallBlock toolCall={call} />)
+    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
+    const running = mergeSubagentProgress(call, { ...event, status: 'running', preview: 'Inspecting', steps: ['read source'] })
+    rerender(<ToolCallBlock toolCall={running} />)
+    expect(screen.getByText('read source')).toBeVisible()
     await user.click(screen.getByRole('button'))
-    expect(screen.getByText('去调查一下这个问题')).toBeInTheDocument()
-    expect(screen.getByText('调查结论')).toBeInTheDocument()
+    expect(screen.getByText('Inspecting')).toBeVisible()
+    const completed = mergeSubagentProgress(running, { ...event, status: 'completed', preview: 'Finished result' })
+    rerender(<ToolCallBlock toolCall={completed} />)
+    expect(screen.getByText('Finished result')).toBeVisible()
   })
 
   // 外部 CLI（claude）的子代理调用没有 structured content：按 source+名字认进同一张

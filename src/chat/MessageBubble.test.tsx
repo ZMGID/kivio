@@ -139,10 +139,10 @@ describe('assistant body visibility', () => {
         { id: 'wait', kind: 'tool', phase: 'tool_loop', order: 8, tool_call_id: 'wait' },
       ],
       tool_calls: [
-        { id: 'a', name: 'agent', source: 'native', status: 'completed' },
-        { id: 'b', name: 'agent', source: 'native', status: 'completed' },
+        { id: 'a', name: 'task', source: 'native', status: 'completed', arguments: { context: 'Shared', tasks: [{ name: 'A', task: 'Inspect A', solutionSpace: 'Read' }] } },
+        { id: 'b', name: 'task', source: 'native', status: 'completed', arguments: { context: 'Shared', tasks: [{ name: 'B', task: 'Inspect B', solutionSpace: 'Read' }] } },
         { id: 'read', name: 'read_file', source: 'native', status: 'completed' },
-        { id: 'wait', name: 'agent', source: 'native', status: 'running', arguments: '{"operation":"wait"}' },
+        { id: 'wait', name: 'wait', source: 'native', status: 'running', arguments: {} },
       ],
     }
     const { rerender } = render(<MessageBubble message={message} messageStreaming />)

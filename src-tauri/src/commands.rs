@@ -202,10 +202,6 @@ async fn apply_settings(
     ) {
         apply_launch_at_startup(app, sanitized.launch_at_startup)?;
     }
-    state
-        .sub_agents
-        .set_concurrency(sanitized.chat_tools.sub_agent_concurrency);
-
     if crate::shortcuts::hotkey_bindings_changed(&previous_settings, &sanitized) {
         if let Err(err) = register_hotkeys_for_settings(app, &sanitized) {
             // 热键被系统/其他应用占用不该阻断保存——能注册的已注册,失败的作为警告推给前端,

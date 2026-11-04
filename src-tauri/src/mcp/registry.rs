@@ -1140,6 +1140,17 @@ async fn call_native_tool(
         return Err(format!("Unknown native tool: {}", tool.name));
     }
 
+    if tool.name == "read" {
+        if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+            if path.starts_with("agent://") || path.starts_with("history://") {
+                let ctx = native_ctx.as_ref()
+                    .ok_or_else(|| "read requires an agent context for internal URLs".to_string())?;
+                let content = crate::chat::sub_agent::urls::read(app, &ctx.conversation_id, path).await?;
+                return Ok(text_tool_result(content));
+            }
+        }
+    }
+
     let settings = state.settings_read().clone();
     let workspace = resolve_native_workspace(
         app,

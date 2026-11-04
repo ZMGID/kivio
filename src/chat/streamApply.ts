@@ -5,7 +5,7 @@ import type {
   ChatUserPromptPayload,
 } from '../api/tauri'
 import { mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
-import { compareTimelineSegments, isExternalSubagentToolCall, segmentStepNumber, segmentToolCallId } from './segments'
+import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, segmentStepNumber, segmentToolCallId } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 
@@ -321,6 +321,8 @@ function matchesSubagentTool(tool: ToolCallRecord, payload: ChatSubagentPayload)
   const structured = toolStructured(tool)
   if (structured.backgroundTaskId === payload.taskId) return true
   if (structured.childSessionId === payload.taskId) return true
+  if (structured.subagentProgressByTask && typeof structured.subagentProgressByTask === 'object'
+    && Object.prototype.hasOwnProperty.call(structured.subagentProgressByTask, payload.taskId)) return true
   const progress = structured.subagentProgress
   return Boolean(
     progress
@@ -343,6 +345,28 @@ export function mergeSubagentProgress(
   payload: ChatSubagentPayload,
 ): ToolCallRecord {
   const existing = toolStructured(tool)
+  if (tool.source === 'native' && canonicalToolName(tool) === 'task') {
+    const byTask = existing.subagentProgressByTask && typeof existing.subagentProgressByTask === 'object'
+      ? existing.subagentProgressByTask as Record<string, { preview?: string; steps?: string[] }>
+      : {}
+    const previous = Object.prototype.hasOwnProperty.call(byTask, payload.taskId) ? byTask[payload.taskId] : undefined
+    const nextStructured = {
+      ...existing,
+      subagentProgressByTask: {
+        ...byTask,
+        [payload.taskId]: {
+          taskId: payload.taskId,
+          name: payload.name,
+          model: payload.model ?? '',
+          depth: payload.depth,
+          status: payload.status,
+          preview: payload.preview || previous?.preview || '',
+          steps: payload.steps?.length ? payload.steps : previous?.steps ?? [],
+        },
+      },
+    }
+    return { ...tool, structuredContent: nextStructured, structured_content: nextStructured }
+  }
   const previous = existing.subagentProgress && typeof existing.subagentProgress === 'object'
     ? existing.subagentProgress as { preview?: string; steps?: string[] }
     : {}
@@ -364,13 +388,13 @@ export function mergeSubagentProgress(
       steps,
     },
   }
-  const terminal = payload.status !== 'running'
+  const terminal = payload.status !== 'running' && payload.status !== 'pending'
   return {
     ...tool,
     status: terminal
       ? payload.status === 'failed'
         ? 'error'
-        : payload.status === 'cancelled'
+        : payload.status === 'cancelled' || payload.status === 'aborted'
           ? 'cancelled'
           : 'success'
       : tool.status,

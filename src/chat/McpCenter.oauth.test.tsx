@@ -116,3 +116,41 @@ it('does not save a late authorization result onto a changed server URL', async 
   expect(mocks.settings.chatTools.servers[0].headers).toEqual({ 'X-Custom': 'keep' })
   expect(mocks.test).not.toHaveBeenCalled()
 })
+
+it.each([
+  { lang: 'zh', advanced: '高级设置', label: '最大并发任务数', unlimited: '不限制' },
+  { lang: 'en', advanced: 'Advanced', label: 'Maximum concurrent tasks', unlimited: 'Unlimited' },
+] as const)('shows and saves task concurrency in $lang', async ({ lang, advanced, label, unlimited }) => {
+  mocks.settings.chatTools.taskMaxRecursionDepth = -1
+  mocks.settings.chatTools.taskSoftRequestBudget = 0
+  const { unmount } = render(<LangContext.Provider value={lang}><McpCenter /></LangContext.Provider>)
+  fireEvent.click(screen.getByRole('button', { name: advanced }))
+
+  const select = await screen.findByRole('button', { name: label })
+  expect(select).toHaveTextContent('32')
+  fireEvent.click(select)
+  fireEvent.click(screen.getByRole('option', { name: unlimited }))
+  await waitFor(() => expect(mocks.settings.chatTools.taskMaxConcurrency).toBe(0))
+  expect(select).toHaveTextContent(unlimited)
+  expect(mocks.settings.chatTools.taskMaxRecursionDepth).toBe(-1)
+  expect(mocks.settings.chatTools.taskSoftRequestBudget).toBe(0)
+
+  unmount()
+  render(<LangContext.Provider value={lang}><McpCenter /></LangContext.Provider>)
+  fireEvent.click(screen.getByRole('button', { name: advanced }))
+  const restored = await screen.findByRole('button', { name: label })
+  expect(restored).toHaveTextContent(unlimited)
+  fireEvent.click(restored)
+  expect(screen.getByRole('option', { name: unlimited })).toHaveAttribute('aria-selected', 'true')
+  fireEvent.click(screen.getByRole('option', { name: '64' }))
+  await waitFor(() => expect(mocks.settings.chatTools.taskMaxConcurrency).toBe(64))
+  expect(restored).toHaveTextContent('64')
+})
+
+it('shows a valid non-preset task concurrency without changing it', async () => {
+  mocks.settings.chatTools.taskMaxConcurrency = 197
+  render(<LangContext.Provider value="en"><McpCenter /></LangContext.Provider>)
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced' }))
+  expect(await screen.findByRole('button', { name: 'Maximum concurrent tasks' })).toHaveTextContent('197')
+  expect(mocks.settings.chatTools.taskMaxConcurrency).toBe(197)
+})

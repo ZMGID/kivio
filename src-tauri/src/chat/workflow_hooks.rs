@@ -441,7 +441,7 @@ fn compatible_input(input: &Value) -> Value {
         "edit" => "Edit",
         "glob" => "Glob",
         "grep" => "Grep",
-        "agent" => "Agent",
+        "task" => "Agent",
         _ => tool,
     };
     if !tool.is_empty() {
@@ -455,11 +455,9 @@ fn compatible_input(input: &Value) -> Value {
             }
         }
     }
-    for path in ["/agent_type", "/tool_input/subagent_type"] {
-        if let Some(value) = out.pointer_mut(path) {
-            if let Some((_, name)) = value.as_str().and_then(|s| s.split_once(':')) {
-                *value = json!(name);
-            }
+    if let Some(value) = out.pointer_mut("/agent_type") {
+        if let Some((_, name)) = value.as_str().and_then(|s| s.split_once(':')) {
+            *value = json!(name);
         }
     }
     out
@@ -473,17 +471,6 @@ fn native_input(original: &Value, mut updated: Value) -> Value {
             if let Some(path) = fields.remove("file_path") {
                 fields.insert("path".into(), path);
             }
-        }
-    }
-    if let Some(name) = original
-        .pointer("/tool_input/subagent_type")
-        .and_then(Value::as_str)
-    {
-        if name
-            .split_once(':')
-            .is_some_and(|(_, short)| updated["subagent_type"].as_str() == Some(short))
-        {
-            updated["subagent_type"] = json!(name);
         }
     }
     updated
@@ -636,13 +623,14 @@ mod tests {
         assert_eq!(translated["tool_input"]["file_path"], "old");
         let updated = native_input(&original, json!({"file_path":"new","content":"y"}));
         assert_eq!(updated, json!({"path":"new","content":"y"}));
-        let agent = json!({"tool_name":"agent","tool_input":{"subagent_type":"example:review","prompt":"task"}});
-        let input = compatible_input(&agent);
-        assert_eq!(input["tool_input"]["subagent_type"], "review");
-        assert_eq!(
-            native_input(&agent, input["tool_input"].clone())["subagent_type"],
-            "example:review"
-        );
+        let task = json!({"tool_name":"task","tool_input":{"tasks":[{"agent":"review","task":"inspect","solutionSpace":"open"}]}});
+        let input = compatible_input(&task);
+        assert_eq!(input["tool_name"], "Agent");
+        assert_eq!(input["kivio_tool_name"], "task");
+        assert_eq!(input["tool_input"], task["tool_input"]);
+        assert_eq!(native_input(&task, input["tool_input"].clone()), task["tool_input"]);
+        let subagent = compatible_input(&json!({"agent_type":"example:review"}));
+        assert_eq!(subagent["agent_type"], "review");
     }
 
     // Process startup competes with the full suite on Windows CI. These tests

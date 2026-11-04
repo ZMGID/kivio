@@ -48,8 +48,15 @@ export function mergeToolRecord(
   if ('result_preview' in next || 'resultPreview' in next) {
     merged.result_preview = merged.resultPreview = next.result_preview ?? next.resultPreview
   }
-  const structured = next.structured_content ?? next.structuredContent
-    ?? previous.structured_content ?? previous.structuredContent
+  const previousStructured = previous.structured_content ?? previous.structuredContent
+  const nextStructured = next.structured_content ?? next.structuredContent
+  let structured = nextStructured ?? previousStructured
+  if (previousStructured && typeof previousStructured === 'object'
+    && 'subagentProgressByTask' in previousStructured
+    && nextStructured && typeof nextStructured === 'object' && !Array.isArray(nextStructured)
+    && !('subagentProgressByTask' in nextStructured)) {
+    structured = { ...nextStructured, subagentProgressByTask: previousStructured.subagentProgressByTask }
+  }
   if (structured !== undefined) {
     merged.structured_content = structured
     merged.structuredContent = structured

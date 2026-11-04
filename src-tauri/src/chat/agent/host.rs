@@ -14,16 +14,12 @@ pub trait AgentHost: Send + Sync {
         true
     }
 
-    /// A managed worker must not claim cleanup merely because a tool future was
-    /// dropped. Keep ownership until the operation itself returns.
+    /// Hosts may require an in-flight tool to finish before cancellation returns.
     fn requires_tool_completion(&self) -> bool {
         false
     }
     fn run_ended(&self, _conversation_id: &str) {}
-    /// At a normal answer boundary, keep the current parent turn alive for its
-    /// outstanding children. True means results or user input should be checked
-    /// again; false means this turn has no remaining child work. Never starts a
-    /// new parent turn. Child hosts and hosts without collaboration return false.
+    /// At an answer boundary, a child host waits for its own jobs; top-level hosts return false.
     fn wait_for_child_results<'a>(
         &'a self,
         _conversation_id: &'a str,
@@ -32,12 +28,10 @@ pub trait AgentHost: Send + Sync {
     ) -> AgentHostFuture<'a, Result<bool, String>> {
         Box::pin(async { Ok(false) })
     }
-    /// Failed workers preserve pending input for an explicit continuation.
     fn close_runtime_input(&self) -> Result<(), String> {
         Ok(())
     }
-    /// Durable hosts checkpoint the complete (possibly compacted) context and
-    /// atomically consume their inbox. Other hosts retain their existing path.
+    /// Return messages received at a runtime checkpoint.
     fn checkpoint_runtime<'a>(
         &'a self,
         _conversation_id: &'a str,
@@ -156,7 +150,7 @@ pub trait AgentHost: Send + Sync {
     /// (assistant tool_calls + tool results) up to this round so the draft is
     /// replayable on a later "continue" — without them an `interrupted` draft
     /// loses all tool context and the model restarts from scratch. Default
-    /// no-op for hosts that don't own persistence (sub-agents, tests).
+    /// no-op for hosts that do not persist assistant drafts.
     fn persist_partial_assistant<'a>(
         &'a self,
         _conversation_id: &'a str,
@@ -176,8 +170,8 @@ pub trait AgentHost: Send + Sync {
 
     /// Ask the user once per conversation to authorize the file/shell tool
     /// family (full-disk read/write + command execution). Hosts that can prompt
-    /// (the chat window) surface a consent dialog and cache the grant; hosts
-    /// that cannot (sub-agents) deny. Default denies — a host must opt in.
+    /// (the chat window) surface a consent dialog and cache the grant.
+    /// Default denies — a host must opt in.
     fn request_session_consent<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,

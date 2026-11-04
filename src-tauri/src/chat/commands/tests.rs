@@ -2161,8 +2161,8 @@ fn compaction_replay_starts_with_user_summary_and_drops_run_notices() {
 #[test]
 fn compaction_replay_does_not_duplicate_snapshot_child_reports() {
     let mut conversation = test_conversation_with_summary(false);
-    let mut report = crate::chat::sub_agent::control::report_input("CHILD_A findings");
-    report[crate::chat::sub_agent::control::REPORT_MESSAGE_ID_KEY] =
+    let mut report = crate::chat::sub_agent::delivery::report_input("CHILD_A findings");
+    report[crate::chat::sub_agent::delivery::REPORT_MESSAGE_ID_KEY] =
         serde_json::json!("subagent-result-a");
     conversation.context_state.summary.as_mut().unwrap().replay =
         Some(crate::chat::types::CompactionReplay {

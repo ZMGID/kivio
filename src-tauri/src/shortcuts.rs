@@ -997,10 +997,6 @@ pub(crate) fn restore_runtime_settings(app: &AppHandle, state: &State<AppState>)
     if let Err(err) = apply_launch_at_startup(app, current.launch_at_startup) {
         eprintln!("Failed to rollback launch-at-startup setting: {err}");
     }
-    state
-        .sub_agents
-        .set_concurrency(current.chat_tools.sub_agent_concurrency);
-
     if let Err(err) = register_hotkeys_for_settings(app, &current) {
         eprintln!(
             "Failed to rollback hotkeys: {}",

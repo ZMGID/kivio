@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import { useRef, type ComponentProps } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ComponentProps } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { useRightDock } from '../hooks/useRightDock'
-import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview, requestDockSubAgent } from './dockPreview'
+import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview } from './dockPreview'
 import { RightDock } from './RightDock'
 
 const { loadedPanels } = vi.hoisted(() => ({ loadedPanels: [] as string[] }))
@@ -41,18 +42,34 @@ vi.mock('./TerminalPanel', () => {
     ),
   }
 })
-vi.mock('./BackgroundTasksPanel', () => ({ BackgroundTasksPanel: () => <div>node server.js</div> }))
 vi.mock('./api', () => ({ dockApi: { resolveCwd: vi.fn(async () => '/tmp/project') } }))
 vi.mock('../../api/settingsCache', () => ({
   peekSettings: () => null,
   subscribeSettings: () => () => {},
 }))
-vi.mock('../../api/tauri', () => ({ api: { chatSubagentControl: vi.fn(async (_id, args) => {
-  const child = { id: 'child', name: 'Environment', sequence: 1, profile: { model: 'test' }, runs: [], history: [], messages: [], tools: [] }
-  if (args.operation === 'list') return { sequence: 1, agents: [child] }
-  if (args.operation === 'wait') return new Promise(() => {})
-  return child
-}) } }))
+vi.mock('../../api/tauri', () => ({ api: {
+  chatListBackgroundTasks: vi.fn(),
+  chatKillBackgroundCommand: vi.fn(),
+  chatStopExternalBackgroundTask: vi.fn(),
+  chatClearFinishedBackgroundTasks: vi.fn(),
+} }))
+
+const command: BackgroundTaskInfo = {
+  id: 'command-1', source: 'builtin', kind: 'bash', title: 'node server.js',
+  status: 'running', elapsedSecs: 1, startedAtMs: 1,
+}
+
+beforeEach(() => {
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+  vi.mocked(api.chatListBackgroundTasks).mockReset().mockResolvedValue([])
+  vi.mocked(api.chatKillBackgroundCommand).mockReset().mockResolvedValue(undefined)
+  vi.mocked(api.chatStopExternalBackgroundTask).mockReset().mockResolvedValue(undefined)
+  vi.mocked(api.chatClearFinishedBackgroundTasks).mockReset().mockResolvedValue(undefined)
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function dockProps(overrides: Partial<ComponentProps<typeof RightDock>> = {}): ComponentProps<typeof RightDock> {
   return {
@@ -77,8 +94,7 @@ function dockProps(overrides: Partial<ComponentProps<typeof RightDock>> = {}): C
 }
 
 function DockHarness({ mounted = true }: { mounted?: boolean }) {
-  const currentConversationIdRef = useRef<string | null>('conv-1')
-  const dock = useRightDock({ conversationId: 'conv-1', projectId: null, agentRuntimeKind: 'builtin', currentConversationIdRef })
+  const dock = useRightDock({ conversationId: 'conv-1', projectId: null, agentRuntimeKind: 'builtin' })
   return (
     <>
       <button onClick={dock.toggle}>Toggle dock</button>
@@ -93,7 +109,6 @@ function DockHarness({ mounted = true }: { mounted?: boolean }) {
             openTabRequest: dock.openTabRequest,
             onOpenTabRequestHandled: dock.onOpenTabRequestHandled,
             workdir: dock.workdir,
-            subAgentRequest: dock.subAgentRequest,
             treeExpanded: dock.treeExpanded,
             revealRequest: dock.reveal,
             previewRequest: dock.preview,
@@ -129,26 +144,79 @@ describe('RightDock tabs', () => {
     }
   })
 
-  it('shows parent commands only in the task list, never inside a child detail', async () => {
+  it('shows and controls background processes in the task list', async () => {
+    const external: BackgroundTaskInfo = {
+      id: 'external-1', source: 'external', kind: 'local_agent', title: 'Indexer',
+      status: 'running', elapsedSecs: 2, startedAtMs: 2, conversationId: 'conv-1',
+    }
+    const finished: BackgroundTaskInfo = { ...command, id: 'finished-1', title: 'Older task', status: 'completed' }
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([command, external, finished])
     render(<RightDock {...dockProps({ activeTab: 'tasks' })} />)
+    expect(api.chatListBackgroundTasks).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('任务'))
-    expect(screen.getByText('node server.js')).toBeVisible()
-    fireEvent.click(await screen.findByText('Environment'))
-    expect(screen.queryByText('node server.js')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '返回任务列表' }))
-    expect(screen.getByText('node server.js')).toBeVisible()
+    expect(await screen.findByText('node server.js')).toBeVisible()
+    expect(screen.getByText('Indexer')).toBeVisible()
+    expect(screen.getByText('Older task')).toBeVisible()
+
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '终止 node server.js' })) })
+    expect(api.chatKillBackgroundCommand).toHaveBeenCalledWith('command-1')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '终止 Indexer' })) })
+    expect(api.chatStopExternalBackgroundTask).toHaveBeenCalledWith('conv-1', 'external-1')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '清空' })) })
+    expect(api.chatClearFinishedBackgroundTasks).toHaveBeenCalledWith('conv-1')
+    expect(screen.getByText('没有后台任务。agent 后台运行的命令和子代理会出现在这里。')).toBeVisible()
   })
 
-  it('keeps parent commands out of direct child reveals and restores the list on conversation changes', async () => {
-    const props = dockProps({ activeTab: 'tasks', subAgentRequest: { conversationId: 'conv-1', agentId: 'child', nonce: 1 } })
+  it('updates background processes when the conversation changes and shows the regular empty state', async () => {
+    const second: BackgroundTaskInfo = { ...command, id: 'command-2', title: 'npm test' }
+    vi.mocked(api.chatListBackgroundTasks).mockImplementation(async (id) =>
+      id === 'conv-1' ? [command] : id === 'conv-2' ? [second] : [],
+    )
+    const props = dockProps({ activeTab: 'tasks' })
     const view = render(<RightDock {...props} />)
     fireEvent.click(screen.getByText('任务'))
-    await screen.findByRole('button', { name: '返回任务列表' })
-    expect(screen.queryByText('node server.js')).toBeNull()
+    expect(await screen.findByText('node server.js')).toBeVisible()
     view.rerender(<RightDock {...props} conversationId="conv-2" />)
-    expect(screen.queryByRole('button', { name: '返回任务列表' })).toBeNull()
-    expect(screen.getByText('node server.js')).toBeVisible()
+    expect(await screen.findByText('npm test')).toBeVisible()
+    expect(screen.queryByText('node server.js')).toBeNull()
+    const count = vi.mocked(api.chatListBackgroundTasks).mock.calls.length
+    view.rerender(<RightDock {...props} conversationId={null} />)
+    expect(screen.getByText('没有后台任务。agent 后台运行的命令和子代理会出现在这里。')).toBeVisible()
+    expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(count)
+    view.rerender(<RightDock {...props} conversationId="conv-empty" />)
+    await act(async () => {})
+    expect(api.chatListBackgroundTasks).toHaveBeenCalledWith('conv-empty')
+    expect(screen.getByText('没有后台任务。agent 后台运行的命令和子代理会出现在这里。')).toBeVisible()
   })
+
+  it('polls only while the task tab and dock are open', async () => {
+    vi.useFakeTimers()
+    try {
+      const props = dockProps({ activeTab: 'tasks', conversationId: 'conv-poll' })
+      const view = render(<RightDock {...props} />)
+      expect(api.chatListBackgroundTasks).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByText('任务'))
+      await act(async () => { await Promise.resolve() })
+      expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(2500) })
+      expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(2)
+
+      view.rerender(<RightDock {...props} open={false} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(7500) })
+      expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(2)
+      view.rerender(<RightDock {...props} />)
+      await act(async () => { await Promise.resolve() })
+      expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(3)
+
+      view.rerender(<RightDock {...props} activeTab="files" openTabRequest={{ tab: 'files' }} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(7500) })
+      expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(3)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('renders panels immediately on opening without waiting for hover or an import', () => {
     const props = dockProps({ open: false })
     const { rerender } = render(<RightDock {...props} />)
@@ -313,23 +381,16 @@ describe('RightDock external requests', () => {
     expect(screen.getByTestId('git-panel')).toBeVisible()
   })
 
-  it('reopens tasks on repeated commands and current-conversation subagent requests', async () => {
+  it('reopens tasks on repeated commands', async () => {
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([command])
     render(<DockHarness />)
     await act(async () => {})
     fireEvent.click(screen.getByText('Open tasks externally'))
-    expect(screen.getByText('node server.js')).toBeVisible()
+    expect(await screen.findByText('node server.js')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '打开面板' }))
-    act(() => requestDockSubAgent({ conversationId: 'other', agentId: 'child' }))
     expect(screen.getByRole('button', { name: '任务 k' })).toBeVisible()
     fireEvent.click(screen.getByText('Open tasks externally'))
-    expect(screen.getByText('node server.js')).toBeVisible()
-
-    fireEvent.click(screen.getByRole('button', { name: '打开面板' }))
-    act(() => requestDockSubAgent({ conversationId: 'conv-1', agentId: 'child' }))
-    expect(await screen.findByRole('button', { name: '返回任务列表' })).toBeVisible()
-    fireEvent.click(screen.getByRole('button', { name: '打开面板' }))
-    act(() => requestDockSubAgent({ conversationId: 'conv-1', agentId: 'child' }))
-    expect(await screen.findByRole('button', { name: '返回任务列表' })).toBeVisible()
+    expect(await screen.findByText('node server.js')).toBeVisible()
   })
 
   it('keeps the launcher and terminal session across collapse, reopen and explicit requests', async () => {

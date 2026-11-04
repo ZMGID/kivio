@@ -29,31 +29,9 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     fn supports_interactive_approval(&self) -> bool {
         self.interactive_approval
     }
-    fn wait_for_child_results<'b>(
-        &'b self,
-        conversation_id: &'b str,
-        run_id: &'b str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<bool, String>> {
-        Box::pin(async move {
-            let runtime = crate::chat::sub_agent::control::runtime(&self.app)?;
-            crate::chat::sub_agent::control::wait_for_parent_results(
-                &runtime,
-                conversation_id,
-                run_id,
-                || {
-                    !self.is_generation_active(conversation_id, generation)
-                        || self.state.chat_runtime().has_pending_input(conversation_id)
-                },
-            )
-            .await
-        })
-    }
 
-    fn run_ended(&self, _conversation_id: &str) {
-        if let Ok(runtime) = crate::chat::sub_agent::control::runtime(&self.app) {
-            runtime.release_parent(&self.run_id);
-        }
+    fn run_ended(&self, conversation_id: &str) {
+        crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
 
     fn checkpoint_runtime<'b>(
@@ -64,7 +42,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::control::collect_results(&self.app, conversation_id, run_id)
+            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id)
                 .await
         })
     }
@@ -409,28 +387,9 @@ pub(super) struct ProbeAgentHost<'a> {
 
 #[cfg(debug_assertions)]
 impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
-    fn wait_for_child_results<'b>(
-        &'b self,
-        conversation_id: &'b str,
-        run_id: &'b str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<bool, String>> {
-        Box::pin(async move {
-            let runtime = crate::chat::sub_agent::control::runtime(&self.app)?;
-            crate::chat::sub_agent::control::wait_for_parent_results(
-                &runtime,
-                conversation_id,
-                run_id,
-                || !self.is_generation_active(conversation_id, generation),
-            )
-            .await
-        })
-    }
 
-    fn run_ended(&self, _conversation_id: &str) {
-        if let Ok(runtime) = crate::chat::sub_agent::control::runtime(&self.app) {
-            runtime.release_parent(&self.run_id);
-        }
+    fn run_ended(&self, conversation_id: &str) {
+        crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
 
     fn checkpoint_runtime<'b>(
@@ -441,7 +400,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::control::collect_results(&self.app, conversation_id, run_id)
+            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id)
                 .await
         })
     }

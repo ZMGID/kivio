@@ -1,7 +1,5 @@
 import { ExtensionCenter, catalog, initializeExtensions, extensionIdForPath, useExtensions, useExtensionPath } from '../extensions/public/host'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
-import { refreshSubAgents } from './useSubAgents'
-import { SubAgentIndicator } from './SubAgentPanel'
 import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
 import { SettingsNavFooter, type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
@@ -1477,7 +1475,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [])
 
   useTauriEvent(api.onChatTool, (payload) => {
-      if (['agent', 'agent_control', 'native__agent', 'native__agent_control'].includes(payload.name) && payload.status === 'success') refreshSubAgents(payload.conversationId)
       if (popoutOwner.owns(payload.conversationId)) return
       if (!executionOwner.allowsStreamPayload(payload)) return
       // 忽略 invoke 结束后的迟到 tool 事件，否则会重新 setStreaming(true) 卡死输入栏。
@@ -1493,8 +1490,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       syncGeneratingConversationIds()
   }, [executionOwner, previewOwner, queueCommands, syncGeneratingConversationIds])
 
-  // Live nested sub-agent progress (P3): merge onto the parent tool card's
-  // structuredContent.subagentProgress, addressed by parentToolCallId.
+  // Live sub-agent progress is merged onto its spawning tool card.
   // 流状态行的瞬态一行字（上游重试等）：写进会话流快照，StreamStatusLine 每秒读。
   // 清除有两条路：后端显式 note=null，或正文/思考恢复流动（onChatStream 的 delta 分支）。
   useTauriEvent(api.onChatStatusNote, (payload) => {
@@ -1504,22 +1500,25 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [executionOwner, previewOwner])
 
   useTauriEvent(api.onChatSubagent, (payload) => {
-      // 父轮还在飞：写流快照。父轮已经收尾后旧预览仍可能留着死快照，
-      // 不能再当直播通道，否则步骤写进看不见的对象，卡上永远「运行中…」。
+      // An older spawn can still report while a newer parent run is active.
       const inFlight = executionOwner.snapshot(payload.parentConversationId).inFlight
-      if (inFlight) {
-        if (!executionOwner.allowsStreamPayload({ conversationId: payload.parentConversationId, runId: payload.parentRunId })) return
-        if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.parentConversationId, runId: payload.parentRunId })) return
-        previewOwner.projectDisplay({ kind: 'subagent', payload })
-        return
-      }
+      const preview = inFlight ? previewOwner.summary(payload.parentConversationId) : null
+      const matchesPreview = payload.parentRunId
+        ? preview?.runId === payload.parentRunId
+        : Boolean(payload.parentToolCallId && preview?.toolCalls.some(tool => tool.id === payload.parentToolCallId))
+      if (inFlight && matchesPreview
+        && executionOwner.allowsStreamPayload({ conversationId: payload.parentConversationId, runId: payload.parentRunId })
+        && executionOwner.observe({ kind: 'runEvent', conversationId: payload.parentConversationId, runId: payload.parentRunId })
+        && previewOwner.projectDisplay({ kind: 'subagent', payload }).accepted) return
       if (currentConversationIdRef.current !== payload.parentConversationId) return
       setCurrentConversation((prev) => {
         if (!prev || prev.id !== payload.parentConversationId) return prev
         let changed = false
         const messages = prev.messages.map((message) => {
           const tools = messageToolCalls(message)
-          const index = findSubagentToolIndex(tools, payload)
+          const index = payload.parentToolCallId
+            ? tools.findIndex(item => item.id === payload.parentToolCallId)
+            : inFlight ? -1 : findSubagentToolIndex(tools, payload)
           if (index < 0) return message
           changed = true
           const nextTools = tools.map((item, i) => (
@@ -2399,7 +2398,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationId: currentConversation?.id ?? null,
     projectId: selectedProject?.id ?? null,
     agentRuntimeKind: activeAgentRuntime.kind,
-    currentConversationIdRef,
   })
   const {
     open: dockOpen,
@@ -3131,7 +3129,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={pendingSlot}
-            subAgentSlot={currentConversation?.id && <SubAgentIndicator key={currentConversation.id} conversationId={currentConversation.id} lang={uiLang} onOpen={handleOpenDockTasks} />}
             goalSlot={visibleGoal ? (
               <GoalCard
                 goal={visibleGoal}
@@ -3153,7 +3150,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         </ChatRouteKeepAlive>
         {chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && (
           <RightDock
-            subAgentRequest={dock.subAgentRequest}
             open={dockOpen}
             toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
             width={dock.width}

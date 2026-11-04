@@ -25,12 +25,12 @@ import {
   argsToText,
   CHAT_TOOL_TIMEOUT_PRESETS_MS,
   clampMcpIdleTimeoutMs,
-  clampSubAgentConcurrency,
+  clampTaskMaxConcurrency,
   clampToolTimeoutMs,
   envToText,
   formatToolTimeoutLabel,
   MCP_IDLE_TIMEOUT_PRESETS_MS,
-  SUB_AGENT_CONCURRENCY_PRESETS,
+  TASK_MAX_CONCURRENCY_PRESETS,
   textToArgs,
   textToEnv,
 } from '../settings/public/mcpTools'
@@ -578,7 +578,7 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
         {desc && <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{desc}</p>}
       </div>
       <div className="mt-auto">
-        <Select className="w-full" value={value} onChange={onChange} options={options} />
+        <Select className="w-full" value={value} onChange={onChange} options={options} ariaLabel={label} />
       </div>
     </div>
   )
@@ -750,10 +750,10 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
                     { value: 'auto', label: t.chatMcpApprovalAuto },
                   ])}
                   {renderRuntimeSelect(
-                    t.chatMcpSubagentConcurrency,
-                    String(clampSubAgentConcurrency(chatTools?.subAgentConcurrency)),
-                    (value) => persistChatTools({ subAgentConcurrency: clampSubAgentConcurrency(value) }),
-                    SUB_AGENT_CONCURRENCY_PRESETS.map((n) => ({ value: String(n), label: String(n) })),
+                    t.chatMcpTaskMaxConcurrency,
+                    String(clampTaskMaxConcurrency(chatTools?.taskMaxConcurrency)),
+                    (value) => persistChatTools({ taskMaxConcurrency: clampTaskMaxConcurrency(value) }),
+                    TASK_MAX_CONCURRENCY_PRESETS.map((n) => ({ value: String(n), label: n === 0 ? t.chatMcpTaskConcurrencyUnlimited : String(n) })),
                   )}
                   {renderRuntimeSelect(
                     t.chatMcpToolTimeout,

@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ChatStreamPayload } from '../../api/tauri'
+import type { ChatStreamPayload, ChatSubagentPayload } from '../../api/tauri'
 import { chatApi } from '../api'
 import { getCoarse, getSnapshot, reset as resetStreamStore, subscribeSnapshot } from '../streamingStore'
 import type { Conversation } from '../types'
@@ -101,6 +101,12 @@ async function setupStreamedAnswer() {
   return { ...rendered, getCommittedMessages: () => committedMessages }
 }
 
+const subagentProgress = (overrides: Partial<ChatSubagentPayload> = {}): ChatSubagentPayload => ({
+  parentConversationId: CONVERSATION_ID, parentRunId: 'run-1', parentToolCallId: 'old-parent',
+  taskId: 'old-worker', name: 'Worker', depth: 1, status: 'running', preview: 'Working',
+  ...overrides,
+})
+
 describe('usePopoutSession run settle', () => {
   it('withdraws only the resolved question while the run continues', async () => {
     const { result } = await setupStreamedAnswer()
@@ -137,6 +143,174 @@ describe('usePopoutSession run settle', () => {
     resetStreamStore()
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it('updates the persisted parent after its run ends and ignores other conversations', async () => {
+    const rendered = await setupStreamedAnswer()
+    const unrelated = { id: 'other-parent', name: 'Task', source: 'external_cli', status: 'running' as const }
+    const persisted = conversationWith([
+      ...userOnly.messages,
+      { id: TWIN_ID, role: 'assistant', content: 'answer', timestamp: 2, tool_calls: [
+        { id: 'old-parent', name: 'task', source: 'native', status: 'success' },
+      ] },
+      { id: 'other-message', role: 'assistant', content: '', timestamp: 3, tool_calls: [unrelated] },
+    ])
+    mockGetConversation.mockResolvedValueOnce(persisted)
+    await act(async () => { emitStream(packet('run_completed', 'run-1')) })
+    await flush()
+    const before = rendered.result.current.conversation
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ parentConversationId: 'other' }))
+      handlers.get('subagent')?.(subagentProgress({ parentToolCallId: 'missing', taskId: 'unknown' }))
+    })
+    expect(rendered.result.current.conversation).toBe(before)
+
+    await act(async () => { handlers.get('subagent')?.(subagentProgress()) })
+    const message = rendered.result.current.conversation!.messages[1]
+    expect(message.toolCalls?.[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'old-worker': { taskId: 'old-worker', status: 'running', preview: 'Working' } },
+    })
+    expect(message.tool_calls).toEqual(message.toolCalls)
+    expect(rendered.result.current.conversation!.messages[2].tool_calls?.[0]).toEqual(unrelated)
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ taskId: 'second-worker', preview: 'Other worker' }))
+    })
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ status: 'completed', preview: 'Done' }))
+    })
+    expect(rendered.result.current.conversation!.messages[1].toolCalls?.[0]).toMatchObject({
+      status: 'success',
+      structuredContent: { subagentProgressByTask: {
+        'old-worker': { status: 'completed', preview: 'Done' },
+        'second-worker': { status: 'running', preview: 'Other worker' },
+      } },
+    })
+  })
+
+  it('keeps live progress in the current run while applying older worker updates only to their exact parent', async () => {
+    const unrelated = { id: 'unrelated', name: 'Agent', source: 'external_cli', status: 'running' as const }
+    const persisted = conversationWith([
+      { id: 'previous', role: 'assistant', content: '', timestamp: 1, toolCalls: [
+        { id: 'old-parent', name: 'task', source: 'native', status: 'success' },
+        unrelated,
+      ] },
+    ])
+    mockGetConversation.mockResolvedValueOnce(persisted)
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    await act(async () => {
+      emitStream(packet('run_started', 'run-2'))
+      handlers.get('tool')?.({
+        conversationId: CONVERSATION_ID, runId: 'run-2', messageId: TWIN_ID,
+        toolCallId: 'live-parent', name: 'task', source: 'native', status: 'running',
+      })
+    })
+    await flush()
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({
+        parentRunId: 'run-2', parentToolCallId: 'live-parent', taskId: 'live-worker', preview: 'Live step',
+      }))
+    })
+    await flush()
+    expect(getSnapshot().toolCalls[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'live-worker': { taskId: 'live-worker', preview: 'Live step' } },
+    })
+
+    await act(async () => { handlers.get('subagent')?.(subagentProgress({ preview: 'Late step' })) })
+    expect(rendered.result.current.conversation!.messages[0].toolCalls?.[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'old-worker': { taskId: 'old-worker', preview: 'Late step' } },
+    })
+    expect(rendered.result.current.conversation!.messages[0].toolCalls?.[1]).toEqual(unrelated)
+    expect(getSnapshot().toolCalls[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'live-worker': { taskId: 'live-worker', preview: 'Live step' } },
+    })
+    const before = rendered.result.current.conversation
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ parentToolCallId: '', taskId: 'unknown', preview: 'Wrong' }))
+      handlers.get('subagent')?.(subagentProgress({ parentRunId: '', parentToolCallId: 'missing', taskId: 'unknown' }))
+    })
+    expect(rendered.result.current.conversation).toBe(before)
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ parentRunId: '', preview: 'Unsequenced update' }))
+    })
+    expect(rendered.result.current.conversation!.messages[0].toolCalls?.[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'old-worker': { preview: 'Unsequenced update' } },
+    })
+    expect(getSnapshot().toolCalls[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'live-worker': { taskId: 'live-worker', preview: 'Live step' } },
+    })
+  })
+
+  it('projects unsequenced progress only onto the exact live parent while terminal reload is pending', async () => {
+    const rendered = await setupStreamedAnswer()
+    await act(async () => {
+      handlers.get('tool')?.({
+        conversationId: CONVERSATION_ID, runId: 'run-1', messageId: TWIN_ID,
+        toolCallId: 'live-parent', name: 'task', source: 'native', status: 'running',
+      })
+    })
+    await flush()
+    let resolveReload: (conversation: Conversation) => void = () => {}
+    mockGetConversation.mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve }))
+    await act(async () => { emitStream(packet('run_completed', 'run-1')) })
+    await flush()
+    expect(getCoarse().streamFrozen).toBe(true)
+    const before = rendered.result.current.conversation
+
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({
+        parentRunId: '', parentToolCallId: 'live-parent', taskId: 'live-worker', preview: 'Unsequenced step',
+      }))
+    })
+    await flush()
+    expect(rendered.result.current.conversation).toBe(before)
+    expect(getSnapshot().toolCalls[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'live-worker': { preview: 'Unsequenced step' } },
+    })
+
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({
+        parentRunId: '', parentToolCallId: 'missing', taskId: 'other-worker', preview: 'Wrong parent',
+      }))
+      handlers.get('subagent')?.(subagentProgress({
+        parentRunId: 'older-run', parentToolCallId: 'live-parent', taskId: 'live-worker', preview: 'Wrong run',
+      }))
+    })
+    await flush()
+    expect(getSnapshot().toolCalls[0].structuredContent).toMatchObject({
+      subagentProgressByTask: { 'live-worker': { preview: 'Unsequenced step' } },
+    })
+    await act(async () => { resolveReload(withTwin) })
+    await flush()
+  })
+
+  it('keeps the idle external CLI fallback when progress has no parent tool id', async () => {
+    mockGetConversation.mockResolvedValueOnce(conversationWith([
+      { id: TWIN_ID, role: 'assistant', content: '', timestamp: 1, toolCalls: [
+        { id: 'external-parent', name: 'Agent', source: 'external_cli', status: 'running' },
+      ] },
+    ]))
+    const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ parentRunId: '', parentToolCallId: '', taskId: 'external-worker' }))
+    })
+    expect(rendered.result.current.conversation!.messages[0].toolCalls?.[0].structuredContent).toMatchObject({
+      subagentProgress: { taskId: 'external-worker', preview: 'Working' },
+    })
+  })
+
+  it('ignores progress for the previous conversation during a route change', async () => {
+    mockGetConversation.mockResolvedValueOnce(conversationWith([
+      { id: TWIN_ID, role: 'assistant', content: '', timestamp: 1, toolCalls: [{ id: 'old-parent', name: 'Task' }] },
+    ]))
+    const rendered = renderHook(({ id }) => usePopoutSession(id, 'zh'), { initialProps: { id: CONVERSATION_ID } })
+    await flush()
+    const before = rendered.result.current.conversation
+    mockGetConversation.mockImplementationOnce(() => new Promise(() => {}))
+    rendered.rerender({ id: 'c2' })
+    await act(async () => { handlers.get('subagent')?.(subagentProgress()) })
+    expect(rendered.result.current.conversation).toBe(before)
   })
 
   it('keeps the live answer frozen through reload and clears it only once the twin is committed', async () => {

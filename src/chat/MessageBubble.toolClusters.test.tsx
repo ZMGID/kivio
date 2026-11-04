@@ -85,6 +85,21 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('deploy').closest('[data-tool-call-cluster]')).toBeNull()
   })
 
+  it('keeps native task and wait and external Task cards out of activity clusters', () => {
+    const task: ToolCallRecord = { id: 'task', source: 'native', name: 'task', status: 'success',
+      arguments: { context: 'Shared', tasks: [{ name: 'Research', task: 'Inspect', solutionSpace: 'Read' }] } }
+    const wait: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
+    const external: ToolCallRecord = { id: 'external', source: 'external_cli', name: 'Task', status: 'running', arguments: { description: 'CLI research' } }
+    const externalMessage: ToolCallRecord = { id: 'external-message', source: 'external_cli', name: 'SendMessage', status: 'completed' }
+    const mcpTask: ToolCallRecord = { id: 'mcp', source: 'mcp', name: 'task', status: 'completed' }
+    const { container } = render(<MessageBubble message={message([read, task, wait, external, externalMessage, mcpTask, command])} messageStreaming />)
+    expect(screen.getByRole('button', { name: /子代理 · Research/ }).closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.getByRole('button', { name: /等待子代理/ }).closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.getByText('SUBAGENT').closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.getByText('SendMessage').closest('[data-tool-call-cluster]')).toBeNull()
+    expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(2)
+  })
+
   it('keeps a single activity anchor as thinking and tools append', () => {
     const thought: ChatMessageSegment = { id: 'thought', kind: 'reasoning', phase: 'tool_loop', order: 0, text: 'Plan\nInspecting source' }
     const initial = message([], [thought])

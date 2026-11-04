@@ -47,6 +47,7 @@ import {
   groupWorkDurationMs,
   isExternalSubagentToolCall,
   isImageReadToolCall,
+  isNativeTaskToolCall,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
   segmentToolCallId,
@@ -725,7 +726,8 @@ function renderProcessSegments({
       && !tool.requires_confirmation && !tool.requiresConfirmation
       && !isPresentationToolCall(tool)
       && !isExternalSubagentToolCall(tool)
-      && !['agent', 'agent_control'].includes(canonicalToolName(tool))
+      && !(tool.source === 'external_cli' && canonicalToolName(tool) === 'agent')
+      && !isNativeTaskToolCall(tool)
   }
   for (let index = 0; index < segments.length; ) {
     const segment = segments[index]

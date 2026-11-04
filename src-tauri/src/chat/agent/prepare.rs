@@ -1421,6 +1421,12 @@ mod tests {
             .expect("pre-rename file tool names resolve to the current builtin");
         assert!(renamed.contains("not enabled"));
         assert!(renamed.contains("this tool only"));
+        for name in ["task", "wait"] {
+            let feedback = disabled_builtin_tool_feedback(name)
+                .expect("disabled subagent tools should produce model feedback");
+            assert!(feedback.contains(name));
+            assert!(feedback.contains("not enabled"));
+        }
     }
 
     #[test]
@@ -1619,9 +1625,9 @@ mod tests {
             &crate::settings::ChatToolsConfig::default(),
             true,
             &[
-                "agent".to_string(),
-                "agent_control".to_string(),
-                "read_file".to_string(),
+                "task".to_string(),
+                "wait".to_string(),
+                "read".to_string(),
             ],
             None,
             None,
@@ -1638,10 +1644,9 @@ mod tests {
             &[],
         );
         let prompt = format!("{}\n{}", prompt.system, prompt.context);
-        assert!(prompt.contains("advance the main task yourself"));
-        assert!(prompt.contains("specific results you need"));
+        assert!(prompt.contains("fan substantial work to `task`"));
+        assert!(prompt.contains("use `wait` only when completely blocked"));
         assert!(!prompt.contains("To add a PERMANENT role"));
-        assert!(!prompt.contains("each agent call BLOCKS"));
         assert!(!prompt.contains("There is no polling or collection tool"));
         assert!(!prompt.contains("Required flow"));
     }

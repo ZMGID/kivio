@@ -85,6 +85,20 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings(input).screenshotTranslation.rapidOcrTier).toBe('future-tier')
   })
 
+  it('preserves task limit disable values in the backend settings snapshot', () => {
+    const chatTools = makeChatToolsFixture({
+      taskMaxConcurrency: 0,
+      taskMaxRecursionDepth: -1,
+      taskSoftRequestBudget: 0,
+    })
+    const normalized = normalizeSettings(baseSettings({ chatTools }))
+
+    expect(normalized.chatTools).toBe(chatTools)
+    expect(normalized.chatTools.taskMaxConcurrency).toBe(0)
+    expect(normalized.chatTools.taskMaxRecursionDepth).toBe(-1)
+    expect(normalized.chatTools.taskSoftRequestBudget).toBe(0)
+  })
+
   it('完整保留 chat.externalCliAgents 等嵌套字段', () => {
     const providers = [
       {

@@ -14,7 +14,9 @@ export function makeChatToolsFixture(overrides: Partial<ChatToolsConfig> = {}): 
     toolTimeoutMs: 60_000,
     mcpIdleTimeoutMs: 600_000,
     approvalPolicy: 'readonly_auto_sensitive_confirm',
-    subAgentConcurrency: 12,
+    taskMaxConcurrency: 32,
+    taskMaxRecursionDepth: 2,
+    taskSoftRequestBudget: 200,
     requestDebugEnabled: false,
     nativeTools: {
       readFile: true,

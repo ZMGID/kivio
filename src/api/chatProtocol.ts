@@ -140,6 +140,11 @@ function retrySync(conversationId: string) {
 }
 
 function applyRunEvent(event: ChatRunEventEnvelope) {
+  // Live worker updates outlive their spawning run and do not have a replay sequence.
+  if (event.type === 'subagent_updated' && event.seq === 0) {
+    dispatch(event)
+    return
+  }
   const state = runState(event)
   // HookFailed 是旁路警告，可在 run 已终态、甚至 hub 已 prune（seq=0 直播帧）之后到达。
   // 不当成内容序列的缺口，也不因 terminal 丢弃——否则黄条永远出不来。

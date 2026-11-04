@@ -41,7 +41,7 @@ import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -215,6 +215,8 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
     case 'mixer_generate_image':
       return ImagePlus
     case 'agent':
+    case 'task':
+    case 'wait':
       return Bot
     case 'ask_user':
       return MessageCircleQuestion
@@ -416,13 +418,9 @@ function structuredSubagent(toolCall: ToolCallRecord): SubagentView | null {
   }
 }
 
-function isSubAgentRecord(toolCall: ToolCallRecord): boolean {
-  if (objectValue(toolCall.structured_content ?? toolCall.structuredContent)?.type === 'subagent_started') return true
-  if (structuredSubagent(toolCall)) return true
-  // 外部 CLI 的子代理（claude 的 Agent/Task）没有 structured content，
-  // 按 source+名字认，与内置 agent 同一张 SUBAGENT 卡。
-  if (isExternalSubagentToolCall(toolCall)) return true
-  return toolCall.source === 'native' && toolRawName(toolCall) === 'agent'
+function isSubagentToolRecord(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'external_cli'
+    && (isExternalSubagentToolCall(toolCall) || Boolean(structuredSubagent(toolCall)))
 }
 
 /** Sub-agent type / display name fall back to the spawn arguments while the run
@@ -611,10 +609,6 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
   const args = useMemo(() => parsedArguments(toolCall), [toolCall])
 
-  const receipt = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
-  if (receipt?.type === 'subagent_started') {
-    return <SubAgentToolCard toolCall={toolCall} />
-  }
 
   const agentType = subagentAgentType(view, args)
   const name = subagentName(view, args)
@@ -622,8 +616,7 @@ function SubAgentCard({ toolCall }: ToolCallBlockProps) {
   const duration = status === 'running' ? '' : formatDuration(getDuration(toolCall))
   const statusLine = subagentStatusLine(t, view, status)
   const prompt = subagentPrompt(args)
-  // 内置 agent 的最终结果在 structured content 里；外部 CLI（claude Agent/Task）没有
-  // structured，最终结果落在 result_preview——终态时兜底取它，否则 Result 区恒空。
+  // External CLI results can arrive in result_preview rather than structured content.
   const result =
     view?.result || (status !== 'running' && status !== 'pending' ? getResultPreview(t, toolCall) : '')
   const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
@@ -2312,7 +2305,7 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
 }
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
-  if ((props.toolCall.source === 'native' && ['agent', 'agent_control'].includes(toolRawName(props.toolCall))) || objectValue(props.toolCall.structured_content ?? props.toolCall.structuredContent)?.type === 'subagent_control') {
+  if (isNativeTaskToolCall(props.toolCall)) {
     return <SubAgentToolCard toolCall={props.toolCall} />
   }
   if (isAskUserTool(props.toolCall)) {
@@ -2321,7 +2314,7 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   if (isImageReadToolCall(props.toolCall)) {
     return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} defaultOpen={props.defaultOpen} />
   }
-  if (isSubAgentRecord(props.toolCall)) {
+  if (isSubagentToolRecord(props.toolCall)) {
     return <SubAgentCard {...props} />
   }
   if (isAdvisorRecord(props.toolCall)) {

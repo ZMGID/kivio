@@ -10,10 +10,10 @@ export const CHAT_TOOL_MAX_TIMEOUT_MS = 600_000
 export const MCP_IDLE_TIMEOUT_PRESETS_MS = [60_000, 300_000, 600_000, 1_800_000, 3_600_000]
 export const MCP_IDLE_TIMEOUT_MIN_MS = 60_000
 export const MCP_IDLE_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1_000
-// 子 agent 并发预设。后端钳制范围 1..64，默认 12。
-export const SUB_AGENT_CONCURRENCY_PRESETS = [3, 6, 12, 24, 48]
-export const SUB_AGENT_CONCURRENCY_MIN = 1
-export const SUB_AGENT_CONCURRENCY_MAX = 64
+// Task concurrency presets; 0 is unlimited and the backend clamps to 0..256.
+export const TASK_MAX_CONCURRENCY_PRESETS = [1, 2, 4, 8, 16, 32, 64, 128, 256, 0]
+export const TASK_MAX_CONCURRENCY_MIN = 0
+export const TASK_MAX_CONCURRENCY_MAX = 256
 
 export function clampToolTimeoutMs(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 60_000)
@@ -27,10 +27,10 @@ export function clampMcpIdleTimeoutMs(value: string | number | null | undefined)
   return Math.min(MCP_IDLE_TIMEOUT_MAX_MS, Math.max(MCP_IDLE_TIMEOUT_MIN_MS, Math.round(parsed)))
 }
 
-export function clampSubAgentConcurrency(value: string | number | null | undefined): number {
-  const parsed = Number(value ?? 12)
-  if (!Number.isFinite(parsed)) return 12
-  return Math.min(SUB_AGENT_CONCURRENCY_MAX, Math.max(SUB_AGENT_CONCURRENCY_MIN, Math.round(parsed)))
+export function clampTaskMaxConcurrency(value: string | number | null | undefined): number {
+  const parsed = Number(value ?? 32)
+  if (!Number.isFinite(parsed)) return 32
+  return Math.min(TASK_MAX_CONCURRENCY_MAX, Math.max(TASK_MAX_CONCURRENCY_MIN, Math.round(parsed)))
 }
 
 export function formatToolTimeoutLabel(ms: number, lang: string): string {

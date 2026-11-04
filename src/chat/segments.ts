@@ -52,6 +52,8 @@ function foldedToolName(toolCall: ToolCallRecord): string {
 }
 
 export function canonicalToolName(toolCall: ToolCallRecord): string {
+  const raw = toolRecordRawName(toolCall).toLowerCase()
+  if (toolCall.source === 'native' && (raw === 'native__task' || raw === 'native__wait')) return raw.slice(8)
   const folded = foldedToolName(toolCall)
   if (folded === 'strreplaceeditor') {
     const command = recordString(parsedToolArguments(toolCall)?.command)
@@ -60,7 +62,7 @@ export function canonicalToolName(toolCall: ToolCallRecord): string {
     return 'edit'
   }
   if (folded.startsWith('cordisinspect')) return 'read'
-  return TOOL_NAME_ALIASES[folded] ?? toolRecordRawName(toolCall).toLowerCase()
+  return TOOL_NAME_ALIASES[folded] ?? raw
 }
 
 /** Edit/Write 类工具名（含外部 CLI 的 Edit/Write/MultiEdit/NotebookEdit 变体）。 */
@@ -216,6 +218,10 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
     || name === 'subagentfork'
     || name === 'workflow'
     || name === 'ralph'
+}
+
+export function isNativeTaskToolCall(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'native' && ['task', 'wait'].includes(canonicalToolName(toolCall))
 }
 
 const IMAGE_READ_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif)$/i
@@ -526,6 +532,9 @@ export type ToolGroupIcon = ToolGroupCategory | 'reasoning'
 
 function categorizeTool(toolCall: ToolCallRecord): ToolGroupCategory {
   const raw = canonicalToolName(toolCall)
+  if (isNativeTaskToolCall(toolCall) || (toolCall.source === 'external_cli' && (raw === 'agent' || raw === 'task'))) {
+    return 'subAgent'
+  }
   switch (raw) {
     case 'read':
     case 'read_file':
@@ -566,8 +575,6 @@ function categorizeTool(toolCall: ToolCallRecord): ToolGroupCategory {
     case 'memory_search':
     case 'memory_modify':
       return 'memory'
-    case 'agent':
-      return 'subAgent'
     case 'skill':
     case 'skill_activate':
       return 'skill'

@@ -144,7 +144,7 @@ mod tests {
         let update = |version: &str| {
             fs::write(
                 content.join("agents/research.md"),
-                format!("---\nname: research\ndescription: Research\n---\n{version}"),
+                format!("---\nname: research\ndescription: Research\ntools: [Read, Grep, Task]\n---\n{version}"),
             )
             .unwrap();
             fs::write(content.join("hooks/hooks.json"), json!({"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":version}]}]}}).to_string()).unwrap();
@@ -174,6 +174,11 @@ mod tests {
                     .system_prompt
                     .trim(),
                 version
+            );
+            let plugin_agent = catalog.agents.iter().find(|a| a.source == "plugin").unwrap();
+            assert_eq!(
+                plugin_agent.tools.as_ref().unwrap().iter().map(String::as_str).collect::<Vec<_>>(),
+                vec!["read", "grep", "task"]
             );
         };
         update("first");

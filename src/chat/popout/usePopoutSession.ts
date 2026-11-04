@@ -12,7 +12,7 @@ import {
 import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState, patchTodoState } from '../agentTodoState'
 import { keepNewerContextMeasurement } from '../contextPanel'
-import { userPromptEventToRecord } from '../streamApply'
+import { findSubagentToolIndex, mergeSubagentProgress, messageToolCalls, userPromptEventToRecord } from '../streamApply'
 import { createChatExecutionOwner } from '../chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
 import { createStreamPreviewOwner } from '../streamPreviewOwner'
@@ -149,15 +149,32 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   }, [executionOwner, previewOwner])
 
   useTauriEvent(api.onChatSubagent, (payload) => {
-    if (payload.parentConversationId !== conversationIdRef.current
-      || !executionOwner.snapshot(payload.parentConversationId).inFlight
-      || !executionOwner.allowsStreamPayload({
-        conversationId: payload.parentConversationId, runId: payload.parentRunId,
-      })) return
-    if (!executionOwner.observe({
-      kind: 'runEvent', conversationId: payload.parentConversationId, runId: payload.parentRunId,
-    })) return
-    previewOwner.projectDisplay({ kind: 'subagent', payload })
+    const id = payload.parentConversationId
+    if (id !== conversationIdRef.current) return
+    const inFlight = executionOwner.snapshot(id).inFlight
+    const preview = previewOwner.summary(id)
+    if (inFlight && preview
+      && (payload.parentRunId
+        ? preview.runId === payload.parentRunId
+        : Boolean(payload.parentToolCallId && preview.toolCalls.some((tool) => tool.id === payload.parentToolCallId)))
+      && executionOwner.allowsStreamPayload({ conversationId: id, runId: payload.parentRunId })
+      && executionOwner.observe({ kind: 'runEvent', conversationId: id, runId: payload.parentRunId })
+      && previewOwner.projectDisplay({ kind: 'subagent', payload }).accepted) return
+    setConversation((current) => {
+      if (!current || current.id !== id || conversationIdRef.current !== id) return current
+      let changed = false
+      const messages = current.messages.map((message) => {
+        const tools = messageToolCalls(message)
+        const index = payload.parentToolCallId
+          ? tools.findIndex((tool) => tool.id === payload.parentToolCallId)
+          : inFlight ? -1 : findSubagentToolIndex(tools, payload)
+        if (index < 0) return message
+        changed = true
+        const nextTools = tools.map((tool, i) => i === index ? mergeSubagentProgress(tool, payload) : tool)
+        return { ...message, toolCalls: nextTools, tool_calls: nextTools }
+      })
+      return changed ? { ...current, messages } : current
+    })
   }, [executionOwner, previewOwner])
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return

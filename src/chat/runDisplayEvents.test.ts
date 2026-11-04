@@ -71,4 +71,41 @@ describe('run display events', () => {
     expect(applyRunDisplayEvent(snapshot, { kind: 'subagent', payload }).accepted).toBe(true)
     expect(snapshot.toolCalls[0].structuredContent).toMatchObject({ subagentProgress: { preview: 'step' } })
   })
+
+  it('keeps batched task progress separate and preserves the spawn result', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    const spawn = { ...tool('run-a', 'running'), name: 'task' }
+    applyRunDisplayEvent(snapshot, { kind: 'tool', payload: spawn })
+    const child = {
+      parentConversationId: 'c1', parentRunId: 'run-a', parentToolCallId: 'tool-1',
+      taskId: 'child-a', name: 'Alpha', depth: 1, status: 'running', preview: 'Alpha work', steps: ['read'],
+    } as ChatSubagentPayload
+    applyRunDisplayEvent(snapshot, { kind: 'subagent', payload: child })
+    applyRunDisplayEvent(snapshot, { kind: 'subagent', payload: {
+      ...child, taskId: 'child-b', name: 'Beta', preview: 'Beta work', steps: ['search'],
+    } })
+    applyRunDisplayEvent(snapshot, { kind: 'subagent', payload: { ...child, status: 'failed', preview: '' } })
+    expect(snapshot.toolCalls[0].status).toBe('running')
+    applyRunDisplayEvent(snapshot, { kind: 'tool', payload: {
+      ...spawn, status: 'success', structuredContent: { accepted: true }, resultPreview: 'Tasks spawned',
+    } })
+    expect(snapshot.toolCalls[0]).toMatchObject({
+      status: 'completed',
+      result_preview: 'Tasks spawned',
+      structuredContent: {
+        accepted: true,
+        subagentProgressByTask: {
+          'child-a': { name: 'Alpha', status: 'failed', preview: 'Alpha work', steps: ['read'] },
+          'child-b': { name: 'Beta', status: 'running', preview: 'Beta work', steps: ['search'] },
+        },
+      },
+    })
+    expect(applyRunDisplayEvent(snapshot, { kind: 'subagent', payload: {
+      ...child, parentToolCallId: '', taskId: 'child-b', name: 'Beta', status: 'completed', preview: 'Beta done',
+    } }).accepted).toBe(true)
+    expect(snapshot.toolCalls[0]).toMatchObject({
+      status: 'completed', result_preview: 'Tasks spawned',
+      structuredContent: { subagentProgressByTask: { 'child-b': { preview: 'Beta done' } } },
+    })
+  })
 })
