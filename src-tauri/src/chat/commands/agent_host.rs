@@ -30,6 +30,10 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         self.interactive_approval
     }
 
+    fn speculative_task_app(&self) -> Option<AppHandle> {
+        Some(self.app.clone())
+    }
+
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
@@ -38,11 +42,11 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        _history: &'b [Value],
+        history: &'b [Value],
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id)
+            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id, history)
                 .await
         })
     }
@@ -387,6 +391,9 @@ pub(super) struct ProbeAgentHost<'a> {
 
 #[cfg(debug_assertions)]
 impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
+    fn speculative_task_app(&self) -> Option<AppHandle> {
+        Some(self.app.clone())
+    }
 
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
@@ -396,11 +403,11 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        _history: &'b [Value],
+        history: &'b [Value],
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id)
+            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id, history)
                 .await
         })
     }

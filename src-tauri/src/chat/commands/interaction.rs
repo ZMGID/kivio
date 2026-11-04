@@ -129,8 +129,14 @@ pub(crate) async fn chat_cancel_stream(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<(), String> {
-    state.sub_agents.set_user_interrupted(&conversation_id, true);
-    cancel_stream(&app, state.inner(), &conversation_id).await
+    cancel_user_generation(state.inner(), &conversation_id);
+    pause_goal_after_cancel(&app, &conversation_id).await
+}
+
+pub(super) fn cancel_user_generation(state: &AppState, conversation_id: &str) {
+    state.sub_agents.interrupt_user_turn(conversation_id, || {
+        state.cancel_chat_generation(conversation_id);
+    });
 }
 
 pub(crate) async fn cancel_stream(
@@ -139,6 +145,10 @@ pub(crate) async fn cancel_stream(
     conversation_id: &str,
 ) -> Result<(), String> {
     state.cancel_chat_generation(conversation_id);
+    pause_goal_after_cancel(app, conversation_id).await
+}
+
+async fn pause_goal_after_cancel(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
     if let Ok(conversation) = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |conversation| {
             if let Some(goal) = conversation

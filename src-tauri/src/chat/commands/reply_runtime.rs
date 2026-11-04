@@ -44,44 +44,48 @@ pub(super) fn resolve_reply_arms(
     Ok(arms)
 }
 
-/// 命令入口的哨兵预留守卫：原子地「busy 检查 + 占一个哨兵槽位」，关闭 busy 判定与真实
-/// per-run 槽位注册之间的 TOCTOU 窗口（防同会话并发发送同时通过 busy 检查）。哨兵槽位只占
-/// `chat_active_replies`、不参与 generation/取消，命令任意退出路径 drop 时释放。
-/// 真实 per-run 槽位（`ChatReplyGuard`）在哨兵存活期间额外注册，二者按不同 run_id 共存。
+/// Reserves a conversation for a send; Stop invalidates it until this guard drops.
 pub(crate) struct ChatSendReservation<'a> {
     state: &'a AppState,
     conversation_id: String,
     run_id: String,
+    interruption_epoch: u64,
 }
 
 impl<'a> ChatSendReservation<'a> {
     /// 尝试预留某会话的发送哨兵。返回 None 表示该会话已有 run 在跑（busy）。
     pub(crate) fn try_acquire(state: &'a AppState, conversation_id: &str) -> Option<Self> {
         let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
-        if !state
-            .chat_runtime()
-            .try_reserve_send(conversation_id, &run_id)
-        {
-            return None;
-        }
+        let interruption_epoch = Self::try_reserve(state, conversation_id, &run_id)?;
         Some(Self {
             state,
             conversation_id: conversation_id.to_string(),
             run_id,
+            interruption_epoch,
         })
+    }
+
+    fn try_reserve(state: &AppState, conversation_id: &str, run_id: &str) -> Option<u64> {
+        state.sub_agents.with_interruption_epoch(conversation_id, |epoch| {
+            state.chat_runtime().try_reserve_send(conversation_id, run_id).then_some(epoch)
+        })
+    }
+
+    pub(crate) fn interruption_epoch(&self) -> u64 {
+        self.interruption_epoch
     }
 
     /// Queued variant: waits while the conversation is replying, then reserves.
     pub(super) async fn acquire_when_idle(state: &'a AppState, conversation_id: &str) -> Self {
         let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
-        state
-            .chat_runtime()
-            .reserve_send_when_idle(conversation_id, &run_id)
+        let interruption_epoch = state.chat_runtime()
+            .reserve_send_when_idle(|| Self::try_reserve(state, conversation_id, &run_id))
             .await;
         Self {
             state,
             conversation_id: conversation_id.to_string(),
             run_id,
+            interruption_epoch,
         }
     }
 }
@@ -159,4 +163,48 @@ pub(super) struct ArmReplyOutcome {
     pub(super) message: Option<ChatMessage>,
     pub(super) run_id: Option<String>,
     pub(super) error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_invalidates_reserved_turn_before_or_after_generation_admission() {
+        let state = crate::state::test_app_state();
+        let first = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
+        let epoch = first.interruption_epoch();
+        super::super::interaction::cancel_user_generation(&state, "conversation");
+        assert!(!state.sub_agents.resume_user_turn("conversation", epoch));
+        assert!(state.sub_agents.user_interrupted("conversation"));
+        assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
+        drop(first);
+
+        let second = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
+        assert!(state.sub_agents.resume_user_turn("conversation", second.interruption_epoch()));
+        let generation = state.chat_runtime().begin_reply_generation("conversation").unwrap();
+        super::super::interaction::cancel_user_generation(&state, "conversation");
+        assert!(!state.chat_runtime().is_generation_active("conversation", generation));
+        assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
+        assert!(state.sub_agents.user_interrupted("conversation"));
+        drop(second);
+
+        let third = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
+        assert!(state.sub_agents.resume_user_turn("conversation", third.interruption_epoch()));
+        assert!(state.chat_runtime().begin_reply_generation("conversation").is_some());
+    }
+
+    #[tokio::test]
+    async fn queued_turn_captures_epoch_when_it_acquires_the_reservation() {
+        let state = crate::state::test_app_state();
+        let first = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
+        let waiting = ChatSendReservation::acquire_when_idle(&state, "conversation");
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        super::super::interaction::cancel_user_generation(&state, "conversation");
+        drop(first);
+        let next = waiting.await;
+        assert!(state.sub_agents.resume_user_turn("conversation", next.interruption_epoch()));
+        assert!(state.chat_runtime().begin_reply_generation("conversation").is_some());
+    }
 }

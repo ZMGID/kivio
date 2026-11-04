@@ -684,12 +684,20 @@ export type ChatToolsConfig = {
   /** MCP 持久连接空闲超时（ms）：会话空闲超过此值后被回收，下次调用透明重连。 */
   mcpIdleTimeoutMs?: number
   approvalPolicy: 'readonly_auto_sensitive_confirm' | 'always_confirm' | 'auto' | string
-  /** Maximum concurrent tasks per conversation (0 = unlimited; default 32). */
+  /** Maximum concurrent tasks per spawning session (0 = unlimited; default 32). */
   taskMaxConcurrency?: number
   /** Maximum task nesting depth (negative = unlimited, 0 = no spawning; default 2). */
   taskMaxRecursionDepth?: number
   /** Soft request budget per task run (0 = disabled; default 200). */
   taskSoftRequestBudget?: number
+  /** Disable to run task batches as synchronous fanout. Default true. */
+  taskAsyncEnabled?: boolean
+  /** Launch complete task entries during argument streaming. Default true. */
+  taskSpeculativeLaunch?: boolean
+  /** Wall-clock limit per child run (0 = disabled). */
+  taskMaxRuntimeMs?: number
+  /** Completion side probes for interactive direct children. Default true. */
+  taskCompletionProbeEnabled?: boolean
   /** 子代理角色的模型与推理强度；SMOL/SLOW 未配置时跟随 TASK，TASK 跟随主对话。 */
   subAgentModels?: Record<string, SubAgentModelSelection>
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */

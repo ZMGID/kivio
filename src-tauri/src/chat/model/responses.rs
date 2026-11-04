@@ -648,6 +648,10 @@ impl OpenAiResponsesProvider<'_> {
         if crate::provider_oauth::is_codex(self.provider) {
             crate::provider_oauth::codex_body(&mut body);
         }
+        if request.options.tool_choice == crate::chat::model::ToolChoice::None {
+            body.as_object_mut().unwrap().remove("tools");
+            body["tool_choice"] = Value::String("none".to_string());
+        }
         body
     }
 
@@ -1334,7 +1338,7 @@ fn handle_responses_stream_event(
                     state.usage = Some(usage);
                 }
                 if let Some(status) = response.get("status").and_then(Value::as_str) {
-                    state.finish_reason = Some(responses_finish_reason(status, response, state));
+                    state.finish_reason = Some(responses_finish_reason(status, response, !state.tool_calls.is_empty()));
                 }
                 // 完整 output 里若还带 web_search_call / message 注解，合并进已流式累加的结果
                 // （不覆盖：hosted web_search_call 通常只在 output_item.done 里出现，不重现在此）。
@@ -1535,15 +1539,8 @@ pub fn output_from_responses(
     }
 
     let usage = model_usage_from_openai_value(value);
-    let finish_reason = value.get("status").and_then(Value::as_str).map(|status| {
-        if status == "completed" && !tool_calls.is_empty() {
-            "tool_calls".to_string()
-        } else if status == "completed" {
-            "stop".to_string()
-        } else {
-            status.to_string()
-        }
-    });
+    let finish_reason = value.get("status").and_then(Value::as_str)
+        .map(|status| responses_finish_reason(status, value, !tool_calls.is_empty()));
 
     Ok(GenerateOutput {
         text,
@@ -1704,9 +1701,9 @@ fn web_search_from_responses_output(output: &[Value]) -> Option<BuiltinWebSearch
     }
 }
 
-fn responses_finish_reason(status: &str, response: &Value, state: &ResponsesStreamState) -> String {
+fn responses_finish_reason(status: &str, response: &Value, has_tool_calls: bool) -> String {
     match status {
-        "completed" if !state.tool_calls.is_empty() => "tool_calls".to_string(),
+        "completed" if has_tool_calls => "tool_calls".to_string(),
         "completed" => "stop".to_string(),
         // Responses 的输出截断不叫 length：status=="incomplete" + incomplete_details.reason
         // =="max_output_tokens"。归一化为 Chat Completions 的 "length"，让上层
@@ -3089,13 +3086,13 @@ mod tests {
     /// "length"，否则「finish_reason==length ⇒ 整批工具调用作废」防护对 Responses 系失效。
     #[test]
     fn incomplete_max_output_tokens_normalizes_to_length() {
-        let state = ResponsesStreamState::default();
+        let has_tool_calls = false;
         let truncated = serde_json::json!({
             "status": "incomplete",
             "incomplete_details": { "reason": "max_output_tokens" }
         });
         assert_eq!(
-            responses_finish_reason("incomplete", &truncated, &state),
+            responses_finish_reason("incomplete", &truncated, has_tool_calls),
             "length"
         );
         // 其它 incomplete 原因（如 content_filter）原样透传，不冒充截断。
@@ -3104,11 +3101,11 @@ mod tests {
             "incomplete_details": { "reason": "content_filter" }
         });
         assert_eq!(
-            responses_finish_reason("incomplete", &filtered, &state),
+            responses_finish_reason("incomplete", &filtered, has_tool_calls),
             "incomplete"
         );
         // completed 的两条既有映射不受影响。
         let done = serde_json::json!({ "status": "completed" });
-        assert_eq!(responses_finish_reason("completed", &done, &state), "stop");
+        assert_eq!(responses_finish_reason("completed", &done, has_tool_calls), "stop");
     }
 }

@@ -21,11 +21,8 @@ pub fn user_agents_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Load the merged agent registry: built-ins, then `<app_data>/agents/*.md`
-/// (source `user`), then `<project_root>/.kivio/agents/*.md` (source
-/// `project`) when a project root is provided. Same-id later layers override
-/// earlier ones. Parse failures are skipped (never fatal) so a malformed file
-/// can't break spawning.
+/// Load built-ins, plugin, user, and project definitions in override order.
+/// Plugin identities remain namespaced independently of running agent IDs.
 pub fn load_agent_definitions(
     user_dir: Option<&Path>,
     project_root: Option<&Path>,
@@ -34,7 +31,11 @@ pub fn load_agent_definitions(
     let mut defs = builtin_agent_definitions();
     for plugin in plugins {
         for path in &plugin.agents {
-            if let Ok(raw) = crate::plugins::packages::component_markdown(path) {
+            if let Err(error) = crate::plugins::packages::component_markdown(path) {
+                eprintln!("Invalid plugin agent {}: {error}", path.display());
+                continue;
+            }
+            if let Ok(raw) = std::fs::read_to_string(path) {
                 let fallback = path.file_stem().and_then(|s| s.to_str()).unwrap_or("agent");
                 if let Some(mut def) = parse::parse_agent_markdown(
                     fallback,
@@ -42,6 +43,9 @@ pub fn load_agent_definitions(
                     "plugin",
                     Some(path.display().to_string()),
                 ) {
+                    if def.description.is_empty() {
+                        def.description = format!("Run the {fallback} plugin component");
+                    }
                     def.id = format!("pkg-{}-{}", plugin.package.id, def.id);
                     def.system_prompt = plugin.expand_body(&def.system_prompt);
                     if let Some(tools) = &mut def.tools {
@@ -155,5 +159,29 @@ mod tests {
         assert_eq!(plugin_tool_name("Read"), "read");
         assert_eq!(plugin_tool_name("Task"), "task");
         assert_eq!(plugin_tool_name("custom_tool"), "custom_tool");
+    }
+
+    #[test]
+    fn plugin_agent_preserves_null_empty_and_unsupported_fields() {
+        use crate::plugins::packages::{Package, Resolved};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("helper.md");
+        let plugin = Resolved {
+            package: Package {
+                id: "example-id".into(), name: "example".into(), description: String::new(),
+                version: None, format: "plugin".into(), source: String::new(), revision: None,
+                enabled: true, components: Default::default(), diagnostics: Vec::new(), marketplace: None,
+            },
+            root: root.path().to_path_buf(), skills: Vec::new(), commands: Vec::new(),
+            agents: vec![path.clone()], hooks: Vec::new(), servers: Vec::new(),
+        };
+        std::fs::write(&path, "---\nname: helper\ntools: []\noutput:\n  type: object\n---\nbody").unwrap();
+        let defs = load_agent_definitions(None, None, std::slice::from_ref(&plugin));
+        let helper = find_definition(&defs, "example:helper").unwrap();
+        assert_eq!(helper.tools, Some(vec![]));
+        assert_eq!(helper.unsupported, ["output"]);
+        std::fs::write(&path, "---\nname: helper\ntools: null\n---\nbody").unwrap();
+        let defs = load_agent_definitions(None, None, &[plugin]);
+        assert_eq!(find_definition(&defs, "example:helper").unwrap().tools, None);
     }
 }

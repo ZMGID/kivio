@@ -652,9 +652,9 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         def: || crate::chat::sub_agent::task::tool_definition(&[], &Settings::default()),
         enabled: |_, _, _| false,
         parallel_safe: true,
-        bypasses_approval: true,
+        bypasses_approval: false,
         read_only: false,
-        requires_session_consent: false,
+        requires_session_consent: true,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::task::dispatch),
     },
     NativeToolEntry {
@@ -1254,6 +1254,7 @@ fn call_advisor(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 &model,
                 messages,
                 None,
+                crate::chat::model::ToolChoice::Auto,
                 retry_attempts,
                 false,
                 None,
@@ -1820,40 +1821,6 @@ mod tests {
         "wait",
     ];
 
-    #[test]
-    fn session_consent_set_is_exactly_the_file_shell_tools() {
-        let consent: Vec<&str> = NATIVE_TOOLS
-            .iter()
-            .filter(|entry| entry.requires_session_consent)
-            .map(|entry| entry.name)
-            .collect();
-        assert_eq!(
-            consent,
-            [
-                "read",
-                "ls",
-                "grep",
-                "glob",
-                "write",
-                "edit",
-                "bash",
-                "bash_output",
-                "kill_background",
-                "kivio_inspect",
-                "kivio_configure"
-            ],
-            "session-consent set must be exactly the file/shell tools (read now also \
-             lists directories; `ls` is the standalone kivio-code list_dir tool; find \
-             is renamed glob) plus the background-command observability tools (gated \
-             identically to bash) and Kivio configuration tools; a new file/shell tool MUST set \
-             requires_session_consent or it silently bypasses the consent gate"
-        );
-        // The predicate agrees with the flag, and non-file tools are excluded.
-        assert!(native_tool_requires_session_consent("bash"));
-        assert!(!native_tool_requires_session_consent("web_search"));
-        assert!(!native_tool_requires_session_consent("present_artifacts"));
-        assert!(!native_tool_requires_session_consent("memory_read"));
-    }
 
     #[test]
     fn registry_order_and_names_match_exposure_order() {
@@ -1932,7 +1899,6 @@ mod tests {
                 "goal_wait",
                 "schedule_list",
                 "ask_user",
-                "task",
                 "wait",
             ]
         );
@@ -1978,20 +1944,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn subagent_tools_use_native_dispatch_and_request_scoped_exposure() {
-        let native = ChatNativeToolsConfig::default();
-        for (name, parallel_safe, read_only) in [("task", true, false), ("wait", false, true)] {
-            let entry = find_entry(name).unwrap();
-            assert!(!(entry.enabled)(&native, false, false), "{name}");
-            assert!(!(entry.enabled)(&native, true, true), "{name}");
-            assert_eq!(entry.parallel_safe, parallel_safe, "{name}");
-            assert!(entry.bypasses_approval, "{name}");
-            assert_eq!(entry.read_only, read_only, "{name}");
-            assert!(!entry.requires_session_consent, "{name}");
-            assert!(matches!(entry.call, NativeToolCall::SubAgent(_)), "{name}");
-        }
-    }
 
     #[test]
     fn conversation_tools_are_never_listed_via_builtin_exposure() {

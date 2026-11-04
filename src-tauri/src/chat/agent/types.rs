@@ -37,6 +37,8 @@ pub struct AgentRunConfig<'a> {
     pub tool_conversation_id: String,
     /// Sub-agent nesting depth (0 = top-level chat run).
     pub depth: u8,
+    /// True only when this run is hosted by the interactive chat UI.
+    pub interactive_host: bool,
     pub run_id: String,
     pub message_id: String,
     pub generation: u64,
@@ -46,6 +48,11 @@ pub struct AgentRunConfig<'a> {
     pub runtime_context: Option<String>,
     pub tools: Vec<ChatToolDefinition>,
     pub blocked_tool_calls: Vec<ChatToolDefinition>,
+    /// Delegation inherits the mode and the exact MCP authority exposed by this run.
+    pub plan_state: crate::chat::types::AgentPlanState,
+    /// Exact (server ID, tool ID) pairs; empty means no MCP tools.
+    pub mcp_tool_ids: Vec<(String, String)>,
+    pub mcp_server_ids: Vec<String>,
     pub settings: Settings,
     pub effective_chat_tools: ChatToolsConfig,
     pub language: String,

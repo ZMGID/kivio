@@ -39,7 +39,7 @@ pub fn with_mode(current: &AgentPlanState, mode: AgentPlanMode) -> AgentPlanStat
     next
 }
 
-pub fn format_prompt(state: &AgentPlanState) -> String {
+pub fn format_prompt(state: &AgentPlanState, task_available: bool) -> String {
     if state.mode == AgentPlanMode::Act
         && state.document.is_none()
         && current_plan_text(state).is_none()
@@ -68,12 +68,22 @@ pub fn format_prompt(state: &AgentPlanState) -> String {
     };
 
     if state.mode == AgentPlanMode::Plan {
+        let delegation = if task_available {
+            " You may use task for read-only planning investigations; children report findings and must not edit files or spawn further agents."
+        } else {
+            ""
+        };
         format!(
-            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed. Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document; if save_plan is unavailable, write the plan in your reply. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation belongs in Act or Orchestrate when the user asks to begin.\n\nCurrent plan context:\n{current_plan}"
+            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed.{delegation} Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document; if save_plan is unavailable, write the plan in your reply. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation belongs in Act or Orchestrate when the user asks to begin.\n\nCurrent plan context:\n{current_plan}"
         )
     } else if state.mode == AgentPlanMode::Orchestrate {
+        let delegation = if task_available {
+            "Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad, serialize independent work, or spawn then idle. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Spawn → keep working → read the auto-delivered result; use `wait` only when completely blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself."
+        } else {
+            "Work directly with the available tools."
+        };
         format!(
-            "Agent orchestrate mode: Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad, serialize independent work, or spawn then idle. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Spawn → keep working → read the auto-delivered result; use `wait` only when completely blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself. Follow the user's latest request; use the saved plan as context when relevant.\n\nCurrent saved plan:\n{current_plan}"
+            "Agent orchestrate mode: {delegation} Follow the user's latest request; use the saved plan as context when relevant.\n\nCurrent saved plan:\n{current_plan}"
         )
     } else {
         format!(
@@ -143,7 +153,7 @@ mod tests {
         };
         let state = with_mode(&draft, AgentPlanMode::Orchestrate);
         assert_eq!(state.plan, draft.plan);
-        let prompt = format_prompt(&state);
+        let prompt = format_prompt(&state, true);
         assert!(prompt.contains(current_plan_text(&draft).unwrap()));
         assert!(prompt.contains("fan substantial work to `task`"));
         assert!(prompt.contains("use `wait` only when completely blocked"));
@@ -162,17 +172,27 @@ mod tests {
                 plan,
                 ..Default::default()
             };
-            assert_eq!(format_prompt(&state), "Current mode: act.");
+            assert_eq!(format_prompt(&state, true), "Current mode: act.");
         }
         let state = AgentPlanState {
             plan: Some("Inspect markdown, then fix rendering.".into()),
             status: AgentPlanStatus::Approved,
             ..Default::default()
         };
-        let prompt = format_prompt(&state);
+        let prompt = format_prompt(&state, true);
         assert!(prompt.contains("approved"));
         assert!(prompt.contains(state.plan.as_deref().unwrap()));
         assert!(!prompt.contains("reminders"));
+    }
+
+    #[test]
+    fn delegation_guidance_requires_an_exposed_task_tool() {
+        let mut state = AgentPlanState { mode: AgentPlanMode::Plan, ..Default::default() };
+        assert!(format_prompt(&state, true).contains("read-only planning investigations"));
+        assert!(!format_prompt(&state, false).contains("use task"));
+        state.mode = AgentPlanMode::Orchestrate;
+        assert!(format_prompt(&state, true).contains("fan substantial work to `task`"));
+        assert!(!format_prompt(&state, false).contains("`task`"));
     }
 
     #[test]

@@ -228,6 +228,7 @@ pub fn resolve_runtime_prompt_sources(
     agent_system_prompt: &str,
     chat_mode_system_prompt: &str,
     plan_state: &crate::chat::types::AgentPlanState,
+    task_available: bool,
 ) -> RuntimePromptSources {
     if chat_mode {
         RuntimePromptSources {
@@ -238,7 +239,7 @@ pub fn resolve_runtime_prompt_sources(
     } else {
         RuntimePromptSources {
             custom_system_prompt: agent_system_prompt.to_string(),
-            agent_plan_prompt: Some(crate::chat::plan::format_prompt(plan_state)),
+            agent_plan_prompt: Some(crate::chat::plan::format_prompt(plan_state, task_available)),
             is_chat_runtime: false,
         }
     }
@@ -1592,17 +1593,17 @@ mod tests {
     #[test]
     fn resolve_runtime_prompt_sources_keeps_chat_and_agent_apart() {
         let plan = crate::chat::types::AgentPlanState::default();
-        let chat = resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "  ", &plan);
+        let chat = resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "  ", &plan, false);
         assert!(chat.is_chat_runtime);
         assert!(chat.custom_system_prompt.is_empty());
         assert!(chat.agent_plan_prompt.is_none());
 
         let chat_custom =
-            resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "only research", &plan);
+            resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "only research", &plan, false);
         assert_eq!(chat_custom.custom_system_prompt, "only research");
         assert!(chat_custom.agent_plan_prompt.is_none());
 
-        let agent = resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan);
+        let agent = resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan, false);
         assert!(!agent.is_chat_runtime);
         assert_eq!(agent.custom_system_prompt, "AGENT IDENTITY");
         assert!(agent
@@ -1616,7 +1617,7 @@ mod tests {
             &crate::chat::types::AgentPlanState::default(),
             crate::chat::types::AgentPlanMode::Orchestrate,
         );
-        let sources = resolve_runtime_prompt_sources(false, "", "", &state);
+        let sources = resolve_runtime_prompt_sources(false, "", "", &state, true);
         let prompt = build_chat_prompt(
             "zh-CN",
             false,

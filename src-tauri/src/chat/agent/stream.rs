@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
+use tauri::Manager;
 
 use crate::chat::model::{
     GenerateOutput, GeneratedImageData, ModelError, PendingToolCall, StreamPart, StreamSink,
@@ -13,6 +14,7 @@ use crate::chat::types::{
 use crate::mcp::types::PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS;
 use crate::mcp::ChatToolDefinition;
 
+use super::execute::match_tool_call;
 use super::finalize::{build_web_search_record, build_web_search_segment};
 use super::host::AgentHost;
 use super::prepare::disabled_builtin_tool_feedback;
@@ -44,6 +46,7 @@ struct ToolCallDraftState {
     step_number: Option<u8>,
     next_order: u32,
     drafts: Vec<ToolCallDraft>,
+    speculative: Option<crate::chat::sub_agent::speculative::Scope>,
 }
 
 struct ToolCallDraft {
@@ -69,8 +72,38 @@ impl ToolCallDraftTracker {
                 step_number,
                 next_order: first_order,
                 drafts: Vec::new(),
+                speculative: None,
             })),
         }
+    }
+
+    pub(crate) fn enable_speculation(
+        &self,
+        host: &dyn AgentHost,
+        settings: &crate::settings::Settings,
+        context: &super::execute::ToolExecutionContext<'_>,
+    ) {
+        let Some(app) = host.speculative_task_app() else { return; };
+        let root_consent = context.approval_policy == "auto"
+            || (context.approval_policy != "always_confirm"
+                && app.state::<crate::state::AppState>().chat_interactions()
+                    .has_session_consent(context.tool_conversation_id));
+        let mut state = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if !speculative_task_allowed(settings, &state.tools, host.workflow_hooks(),
+            context.approval_policy, root_consent, host.supports_interactive_approval())
+            || host.hooks().is_some_and(|hooks| {
+                hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
+                    || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd)
+            })
+            || !host.is_generation_active(context.conversation_id, context.generation)
+        {
+            return;
+        }
+        state.speculative = Some(crate::chat::sub_agent::speculative::Scope::new(app, context));
+    }
+
+    pub(crate) fn disable_speculation(&self) {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner()).speculative.take();
     }
 
     pub fn has_started(&self) -> bool {
@@ -101,9 +134,39 @@ impl ToolCallDraftTracker {
             .any(|draft| !draft.done)
     }
 
+    pub(crate) fn inflight(&self) -> Vec<(String, String)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .drafts
+            .iter()
+            .filter(|draft| !draft.done)
+            .map(|draft| (draft.model_name.clone(), draft.arguments_raw.clone()))
+            .collect()
+    }
+
+    pub(crate) fn reconcile_speculation(&self, calls: &[PendingToolCall], truncated: bool) {
+        let state = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(scope) = &state.speculative else { return; };
+        let final_calls = if truncated {
+            Vec::new()
+        } else {
+            calls.iter().filter_map(|call| {
+                let draft = state.drafts.iter().find(|draft| draft.record.id == call.id)?;
+                (draft.record.source == "native"
+                    && draft.record.name == crate::chat::sub_agent::TASK_TOOL_NAME
+                    && draft.model_name == call.function_name
+                    && call.arguments_parse_error.is_none())
+                    .then_some((call.id.as_str(), &call.arguments))
+            }).collect()
+        };
+        scope.reconcile(&final_calls);
+    }
+
     pub fn mark_error(&self, error: &str) -> Vec<ToolCallRecord> {
         let now = chrono::Local::now().timestamp();
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(scope) = &guard.speculative { scope.discard(); }
         for draft in &mut guard.drafts {
             draft.record.status = ToolCallStatus::Error;
             draft.record.completed_at = Some(now);
@@ -126,6 +189,28 @@ impl ToolCallDraftTracker {
             .map(|draft| draft.record.clone())
             .collect()
     }
+}
+
+fn speculative_task_allowed(
+    settings: &crate::settings::Settings,
+    tools: &[ChatToolDefinition],
+    workflow: Option<&crate::chat::workflow_hooks::Runtime>,
+    approval_policy: &str,
+    root_consent: bool,
+    interactive: bool,
+) -> bool {
+    let Some(task) = tools.iter().find(|tool| {
+        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
+    }) else { return false; };
+    let requires_approval = super::execute::tool_requires_approval_for_policy(approval_policy, task);
+    settings.chat_tools.task_speculative_launch
+        && approval_policy != "always_confirm"
+        && (approval_policy == "auto" || root_consent)
+        && (interactive || !requires_approval)
+        && (super::prepare::tool_requires_session_consent(task) || !requires_approval)
+        && !workflow.is_some_and(|runtime| runtime.hooks.iter().any(|hook| {
+            matches!(hook.event.as_str(), "PreToolUse" | "PostToolUse")
+        }))
 }
 
 /// 模型**原生内置联网搜索**的实时卡追踪器（任务 07-23）。镜像 `ToolCallDraftTracker`
@@ -345,6 +430,7 @@ impl<'a> AgentStreamSink<'a> {
         let mut tool_ids = Vec::new();
         if let Some(tracker) = &self.tool_draft_tracker {
             let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(scope) = &state.speculative { scope.discard(); }
             if let Some(order) = state.drafts.iter().map(|d| d.segment.order).min() {
                 state.next_order = order;
             }
@@ -417,13 +503,13 @@ impl<'a> AgentStreamSink<'a> {
         if guard.drafts.iter().any(|draft| draft.record.id == id) {
             return;
         }
-        if find_tool_definition(&guard.tools, &name).is_none()
+        if match_tool_call(&guard.tools, &name).is_none()
             && disabled_builtin_tool_feedback(&name).is_some()
         {
             return;
         }
         let (record_name, source, server_id, sensitive) =
-            if let Some(tool) = find_tool_definition(&guard.tools, &name) {
+            if let Some(tool) = match_tool_call(&guard.tools, &name) {
                 (
                     tool.name.clone(),
                     tool.source.clone(),
@@ -500,7 +586,8 @@ impl<'a> AgentStreamSink<'a> {
         };
         let record_to_emit = {
             let mut guard = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            let Some(draft) = guard.drafts.iter_mut().find(|draft| draft.record.id == id) else {
+            let ToolCallDraftState { drafts, speculative, .. } = &mut *guard;
+            let Some(draft) = drafts.iter_mut().find(|draft| draft.record.id == id) else {
                 return Ok(());
             };
             if let Some(limit) = compact_tool_argument_limit(&draft.model_name) {
@@ -516,6 +603,9 @@ impl<'a> AgentStreamSink<'a> {
                 }
             }
             draft.arguments_raw.push_str(&delta);
+            if draft.record.source == "native" && draft.record.name == crate::chat::sub_agent::TASK_TOOL_NAME {
+                if let Some(scope) = speculative { scope.update(&id, &draft.arguments_raw); }
+            }
             if compact_tool_argument_limit(&draft.model_name).is_some() {
                 return Ok(());
             }
@@ -562,13 +652,20 @@ impl<'a> AgentStreamSink<'a> {
         };
         let record_to_emit = {
             let mut guard = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            let Some(draft) = guard
-                .drafts
+            let ToolCallDraftState { drafts, speculative, .. } = &mut *guard;
+            let Some(draft) = drafts
                 .iter_mut()
                 .find(|draft| draft.record.id == call.id)
             else {
                 return Ok(());
             };
+            if draft.record.source == "native" && draft.record.name == crate::chat::sub_agent::TASK_TOOL_NAME {
+                if let Some(scope) = speculative {
+                    let args = (draft.model_name == call.function_name && call.arguments_parse_error.is_none())
+                        .then_some(&call.arguments);
+                    scope.reconcile_call(&call.id, args);
+                }
+            }
             draft.done = true;
             draft.arguments_raw = call.arguments_raw.clone();
             let chars = draft.arguments_raw.chars().count();
@@ -680,15 +777,6 @@ impl StreamSink for AgentStreamSink<'_> {
         }
         Ok(())
     }
-}
-
-fn find_tool_definition<'a>(
-    tools: &'a [ChatToolDefinition],
-    function_name: &str,
-) -> Option<&'a ChatToolDefinition> {
-    tools
-        .iter()
-        .find(|tool| tool.openai_tool_name() == function_name || tool.name == function_name)
 }
 
 fn tool_draft_span_id(round: u32, tool_call_id: &str) -> String {
@@ -1038,6 +1126,37 @@ mod tests {
     }
 
     #[test]
+    fn speculative_launch_obeys_visibility_approval_and_workflow_hooks() {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        assert!(settings.chat_tools.task_speculative_launch);
+        let task = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "auto", false, true));
+        assert!(!speculative_task_allowed(&settings, &[], None, "auto", false, true));
+        settings.chat_tools.task_speculative_launch = false;
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "auto", true, true));
+        settings.chat_tools.task_speculative_launch = true;
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "always_confirm", true, true));
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", false, true));
+        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
+        let mut sensitive_task = task.clone();
+        sensitive_task.sensitive = true;
+        assert!(speculative_task_allowed(&settings, &[sensitive_task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
+        assert!(!speculative_task_allowed(&settings, &[sensitive_task], None, "readonly_auto_sensitive_confirm", true, false));
+        for event in ["PreToolUse", "PostToolUse", "SessionStart"] {
+            let hooks = crate::chat::workflow_hooks::parse(
+                &serde_json::json!({(event): [{"hooks": [{"type": "command", "command": "true"}]}]}),
+                "test", std::path::Path::new("."), std::path::Path::new("."),
+            ).unwrap();
+            let runtime = crate::chat::workflow_hooks::Runtime { hooks, ..Default::default() };
+            assert_eq!(
+                speculative_task_allowed(&settings, &[task.clone()], Some(&runtime), "auto", false, true),
+                event == "SessionStart"
+            );
+        }
+    }
+
+    #[test]
     fn tool_planning_text_buffer_delays_possible_dsml_prefix() {
         assert!(!should_flush_tool_planning_text_buffer("<|DSML|"));
         assert!(!should_flush_tool_planning_text_buffer("   <invoke"));
@@ -1073,6 +1192,10 @@ mod tests {
             delta: "{\"path\":\"demo.html\",\"content\":\"".to_string(),
         })
         .expect("delta should emit");
+        assert_eq!(
+            tracker.inflight(),
+            vec![("write".to_string(), "{\"path\":\"demo.html\",\"content\":\"".to_string())]
+        );
         let call = PendingToolCall {
             id: "call_write".to_string(),
             function_name: "write".to_string(),
@@ -1086,6 +1209,7 @@ mod tests {
         };
         sink.emit(StreamPart::ToolCallDone { call })
             .expect("done should emit");
+        assert!(tracker.inflight().is_empty());
 
         let records = host.records.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(records.len(), 2);

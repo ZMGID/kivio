@@ -37,6 +37,7 @@ struct TestHost {
     /// Per-call snapshot sizes from `persist_partial_assistant`:
     /// `(message_id, tool_records_len, segments_len, api_messages_len)`.
     persists: Mutex<Vec<(String, usize, usize, usize)>>,
+    persisted_drafts: Mutex<Vec<(Vec<ToolCallRecord>, Vec<Value>)>>,
     /// 生成过程中推给前端的上下文占用活数：`(分子, 分母)`，每轮一条。
     context_ticks: parking_lot::Mutex<Vec<(u64, Option<u64>)>>,
     cache_ticks: parking_lot::Mutex<Vec<(u64, u64)>>,
@@ -57,6 +58,10 @@ struct TestHost {
     auto_compact_failures: Mutex<u32>,
     /// Compaction phases emitted, in order.
     compaction_phases: Mutex<Vec<String>>,
+    capture_compaction: bool,
+    fail_compaction_checkpoint: bool,
+    compaction_checkpoints: Mutex<Vec<Vec<Value>>>,
+    compaction_incoming: Mutex<Option<Value>>,
     retry_notes: Mutex<Vec<Option<String>>>,
     retry_statuses: Mutex<Vec<crate::chat::protocol::ChatRetryStatusPayload>>,
     discarded_attempts: Mutex<Vec<(u32, u32, Vec<String>, Vec<String>)>>,
@@ -140,6 +145,27 @@ impl TestHost {
 }
 
 impl AgentHost for TestHost {
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _conversation: &'a str,
+        _run: &'a str,
+        history: &'a [Value],
+        _finishing: bool,
+    ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<Value>, String>> {
+        Box::pin(async move {
+            if self.capture_compaction
+                && self.compaction_phases.lock().unwrap().last().is_some_and(|phase| phase == "started")
+            {
+                self.compaction_checkpoints.lock().unwrap().push(history.to_vec());
+                if self.fail_compaction_checkpoint {
+                    return Err("checkpoint persistence failed".into());
+                }
+                return Ok(self.compaction_incoming.lock().unwrap().take().into_iter().collect());
+            }
+            Ok(Vec::new())
+        })
+    }
+
     fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
         *self.auto_compact_failures.lock().unwrap()
     }
@@ -266,6 +292,8 @@ impl AgentHost for TestHost {
                 segments.len(),
                 api_messages.len(),
             ));
+        self.persisted_drafts.lock().unwrap_or_else(|err| err.into_inner())
+            .push((tool_records.to_vec(), api_messages.to_vec()));
         Box::pin(async {})
     }
 
@@ -693,6 +721,7 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         conversation_id: "conversation".to_string(),
         tool_conversation_id: "conversation".to_string(),
         depth: 0,
+        interactive_host: false,
         run_id: "run".to_string(),
         message_id: "message".to_string(),
         generation: 1,
@@ -704,6 +733,9 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         ],
         tools: vec![native_read_file_tool()],
         blocked_tool_calls: Vec::new(),
+        plan_state: Default::default(),
+        mcp_tool_ids: Vec::new(),
+        mcp_server_ids: Vec::new(),
         settings: Settings::default(),
         effective_chat_tools: ChatToolsConfig::default(),
         language: "zh-CN".to_string(),
@@ -813,6 +845,15 @@ fn test_round_context() -> ToolRoundContext<'static> {
         round: 1,
         depth: 0,
         tool_conversation_id: "conversation",
+        plan_state: {
+            static PLAN_STATE: std::sync::LazyLock<crate::chat::types::AgentPlanState> =
+                std::sync::LazyLock::new(crate::chat::types::AgentPlanState::default);
+            &PLAN_STATE
+        },
+        mcp_tool_ids: &[],
+        mcp_server_ids: &[],
+        approval_policy: "auto",
+        interactive_host: false,
         finish_reason: None,
     }
 }
@@ -897,6 +938,64 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
     assert!(feedback.contains("Available tools: read"), "{feedback}");
     assert!(feedback.contains("this tool only"), "{feedback}");
     assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+    assert_eq!(result.tool_records.len(), 1);
+    assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
+}
+
+#[tokio::test]
+async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
+    struct InspectContext;
+    impl ToolExecutor for InspectContext {
+        fn call<'a>(
+            &'a self,
+            ctx: &'a ToolExecutionContext<'a>,
+            _: &'a ChatToolDefinition,
+            _: Value,
+            _: Option<&'a mut skills::SkillRunContext>,
+        ) -> super::super::execute::ToolExecutorFuture<'a> {
+            Box::pin(async move {
+                let native = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                assert_eq!(native.plan_state.mode, crate::chat::types::AgentPlanMode::Orchestrate);
+                assert_eq!(native.plan_state.plan.as_deref(), Some("approved snapshot"));
+                assert_eq!(native.mcp_tool_ids.len(), 1);
+                assert_eq!(native.mcp_tool_ids[0].0, "allowed");
+                assert_eq!(native.mcp_tool_ids[0].1, "mcp__allowed__read");
+                assert_eq!(native.mcp_server_ids.len(), 1);
+                assert_eq!(native.mcp_server_ids[0], "allowed");
+                assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
+                assert!(native.interactive_host);
+                Ok(McpToolCallResult::default())
+            })
+        }
+    }
+    let plan = crate::chat::types::AgentPlanState {
+        mode: crate::chat::types::AgentPlanMode::Orchestrate,
+        plan: Some("approved snapshot".into()),
+        ..Default::default()
+    };
+    let tool_ids = vec![("allowed".to_string(), "mcp__allowed__read".to_string())];
+    let server_ids = vec!["allowed".to_string()];
+    let context = ToolRoundContext {
+        plan_state: &plan,
+        mcp_tool_ids: &tool_ids,
+        mcp_server_ids: &server_ids,
+        approval_policy: "readonly_auto_sensitive_confirm",
+        interactive_host: true,
+        ..test_round_context()
+    };
+    let mut settings = Settings::default();
+    settings.chat_tools.approval_policy = "auto".into();
+    let mut skills = skills::SkillRunContext::default();
+    let result = execute_tool_round(
+        &TestHost::default(),
+        &InspectContext,
+        &settings,
+        context,
+        &[native_read_file_tool()],
+        &[],
+        vec![pending_tool_call("call", "read")],
+        &mut skills,
+    ).await;
     assert_eq!(result.tool_records.len(), 1);
     assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
 }
@@ -1779,6 +1878,44 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
     );
 }
 
+#[tokio::test]
+async fn stream_request_none_reaches_provider_wire() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        r#"{"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]}"#.into(),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let host = TestHost::default();
+    let output = config.provider_runtime.stream(crate::chat::agent::provider_runtime::StreamRequest {
+        host: &host,
+        provider: &config.provider,
+        model: &config.model,
+        messages: vec![serde_json::json!({"role":"user","content":"hello"})],
+        tools: Some(&config.tools),
+        tool_choice: crate::chat::model::ToolChoice::None,
+        retry_attempts: 1,
+        thinking_enabled: false,
+        thinking_level: None,
+        builtin_web_search: false,
+        max_output_tokens: 100,
+        conversation_id: &config.conversation_id,
+        run_id: &config.run_id,
+        message_id: &config.message_id,
+        generation: config.generation,
+        label: "forced finalization",
+        policy: crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
+        text_segment: None,
+        reasoning_segment: None,
+        tool_draft_tracker: None,
+        web_search_tracker: None,
+    }).await.unwrap();
+    assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+    let body: Value = serde_json::from_str(&server.captured_bodies()[0]).unwrap();
+    assert_eq!(body["tool_choice"], "none");
+    assert!(body.get("tools").is_none());
+}
+
 /// An HTTP error and an interrupted established stream consume the same budget.
 #[tokio::test]
 async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
@@ -1808,6 +1945,7 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
                 model: &config.model,
                 messages: vec![serde_json::json!({"role":"user", "content":"hello"})],
                 tools: None,
+                tool_choice: crate::chat::model::ToolChoice::Auto,
                 retry_attempts: 3,
                 thinking_enabled: false,
                 thinking_level: None,
@@ -2946,6 +3084,53 @@ async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
     assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
 }
 
+#[tokio::test]
+async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provider_call() {
+    struct CheckpointExecutor<'a> { host: &'a TestHost, arguments: String }
+    impl ToolExecutor for CheckpointExecutor<'_> {
+        fn call<'a>(
+            &'a self, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
+            _arguments: Value, _skill_context: Option<&'a mut skills::SkillRunContext>,
+        ) -> super::super::execute::ToolExecutorFuture<'a> {
+            Box::pin(async move {
+                if tool.name != "task" {
+                    return Ok(McpToolCallResult { content: "Read result".into(), ..Default::default() });
+                }
+                let drafts = self.host.persisted_drafts.lock().unwrap();
+                let (records, messages) = drafts.last().expect("checkpoint precedes task execution");
+                let task = records.iter().find(|record| record.id == "call_task").unwrap();
+                assert_eq!(task.name, "task");
+                assert_eq!(task.source, "native");
+                assert_eq!(task.status, ToolCallStatus::Pending);
+                assert_eq!(task.arguments, self.arguments);
+                assert!(messages.len() >= 2, "completed prior tool work remains replayable");
+                assert!(!serde_json::to_string(messages).unwrap().contains("call_task"),
+                    "the incomplete tool-call message must not enter replay");
+                Ok(McpToolCallResult { content: "Task result".into(), ..Default::default() })
+            })
+        }
+    }
+
+    let arguments = serde_json::json!({
+        "context":"shared", "tasks":[{"name":"Worker","task":"x".repeat(2048),"solutionSpace":"read only"}]
+    }).to_string();
+    let call = serde_json::json!({"choices":[{"delta":{"tool_calls":[
+        {"index":0,"id":"call_task","function":{"name":"task","arguments":arguments}}
+    ]}}]}).to_string();
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![call, r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(), "[DONE]".into()]),
+        MockResponse::Sse(vec![r#"{"choices":[{"delta":{"content":"Finished"}}]}"#.into(), "[DONE]".into()]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools = vec![native_read_file_tool(), crate::chat::sub_agent::task::tool_definition(&[], &Settings::default())];
+    let host = TestHost::default();
+    let executor = CheckpointExecutor { host: &host, arguments };
+    let result = run_agent_loop(config, &host, &executor).await.expect("run completes");
+    assert_eq!(result.stream_outcome, "completed");
+}
+
 /// 运行中「立刻引导」：轮首注入的用户插话必须①进下一次模型请求，②在时间线上留一张
 /// `user_steer` 卡（否则用户说过的话在历史里查无此人），③随 api_messages 落盘让下一轮回放不丢。
 #[tokio::test]
@@ -3599,6 +3784,43 @@ fn over_budget_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig
     config
 }
 
+#[tokio::test]
+async fn compaction_checkpoints_old_history_and_keeps_concurrent_input() {
+    for fail in [false, true] {
+        let mut responses = vec![MockResponse::Sse(vec![
+            long_summary_sse_tagged("CHECKPOINT_SUMMARY"),
+            "[DONE]".into(),
+        ])];
+        if !fail {
+            responses.push(final_answer_sse("completed"));
+        }
+        let server = MockModelServer::start(responses);
+        let state = test_app_state();
+        let config = over_budget_config(&state, &server.base_url);
+        let old = config.runtime_messages.clone();
+        let incoming = serde_json::json!({"role":"user", "content":"arrived during compaction"});
+        let host = TestHost {
+            capture_compaction: true,
+            fail_compaction_checkpoint: fail,
+            compaction_incoming: Mutex::new(Some(incoming.clone())),
+            ..Default::default()
+        };
+        let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await;
+        let checkpoints = host.compaction_checkpoints.lock().unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0], old);
+        if fail {
+            assert!(result.err().unwrap().contains("checkpoint persistence failed"));
+            assert_eq!(server.captured_bodies().len(), 1);
+        } else {
+            let result = result.unwrap();
+            assert!(server.captured_bodies()[1].contains("arrived during compaction"));
+            assert!(result.api_messages.contains(&incoming));
+            assert!(result.compacted_history.unwrap().contains(&incoming));
+        }
+    }
+}
+
 /// ZCode policy: a failed automatic compaction does not end the turn. The request goes
 /// out uncompacted (the budget keeps a safety margin below the window) and the failure
 /// only feeds the conversation-level circuit breaker.
@@ -3873,7 +4095,7 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
             serde_json::json!({ "role": "assistant", "content": archived_work("earlier answer") }),
         ],
     );
-    let host = TestHost::default();
+    let host = TestHost { capture_compaction: true, ..Default::default() };
     let executor = RecordingExecutor::default();
 
     let result = run_agent_loop(config, &host, &executor)
@@ -3890,6 +4112,10 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
     ));
     // Planning, capability rejection, failed synthesis, compaction summary, retry.
     assert_eq!(server.captured_bodies().len(), 5);
+    let checkpoints = host.compaction_checkpoints.lock().unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    assert!(checkpoints[0].iter().any(|message| message["content"].as_str().is_some_and(|text| text.contains("earlier answer"))));
+    assert!(checkpoints[0].iter().any(|message| message["role"] == "tool" && message["content"] == "result:read"));
 }
 
 /// 静默超窗（pi `isContextOverflow` case 2/3）：synthesis 调用 **HTTP 200 成功**，

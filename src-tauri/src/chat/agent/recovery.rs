@@ -122,7 +122,7 @@ pub(crate) async fn stream_with_truncation_recovery(
             true,
             request.tools.unwrap_or_default(),
         )
-        .await;
+        .await.map_err(ModelError::new)?;
         if !request
             .host
             .is_generation_active(request.conversation_id, request.generation)

@@ -108,6 +108,91 @@ it('distinguishes failed and aborted children from successful scheduling', () =>
   expect(screen.getByText('Cancelled work')).toBeVisible()
 })
 
+it('restores mixed inline and background results after reload without regressing on late events', () => {
+  const persisted: ToolCallRecord = {
+    id: 'call', source: 'native', name: 'task', status: 'success',
+    arguments: { tasks: [{ task: 'Inline work' }, { task: 'Background work' }, { task: 'Cancelled work' }] },
+    structured_content: {
+      agents: [
+        { agentId: 'inline', name: 'Inline' },
+        { agentId: 'background', name: 'Background', jobId: 'job-background' },
+        { agentId: 'cancelled', name: 'Cancelled', jobId: 'job-cancelled' },
+      ],
+      subagentProgressByTask: {
+        inline: { taskId: 'inline', name: 'Inline', status: 'completed', preview: 'Inline final output' },
+        background: { taskId: 'background', name: 'Background', status: 'failed', preview: 'Background failure' },
+        cancelled: { taskId: 'cancelled', name: 'Cancelled', status: 'aborted', preview: 'Cancelled by caller' },
+      },
+    },
+  }
+  const reloaded = JSON.parse(JSON.stringify(persisted)) as ToolCallRecord
+  const { rerender } = render(<ToolCallBlock toolCall={reloaded} />)
+  expect(screen.getByText('3 个已结束')).toBeVisible()
+  const disclosure = screen.getByRole('button', { name: /子代理/ })
+  expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+  fireEvent.click(disclosure)
+  expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByText('已完成')).toBeVisible()
+  expect(screen.getByText('失败')).toBeVisible()
+  expect(screen.getByText('已中断')).toBeVisible()
+  expect(screen.getByText('Inline final output')).toBeVisible()
+  expect(screen.getByText('Background failure')).toBeVisible()
+  expect(screen.getByText('Cancelled by caller')).toBeVisible()
+  expect(screen.getByText('任务: job-background')).toBeVisible()
+  expect(screen.getByText('任务: job-cancelled')).toBeVisible()
+
+  const stale = mergeSubagentProgress(reloaded, {
+    parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: 'call',
+    taskId: 'inline', name: 'Inline', depth: 1, status: 'running', preview: 'Stale output',
+  })
+  rerender(<ToolCallBlock toolCall={stale} />)
+  expect(screen.getByText('3 个已结束')).toBeVisible()
+  expect(screen.getByText('Inline final output')).toBeVisible()
+  expect(screen.queryByText('Stale output')).toBeNull()
+  expect(screen.getByText('Background failure')).toBeVisible()
+})
+
+it('merges receipt snapshots per child while retaining newer live progress and terminal results', () => {
+  const call: ToolCallRecord = { id: 'call', source: 'native', name: 'task', status: 'running' }
+  const event = { parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: 'call', depth: 1 }
+  const first = mergeSubagentProgress(call, { ...event, taskId: 'a', name: 'A', status: 'completed', preview: 'A final' })
+  const both = mergeSubagentProgress(first, { ...event, taskId: 'b', name: 'B', status: 'running', preview: 'B working' })
+  const receipt = mergeToolRecord(both, {
+    ...call, status: 'success',
+    structured_content: {
+      agents: [{ agentId: 'a', name: 'A' }, { agentId: 'b', name: 'B', jobId: 'job-b' }],
+      subagentProgressByTask: {
+        a: { status: 'pending', preview: 'A stale' },
+        b: { status: 'pending', preview: 'B stale' },
+      },
+    },
+  })
+  const { rerender } = render(<ToolCallBlock toolCall={receipt} />)
+  expect(screen.getByText('1 个运行中')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getByText('已完成')).toBeVisible()
+  expect(screen.getByText('A final')).toBeVisible()
+  expect(screen.getByText('B working')).toBeVisible()
+  expect(screen.queryByText('A stale')).toBeNull()
+  expect(screen.queryByText('B stale')).toBeNull()
+
+  const finalReceipt = mergeToolRecord(receipt, {
+    ...call, status: 'success',
+    structured_content: {
+      agents: [{ agentId: 'a', name: 'A' }, { agentId: 'b', name: 'B', jobId: 'job-b' }],
+      subagentProgressByTask: {
+        a: { status: 'completed', preview: 'A stale terminal snapshot' },
+        b: { status: 'completed', preview: 'B final' },
+      },
+    },
+  })
+  rerender(<ToolCallBlock toolCall={finalReceipt} />)
+  expect(screen.getByText('2 个已结束')).toBeVisible()
+  expect(screen.getByText('A final')).toBeVisible()
+  expect(screen.queryByText('A stale terminal snapshot')).toBeNull()
+  expect(screen.getByText('B final')).toBeVisible()
+})
+
 it('shows wait progress, complete structured results, and already-delivered receipts', () => {
   const call: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
   const { rerender } = render(<ToolCallBlock toolCall={call} />)

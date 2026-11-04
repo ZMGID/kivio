@@ -59,7 +59,10 @@ pub(crate) async fn generate_with_chat_provider(
         .map_err(ModelError::new)?;
     let provider = &resolved;
     use crate::settings::ProviderApiFormat;
-    match official_deepseek_builtin_hop(provider, request.options.builtin_web_search) {
+    match official_deepseek_builtin_hop(
+        provider,
+        request.options.builtin_web_search && request.options.tool_choice != ToolChoice::None,
+    ) {
         Some(OfficialDeepseekBuiltinHop::Responses) => {
             return OpenAiResponsesProvider::new(state, provider, retry_attempts)
                 .generate(request)
@@ -112,7 +115,10 @@ pub(crate) async fn stream_with_chat_provider(
         .map_err(ModelError::new)?;
     let provider = &resolved;
     use crate::settings::ProviderApiFormat;
-    match official_deepseek_builtin_hop(provider, request.options.builtin_web_search) {
+    match official_deepseek_builtin_hop(
+        provider,
+        request.options.builtin_web_search && request.options.tool_choice != ToolChoice::None,
+    ) {
         Some(OfficialDeepseekBuiltinHop::Responses) => {
             return OpenAiResponsesProvider::new(state, provider, retry_attempts)
                 .stream(request, sink)
@@ -326,6 +332,210 @@ mod anonymous_http_tests {
             ).into(),
             "gemini" => format!("data: {json}\n\n"),
             _ => unreachable!(),
+        }
+    }
+
+    fn finish_response(format: &str, finish: &str, stream: bool) -> String {
+        use serde_json::json;
+        let tool = finish == "tool_calls";
+        let length = finish == "length";
+        let body = match format {
+            "openai_chat" => json!({"choices": [{
+                "message": {"role":"assistant", "content":"answer"},
+                "finish_reason": finish
+            }]}),
+            "openai_responses" | "xai_responses" => json!({
+                "status": if length { "incomplete" } else { "completed" },
+                "incomplete_details": if length { json!({"reason":"max_output_tokens"}) } else { serde_json::Value::Null },
+                "output": if tool {
+                    vec![json!({"type":"function_call","id":"fc_1","call_id":"call_1","name":"read","arguments":"{}"})]
+                } else {
+                    vec![json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]})]
+                }
+            }),
+            "anthropic_messages" => json!({
+                "role":"assistant",
+                "content":[{"type":"text","text":"answer"}],
+                "stop_reason": if tool { "tool_use" } else if length { "max_tokens" } else { "end_turn" },
+                "usage":{"input_tokens":1,"output_tokens":1}
+            }),
+            "gemini" => json!({
+                "candidates":[{"content":{"role":"model","parts": if tool {
+                    vec![json!({"functionCall":{"name":"read","args":{}}})]
+                } else { vec![json!({"text":"answer"})] }},
+                "finishReason": if length { "MAX_TOKENS" } else { "STOP" }}]
+            }),
+            _ => unreachable!(),
+        };
+        if !stream {
+            return body.to_string();
+        }
+        let events = match format {
+            "openai_chat" => vec![json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]})],
+            "openai_responses" | "xai_responses" => {
+                let mut events = vec![json!({"type":"response.output_text.delta","delta":"answer"})];
+                if tool {
+                    events.push(json!({"type":"response.output_item.added","output_index":0,
+                        "item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read","arguments":"{}"}}));
+                    events.push(json!({"type":"response.output_item.done","output_index":0,
+                        "item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read","arguments":"{}"}}));
+                }
+                events.push(json!({"type":if length { "response.incomplete" } else { "response.completed" },"response":body}));
+                events
+            }
+            "anthropic_messages" => vec![
+                json!({"type":"message_start","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"answer"}}),
+                json!({"type":"message_delta","delta":{"stop_reason":body["stop_reason"]},"usage":{"output_tokens":1}}),
+                json!({"type":"message_stop"}),
+            ],
+            "gemini" => vec![body],
+            _ => unreachable!(),
+        };
+        events.into_iter().map(|event| format!("data: {event}\n\n")).collect()
+    }
+
+    #[tokio::test]
+    async fn no_tools_and_finish_reason_survive_provider_wire_and_message_runtime() {
+        use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
+        for format in FORMATS {
+            for stream in [false, true] {
+                for finish in ["stop", "length", "tool_calls"] {
+                    let (url, server) = endpoint(
+                        vec![("200 OK", finish_response(format, finish, stream))], false,
+                    ).await;
+                    let state = crate::state::AppState::new_headless(
+                        crate::settings::Settings::default(), std::env::temp_dir(),
+                    );
+                    let provider = provider(format, url, Vec::new());
+                    let message = if stream {
+                        ProviderRuntime::message(&state, MessageRequest {
+                            provider: &provider,
+                            model: "local-model",
+                            messages: vec![serde_json::json!({"role":"user","content":"hello"})],
+                            tool_choice: ToolChoice::None,
+                            retry_attempts: 1,
+                            thinking_enabled: false,
+                            thinking_level: None,
+                            builtin_web_search: true,
+                            max_output_tokens: 100,
+                            conversation_id: "conv",
+                            message_id: "msg",
+                            label: "finish regression",
+                        }).await.unwrap().0
+                    } else {
+                        let request = GenerateRequest {
+                            model: "local-model".into(),
+                            system: String::new(),
+                            messages: vec![ModelMessage::text(ModelRole::User, "hello")],
+                            tools: vec![ModelTool {
+                                id: "native__read".into(), name: "read".into(), description: String::new(),
+                                source: "native".into(), server_id: None, server_name: None,
+                                input_schema: serde_json::json!({"type":"object"}), sensitive: false,
+                            }],
+                            options: GenerateOptions {
+                                tool_choice: ToolChoice::None,
+                                builtin_web_search: true,
+                                provider_options: serde_json::json!({
+                                    "tools":[{"type":"web_search"}], "tool_choice":"auto",
+                                    "toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}
+                                }),
+                                ..Default::default()
+                            },
+                            metadata: Default::default(),
+                        };
+                        generate_with_chat_provider(&state, &provider, 1, request)
+                            .await.unwrap().to_openai_compatible_message()
+                    };
+                    assert_eq!(message["finish_reason"], finish, "{format} stream={stream}");
+                    let captured = server.await.unwrap();
+                    let (_, body) = captured[0].split_once("\r\n\r\n").unwrap();
+                    let body: serde_json::Value = serde_json::from_str(body).unwrap();
+                    assert!(body.get("tools").is_none(), "{format} stream={stream}: {body}");
+                    match format {
+                        "anthropic_messages" => assert_eq!(body["tool_choice"]["type"], "none"),
+                        "gemini" => assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE"),
+                        _ => assert_eq!(body["tool_choice"], "none"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn message_runtime_preserves_provider_errors() {
+        use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
+        let (url, server) = endpoint(
+            vec![("401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#.into())],
+            false,
+        ).await;
+        let state = crate::state::test_app_state();
+        let provider = provider("openai_chat", url, Vec::new());
+        let result = ProviderRuntime::message(&state, MessageRequest {
+            provider: &provider,
+            model: "local-model",
+            messages: vec![serde_json::json!({"role":"user","content":"hello"})],
+            tool_choice: ToolChoice::None,
+            retry_attempts: 1,
+            thinking_enabled: false,
+            thinking_level: None,
+            builtin_web_search: false,
+            max_output_tokens: 100,
+            conversation_id: "conv",
+            message_id: "msg",
+            label: "error regression",
+        }).await;
+        assert!(result.unwrap_err().contains("server requires authentication"));
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn developer_delivery_survives_replay_and_provider_wire() {
+        let delivery = "<async-result>worker output &lt;unsafe&gt;</async-result>";
+        let history = vec![
+            serde_json::json!({"role":"system", "content":"application policy"}),
+            serde_json::json!({"role":"user", "content":"start"}),
+            serde_json::json!({"role":"assistant", "content":"working"}),
+            serde_json::json!({"role":"developer", "content":delivery}),
+        ];
+        let request = generate_request_from_openai_messages(
+            "local-model", history, None, GenerateOptions::default(), "delivery",
+            GenerateRequestContext::default(),
+        );
+        assert_eq!(request.messages[2].role, ModelRole::Developer);
+        let stored = serde_json::to_vec(&request.messages).unwrap();
+        let replayed: Vec<ModelMessage> = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(replayed[2].role, ModelRole::Developer);
+        assert_eq!(openai_messages_from_model_messages(&replayed)[2]["role"], "developer");
+
+        for format in FORMATS {
+            let (url, server) = endpoint(vec![("200 OK", success(format, false))], false).await;
+            let state = crate::state::test_app_state();
+            let provider = provider(format, url, Vec::new());
+            generate_with_chat_provider(&state, &provider, 1, request.clone()).await.unwrap();
+            let captured = server.await.unwrap();
+            let (_, body) = captured[0].split_once("\r\n\r\n").unwrap();
+            let body: serde_json::Value = serde_json::from_str(body).unwrap();
+            match format {
+                "openai_chat" => {
+                    assert_eq!(body["messages"][3]["role"], "developer");
+                    assert_eq!(body["messages"][3]["content"], delivery);
+                }
+                "openai_responses" | "xai_responses" => {
+                    let item = body["input"].as_array().unwrap().last().unwrap();
+                    assert_eq!(item["role"], "developer");
+                    assert_eq!(item["content"][0]["text"], delivery);
+                }
+                "anthropic_messages" => {
+                    assert_eq!(body["messages"][2]["role"], "user");
+                    assert_eq!(body["messages"][2]["content"][0]["text"], delivery);
+                }
+                "gemini" => {
+                    assert_eq!(body["contents"][2]["role"], "user");
+                    assert_eq!(body["contents"][2]["parts"][0]["text"], delivery);
+                }
+                _ => unreachable!(),
+            }
         }
     }
 

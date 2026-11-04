@@ -114,7 +114,7 @@ fn assistant_turn_span(
     message_id: &str,
 ) -> Result<(usize, usize, usize), String> {
     let target_idx = find_message_index(conversation, message_id)?;
-    if conversation.messages[target_idx].role != "assistant" {
+    if conversation.messages[target_idx].role != "assistant" || is_subagent_report(&conversation.messages[target_idx]) {
         return Err("仅支持对助手回复换模型回答".to_string());
     }
     let user_idx = conversation.messages[..target_idx]
@@ -125,7 +125,7 @@ fn assistant_turn_span(
     let mut start = target_idx;
     while start > user_idx + 1 {
         let previous = &conversation.messages[start - 1];
-        if previous.role != "assistant" || !same_reply_group(target, previous) {
+        if previous.role != "assistant" || is_subagent_report(previous) || !same_reply_group(target, previous) {
             break;
         }
         start -= 1;
@@ -133,7 +133,7 @@ fn assistant_turn_span(
     let mut end = target_idx;
     while end + 1 < conversation.messages.len() {
         let next = &conversation.messages[end + 1];
-        if next.role != "assistant" || !same_reply_group(target, next) {
+        if next.role != "assistant" || is_subagent_report(next) || !same_reply_group(target, next) {
             break;
         }
         end += 1;
@@ -162,7 +162,7 @@ pub(super) fn prepare_reply_with_model(
         return Err("请选择要回答的模型".to_string());
     }
     let (user_idx, start, end) = assistant_turn_span(conversation, message_id)?;
-    if end + 1 != conversation.messages.len() {
+    if conversation.messages[end + 1..].iter().any(|message| !is_subagent_report(message)) {
         return Err("只能对最后一轮回答换模型".to_string());
     }
     let siblings = &conversation.messages[start..=end];
@@ -315,6 +315,15 @@ pub(crate) async fn chat_update_message(
     }))
 }
 
+fn is_subagent_report(message: &ChatMessage) -> bool {
+    message.role == "assistant" && message.id.starts_with("subagent-result-")
+}
+
+fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {
+    messages.iter().rev().find(|message| !is_subagent_report(message))
+        .filter(|message| message.role == "user")
+}
+
 /// `chat_regenerate_message` 的截断/编辑核心（纯函数，便于单测）：
 /// - assistant：截到它之前（`new_content` 无意义 → 报错）。
 /// - user + `new_content`：trim 校验非空 → 替换内容（编辑提问；附件保留）→ 保留该条截掉其后。
@@ -325,13 +334,14 @@ pub(super) fn apply_regenerate_truncation(
     idx: usize,
     new_content: Option<String>,
 ) -> Result<(), String> {
-    match conversation.messages[idx].role.as_str() {
+    let current_turn = !conversation.messages[idx + 1..].iter().any(|message| message.role == "user");
+    let keep = match conversation.messages[idx].role.as_str() {
         "assistant" => {
             if new_content.is_some() {
                 return Err("编辑内容仅支持用户消息".to_string());
             }
             mark_summary_stale_if_needed(conversation, idx);
-            conversation.messages.truncate(idx);
+            idx
         }
         "user" => {
             if let Some(content) = new_content {
@@ -345,9 +355,13 @@ pub(super) fn apply_regenerate_truncation(
             } else {
                 mark_summary_stale_if_needed(conversation, idx + 1);
             }
-            conversation.messages.truncate(idx + 1);
+            idx + 1
         }
         _ => return Err("仅支持重新生成助手回复或重试用户消息".to_string()),
+    };
+    let removed = conversation.messages.split_off(keep);
+    if current_turn {
+        conversation.messages.extend(removed.into_iter().filter(is_subagent_report));
     }
     Ok(())
 }
@@ -382,13 +396,14 @@ pub(crate) async fn chat_regenerate_message(
 ) -> Result<serde_json::Value, String> {
     // Busy 拒绝：该会话仍有任意一条 run 在跑时不允许再触发重新生成。
     // 原子哨兵预留关闭 TOCTOU 窗口；per-run 槽位 / generation 在 `complete_assistant_reply` 内注册。
-    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    let Some(send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
     else {
         return Ok(serde_json::json!({
             "success": false,
             "error": CHAT_REPLY_BUSY_ERROR,
         }));
     };
+    let interruption_epoch = send_reservation.interruption_epoch();
 
     let repository = crate::chat::repository::repository(&app);
     let mut snapshot = repository
@@ -402,7 +417,7 @@ pub(crate) async fn chat_regenerate_message(
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
                 let idx = find_message_index(latest, &message_id)?;
                 apply_regenerate_truncation(latest, idx, next_content)?;
-                if latest.messages.last().map(|message| message.role.as_str()) != Some("user") {
+                if last_turn_user(&latest.messages).is_none() {
                     return Err("缺少对应的用户消息，无法重新生成".to_string());
                 }
                 let existing_ids: std::collections::HashSet<String> = latest
@@ -439,11 +454,12 @@ pub(crate) async fn chat_regenerate_message(
             Err(err) => return Err(crate::chat::repository::repository_error(err)),
         }
     };
+    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+    }
 
-    let last_user_api_content = conversation
-        .messages
-        .last()
-        .filter(|message| message.role == "user")
+    let last_user_api_content = last_turn_user(&conversation.messages)
         .map(|message| {
             let attachment_dir = if message.attachments.is_empty() {
                 None
@@ -463,10 +479,7 @@ pub(crate) async fn chat_regenerate_message(
             }
             api_content
         });
-    let last_user_image_paths = conversation
-        .messages
-        .last()
-        .filter(|message| message.role == "user")
+    let last_user_image_paths = last_turn_user(&conversation.messages)
         .map(|message| {
             stored_image_paths_for_attachments(&app, &conversation_id, &message.attachments)
         })
@@ -520,6 +533,10 @@ pub(crate) async fn chat_regenerate_message(
                 break;
             }
         }
+    }
+    if state.sub_agents.user_interrupted(&conversation_id) {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
     let reply_outcome = complete_assistant_reply(
         &app,
@@ -1131,6 +1148,7 @@ mod subagent_cleanup_tests {
             root: root.into(),
             parent_id: MAIN_AGENT_ID.into(),
             generation: 0,
+            published: true,
             display_name: id.into(),
             agent_type: "task".into(),
             status: AgentStatus::Running,
@@ -1687,16 +1705,17 @@ pub(crate) async fn chat_reply_with_model(
     model: String,
     group_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    let Some(send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
     else {
         return Ok(serde_json::json!({
             "success": false,
             "error": CHAT_REPLY_BUSY_ERROR,
         }));
     };
+    let interruption_epoch = send_reservation.interruption_epoch();
 
     let repository = crate::chat::repository::repository(&app);
-    let conversation = repository
+    let mut conversation = repository
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
@@ -1743,10 +1762,15 @@ pub(crate) async fn chat_reply_with_model(
     }
     let last_user_image_paths =
         stored_image_paths_for_attachments(&app, &conversation_id, &user_message.attachments)?;
+    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+        strip_transcripts_for_frontend(&mut conversation);
+        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+    }
     let user_skill_id = prep.user_skill_id.clone();
 
     let mut arm_conversation = conversation.clone();
-    arm_conversation.messages.truncate(prep.user_index + 1);
+    let removed = arm_conversation.messages.split_off(prep.user_index + 1);
+    arm_conversation.messages.extend(removed.into_iter().filter(is_subagent_report));
 
     let arm = ReplyArm {
         group_id: prep.group_id.clone(),

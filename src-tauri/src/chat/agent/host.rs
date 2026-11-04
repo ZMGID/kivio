@@ -14,6 +14,11 @@ pub trait AgentHost: Send + Sync {
         true
     }
 
+    /// Only application-backed hosts may start subagents while arguments stream.
+    fn speculative_task_app(&self) -> Option<tauri::AppHandle> {
+        None
+    }
+
     /// Hosts may require an in-flight tool to finish before cancellation returns.
     fn requires_tool_completion(&self) -> bool {
         false
@@ -28,10 +33,8 @@ pub trait AgentHost: Send + Sync {
     ) -> AgentHostFuture<'a, Result<bool, String>> {
         Box::pin(async { Ok(false) })
     }
-    fn close_runtime_input(&self) -> Result<(), String> {
-        Ok(())
-    }
-    /// Return messages received at a runtime checkpoint.
+    /// Persist the supplied history when needed and return newly received messages.
+    /// Before compaction this sees the original history; an error prevents replacement.
     fn checkpoint_runtime<'a>(
         &'a self,
         _conversation_id: &'a str,

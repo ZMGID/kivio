@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     chat::{
-        model::{ModelError, ModelUsage},
+        model::{ModelError, ModelUsage, ToolChoice},
         types::ChatMessageSegment,
     },
     mcp::ChatToolDefinition,
@@ -33,6 +33,7 @@ pub(crate) struct StreamRequest<'a> {
     pub model: &'a str,
     pub messages: Vec<Value>,
     pub tools: Option<&'a [ChatToolDefinition]>,
+    pub tool_choice: ToolChoice,
     pub retry_attempts: usize,
     pub thinking_enabled: bool,
     pub thinking_level: Option<String>,
@@ -54,6 +55,7 @@ pub(crate) struct MessageRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: Vec<Value>,
+    pub tool_choice: ToolChoice,
     pub retry_attempts: usize,
     pub thinking_enabled: bool,
     pub thinking_level: Option<String>,
@@ -92,11 +94,22 @@ pub(crate) trait ProviderRuntime: Send + Sync {
     fn summarize<'a>(&'a self, request: SummaryRequest<'a>) -> ProviderFuture<'a, CompactOutcome>;
 }
 
+fn allows_task_speculation(choice: ToolChoice, tools: Option<&[ChatToolDefinition]>) -> bool {
+    choice != ToolChoice::None && tools.is_some_and(|tools| tools.iter().any(|tool| {
+        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
+    }))
+}
+
 impl ProviderRuntime for AppState {
     fn stream<'a>(
         &'a self,
         request: StreamRequest<'a>,
     ) -> ProviderFuture<'a, Result<ChatStreamOutput, ModelError>> {
+        if !allows_task_speculation(request.tool_choice, request.tools) {
+            if let Some(tracker) = &request.tool_draft_tracker {
+                tracker.disable_speculation();
+            }
+        }
         Box::pin(stream_scoped_chat_completion_inner(
             self,
             request.host,
@@ -104,6 +117,7 @@ impl ProviderRuntime for AppState {
             request.model,
             request.messages,
             request.tools,
+            request.tool_choice,
             request.retry_attempts,
             request.thinking_enabled,
             request.thinking_level,
@@ -132,6 +146,7 @@ impl ProviderRuntime for AppState {
             request.model,
             request.messages,
             None,
+            request.tool_choice,
             request.retry_attempts,
             request.thinking_enabled,
             request.thinking_level,
@@ -157,5 +172,23 @@ impl ProviderRuntime for AppState {
             request.cancel,
             request.host,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speculation_requires_enabled_native_task_in_this_request() {
+        let mut task = crate::chat::sub_agent::task::tool_definition(
+            &[], &crate::settings::Settings::default(),
+        );
+        assert!(allows_task_speculation(ToolChoice::Auto, Some(std::slice::from_ref(&task))));
+        assert!(!allows_task_speculation(ToolChoice::None, Some(std::slice::from_ref(&task))));
+        assert!(!allows_task_speculation(ToolChoice::Auto, None));
+        assert!(!allows_task_speculation(ToolChoice::Auto, Some(&[])));
+        task.source = "mcp".into();
+        assert!(!allows_task_speculation(ToolChoice::Auto, Some(std::slice::from_ref(&task))));
     }
 }

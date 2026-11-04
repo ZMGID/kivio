@@ -4,7 +4,7 @@ import type {
   ChatToolProgressPayload,
   ChatUserPromptPayload,
 } from '../api/tauri'
-import { mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
+import { isTerminalSubagentStatus, mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
 import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, segmentStepNumber, segmentToolCallId } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
@@ -321,6 +321,8 @@ function matchesSubagentTool(tool: ToolCallRecord, payload: ChatSubagentPayload)
   const structured = toolStructured(tool)
   if (structured.backgroundTaskId === payload.taskId) return true
   if (structured.childSessionId === payload.taskId) return true
+  if (tool.source === 'native' && canonicalToolName(tool) === 'task' && Array.isArray(structured.agents)
+    && structured.agents.some(agent => agent && typeof agent === 'object' && agent.agentId === payload.taskId)) return true
   if (structured.subagentProgressByTask && typeof structured.subagentProgressByTask === 'object'
     && Object.prototype.hasOwnProperty.call(structured.subagentProgressByTask, payload.taskId)) return true
   const progress = structured.subagentProgress
@@ -347,9 +349,12 @@ export function mergeSubagentProgress(
   const existing = toolStructured(tool)
   if (tool.source === 'native' && canonicalToolName(tool) === 'task') {
     const byTask = existing.subagentProgressByTask && typeof existing.subagentProgressByTask === 'object'
-      ? existing.subagentProgressByTask as Record<string, { preview?: string; steps?: string[] }>
+      && !Array.isArray(existing.subagentProgressByTask)
+      ? existing.subagentProgressByTask as Record<string, { status?: string; preview?: string; steps?: string[] }>
       : {}
     const previous = Object.prototype.hasOwnProperty.call(byTask, payload.taskId) ? byTask[payload.taskId] : undefined
+    if (isTerminalSubagentStatus(previous?.status)
+      || (previous?.status === 'running' && payload.status === 'pending')) return tool
     const nextStructured = {
       ...existing,
       subagentProgressByTask: {

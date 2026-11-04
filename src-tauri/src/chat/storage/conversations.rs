@@ -94,7 +94,12 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, Stri
         return Err(format!("对话不存在：{id}"));
     }
 
-    read_conversation_file(&path, id)
+    // Read the journal before the conversation: a concurrent writer removes an
+    // entry only after embedding it in the atomically replaced conversation.
+    let pending = crate::chat::sub_agent::progress::pending(app, id)?;
+    let mut conversation = read_conversation_file(&path, id)?;
+    crate::chat::sub_agent::progress::apply(&mut conversation, &pending);
+    Ok(conversation)
 }
 
 fn write_conversation_file_at_path(
@@ -144,7 +149,11 @@ pub(crate) fn write_conversation_file(
             &mut replay.messages,
         );
     }
-    write_conversation_file_at_path(&path, conversation)
+    let pending = crate::chat::sub_agent::progress::pending(app, &conversation.id)?;
+    let applied = crate::chat::sub_agent::progress::apply(&mut conversation, &pending);
+    let persisted = write_conversation_file_at_path(&path, conversation)?;
+    crate::chat::sub_agent::progress::clear_applied(&applied);
+    Ok(persisted)
 }
 
 /// 删除对话。

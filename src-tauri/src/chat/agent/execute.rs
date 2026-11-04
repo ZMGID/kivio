@@ -58,6 +58,11 @@ pub struct ToolExecutionContext<'a> {
     /// Conversation used by conversation-scoped tools; it can differ from
     /// `conversation_id` in a sub-agent run.
     pub tool_conversation_id: &'a str,
+    pub plan_state: &'a crate::chat::types::AgentPlanState,
+    pub mcp_tool_ids: &'a [(String, String)],
+    pub mcp_server_ids: &'a [String],
+    pub approval_policy: &'a str,
+    pub interactive_host: bool,
     /// The model-issued tool_call id of the call currently executing. Sub-agent
     /// progress is reported back onto the parent tool card addressed by this id.
     pub tool_call_id: &'a str,
@@ -150,26 +155,13 @@ pub fn invalid_tool_arguments_record(
     }
 }
 
-pub async fn execute_tool_call(
-    host: &dyn AgentHost,
-    executor: &dyn ToolExecutor,
-    settings: &Settings,
-    ctx: &ToolExecutionContext<'_>,
+pub(crate) fn pending_tool_record(
     tool: &ChatToolDefinition,
-    call: PendingToolCall,
-    skill_context: Option<&mut skills::SkillRunContext>,
-) -> (ToolCallRecord, String, Vec<Value>) {
-    // 宽容 coercion（对齐 pi validateToolArguments 的 Value.Convert + coerceWithJsonSchema）：
-    // 校验前先按 schema 把「差一层类型」的参数掰正（"5"→5、"true"→true、5→"5"），
-    // 弱模型的这类口误不值得烧掉一整轮。`arguments_raw` 保持模型原话（展示/落盘/回放）。
-    let mut call = {
-        let mut call = call;
-        call.arguments =
-            coerce_tool_arguments(&tool.input_schema, std::mem::take(&mut call.arguments));
-        call
-    };
-    let now = chrono::Local::now().timestamp();
-    let mut record = ToolCallRecord {
+    call: &PendingToolCall,
+    run_id: &str,
+    round: u32,
+) -> ToolCallRecord {
+    ToolCallRecord {
         id: call.id.clone(),
         name: tool.name.clone(),
         source: tool.source.clone(),
@@ -179,15 +171,34 @@ pub async fn execute_tool_call(
         result_preview: None,
         error: None,
         duration_ms: None,
-        started_at: Some(now),
+        started_at: Some(chrono::Local::now().timestamp()),
         completed_at: None,
-        round: ctx.round,
+        round,
         sensitive: tool.sensitive,
         artifacts: Vec::new(),
-        trace_id: Some(ctx.run_id.to_string()),
-        span_id: Some(tool_span_id(ctx.round, &call.id)),
+        trace_id: Some(run_id.to_string()),
+        span_id: Some(tool_span_id(round, &call.id)),
         structured_content: None,
-    };
+    }
+}
+
+pub async fn execute_tool_call(
+    host: &dyn AgentHost,
+    executor: &dyn ToolExecutor,
+    settings: &Settings,
+    ctx: &ToolExecutionContext<'_>,
+    tool: &ChatToolDefinition,
+    call: PendingToolCall,
+    skill_context: Option<&mut skills::SkillRunContext>,
+) -> (ToolCallRecord, String, Vec<Value>) {
+    let task_preflight = tool.source == "native"
+        && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME;
+    let mut call = call;
+    if !task_preflight {
+        call.arguments =
+            coerce_tool_arguments(&tool.input_schema, std::mem::take(&mut call.arguments));
+    }
+    let mut record = pending_tool_record(tool, &call, ctx.run_id, ctx.round);
     host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
 
     let mut hook_context = Vec::new();
@@ -244,8 +255,12 @@ pub async fn execute_tool_call(
             return (record, format!("Workflow hook: {reason}"), Vec::new());
         }
     }
-    // Validate the effective arguments and run normal approval AFTER hook changes.
-    if let Err(err) = validate_tool_arguments(tool, &call.arguments) {
+    // The native task handler validates the entire batch after hooks and approval.
+    if let Err(err) = if task_preflight {
+        Ok(())
+    } else {
+        validate_tool_arguments(tool, &call.arguments)
+    } {
         record.status = ToolCallStatus::Error;
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
@@ -531,10 +546,14 @@ pub fn disabled_tool_content(call: &PendingToolCall) -> Option<String> {
 }
 
 pub fn tool_requires_approval(settings: &Settings, tool: &ChatToolDefinition) -> bool {
+    tool_requires_approval_for_policy(&settings.chat_tools.approval_policy, tool)
+}
+
+pub(crate) fn tool_requires_approval_for_policy(policy: &str, tool: &ChatToolDefinition) -> bool {
     if builtin_tool_bypasses_approval(tool) {
         return false;
     }
-    match settings.chat_tools.approval_policy.as_str() {
+    match policy {
         "auto" => false,
         "always_confirm" => true,
         // MCP annotations are self-reported by the server and cannot weaken approval.
@@ -984,8 +1003,8 @@ fn effective_tool_timeout_ms(
     if tool.source == "native" && tool.name == "bash" {
         return NO_OUTER_TOOL_TIMEOUT;
     }
-    // The subagent wait tool owns its escalating deadline and collection window.
-    if tool.source == "native" && tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME {
+    // Task may wait for blocking/synchronous children; both tools own their lifetime.
+    if tool.source == "native" && crate::chat::sub_agent::is_sub_agent_tool_name(&tool.name) {
         return NO_OUTER_TOOL_TIMEOUT;
     }
     // The orchestration tools bound their own wait and detach the target reply on timeout.
@@ -1181,6 +1200,7 @@ mod tests {
         workflow: Option<crate::chat::workflow_hooks::Runtime>,
         approvals: AtomicUsize,
         consents: AtomicUsize,
+        deny_approval: bool,
         deny_consent: bool,
         parallel_arm: bool,
         records: Mutex<Vec<ToolCallRecord>>,
@@ -1223,7 +1243,8 @@ mod tests {
             _record: &'a ToolCallRecord,
         ) -> AgentHostFuture<'a, bool> {
             self.approvals.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { true })
+            let granted = !self.deny_approval;
+            Box::pin(async move { granted })
         }
 
         fn request_session_consent<'a>(
@@ -1307,6 +1328,15 @@ mod tests {
             round: 2,
             depth: 0,
             tool_conversation_id: "conversation",
+            plan_state: {
+                static PLAN_STATE: std::sync::LazyLock<crate::chat::types::AgentPlanState> =
+                    std::sync::LazyLock::new(crate::chat::types::AgentPlanState::default);
+                &PLAN_STATE
+            },
+            mcp_tool_ids: &[],
+            mcp_server_ids: &[],
+            approval_policy: "auto",
+            interactive_host: false,
             tool_call_id: "call",
         }
     }
@@ -1556,6 +1586,64 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(matches!(records[0].status, ToolCallStatus::Pending));
         assert!(matches!(records[1].status, ToolCallStatus::Error));
+    }
+
+    #[tokio::test]
+    async fn native_task_validation_runs_after_approval_without_coercing_batch() {
+        struct TaskExecutor(Mutex<Vec<Value>>);
+        impl ToolExecutor for TaskExecutor {
+            fn call<'a>(
+                &'a self,
+                _ctx: &'a ToolExecutionContext<'a>,
+                _tool: &'a ChatToolDefinition,
+                arguments: Value,
+                _skill_context: Option<&'a mut skills::SkillRunContext>,
+            ) -> ToolExecutorFuture<'a> {
+                self.0.lock().unwrap().push(arguments);
+                Box::pin(async {
+                    Ok(McpToolCallResult {
+                        content: "dedicated batch preflight error".into(),
+                        is_error: true,
+                        ..Default::default()
+                    })
+                })
+            }
+        }
+        let tool = crate::chat::sub_agent::task::tool_definition(&[], &Settings::default());
+        let arguments = serde_json::json!({
+            "context": 12, "agent": "task", "tasks": [{"task": "work", "solutionSpace": 5}]
+        });
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "always_confirm".into();
+        let executor = TaskExecutor(Mutex::new(Vec::new()));
+        let denied = ExecuteTestHost { deny_approval: true, ..Default::default() };
+        let (record, _, _) = execute_tool_call(
+            &denied, &executor, &settings, &test_execution_context(), &tool,
+            test_pending_call("denied", "task", arguments.clone()), None,
+        ).await;
+        assert!(matches!(record.status, ToolCallStatus::Skipped));
+        assert_eq!(denied.approvals.load(Ordering::SeqCst), 1);
+        assert!(executor.0.lock().unwrap().is_empty());
+
+        let allowed = ExecuteTestHost::default();
+        let (record, content, _) = execute_tool_call(
+            &allowed, &executor, &settings, &test_execution_context(), &tool,
+            test_pending_call("allowed", "task", arguments.clone()), None,
+        ).await;
+        assert!(matches!(record.status, ToolCallStatus::Error));
+        assert!(content.contains("dedicated batch preflight error"));
+        assert_eq!(allowed.approvals.load(Ordering::SeqCst), 1);
+        assert_eq!(*executor.0.lock().unwrap(), vec![arguments.clone()]);
+
+        let mut remote = tool.clone();
+        remote.source = "mcp".into();
+        let (record, content, _) = execute_tool_call(
+            &allowed, &executor, &settings, &test_execution_context(), &remote,
+            test_pending_call("remote", "task", arguments), None,
+        ).await;
+        assert!(matches!(record.status, ToolCallStatus::Error));
+        assert!(content.contains("schema validation"));
+        assert_eq!(executor.0.lock().unwrap().len(), 1);
     }
 
     fn host_with_hook(dir: &std::path::Path, output: Value) -> ExecuteTestHost {
@@ -1900,6 +1988,37 @@ mod tests {
         assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn task_obeys_session_consent_before_execution() {
+        for denied in [true, false] {
+            let host = ExecuteTestHost {
+                deny_consent: denied,
+                ..Default::default()
+            };
+            let executor = ExecuteTestExecutor::default();
+            let mut settings = Settings::default();
+            settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".into();
+            let tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+            let call = test_pending_call("call_task", "task", serde_json::json!({
+                "context": "shared",
+                "tasks": [{"task": "work", "solutionSpace": "one fix"}]
+            }));
+            let (record, content, _) = execute_tool_call(
+                &host, &executor, &settings, &test_execution_context(), &tool, call, None,
+            ).await;
+            assert_eq!(host.consents.load(Ordering::SeqCst), 1);
+            assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
+            assert_eq!(executor.calls.load(Ordering::SeqCst), usize::from(!denied));
+            if denied {
+                assert!(matches!(record.status, ToolCallStatus::Skipped));
+                assert!(!content.is_empty());
+            } else {
+                assert!(matches!(record.status, ToolCallStatus::Success));
+                assert_eq!(content, "result:task");
+            }
+        }
+    }
+
     /// MCP structured-content 契约（agent-runtime spec）：MCP 结果的 structuredContent
     /// 必须进入模型可见文本（除非文本已含同样 JSON）。
     #[tokio::test]
@@ -2042,19 +2161,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn asynchronous_task_admission_uses_normal_tool_timeout() {
+    #[tokio::test]
+    async fn blocking_task_is_not_cut_off_by_the_ordinary_tool_timeout() {
+        struct SlowTask;
+        impl ToolExecutor for SlowTask {
+            fn call<'a>(
+                &'a self, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition,
+                _arguments: Value, _skills: Option<&'a mut skills::SkillRunContext>,
+            ) -> ToolExecutorFuture<'a> {
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok(McpToolCallResult { content: "completed child result".into(), ..Default::default() })
+                })
+            }
+        }
         let mut settings = Settings::default();
-        settings.chat_tools.tool_timeout_ms = 120_000;
+        settings.chat_tools.approval_policy = "auto".into();
+        settings.chat_tools.tool_timeout_ms = 1;
         let tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
-        assert_eq!(
-            effective_tool_timeout_ms(
-                &settings,
-                &tool,
-                &serde_json::json!({"tasks": [{"task": "inspect", "solutionSpace": "code"}]})
-            ),
-            120_000
-        );
+        let call = test_pending_call("blocking", "task", serde_json::json!({
+            "context": "shared", "tasks": [{"task": "work", "solutionSpace": "one fix"}]
+        }));
+        let (record, content, _) = execute_tool_call(
+            &ExecuteTestHost::default(), &SlowTask, &settings, &test_execution_context(), &tool, call, None,
+        ).await;
+        assert!(matches!(record.status, ToolCallStatus::Success), "{content}");
+        assert_eq!(content, "completed child result");
     }
 
     #[test]

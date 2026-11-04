@@ -3,6 +3,8 @@
 //! `{{#if}}`/`{{else}}`/`{{/if}}`, `{{#unless}}`, `{{#each}}` (with `this`,
 //! `@index`, `@last`). Nothing is HTML-escaped: output is model text.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 /// Render `template` against `ctx` (a JSON object).
@@ -12,7 +14,88 @@ pub fn render(template: &str, ctx: &Value) -> String {
     let nodes = parse(&tokens, &mut pos);
     let mut out = String::new();
     emit(&nodes, &Scope { current: ctx, root: ctx, index: 0, last: false }, &mut out);
-    out
+    format_rendered(&out)
+}
+
+// OMP formats the rendered text, rather than formatting the template before
+// interpolation, so conditional branches cannot leave runs of empty lines.
+fn format_rendered(rendered: &str) -> String {
+    let lines: Vec<_> = rendered.split('\n').collect();
+    let mut out: Vec<Cow<'_, str>> = Vec::with_capacity(lines.len());
+    let mut in_code = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code = !in_code;
+            out.push(Cow::Borrowed(line));
+            i += 1;
+            continue;
+        }
+        if in_code {
+            out.push(Cow::Borrowed(line));
+            i += 1;
+            continue;
+        }
+        if trimmed.is_empty() {
+            if i + 1 == lines.len() || lines[i + 1].trim().is_empty() {
+                while out.last().is_some_and(|line| line.is_empty()) {
+                    out.pop();
+                }
+                i += 1;
+                while i < lines.len() && lines[i].trim().is_empty() {
+                    i += 1;
+                }
+                continue;
+            }
+            if !out.is_empty() && out.last().is_some_and(|line| !line.is_empty()) {
+                out.push(Cow::Borrowed(""));
+            }
+            i += 1;
+            continue;
+        }
+        let closing = trimmed.strip_prefix("</").and_then(|s| s.strip_suffix('>'))
+            .is_some_and(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-' || b == b'_'));
+        if closing {
+            while out.last().is_some_and(|line| line.is_empty()) {
+                out.pop();
+            }
+        }
+        if trimmed.starts_with('|') && trimmed.ends_with('|') {
+            let indent = &line[..line.len() - trimmed.len()];
+            let is_separator = trimmed.bytes().all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'));
+            let cells = trimmed.split('|').map(str::trim);
+            let table = if is_separator {
+                let cells = cells.filter(|cell| !cell.is_empty()).map(|cell| {
+                    match (cell.starts_with(':'), cell.ends_with(':')) {
+                        (true, true) => ":---:",
+                        (true, false) => ":---",
+                        (false, true) => "---:",
+                        (false, false) => "---",
+                    }
+                }).collect::<Vec<_>>().join("|");
+                format!("{indent}|{cells}|")
+            } else {
+                format!("{indent}{}", cells.collect::<Vec<_>>().join("|"))
+            };
+            out.push(Cow::Owned(table));
+        } else {
+            out.push(Cow::Borrowed(line));
+        }
+        i += 1;
+    }
+    while out.last().is_some_and(|line| line.is_empty()) {
+        out.pop();
+    }
+    let mut result = String::with_capacity(rendered.len());
+    for (index, line) in out.iter().enumerate() {
+        if index != 0 {
+            result.push('\n');
+        }
+        result.push_str(line);
+    }
+    result
 }
 
 enum Token<'a> {
@@ -109,11 +192,9 @@ fn lookup(scope: &Scope<'_>, path: &str) -> Value {
         let segment = segment.trim_start_matches('[').trim_end_matches(']');
         value = match value {
             Value::Object(map) => map.get(segment).unwrap_or(&Value::Null),
-            Value::Array(items) => segment
-                .parse::<usize>()
-                .ok()
-                .and_then(|i| items.get(i))
-                .unwrap_or(&Value::Null),
+            Value::Array(items) if segment == "length" => return Value::from(items.len()),
+            Value::Array(items) => segment.parse::<usize>().ok()
+                .and_then(|i| items.get(i)).unwrap_or(&Value::Null),
             _ => &Value::Null,
         };
     }
@@ -168,13 +249,57 @@ mod tests {
         let one = render(template, &json!({"multiple": false, "jobs": [{"id": "A", "result": "r"}]}));
         assert_eq!(one, "Job A:r!");
         let two = render(template, &json!({"multiple": true, "jobs": [{"id": "A", "result": "r"}, {"id": "B", "result": "s"}]}));
-        assert_eq!(two, " jobs:[A]r,[B]s!", "`.length` is not a JSON field; callers pass counts explicitly");
+        assert_eq!(two, "2 jobs:[A]r,[B]s!");
         assert_eq!(render("{{{raw}}} {{n}}", &json!({"raw": "<x>", "n": 3})), "<x> 3");
+    }
+
+    #[test]
+    fn normalizes_rendered_whitespace_without_collapsing_code_blocks() {
+        let template = "<section>  \nA  \n{{#if optional}}{{optional}}{{/if}}\n\nB\n\n</section>\n\n```\none\n\n\n two  \n```\n";
+        assert_eq!(render(template, &json!({})), "<section>\nA\nB\n</section>\n\n```\none\n\n\n two\n```");
+        assert_eq!(render("| one | two |\n| :------ | ----: |\n", &json!({})), "|one|two|\n|:---|---:|");
+    }
+
+    #[test]
+    fn actual_templates_switch_between_sync_async_and_plan_content() {
+        let guidance = render(TASK_ASYNC_CONTRACT, &json!({"waitTool": true, "ircEnabled": false}));
+        let async_text = render(TASK_TOOL, &json!({
+            "asyncEnabled": true, "hasBlockingAgents": true, "asyncGuidance": guidance,
+            "defaultAgent": "task", "ircEnabled": false
+        }));
+        assert!(async_text.contains("BLOCKING agents return inline"));
+        assert!(async_text.contains("Call `wait`"));
+        assert!(!async_text.contains("proc://"));
+        assert!(!async_text.contains("write agent://"));
+        assert!(!async_text.contains("local://"));
+        let sync_text = render(TASK_TOOL, &json!({"asyncEnabled": false, "defaultAgent": "task"}));
+        assert!(sync_text.contains("Run `tasks[]` synchronously"));
+        assert!(!sync_text.contains("Results auto-deliver"));
+        let worker = render(SUBAGENT_SYSTEM, &json!({
+            "agent": "Planner", "context": "shared", "planReference": "The approved plan.",
+            "planReferencePath": "plan.md", "ircSelfId": ""
+        }));
+        assert!(worker.contains("<plan path=\"plan.md\">\nThe approved plan.\n</plan>"));
+        assert!(!worker.contains("# Peers"));
+        assert!(worker.contains("No `yield` tool exists"));
+        assert!(PLAN_MODE_SUBAGENT.contains("### Critical Files for Implementation"));
+    }
+
+    #[test]
+    fn completion_probe_renders_inflight_details() {
+        let prompt = render(COMPLETION_PROBE, &json!({
+            "inflight": [{"name": "grep", "path": "src", "chars": 12}],
+            "previous": {"ago": "5m", "percent": 50, "stage": "reading"}
+        }));
+        assert!(prompt.contains("`grep` (src): 12 characters"));
+        assert!(prompt.contains("5m ago, was 50%"));
+        assert!(!render(COMPLETION_PROBE, &json!({"inflight": []})).contains("mid-response"));
     }
 }
 
-/// Task description: `asyncGuidance`, `defaultAgent`, `scoutAvailable`,
-/// `spawningDisabled`, `hasModelMentions`, `ircEnabled`, and `agentList`.
+/// Task description: `asyncEnabled`, `hasBlockingAgents`, `asyncGuidance`,
+/// `defaultAgent`, `scoutAvailable`, `spawningDisabled`, `hasModelMentions`,
+/// `ircEnabled`, and `agentList`.
 /// `agentList` is preformatted OMP agent-list text, including its trailing newline.
 pub const TASK_TOOL: &str = include_str!("prompts/task.md");
 /// Async guidance: `waitTool` and `ircEnabled`.
@@ -193,13 +318,15 @@ pub const TASK_FOLLOW_UP: &str = include_str!("prompts/task-follow-up.md");
 /// Delivery envelope: `multiple`, `jobCount`, and `jobs` (items have `jobId`,
 /// `label`, `result`, `showAgentUrl`, `showHistoryUrl`, and `agentUrlId`).
 pub const ASYNC_RESULT: &str = include_str!("prompts/async-result.md");
-/// The upstream `wait` description; no variables.
+/// Stage-one background-job wait description; no variables.
 pub const WAIT_TOOL: &str = include_str!("prompts/wait.md");
 /// Worker system prompt: `agent`, `context`, `planReference`,
 /// `planReferencePath`, `worktree`, `ircSelfId`, `ircPeers` (each has `id`,
 /// `displayName`, `kind`, `status`, `activity`), `ircOmittedCount`, and
 /// `ircParkedCount`.
 pub const SUBAGENT_SYSTEM: &str = include_str!("prompts/subagent-system-prompt.md");
+/// Read-only planning persona used when the parent session is in plan mode.
+pub const PLAN_MODE_SUBAGENT: &str = include_str!("prompts/plan-mode-subagent.md");
 /// Worker user prompt: `assignment`.
 pub const SUBAGENT_USER: &str = include_str!("prompts/subagent-user-prompt.md");
 /// Non-structured budget-stop reminder; no variables.
@@ -214,6 +341,10 @@ pub const AGENT_TASK: &str = include_str!("prompts/agents/task.md");
 pub const AGENT_SCOUT: &str = include_str!("prompts/agents/scout.md");
 /// OMP reviewer agent body, without frontmatter.
 pub const AGENT_REVIEWER: &str = include_str!("prompts/agents/reviewer.md");
+/// OMP security reviewer body, adapted to non-structured results.
+pub const AGENT_SECURITY_REVIEWER: &str = include_str!("prompts/agents/security-reviewer.md");
+/// Historical consultant body; dispatch requires historical-session support.
+pub const AGENT_SEANCE: &str = include_str!("prompts/agents/seance.md");
 
 #[cfg(test)]
 mod template_tests {

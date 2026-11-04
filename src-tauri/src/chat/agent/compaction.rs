@@ -1084,7 +1084,7 @@ pub(crate) async fn maybe_compact_send_view(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     compact_send_view(env, state, false, request_tools).await
 }
 
@@ -1093,8 +1093,8 @@ pub(crate) async fn compact_send_view(
     state: &mut RunState,
     force: bool,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Vec<Value> {
-    let messages = compact_send_view_inner(env, state, force, request_tools).await;
+) -> Result<Vec<Value>, String> {
+    let messages = compact_send_view_inner(env, state, force, request_tools).await?;
     let config = env.config;
     let window = context_window_for_model(Some(&config.provider), &config.model).0;
     let window = if window == 0 { 200_000 } else { window };
@@ -1113,7 +1113,7 @@ pub(crate) async fn compact_send_view(
     {
         state.compaction_blocked = true;
     }
-    messages
+    Ok(messages)
 }
 
 async fn compact_send_view_inner(
@@ -1121,7 +1121,7 @@ async fn compact_send_view_inner(
     state: &mut RunState,
     force: bool,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     let config = env.config;
     // 先做无条件的图片收敛：与 token 预算无关，重复上传同一张图、以及无上限堆积的历史
     // 图片，任何情况下都是纯浪费；随后请求预算仍计入保留图片的 token（详见 `prune_image_parts`）。
@@ -1192,7 +1192,7 @@ async fn compact_send_view_inner(
         super::context_estimate::effective_context_tokens(anchor_prompt, trailing, estimate_full);
     let estimated = anchored.max(estimate_full);
     if !force && estimated < budget {
-        return state.runtime_messages.clone();
+        return Ok(state.runtime_messages.clone());
     }
     // Failed optional compaction may continue only if the final request fits
     // (checked at the compact_send_view boundary). A real provider overflow still
@@ -1201,11 +1201,11 @@ async fn compact_send_view_inner(
         && !hard_pressure
         && state.auto_compact_failures >= MAX_CONSECUTIVE_AUTO_COMPACT_FAILURES
     {
-        return state.runtime_messages.clone();
+        return Ok(state.runtime_messages.clone());
     }
     // Too little history is a healthy no-op: no events, no failure.
     if !has_compactable_history(&state.runtime_messages) {
-        return state.runtime_messages.clone();
+        return Ok(state.runtime_messages.clone());
     }
     // Rapid refill is judged before starting and recorded only when a compaction succeeds.
     let rapid_refills =
@@ -1217,7 +1217,7 @@ async fn compact_send_view_inner(
     if !force && rapid_refills >= MAX_CONSECUTIVE_RAPID_REFILLS {
         eprintln!("Chat context compaction: context refilled right after compaction {rapid_refills} times; ending the turn");
         state.compaction_blocked = true;
-        return state.runtime_messages.clone();
+        return Ok(state.runtime_messages.clone());
     }
 
     eprintln!(
@@ -1247,7 +1247,7 @@ async fn compact_send_view_inner(
             .set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
         env.host
             .emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
-        return state.runtime_messages.clone();
+        return Ok(state.runtime_messages.clone());
     };
     let compacted = config
         .provider_runtime
@@ -1271,7 +1271,7 @@ async fn compact_send_view_inner(
         .await;
 
     match compacted {
-        CompactOutcome::Compacted(compacted, summary_text) => {
+        CompactOutcome::Compacted(mut compacted, summary_text) => {
             let after = estimate_request_tokens(&compacted, &config.provider, &config.model)
                 .saturating_add(tool_schema_tokens);
             if after >= estimate_full || after > budget.saturating_mul(9) / 10 {
@@ -1286,8 +1286,26 @@ async fn compact_send_view_inner(
                     Some(trigger),
                     None,
                 );
-                return state.runtime_messages.clone();
+                return Ok(state.runtime_messages.clone());
             }
+            let incoming = match env.host.checkpoint_runtime(
+                &config.conversation_id,
+                &config.run_id,
+                &state.runtime_messages,
+                false,
+            ).await {
+                Ok(incoming) => incoming,
+                Err(error) => {
+                    env.host.emit_compaction_status(
+                        &config.conversation_id, "failed", Some(trigger), None,
+                    );
+                    return Err(error);
+                }
+            };
+            state.generated_api_messages.extend(
+                incoming.iter().filter(|message| message["subagent_parent_persisted"] != true).cloned()
+            );
+            compacted.extend(incoming);
             state.tool_batches_since_compact = 0;
             state.rapid_refills = rapid_refills;
             state.auto_compact_failures = 0;
@@ -1381,7 +1399,7 @@ async fn compact_send_view_inner(
                     &[format!("SessionStart compact hook failed: {error}")],
                 ),
             };
-            state.runtime_messages.clone()
+            Ok(state.runtime_messages.clone())
         }
         CompactOutcome::Skipped => {
             // Nothing outside the recent retention budget can be summarized safely.
@@ -1391,7 +1409,7 @@ async fn compact_send_view_inner(
                 Some(trigger),
                 None,
             );
-            state.runtime_messages.clone()
+            Ok(state.runtime_messages.clone())
         }
         CompactOutcome::Cancelled => {
             // 用户主动取消进行中的 run：不计入失败次数（取消 ≠ 压缩无能为力），
@@ -1402,7 +1420,7 @@ async fn compact_send_view_inner(
                 Some(trigger),
                 None,
             );
-            state.runtime_messages.clone()
+            Ok(state.runtime_messages.clone())
         }
         CompactOutcome::Failed => {
             // Keep the old send view; the boundary guard decides if it can be sent safely.
@@ -1412,7 +1430,7 @@ async fn compact_send_view_inner(
             // started 已发——失败也必须发终止事件，否则前端"压缩中"状态永久卡死。
             env.host
                 .emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
-            state.runtime_messages.clone()
+            Ok(state.runtime_messages.clone())
         }
     }
 }

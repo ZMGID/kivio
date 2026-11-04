@@ -122,8 +122,11 @@ async fn find_artifact(
 }
 
 async fn not_found(dir: &Path, registry: &AgentRegistry, root: &str, id: &str, suffix: &str) -> Result<String, String> {
-    let mut ids: Vec<String> = registry.list(root).into_iter().map(|agent| agent.id).collect();
-    ids.extend(disk_ids(dir, suffix).await?);
+    let agents = registry.list(root);
+    let hidden: HashSet<_> = agents.iter().filter(|agent| !agent.published)
+        .map(|agent| agent.id.to_lowercase()).collect();
+    let mut ids: Vec<String> = agents.into_iter().filter(|agent| agent.published).map(|agent| agent.id).collect();
+    ids.extend(disk_ids(dir, suffix).await?.into_iter().filter(|id| !hidden.contains(&id.to_lowercase())));
     ids.sort_by_cached_key(|id| id.to_ascii_lowercase());
     ids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     ids.retain(|candidate| !candidate.eq_ignore_ascii_case(id));
@@ -153,11 +156,18 @@ async fn read_in(
     let (scheme, requested) = parse_url(url)?;
     if scheme == Scheme::History && requested.is_empty() {
         let agents = registry.list(root);
-        let disk = disk_ids(dir, ".jsonl").await?;
-        return Ok(format_index(&agents, &disk, now_ms()));
+        let hidden: HashSet<_> = agents.iter().filter(|agent| !agent.published)
+            .map(|agent| agent.id.to_lowercase()).collect();
+        let disk: Vec<_> = disk_ids(dir, ".jsonl").await?.into_iter()
+            .filter(|id| !hidden.contains(&id.to_lowercase())).collect();
+        let visible: Vec<_> = agents.into_iter().filter(|agent| agent.published).collect();
+        return Ok(format_index(&visible, &disk, now_ms()));
     }
 
     let agent = registry.resolve(root, requested);
+    if agent.as_ref().is_some_and(|agent| !agent.published) {
+        return Err(not_found(dir, registry, root, requested, if scheme == Scheme::Agent { ".md" } else { ".jsonl" }).await?);
+    }
     let id = agent.as_ref().map(|agent| agent.id.as_str()).unwrap_or(requested);
     let registered = agent.is_some();
     if scheme == Scheme::Agent {
@@ -178,9 +188,9 @@ async fn read_in(
             });
         }
         if let Some(agent) = agent {
-            let messages = match artifact(dir, &agent.id, "jsonl").await? {
-                Some((text, _)) => parse_jsonl(&text, agent.status == AgentStatus::Running)?,
-                None => Vec::new(),
+            let (messages, incomplete) = match artifact(dir, &agent.id, "jsonl").await? {
+                Some((text, _)) => parse_jsonl(&text)?,
+                None => (Vec::new(), false),
             };
             let live = if agent.status == AgentStatus::Running {
                 jobs.running(root, &agent.parent_id)
@@ -197,15 +207,15 @@ async fn read_in(
             } else {
                 None
             };
-            return Ok(format_progress(&agent, &messages, live.as_deref()));
+            return Ok(note_incomplete(format_progress(&agent, &messages, live.as_deref()), incomplete));
         }
         return Err(not_found(dir, registry, root, requested, ".md").await?);
     }
 
     if let Some((actual, text, _)) = find_artifact(dir, id, "jsonl", registered).await? {
         let status = agent.as_ref().map(|agent| status_name(agent.status)).unwrap_or("on disk");
-        let running = agent.as_ref().is_some_and(|agent| agent.status == AgentStatus::Running);
-        return Ok(format_transcript(&actual, status, &parse_jsonl(&text, running)?));
+        let (messages, incomplete) = parse_jsonl(&text)?;
+        return Ok(note_incomplete(format_transcript(&actual, status, &messages), incomplete));
     }
     if let Some(agent) = agent {
         if agent.status == AgentStatus::Running {
@@ -266,8 +276,9 @@ fn format_index(agents: &[AgentRecord], disk: &[String], now: i64) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
-fn parse_jsonl(text: &str, running: bool) -> Result<Vec<Value>, String> {
+fn parse_jsonl(text: &str) -> Result<(Vec<Value>, bool), String> {
     let mut messages = Vec::new();
+    let mut incomplete = false;
     let mut lines = text.lines().enumerate().peekable();
     while let Some((index, line)) = lines.next() {
         if line.trim().is_empty() {
@@ -275,11 +286,21 @@ fn parse_jsonl(text: &str, running: bool) -> Result<Vec<Value>, String> {
         }
         match serde_json::from_str(line) {
             Ok(message) => messages.push(message),
-            Err(error) if running && lines.peek().is_none() && !text.ends_with('\n') && error.is_eof() => break,
+            Err(error) if lines.peek().is_none() && !text.ends_with('\n') && error.is_eof() => {
+                incomplete = true;
+                break;
+            }
             Err(error) => return Err(format!("Invalid agent transcript on line {}: {error}", index + 1)),
         }
     }
-    Ok(messages)
+    Ok((messages, incomplete))
+}
+
+fn note_incomplete(mut text: String, incomplete: bool) -> String {
+    if incomplete {
+        text.push_str("\n[Warning: the final transcript entry is incomplete and was omitted.]\n");
+    }
+    text
 }
 
 fn content_text(content: &Value, include_images: bool) -> String {
@@ -457,7 +478,7 @@ mod tests {
     fn record(root: &str, id: &str, status: AgentStatus) -> AgentRecord {
         AgentRecord {
             id: id.into(), root: root.into(), parent_id: "Main".into(), generation: 0,
-            display_name: id.into(), agent_type: "scout".into(), status, depth: 1,
+            display_name: id.into(), agent_type: "scout".into(), status, depth: 1, published: true,
             child_conversation_id: format!("child-{id}"), run_id: None,
             session_file: PathBuf::new(), output_file: PathBuf::new(), last_activity: 0, activity: None,
         }
@@ -484,7 +505,7 @@ mod tests {
             "{\"role\":\"tool\",\"tool_call_id\":\"two\",\"content\":\"permission denied\",\"is_error\":true}\n",
             "{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done\"}]}\n"
         );
-        let transcript = format_transcript("Scout", "running", &parse_jsonl(jsonl, true).unwrap());
+        let transcript = format_transcript("Scout", "running", &parse_jsonl(jsonl).unwrap().0);
         assert!(transcript.contains("## user\n\nInspect this"));
         assert!(transcript.contains("## assistant\n\nChecking"));
         assert!(transcript.contains("→ read(src/main.rs) ⇒ ok · 2 lines"));
@@ -503,7 +524,7 @@ mod tests {
             "{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"same\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"second\\\"}\"}}]}\n",
             "{\"role\":\"tool\",\"tool_call_id\":\"same\",\"content\":\"denied\",\"is_error\":true}\n"
         );
-        let transcript = format_transcript("Scout", "idle", &parse_jsonl(jsonl, false).unwrap());
+        let transcript = format_transcript("Scout", "idle", &parse_jsonl(jsonl).unwrap().0);
         assert!(transcript.contains("→ tool() ⇒ error · 1 line — orphan"));
         assert!(transcript.contains("→ read(first) ⇒ ok · 1 line"));
         assert!(transcript.contains("→ read(second) ⇒ error · 1 line — denied"));
@@ -625,10 +646,64 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_live_jsonl_is_tolerated_but_corruption_is_reported() {
+    fn incomplete_final_jsonl_is_readable_but_corrupt_lines_fail() {
         let text = "{\"role\":\"user\",\"content\":\"ok\"}\n{\"role\":\"assistant\"";
-        assert_eq!(parse_jsonl(text, true).unwrap().len(), 1);
-        assert!(parse_jsonl(text, false).is_err());
-        assert!(parse_jsonl("{bad}\n", true).is_err());
+        let (messages, incomplete) = parse_jsonl(text).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(note_incomplete(format_transcript("Scout", "on disk", &messages), incomplete)
+            .contains("final transcript entry is incomplete"));
+        assert!(parse_jsonl("{bad}\n").is_err());
+        assert!(parse_jsonl("{bad}\n{\"role\":\"user\"}\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn internal_urls_use_normal_read_windows_and_output_caps() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::default();
+        let jobs = JobManager::default();
+        registry.register(record("conv_root", "Scout", AgentStatus::Idle));
+        let lines = (1..=2_501).map(|line| format!("line-{line}")).collect::<Vec<_>>().join("\n");
+        tokio::fs::write(temp.path().join("Scout.md"), &lines).await.unwrap();
+        let output = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap();
+        let first = crate::native_tools::read_text_content("agent://Scout", output.clone(), &serde_json::json!({})).unwrap();
+        assert_eq!(first.end_line, 2_000);
+        assert_eq!(first.next_offset, Some(2_001));
+        assert!(first.content.len() <= crate::native_tools::TOOL_OUTPUT_MAX_BYTES);
+        let page = crate::native_tools::read_text_content("agent://Scout", output, &serde_json::json!({ "offset": 2_001, "limit": 2 })).unwrap();
+        assert_eq!(page.content, "line-2001\nline-2002");
+        assert_eq!(page.next_offset, Some(2_003));
+
+        let journal = (1..=1_000).map(|line| serde_json::json!({"role":"assistant","content":format!("history-{line}")}).to_string())
+            .collect::<Vec<_>>().join("\n");
+        tokio::fs::write(temp.path().join("Scout.jsonl"), journal).await.unwrap();
+        let history = read_in(temp.path(), &registry, &jobs, "conv_root", "history://Scout").await.unwrap();
+        let page = crate::native_tools::read_text_content("history://Scout", history.clone(), &serde_json::json!({ "offset": 3, "limit": 4 })).unwrap();
+        assert_eq!((page.start_line, page.end_line), (3, 6));
+        assert_eq!(page.next_offset, Some(7));
+        assert!(crate::native_tools::read_text_content("history://Scout", history, &serde_json::json!({ "offset": 99_999 })).is_err());
+
+        let oversized = format!("{}\nsafe", "x".repeat(crate::native_tools::TOOL_OUTPUT_MAX_BYTES + 1));
+        let page = crate::native_tools::read_text_content("agent://Scout", oversized.clone(), &serde_json::json!({})).unwrap();
+        assert!(page.content.is_empty());
+        assert_eq!(page.next_offset, Some(2));
+        assert!(!page.warnings[0].contains("bash"));
+        let page = crate::native_tools::read_text_content("agent://Scout", oversized, &serde_json::json!({ "offset": 2 })).unwrap();
+        assert_eq!(page.content, "safe");
+    }
+
+    #[tokio::test]
+    async fn unpublished_speculation_is_not_listed_or_readable_from_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::default();
+        let jobs = JobManager::default();
+        let mut hidden = record("conv_root", "Hidden", AgentStatus::Running);
+        hidden.published = false;
+        registry.register(hidden);
+        tokio::fs::write(temp.path().join("Hidden.jsonl"), "{\"role\":\"assistant\",\"content\":\"secret\"}\n").await.unwrap();
+        tokio::fs::write(temp.path().join("Hidden.md"), "secret").await.unwrap();
+        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://").await.unwrap();
+        assert!(!index.contains("Hidden"));
+        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://hidden").await.is_err());
+        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "history://Hidden").await.is_err());
     }
 }

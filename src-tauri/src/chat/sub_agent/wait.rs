@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use serde_json::{json, Value};
 
@@ -23,7 +24,7 @@ const LADDER: [Duration; 5] = [
 ];
 const LADDER_RESET: Duration = Duration::from_secs(60);
 const SETTLE_WINDOW: Duration = Duration::from_millis(1500);
-const NOTHING_TO_WAIT_FOR: &str = "Nothing to wait for: no background job or service you started is running, and no agent you messaged this run owes a reply. Other agents' results and messages arrive on their own.";
+const NOTHING_TO_WAIT_FOR: &str = "Nothing to wait for: no background subagent job you started is running.";
 
 pub fn definition() -> ChatToolDefinition {
     ChatToolDefinition {
@@ -96,14 +97,52 @@ pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
             generation_conversation,
             ctx.native_ctx.generation,
         );
-        wait(
+        let steering = ctx.state.chat_runtime().wait_for_steering(generation_conversation);
+        let _child_progress = (owner != super::MAIN_AGENT_ID).then(|| ChildWaitProgress {
+            jobs: &ctx.state.sub_agents.jobs,
+            root,
+            owner: &owner,
+        });
+        wait_with_updates(
             &ctx.state.sub_agents.jobs,
             &WAIT_LADDERS,
             root,
             &owner,
             cancelled,
+            steering,
+            |snapshots| {
+                if owner != super::MAIN_AGENT_ID {
+                    ctx.state.sub_agents.jobs.report_wait_progress(root, &owner, Some(json!({
+                        "op": "wait", "jobs": snapshots,
+                    })));
+                }
+                let Some(id) = ctx.native_ctx.tool_call_id.as_deref() else { return };
+                let Some(mut tool) = ctx.state.chat_protocol()
+                    .running_snapshot(root, &ctx.native_ctx.run_id, &ctx.native_ctx.message_id)
+                    .and_then(|snapshot| snapshot.tools.into_iter()
+                        .find(|tool| tool.id == id && tool.round == ctx.native_ctx.round))
+                else { return };
+                tool.structured_content = Some(json!({ "op": "wait", "jobs": snapshots }));
+                crate::chat::protocol::emit_run_event(
+                    ctx.app,
+                    &ctx.native_ctx.run_id,
+                    crate::chat::protocol::ChatRunEvent::ToolUpdated { tool },
+                );
+            },
         ).await
     })
+}
+
+struct ChildWaitProgress<'a> {
+    jobs: &'a JobManager,
+    root: &'a str,
+    owner: &'a str,
+}
+
+impl Drop for ChildWaitProgress<'_> {
+    fn drop(&mut self) {
+        self.jobs.report_wait_progress(self.root, self.owner, None);
+    }
 }
 
 struct WatchedJobs<'a> {
@@ -117,6 +156,7 @@ impl Drop for WatchedJobs<'_> {
     }
 }
 
+#[cfg(test)]
 async fn wait(
     jobs: &JobManager,
     ladders: &Mutex<WaitLadders>,
@@ -124,10 +164,29 @@ async fn wait(
     owner: &str,
     cancelled: impl Future<Output = ()>,
 ) -> Result<McpToolCallResult, String> {
+    wait_with_updates(jobs, ladders, root, owner, cancelled, std::future::pending(), |_| {}).await
+}
+
+async fn wait_with_updates(
+    jobs: &JobManager,
+    ladders: &Mutex<WaitLadders>,
+    root: &str,
+    owner: &str,
+    cancelled: impl Future<Output = ()>,
+    steering: impl Future<Output = ()>,
+    on_progress: impl Fn(&[JobSnapshot]) + Send + Sync,
+) -> Result<McpToolCallResult, String> {
     tokio::select! {
         biased;
         _ = cancelled => Err("cancelled".into()),
-        result = wait_for_jobs(jobs, ladders, root, owner) => Ok(result),
+        _ = steering => {
+            let mut output = result("Wait interrupted by user steering.".into(), &[]);
+            output.raw["useless"] = json!(false);
+            output.raw["interrupted"] = json!(true);
+            output.structured_content = Some(output.raw.clone());
+            Ok(output)
+        },
+        result = wait_for_jobs(jobs, ladders, root, owner, &on_progress) => Ok(result),
     }
 }
 
@@ -136,6 +195,7 @@ async fn wait_for_jobs(
     ladders: &Mutex<WaitLadders>,
     root: &str,
     owner: &str,
+    on_progress: &(impl Fn(&[JobSnapshot]) + Sync),
 ) -> McpToolCallResult {
     let (rung, previously_waited) = ladders.lock().unwrap_or_else(|e| e.into_inner())
         .begin(root, owner, Instant::now());
@@ -149,6 +209,16 @@ async fn wait_for_jobs(
     if watched.ids.is_empty() {
         return result(NOTHING_TO_WAIT_FOR.into(), &[]);
     }
+
+    let emit_progress = || {
+        let snapshots: Vec<_> = watched.ids.iter().filter_map(|id| jobs.get(id)).collect();
+        on_progress(&snapshots);
+    };
+    emit_progress();
+    let mut progress = tokio::time::interval_at(
+        tokio::time::Instant::now() + Duration::from_millis(500),
+        Duration::from_millis(500),
+    );
 
     let deadline = tokio::time::Instant::now() + LADDER[rung];
     let mut settle_deadline = None;
@@ -170,6 +240,7 @@ async fn wait_for_jobs(
         let until = settle_deadline.map_or(deadline, |settle| settle.min(deadline));
         tokio::select! {
             _ = tokio::time::sleep_until(until) => break until == deadline,
+            _ = progress.tick() => emit_progress(),
             changed = changed.changed() => {
                 if changed.is_err() {
                     break false;
@@ -179,12 +250,12 @@ async fn wait_for_jobs(
     };
 
     let mut output = snapshot(jobs, Vec::new(), &watched.ids);
-    if timed_out {
+    if timed_out && output.structured_content.as_ref().is_some_and(|details| details["useless"] == true) {
         ladders.lock().unwrap_or_else(|e| e.into_inner())
             .elapsed(root, owner, rung, previously_waited, Instant::now());
         if rung > 0 {
             let waited = format_duration((previously_waited + LADDER[rung]).as_millis() as u64);
-            write!(output.content, "\n\n<system-notice>\nNothing new after {waited} of back-to-back waits. Waiting is not progress: each response MUST advance the task. Make as much progress as you can on everything that does not need what you are waiting on; call `wait` again only once nothing else is left. Results and messages arrive on their own.\n</system-notice>").unwrap();
+            write!(output.content, "\n\n<system-notice>\nNothing new after {waited} of back-to-back waits. Waiting is not progress: each response MUST advance the task. Make as much progress as you can on everything that does not need what you are waiting on; call `wait` again only once nothing else is left. Results arrive on their own.\n</system-notice>").unwrap();
         }
     }
     output
@@ -333,7 +404,7 @@ fn format_duration(ms: u64) -> String {
 }
 
 fn result(content: String, jobs: &[&JobSnapshot]) -> McpToolCallResult {
-    let details = json!({ "op": "wait", "jobs": jobs });
+    let details = json!({ "op": "wait", "jobs": jobs, "useless": jobs.iter().all(|job| job.status == JobStatus::Running) });
     McpToolCallResult {
         content,
         is_error: false,
@@ -399,10 +470,12 @@ mod tests {
         assert!(output.content.contains("## Still Running (1)"));
         assert!(!output.content.contains("private result"));
         assert_eq!(output.structured_content.as_ref().unwrap()["jobs"][0]["result"], "unique result");
+        assert_eq!(output.structured_content.as_ref().unwrap()["useless"], false);
         assert!(jobs.take_deliverable("root", "Main").is_empty());
         assert!(jobs.cancel("root", &running, "Main"));
         let second = wait(&jobs, &ladders, "root", "Main", pending()).await.unwrap();
         assert_eq!(second.content, NOTHING_TO_WAIT_FOR);
+        assert_eq!(second.structured_content.as_ref().unwrap()["useless"], true);
         assert!(!second.content.contains("unique result"));
         assert_eq!(jobs.take_deliverable("root", "Other").len(), 1);
     }
@@ -477,6 +550,7 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         let output = second.await.unwrap();
         assert!(output.content.contains("## Still Running (1)"));
+        assert_eq!(output.structured_content.as_ref().unwrap()["useless"], true);
         assert!(output.content.contains("Nothing new after 15s"));
     }
 
@@ -530,5 +604,74 @@ mod tests {
         let _ = task.await;
         jobs.settle(&second, Ok("after drop".into()));
         assert_eq!(jobs.take_deliverable("root", "Main").len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_emits_periodic_non_consuming_snapshots_and_cancellation_releases_them() {
+        let jobs = Arc::new(JobManager::default());
+        let ladders = Arc::new(Mutex::new(WaitLadders::default()));
+        let updates = Arc::new(Mutex::new(Vec::<Vec<JobSnapshot>>::new()));
+        let (job, _) = jobs.register("root", "Main", "Scout", "inspect");
+        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
+        let task = {
+            let jobs = jobs.clone();
+            let updates = updates.clone();
+            tokio::spawn(async move {
+                wait_with_updates(&jobs, &ladders, "root", "Main", async { let _ = cancelled.await; },
+                    pending(), |snapshot| updates.lock().unwrap().push(snapshot.to_vec())).await
+            })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(updates.lock().unwrap().len(), 1);
+        jobs.report_progress(&job, json!({ "stage": "reading" }));
+        tokio::time::advance(Duration::from_millis(500)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(updates.lock().unwrap().last().unwrap()[0].progress.as_ref().unwrap()["stage"], "reading");
+        cancel.send(()).unwrap();
+        assert_eq!(task.await.unwrap().unwrap_err(), "cancelled");
+        jobs.settle(&job, Ok("after interrupt".into()));
+        assert_eq!(jobs.take_deliverable("root", "Main")[0].result.as_deref(), Some("after interrupt"));
+    }
+
+    #[tokio::test]
+    async fn steering_wins_against_settlement_without_consuming_the_job() {
+        let jobs = Arc::new(JobManager::default());
+        let ladders = Arc::new(Mutex::new(WaitLadders::default()));
+        let (first, _) = jobs.register("root", "Main", "First", "one");
+        let (_second, _) = jobs.register("root", "Main", "Second", "two");
+        let (steer, steered) = tokio::sync::oneshot::channel::<()>();
+        let task = {
+            let jobs = jobs.clone();
+            tokio::spawn(async move {
+                wait_with_updates(&jobs, &ladders, "root", "Main", pending(),
+                    async { let _ = steered.await; }, |_| {}).await.unwrap()
+            })
+        };
+        tokio::task::yield_now().await;
+        jobs.settle(&first, Ok("preserved result".into()));
+        steer.send(()).unwrap();
+        let output = task.await.unwrap();
+        assert_eq!(output.structured_content.unwrap()["interrupted"], true);
+        let delivered = jobs.take_deliverable("root", "Main");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].result.as_deref(), Some("preserved result"));
+    }
+
+    #[test]
+    fn child_wait_snapshots_survive_heartbeats_and_clear_on_exit() {
+        let jobs = JobManager::default();
+        let (parent, _) = jobs.register("root", "Main", "Parent", "work");
+        jobs.report_progress(&parent, json!({ "status": "running", "requests": 1 }));
+        {
+            let _guard = ChildWaitProgress { jobs: &jobs, root: "root", owner: "Parent" };
+            jobs.report_wait_progress("root", "Parent", Some(json!({
+                "op": "wait", "jobs": [{ "id": "Child", "status": "running" }],
+            })));
+            jobs.report_progress(&parent, json!({ "status": "running", "requests": 2 }));
+            let progress = jobs.get(&parent).unwrap().progress.unwrap();
+            assert_eq!(progress["requests"], 2);
+            assert_eq!(progress["wait"]["jobs"][0]["id"], "Child");
+        }
+        assert!(jobs.get(&parent).unwrap().progress.unwrap().get("wait").is_none());
     }
 }

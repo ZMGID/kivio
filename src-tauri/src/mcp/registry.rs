@@ -35,6 +35,13 @@ pub struct NativeToolContext<'a> {
     pub round: u32,
     /// Sub-agent nesting depth of the issuing agent loop (0 = top-level).
     pub depth: u8,
+    /// The issuing run's frozen plan and effective MCP permissions.
+    pub plan_state: &'a crate::chat::types::AgentPlanState,
+    /// Exact (server ID, tool ID) pairs; empty means no MCP tools.
+    pub mcp_tool_ids: &'a [(String, String)],
+    pub mcp_server_ids: &'a [String],
+    pub approval_policy: &'a str,
+    pub interactive_host: bool,
 }
 
 impl<'a> NativeToolContext<'a> {
@@ -49,6 +56,11 @@ impl<'a> NativeToolContext<'a> {
             generation: ctx.generation,
             round: ctx.round,
             depth: ctx.depth,
+            plan_state: ctx.plan_state,
+            mcp_tool_ids: ctx.mcp_tool_ids,
+            mcp_server_ids: ctx.mcp_server_ids,
+            approval_policy: ctx.approval_policy,
+            interactive_host: ctx.interactive_host,
         }
     }
 }
@@ -137,6 +149,21 @@ pub async fn list_enabled_tool_catalog_for_run(
     allowed_mcp_server_ids: Option<&[String]>,
 ) -> EnabledToolCatalog {
     list_enabled_tool_catalog_inner(app, state, false, allowed_mcp_server_ids).await
+}
+
+/// Snapshot only MCP tools actually exposed by the current run; empty means none.
+pub(crate) fn mcp_grants(tools: &[ChatToolDefinition]) -> (Vec<(String, String)>, Vec<String>) {
+    let mut tool_ids = Vec::new();
+    let mut server_ids = Vec::new();
+    for tool in tools.iter().filter(|tool| tool.source == "mcp") {
+        if let Some(server_id) = tool.server_id.as_ref() {
+            tool_ids.push((server_id.clone(), tool.id.clone()));
+            if !server_ids.contains(server_id) {
+                server_ids.push(server_id.clone());
+            }
+        }
+    }
+    (tool_ids, server_ids)
 }
 
 async fn list_enabled_tool_catalog_inner(
@@ -1146,7 +1173,7 @@ async fn call_native_tool(
                 let ctx = native_ctx.as_ref()
                     .ok_or_else(|| "read requires an agent context for internal URLs".to_string())?;
                 let content = crate::chat::sub_agent::urls::read(app, &ctx.conversation_id, path).await?;
-                return Ok(text_tool_result(content));
+                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
             }
         }
     }
@@ -1372,6 +1399,26 @@ async fn resolve_native_workspace(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_grants_capture_only_exposed_tools_and_their_servers() {
+        let mut first = crate::mcp::types::native_read_file_tool();
+        first.source = "mcp".into();
+        first.id = "mcp__allowed__read".into();
+        first.server_id = Some("allowed".into());
+        let mut second = first.clone();
+        second.id = "mcp__allowed__search".into();
+        let mut malformed = first.clone();
+        malformed.server_id = None;
+        let tools = vec![first, second, malformed, crate::mcp::types::native_read_file_tool()];
+        let (tool_ids, server_ids) = super::mcp_grants(&tools);
+        assert_eq!(tool_ids, vec![
+            ("allowed".to_string(), "mcp__allowed__read".to_string()),
+            ("allowed".to_string(), "mcp__allowed__search".to_string()),
+        ]);
+        assert_eq!(server_ids, vec!["allowed".to_string()]);
+        assert_eq!(super::mcp_grants(&[]), (Vec::new(), Vec::new()));
+    }
+
     #[test]
     fn successful_file_receipt_omits_code_but_preserves_disk_and_review() {
         let dir = tempfile::tempdir().unwrap();

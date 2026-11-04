@@ -1,70 +1,178 @@
-# 子代理改用 OMP 实现：三步计划
+# 子代理改用 OMP：三步实施与验收计划
 
-日期：2026-11-05。分支：`feat/omp-subagents`。决定见 [ADR-0007](../adr/0007-subagents-follow-omp.md)。
+更新：2026-11-05。分支：`feat/omp-subagents`。产品决定：[ADR-0007](../adr/0007-subagents-follow-omp.md)。OMP 基线：[5dec65ed5f500ec456c2c7f91f7e517f99d92eec](https://github.com/can1357/oh-my-pi/tree/5dec65ed5f500ec456c2c7f91f7e517f99d92eec)，MIT 许可见 [许可文件](../licenses/oh-my-pi-MIT.txt)。
 
-## 目标与边界
+**先读 [OMP 实现与运行调查](../research/omp-subagents-implementation.md)。** 该文档记录源代码事实、调用链、状态/消息/持久化契约、提示词和运行证据；本文件只规定做什么、依赖什么、怎样算完成，不再用“按 OMP”代替接口定义。
 
-把内置运行时的子代理整体替换为 oh-my-pi（OMP）的子代理设计，行为以 OMP 源码为准：`can1357/oh-my-pi` commit `5dec65ed5f500ec456c2c7f91f7e517f99d92eec`（MIT，见 `docs/licenses/oh-my-pi-MIT.txt`）。下文 `omp:` 前缀路径均相对其 `packages/coding-agent/src/`，`omp-tui:` 相对 `packages/tui/src/`。
+## 1. 当前状态与范围
 
-- 旧实现（`agent` / `agent_control`、持久 runtime、`chat_subagent_control`、`SubAgentPanel` 一套）直接删除，不迁移、不兼容。历史对话里的旧工具卡按普通工具卡显示。
-- 外部 CLI 代理（`external_agents`）不受影响。
-- 不做（OMP 默认关闭或与子代理无关）：worktree 隔离、structured/`yield`/outputSchema、per-call model、seance、workpool、prewalk、advisor、speculative launch、eval 工具共享、collab。
-- 提示词原文从 OMP `prompts/` 拷贝，只删去上面未实现功能的分支；不改写措辞。
-
-## 三套状态（不得合并）
-
-| 状态 | 取值 | 归属 |
+| 阶段 | 当前状态 | 完成条件 |
 |---|---|---|
-| 运行 run | pending / running / completed / failed / aborted | 进度事件、task 卡片 |
-| 代理 registry | running / idle / parked / aborted | 代理注册表、Agent Hub |
-| 作业 job | running / completed / failed / cancelled | 作业管理器、`wait`、送达 |
+| 第一步：派工、执行、结果与 wait | `dde91fd7` 后的对齐改动已落入工作区，定向回归通过；**尚未通过本版完整实机验收** | 下文第一步验收全部有证据，且无结果丢失/产物覆盖问题 |
+| 第二步：IRC 与身份生命周期 | 未实施 | 投递、回复、park/复活、kill、重启语义端到端通过 |
+| 第三步：显示与操作 | 仅旧 UI 清理及简易 task 卡片；未完成 OMP 展示 | 批量卡片、Hub、通信与历史显示在真实界面验收 |
 
-## 第一步：派工、执行、结果送达、wait
+旧的 `agent` / `agent_control`、durable runtime 和旧面板放弃，不留兼容别名、不迁移旧运行记录。旧对话里的旧工具卡退化为普通工具卡。外部 CLI 代理不随本次更换；其共享进度协议不得误删。
 
-删除 `src-tauri/src/chat/sub_agent.rs`、`sub_agent/control.rs`、`sub_agent/runtime.rs`、`chat_subagent_control`、编排模式子代理叠加段（`chat/plan.rs`）、旧内置角色，以及前端对它们的调用（前端显示的重做在第三步；本步只保证编译和不报错）。
+“旧实现不兼容”不意味着可以随意删除新 OMP 能力。之前文档把尚未实现的功能写成永久“不做”，并将 speculativeLaunch 误归为默认关闭，本版撤销该混淆：
 
-新模块放在 `src-tauri/src/chat/sub_agent/`：
+- OMP 能力与默认配置完整记录在调查第 3、9、11 节。
+- 工作区已加入 blocking/async 混合、async disabled 同步执行、speculative adopt/discard；旧版本的全异步限制不再代表当前代码，但这些路径仍须完成本版运行验收。
+- structured/yield、taskFile、effort、per-call model、isolation、seance/workpool/prewalk/advisor、eval 工具共享、proc 服务、恢复执行等未覆盖能力，要记录状态及共享字段/文案影响；默认关闭不能当作批准删除。
+- Rust/Tauri、目录布局、UI 组件和工具名可适配；调度、授权、消息消费和用户可观察行为不能悄悄改成另一套。
+- 本轮已进入第一步实现；收尾时区分代码落地、自动检查和真实运行证据，不用旧版本 smoke 证明新代码。
 
-| 模块 | 行为（OMP 依据） |
+## 2. 三步共享的契约
+
+### 2.1 身份、状态与数据所有权
+
+| 数据 | 唯一负责人 | 约束 |
+|---|---|---|
+| agent id、generation、父子关系、session 绑定 | registry/lifecycle | 身份可跨多轮；旧代异步回调不得覆盖新代 |
+| 单次 run 的结果和进度 | executor/monitor | pending/running/completed/failed/aborted 与身份状态分开 |
+| job id、owner、claim/consume、expiry | jobs/delivery | 一次结果只有一个消费者；显示名不是持久执行去重键 |
+| task 调用聚合详情 | task 调用记录 | inline results、async handles、各子项终态均可重载 |
+| transcript 与 session_init | 子会话存储 | transcript 不因模型上下文压缩而丢失；复活不能扩大工具授权 |
+| UI 选择/折叠 | 前端组件 | 后端状态为权威，不另维护永久代理状态 |
+
+### 2.2 能力与提示词必须一致
+
+以调查第 9 节提示词清单逐项登记：模板 → renderer → 参数 → 开关 → 输出位置。新增/关闭能力时同步 schema、执行检查和文案；不能只改 schema。
+
+特别核对：spawns 缺省为不限角色，空字符串为禁用；tools null 为默认集，显式空数组为空集；深度负值为无限、0 为禁止；普通工具名单与 restrictToolNames 不同；MCP/skills/hooks 和插件层不能在新建/复活间悄悄丢失。
+
+审批按 OMP 的 yolo 模式但保留用户显式 `tools.approval` 策略，不等于无条件允许一切。Kivio 适配保留根会话授权与显式确认策略，子代理继承有效策略；无人处理的确认不自动放行，speculative 不绕过审批与 hooks。
+
+## 3. 第一步：派工、执行、结果送达、wait
+
+### 3.1 实施项
+
+| 工作 | 具体契约 | Kivio 主要落点 |
+|---|---|---|
+| task 接口 | context/tasks/solutionSpace、角色发现、整批预检、明确修复提示；工具可见性符合模式/深度 | `chat/sub_agent/task.rs`、`agents/`、`mcp/native_registry.rs` |
+| 执行模式 | 每项 blocking 与 async 可混合；无 manager/async disabled 同步退化；speculative adopt/discard 不与正式分配冲突 | task/executor；调查 3.2 |
+| 名字与产物 | 名字分配扫描内存和磁盘已有产物；job 执行去重不复用永久消息 id；嵌套前缀和平台路径限制明确 | task、names、registry、output 路径 |
+| 调度 | OMP session/TaskTool 并发作用域、FIFO、0 无限、acquire/release 更新限制、取消排队；不以 root 全局锁代替语义 | task admission |
+| 子会话初始化 | 默认系统提示词 + Role/Context/Plan/Coop/Completion；首条任务单独输入；模型/thinking、工具/MCP/skills/审批策略一致 | executor、agent/filter、资源快照 |
+| 计划模式 | 将角色改造成只读规划器，禁继续派工，传已批准计划全文；不是无声明沿用普通编辑工具 | `chat/plan.rs`、task preflight、executor |
+| 预算/错误/探针 | stopReason、请求计数含恢复路径、软/强制/硬预算、错误归因；ephemeral 探针间隔/输入/费用按调查 5.2 | executor/monitor |
+| 结果与历史 | 结果状态、UTF-16 阈值、全量产物/预览/内存尾部分开；追加 transcript 与 compaction journal；失败保留证据 | executor、urls、result formatter |
+| 送达 | busy checkpoint、idle 新轮、中断抑制与手动恢复；投递失败重排；wait 与 sink 原子认领；实际 retention | jobs、delivery、commands 共享回合入口 |
+| wait | 当前阶段 job 路径先对齐；补齐 service 能力时统一 owner；IRC 在第二步接入；未实现分支不宣传 | wait、后台服务适配、read URL |
+| 角色/frontmatter | 对照所有内置角色及有效字段，不把四个角色当上游全集；插件→用户→项目覆盖与实例寻址分开 | agents/types、parse、mod |
+| 显示桥接 | 批量各项进度不互盖；终态持久化，刷新/重开不退回 Scheduled | progress 事件、tool record、SubAgentToolCard |
+
+### 3.2 当前对照审查的修复队列
+
+完整双边源码引用见调查第 12 节。以下不是重新设计，也不是要求保留旧系统。
+
+**先修数据丢失与用户可见错误：**
+
+1. 重启同名 agent 覆盖旧 `.jsonl/.md`；分配时占住已有磁盘名字。
+2. 新执行复用 `subagent-result-<jobId>`，被旧持久消息去重后整批结果丢失；给执行使用独立持久身份。
+3. idle sink 持久化失败只恢复 result 没有重试；结果重排并有界退避。
+4. Stop 后只有直接 send 清抑制，Regenerate/Retry/voice/scheduled 新轮仍被压制；统一正常新轮边界。
+5. 活跃批次 resize 只在 enqueue 读设置，release 继续旧限制；与 session 作用域一并修正。
+6. bare YAML `tools:` 被当空名单；修 null/empty 区分。
+7. task 卡片终态只在内存，父消息重载就丢；持久化最终聚合状态。
+
+**再核对行为差异与残留：**
+
+- transcript 被压缩历史重写、恢复请求漏预算、显式工具名单丢 MCP、activity 心跳不更新。
+- thinking auto、camelCase frontmatter、probe 流式工具草稿、UTF-16 截断及渲染后空白处理。
+- task 错误校验顺序/通用 schema 抢先拦截、深度 0 的工具展示、read URL 的窗口与上限、job 到期驱逐。
+- custom→模型角色映射、数值上限 256/8/10000、plan 工具门控、OMP 角色全集、部分移植的主系统委派规则。
+- 新增死代码 `child_conversation_ids`、无调用的 `close_runtime_input`、仅测试使用的旧 pending-input 方法，以及旧 model README/MessageList 注释；删除时按调用证据，不凭编译 warning 全删。
+
+### 3.3 第一阶段验收矩阵
+
+| 场景 | 通过标准 | 当前证据 |
+|---|---|---|
+| 一次 task 派 3 个 scout，wait 汇总 | 三项身份独立、输出正确、只消费一次 | 实机两次 wait 汇总成功；精确竞争需专门回归 |
+| 父立即结束，子稍后完成 | 不增加伪造用户消息，自动启动父回复 | 实机成功 |
+| 同 root 重启后重用显式名字 | 不覆盖旧产物、不丢新报告 | 已加入磁盘占名与执行 UUID；跨进程实机验收待跑 |
+| sink 一次写失败 | 保留结果并自动恢复投递，不无限循环 | 已加入认领回滚、退避重投及故障回归；检查结果见 §3.4 |
+| Stop→Regenerate/Send/voice/scheduled | 停止轮不被抢开，新正常轮恢复结果自动送达 | 已接统一 epoch/admission；全入口实机验收待跑 |
+| 并发 1 的递归派工、批次 resize | 不死锁；调度范围和 release 行为与 OMP 一致 | 已改为 session 作用域、release 读取新限制；检查结果见 §3.4 |
+| 预算穿过普通/恢复请求路径 | 计数、notice、禁工具收尾与硬停止一致 | 已接请求计数与 tool choice；真实模型预算边界待验收 |
+| null/empty tools、spawns、MCP、plan | 工具表和真实执行授权一致 | 已修改解析、授权和模式传递；完整运行验收待跑 |
+| mixed blocking/async、sync fallback、speculative | 回执/终态/取消/副作用一致 | 已加入执行路径及回归；混合批次实机验收待跑 |
+| 大结果/压缩后历史/read 分页 | 完整证据可查，不把 preview 当全文 | 已接追加历史、压缩留档与读取窗口；检查结果见 §3.4 |
+| 卡片完成后刷新/重开 | 不退回 Scheduled、不丢各项结果 | 已接终态 journal 与重载合并；组件测试通过，真实界面待验收 |
+
+旧版本构建、类型检查、protocol 检查已跑过，不能代替本版验收。旧版本全套测试有失败，尚未与 main 同环境基线运行比较，归因未确定。本轮检查单独记在 §3.4。
+
+### 3.4 本轮实现收尾记录
+
+本节记录工作区改动，不代表上表全部验收通过。上表的“实机成功”来自旧版本，本轮须重新验证。
+
+- **派工与执行**：混合 blocking/async、同步 fanout、流式 speculative 的采用/废弃；按派工 session 的 FIFO 并发、运行中 resize、递归不共享根信号量；磁盘名字预留及独立执行身份。
+- **结果与生命周期边界**：认领失败回滚及退避重投，消费/未消费定时淘汰；Stop 与新轮 admission 的 epoch 保护；wait 可被 steering 打断。IRC、service wait、park/复活仍属于后续阶段。
+- **子会话与授权**：追加 transcript、压缩前留档、精确 MCP 授权、有效审批策略、只读 plan 转换及已批准计划正文；请求预算、禁工具收尾、失败归因和探针参数接入。
+- **显示桥接**：终态 journal、读写合并、逐子项状态与 async 聚合、speculative 发布门控、执行前 task checkpoint。多模型分支在首条消息保存前强退，journal 可能尚无可附着消息；普通 draft checkpoint 仍沿用现有非 fsync 写入，不能声称完整崩溃恢复。
+- **frontmatter**：已知尚不支持的执行能力显式拒绝；不认识的元数据忽略，不能把它当成已生效能力。旧 `disallowed_tools` 等限制字段拒绝，避免静默丢授权限制。seance 历史 fork 不可用时不向模型宣传。
+- **适配限制**：Anthropic/Gemini 无有序的中途 developer 角色，保留报告顺序而不伪称原生 developer 权限；URL 输出目前先格式化全文再分页；job id 进程内保留以阻止旧回调误写新执行。全局及内置角色预算已接入，不宣称有完整逐角色覆盖设置。
+
+本轮收尾检查：
+
+| 检查 | 结果 |
 |---|---|
-| `registry` | `AgentRef { id, generation, parent_id, kind: main/sub, status, session_file, last_activity, activity }`；`list_visible_to`。(`omp:registry/agent-registry.ts`) |
-| `jobs` | owner 归属作业、送达队列、`watch`/`consume` 去重；未消费保留 5 分钟，已消费 30 秒。(`omp:async/job-manager.ts`、`job-control.ts`) |
-| `task` 工具 | 入参 `{context, tasks[{name?, agent?, task, solutionSpace}]}`；整批预检，任一失败整批拒绝；同批名字 trim 后大小写不敏感去重；id = name 或 AdjectiveNoun，冲突加 `-2`，嵌套 `父.子`；会话级信号量默认 32 排队；`maxRecursionDepth` 默认 2。返回 `task-spawn-feedback.md`。(`omp:task/index.ts`、`types.ts`、`output-manager.ts`、`parallel.ts`、`spawn-policy.ts`) |
-| `executor` | 子代理系统提示词 = Kivio 默认 Agent 提示词 + `subagent-system-prompt.md`（Role/Context/Coop/Completion，非 structured 分支）；首条 user 为 `subagent-user-prompt.md`；去 todo；工具含 task/bash 时加 wait；深度到顶去 task；审批强制放行；最后一条无工具调用的回复为结果；软请求预算 200（scout/sonic 100），1.5× 强制收尾一轮（禁用工具），1.5×+5 硬中止；`AgentProgress` 150ms 合帧；完成度探针 2/5/10/30/60 分钟；产物 `<id>.jsonl`、`<id>.md`。(`omp:task/executor.ts`、`completion-probe.ts`、`structured-subagent.ts`) |
-| `delivery` | `task-summary.md`（11500 字全文 / 5000 字预览 + `agent://`）+ `task-follow-up.md`，外包 `async-result.md`；父在跑：步骤边界作为旁注注入（复用 steering/follow-up 通道）；父空闲：开新一轮（复用定时任务/语音编排的空闲发送路径）；用户手动中断后只记入上下文。(`omp:session/async-job-delivery.ts`、`yield-queue.ts`、`prompts/tools/async-result.md`) |
-| `wait` 工具 | 无参数；梯度 5/10/30/60/300 秒，60 秒无调用重置；一个作业完成后再收集 1.5 秒；Completed/Still Running 文本；返回的结果视为已消费。本步只等作业，等回复在第二步。(`omp:tools/wait.ts`) |
-| 角色 | 内置 `task`、`scout`、`reviewer`、`sonic`，正文来自 `omp:prompts/agents/*.md`；frontmatter 字段 `name/description/tools/spawns/model/thinking`；三层加载（内置 → 用户 → 项目 `.kivio/agents`）保留；`@task`/`@smol`/`@slow` 接现有子代理模型设置。(`omp:task/agents.ts`、`discovery.ts`) |
-| `agent://` / `history://` 读取 | 输出未发布时返回状态与最新助手文本；已发布读 `<id>.md`；`history://` 简明对话记录。(`omp:internal-urls/agent-protocol.ts`、`history-protocol.ts`) |
+| `powershell -NoProfile -File scripts/win-cargo-test.ps1 --lib chat::sub_agent` | 84 项通过，包含认领/重投、取消、预算、speculative、历史与终态 journal |
+| `powershell -NoProfile -File scripts/win-cargo-test.ps1 --lib agents::parse::tests` | 5 项通过 |
+| `npx tsc --noEmit` | 通过 |
+| 定向 Vitest：SubAgentToolCard、MessageList.subagents、chatToolsShared、runDisplayEvents、usePopoutSession | 5 个文件、50 项通过 |
+| `npm run architecture:check` | 12 项检查器测试通过，架构边界无新增违规 |
 
-设置：删除 `sub_agent_concurrency`，新增 `task_max_concurrency=32`、`task_max_recursion_depth=2`、`task_soft_request_budget=200`（后端默认与规范化；`McpCenter` 同步）。
+集成检查修复了大型 `session_init` JSON 宏递归超限、错误日志依赖，以及不完整但已经非法的 Unicode escape 未立即撤销 speculative run 的缺陷；后者保留了失败前/修复后通过的回归。
 
-验收：可控 provider 的 Rust 测试覆盖批量派工、并发排队、深度上限、预算收尾、父在跑注入、父空闲开轮、wait 消费后不重复送达；实机派 3 个 scout，主代理继续工作，结果自动回来。
+按本轮“先收尾”要求，未继续进入第二步；新版桌面端真实模型、刷新重开、跨进程重启 smoke 及全量测试、protocol 检查未重跑。编译仍有弃用/未使用项警告，未借收尾清理无关代码。第一步因此保持“实现已落地、完整验收未完成”，不是已交付的 OMP 全量等价实现。
 
-## 第二步：IRC 与生命周期
+## 4. 第二步：IRC 与完整身份生命周期
 
-- **IRC 总线**（`omp:irc/bus.ts`、`messaging.ts`、`omp-tui:tools/irc.ts`）：`IrcMessage {id, from, to, body, ts, reply_to?, wake_relay?, broadcast?, progress?}`；回执 injected/woken/revived/failed；投递顺序 parked/aborted 先复活（失败直接 failed，不入邮箱）→ 匹配的 wait 等待者 → 会话桥 → 会话抛错才进邮箱（上限 100，丢最旧）；回复账本按发送序号；progress 之后只有正式消息算回答；非 main 端点间通信向主会话推只显示的 `irc:relay`。
-- **会话桥**（`omp:session/irc-bridge.ts`）：父消息在跑时以 `parent-irc.md` steer；其他放中断队列，广播/progress 为 quiet 不打断 wait；空闲开唤醒回合；plan 模式只记入上下文；正文转义 harness 标签；派工驱动的一轮持有 `hold_irc_wakes`，peer 消息延到结果交出后另开一轮。
-- **唤醒回合**（`omp:task/executor.ts` `attachIrcWakeTurnMonitor`、`relayWakeTurnOutput`、`buildWakeRelayBody`）：父发起则登记 owner=父的 job；其他发送者自动转发本轮输出，成功且已回复过则跳过，失败一定通知；wakeRelay/广播/progress 不作唤醒来源。
-- **`write agent://<id>`**：`?progress`；`agent://all` 仅 main；子代理提示词 peer 名单上限 32，running 优先，parked 只计数（`collectIrcPeerRoster`）。
-- **wait 等回复**：`pending_replies` 分 from/blocked/onUser/stopped；`AgentAwaits` 死锁检测，用户为 `@user`；无人可答时提前返回并说明原因。(`omp:tools/wait.ts`、`registry/agent-awaits.ts`)
-- **生命周期**（`omp:registry/agent-lifecycle.ts`、`persisted-agents.ts`、`task/persisted-revive.ts`）：一轮结束 idle；空闲 7 分钟 parked（先解绑再释放，保留 jsonl）；`ensure_live` 复活并合并并发请求，generation 防迟到；kill = 中止 + tombstone → aborted，再发消息复活为新一代；重启扫描产物目录恢复名单；父对话停止只取消其作业，子代理保持可复活。
+### 4.1 实施顺序与依赖
 
-验收：测试覆盖运行中收父消息、空闲唤醒、parked 复活、relay 不循环、互等时 wait 提前返回、重启恢复名单；实机两个子代理互相提问，parked 后主代理发消息能唤醒。
+1. **先定义/写入复活契约**：参考调查 8.1。新建时记录 systemPrompt、task、角色/模型/thinking、精确 tools/mountedTools、spawns/readOnly/restrict、cwd、parent 与产物归属。仅存当前消息数组不够。
+2. **registry/lifecycle**：idle TTL、park、ensureLive、reopen/kill、generation/expected-ref 检查、并发复活合并；不把正在 dispose 的 session 交给发送方。
+3. **IRC bus 与 session bridge**：write agent URL、direct/broadcast/progress、匹配 waiter 优先、父 steer、后代 in-run、peer deferred、plan idle、失败邮箱。
+4. **wake monitor 与回复路由**：父 owner job 与 peer relay 分开；失败必回信；wakeRelay/broadcast/progress 不再次自动回信，但并非“不唤醒”。
+5. **wait 扩展**：收信优先、progress 承诺、job-carried reply、directOnly、@user 和传递等待图；不会回答的对象及时解除等待。
+6. **重启/退出**：名单恢复、冷复活、中断 job restore 三条路径分别实现/记录；明确未支持的恢复形式，不默默重开错误会话。
 
-## 第三步：前端
+消息总线的状态与持久 transcript 不等价：队列/回复账本重启后不能凭 transcript 自动恢复成原来的活跃等待关系。用户 kill、父 stop、取消 job、进程退出也不得合成一个 `cancel_root` 后声称等价。
 
-删除 `SubAgentPanel`、`SubAgentConversation`、`SubAgentIndicator`、`SubAgentAvatar`、`SubAgentElapsed`、`useSubAgents`、`subAgentMessages`、`subAgentStatus` 及 `MessageList` 的 `subagent-result-*` 过滤。按工程规范第 1 节复用全局组件与 token：
+### 4.2 第二阶段验收矩阵
 
-- task 卡片：运行中最后 4 行（已完成按耗时在前），行 `状态 · id · 描述 · % · 工具 · 请求 · 上下文 · 费用`，下行当前工具与 intent，>5 秒显示耗时；展开任务说明 ≤20 行与最近输出；结束后问题优先 ≤4 行，输出折叠 3 行 / 展开 12 行，底部汇总。(`omp-tui:tools/task.ts`、`agent-tree.ts`)
-- wait 卡片、IRC 卡片（收到的消息、`A → B` 通信）。(`omp-tui:tools/wait.ts`)
-- Agent Hub（右侧栏，取代任务面板）：列 Cost/Time/Req/Tools/Tok/Ctx；首次出现定序不重排；平铺/树、过滤；详情面板；活动日志 全部/错误/回复/工具；打开（复活）、发消息、revive、kill。(`omp-tui:overlays/agent-hub*.ts`、`agent-activity.ts`)
-- 对话记录查看器（增量读 jsonl）、输入栏上方钉住的 Subagents 列表（仅运行中，>3 折叠）。(`omp-tui:overlays/agent-transcript-viewer.ts`，`omp:modes/interactive-mode.ts`)
-- 高频进度沿用 `Chat.tsx` 的 rAF 合帧。
+| 场景 | 可观察结果 |
+|---|---|
+| 父给运行中子发指令 | 当前任务边界读取，不开第二个并发 run |
+| 后代问正在等它的祖先 | 问题能在当前 run 处理，不被误延期造成死锁 |
+| peer 在派工结果收尾时发消息 | 原任务结果不被 peer 回答替换，问答另开 wake turn |
+| idle 收 direct/broadcast/progress/wakeRelay | 按源码分别检查是否运行、是否打断、是否自动回信；无 ping-pong |
+| progress 后 job settle | 不把“稍后回复”的承诺错误视为已回答 |
+| 双方互等或等待用户 | wait 报明阻塞原因并退出，不盲等 300 秒 |
+| park 前后同时发消息/开 Hub | 无 disposed session 使用，复活请求合并 |
+| kill 后消息、旧回调迟到 | 新 generation 接收，旧回调无权改新状态 |
+| 重启后冷复活 | 工具名单不扩大、模型/角色恢复、MCP/hooks 可用、产物归属正确 |
+| 缺 contract/cwd、损坏 transcript | 明确失败，历史仍可读，不造空会话 |
+| 切换/压缩/用户新输入与 wake 竞争 | 单一会话归属，不串消息，不越过被接受的用户输入 |
 
-验收：实机逐项检查各状态卡片、Hub 四个操作、明暗主题。
+## 5. 第三步：任务卡片、通信与 Agent Hub
 
-## 风险
+第一步的简易卡片不是最终 UI；第二步的 backend 是 Hub 操作前提。
 
-- 父空闲自动开轮会与用户输入争同一对话：必须复用现有"等空闲后预留"路径，不另写。
-- 子代理审批强制放行：需要审批的工具不再询问用户（ADR-0007 已接受）。
-- 第二步触及主循环边界注入：先写失败用例再改。
+- task 卡片同时支持异步回执、blocking 内联结果、同步 fanout、持续进度、失败/取消。数据 keyed by agent/run，不让一个 batch 多项互相覆盖。
+- live progress/终态/持久历史分别有来源；UI 重载以持久终态恢复，再合并更新的 live 事件。按调查 10 的分支核对排序与截断，而不是统一硬编码 3/12 行。
+- wait 展示实际等待对象、Completed/Still Running、投递状态和返回原因；IRC 展示 incoming 与 main-only A→B observation，不把只显示卡片注入模型。
+- Agent Hub 展示身份名单、generation、父子树、活动和指标；打开、消息、revive、kill 复用同一个后端生命周期入口；状态变化不导致列表无理由跳行。
+- transcript viewer 增量读取完整 JSONL 行，处理截断/替换；输入区入口区分“运行中的任务数”和“仍可查看的代理数”。
+- React 复用全局 Button/IconButton、settings controls、ErrorNotice、scrollbar 与主题 token；不复制 TUI 的绘图代码，不绕开现有 IPC/协议入口。
+
+验收必须在真实界面覆盖：多 agent 批次、long output、失败/取消、父轮结束后仍更新、刷新/重开、Hub 四项操作、消息/恢复失败、明暗主题、键盘与滚动。截图或静态组件测试不替代操作链验证。
+
+## 6. 文档、范围与验收的维护方式
+
+- OMP 事实改动：更新调查，并附固定提交的文件/符号/行号；Kivio 选择不同：明确写“适配/差异”，不修改事实迎合当前代码。
+- 暂未实现能力：schema、提示词、URL、持久字段、UI 都要有一致的不可用边界，不暴露假入口。没有用户批准，不升级为永久删除范围。
+- 旧 agent 配置失效只做说明，不加别名或双系统。插件命名空间和资源继承是现行功能，不能借“放弃旧子代理”误删。
+- 修复审查项时先复现可观察错误，再验证修复，保留有效回归。文档调查阶段不顺手改功能代码。
+- 阶段完成必须同时满足行为、调用点、持久化和验收；“已提交”“能编译”“有一次成功路径”均不足以单独关闭阶段。

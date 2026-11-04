@@ -12,8 +12,16 @@ Rules:
 - Runtime and tool loop code should not inspect OpenAI `choices`, Anthropic `content`
   blocks, SSE event names, or provider-specific headers.
 - Provider adapters may use `serde_json::Value` freely at their wire boundary.
+- `GenerateOptions.tool_choice` defaults to `Auto`; `None` explicitly disables
+  client and provider-hosted tools on every supported provider wire format, including
+  after provider-specific request overrides. Runtime finalization can request it
+  without changing the default behavior of existing callers.
 - Storage can keep legacy `api_messages` for compatibility, but new replay logic should
   prefer canonical model messages when available.
+- Runtime developer messages retain their role on OpenAI Chat and Responses and
+  survive canonical replay. Anthropic and Gemini lack an equivalent mid-turn role;
+  their adapters send the message in order as a user turn, without hoisting it into
+  the system prompt.
 - `GenerateOutput.canonical_message` and `ChatStreamOutput.canonical_message` preserve
   ordered provider content for replay. Their legacy bridge also preserves `finish_reason`
   so tool loops and compaction can reject truncated responses. Anthropic thinking and

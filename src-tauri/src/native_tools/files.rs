@@ -128,16 +128,43 @@ pub fn read_file(
     }
 
     let content = fs::read_to_string(&full).map_err(|err| format!("Read file failed: {err}"))?;
+    let display_path = workspace_display_path(workspace, &full);
+    read_text_window(display_path, full.display().to_string(), content, metadata.len(), offset, limit)
+}
 
+/// Apply the normal read window and output limits to generated internal URLs.
+pub(crate) fn read_text_content(path: &str, content: String, arguments: &Value) -> Result<ReadFileResult, String> {
+    let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let limit = arguments.get("limit").and_then(Value::as_u64).map(|value| value as usize);
+    let size = content.len() as u64;
+    let mut result = read_text_window(path.to_string(), path.to_string(), content, size, offset, limit)?;
+    if result.start_line > result.end_line && result.next_offset == Some(result.start_line + 1)
+        && result.warnings.first().is_some_and(|warning| warning.contains("Use bash:"))
+    {
+        result.warnings = vec![format!(
+            "[Line {} exceeds the {}KB limit. Use offset={} to skip it.]",
+            result.start_line, TOOL_OUTPUT_MAX_BYTES / 1024, result.start_line + 1,
+        )];
+    }
+    Ok(result)
+}
+
+fn read_text_window(
+    display_path: String,
+    resolved_path: String,
+    content: String,
+    file_size: u64,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<ReadFileResult, String> {
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let start = offset.saturating_sub(1);
     offset_in_bounds(offset, start, total_lines)?;
+    let start = start.min(total_lines);
     let requested_end = limit
-        .map(|lim| (start + lim).min(lines.len()))
+        .map(|lim| start.saturating_add(lim).min(lines.len()))
         .unwrap_or(lines.len());
-    // 照抄 pi `read.ts`：模型给的 limit 先切，**再无条件过一遍 truncate_head**。
-    // limit 是模型的意图，上限是框架的地板——模型写多大都翻不过去。
     let (kept, capped) = truncate_head(&lines[start..requested_end]);
     let end = start + kept;
     let truncated = end < total_lines;
@@ -146,16 +173,15 @@ pub fn read_file(
     } else {
         lines[start..end].join("\n")
     };
-    let display_path = workspace_display_path(workspace, &full);
     let next_offset = truncated.then(|| next_offset_after(start, end, kept, capped));
     Ok(ReadFileResult {
-        resolved_path: full.display().to_string(),
+        resolved_path,
         content: returned_content,
         total_lines,
         start_line: if total_lines == 0 { 0 } else { start + 1 },
         end_line: end,
         truncated,
-        file_size: metadata.len(),
+        file_size,
         next_offset,
         warnings: continuation_notice(capped, &display_path, start, end, total_lines, next_offset),
         path: display_path,

@@ -8,7 +8,7 @@ use crate::skills;
 
 use super::execute::{
     disabled_tool_content, execute_tool_call, invalid_tool_arguments_record, match_tool_call,
-    tool_requires_approval, unknown_tool_record, ToolExecutionContext, ToolExecutor,
+    pending_tool_record, tool_requires_approval, unknown_tool_record, ToolExecutionContext, ToolExecutor,
 };
 use super::finalize::cancelled_tool_round_run_result;
 use super::host::AgentHost;
@@ -34,6 +34,7 @@ pub(crate) async fn run_tool_round(
     round: u32,
     planned: PlannedToolRound,
 ) -> ToolRoundOutcome {
+    let _draft_guard = planned.drafts;
     let config = env.config;
     let host = env.host;
     let assistant_message =
@@ -50,6 +51,24 @@ pub(crate) async fn run_tool_round(
             .cloned()
             .unwrap_or(Value::Null),
     );
+    let mut task_records = planned.tool_calls.iter().filter_map(|call| {
+        let tool = match_tool_call(&state.tools, &call.function_name)?;
+        (tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME)
+            .then(|| pending_tool_record(tool, call, &config.run_id, round))
+    });
+    if let Some(first) = task_records.next() {
+        let mut records = state.tool_records.clone();
+        records.push(first);
+        records.extend(task_records);
+        // The current tool-call message has no results yet, so it is not replayable.
+        host.persist_partial_assistant(
+            &config.conversation_id,
+            &config.message_id,
+            &records,
+            state.segment_builder.segments(),
+            &state.generated_api_messages[..state.generated_api_messages.len() - 1],
+        ).await;
+    }
     let round_result = execute_tool_round(
         host,
         env.executor,
@@ -64,6 +83,11 @@ pub(crate) async fn run_tool_round(
             round,
             depth: config.depth,
             tool_conversation_id: &config.tool_conversation_id,
+            plan_state: &config.plan_state,
+            mcp_tool_ids: &config.mcp_tool_ids,
+            mcp_server_ids: &config.mcp_server_ids,
+            approval_policy: &config.effective_chat_tools.approval_policy,
+            interactive_host: config.interactive_host,
             finish_reason: planned
                 .message
                 .get("finish_reason")
@@ -104,6 +128,11 @@ pub(crate) struct ToolRoundContext<'a> {
     pub(crate) round: u32,
     pub(crate) depth: u8,
     pub(crate) tool_conversation_id: &'a str,
+    pub(crate) plan_state: &'a crate::chat::types::AgentPlanState,
+    pub(crate) mcp_tool_ids: &'a [(String, String)],
+    pub(crate) mcp_server_ids: &'a [String],
+    pub(crate) approval_policy: &'a str,
+    pub(crate) interactive_host: bool,
     /// finish_reason of the generation that produced these tool calls. When
     /// `"length"`, the model hit max_output_tokens and any tool-call JSON is
     /// truncated — so we explain *that* instead of "invalid JSON, retry".
@@ -491,6 +520,11 @@ async fn execute_tool_call_result(
         round: round_ctx.round,
         depth: round_ctx.depth,
         tool_conversation_id: round_ctx.tool_conversation_id,
+        plan_state: round_ctx.plan_state,
+        mcp_tool_ids: round_ctx.mcp_tool_ids,
+        mcp_server_ids: round_ctx.mcp_server_ids,
+        approval_policy: round_ctx.approval_policy,
+        interactive_host: round_ctx.interactive_host,
         tool_call_id: &tool_call_id,
     };
     // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个

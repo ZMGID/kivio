@@ -1538,7 +1538,7 @@ pub struct ChatToolsConfig {
     pub max_tool_output_chars: Option<usize>,
     #[serde(default = "default_chat_approval_policy")]
     pub approval_policy: String,
-    /// Maximum concurrent tasks per conversation; 0 means unlimited.
+    /// Maximum concurrent tasks per spawning session; 0 means unlimited.
     #[serde(default = "default_task_max_concurrency")]
     pub task_max_concurrency: usize,
     /// Maximum task nesting depth; -1 removes the limit and 0 prevents spawning.
@@ -1547,6 +1547,18 @@ pub struct ChatToolsConfig {
     /// Soft request budget per subagent run; 0 disables the budget.
     #[serde(default = "default_task_soft_request_budget")]
     pub task_soft_request_budget: u32,
+    /// OMP async.enabled: disabled batches run synchronous fanout.
+    #[serde(default = "default_true")]
+    pub task_async_enabled: bool,
+    /// Start complete task items while their call arguments are still streaming.
+    #[serde(default = "default_true")]
+    pub task_speculative_launch: bool,
+    /// Wall-clock limit per child run; 0 disables it.
+    #[serde(default)]
+    pub task_max_runtime_ms: u64,
+    /// Side-request progress probes for direct children of interactive hosts.
+    #[serde(default = "default_true")]
+    pub task_completion_probe_enabled: bool,
     /// Legacy global override, consumed into sub_agent_models.task during normalization.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub_agent_provider_id: String,
@@ -1588,6 +1600,10 @@ impl Default for ChatToolsConfig {
             task_max_concurrency: default_task_max_concurrency(),
             task_max_recursion_depth: default_task_max_recursion_depth(),
             task_soft_request_budget: default_task_soft_request_budget(),
+            task_async_enabled: true,
+            task_speculative_launch: true,
+            task_max_runtime_ms: 0,
+            task_completion_probe_enabled: true,
             sub_agent_provider_id: String::new(),
             sub_agent_model: String::new(),
             sub_agent_models: Default::default(),
@@ -2897,12 +2913,6 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         .chat_tools
         .tool_timeout_ms
         .clamp(CHAT_TOOL_MIN_TIMEOUT_MS, CHAT_TOOL_MAX_TIMEOUT_MS);
-    settings.chat_tools.task_max_concurrency =
-        settings.chat_tools.task_max_concurrency.clamp(0, 256);
-    settings.chat_tools.task_max_recursion_depth =
-        settings.chat_tools.task_max_recursion_depth.clamp(-1, 8);
-    settings.chat_tools.task_soft_request_budget =
-        settings.chat_tools.task_soft_request_budget.clamp(0, 10_000);
     settings.chat_tools.mcp_idle_timeout_ms = settings
         .chat_tools
         .mcp_idle_timeout_ms
@@ -3959,32 +3969,17 @@ mod tests {
         assert_eq!(restored.chat_tools.task_soft_request_budget, 0);
     }
 
+
     #[test]
-    fn sanitize_settings_clamps_task_limits() {
-        for (concurrency, depth, budget, expected) in [
-            (0, -2, 0, (0, -1, 0)),
-            (1, -1, 1, (1, -1, 1)),
-            (32, 0, 200, (32, 0, 200)),
-            (255, 1, 9_999, (255, 1, 9_999)),
-            (256, 8, 10_000, (256, 8, 10_000)),
-            (257, 9, 10_001, (256, 8, 10_000)),
-            (usize::MAX, i32::MIN, u32::MAX, (256, -1, 10_000)),
-            (12, i32::MAX, 0, (12, 8, 0)),
-        ] {
-            let mut settings = Settings::default();
-            settings.chat_tools.task_max_concurrency = concurrency;
-            settings.chat_tools.task_max_recursion_depth = depth;
-            settings.chat_tools.task_soft_request_budget = budget;
-            let settings = sanitize_settings(settings);
-            assert_eq!(
-                (
-                    settings.chat_tools.task_max_concurrency,
-                    settings.chat_tools.task_max_recursion_depth,
-                    settings.chat_tools.task_soft_request_budget,
-                ),
-                expected
-            );
-        }
+    fn task_limits_preserve_custom_values_above_old_caps() {
+        let mut settings = Settings::default();
+        settings.chat_tools.task_max_concurrency = 1024;
+        settings.chat_tools.task_max_recursion_depth = 12;
+        settings.chat_tools.task_soft_request_budget = 20_000;
+        let normalized = sanitize_settings(settings);
+        assert_eq!(normalized.chat_tools.task_max_concurrency, 1024);
+        assert_eq!(normalized.chat_tools.task_max_recursion_depth, 12);
+        assert_eq!(normalized.chat_tools.task_soft_request_budget, 20_000);
     }
 
     #[test]

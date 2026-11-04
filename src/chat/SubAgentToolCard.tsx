@@ -87,7 +87,7 @@ export function SubAgentToolCard({ toolCall }: { toolCall: ToolCallRecord }) {
       className="flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 text-left text-neutral-500 hover:bg-neutral-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400">
       <Users size={16} className="shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
-      <span className={`max-w-[50%] truncate text-xs ${failed ? 'text-red-600' : ''}`} title={summary}>{summary}</span>
+      <span aria-live="polite" className={`max-w-[50%] truncate text-xs ${failed ? 'text-red-600' : ''}`} title={summary}>{summary}</span>
       <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
     </button>
     {expanded && <div className="ml-5 space-y-2 border-l border-neutral-200 py-2 pl-3">

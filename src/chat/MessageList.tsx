@@ -266,9 +266,8 @@ function MessageListBase({
   historyLoadError,
   onFocusHistoryMessage,
 }: MessageListProps) {
-  // Durable worker receipts belong to the model context and the task dock,
-  // not the parent timeline. Use the backend's reserved receipt identity so
-  // existing conversations are covered without hiding quoted report text.
+  // Subagent reports enter model context; their visible results live in task cards.
+  // Match the reserved receipt identity, not quoted report text in ordinary messages.
   const messages = useMemo(() => storedMessages.filter(message => !(
     message.role === 'assistant' && message.id.startsWith('subagent-result-')
   )), [storedMessages])

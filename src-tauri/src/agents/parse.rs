@@ -1,21 +1,8 @@
-//! Parse an `AgentDefinition` from a Markdown file with YAML-ish frontmatter,
-//! reusing the Skill frontmatter parser so the two systems stay consistent.
-//!
-//! ```text
-//! ---
-//! name: research-agent
-//! description: Deep-dive research and source synthesis
-//! tools: read, web_search, web_fetch
-//! spawns: scout
-//! autoload-skills: pdf
-//! thinking-level: medium
-//! model: gpt-4o
-//! ---
-//!
-//! You are specialized in deep fact-checking research...
-//! ```
+//! Parse OMP agent Markdown and its YAML frontmatter.
 
-use crate::skills::parse::{parse_list_value, split_frontmatter};
+use std::collections::BTreeMap;
+
+use serde_yaml::Value;
 use crate::skills::slugify;
 
 use super::types::AgentDefinition;
@@ -27,34 +14,84 @@ pub fn parse_agent_markdown(
     source: &str,
     path: Option<String>,
 ) -> Option<AgentDefinition> {
-    let (frontmatter, body, declares_tools) = split_agent_frontmatter(raw);
+    let (frontmatter, body) = match split_agent_frontmatter(raw) {
+        Ok(parts) => parts,
+        Err(error) => {
+            eprintln!("Invalid agent {}: {error}", path.as_deref().unwrap_or(fallback_id));
+            return None;
+        }
+    };
 
-    let name = frontmatter
-        .get("name")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| fallback_id.to_string());
+    let string = |key: &str| frontmatter.get(key).and_then(Value::as_str)
+        .map(str::trim).filter(|s| !s.is_empty());
+    let name = string("name").unwrap_or(fallback_id).to_string();
     if name.is_empty() {
         return None;
     }
     let id = slugify(&name);
-    let description = frontmatter
-        .get("description")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let optional = |key: &str| {
-        frontmatter.get(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    let description = string("description").unwrap_or_default().to_string();
+    let models = list(frontmatter.get("model"));
+    let model = models.first().cloned();
+    let thinking_level = string("thinkingLevel").or_else(|| string("thinking-level"))
+        .or_else(|| string("thinking")).and_then(normalize_thinking).map(str::to_string);
+    let tools = match frontmatter.get("tools") {
+        None | Some(Value::Null) => None,
+        value => {
+            let mut tools = Vec::new();
+            for name in list(value) {
+                let name = normalize_tool_name(&name);
+                if !tools.contains(&name) {
+                    tools.push(name);
+                }
+            }
+            Some(tools)
+        }
     };
-    let model = optional("model");
-    let thinking_level = optional("thinking-level").or_else(|| optional("thinking"))
-        .filter(|value| value != "auto");
-    let tools = declares_tools.then(|| parse_list_value(frontmatter.get("tools")));
-    let spawns = frontmatter.get("spawns").map(|value| parse_list_value(Some(value)).join(","))
-        .filter(|value| !value.is_empty());
-    let skills = parse_list_value(frontmatter.get("autoload-skills").or_else(|| frontmatter.get("skills")));
+    let spawns = match frontmatter.get("spawns") {
+        None | Some(Value::Null) => {
+            tools.as_ref().filter(|tools| tools.iter().any(|tool| tool == "task"))
+                .map(|_| "*".to_string())
+        }
+        Some(Value::Bool(true)) => Some("*".into()),
+        Some(Value::Bool(false)) => Some(String::new()),
+        value => Some(list(value).join(",")),
+    };
+    let skills = list(frontmatter.get("autoloadSkills").or_else(|| frontmatter.get("autoload-skills"))
+        .or_else(|| frontmatter.get("skills")));
+    let blocking = frontmatter.get("blocking").and_then(parse_bool).unwrap_or(false);
+    let mut unsupported = Vec::new();
+    if models.len() > 1 {
+        unsupported.push("multiple model fallbacks".into());
+    }
+    for (key, value) in &frontmatter {
+        let unsupported_value = match key.as_str() {
+            "name" | "description" | "tools" | "spawns" => false,
+            "model" | "autoloadSkills" | "autoload-skills" | "skills" => {
+                !matches!(value, Value::Null | Value::String(_) | Value::Sequence(_))
+            }
+            "thinkingLevel" | "thinking-level" | "thinking" => match value {
+                Value::Null => false,
+                Value::String(value) if value.trim().is_empty() => false,
+                Value::String(value) => normalize_thinking(value.trim()).is_none(),
+                _ => true,
+            },
+            "blocking" => !value.is_null() && parse_bool(value).is_none(),
+            // Native read is already verbatim, matching readSummarize: false.
+            "readSummarize" | "read-summarize" => {
+                !value.is_null() && parse_bool(value) != Some(false)
+            }
+            "structured" | "prewalk" | "advisor" => {
+                !value.is_null() && parse_bool(value) != Some(false)
+            }
+            "output" | "disallowed_tools" | "disallowed-tools" | "disallowedTools" => !value.is_null(),
+            _ => false,
+        };
+        if unsupported_value {
+            unsupported.push(key.clone());
+        }
+    }
     let system_prompt = body.trim().to_string();
 
-    let _ = path; // reserved for future "open definition" UX; kept for symmetry with skills
     Some(AgentDefinition {
         id,
         name,
@@ -62,53 +99,70 @@ pub fn parse_agent_markdown(
         system_prompt,
         model,
         thinking_level,
+        blocking,
         tools,
         spawns,
         skills,
         source: source.to_string(),
+        unsupported,
     })
 }
 
-// The shared parser flattens nested keys and drops empty scalars. Preserve the
-// top-level field boundary and an explicitly empty tools list.
-fn split_agent_frontmatter(raw: &str) -> (std::collections::HashMap<String, String>, &str, bool) {
-    let (_, body) = split_frontmatter(raw);
-    let Some((front, _)) = raw.trim_start().strip_prefix("---").and_then(|s| s.split_once("\n---")) else {
-        return (Default::default(), body, false);
+fn split_agent_frontmatter(raw: &str) -> Result<(BTreeMap<String, Value>, &str), String> {
+    let trimmed = raw.trim_start();
+    let Some(rest) = trimmed.strip_prefix("---") else {
+        return Ok((BTreeMap::new(), raw));
     };
-    let indent = front.lines()
-        .filter(|line| {
-            let trimmed = line.trim_start();
-            !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with('-')
-        })
-        .map(|line| line.len() - line.trim_start().len())
-        .min()
-        .unwrap_or(0);
-    let mut top_level = String::from("---\n");
-    let mut declares_tools = false;
-    let mut in_list = false;
-    for line in front.lines() {
-        let trimmed = line.trim_start();
-        let depth = line.len() - trimmed.len();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if depth >= indent && in_list && trimmed.starts_with("- ") {
-            top_level.push_str(line);
-            top_level.push('\n');
-        } else if depth == indent {
-            if let Some((key, _)) = trimmed.split_once(':') {
-                let key = key.trim();
-                declares_tools |= key == "tools";
-                in_list = matches!(key, "tools" | "spawns" | "autoload-skills" | "skills");
-                top_level.push_str(line);
-                top_level.push('\n');
-            }
-        }
+    let end = rest.find("\n---").ok_or("Unclosed frontmatter")?;
+    let frontmatter = serde_yaml::from_str::<Option<BTreeMap<String, Value>>>(&rest[..end])
+        .map_err(|error| error.to_string())?.unwrap_or_default();
+    Ok((frontmatter, &rest[end + 4..]))
+}
+
+fn list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::String(s)) => s.split(',').map(str::trim)
+            .filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        Some(Value::Sequence(items)) => items.iter().filter_map(Value::as_str)
+            .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        _ => Vec::new(),
     }
-    top_level.push_str("---\n");
-    let (frontmatter, _) = split_frontmatter(&top_level);
-    (frontmatter, body, declares_tools)
+}
+
+fn parse_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::String(value) if value.trim().eq_ignore_ascii_case("true") => Some(true),
+        Value::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
+        _ => None,
+    }
+}
+
+fn normalize_thinking(value: &str) -> Option<&'static str> {
+    const LEVELS: &[&str] = &["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    if value == "auto" {
+        return Some("auto");
+    }
+    if value.len() < 2 {
+        return None;
+    }
+    let mut matches = LEVELS.iter().copied().filter(|level| level.starts_with(value));
+    let level = matches.next()?;
+    matches.next().is_none().then_some(level)
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "search" => "grep".into(),
+        "read" | "bash" | "edit" | "ast_grep" | "ast_edit" | "ask" | "debug" | "ida"
+        | "eval" | "github" | "glob" | "grep" | "find" | "lsp" | "checkpoint"
+        | "rewind" | "context_notes" | "new_context" | "security_scan" | "task"
+        | "wait" | "todo" | "web_search" | "write" | "memory_edit" | "retain"
+        | "recall" | "reflect" | "learn" | "manage_skill" | "yield" | "goal"
+        | "think" => lower,
+        _ => name.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -136,20 +190,23 @@ mod tests {
         let absent = parse_agent_markdown("fallback", "Just a body.", "project", None).unwrap();
         assert_eq!(absent.name, "fallback");
         assert_eq!(absent.tools, None);
-        for tools in ["tools:", "tools: ''", "tools: []"] {
-            let raw = format!("---\nname: x\n{tools}\nspawns: '*'\n---\nbody");
-            let def = parse_agent_markdown("x", &raw, "user", None).unwrap();
-            assert_eq!(def.tools, Some(vec![]), "{tools}");
-            assert_eq!(def.spawns.as_deref(), Some("*"));
+        for tools in ["tools:", "tools: null", "tools: ~"] {
+            let raw = format!("---\nname: x\n{tools}\n---\nbody");
+            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().tools, None, "{tools}");
+        }
+        for tools in ["tools: ''", "tools: []", "tools: false"] {
+            let raw = format!("---\nname: x\n{tools}\n---\nbody");
+            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().tools, Some(vec![]), "{tools}");
         }
         let indented = "---\n  name: x\n  tools:\n  spawns: '*'\n---\nbody";
-        assert_eq!(parse_agent_markdown("x", indented, "user", None).unwrap().tools, Some(vec![]));
+        assert_eq!(parse_agent_markdown("x", indented, "user", None).unwrap().tools, None);
         let nested_only = "---\nname: x\noutput:\n  tools: [write]\n---\nbody";
         assert_eq!(parse_agent_markdown("x", nested_only, "user", None).unwrap().tools, None);
         let nested_override = "---\nname: x\ntools: []\noutput:\n  tools: [write]\n  name: nested\n  spawns: '*'\n---\nbody";
         let def = parse_agent_markdown("x", nested_override, "user", None).unwrap();
         assert_eq!(def.name, "x");
         assert_eq!(def.tools, Some(vec![]));
+        assert_eq!(def.unsupported, ["output"]);
         assert_eq!(def.spawns, None);
     }
 
@@ -165,7 +222,45 @@ mod tests {
         let def = parse_agent_markdown("x", unindented, "user", None).unwrap();
         assert_eq!(def.tools, Some(vec!["read".into(), "glob".into()]));
         assert_eq!(def.spawns.as_deref(), Some("scout"));
-        let auto = parse_agent_markdown("x", "---\nthinking-level: auto\n---\nbody", "user", None).unwrap();
-        assert_eq!(auto.thinking_level, None);
+        let auto = parse_agent_markdown("x", "---\nthinkingLevel: auto\nautoloadSkills: [pdf, docx]\nblocking: 'true'\n---\nbody", "user", None).unwrap();
+        assert_eq!(auto.thinking_level.as_deref(), Some("auto"));
+        assert_eq!(auto.skills, ["pdf", "docx"]);
+        assert!(auto.blocking);
+        for key in ["thinking-level", "thinkingLevel", "thinking"] {
+            let raw = format!("---\n{key}: auto\n---\nbody");
+            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().thinking_level.as_deref(), Some("auto"));
+        }
+        let abbreviated = parse_agent_markdown("x", "---\nthinking: med\n---\nbody", "user", None).unwrap();
+        assert_eq!(abbreviated.thinking_level.as_deref(), Some("medium"));
+        let invalid = parse_agent_markdown("x", "---\nthinking: nope\n---\nbody", "user", None).unwrap();
+        assert_eq!(invalid.thinking_level, None);
+        assert_eq!(invalid.unsupported, ["thinking"]);
+    }
+
+    #[test]
+    fn spawn_policy_preserves_explicit_denials_and_normalizes_tools() {
+        for value in ["false", "''", "[]"] {
+            let raw = format!("---\ntools: [TASK]\nspawns: {value}\n---\nbody");
+            let def = parse_agent_markdown("x", &raw, "user", None).unwrap();
+            assert_eq!(def.tools, Some(vec!["task".into()]));
+            assert_eq!(def.spawns.as_deref(), Some(""), "{value}");
+        }
+        let def = parse_agent_markdown("x", "---\ntools: [TASK, search, grep, Read]\n---\nbody", "user", None).unwrap();
+        assert_eq!(def.tools, Some(vec!["task".into(), "grep".into(), "read".into()]));
+        assert_eq!(def.spawns.as_deref(), Some("*"));
+        let def = parse_agent_markdown("x", "---\nspawns: true\n---\nbody", "user", None).unwrap();
+        assert_eq!(def.spawns.as_deref(), Some("*"));
+    }
+
+    #[test]
+    fn unsupported_capabilities_are_reported_but_unknown_metadata_is_ignored() {
+        let raw = "---\nmodel: [first, fallback]\nstructured: true\noutput:\n  type: object\nprewalk: true\nadvisor: other\nextraField: value\n---\nbody";
+        let def = parse_agent_markdown("x", raw, "user", None).unwrap();
+        for field in ["multiple model fallbacks", "structured", "output", "prewalk", "advisor"] {
+            assert!(def.unsupported.iter().any(|item| item == field), "{field}");
+        }
+        assert!(!def.unsupported.iter().any(|item| item == "extraField"));
+        let disabled = parse_agent_markdown("x", "---\nstructured: false\nprewalk: false\nadvisor: false\nread-summarize: false\n---\nbody", "user", None).unwrap();
+        assert!(disabled.unsupported.is_empty());
     }
 }

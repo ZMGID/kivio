@@ -32,6 +32,7 @@ pub(crate) struct ChatPlanningStep {
 pub(crate) struct PlannedToolRound {
     pub(crate) message: Value,
     pub(crate) tool_calls: Vec<PendingToolCall>,
+    pub(crate) drafts: ToolCallDraftTracker,
 }
 
 pub(crate) enum PlanningStepOutcome {
@@ -73,7 +74,7 @@ pub(crate) async fn planning_step(
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
     let active_tools = state.tools.clone();
     let mut send_messages =
-        super::compaction::maybe_compact_send_view(env, state, &active_tools).await;
+        super::compaction::maybe_compact_send_view(env, state, &active_tools).await?;
 
     // ZCode rapid-refill breaker: the context refilled right after compaction several
     // times in a row (a file or tool output is too large), so compacting again cannot
@@ -142,6 +143,27 @@ pub(crate) async fn planning_step(
         Some(step_number),
         state.segment_builder.next_order(),
     );
+    planning_tool_drafts.enable_speculation(
+        host,
+        &config.settings,
+        &super::execute::ToolExecutionContext {
+            conversation_id: &config.conversation_id,
+            run_id: &config.run_id,
+            message_id: &config.message_id,
+            provider: &config.provider,
+            model: &config.model,
+            generation: config.generation,
+            round,
+            depth: config.depth,
+            tool_conversation_id: &config.tool_conversation_id,
+            tool_call_id: "",
+            plan_state: &config.plan_state,
+            mcp_tool_ids: &config.mcp_tool_ids,
+            mcp_server_ids: &config.mcp_server_ids,
+            approval_policy: &config.effective_chat_tools.approval_policy,
+            interactive_host: config.interactive_host,
+        },
+    );
     // 内置搜索实时卡追踪器：仅在会话 Builtin 模式且模型支持时建（否则 None，走现状路径）。
     let planning_web_search_tracker = if config.builtin_web_search_active() {
         Some(WebSearchCardTracker::new(
@@ -165,6 +187,7 @@ pub(crate) async fn planning_step(
                 model: &config.model,
                 messages: send_messages.clone(),
                 tools: Some(&active_tools),
+                tool_choice: crate::chat::model::ToolChoice::Auto,
                 retry_attempts: config.retry_attempts,
                 thinking_enabled: config.thinking_enabled,
                 thinking_level: config.thinking_level.clone(),
@@ -278,7 +301,7 @@ pub(crate) async fn planning_step(
                 overflow_attempted = true;
                 let previous = send_messages.clone();
                 send_messages =
-                    super::compaction::compact_send_view(env, state, true, &active_tools).await;
+                    super::compaction::compact_send_view(env, state, true, &active_tools).await?;
                 if state.compaction_blocked || previous == send_messages {
                     break Err(err.to_string());
                 }
@@ -323,7 +346,7 @@ pub(crate) async fn planning_step(
             // 整轮报错丢弃成果——走与 synthesis 同一条恢复阶梯(去敏重做 → 确定性兜底),
             // 而非直接堆原始结果。
             if !state.tool_records.is_empty() {
-                let content = super::synthesis::recover_synthesis(env, state, &err).await;
+                let content = super::synthesis::recover_synthesis(env, state, &err).await?;
                 if !content.trim().is_empty() {
                     eprintln!("Chat planning call failed mid-run; recovered: {err}");
                     // 降级文案是本轮的**正文**，段 phase 必须是 Synthesis（不能留 ToolLoop）：
@@ -359,6 +382,10 @@ pub(crate) async fn planning_step(
         }
     }
     let tool_calls = extract_tool_calls(&message);
+    planning_tool_drafts.reconcile_speculation(
+        &tool_calls,
+        message.get("finish_reason").and_then(Value::as_str) == Some("length"),
+    );
     if tool_calls.is_empty() {
         let response =
             sanitize_assistant_text_response(&assistant_content_from_api_message(&message));
@@ -455,6 +482,7 @@ pub(crate) async fn planning_step(
     Ok(PlanningStepOutcome::ToolCalls(PlannedToolRound {
         message,
         tool_calls,
+        drafts: planning_tool_drafts,
     }))
 }
 
@@ -467,6 +495,7 @@ pub(crate) async fn call_chat_completion_message_with_usage(
     model: &str,
     messages: Vec<Value>,
     tools: Option<&[ChatToolDefinition]>,
+    tool_choice: crate::chat::model::ToolChoice,
     retry_attempts: usize,
     thinking_enabled: bool,
     thinking_level: Option<String>,
@@ -482,6 +511,7 @@ pub(crate) async fn call_chat_completion_message_with_usage(
         model,
         messages,
         tools,
+        tool_choice,
         retry_attempts,
         thinking_enabled,
         thinking_level,
@@ -504,6 +534,7 @@ pub(crate) async fn call_chat_completion_output_with_usage(
     model: &str,
     messages: Vec<Value>,
     tools: Option<&[ChatToolDefinition]>,
+    tool_choice: crate::chat::model::ToolChoice,
     retry_attempts: usize,
     thinking_enabled: bool,
     thinking_level: Option<String>,
@@ -529,6 +560,7 @@ pub(crate) async fn call_chat_completion_output_with_usage(
             thinking_enabled,
             thinking_level,
             builtin_web_search,
+            tool_choice,
             max_tokens: max_output_tokens,
             ..GenerateOptions::default()
         },
@@ -638,6 +670,7 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
     model: &str,
     messages: Vec<Value>,
     tools: Option<&[ChatToolDefinition]>,
+    tool_choice: crate::chat::model::ToolChoice,
     retry_attempts: usize,
     thinking_enabled: bool,
     thinking_level: Option<String>,
@@ -670,6 +703,7 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
             thinking_enabled,
             thinking_level,
             builtin_web_search,
+            tool_choice,
             max_tokens: max_output_tokens,
             ..GenerateOptions::default()
         },
