@@ -179,7 +179,7 @@ pub(crate) async fn run_external_cli_reply_in(
         .await?;
     let conversation_id = conversation.id.clone();
     let finalizes_reply = std::sync::atomic::AtomicBool::new(false);
-    let run = run_external_cli_reply_owned(
+    let run = Box::pin(run_external_cli_reply_owned(
         app,
         state,
         conversation,
@@ -194,7 +194,7 @@ pub(crate) async fn run_external_cli_reply_in(
         &run_id,
         &lease,
         &finalizes_reply,
-    );
+    ));
     let run = super::session::live::PROCESS_CONVERSATION.scope(conversation_id.clone(), run);
     tokio::pin!(run);
     let result = tokio::select! {
