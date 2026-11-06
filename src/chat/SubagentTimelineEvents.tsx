@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Ellipsis, Flower2, Users } from 'lucide-react'
+import { Fragment, useState } from 'react'
+import { Ellipsis, Users } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { parsedRecord, record, text } from '../api/subagents'
@@ -7,19 +7,13 @@ import { AgentProgress, AgentOutput, AgentStatus } from './AgentProgress'
 import { SubagentDialog } from './AgentHub'
 import { requestDockSubagent } from './dock/dockPreview'
 import { normalizeToolCallStatus } from './toolStatus'
+import { AgentAvatar } from './AgentAvatar'
 import type { SubagentTimelineEntry, SubagentTimelineStatus } from '../generated/chatProtocol'
 import type { ToolCallRecord } from './types'
 import './AgentHub.css'
 
 type AgentRow = { id: string; name: string; role: string; model: string; jobId: string; progress: Record<string, unknown>; result: Record<string, unknown>; index: number }
 const arrayRecords = (value: unknown) => Array.isArray(value) ? value.map(record) : []
-const agentColors = ['text-violet-400', 'text-emerald-400', 'text-rose-400', 'text-sky-400']
-
-function agentColor(id: string): string {
-  let hash = 0
-  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) % agentColors.length
-  return agentColors[hash]
-}
 
 const lifecycleLabels: Record<SubagentTimelineStatus, [string, string]> = {
   started: ['开始工作', 'started working'],
@@ -28,18 +22,41 @@ const lifecycleLabels: Record<SubagentTimelineStatus, [string, string]> = {
   interrupted: ['已中断', 'was interrupted'],
 }
 
-export function SubagentLifecycleEvent({ event, conversationId, live = false }: {
+export function SubagentLifecycleEvent({ event, parallel, conversationId, live = false }: {
   event: SubagentTimelineEntry
+  parallel?: SubagentTimelineEntry[]
   conversationId?: string | null
   live?: boolean
 }) {
   const zh = useLang() === 'zh'
-  const label = `${event.name || event.agentId} ${lifecycleLabels[event.status][zh ? 0 : 1]}`
+  const action = lifecycleLabels[event.status][zh ? 0 : 1]
+  const label = `${event.name || event.agentId} ${action}`
+  const className = `not-prose kv-agent-event${live ? ' chat-motion-bubble-in' : ''}`
+  if (parallel?.length) {
+    const agents = [event, ...parallel]
+    return <div className={className}>
+      <span className="flex max-w-[40%] shrink-0 flex-wrap items-center gap-1">
+        {agents.map(agent => <AgentAvatar key={agent.agentId} agentId={agent.agentId} />)}
+      </span>
+      <span className="min-w-0 text-[13px] leading-5 text-[var(--text-muted)] [overflow-wrap:anywhere]">
+        {agents.map((agent, index) => {
+          const name = agent.name || agent.agentId
+          return <Fragment key={agent.agentId}>
+            {index > 0 && (index === agents.length - 1 ? (zh ? '和' : ' and ') : (zh ? '、' : ', '))}
+            {conversationId ? <button type="button" className="kv-agent-event-link max-w-full align-baseline"
+              aria-label={`${name} ${action}`}
+              onClick={() => requestDockSubagent({ conversationId, agentId: agent.agentId })}>{name}</button> : name}
+          </Fragment>
+        })}
+        {' '}{action}
+      </span>
+    </div>
+  }
   const content = <>
-    <Flower2 size={14} className={`shrink-0 ${agentColor(event.agentId)}`} aria-hidden="true" />
+    <AgentAvatar agentId={event.agentId} />
     <span>{label}</span>
   </>
-  return <div className={`not-prose kv-agent-event${live ? ' chat-motion-bubble-in' : ''}`}>
+  return <div className={className}>
     {conversationId ? <button type="button" className="kv-agent-event-link" onClick={() => requestDockSubagent({ conversationId, agentId: event.agentId })}>
       {content}
     </button> : <span className="kv-agent-event-link">{content}</span>}
@@ -84,40 +101,38 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
   const tasks = arrayRecords(args.tasks)
   const rows = taskRows(structured)
   const status = normalizeToolCallStatus(toolCall.status)
-  const pending = status === 'running' || status === 'pending'
   const label = t('派工回执', 'Dispatch receipt')
   const dispatchStatus = status === 'error' ? t('派工失败', 'dispatch failed')
     : status === 'cancelled' || status === 'skipped' ? t('派工已中断', 'dispatch cancelled')
-      : pending ? t('正在派工', 'dispatching') : t('已派工', 'dispatched')
+      : ''
   const result = text(toolCall.result_preview ?? toolCall.resultPreview ?? toolCall.result ?? toolCall.output)
   const issue = toolCall.error || text(structured.error)
   const root = conversationId || toolCall.conversationId
   const close = () => setInspection(null)
   const timelineAgentIds = new Set(Array.isArray(structured.timelineAgentIds) ? structured.timelineAgentIds : [])
-  const events = rows.filter(row => !timelineAgentIds.has(row.id)).map(row => ({
-    id: row.id, key: row.id || row.index, name: row.name || t('子代理', 'Subagent'),
-    state: text(row.result.status) || text(row.progress.status),
-  }))
-  if (events.length === 0 && timelineAgentIds.size > 0 && !issue && !inspection) return null
-  if (events.length === 0 && (timelineAgentIds.size === 0 || issue)) events.push({
+  const events = rows.filter(row => !timelineAgentIds.has(row.id)).flatMap(row => {
+    const state = text(row.result.status) || text(row.progress.status)
+    const action = state === 'running' ? t('开始工作', 'started working')
+      : state === 'completed' ? t('已完成', 'completed')
+        : state === 'failed' || state === 'error' ? t('失败', 'failed')
+          : state === 'aborted' || state === 'cancelled' ? t('已中断', 'was interrupted') : ''
+    return action ? [{ id: row.id, key: row.id || row.index, name: row.name || t('子代理', 'Subagent'), action }] : []
+  })
+  if (events.length === 0 && (dispatchStatus || issue)) events.push({
     id: '', key: 'dispatch', name: tasks.length === 1
       ? text(tasks[0].name) || text(tasks[0].agent) || t('子代理', 'Subagents')
       : t('子代理', 'Subagents'),
-    state: '',
+    action: dispatchStatus || t('派工失败', 'dispatch failed'),
   })
+  if (events.length === 0 && !inspection) return null
   return <section className="not-prose kv-agent-events">
-    {events.map(({ id, key, name, state }, index) => {
-      const action = state === 'running' ? t('开始工作', 'started working')
-        : state === 'completed' ? t('已完成', 'completed')
-          : state === 'failed' || state === 'error' ? t('失败', 'failed')
-            : state === 'aborted' || state === 'cancelled' ? t('已中断', 'was interrupted')
-              : state === 'queued' || state === 'pending' ? t('等待运行', 'queued') : dispatchStatus
+    {events.map(({ id, key, name, action }, index) => {
       const inspectAgent = root && id
       const caption = `${name} ${action}`
       return <div className="kv-agent-event" key={key}>
         <button type="button" className="kv-agent-event-link" aria-haspopup={inspectAgent ? undefined : 'dialog'}
           onClick={() => inspectAgent && root ? requestDockSubagent({ conversationId: root, agentId: id }) : setInspection('receipt')}>
-          {id ? <Flower2 size={14} className={`shrink-0 ${agentColor(id)}`} aria-hidden="true" />
+          {id ? <AgentAvatar agentId={id} />
             : <Users size={14} className="shrink-0" aria-hidden="true" />}
           <span>{caption}</span>
         </button>

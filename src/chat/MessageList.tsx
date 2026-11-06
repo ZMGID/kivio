@@ -11,8 +11,8 @@ import {
 } from '@tanstack/react-virtual'
 import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, ConversationContextState, DegradedAnswer } from './types'
 import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
-import { userSteerId, userFollowUpId } from './segments'
-import { MessageBubble } from './MessageBubble'
+import { isNativeTaskToolCall, isSubagentTimelineSegment, userSteerId, userFollowUpId } from './segments'
+import { MessageBubble, type TurnWorkDisclosure } from './MessageBubble'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
@@ -270,9 +270,10 @@ function MessageListBase({
 }: MessageListProps) {
   // Subagent reports enter model context; their visible results live in task cards.
   // Match the reserved receipt identity, not quoted report text in ordinary messages.
-  const messages = useMemo(() => storedMessages.filter(message => !(
-    message.role === 'assistant' && message.id.startsWith('subagent-result-')
-  )), [storedMessages])
+  const messages = useMemo(() => storedMessages.filter(message => {
+    if (message.role === 'assistant' && message.id.startsWith('subagent-result-')) return false
+    return !(message.irc_message ?? message.ircMessage) || Boolean(message.segments?.some(isSubagentTimelineSegment))
+  }), [storedMessages])
   const conversationArtifactsById = useMemo(() => {
     const artifacts = new Map(historyArtifacts.map(artifact => [artifactId(artifact), artifact]))
     for (const message of messages) {
@@ -347,6 +348,68 @@ function MessageListBase({
     if (activeMessageIds.size === 0) return messages
     return messages.filter((message) => !activeMessageIds.has(message.id))
   }, [liveGroup, messages, snapshot.messageId, streamFrozen, streaming])
+
+  const [turnWorkOverrides, setTurnWorkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const liveHasSubagentWork = liveRowActive && !liveGroupId
+    && (streamingToolCalls.some(isNativeTaskToolCall) || streamingSegments.some(isSubagentTimelineSegment))
+  const { workByMessageId, liveTurnWork } = useMemo(() => {
+    const visible = new Set(historyMessages.map(message => message.id))
+    const workByMessageId = new Map<string, TurnWorkDisclosure>()
+    let liveTurnWork: TurnWorkDisclosure | undefined
+    let userId: string | undefined
+    let multiModel = false
+    let hasSubagentWork = false
+    let rows: ChatMessage[] = []
+    let lastAnswer: ChatMessage | undefined
+
+    const addTurn = (current: boolean) => {
+      const includeLive = current && liveRowActive && !liveGroupId
+      if (!userId || multiModel || (current && liveGroupId)
+        || (!hasSubagentWork && !(includeLive && liveHasSubagentWork))) return
+      const key = JSON.stringify([conversationId, userId])
+      const active = current && ((streaming && !streamFrozen) || waitingForBackgroundTasks)
+      const open = turnWorkOverrides.get(key) ?? (active || rows.some(message =>
+        (message.stream_outcome ?? message.streamOutcome) === 'cancelled'))
+      const onOpenChange = (value: boolean) => {
+        setTurnWorkOverrides(previous => new Map(previous).set(key, value))
+      }
+      rows.forEach((message, index) => {
+        const outcome = message.stream_outcome ?? message.streamOutcome
+        workByMessageId.set(message.id, {
+          active,
+          open,
+          showHeader: index === 0,
+          foldAnswer: message.role === 'assistant' && (active || includeLive || message !== lastAnswer)
+            && (!outcome || outcome === 'completed'),
+          onOpenChange,
+        })
+      })
+      if (includeLive) liveTurnWork = { active, open, showHeader: rows.length === 0, foldAnswer: false, onOpenChange }
+    }
+
+    for (const message of storedMessages) {
+      const lifecycle = message.segments?.some(isSubagentTimelineSegment) ?? false
+      if (message.role === 'user') {
+        addTurn(false)
+        userId = message.id
+        multiModel = Boolean(message.group_id ?? message.groupId)
+        hasSubagentWork = lifecycle
+        rows = lifecycle && visible.has(message.id) ? [message] : []
+        lastAnswer = undefined
+      } else if (message.role === 'assistant' && userId) {
+        multiModel ||= Boolean(message.group_id ?? message.groupId)
+        hasSubagentWork ||= lifecycle || message.id.startsWith('subagent-result-')
+          || Boolean((message.tool_calls ?? message.toolCalls)?.some(isNativeTaskToolCall))
+        if (visible.has(message.id)) {
+          rows.push(message)
+          if (!(message.irc_message ?? message.ircMessage) && message.content.trim()) lastAnswer = message
+        }
+      }
+    }
+    addTurn(true)
+    return { workByMessageId, liveTurnWork }
+  }, [conversationId, historyMessages, liveGroupId, liveHasSubagentWork, liveRowActive,
+    storedMessages, streamFrozen, streaming, turnWorkOverrides, waitingForBackgroundTasks])
 
   // A committed answer adopts its live key for both measurements and React
   // identity. Live and historical rows share a parent in renderTail below.
@@ -1782,12 +1845,17 @@ function MessageListBase({
   // 之间若消息列表又变（落库/工具更新），不挡一道会对同一个 id 反复重跳。
   // prop 回到 null 时重置，同一 id 之后仍可再次聚焦。
   const handledFocusRef = useRef<string | null>(null)
+  const focusedTurnWork = focusMessageId ? workByMessageId.get(focusMessageId) : undefined
   useEffect(() => {
     if (!focusMessageId || !conversationId) {
       handledFocusRef.current = null
       return
     }
     if (handledFocusRef.current === focusMessageId) return
+    if (focusedTurnWork?.foldAnswer && !focusedTurnWork.open) {
+      focusedTurnWork.onOpenChange(true)
+      return
+    }
     let targetIndex = -1
     for (let i = 0; i < historyItems.length; i++) {
       const item = historyItems[i]
@@ -1843,6 +1911,7 @@ function MessageListBase({
     contentEl,
     conversationId,
     focusMessageId,
+    focusedTurnWork,
     followHandle,
     historyItems,
     messages.length,
@@ -2391,6 +2460,7 @@ function MessageListBase({
               reasoningDurationMs={assistantStats?.reasoningDurationMs}
               reasoningDurationMsBySegmentId={assistantStats?.reasoningDurationMsBySegmentId}
               sentModels={item.sentModels}
+              turnWork={workByMessageId.get(msg.id)}
               onUpdateMessage={msg.role === 'assistant' ? onUpdateMessage : undefined}
               // 编辑/重生成入口在任何 run 在飞时都不可用（AC3）。streamFrozen 也算在飞：
               // 本地取消后 send invoke 尚未返回，此窗口内触发只会被 in-flight 兜底静默吞掉
@@ -2474,6 +2544,7 @@ function MessageListBase({
               reasoningStreaming={item.reasoningStreaming}
               reasoningDurationMs={streamingReasoningDurationMs}
               reasoningDurationMsBySegmentId={streamingReasoningDurationMsBySegmentId}
+              turnWork={liveTurnWork}
             />
           )
         case 'compaction-divider':
@@ -2539,6 +2610,8 @@ function MessageListBase({
       streaming,
       streamFrozen,
       messages,
+      workByMessageId,
+      liveTurnWork,
       groupSelections,
       onSetGroupSelection,
       handleOutlineSourceChange,
@@ -2600,7 +2673,8 @@ function MessageListBase({
       )}
       {(messages.length > 0 || streaming) && (
         <div className="chat-reading-content">
-          <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
+          <StreamStatusLine conversationId={conversationId} active={streaming && !streamFrozen && !liveGroup}
+            waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
         </div>
       )}
       {visibleInjections.map(message => (

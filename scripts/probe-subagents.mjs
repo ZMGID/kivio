@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Run against an already running debug app. Conversations and evidence are retained.
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const scenarios = ['batch-scouts', 'idle-auto-result', 'single-event-wait', 'nested-irc', 'task-error', 'cancel-resume', 'eval-shared', 'workpool-reuse']
+const scenarios = ['batch-scouts', 'idle-auto-result', 'single-event-wait', 'nested-irc', 'task-error', 'cancel-resume', 'eval-shared', 'workpool-reuse', 'settlement-audit', 'implementation-review', 'broadcast-advisor']
 const options = {}
 const filters = []
 for (let index = 2; index < process.argv.length; index++) {
@@ -131,6 +132,12 @@ async function turn(name, request) {
   if (result.conversationId) created.add(result.conversationId)
   assert(!result.error, `Probe failed. ${result.error}`)
   assert(result.conversationId, 'Probe did not return a conversation ID')
+  if (options.model) {
+    const saved = conversation(result.conversationId)
+    assert.equal(saved?.model, options.model, 'The saved parent must use the requested model')
+    const reply = saved.messages.findLast((message) => message.role === 'assistant' && message.model)
+    if (result.streamOutcome === 'completed') assert.equal(reply?.model, options.model, 'The generated reply must use the requested model')
+  }
   console.log(`${name} ${result.streamOutcome ?? 'no outcome'} ${result.durationMs}ms`)
   return result
 }
@@ -148,10 +155,14 @@ function workers(id) {
   })
 }
 async function completedWorkers(id, count) {
-  return until(() => {
+  const children = await until(() => {
     const result = workers(id)
     return result.length >= count && result.every((worker) => worker.end) ? result : null
   }, 240_000, `${count} saved worker completions for ${id}`)
+  if (options.model) {
+    for (const child of children) assert.equal(child.init.resolvedModel.model, options.model, `Worker ${child.init.id} must use the requested model`)
+  }
+  return children
 }
 function requireCall(messages, name, predicate = () => true) {
   const call = calls(messages).find((item) => item.name === name && predicate(item))
@@ -173,7 +184,11 @@ role('probe-delay', 'tools: [bash]\nspawns: false', 'Follow the assignment exact
 role('probe-peer', 'tools: [read, write, wait]\nspawns: false', 'Follow the assigned IRC exchange exactly. Do not finish until you receive the requested reply.')
 role('probe-parent', 'tools: [task, wait, read, write]\nspawns: [probe-peer]', 'Follow the assignment exactly. Delegate the requested nested peer and reply through write agent:// URLs. Do not invent file contents.')
 role('probe-eval', 'tools: []\nspawns: false', 'Call the assigned shared custom tool exactly once. Submit its exact returned object with yield data. Do not invent its nonce. Do not call any other tool except yield.')
-role('probe-pool', 'tools: []\nspawns: false', 'For each assigned workpool item, call the shared echo custom tool exactly once with its requested value. Submit its exact returned object with yield using the batch-local numeric key. Do not invent the nonce. The last item ends the turn automatically.')
+role('probe-pool', 'tools: []\nspawns: false', 'For each assigned workpool item, call the shared echo custom tool exactly once with its requested value. Call yield with the batch-local numeric key and a JSON object in data, for example {"key":1,"data":{"value":"received value","nonce":"received nonce"}}. Copy the actual echo values. Do not serialize data as a string. The last item ends the turn automatically.')
+role('probe-audit', 'model: inherit\ntools: [read]\nspawns: false', 'Read the assigned file and report the requested totals and its source ID.')
+role('probe-implement', 'model: inherit\ntools: [read, write, bash]\nspawns: false', 'Follow the assignment and keep the implementation inside this workbench.')
+role('probe-review', 'model: inherit\ntools: [read, write, bash]\nspawns: false', 'Review independently. Only use write for an IRC report. Never modify the reviewed implementation or fixtures.')
+role('advisor', 'model: inherit\ntools: []\nspawns: false', 'Return the supplied confirmation and finish.')
 
 async function runScenario(name) {
   if (name === 'batch-scouts') {
@@ -201,7 +216,10 @@ async function runScenario(name) {
     return { conversationId: result.conversationId, agents: children.map((child) => child.init.id) }
   }
   if (name === 'idle-auto-result') {
-    const result = await turn(name, { prompt: 'Use task to delegate this check to probe-delay. The child should run node delayed.cjs once with bash and report the exact output. I only need you to relay that output when available. The child owns the entire check, so do not run commands or read files yourself.' })
+    const args = { context: 'Verify automatic result delivery after an asynchronous handoff.',
+      tasks: [{ name: 'IdleDelivery', agent: 'probe-delay', solutionSpace: 'Run the fixture command only.',
+        task: 'Run node delayed.cjs once with bash and return its exact stdout.' }] }
+    const result = await turn(name, { prompt: `First actually call the task tool now with these arguments: ${JSON.stringify(args)}. After the tool returns its job receipt, end this turn with just HANDOFF. Do not call wait. When a later turn automatically receives the child result, relay its exact stdout.` })
     completed(result)
     assert(!(result.toolCalls ?? []).some((call) => /(^|__)wait$/.test(call.name)), 'Initial parent must become idle without waiting')
     const baseline = conversation(result.conversationId)
@@ -329,7 +347,8 @@ async function runScenario(name) {
     assert(pool.status.items.every((item) => item.status === 'completed'), 'Every real pool item must complete')
     assert.equal(pool.status.agents.length, 2, 'Later push must reuse one of the first two workers')
     assert(pool.status.agents.some((agent) => agent.turns === 2), 'A retained worker must serve two turns')
-    const returned = pool.outcomes.flatMap((batch) => Object.values(batch.data))
+    const raw = pool.outcomes.flatMap((batch) => Object.values(batch.data))
+    const returned = raw.map((item) => typeof item === 'string' ? JSON.parse(item) : item)
     assert.deepEqual(returned.map((item) => item.value).sort(), ['fast', 'later', 'slow'])
     assert(returned.every((item) => item.nonce === fixtures.pool), 'Per-item JSON must contain the private tool nonce')
     const children = await completedWorkers(result.conversationId, 2)
@@ -343,7 +362,101 @@ async function runScenario(name) {
       assert(child.init.tools.includes('eval__echo'))
       assert.equal(child.end.progress.status, 'completed')
     }
-    return { conversationId: result.conversationId, agents: children.map((child) => child.init.id), outcomes: returned }
+    return { conversationId: result.conversationId, agents: children.map((child) => child.init.id),
+      rawDataTypes: raw.map(item => typeof item), outcomes: returned }
+  }
+  if (name === 'settlement-audit') {
+    const sources = [
+      { agent: 'Orders', file: 'orders.csv', marker: fixtures.alpha,
+        content: 'region,status,cents\nNorth,paid,1259\nSouth,paid,499\nNorth,paid,641\nSouth,cancelled,2200\nSouth,paid,951\n',
+        task: 'Total paid cents by region, excluding cancelled orders.' },
+      { agent: 'Refunds', file: 'refunds.csv', marker: fixtures.beta,
+        content: 'region,status,cents\nNorth,approved,105\nSouth,pending,120\nSouth,approved,237\nNorth,approved,56\n',
+        task: 'Total approved refund cents by region, excluding pending refunds.' },
+      { agent: 'Incidents', file: 'incidents.csv', marker: fixtures.gamma,
+        content: 'case,severity,status\nINC-31,high,open\nINC-54,high,closed\nINC-72,low,open\nINC-90,high,open\n',
+        task: 'List all open high-severity incident IDs in ascending order.' },
+    ]
+    for (const source of sources) fs.writeFileSync(path.join(workdir, source.file), `source=${source.marker}\n${source.content}`)
+    const tasks = sources.map(source => ({ name: source.agent, agent: 'probe-audit', solutionSpace: 'Read only your own CSV.',
+      task: `Read ${source.file}. ${source.task} Return its exact source ID as well.` }))
+    const result = await turn(name, { prompt: `Audit the settlement using one parallel task batch with these arguments: ${JSON.stringify({ context: 'Independent inputs for one settlement audit.', tasks })}. Use wait {} for results. Only children may read the CSV files. Subtract approved refunds from paid orders. Return only JSON with keys North and South (net cents), incidents (array of open high-severity IDs), and sources (array of exact source IDs in Orders, Refunds, Incidents order).` })
+    completed(result)
+    const saved = conversation(result.conversationId)
+    const parentCalls = calls(saved.messages)
+    assert.equal(parentCalls.filter(call => call.name === 'task').length, 1)
+    requireCall(saved.messages, 'task', call => call.args.tasks?.length === 3)
+    assert(!parentCalls.some(call => ['read', 'bash', 'eval'].includes(call.name)), 'Parent may only aggregate child results')
+    const children = await completedWorkers(result.conversationId, 3)
+    for (const source of sources) {
+      const child = children.find(worker => worker.init.id === source.agent)
+      assert(child?.output.includes(source.marker), `${source.agent} must read and report its private source ID`)
+      requireCall(child.entries, 'read', call => JSON.stringify(call.args).includes(source.file))
+    }
+    const output = JSON.parse(result.answer.match(/\{[\s\S]*\}/)?.[0] ?? '')
+    assert.deepEqual(output, { North: 1739, South: 1213, incidents: ['INC-31', 'INC-90'], sources: sources.map(source => source.marker) })
+    return { conversationId: result.conversationId, output }
+  }
+  if (name === 'implementation-review') {
+    const verification = `const assert = require('node:assert/strict')
+const allocate = require('./allocate.cjs')
+assert.deepEqual(allocate(10, {a: 1, b: 1, c: 1}), {a: 4, b: 3, c: 3})
+assert.deepEqual(allocate(7, {west: 3, east: 1}), {east: 2, west: 5})
+assert.deepEqual(allocate(1, {z: 1, a: 1}), {a: 1, z: 0})
+assert.deepEqual(allocate(0, {a: 1}), {a: 0})
+assert.deepEqual(allocate(4, JSON.parse('{"__proto__":1,"a":1}')), JSON.parse('{"__proto__":2,"a":2}'))
+assert.throws(() => allocate(4, {a: 0}))
+assert.throws(() => allocate(-1, {a: 1}))
+console.log(${JSON.stringify(fixtures.recovery)})
+`
+    fs.writeFileSync(path.join(workdir, 'verify-allocation.cjs'), verification)
+    const result = await turn(name, { prompt: 'Use task to dispatch one project agent probe-implement named Builder. It must create allocate.cjs containing allocate(totalCents, weights) with the exact export module.exports = allocate. Require nonnegative integer cents, nonempty object of positive integer weights, and throw on invalid inputs. Allocate whole cents proportionally by largest remainder with ties broken by ascending key. Treat every own key, including __proto__, as an ordinary result key. Builder must run node verify-allocation.cjs, fix its own implementation if needed, and never modify the verification file. Wait for Builder before dispatching a separate probe-review agent named Reviewer. Reviewer must inspect allocate.cjs, run node verify-allocation.cjs using bash, and send its stdout to agent://Main with write, then return. Use wait {} for the review and report the result. If it fails, report the failure directly. Main must only delegate and wait, never inspect, edit, or run files or ask the user a question.' })
+    completed(result)
+    const saved = conversation(result.conversationId)
+    const parentCalls = calls(saved.messages)
+    assert.equal(parentCalls.filter(call => call.name === 'task').length, 2)
+    assert(!parentCalls.some(call => ['read', 'bash', 'eval', 'write', 'edit'].includes(call.name)), 'Parent must leave implementation and review to workers')
+    const children = await completedWorkers(result.conversationId, 2)
+    const builder = children.find(worker => worker.init.id === 'Builder')
+    const reviewer = children.find(worker => worker.init.id === 'Reviewer')
+    assert(builder && reviewer)
+    requireCall(builder.entries, 'write', call => call.args.path?.endsWith('allocate.cjs'))
+    requireCall(reviewer.entries, 'read', call => call.args.path?.endsWith('allocate.cjs'))
+    const shellRun = requireCall(reviewer.entries, 'bash', call => /\bnode\b[^\r\n]*\bverify-allocation\.cjs\b/.test(call.args.command ?? ''))
+    const shellResult = reviewer.entries.find(entry => entry.role === 'tool' && entry.tool_call_id === shellRun.id)
+    assert(shellResult?.is_error === false && shellResult.content.includes(fixtures.recovery), 'Reviewer must execute the verification successfully')
+    const send = requireCall(reviewer.entries, 'write', call => call.args.path === 'agent://Main' && call.args.content.includes(fixtures.recovery))
+    const sendResult = reviewer.entries.find(entry => entry.role === 'tool' && entry.tool_call_id === send.id)
+    assert.equal(sendResult?.is_error, false, 'Reviewer IRC send must succeed')
+    assert(saved.messages.some(message => message.irc_message?.fromAgent === 'Reviewer'
+      && message.irc_message.toAgent === 'Main' && message.irc_message.content.includes(fixtures.recovery)), 'IRC review must actually reach Main')
+    assert.equal(fs.readFileSync(path.join(workdir, 'verify-allocation.cjs'), 'utf8'), verification)
+    assert.equal(execFileSync(process.execPath, ['verify-allocation.cjs'], { cwd: workdir, encoding: 'utf8', timeout: 5_000 }).trim(), fixtures.recovery)
+    assert(result.answer.includes(fixtures.recovery), 'Parent must receive and relay the independent review result')
+    return { conversationId: result.conversationId, file: path.join(workdir, 'allocate.cjs') }
+  }
+  if (name === 'broadcast-advisor') {
+    const tasks = ['BroadcastFirst', 'BroadcastAdvisor', 'BroadcastLast'].map((name) => ({
+      name, agent: name === 'BroadcastAdvisor' ? 'advisor' : 'probe-audit',
+      solutionSpace: 'No external resources.', task: 'Reply with READY, then finish.',
+    }))
+    const message = { path: 'agent://all', content: `Broadcast acceptance test ${fixtures.nested}` }
+    const result = await turn(name, { prompt: `First actually call task once with ${JSON.stringify({ context: 'Test a broadcast containing an advisor.', tasks })}. After its receipt, call write once with ${JSON.stringify(message)}. End this turn after write returns with a short acknowledgement. Do not call wait or inspect histories in this turn.` })
+    completed(result)
+    const saved = conversation(result.conversationId)
+    const broadcast = requireCall(saved.messages, 'write', call => call.args.path === 'agent://all')
+    assert.equal(broadcast.status, 'success', broadcast.result_preview ?? broadcast.error)
+    const receipt = broadcast.structured_content ?? JSON.parse(broadcast.result_preview)
+    assert.equal(receipt.status, 'queued')
+    assert.deepEqual(Object.fromEntries(receipt.receipts.map(item => [item.recipient, item.status])), {
+      BroadcastFirst: 'queued', BroadcastLast: 'queued',
+    })
+    await completedWorkers(result.conversationId, 3)
+    await until(() => receipt.receipts.every(item => workers(result.conversationId)
+      .find(worker => worker.init.id === item.recipient)?.entries
+      .some(entry => entry._subagent_irc_id === item.id && entry.content.includes(fixtures.nested))),
+    60_000, 'both queued broadcasts appear in worker journals')
+    return { conversationId: result.conversationId, receipts: receipt.receipts }
   }
   const cancelled = await turn(name, { prompt: 'Call bash to execute node delayed.cjs and wait for its output. Do not answer before the command finishes.', cancelAfterMs: 1500 })
   assert.equal(cancelled.streamOutcome, 'cancelled', 'Cancellation must use the cancelled outcome')

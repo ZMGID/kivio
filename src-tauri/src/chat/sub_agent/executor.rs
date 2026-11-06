@@ -1667,6 +1667,8 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         initial_anchor_trailing_estimate: 0, skill_registry: skills, todo_state: policies.todo_state.clone(),
     };
     let completion_instruction = match &host.options.completion {
+        super::spawn::CompletionPolicy::Yield { .. } if !host.options.workpool_items.is_empty() =>
+            "Submit each workpool item once with yield and its batch-local numeric key. Put the item result itself in data, or put the failure in error. The runtime adds item IDs and assembles the batch. Do not wrap data in an item ID or submit a separate final yield.".into(),
         super::spawn::CompletionPolicy::Yield { schema, strict } => format!("Submit this turn's final result with yield. Validation is {}. Schema: {}", if *strict { "strict" } else { "permissive" }, schema.as_ref().map(Value::to_string).unwrap_or_else(|| "any JSON value".into())),
         super::spawn::CompletionPolicy::Text => "This turn uses an ordinary final text response. Previous workpool item submissions and yield contracts have ended.".into(),
     };
@@ -1838,7 +1840,11 @@ struct WakeReservation {
 
 impl Drop for WakeReservation {
     fn drop(&mut self) {
-        self.slot.control.lock().unwrap_or_else(|error| error.into_inner()).wake_reserved = false;
+        {
+            let mut control = self.slot.control.lock().unwrap_or_else(|error| error.into_inner());
+            if control.generation != self.record.generation || control.killed { return; }
+            control.wake_reserved = false;
+        }
         super::irc::schedule_wake(&self.app, &self.record);
     }
 }
@@ -1857,12 +1863,21 @@ pub(crate) async fn run_inline_followup(app: &AppHandle, record: &registry::Agen
     let slot = state.sub_agents.sessions.slot(&record)?;
     {
         let mut control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        if control.generation != record.generation || control.killed {
+            return Err("Worker changed before the item started".into());
+        }
         if control.active_run.is_some() || control.wake_reserved { return Err("Worker is busy".into()); }
         control.wake_reserved = true;
     }
     let reservation = WakeReservation { app: app.clone(), record: record.clone(), slot: slot.clone() };
     let result = async {
         let mut guard = slot.worker.lock().await;
+        {
+            let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+            if control.generation != record.generation || control.killed {
+                return Err("Worker changed before the item started".into());
+            }
+        }
         let worker = guard.as_mut().ok_or("Worker session is unavailable")?;
         let saved = worker.contract.clone().ok_or("Worker contract is unavailable")?;
         worker.history.push(json!({"role":"user","content":task}));

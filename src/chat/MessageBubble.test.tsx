@@ -124,7 +124,7 @@ describe('assistant body visibility', () => {
     expect(screen.queryByText('正在检查日志。')).not.toBeInTheDocument()
   })
 
-  it('keeps delegation visible and shares one Work control across the remaining activity', () => {
+  it('hides dispatch placeholders and shares one Work control across the remaining activity', () => {
     const message: ChatMessage = {
       id: 'live-subagents', role: 'assistant', timestamp: 1, content: '',
       segments: [
@@ -160,8 +160,8 @@ describe('assistant body visibility', () => {
     expect(screen.queryByRole('button', { name: /^B / })).not.toBeInTheDocument()
     expect(screen.queryByText('先启动子代理，我来读 README。')).not.toBeInTheDocument()
     fireEvent.click(work)
-    expect(screen.getByRole('button', { name: /^A / })).toBeVisible()
-    expect(screen.getByRole('button', { name: /^B / })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^A / })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^B / })).not.toBeInTheDocument()
     expect(screen.getByText('README 只有 9 字节，再看文档。')).toBeVisible()
     expect(screen.getByText('项目用途已了解，等待子代理。')).toBeVisible()
   })
@@ -176,6 +176,14 @@ describe('assistant body visibility', () => {
           agentId: 'atlas', name: 'Atlas', status: 'started', parentToolCallId: 'task',
           afterSegmentId: 'update', afterOrder: 2, textChars: Array.from(before).length,
         } }, phase: 'auxiliary', order: 50 },
+        { id: 'parallel', kind: { subagent: {
+          agentId: 'beacon', name: 'Beacon', status: 'started', parentToolCallId: 'task',
+          afterSegmentId: 'update', afterOrder: 2, textChars: Array.from(before).length,
+        } }, phase: 'auxiliary', order: 51 },
+        { id: 'other-start', kind: { subagent: {
+          agentId: 'birch', name: 'Birch', status: 'started', parentToolCallId: 'other',
+          afterSegmentId: 'update', afterOrder: 2, textChars: Array.from(before).length,
+        } }, phase: 'auxiliary', order: 52 },
         { id: 'task-segment', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'task' },
         { id: 'update', kind: 'text', phase: 'tool_loop', order: 2, text: `${before}${between}` },
         { id: 'wait-segment', kind: 'tool', phase: 'tool_loop', order: 3, tool_call_id: 'wait' },
@@ -214,10 +222,19 @@ describe('assistant body visibility', () => {
     expect(screen.getByText('继续整理。')).toBeVisible()
     const worked = screen.getByRole('button', { name: /^Worked/ })
     fireEvent.click(worked)
+    const atlasStart = screen.getByRole('button', { name: 'Atlas 开始工作' })
+    const beaconStart = screen.getByRole('button', { name: 'Beacon 开始工作' })
+    const parallel = atlasStart.parentElement
+    expect(parallel).toHaveTextContent('Atlas和Beacon 开始工作')
+    expect(parallel).toContainElement(beaconStart)
+    const otherStart = screen.getByRole('button', { name: 'Birch 开始工作' })
+    expect(parallel).not.toContainElement(otherStart)
     const items = [
       worked,
       screen.getByText(before),
-      screen.getByRole('button', { name: 'Atlas 开始工作' }),
+      atlasStart,
+      beaconStart,
+      otherStart,
       screen.getByText(between),
       screen.getByRole('button', { name: 'Atlas 已完成' }),
       screen.getByText('任务结束。'),

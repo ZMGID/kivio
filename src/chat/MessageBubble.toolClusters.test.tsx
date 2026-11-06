@@ -85,7 +85,7 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('deploy').closest('[data-tool-call-cluster]')).toBeNull()
   })
 
-  it('keeps dispatch cards out of activity clusters and hides built-in wait', () => {
+  it('hides built-in dispatch placeholders and wait while preserving external tools', () => {
     const task: ToolCallRecord = { id: 'task', source: 'native', name: 'task', status: 'success',
       arguments: { context: 'Shared', tasks: [{ name: 'Research', task: 'Inspect', solutionSpace: 'Read' }] } }
     const wait: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
@@ -93,7 +93,7 @@ describe('tool activity in the message timeline', () => {
     const externalMessage: ToolCallRecord = { id: 'external-message', source: 'external_cli', name: 'SendMessage', status: 'completed' }
     const mcpTask: ToolCallRecord = { id: 'mcp', source: 'mcp', name: 'task', status: 'completed' }
     const { container } = render(<MessageBubble message={message([read, task, wait, external, externalMessage, mcpTask, command])} messageStreaming />)
-    expect(screen.getByRole('button', { name: 'Research 已派工' }).closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Research 已派工' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /等待子代理/ })).not.toBeInTheDocument()
     expect(screen.getByText('SUBAGENT').closest('[data-tool-call-cluster]')).toBeNull()
     expect(screen.getByText('SendMessage').closest('[data-tool-call-cluster]')).toBeNull()

@@ -241,10 +241,24 @@ fn main_recovery(conversation: &Conversation) -> Option<MainRecovery<'_>> {
 }
 
 fn is_accepted_task_record(call: &ToolCallRecord) -> bool {
-    call.source == "native"
-        && matches!(call.name.as_str(), "task" | "native__task")
-        && call.status == ToolCallStatus::Success
-        && !call.id.is_empty()
+    if call.source != "native"
+        || !matches!(call.name.as_str(), "task" | "native__task")
+        || call.id.is_empty()
+    {
+        return false;
+    }
+    match call.status {
+        ToolCallStatus::Success => true,
+        ToolCallStatus::Error => call.structured_content.as_ref().is_some_and(|receipt| {
+            receipt["async"]["state"] == "running"
+                && receipt["agents"].as_array().is_some_and(|agents| {
+                    agents.iter().any(|agent| {
+                        agent["jobId"].as_str().is_some_and(|id| !id.is_empty())
+                    })
+                })
+        }),
+        _ => false,
+    }
 }
 
 fn resumable_checkpoint(draft: &ChatMessage) -> bool {
@@ -318,6 +332,30 @@ mod recovery_tests {
 
         conversation.messages.push(serde_json::from_value(user("new-user")).unwrap());
         assert!(main_recovery(&conversation).is_none());
+    }
+
+    #[test]
+    fn recovery_keeps_background_jobs_from_a_mixed_task_error() {
+        let mut draft = checkpoint("draft", "current-run", "interrupted");
+        draft["tool_calls"] = json!([
+            {"id":"mixed","name":"task","source":"native","trace_id":"current-run","status":"error",
+                "structured_content":{
+                    "agents":[{"agentId":"Inline","jobId":"inline-job"},{"agentId":"Background","jobId":"background-job"}],
+                    "results":[{"id":"inline-job","status":"failed"}],
+                    "async":{"state":"running"}
+                }},
+            {"id":"rejected","name":"task","source":"native","trace_id":"current-run","status":"error",
+                "error":"unknown agent"},
+            {"id":"inline-only","name":"task","source":"native","trace_id":"current-run","status":"error",
+                "structured_content":{
+                    "agents":[{"agentId":"Inline","jobId":"inline-job"}],
+                    "results":[{"id":"inline-job","status":"failed"}],
+                    "async":{"state":"failed"}
+                }}
+        ]);
+        let conversation = conversation(vec![user("current-user"), draft]);
+        let recovery = main_recovery(&conversation).unwrap();
+        assert_eq!(recovery.child_calls, vec![("current-run".into(), "mixed".into())]);
     }
 
     #[test]
@@ -413,6 +451,13 @@ async fn send_reserved(
     let idle_parent_calls = recovery
         .filter(|scope| scope.checkpoint.stream_outcome.as_deref() == Some("completed"))
         .map(|scope| scope.child_calls);
+    if let Some(calls) = idle_parent_calls.as_ref().filter(|_| continue_requested) {
+        let restored = register_recovered_children(&app, &conversation_id, calls, interruption_epoch).await;
+        if !restored.is_empty() {
+            strip_transcripts_for_frontend(&mut conversation);
+            return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+        }
+    }
 
     let plan_message_id = plan_message_id.or_else(|| {
         (conversation.agent_plan_state.document.is_some()

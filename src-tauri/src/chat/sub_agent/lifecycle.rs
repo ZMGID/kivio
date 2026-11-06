@@ -185,27 +185,30 @@ pub async fn park(
     }
     let slot = manager.sessions.slot(&record)?;
     let mut worker = slot.worker.lock().await;
-    {
-        let control = slot
-            .control
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if control.active_run.is_some() || control.wake_reserved || manager.irc.has_pending(root, id) {
-            return Err("Subagent has active or queued work".into());
-        }
-    }
-    let record = manager
-        .registry
-        .update_checked(root, id, expected_generation, None, |current| {
-            current.status = AgentStatus::Parked;
-            current.run_id = None;
-            current.activity = None;
-        })
-        .ok_or("Subagent changed while being parked")?;
+    let record = mark_parked(manager, &slot, &record)?;
     manager.pools.close_owner(root, id);
     manager.eval.close_owner(root, id).await;
     *worker = None;
     Ok(record)
+}
+
+fn mark_parked(manager: &SubAgentManager, slot: &session::Slot, record: &AgentRecord) -> Result<AgentRecord, String> {
+    let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+    if control.killed || control.generation != record.generation {
+        return Err("Subagent changed while being parked".into());
+    }
+    if control.active_run.is_some() || control.wake_reserved || manager.irc.has_pending(&record.root, &record.id) {
+        return Err("Subagent has active or queued work".into());
+    }
+    // IRC enqueue takes the same lock before checking the recipient's status.
+    manager
+        .registry
+        .update_checked(&record.root, &record.id, record.generation, None, |current| {
+            current.status = AgentStatus::Parked;
+            current.run_id = None;
+            current.activity = None;
+        })
+        .ok_or_else(|| "Subagent changed while being parked".into())
 }
 
 pub async fn kill(
@@ -589,6 +592,24 @@ mod tests {
             activity: None,
             published: true,
         }
+    }
+
+    #[test]
+    fn queued_irc_work_prevents_idle_worker_from_parking() {
+        let manager = SubAgentManager::default();
+        let record = manager.registry.register(record(AgentStatus::Idle));
+        let slot = manager.sessions.slot(&record).unwrap();
+        manager.irc.seed_message(super::super::irc::Message {
+            id: "message".into(), root: record.root.clone(), from: record.parent_id.clone(),
+            to: record.id.clone(), body: "Follow up".into(), sequence: 1, reply_to: None,
+            progress: false, broadcast: false, wake_relay: false, timestamp: 0,
+        });
+        assert!(mark_parked(&manager, &slot, &record).is_err());
+        assert_eq!(manager.registry.get(&record.root, &record.id).unwrap().status, AgentStatus::Idle);
+        let mut delivered = manager.irc.claim(&record.root, &record.id, |_| true);
+        assert_eq!(delivered.messages().len(), 1);
+        delivered.commit();
+        assert_eq!(mark_parked(&manager, &slot, &record).unwrap().status, AgentStatus::Parked);
     }
 
     #[test]

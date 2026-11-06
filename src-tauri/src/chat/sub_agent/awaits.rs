@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
+use tokio::sync::watch;
+
 #[derive(Clone)]
 struct Hold {
     root: String,
@@ -10,8 +12,19 @@ struct Hold {
     interruptible: bool,
 }
 
-#[derive(Default)]
-pub(crate) struct AwaitGraph(Mutex<HashMap<String, Hold>>);
+pub(crate) struct AwaitGraph {
+    holds: Mutex<HashMap<String, Hold>>,
+    changed: watch::Sender<()>,
+}
+
+impl Default for AwaitGraph {
+    fn default() -> Self {
+        Self {
+            holds: Mutex::new(HashMap::new()),
+            changed: watch::channel(()).0,
+        }
+    }
+}
 
 pub(crate) struct AwaitHold<'a> {
     graph: &'a AwaitGraph,
@@ -21,14 +34,19 @@ pub(crate) struct AwaitHold<'a> {
 impl Drop for AwaitHold<'_> {
     fn drop(&mut self) {
         self.graph
-            .0
+            .holds
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&self.id);
+        self.graph.changed.send_replace(());
     }
 }
 
 impl AwaitGraph {
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+
     pub fn hold(
         &self,
         root: &str,
@@ -38,7 +56,7 @@ impl AwaitGraph {
         interruptible: bool,
     ) -> AwaitHold<'_> {
         let id = uuid::Uuid::new_v4().to_string();
-        self.0
+        self.holds
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .insert(
@@ -51,11 +69,12 @@ impl AwaitGraph {
                     interruptible,
                 },
             );
+        self.changed.send_replace(());
         AwaitHold { graph: self, id }
     }
 
     pub fn blocks_on(&self, root: &str, agent: &str, target: &str, question: u64) -> bool {
-        let holds = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let holds = self.holds.lock().unwrap_or_else(|error| error.into_inner());
         fn blocked(
             holds: &HashMap<String, Hold>,
             root: &str,
