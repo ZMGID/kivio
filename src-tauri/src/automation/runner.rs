@@ -246,26 +246,11 @@ async fn execute_graph(
         let result = execute_node(app, &automation, run_id, node, &prev, origin).await;
         let handle_hint = match result {
             Ok((mut output, next_handle)) => {
-                output.sources = prev.sources.clone();
-                output.sources.insert(
-                    node.id.clone(),
-                    json!({ "text": output.text, "json": output.json }),
+                record.nodes[node_index] = success_node_record(
+                    &node.id, &node.node_type, node_disabled(&node.data), &prev, &mut output,
                 );
-                let preview = clip(&output.text, 2000);
-                let status = if node_disabled(&node.data) {
-                    "skipped"
-                } else {
-                    "success"
-                };
-                record.nodes[node_index] = AutomationRunNode {
-                    node_id: node.id.clone(),
-                    node_type: node.node_type.clone(),
-                    status: status.into(),
-                    input: snapshot(&prev),
-                    result: snapshot(&output),
-                    output: Some(preview.clone()),
-                    error: None,
-                };
+                let preview = record.nodes[node_index].output.clone();
+                let status = record.nodes[node_index].status.as_str();
                 let _ = history::write_run(app, record);
                 events::node_finished(
                     app,
@@ -273,7 +258,7 @@ async fn execute_graph(
                     run_id,
                     &node.id,
                     status,
-                    Some(preview),
+                    preview,
                     None,
                 );
                 incoming = output;
@@ -330,27 +315,45 @@ async fn execute_graph(
     finish_run(app, record, "success", None)
 }
 
+pub(super) fn success_node_record(
+    node_id: &str,
+    node_type: &str,
+    disabled: bool,
+    input: &NodeOutput,
+    output: &mut NodeOutput,
+) -> AutomationRunNode {
+    output.sources = input.sources.clone();
+    output.sources.insert(node_id.to_string(), json!({ "text": output.text, "json": output.json }));
+    AutomationRunNode {
+        node_id: node_id.to_string(),
+        node_type: node_type.to_string(),
+        status: if disabled { "skipped" } else { "success" }.into(),
+        input: snapshot(input),
+        result: snapshot(output),
+        output: Some(clip(&output.text, 2000)),
+        error: None,
+    }
+}
+
+pub(super) fn finish_run_record(record: &mut AutomationRun, status: &str, error: Option<String>) {
+    record.status = status.to_string();
+    record.finished_at = Some(now_iso());
+    record.error = error;
+}
+
 fn finish_run(
     app: &AppHandle,
     record: &mut AutomationRun,
     status: &str,
     error: Option<String>,
 ) -> Result<(), String> {
-    record.status = status.to_string();
-    record.finished_at = Some(now_iso());
-    record.error = error.clone();
+    finish_run_record(record, status, error.clone());
     for node in &mut record.nodes {
         if node.status == "running" {
             node.status = status.to_string();
             node.error = error.clone();
             events::node_finished(
-                app,
-                &record.automation_id,
-                &record.id,
-                &node.node_id,
-                status,
-                None,
-                error.clone(),
+                app, &record.automation_id, &record.id, &node.node_id, status, None, error.clone(),
             );
         }
     }

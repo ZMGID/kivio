@@ -1,14 +1,14 @@
+use super::content::{ContentPhase, ContentKind, ContentBlock};
 use crate::chat::model::{
     stream_with_chat_provider, FinishKind, GenerateOptions, GenerateOutput, GenerateRequest,
     ModelError, ModelErrorKind, PendingToolCall, StreamPart, StreamSink,
 };
-use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
+
 use crate::mcp::ChatToolDefinition;
 
 use super::finalize::{
     cancelled_tool_round_run_result, tool_planning_failed_run_result, RunResultBuilder,
 };
-use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::rounds::visible_tool_segment_calls;
 use super::stop::sanitize_assistant_text_response;
@@ -87,17 +87,17 @@ pub(crate) async fn planning_step(
         };
         // 为降级文案预约一个文本 segment，让它在 transcript 里正常渲染（与其它收尾路径一致）。
         let degrade_segment = state.segment_builder.reserve(
-            ChatMessageSegmentKind::Text,
-            ChatMessageSegmentPhase::Plain,
+            ContentKind::Text,
+            ContentPhase::Plain,
             Some(step_number),
             Some(round),
             &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(PlanningStepOutcome::Recovered(
-            RunResultBuilder::new(host, env.ids(), content)
+            RunResultBuilder::new(host, content)
                 .segment(&degrade_segment)
                 .emit_done("done")
-                .outcome("compaction_blocked")
+                .outcome(super::types::AgentRunStatus::CompactionBlocked)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
                     &state.planning_reasoning_parts,
@@ -109,8 +109,8 @@ pub(crate) async fn planning_step(
 
     let stream_policy = AgentStreamPolicy::PlanningNoDoneUntilNoTools;
     let planning_reasoning_segment = state.segment_builder.reserve(
-        ChatMessageSegmentKind::Reasoning,
-        ChatMessageSegmentPhase::ToolLoop,
+        ContentKind::Reasoning,
+        ContentPhase::ToolLoop,
         Some(step_number),
         Some(round),
         &format!("step_{step_number}_reasoning"),
@@ -119,8 +119,8 @@ pub(crate) async fn planning_step(
     // 这里 → 渲染在答案文本之前；未搜索则该 order 留空洞无害。
     let web_search_order = state.segment_builder.reserve_order();
     let planning_text_segment = state.segment_builder.reserve(
-        ChatMessageSegmentKind::Text,
-        ChatMessageSegmentPhase::ToolLoop,
+        ContentKind::Text,
+        ContentPhase::ToolLoop,
         Some(step_number),
         Some(round),
         &format!("step_{step_number}_text"),
@@ -157,7 +157,7 @@ pub(crate) async fn planning_step(
         Some(WebSearchCardTracker::new(
             web_search_order,
             Some(round),
-            ChatMessageSegmentPhase::ToolLoop,
+            ContentPhase::ToolLoop,
             config.provider.name.clone(),
         ))
     } else {
@@ -182,9 +182,7 @@ pub(crate) async fn planning_step(
                 builtin_web_search: config.builtin_web_search_active(),
                 max_output_tokens: config.max_output_tokens,
                 conversation_id: &config.conversation_id,
-                run_id: &config.run_id,
                 message_id: &config.message_id,
-                generation: config.generation,
                 label: "Chat tools planning",
                 policy: stream_policy,
                 text_segment: Some(planning_text_segment.clone()),
@@ -229,20 +227,20 @@ pub(crate) async fn planning_step(
                         .filter(|value| !value.is_empty())
                     {
                         let mut reasoning_segment = planning_reasoning_segment.clone();
-                        reasoning_segment.phase = ChatMessageSegmentPhase::Plain;
+                        reasoning_segment.phase = ContentPhase::Plain;
                         state.segment_builder.append_text_from_template(
                             &reasoning_segment,
                             reasoning_text.to_string(),
                         );
                     }
                     let mut segment = planning_text_segment.clone();
-                    segment.phase = ChatMessageSegmentPhase::Plain;
+                    segment.phase = ContentPhase::Plain;
                     return Ok(PlanningStepOutcome::Cancelled(
-                        RunResultBuilder::new(host, env.ids(), partial)
+                        RunResultBuilder::new(host, partial)
                             .segment(&segment)
                             .api_reasoning(stream.reasoning.clone())
                             .reasoning_tail(stream.reasoning)
-                            .outcome("cancelled")
+                            .outcome(super::types::AgentRunStatus::Cancelled)
                             .finish(
                                 std::mem::take(&mut state.segment_builder),
                                 &state.planning_reasoning_parts,
@@ -334,12 +332,12 @@ pub(crate) async fn planning_step(
                     // content_from_segments 只认 Plain|Synthesis，留 ToolLoop 会让
                     // normalize_assistant_segments 以为正文没落段而再补一条，正文渲染两遍。
                     let mut segment = planning_text_segment.clone();
-                    segment.phase = ChatMessageSegmentPhase::Synthesis;
+                    segment.phase = ContentPhase::Synthesis;
                     return Ok(PlanningStepOutcome::Recovered(
-                        RunResultBuilder::new(host, env.ids(), content)
+                        RunResultBuilder::new(host, content)
                             .segment(&segment)
                             .emit_done("done")
-                            .outcome("recovered")
+                            .outcome(super::types::AgentRunStatus::Recovered)
                             .replay(replay)
                             .degraded(state.degraded.take())
                             .finish(
@@ -356,11 +354,10 @@ pub(crate) async fn planning_step(
     };
     // 内置搜索：实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     if let Some(tracker) = planning_web_search_tracker.as_ref() {
-        if let Some((record, segment)) = tracker.take_card() {
+        if let Some(segment) = tracker.take_card() {
             state
                 .segment_builder
                 .append_existing_segments(vec![segment]);
-            state.tool_records.push(record);
         }
     }
     let tool_calls = message.tool_calls.clone();
@@ -383,15 +380,8 @@ pub(crate) async fn planning_step(
         }
         if !response.trim().is_empty() {
             let mut segment = planning_text_segment.clone();
-            segment.phase = ChatMessageSegmentPhase::Plain;
-            host.emit_stream_delta(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                "",
-                None,
-                Some(&segment),
-            );
+            segment.phase = ContentPhase::Plain;
+            host.content("", None, Some(&segment));
             state
                 .segment_builder
                 .append_text_from_template(&segment, response);
@@ -402,15 +392,8 @@ pub(crate) async fn planning_step(
             .filter(|text| !text.trim().is_empty())
         {
             let mut segment = planning_reasoning_segment.clone();
-            segment.phase = ChatMessageSegmentPhase::Plain;
-            host.emit_stream_delta(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                "",
-                None,
-                Some(&segment),
-            );
+            segment.phase = ContentPhase::Plain;
+            host.content("", None, Some(&segment));
             state
                 .segment_builder
                 .append_text_from_template(&segment, reasoning);
@@ -439,20 +422,13 @@ pub(crate) async fn planning_step(
     let draft_tool_segments = planning_tool_drafts.segments();
     if draft_tool_segments.is_empty() {
         let tool_segments = state.segment_builder.append_tool_calls(
-            ChatMessageSegmentPhase::ToolLoop,
+            ContentPhase::ToolLoop,
             Some(step_number),
             round,
             &visible_tool_calls,
         );
         for segment in &tool_segments {
-            host.emit_stream_delta(
-                &config.conversation_id,
-                &config.run_id,
-                &config.message_id,
-                "",
-                None,
-                Some(segment),
-            );
+            host.content("", None, Some(segment));
         }
     } else {
         state
@@ -495,7 +471,7 @@ pub(crate) async fn generate_via_stream_collect(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn stream_scoped_chat_completion_inner(
     state: &crate::state::AppState,
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     provider: &crate::settings::ModelProvider,
     model: &str,
     messages: Vec<super::history::RuntimeMessage>,
@@ -507,24 +483,15 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
     builtin_web_search: bool,
     max_output_tokens: u32,
     conversation_id: &str,
-    run_id: &str,
     message_id: &str,
-    generation: u64,
     label: &str,
     policy: AgentStreamPolicy,
-    text_segment: Option<ChatMessageSegment>,
-    reasoning_segment: Option<ChatMessageSegment>,
+    text_segment: Option<ContentBlock>,
+    reasoning_segment: Option<ContentBlock>,
     tool_draft_tracker: Option<ToolCallDraftTracker>,
     web_search_tracker: Option<WebSearchCardTracker>,
 ) -> Result<GenerateOutput, ModelError> {
-    host.begin_context_request(
-        conversation_id,
-        message_id,
-        &provider.id,
-        model,
-        &messages,
-        tools.unwrap_or_default(),
-    );
+    host.context_prepared(&provider.id, model, &messages, tools.unwrap_or_default());
     let request = super::history::request_from_history(
         &messages,
         model,
@@ -549,9 +516,6 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         loop {
             let mut sink = AgentStreamSink::new(
                 host,
-                conversation_id,
-                run_id,
-                message_id,
                 matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools),
                 text_segment.clone(),
                 reasoning_segment.clone(),
@@ -574,12 +538,12 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                 loop {
                     tokio::select! {
                         result = &mut stream_future => break Some(result),
-                        Some(retry) = progress_rx.recv() => host.emit_retry_status(run_id, retry),
-                        _ = host.wait_for_generation_inactive(conversation_id, generation) => break None,
+                        Some(retry) = progress_rx.recv() => host.retry(super::events::RetryStatus { reason: retry.reason, attempt: retry.attempt, max_retries: retry.max_retries, retry_at_ms: retry.retry_at_ms }),
+                        _ = host.control.wait_inactive() => break None,
                     }
                 }
             };
-            let Some(result) = result else {
+            let Some(result) = result.filter(|_| host.control.active()) else {
                 let (content, reasoning) = sink.snapshot();
                 return Ok(GenerateOutput::cancelled(
                     content.trim().to_string(),
@@ -593,11 +557,11 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                         return Err(err);
                     };
                     sink.discard_attempt();
-                    host.emit_retry_status(run_id, retry);
+                    host.retry(super::events::RetryStatus { reason: retry.reason, attempt: retry.attempt, max_retries: retry.max_retries, retry_at_ms: retry.retry_at_ms });
                     let delay = std::time::Duration::from_millis(delay_ms);
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {},
-                        _ = host.wait_for_generation_inactive(conversation_id, generation) => {
+                        _ = host.control.wait_inactive() => {
                             return Ok(GenerateOutput::cancelled(String::new(), None));
                         }
                     }
@@ -605,12 +569,12 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                 }
                 Err(err) => return Err(err),
             };
-            host.emit_status_note(run_id, None);
+            host.status(None);
             sink.flush_pending_text();
             // 内置搜索实时卡定稿：流成功结束 ⇒ 翻 Success 并发终态记录（取消路径已在上面的
             // select 分支 return，不会到这里，故取消时实时卡不落 Success，与 draft 行为一致）。
             if let Some(record) = sink.finish_web_search_card() {
-                host.emit_tool_record(conversation_id, run_id, message_id, &record);
+                host.search_updated(&record, false);
             }
             let (snapshot_content, snapshot_reasoning) = sink.snapshot();
             let stream_output = normalize_stream_output(

@@ -61,3 +61,6 @@ pub(crate) use tooling::apply_chat_mode_tool_filter;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sdk04_tests;

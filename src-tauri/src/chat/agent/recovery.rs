@@ -11,8 +11,8 @@
 //! 共用;并保证「产生过工具结果的轮次永不空手而归」这一不变式只在此处定义
 //! (`DegradeToGathered` → `assemble_results_from_tool_records`)。
 //!
+use super::content::{AgentToolCall, AgentToolStatus};
 use crate::chat::model::{FinishKind, ModelError, ModelErrorKind};
-use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 
 /// 降级回答的结构化描述，落到 `ChatMessage.degraded` 供前端渲染成独立卡片。
 ///
@@ -125,7 +125,7 @@ pub(crate) async fn stream_with_truncation_recovery(
         .await.map_err(ModelError::new)?;
         if !request
             .host
-            .is_generation_active(request.conversation_id, request.generation)
+            .control.active()
         {
             return Ok(crate::chat::model::GenerateOutput::cancelled(
                 String::new(),
@@ -137,14 +137,7 @@ pub(crate) async fn stream_with_truncation_recovery(
         }
         request.messages = compacted;
         if env.config.depth == 0 {
-            request.host.begin_context_request(
-                request.conversation_id,
-                request.message_id,
-                &request.provider.id,
-                request.model,
-                &request.messages,
-                request.tools.unwrap_or_default(),
-            );
+            request.host.context_prepared(&request.provider.id, request.model, &request.messages, request.tools.unwrap_or_default());
         }
     }
 }
@@ -284,7 +277,7 @@ pub(crate) fn decide(
 /// 呈现,这里再 dump 全文只会刷出几百行,故只留指针式短摘要。没有任何成功 preview → 返回空串
 /// (调用方据此退回静态文案)。
 pub(crate) fn assemble_results_from_tool_records(
-    records: &[ToolCallRecord],
+    records: &[AgentToolCall],
     language: &str,
     kind: FailureKind,
 ) -> String {
@@ -345,7 +338,7 @@ pub(crate) fn extract_error_detail(raw: &str) -> Option<String> {
 /// 让前端能渲染成独立卡片而不是把故障混进 assistant 正文。
 /// 没有任何成功 preview → None（调用方退回静态文案，与文本版语义一致）。
 pub(crate) fn assemble_degraded_answer(
-    records: &[ToolCallRecord],
+    records: &[AgentToolCall],
     language: &str,
     kind: FailureKind,
     raw_error: Option<&str>,
@@ -360,14 +353,16 @@ pub(crate) fn assemble_degraded_answer(
     let mut summaries: Vec<DegradedToolSummary> = Vec::new();
     let mut overflow = 0usize;
     for record in records {
-        if record.status != ToolCallStatus::Success {
+        if record.status != AgentToolStatus::Success {
             continue;
         }
         let preview = record
-            .result_preview
+            .output
             .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty());
+            .map(|output| super::execute::limit_tool_text_for_model(
+                &crate::chat::tools::summarize_tool_text(output), record.output_limit,
+            ));
+        let preview = preview.as_deref().map(str::trim).filter(|p| !p.is_empty());
         let Some(preview) = preview else {
             continue;
         };
@@ -520,15 +515,16 @@ mod tests {
         assert!(!is_silent_overflow(Some(999_999), 0));
     }
 
-    fn rec(name: &str, status: ToolCallStatus, preview: Option<&str>) -> ToolCallRecord {
-        ToolCallRecord {
+    fn rec(name: &str, status: AgentToolStatus, preview: Option<&str>) -> AgentToolCall {
+        AgentToolCall {
             id: "t".into(),
             name: name.into(),
             source: "native".into(),
             server_id: None,
             arguments: String::new(),
             status,
-            result_preview: preview.map(|p| p.to_string()),
+            output: preview.map(|p| p.to_string()),
+            output_limit: None,
             error: None,
             duration_ms: None,
             started_at: None,
@@ -536,8 +532,7 @@ mod tests {
             round: 0,
             sensitive: false,
             artifacts: Vec::new(),
-            trace_id: None,
-            span_id: None,
+            draft: None,
             structured_content: None,
         }
     }
@@ -658,9 +653,9 @@ mod tests {
     #[test]
     fn assemble_uses_successful_previews_only() {
         let records = vec![
-            rec("web_search", ToolCallStatus::Success, Some("标题A\n标题B")),
-            rec("web_search", ToolCallStatus::Error, Some("不该出现")),
-            rec("noop", ToolCallStatus::Success, None),
+            rec("web_search", AgentToolStatus::Success, Some("标题A\n标题B")),
+            rec("web_search", AgentToolStatus::Error, Some("不该出现")),
+            rec("noop", AgentToolStatus::Success, None),
         ];
         let out = assemble_results_from_tool_records(&records, "zh-CN", FailureKind::Exhausted);
         assert!(out.contains("标题A"));
@@ -681,15 +676,15 @@ mod tests {
         let records = vec![
             rec(
                 "mixer_generate_image",
-                ToolCallStatus::Success,
+                AgentToolStatus::Success,
                 Some("Generated 1 image."),
             ),
             rec(
                 "present_artifacts",
-                ToolCallStatus::Success,
+                AgentToolStatus::Success,
                 Some("Displayed 1 file."),
             ),
-            rec("failed_tool", ToolCallStatus::Error, Some("不该出现")),
+            rec("failed_tool", AgentToolStatus::Error, Some("不该出现")),
         ];
         let d = assemble_degraded_answer(
             &records,
@@ -788,7 +783,7 @@ mod tests {
     #[test]
     fn text_and_structured_stay_in_sync() {
         // 文本版是结构化版的投影，二者不能漂移（文本版仍被旧路径调用）。
-        let records = vec![rec("t", ToolCallStatus::Success, Some("preview"))];
+        let records = vec![rec("t", AgentToolStatus::Success, Some("preview"))];
         for kind in [
             FailureKind::Exhausted,
             FailureKind::ContextOverflow,
@@ -807,18 +802,18 @@ mod tests {
     fn assemble_caps_and_clips_to_avoid_wall_of_text() {
         // 单条超长 + 多行只保留首行裁剪;>8 条折叠为计数 —— 不再刷几百行。
         let long = "x".repeat(5000);
-        let mut records: Vec<ToolCallRecord> = (0..12)
+        let mut records: Vec<AgentToolCall> = (0..12)
             .map(|i| {
                 rec(
                     "read",
-                    ToolCallStatus::Success,
+                    AgentToolStatus::Success,
                     Some(Box::leak(format!("行{i}首行\n{long}").into_boxed_str())),
                 )
             })
             .collect();
         records.push(rec(
             "read",
-            ToolCallStatus::Success,
+            AgentToolStatus::Success,
             Some(Box::leak(long.clone().into_boxed_str())),
         ));
         let out = assemble_results_from_tool_records(&records, "en", FailureKind::Other);

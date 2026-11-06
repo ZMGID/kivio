@@ -315,14 +315,13 @@ pub fn state_from_messages(
 
 /// Last todo snapshot recorded on a successful tool call in `records`.
 pub(crate) fn latest_recorded_state(records: &[ToolCallRecord]) -> Option<AgentTodoState> {
-    records
-        .iter()
-        .rev()
-        .filter(|record| record.status == ToolCallStatus::Success)
-        .find_map(|record| {
-            let todo = record.structured_content.as_ref()?.get("todoState")?;
-            serde_json::from_value::<AgentTodoState>(todo.clone()).ok()
-        })
+    latest_result_state(records.iter().rev().filter(|record| record.status == ToolCallStatus::Success)
+        .filter_map(|record| record.structured_content.as_ref()))
+}
+
+pub(crate) fn latest_result_state<'a>(results: impl Iterator<Item = &'a serde_json::Value>) -> Option<AgentTodoState> {
+    results.filter_map(|result| result.get("todoState"))
+        .find_map(|todo| serde_json::from_value::<AgentTodoState>(todo.clone()).ok())
 }
 
 /// The reminder to append before the next model step, if any.

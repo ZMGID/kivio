@@ -482,17 +482,20 @@ fn validate_tool_pairs(history: &[Value]) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn contract(cwd: &std::path::Path) -> Value {
-        json!({"type":"session_init","version":1,"id":"A","root":"r","parentId":"Main","depth":1,
+pub(super) fn test_contract(cwd: &std::path::Path) -> Value {
+        serde_json::json!({"type":"session_init","version":1,"id":"A","root":"r","parentId":"Main","depth":1,
             "generation":1,"conversationId":"subagent-r-A","cwd":cwd,"systemPrompt":"system","runtimeContext":"context",
             "task":"task","agentDefinition":crate::agents::builtin_agent_definitions()[0],"tools":[],"mcpToolIds":[],"mcpServerIds":[],
             "readOnly":true,"resolvedModel":{"provider":"provider","model":"model"},"thinkingEnabled":false,"resolvedThinkingLevel":null,
             "approvalPolicy":"always_confirm","planState":crate::chat::types::AgentPlanState::default()})
     }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    use super::test_contract as contract;
 
     fn bytes(entries: &[Value]) -> Vec<u8> {
         entries

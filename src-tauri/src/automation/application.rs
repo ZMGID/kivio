@@ -7,7 +7,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
@@ -20,7 +19,7 @@ use crate::chat::agent::{
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::types::{
     AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, AgentTodoState, ChatMessage,
-    ChatMessageSegment, Conversation, ConversationContextState, ToolCallRecord, WebSearchMode,
+    Conversation, ConversationContextState, WebSearchMode,
 };
 use crate::mcp::ChatToolDefinition;
 use crate::skills;
@@ -173,54 +172,38 @@ pub(crate) async fn run_captured_command(
     crate::native_tools::run_captured_command(command, cwd, timeout_ms, Some(&*state)).await
 }
 
-struct WorkflowAgentHost {
-    app: AppHandle,
+#[derive(Default)]
+struct WorkflowAgentEvents {
     text: Mutex<String>,
 }
 
-impl AgentHost for WorkflowAgentHost {
-    fn emit_stream_delta(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        delta: &str,
-        _reasoning_delta: Option<&str>,
-        _segment: Option<&ChatMessageSegment>,
-    ) {
-        if !delta.is_empty() {
-            if let Ok(mut guard) = self.text.lock() {
-                guard.push_str(delta);
-            }
+fn apply_workflow_event(text: &mut String, event: &crate::chat::agent::events::AgentEvent<'_>) {
+    use crate::chat::agent::events::AgentEventKind;
+    match &event.kind {
+        AgentEventKind::Content { delta, .. } => text.push_str(delta),
+        AgentEventKind::AttemptDiscarded { text_chars, .. } => {
+            crate::chat::protocol::truncate_stream_tail(text, *text_chars);
         }
+        _ => {}
     }
+}
 
-    fn discard_stream_attempt(
-        &self,
-        _run_id: &str,
-        text_chars: u32,
-        _reasoning_chars: u32,
-        _segment_ids: Vec<String>,
-        _tool_ids: Vec<String>,
-    ) {
+impl crate::chat::agent::events::AgentEventSink for WorkflowAgentEvents {
+    fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
         if let Ok(mut text) = self.text.lock() {
-            crate::chat::protocol::truncate_stream_tail(&mut text, text_chars);
+            apply_workflow_event(&mut text, event);
         }
+        crate::chat::agent::events::EventDelivery::Accepted
     }
+}
 
-    fn emit_tool_record(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _record: &ToolCallRecord,
-    ) {
-    }
+struct WorkflowAgentHost;
 
+impl AgentHost for WorkflowAgentHost {
     fn request_tool_approval<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
@@ -235,7 +218,7 @@ impl AgentHost for WorkflowAgentHost {
     fn request_user_response<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
         _prompt: AskUserPromptPayload,
     ) -> AgentHostFuture<'a, AskUserResponseResult> {
         Box::pin(async {
@@ -246,27 +229,6 @@ impl AgentHost for WorkflowAgentHost {
         })
     }
 
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.app
-            .state::<AppState>()
-            .chat_runtime()
-            .is_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            loop {
-                if !self.is_generation_active(conversation_id, generation) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-    }
 }
 
 struct WorkflowToolExecutor {
@@ -510,10 +472,8 @@ async fn run_builtin_agent_node(
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
 
-    let host = WorkflowAgentHost {
-        app: app.clone(),
-        text: Mutex::new(String::new()),
-    };
+    let host = WorkflowAgentHost;
+    let events = WorkflowAgentEvents::default();
     let executor = WorkflowToolExecutor { app: app.clone() };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
@@ -559,25 +519,35 @@ async fn run_builtin_agent_node(
         todo_state: Default::default(),
     };
 
-    let outcome = run_agent_loop(config, &host, &executor).await;
+    let control = crate::chat::runtime_state::ChatRunControl::new(
+        state.chat_runtime(), &conversation_id, generation,
+    );
+    let run_id = config.run_id.clone();
+    let message_id = config.message_id.clone();
+    let handle = crate::chat::agent::control::AgentRunHandle::new(
+        crate::chat::agent::events::AgentRunIdentity {
+            conversation_id: &conversation_id, run_id: &run_id, message_id: &message_id, generation,
+        },
+        &control,
+    );
+    let outcome = run_agent_loop(config, &host, &executor, &events, handle).await;
     state
         .chat_runtime()
         .end_generation(&conversation_id, generation);
-    match outcome {
-        Ok(result) => {
-            let text = if result.content.trim().is_empty() {
-                host.text.lock().ok().map(|g| g.clone()).unwrap_or_default()
-            } else {
-                result.content
-            };
-            if text.trim().is_empty() {
-                Err("Agent returned an empty response".to_string())
-            } else {
-                Ok(NodeOutput::from_text(text))
-            }
-        }
-        Err(err) if err == "cancelled" => Err("cancelled".to_string()),
-        Err(err) => Err(err),
+    let fallback = events.text.lock().ok().map(|text| text.clone()).unwrap_or_default();
+    builtin_agent_node_output(outcome, fallback)
+}
+
+fn builtin_agent_node_output(
+    outcome: Result<crate::chat::agent::types::AgentRunResult, String>,
+    fallback_text: String,
+) -> Result<NodeOutput, String> {
+    let result = outcome?;
+    let text = if result.content.trim().is_empty() { fallback_text } else { result.content };
+    if text.trim().is_empty() {
+        Err("Agent returned an empty response".to_string())
+    } else {
+        Ok(NodeOutput::from_text(text))
     }
 }
 
@@ -1080,3 +1050,7 @@ mod tests {
         assert_eq!(tools.len(), count);
     }
 }
+
+#[cfg(test)]
+#[path = "application_sdk04_tests.rs"]
+mod sdk04_tests;

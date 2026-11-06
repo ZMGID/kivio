@@ -3904,7 +3904,7 @@ fn apply_unified_event(
             let Some(message) = crate::chat::agent::SteeringMessage::new(id, &text) else {
                 return;
             };
-            let record = crate::chat::agent::steering::build_steer_record(&message, 1);
+            let record = crate::chat::agent_presentation::build_steer_record(&message, 1);
             let segment = push_tool_segment(segments, segment_order, &record.id);
             emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
             tool_map.insert(record.id.clone(), tool_calls.len());
@@ -3917,7 +3917,7 @@ fn apply_unified_event(
             let Some(message) = crate::chat::agent::SteeringMessage::new(id, &text) else {
                 return;
             };
-            let record = crate::chat::agent::steering::build_follow_up_record(&message, 1);
+            let record = crate::chat::agent_presentation::build_follow_up_record(&message, 1);
             let segment = push_tool_segment(segments, segment_order, &record.id);
             emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
             tool_map.insert(record.id.clone(), tool_calls.len());

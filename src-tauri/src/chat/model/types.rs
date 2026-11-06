@@ -373,7 +373,7 @@ impl PendingToolCall {
 /// `snippet` / `published_date` 尽力而为——各家 wire 未必提供（Gemini 的
 /// groundingSupports 有正文片段，第三方搜索有摘要/日期，Responses/Anthropic 大多没有）。
 /// 前端把 citations 渲染成可点来源列表，并把答案正文里的 `[n]` 锚到对应来源。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct WebCitation {
     pub title: String,
     pub url: String,

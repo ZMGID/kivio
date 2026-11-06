@@ -801,16 +801,7 @@ pub(super) async fn wait_for_chat_cancel(state: &AppState, conversation_id: &str
 }
 
 pub(crate) fn emit_chat_tool_record(app: &AppHandle, run_id: &str, record: &ToolCallRecord) {
-    crate::chat::protocol::emit_run_event(
-        app,
-        run_id,
-        crate::chat::protocol::ChatRunEvent::ToolUpdated {
-            tool: crate::chat::protocol::ChatToolPayload::from_record(
-                record,
-                truncate_chars(&record.arguments, 800),
-            ),
-        },
-    );
+    crate::chat::protocol::emit_run_event(app, run_id, crate::chat::agent_presentation::project_tool_event(record));
 }
 
 /// 决定一次 `emit_chat_stream_delta` 要发哪几条事件：`(发 reasoning, 发 text)`。
@@ -836,29 +827,7 @@ pub(crate) fn emit_chat_stream_delta(
     reasoning_delta: Option<&str>,
     segment: Option<&ChatMessageSegment>,
 ) {
-    let segment = segment.map(crate::chat::protocol::ChatSegmentPayload::from);
-    let (emit_reasoning, emit_text) =
-        stream_delta_event_kinds(delta, reasoning_delta, segment.is_some());
-    if emit_reasoning {
-        crate::chat::protocol::emit_run_event(
-            app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::ReasoningDelta {
-                delta: reasoning_delta.unwrap_or_default().to_string(),
-                segment: segment.clone(),
-            },
-        );
-    }
-    if emit_text {
-        crate::chat::protocol::emit_run_event(
-            app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::TextDelta {
-                delta: delta.to_string(),
-                segment,
-            },
-        );
-    }
+    for event in crate::chat::agent_presentation::project_stream_delta(delta, reasoning_delta, segment) { crate::chat::protocol::emit_run_event(app, run_id, event); }
 }
 
 /// 审批卡要展示的两样东西：`target` 是这次操作的对象（文件路径 / 命令），用来在前端拼

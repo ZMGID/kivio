@@ -46,10 +46,13 @@ pub(crate) fn append_draft(
     {
         super::attachments::externalize_message_artifacts(app, conversation_id, &mut draft);
     }
-    let mut line =
-        serde_json::to_string(&draft).map_err(|e| format!("serialize draft message: {e}"))?;
+    append_draft_at_path(&path, &draft)
+}
+
+pub(crate) fn append_draft_at_path(path: &Path, draft: &ChatMessage) -> Result<(), String> {
+    let mut line = serde_json::to_string(draft).map_err(|e| format!("serialize draft message: {e}"))?;
     line.push('\n');
-    append_line(&path, &line)
+    append_line(path, &line)
 }
 
 fn append_line(path: &Path, line: &str) -> Result<(), String> {
@@ -156,7 +159,7 @@ pub(crate) fn latest_drafts_for(app: &AppHandle, conversation_id: &str) -> Vec<C
 
 /// 解析日志:每个 message_id 取最后一行(自包含快照,后写覆盖先写),
 /// 保持首次出现的顺序;坏行(崩溃时写了半行)跳过。
-fn latest_drafts_per_message(content: &str) -> Vec<ChatMessage> {
+pub(crate) fn latest_drafts_per_message(content: &str) -> Vec<ChatMessage> {
     let mut order: Vec<String> = Vec::new();
     let mut latest: HashMap<String, ChatMessage> = HashMap::new();
     for line in content.lines() {
