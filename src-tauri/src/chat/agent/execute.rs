@@ -10,31 +10,24 @@ use tokio::time::timeout;
 use crate::chat::ask_user;
 use crate::chat::model::PendingToolCall;
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
-use crate::mcp::types::{ChatToolArtifact, McpToolCallResult};
+use crate::chat::{
+    model::ModelArtifact,
+    tools::{ArgumentPolicy, ToolOutput},
+};
 use crate::mcp::ChatToolDefinition;
-use crate::settings::{Settings, CHAT_TOOL_MAX_TIMEOUT_MS};
+use crate::settings::Settings;
 use crate::skills;
 
 use super::host::AgentHost;
+pub(crate) use crate::chat::tools::schema::coerce_arguments as coerce_tool_arguments;
 use super::prepare::{builtin_tool_bypasses_approval, disabled_builtin_tool_feedback};
 
+pub type AgentToolOutput = ToolOutput<Vec<ModelArtifact>>;
+
 pub type ToolExecutorFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<McpToolCallResult, String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<AgentToolOutput, String>> + Send + 'a>>;
 
 pub trait ToolExecutor: Send + Sync {
-    /// Publish a complete, readable result before the model or UI sees success.
-    fn prepare_result<'a>(
-        &'a self,
-        _ctx: &ToolExecutionContext<'_>,
-        _tool: &ChatToolDefinition,
-        _arguments: &Value,
-        mut output: McpToolCallResult,
-    ) -> ToolExecutorFuture<'a> {
-        Box::pin(async move {
-            assign_artifact_ids(&mut output.artifacts);
-            Ok(output)
-        })
-    }
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
@@ -191,8 +184,7 @@ pub async fn execute_tool_call(
     call: PendingToolCall,
     skill_context: Option<&mut skills::SkillRunContext>,
 ) -> (ToolCallRecord, String, Vec<Value>) {
-    let task_preflight = tool.source == "native"
-        && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME;
+    let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
     let mut call = call;
     if !task_preflight {
         call.arguments =
@@ -353,14 +345,7 @@ pub async fn execute_tool_call(
     host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
     let started = Instant::now();
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
-    let call_fut = async {
-        let output = executor
-            .call(ctx, tool, call.arguments.clone(), skill_context)
-            .await?;
-        executor
-            .prepare_result(ctx, tool, &call.arguments, output)
-            .await
-    };
+    let call_fut = executor.call(ctx, tool, call.arguments.clone(), skill_context);
     let result = if host.requires_tool_completion() {
         // Cancellation stops further steps, but the worker remains "stopping"
         // until this operation returns. Its own native/provider deadlines still
@@ -391,34 +376,23 @@ pub async fn execute_tool_call(
     let max_tool_output_chars = settings.chat_tools.max_tool_output_chars;
     let mut follow_ups: Vec<Value> = Vec::new();
     let mut tool_content = match result {
-        Ok(Ok(mut output)) if !output.is_error => {
-            if tool.name == "present_artifacts" {
-                complete_artifact_presentation(&mut output);
-            }
+        Ok(Ok(output)) if !output.is_error => {
             record.status = ToolCallStatus::Success;
-            record.artifacts = output.artifacts.clone();
+            record.artifacts = output.host_data.clone();
             record.structured_content = output.structured_content.clone();
-            follow_ups = output.follow_up_user_messages.clone();
+            follow_ups =
+                crate::chat::model::openai_messages_from_model_messages(&output.follow_up_messages);
             record.result_preview = Some(limit_tool_text_for_model(
-                &format_tool_result_preview(&tool_content_with_structured_output(
-                    &output,
-                    &tool.source,
-                )),
+                &format_tool_result_preview(&output.content),
                 max_tool_output_chars,
             ));
-            limit_tool_text_for_model(
-                &tool_content_with_structured_output(&output, &tool.source),
-                max_tool_output_chars,
-            )
+            limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Ok(output)) => {
             record.status = ToolCallStatus::Error;
             record.structured_content = output.structured_content.clone();
             record.error = Some(truncate_chars(&output.content, 1000));
-            limit_tool_text_for_model(
-                &tool_content_with_structured_output(&output, &tool.source),
-                max_tool_output_chars,
-            )
+            limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Err(err)) => {
             record.status = ToolCallStatus::Error;
@@ -568,419 +542,7 @@ fn tool_span_id(round: u32, tool_call_id: &str) -> String {
 }
 
 pub fn validate_tool_arguments(tool: &ChatToolDefinition, arguments: &Value) -> Result<(), String> {
-    validate_schema_value(&tool.input_schema, arguments, "arguments")
-}
-
-/// 按 JSON Schema 做宽容 coercion（pi `coerceWithJsonSchema` 的 Rust 移植）：
-/// 类型差一层皮的值在校验前被掰正，语义不明的值原样保留交给校验报错。
-/// 只做无损/明确的转换——字符串数字→数字、"true"/"false"→bool、数字/布尔→字符串、
-/// 对 object/array 递归；anyOf/oneOf 先试原值、再逐成员试 coercion。
-pub(crate) fn coerce_tool_arguments(schema: &Value, value: Value) -> Value {
-    if schema.is_null() || schema.as_object().is_some_and(|object| object.is_empty()) {
-        return value;
-    }
-    coerce_with_schema(schema, value)
-}
-
-fn coerce_with_schema(schema: &Value, mut value: Value) -> Value {
-    if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
-        for nested in all_of {
-            value = coerce_with_schema(nested, value);
-        }
-    }
-    if let Some(any_of) = schema.get("anyOf").and_then(Value::as_array) {
-        value = coerce_with_union(any_of, value);
-    }
-    if let Some(one_of) = schema.get("oneOf").and_then(Value::as_array) {
-        value = coerce_with_union(one_of, value);
-    }
-
-    let types = schema_types(schema);
-    let matches_union_member = types.len() > 1
-        && types
-            .iter()
-            .any(|type_name| value_matches_schema_type(type_name, &value));
-    if !types.is_empty() && !matches_union_member {
-        for type_name in &types {
-            let candidate = coerce_primitive_by_type(&value, type_name);
-            if let Some(candidate) = candidate {
-                value = candidate;
-                break;
-            }
-        }
-    }
-
-    if types.iter().any(|t| t == "object") {
-        if let Some(object) = value.as_object_mut() {
-            let properties = schema.get("properties").and_then(Value::as_object);
-            if let Some(properties) = properties {
-                let required = schema
-                    .get("required")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .collect::<std::collections::HashSet<_>>();
-                for (key, child_schema) in properties {
-                    if let Some(child) = object.remove(key) {
-                        // 模型经常把未设置的 optional 参数显式写成 null。若 schema 本身
-                        // 不接受 null，就应视为省略；转成 0/false/"" 会改变工具语义。
-                        if child.is_null()
-                            && !required.contains(key.as_str())
-                            && validate_schema_value(child_schema, &child, "value").is_err()
-                        {
-                            continue;
-                        }
-                        object.insert(key.clone(), coerce_with_schema(child_schema, child));
-                    }
-                }
-            }
-            if let Some(additional) = schema
-                .get("additionalProperties")
-                .filter(|extra| extra.is_object())
-            {
-                let extra_keys: Vec<String> = object
-                    .keys()
-                    .filter(|key| {
-                        properties
-                            .map(|props| !props.contains_key(*key))
-                            .unwrap_or(true)
-                    })
-                    .cloned()
-                    .collect();
-                for key in extra_keys {
-                    if let Some(child) = object.remove(&key) {
-                        object.insert(key, coerce_with_schema(additional, child));
-                    }
-                }
-            }
-        }
-    }
-    if types.iter().any(|t| t == "array") {
-        if let (Some(items), Some(array)) = (schema.get("items"), value.as_array_mut()) {
-            if items.is_object() {
-                for item in array.iter_mut() {
-                    let taken = std::mem::take(item);
-                    *item = coerce_with_schema(items, taken);
-                }
-            }
-        }
-    }
-    value
-}
-
-/// anyOf/oneOf：原值已匹配任一成员则不动；否则逐成员试 coercion，取第一个校验通过的。
-fn coerce_with_union(options: &[Value], value: Value) -> Value {
-    if options
-        .iter()
-        .any(|option| validate_schema_value(option, &value, "v").is_ok())
-    {
-        return value;
-    }
-    for option in options {
-        let candidate = coerce_with_schema(option, value.clone());
-        if validate_schema_value(option, &candidate, "v").is_ok() {
-            return candidate;
-        }
-    }
-    value
-}
-
-fn schema_types(schema: &Value) -> Vec<String> {
-    match schema.get("type") {
-        Some(Value::String(type_name)) => vec![type_name.clone()],
-        Some(Value::Array(type_names)) => type_names
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// 单个标量的定向 coercion（pi `coercePrimitiveByType`）。返回 None = 不知道怎么转，原样保留。
-fn coerce_primitive_by_type(value: &Value, type_name: &str) -> Option<Value> {
-    match type_name {
-        "number" => match value {
-            Value::String(text) if !text.trim().is_empty() => text
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|n| n.is_finite())
-                .map(Value::from),
-            Value::Bool(flag) => Some(Value::from(if *flag { 1 } else { 0 })),
-            _ => None,
-        },
-        "integer" => match value {
-            Value::String(text) if !text.trim().is_empty() => {
-                text.trim().parse::<i64>().ok().map(Value::from)
-            }
-            Value::Bool(flag) => Some(Value::from(if *flag { 1 } else { 0 })),
-            _ => None,
-        },
-        "boolean" => match value {
-            Value::String(text) if text == "true" => Some(Value::Bool(true)),
-            Value::String(text) if text == "false" => Some(Value::Bool(false)),
-            Value::Number(number) if number.as_i64() == Some(1) => Some(Value::Bool(true)),
-            Value::Number(number) if number.as_i64() == Some(0) => Some(Value::Bool(false)),
-            _ => None,
-        },
-        "string" => match value {
-            Value::Number(number) => Some(Value::String(number.to_string())),
-            Value::Bool(flag) => Some(Value::String(flag.to_string())),
-            _ => None,
-        },
-        "null" => match value {
-            Value::String(text) if text.is_empty() => Some(Value::Null),
-            Value::Number(number) if number.as_i64() == Some(0) => Some(Value::Null),
-            Value::Bool(false) => Some(Value::Null),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
-    if schema.is_null() || schema.as_object().is_some_and(|object| object.is_empty()) {
-        return Ok(());
-    }
-    if let Some(options) = schema.get("anyOf").and_then(Value::as_array) {
-        if options
-            .iter()
-            .any(|option| validate_schema_value(option, value, path).is_ok())
-        {
-            return Ok(());
-        }
-        return Err(format!("{path} does not match any allowed schema"));
-    }
-    if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
-        let matches = options
-            .iter()
-            .filter(|option| validate_schema_value(option, value, path).is_ok())
-            .count();
-        if matches == 1 {
-            return Ok(());
-        }
-        return Err(format!("{path} must match exactly one allowed schema"));
-    }
-    if let Some(types) = schema.get("type") {
-        validate_schema_type(types, value, path)?;
-    }
-    if let Some(enum_values) = schema.get("enum").and_then(Value::as_array) {
-        if !enum_values.iter().any(|candidate| candidate == value) {
-            return Err(format!("{path} must be one of the declared enum values"));
-        }
-    }
-    if let Some(object) = value.as_object() {
-        validate_object_schema(schema, object, path)?;
-    }
-    if let Some(items) = schema.get("items") {
-        if let Some(array) = value.as_array() {
-            for (idx, item) in array.iter().enumerate() {
-                validate_schema_value(items, item, &format!("{path}[{idx}]"))?;
-            }
-        }
-    }
-    if let Some(max_items) = schema.get("maxItems").and_then(Value::as_u64) {
-        if value
-            .as_array()
-            .is_some_and(|array| array.len() as u64 > max_items)
-        {
-            return Err(format!("{path} must contain at most {max_items} items"));
-        }
-    }
-    validate_numeric_range(schema, value, path)?;
-    Ok(())
-}
-
-fn validate_schema_type(types: &Value, value: &Value, path: &str) -> Result<(), String> {
-    if let Some(type_name) = types.as_str() {
-        if value_matches_schema_type(type_name, value) {
-            return Ok(());
-        }
-        return Err(format!("{path} must be {type_name}"));
-    }
-    if let Some(type_names) = types.as_array() {
-        if type_names
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|type_name| value_matches_schema_type(type_name, value))
-        {
-            return Ok(());
-        }
-        return Err(format!("{path} has an invalid type"));
-    }
-    Ok(())
-}
-
-fn value_matches_schema_type(type_name: &str, value: &Value) -> bool {
-    match type_name {
-        "null" => value.is_null(),
-        "boolean" => value.is_boolean(),
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "number" => value.is_number(),
-        _ => true,
-    }
-}
-
-fn validate_object_schema(
-    schema: &Value,
-    object: &serde_json::Map<String, Value>,
-    path: &str,
-) -> Result<(), String> {
-    let properties = schema.get("properties").and_then(Value::as_object);
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        for key in required.iter().filter_map(Value::as_str) {
-            if !object.contains_key(key) {
-                return Err(format!("{path}.{key} is required"));
-            }
-        }
-    }
-    if let Some(properties) = properties {
-        for (key, child_schema) in properties {
-            if let Some(child_value) = object.get(key) {
-                validate_schema_value(child_schema, child_value, &format!("{path}.{key}"))?;
-            }
-        }
-    }
-    if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
-        if let Some(extra_key) = object.keys().find(|key| match properties {
-            Some(properties) => !properties.contains_key(*key),
-            None => true,
-        }) {
-            return Err(format!("{path}.{extra_key} is not allowed"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_numeric_range(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
-    let Some(number) = value.as_f64() else {
-        return Ok(());
-    };
-    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
-        if number < minimum {
-            return Err(format!("{path} must be at least {minimum}"));
-        }
-    }
-    if let Some(maximum) = schema.get("maximum").and_then(Value::as_f64) {
-        if number > maximum {
-            return Err(format!("{path} must be at most {maximum}"));
-        }
-    }
-    Ok(())
-}
-
-/// MCP 契约要求 structuredContent 进入模型可见文本（除非 text 已含同样 JSON）。
-/// native 工具不受此约束：它们的 content 都是为模型精心格式化的文本（read_file 的
-/// cat -n、文件变更的 summary+diff、todo/memory 的排版文本），再拼整包 JSON 只会
-/// 让 token 翻倍（read_file 行号化后 content 不再等于 JSON，旧逻辑会整包重复追加）。
-fn assign_artifact_ids(artifacts: &mut [ChatToolArtifact]) {
-    for artifact in artifacts {
-        // IDs are a Kivio-owned display capability. Never trust or preserve an
-        // ID supplied by an external tool server.
-        artifact.id = Some(format!("art_{}", uuid::Uuid::new_v4().simple()));
-    }
-}
-
-fn complete_artifact_presentation(output: &mut McpToolCallResult) {
-    let Some(structured) = output.structured_content.as_mut() else {
-        return;
-    };
-    let Some(ids) = structured
-        .get_mut("artifactIds")
-        .and_then(Value::as_array_mut)
-    else {
-        return;
-    };
-    for artifact in &output.artifacts {
-        let Some(id) = artifact.id.as_deref() else {
-            continue;
-        };
-        if !ids.iter().any(|value| value.as_str() == Some(id)) {
-            ids.push(Value::String(id.to_string()));
-        }
-    }
-    output.raw = structured.clone();
-}
-
-fn artifact_presentation_hint(artifacts: &[ChatToolArtifact]) -> Option<String> {
-    if artifacts.is_empty() {
-        return None;
-    }
-    let mut items = Vec::new();
-    for artifact in artifacts {
-        let Some(id) = artifact.id.as_deref() else {
-            continue;
-        };
-        items.push(format!(
-            "- {id}: {} ({})",
-            artifact.name, artifact.mime_type
-        ));
-        if let Some(path) = artifact.path.as_deref() {
-            items.push(format!(
-                "  Local file: {}",
-                serde_json::to_string(path).unwrap_or_default()
-            ));
-        }
-    }
-    if items.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "Available artifacts (not shown automatically):\n{}\nIn your final answer, reference only necessary deliverables at the relevant paragraph: [label](artifact:art_ID) for files, ![description](artifact:art_ID) for images. Replace art_ID with an exact ID listed above. Internal QA screenshots, extracted frames, drafts, and failed attempts normally stay in the work log. Do not pass file contents, base64, or data URLs. Use present_artifacts with paths to prepare selected existing local files; use mode preview only for an explicit user preview or choice.",
-        format!("{}\nTo inspect an artifact listed here, call read with artifact_ids containing its exact ID. If a local path is listed, it can also be used by file-based tools. For a user-provided disk path, use read with path directly; no artifact registration is required. Avoid guessing or searching for a generated filename when its exact ID or path is already available. Showing an image does not mean you have visually inspected it.", items.join("\n")),
-    ))
-}
-
-fn tool_content_with_structured_output(output: &McpToolCallResult, source: &str) -> String {
-    let mut content = if source == "native" {
-        output.content.clone()
-    } else if let Some(structured_content) = output.structured_content.as_ref() {
-        let structured_json = serde_json::to_string(structured_content).unwrap_or_default();
-        if structured_json.is_empty() || output.content.contains(&structured_json) {
-            output.content.clone()
-        } else if output.content.trim().is_empty() {
-            structured_json
-        } else {
-            format!(
-                "{}\n\nstructuredContent: {}",
-                output.content, structured_json
-            )
-        }
-    } else {
-        output.content.clone()
-    };
-    let is_presentation = output
-        .structured_content
-        .as_ref()
-        .and_then(|value| value.get("type"))
-        .and_then(Value::as_str)
-        == Some("artifact_presentation");
-    if !is_presentation {
-        if let Some(hint) = artifact_presentation_hint(&output.artifacts) {
-            if !content.trim().is_empty() {
-                content.push_str("\n\n");
-            }
-            content.push_str(&hint);
-        }
-    } else if let Some(structured) = output.structured_content.as_ref() {
-        // Old records have no mode. New calls need the IDs assigned to local
-        // files after execution, including when native content omits raw JSON.
-        if structured.get("mode").is_some() {
-            if let Some(ids) = structured.get("artifactIds").and_then(Value::as_array) {
-                let ids: Vec<&str> = ids.iter().filter_map(Value::as_str).collect();
-                content.push_str(&format!(
-                    "\n\nRegistered artifact IDs: {}. Use only needed IDs in your final answer: [label](artifact:art_ID) for files or ![description](artifact:art_ID) for images. Do not repeat a separate attachment gallery.",
-                    ids.join(", ")
-                ));
-            }
-        }
-    }
-    content
+    crate::chat::tools::schema::validate_arguments(&tool.input_schema, arguments)
 }
 
 /// Sentinel for tools that enforce their own wait or timeout.
@@ -991,44 +553,9 @@ fn effective_tool_timeout_ms(
     tool: &ChatToolDefinition,
     arguments: &Value,
 ) -> u64 {
-    let default_timeout_ms = settings.chat_tools.tool_timeout_ms;
-    if tool.source == "mixer" && tool.name == "mixer_video_analysis" {
-        return default_timeout_ms.max(300_000);
-    }
-    if tool.source == "mixer" && tool.name == "mixer_generate_image" {
-        return default_timeout_ms.max(crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS);
-    }
-    // 前台 bash 自己等到退出；显式 timeout_ms 由 shell 杀掉进程。外层 60s
-    // 工具超时不能再套一层，否则有限长任务会被误杀、逼进 background。
-    if tool.source == "native" && tool.name == "bash" {
-        return NO_OUTER_TOOL_TIMEOUT;
-    }
-    // Task may wait for blocking/synchronous children; both tools own their lifetime.
-    if tool.source == "native" && crate::chat::sub_agent::is_sub_agent_tool_name(&tool.name) {
-        return NO_OUTER_TOOL_TIMEOUT;
-    }
-    // The orchestration tools bound their own wait and detach the target reply on timeout.
-    if tool.source == "native"
-        && matches!(
-            tool.name.as_str(),
-            "kivio_create_conversation" | "kivio_send_message"
-        )
-    {
-        return NO_OUTER_TOOL_TIMEOUT;
-    }
-    if tool.source == "native" && tool.name == "bash_output" {
-        let wait_ms = arguments
-            .get("wait_ms")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
-            .min(CHAT_TOOL_MAX_TIMEOUT_MS);
-        return default_timeout_ms.max(wait_ms);
-    }
-    if tool.source == "native" && tool.name == "automation_run" {
-        return crate::automation::tools::run_timeout_ms(arguments).max(default_timeout_ms);
-    }
-    // MCP 与其它工具一样走设置里的「工具超时」，不单独封顶。
-    default_timeout_ms
+    tool.timeout_policy()
+        .milliseconds(settings.chat_tools.tool_timeout_ms, arguments)
+        .unwrap_or(NO_OUTER_TOOL_TIMEOUT)
 }
 
 /// 超时错误给模型用：含工具名、时限、简短参数摘要与可执行建议（避免只回一句「超时」）。
@@ -1296,7 +823,7 @@ mod tests {
             let content = format!("result:{}", tool.name);
             let structured_content = self.structured_content.clone();
             Box::pin(async move {
-                Ok(McpToolCallResult {
+                crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
                     content,
                     is_error: false,
                     raw: Value::Null,
@@ -1387,100 +914,6 @@ mod tests {
             annotations: None,
             output_schema: None,
         }
-    }
-
-    #[test]
-    fn assigns_fresh_kivio_owned_artifact_ids() {
-        let mut artifacts = vec![
-            ChatToolArtifact {
-                id: None,
-                name: "report.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-                data_url: String::new(),
-                size_bytes: None,
-                path: None,
-            },
-            ChatToolArtifact {
-                id: Some("art_existing".to_string()),
-                name: "chart.png".to_string(),
-                mime_type: "image/png".to_string(),
-                data_url: String::new(),
-                size_bytes: None,
-                path: None,
-            },
-        ];
-
-        assign_artifact_ids(&mut artifacts);
-
-        let first = artifacts[0].id.as_deref().expect("first artifact id");
-        let second = artifacts[1].id.as_deref().expect("second artifact id");
-        assert!(first.starts_with("art_") && first.len() > 4);
-        assert!(second.starts_with("art_") && second.len() > 4);
-        assert_ne!(first, second);
-        assert_ne!(second, "art_existing");
-    }
-
-    #[test]
-    fn completes_path_based_presentation_with_assigned_ids() {
-        let mut output = McpToolCallResult {
-            content: "display".to_string(),
-            is_error: false,
-            raw: serde_json::json!({}),
-            artifacts: vec![ChatToolArtifact {
-                id: Some("art_local".to_string()),
-                name: "local.txt".to_string(),
-                mime_type: "text/plain".to_string(),
-                data_url: String::new(),
-                size_bytes: Some(5),
-                path: Some("C:\\tmp\\local.txt".to_string()),
-            }],
-            structured_content: Some(serde_json::json!({
-                "type": "artifact_presentation",
-                "artifactIds": ["art_existing"]
-            })),
-            follow_up_user_messages: Vec::new(),
-        };
-
-        complete_artifact_presentation(&mut output);
-
-        let expected = serde_json::json!({
-            "type": "artifact_presentation",
-            "artifactIds": ["art_existing", "art_local"]
-        });
-        assert_eq!(output.structured_content, Some(expected.clone()));
-        assert_eq!(output.raw, expected);
-        assert_eq!(
-            tool_content_with_structured_output(&output, "native"),
-            "display"
-        );
-        output.structured_content.as_mut().unwrap()["mode"] = serde_json::json!("prepare");
-        let prepared_content = tool_content_with_structured_output(&output, "native");
-        assert!(prepared_content.contains("Registered artifact IDs: art_existing, art_local"));
-        assert!(prepared_content.contains("[label](artifact:art_ID)"));
-    }
-
-    #[test]
-    fn artifact_hint_exposes_ids_without_claiming_automatic_display() {
-        let artifacts = vec![ChatToolArtifact {
-            id: Some("art_report".to_string()),
-            name: "report.txt".to_string(),
-            mime_type: "text/plain".to_string(),
-            data_url: String::new(),
-            size_bytes: None,
-            path: None,
-        }];
-
-        let hint = artifact_presentation_hint(&artifacts).expect("artifact hint");
-
-        assert!(hint.contains("art_report: report.txt (text/plain)"));
-        assert!(hint.contains("not shown automatically"));
-        assert!(hint.contains("present_artifacts"));
-        assert!(hint.contains("[label](artifact:art_ID)"));
-        assert!(hint.contains("Internal QA screenshots"));
-        assert!(hint.contains("Do not pass file contents, base64, or data URLs"));
-        assert!(hint.contains("prepare selected existing local files"));
-        assert!(hint.contains("user-provided disk path"));
-        assert!(!hint.contains("Do not search the filesystem for generated filenames."));
     }
 
     #[test]
@@ -1595,13 +1028,13 @@ mod tests {
             fn call<'a>(
                 &'a self,
                 _ctx: &'a ToolExecutionContext<'a>,
-                _tool: &'a ChatToolDefinition,
+                tool: &'a ChatToolDefinition,
                 arguments: Value,
                 _skill_context: Option<&'a mut skills::SkillRunContext>,
             ) -> ToolExecutorFuture<'a> {
                 self.0.lock().unwrap().push(arguments);
                 Box::pin(async {
-                    Ok(McpToolCallResult {
+                    crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
                         content: "dedicated batch preflight error".into(),
                         is_error: true,
                         ..Default::default()
@@ -2166,12 +1599,12 @@ mod tests {
         struct SlowTask;
         impl ToolExecutor for SlowTask {
             fn call<'a>(
-                &'a self, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition,
+                &'a self, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
                 _arguments: Value, _skills: Option<&'a mut skills::SkillRunContext>,
             ) -> ToolExecutorFuture<'a> {
                 Box::pin(async {
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    Ok(McpToolCallResult { content: "completed child result".into(), ..Default::default() })
+                    crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult { content: "completed child result".into(), ..Default::default() })
                 })
             }
         }
@@ -2315,7 +1748,7 @@ mod tests {
             serde_json::json!({ "offset": 5, "ratio": 0.5, "recursive": true, "name": "42" })
         );
         // coercion 后必须能过既有校验（这就是它存在的意义）。
-        assert!(validate_schema_value(&schema, &coerced, "arguments").is_ok());
+        assert!(crate::chat::tools::schema::validate_arguments(&schema, &coerced).is_ok());
     }
 
     #[test]
@@ -2360,7 +1793,7 @@ mod tests {
         });
         let coerced = coerce_tool_arguments(&schema, serde_json::json!({ "count": null }));
         assert_eq!(coerced, serde_json::json!({ "count": null }));
-        assert!(validate_schema_value(&schema, &coerced, "arguments").is_err());
+        assert!(crate::chat::tools::schema::validate_arguments(&schema, &coerced).is_err());
     }
 
     #[test]
@@ -2399,7 +1832,7 @@ mod tests {
         // 掰不动的（非数字字符串）：原样保留，交给校验去报错。
         let hopeless = serde_json::json!({ "count": "many" });
         assert_eq!(coerce_tool_arguments(&schema, hopeless.clone()), hopeless);
-        assert!(validate_schema_value(&schema, &hopeless, "arguments").is_err());
+        assert!(crate::chat::tools::schema::validate_arguments(&schema, &hopeless).is_err());
     }
 
     #[test]

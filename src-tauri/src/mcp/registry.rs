@@ -1210,7 +1210,7 @@ async fn call_native_tool(
     )
     .await?;
 
-    match &entry.call {
+    let mut result = match &entry.call {
         NativeToolCall::SyncText(call) => Ok(text_tool_result(call(&workspace, &arguments)?)),
         NativeToolCall::SyncResult(call) => call(&workspace, &arguments),
         NativeToolCall::BlockingText(call) => {
@@ -1219,18 +1219,7 @@ async fn call_native_tool(
         }
         NativeToolCall::BlockingMutation(call) => {
             let result = run_blocking_file_mutation(&workspace, &arguments, *call).await?;
-            let mut tool_result = file_mutation_tool_result(result)?;
-            // If an ordinary-chat `write` lands inside that conversation's
-            // workbench, attach a downloadable file-card artifact. Explicit writes
-            // elsewhere and project edits do not become delivery cards.
-            if tool.name == "write" {
-                if let Some(artifact) =
-                    delivery_artifact_for_write(&workspace, &arguments, native_ctx.as_ref())
-                {
-                    tool_result.artifacts.push(artifact);
-                }
-            }
-            Ok(tool_result)
+            file_mutation_tool_result(result)
         }
         NativeToolCall::Async(call) => {
             call(NativeCallCtx {
@@ -1246,7 +1235,15 @@ async fn call_native_tool(
         NativeToolCall::Conversation(_)
         | NativeToolCall::HostMediated
         | NativeToolCall::SubAgent(_) => unreachable!(),
+    }?;
+    if tool.name == "write" {
+        if let Some(artifact) =
+            delivery_artifact_for_write(&workspace, &arguments, native_ctx.as_ref())
+        {
+            result.artifacts.push(artifact);
+        }
     }
+    Ok(result)
 }
 
 /// Runs a file mutation tool on the blocking thread pool so in-process path
@@ -1268,31 +1265,8 @@ where
         .map_err(|err| format!("File mutation task failed: {err}"))?
 }
 
-/// 文件变更结果给模型的 diff 最多带多少行（对齐 clawspring 的 80 行裁剪）。
-const FILE_MUTATION_DIFF_MAX_LINES: usize = 80;
-
 pub fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallResult, String> {
-    let summary = result.summary();
-    let mut content = summary;
-    if !result.warnings.is_empty() {
-        content = format!("{}\n{}", content, result.warnings.join("\n"));
-    }
-    // 成功只回传摘要和警告；完整 diff 仍留在 structured_content 中用于审阅。
-    // 失败保留原有诊断回显，不修改调用参数或实际文件内容。
-    if !result.ok && !result.diff.trim().is_empty() {
-        let lines: Vec<&str> = result.diff.lines().collect();
-        if lines.len() > FILE_MUTATION_DIFF_MAX_LINES {
-            let clipped = lines[..FILE_MUTATION_DIFF_MAX_LINES].join("\n");
-            content = format!(
-                "{}\n\n{}\n[... diff clipped: showing first {FILE_MUTATION_DIFF_MAX_LINES} of {} lines ...]",
-                content,
-                clipped,
-                lines.len()
-            );
-        } else {
-            content = format!("{}\n\n{}", content, result.diff);
-        }
-    }
+    let content = result.model_content();
     let is_error = !result.ok;
     let structured = serde_json::to_value(&result)
         .map_err(|err| format!("Serialize file mutation result failed: {err}"))?;
@@ -1456,9 +1430,9 @@ mod tests {
         let source = "def answer():\n    return 42\n".repeat(100);
         let mut mutation = crate::native_tools::write_file(
             &workspace,
-            &serde_json::json!({
-                "path": "answer.py", "content": source,
-            }),
+            &crate::native_tools::WriteArgs {
+                path: "answer.py".into(), content: source.clone(),
+            },
         )
         .unwrap();
         mutation.warnings.push("retained warning".into());

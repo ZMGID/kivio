@@ -574,7 +574,10 @@ fn execute_file(
         file.get("content").and_then(Value::as_str).unwrap_or(""),
         prev,
     );
-    write_file(&workspace, &json!({ "path": path, "content": content }))?;
+    write_file(
+        &workspace,
+        &crate::native_tools::WriteArgs { path: path.clone(), content },
+    )?;
     Ok(NodeOutput::with_json(
         path.clone(),
         json!({ "path": path, "op": "write" }),

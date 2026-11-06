@@ -795,47 +795,57 @@ impl AgentHost for Host {
 struct Executor { app: AppHandle, host: Arc<Host> }
 
 impl ToolExecutor for Executor {
-    fn prepare_result<'a>(&'a self, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, args: &Value, output: crate::mcp::types::McpToolCallResult) -> ToolExecutorFuture<'a> {
-        crate::chat::artifacts::prepare_output(&self.app, ctx.tool_conversation_id, ctx.message_id, tool, args, output)
-    }
     fn call<'a>(&'a self, ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition, args: Value, skill_context: Option<&'a mut crate::skills::SkillRunContext>) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            if self.host.forced() { return Err("Request budget crossed; tools are disabled for the final report".into()); }
-            if tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name) {
-                return Ok(crate::chat::todo::tool_result(&crate::chat::todo::apply_todo_write(args)?));
-            }
-            if tool.source == "eval" {
-                let shared = self.host.shared_tools.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|shared| shared.definition.id == tool.id).cloned()
-                    .ok_or("The eval tool is outside this session's saved grant")?;
-                return super::eval::invoke(&shared, args).await;
-            }
-            if tool.id == "native__yield" {
-                if !self.host.options.workpool_items.is_empty() {
-                    let (key, data) = workpool_yield(&args, self.host.options.workpool_items.len())?;
-                    let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner())
-                        .submit_workpool(key, data, &self.host.options.workpool_items, &self.host.options.completion)?;
-                    return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "All workpool items are complete; ending this turn." } else { "Workpool item submitted." }.into(), ..Default::default() });
+            let result_arguments = args.clone();
+            let output: crate::mcp::types::McpToolCallResult = async {
+                if self.host.forced() { return Err("Request budget crossed; tools are disabled for the final report".into()); }
+                if tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name) {
+                    return Ok(crate::chat::todo::tool_result(&crate::chat::todo::apply_todo_write(args)?));
                 }
-                if let Some(error) = empty_yield(&args, &mut self.host.empty_yields.lock().unwrap_or_else(|error| error.into_inner()))? {
-                    *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
-                    return Ok(crate::mcp::types::McpToolCallResult { content: error, ..Default::default() });
+                if tool.source == "eval" {
+                    let shared = self.host.shared_tools.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|shared| shared.definition.id == tool.id).cloned()
+                        .ok_or("The eval tool is outside this session's saved grant")?;
+                    return super::eval::invoke(&shared, args).await;
                 }
-                if let Some(error) = yield_error(&args)? {
-                    *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
-                    let structured = json!({"data": null, "schemaOverridden": false, "error": error});
-                    self.host.app.state::<AppState>().sub_agents.jobs.set_structured_output(&self.host.job_id, structured.clone());
-                    self.host.lock().structured_output = Some(structured);
-                    return Ok(crate::mcp::types::McpToolCallResult { content: "Failure accepted.".into(), ..Default::default() });
+                if tool.id == "native__yield" {
+                    if !self.host.options.workpool_items.is_empty() {
+                        let (key, data) = workpool_yield(&args, self.host.options.workpool_items.len())?;
+                        let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner())
+                            .submit_workpool(key, data, &self.host.options.workpool_items, &self.host.options.completion)?;
+                        return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "All workpool items are complete; ending this turn." } else { "Workpool item submitted." }.into(), ..Default::default() });
+                    }
+                    if let Some(error) = empty_yield(&args, &mut self.host.empty_yields.lock().unwrap_or_else(|error| error.into_inner()))? {
+                        *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
+                        return Ok(crate::mcp::types::McpToolCallResult { content: error, ..Default::default() });
+                    }
+                    if let Some(error) = yield_error(&args)? {
+                        *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
+                        let structured = json!({"data": null, "schemaOverridden": false, "error": error});
+                        self.host.app.state::<AppState>().sub_agents.jobs.set_structured_output(&self.host.job_id, structured.clone());
+                        self.host.lock().structured_output = Some(structured);
+                        return Ok(crate::mcp::types::McpToolCallResult { content: "Failure accepted.".into(), ..Default::default() });
+                    }
+                    let mut arguments = args;
+                    if let Some(arguments) = arguments.as_object_mut() { arguments.remove("error"); }
+                    let input = serde_json::from_value(arguments).map_err(|error| format!("Invalid yield arguments: {error}"))?;
+                    let text = self.host.lock().last_assistant.clone();
+                    let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner()).submit(input, &self.host.options.completion, &text)?;
+                    return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "Result accepted." } else { "Incremental result recorded." }.into(), ..Default::default() });
                 }
-                let mut arguments = args;
-                if let Some(arguments) = arguments.as_object_mut() { arguments.remove("error"); }
-                let input = serde_json::from_value(arguments).map_err(|error| format!("Invalid yield arguments: {error}"))?;
-                let text = self.host.lock().last_assistant.clone();
-                let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner()).submit(input, &self.host.options.completion, &text)?;
-                return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "Result accepted." } else { "Incremental result recorded." }.into(), ..Default::default() });
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                crate::mcp::registry::call_tool(&self.app, &self.app.state::<AppState>(), tool, args, skill_context, Some(native_ctx)).await
             }
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
-            crate::mcp::registry::call_tool(&self.app, &self.app.state::<AppState>(), tool, args, skill_context, Some(native_ctx)).await
+            .await?;
+            crate::chat::tool_output::prepare(
+                &self.app,
+                ctx.tool_conversation_id,
+                ctx.message_id,
+                tool,
+                &result_arguments,
+                output,
+            )
+            .await
         })
     }
 }

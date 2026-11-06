@@ -559,22 +559,6 @@ pub(super) struct RegistryToolExecutor<'a> {
     pub(super) video_analysis: tokio::sync::Mutex<crate::chat::video_analysis::VideoTool>,
 }
 impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
-    fn prepare_result<'a>(
-        &'a self,
-        ctx: &crate::chat::agent::ToolExecutionContext<'_>,
-        tool: &ChatToolDefinition,
-        arguments: &Value,
-        output: crate::mcp::types::McpToolCallResult,
-    ) -> crate::chat::agent::ToolExecutorFuture<'a> {
-        crate::chat::artifacts::prepare_output(
-            &self.app,
-            ctx.tool_conversation_id,
-            ctx.message_id,
-            tool,
-            arguments,
-            output,
-        )
-    }
     fn call<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
@@ -583,58 +567,71 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
         skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            if ctx.depth == 0 {
-                if let Ok(conversation) =
-                    crate::chat::storage::load_conversation(&self.app, ctx.conversation_id)
-                {
-                    if conversation.goal_state.as_ref().is_some_and(|goal| {
-                        goal.status == crate::chat::types::GoalStatus::Completed
-                            && goal.active_run_id.as_deref() == Some(ctx.run_id)
+            let result_arguments = arguments.clone();
+            let output: crate::mcp::types::McpToolCallResult = async {
+                if ctx.depth == 0 {
+                    if let Ok(conversation) =
+                        crate::chat::storage::load_conversation(&self.app, ctx.conversation_id)
+                    {
+                        if conversation.goal_state.as_ref().is_some_and(|goal| {
+                            goal.status == crate::chat::types::GoalStatus::Completed
+                                && goal.active_run_id.as_deref() == Some(ctx.run_id)
+                        }) {
+                            return Err(
+                                "Goal completion was accepted; no further tools may run in this turn"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+                if tool.source == "mixer" && tool.name == "mixer_video_analysis" {
+                    return self
+                        .video_analysis
+                        .lock()
+                        .await
+                        .call(&self.app, self.state, ctx, &arguments)
+                        .await;
+                }
+                let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx);
+                let result = mcp::registry::call_tool(
+                    &self.app,
+                    self.state,
+                    tool,
+                    arguments,
+                    skill_context,
+                    Some(native_ctx),
+                )
+                .await;
+                // run 域这条有 replay 价值，保留；但别为它再整读一遍会话 JSON——
+                // todo_write 的结构化返回里本来就带着刚落盘的权威 todoState。
+                if crate::mcp::types::canonical_tool_name(&tool.name) == "todo_write" {
+                    if let Some(todo_state) = result.as_ref().ok().and_then(|res| {
+                        serde_json::from_value::<crate::chat::types::AgentTodoState>(
+                            res.structured_content.as_ref()?.get("todoState")?.clone(),
+                        )
+                        .ok()
                     }) {
-                        return Err(
-                            "Goal completion was accepted; no further tools may run in this turn"
-                                .into(),
+                        crate::chat::protocol::emit_run_event(
+                            &self.app,
+                            ctx.run_id,
+                            crate::chat::protocol::ChatRunEvent::TodoUpdated {
+                                todo_state: (&todo_state).into(),
+                            },
                         );
                     }
                 }
+                result
             }
-            if tool.source == "mixer" && tool.name == "mixer_video_analysis" {
-                return self
-                    .video_analysis
-                    .lock()
-                    .await
-                    .call(&self.app, self.state, ctx, &arguments)
-                    .await;
-            }
-            let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx);
-            let result = mcp::registry::call_tool(
+            .await?;
+            crate::chat::tool_output::prepare(
                 &self.app,
-                self.state,
+                ctx.tool_conversation_id,
+                ctx.message_id,
                 tool,
-                arguments,
-                skill_context,
-                Some(native_ctx),
+                &result_arguments,
+                output,
             )
-            .await;
-            // run 域这条有 replay 价值，保留；但别为它再整读一遍会话 JSON——
-            // todo_write 的结构化返回里本来就带着刚落盘的权威 todoState。
-            if crate::mcp::types::canonical_tool_name(&tool.name) == "todo_write" {
-                if let Some(todo_state) = result.as_ref().ok().and_then(|res| {
-                    serde_json::from_value::<crate::chat::types::AgentTodoState>(
-                        res.structured_content.as_ref()?.get("todoState")?.clone(),
-                    )
-                    .ok()
-                }) {
-                    crate::chat::protocol::emit_run_event(
-                        &self.app,
-                        ctx.run_id,
-                        crate::chat::protocol::ChatRunEvent::TodoUpdated {
-                            todo_state: (&todo_state).into(),
-                        },
-                    );
-                }
-            }
-            result
+            .await
         })
     }
 }
