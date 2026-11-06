@@ -53,13 +53,18 @@ pub fn filter_tools_for_agent(
     };
     let task_allowed = |tool: &ChatToolDefinition| {
         (max_depth < 0 || i32::from(child_depth) < max_depth)
-            && def.spawns.as_deref().is_none_or(|policy| {
-                policy.split(',').any(|name| !name.trim().is_empty())
-            })
+            && def
+                .spawns
+                .as_deref()
+                .is_none_or(|policy| policy.split(',').any(|name| !name.trim().is_empty()))
             && (def.spawns.is_some() || listed(tool))
     };
-    let has_task = tools.iter().any(|tool| is_native(tool, "task") && task_allowed(tool));
-    let has_bash = tools.iter().any(|tool| is_native(tool, "bash") && listed(tool));
+    let has_task = tools
+        .iter()
+        .any(|tool| is_native(tool, "task") && task_allowed(tool));
+    let has_bash = tools
+        .iter()
+        .any(|tool| is_native(tool, "bash") && listed(tool));
 
     tools.retain(|tool| {
         if tool.source == "native"
@@ -108,8 +113,13 @@ mod tests {
             description: String::new(),
             system_prompt: String::new(),
             model: None,
-            models: Vec::new(), structured: false, output: None,
-            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
+            models: Vec::new(),
+            structured: false,
+            output: None,
+            prewalk: None,
+            advisor: None,
+            read_summarize: None,
+            metadata: Default::default(),
             thinking_level: None,
             blocking: false,
             tools: tools.map(|items| items.iter().map(|item| (*item).into()).collect()),
@@ -121,11 +131,25 @@ mod tests {
     }
 
     fn catalog() -> Vec<ChatToolDefinition> {
-        ["read", "write", "bash", "task", "wait", "ask_user", "todo_write", "todo_read", "skill"]
-            .into_iter()
-            .map(|name| tool("native", name))
-            .chain([tool("skill", "research"), tool("mcp", "remote"), tool("extension", "custom")])
-            .collect()
+        [
+            "read",
+            "write",
+            "bash",
+            "task",
+            "wait",
+            "ask_user",
+            "todo_write",
+            "todo_read",
+            "skill",
+        ]
+        .into_iter()
+        .map(|name| tool("native", name))
+        .chain([
+            tool("skill", "research"),
+            tool("mcp", "remote"),
+            tool("extension", "custom"),
+        ])
+        .collect()
     }
 
     fn names(tools: &[ChatToolDefinition]) -> Vec<&str> {
@@ -136,14 +160,25 @@ mod tests {
     fn default_keeps_enabled_tools_but_not_ask_user_or_todos() {
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &definition(None, None), 1, 2);
-        assert_eq!(names(&tools), ["read", "write", "bash", "task", "wait", "skill", "research", "remote", "custom"]);
+        assert_eq!(
+            names(&tools),
+            ["read", "write", "bash", "task", "wait", "skill", "research", "remote", "custom"]
+        );
     }
 
     #[test]
     fn explicit_allowlist_keeps_skill_tools_and_automatically_adds_wait_for_bash() {
         let mut tools = catalog();
-        filter_tools_for_agent(&mut tools, &definition(Some(&["read", "bash", "ask_user", "todo_write"]), None), 1, 2);
-        assert_eq!(names(&tools), ["read", "bash", "wait", "skill", "research", "remote", "custom"]);
+        filter_tools_for_agent(
+            &mut tools,
+            &definition(Some(&["read", "bash", "ask_user", "todo_write"]), None),
+            1,
+            2,
+        );
+        assert_eq!(
+            names(&tools),
+            ["read", "bash", "wait", "skill", "research", "remote", "custom"]
+        );
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &definition(Some(&[]), None), 1, 2);
         assert_eq!(names(&tools), ["skill", "research", "remote", "custom"]);
@@ -151,9 +186,14 @@ mod tests {
 
     #[test]
     fn parsed_null_and_empty_builtin_lists_keep_distinct_permissions() {
-        for (frontmatter, read_allowed) in [("tools:", true), ("tools: null", true), ("tools: []", false)] {
+        for (frontmatter, read_allowed) in [
+            ("tools:", true),
+            ("tools: null", true),
+            ("tools: []", false),
+        ] {
             let raw = format!("---\n{frontmatter}\n---\nbody");
-            let def = crate::agents::parse::parse_agent_markdown("worker", &raw, "user", None).unwrap();
+            let def =
+                crate::agents::parse::parse_agent_markdown("worker", &raw, "user", None).unwrap();
             let mut tools = catalog();
             filter_tools_for_agent(&mut tools, &def, 1, 2);
             let names = names(&tools);
@@ -182,10 +222,16 @@ mod tests {
         let def = definition(Some(&["read"]), Some("scout"));
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &def, 1, 2);
-        assert_eq!(names(&tools), ["read", "task", "wait", "skill", "research", "remote", "custom"]);
+        assert_eq!(
+            names(&tools),
+            ["read", "task", "wait", "skill", "research", "remote", "custom"]
+        );
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &def, 2, 2);
-        assert_eq!(names(&tools), ["read", "skill", "research", "remote", "custom"]);
+        assert_eq!(
+            names(&tools),
+            ["read", "skill", "research", "remote", "custom"]
+        );
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &def, 250, -1);
         assert!(names(&tools).contains(&"task"));
@@ -195,13 +241,32 @@ mod tests {
     fn explicitly_requested_task_and_wait_follow_omp_allowlist_rules() {
         let mut tools = catalog();
         filter_tools_for_agent(&mut tools, &definition(Some(&["task", "wait"]), None), 1, 2);
-        assert_eq!(names(&tools), ["task", "wait", "skill", "research", "remote", "custom"]);
+        assert_eq!(
+            names(&tools),
+            ["task", "wait", "skill", "research", "remote", "custom"]
+        );
         let mut tools = catalog();
-        filter_tools_for_agent(&mut tools, &definition(Some(&["task", "wait"]), Some("*")), 1, 2);
-        assert_eq!(names(&tools), ["task", "wait", "skill", "research", "remote", "custom"]);
+        filter_tools_for_agent(
+            &mut tools,
+            &definition(Some(&["task", "wait"]), Some("*")),
+            1,
+            2,
+        );
+        assert_eq!(
+            names(&tools),
+            ["task", "wait", "skill", "research", "remote", "custom"]
+        );
         let mut tools = catalog();
-        filter_tools_for_agent(&mut tools, &definition(Some(&["task", "wait"]), Some("*")), 2, 2);
-        assert_eq!(names(&tools), ["wait", "skill", "research", "remote", "custom"]);
+        filter_tools_for_agent(
+            &mut tools,
+            &definition(Some(&["task", "wait"]), Some("*")),
+            2,
+            2,
+        );
+        assert_eq!(
+            names(&tools),
+            ["wait", "skill", "research", "remote", "custom"]
+        );
     }
 
     #[test]

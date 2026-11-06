@@ -157,7 +157,9 @@ pub(super) async fn complete_assistant_reply_inner(
     if conversation.agent_runtime.is_external() {
         // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
         // 让 `chat_runtime().has_active_reply` 在外部回复期间也能拒绝并发新发送（防回归）。
-        let ext_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
+        let ext_generation = state
+            .chat_runtime()
+            .begin_reply_generation(&conversation.id)
             .ok_or_else(|| "cancelled".to_string())?;
         let ext_run_id = format!("chat-run-ext-{}-{}", ext_generation, Uuid::new_v4());
         let _ext_reply_guard =
@@ -271,7 +273,9 @@ pub(super) async fn complete_assistant_reply_inner(
                 .into(),
         );
     }
-    let run_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
+    let run_generation = state
+        .chat_runtime()
+        .begin_reply_generation(&conversation.id)
         .ok_or_else(|| "cancelled".to_string())?;
     let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
@@ -635,12 +639,18 @@ pub(super) async fn complete_assistant_reply_inner(
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
     let project_prompt_context = project_prompt_context_for(app, conversation);
-    append_main_subagent_tools(&mut tools, &settings, &resources.agents, chat_mode, builder_mode);
+    append_main_subagent_tools(
+        &mut tools,
+        &settings,
+        &resources.agents,
+        chat_mode,
+        builder_mode,
+    );
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
-    let task_available = tools.iter().any(|tool| {
-        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
-    });
+    let task_available = tools
+        .iter()
+        .any(|tool| tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
     let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
     let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
         chat_mode,
@@ -804,7 +814,9 @@ pub(super) async fn complete_assistant_reply_inner(
                     .map(|m| m.content.clone()),
             );
             if resumed_jobs.is_some() {
-                runtime.hooks.retain(|hook| hook.event != "UserPromptSubmit");
+                runtime
+                    .hooks
+                    .retain(|hook| hook.event != "UserPromptSubmit");
             }
             runtime
         },
@@ -863,7 +875,10 @@ pub(super) async fn complete_assistant_reply_inner(
     let executor = RegistryToolExecutor {
         app: app.clone(),
         state: state.inner(),
-        skills: crate::skills::SkillRunContext::for_run(skill_registry.clone(), conversation.assistant_snapshot.as_ref()),
+        skills: crate::skills::SkillRunContext::for_run(
+            skill_registry.clone(),
+            conversation.assistant_snapshot.as_ref(),
+        ),
         video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
             conversation.clone(),
             video_plan,
@@ -886,7 +901,9 @@ pub(super) async fn complete_assistant_reply_inner(
     );
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
     let control = crate::chat::runtime_state::ChatRunControl::new(
-        state.chat_runtime(), &conversation.id, run_generation,
+        state.chat_runtime(),
+        &conversation.id,
+        run_generation,
     );
     let handle = crate::chat::agent::control::AgentRunHandle::new(
         crate::chat::agent::events::AgentRunIdentity {
@@ -899,9 +916,17 @@ pub(super) async fn complete_assistant_reply_inner(
     );
     let events: &dyn crate::chat::agent::events::AgentEventSink = {
         #[cfg(debug_assertions)]
-        { if probe { &probe_host } else { &chat_host } }
+        {
+            if probe {
+                &probe_host
+            } else {
+                &chat_host
+            }
+        }
         #[cfg(not(debug_assertions))]
-        { &chat_host }
+        {
+            &chat_host
+        }
     };
     let result = crate::chat::session_policy::run_session(
         crate::chat::session_policy::ApplicationRunConfig {
@@ -984,7 +1009,8 @@ pub(super) async fn complete_assistant_reply_inner(
     // A saved document, not the wording of the final response, identifies a plan.
     let message_plan = if plan_mode
         && result.tool_records.iter().any(|tool| {
-            tool.name == "save_plan" && tool.status == crate::chat::agent::content::AgentToolStatus::Success
+            tool.name == "save_plan"
+                && tool.status == crate::chat::agent::content::AgentToolStatus::Success
         }) {
         let latest = crate::chat::storage::load_conversation(app, &conversation.id)?;
         (crate::chat::plan::is_plan_mode(&latest.agent_plan_state)
@@ -993,7 +1019,11 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         None
     };
-    let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(&result.tool_records, &result.segments, Some(&run_id));
+    let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(
+        &result.tool_records,
+        &result.segments,
+        Some(&run_id),
+    );
     let mut segments = auxiliary_tool_segments(&auxiliary_tool_records);
     segments.extend(projected_blocks);
     let mut tool_records = auxiliary_tool_records;
@@ -1272,12 +1302,17 @@ mod tests {
             settings.chat_tools.task_max_recursion_depth = depth;
             let mut tools = Vec::new();
             append_main_subagent_tools(&mut tools, &settings, &[], chat_mode, builder_mode);
-            let task = tools.iter().any(|tool| tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
-            let wait = tools.iter().any(|tool| tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME);
+            let task = tools
+                .iter()
+                .any(|tool| tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
+            let wait = tools
+                .iter()
+                .any(|tool| tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME);
             assert_eq!(task, expected_task);
             assert_eq!(wait, expected_wait);
             assert_eq!(
-                crate::chat::plan::format_prompt(&plan, task).contains("read-only planning investigations"),
+                crate::chat::plan::format_prompt(&plan, task)
+                    .contains("read-only planning investigations"),
                 expected_task,
             );
         }

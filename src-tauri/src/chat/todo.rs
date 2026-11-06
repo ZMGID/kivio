@@ -30,29 +30,52 @@ pub struct RunPolicy {
 
 impl RunPolicy {
     pub fn new(initial: AgentTodoState) -> Self {
-        Self { initial, final_check_sent: false }
+        Self {
+            initial,
+            final_check_sent: false,
+        }
     }
 
     fn current(&self, run: crate::chat::agent::session::RunSnapshot<'_>) -> AgentTodoState {
-        latest_result_state(run.tool_records.iter().rev()
-            .filter(|record| record.status == crate::chat::agent::content::AgentToolStatus::Success)
-            .filter_map(|record| record.structured_content.as_ref()))
-            .unwrap_or_else(|| self.initial.clone())
+        latest_result_state(
+            run.tool_records
+                .iter()
+                .rev()
+                .filter(|record| {
+                    record.status == crate::chat::agent::content::AgentToolStatus::Success
+                })
+                .filter_map(|record| record.structured_content.as_ref()),
+        )
+        .unwrap_or_else(|| self.initial.clone())
     }
 
     fn exposed(run: crate::chat::agent::session::RunSnapshot<'_>) -> bool {
-        run.tools.iter().any(|tool| tool.label.source == "native" && is_agent_todo_tool_name(&tool.label.name))
+        run.tools
+            .iter()
+            .any(|tool| tool.label.source == "native" && is_agent_todo_tool_name(&tool.label.name))
     }
 }
 
 impl crate::chat::agent::session::SessionPolicy for RunPolicy {
-    fn before_step(&mut self, run: crate::chat::agent::session::RunSnapshot<'_>) -> Vec<RuntimeMessage> {
-        if !Self::exposed(run) { return Vec::new(); }
-        reminder_for_next_step(run.history, &self.current(run)).into_iter().collect()
+    fn before_step(
+        &mut self,
+        run: crate::chat::agent::session::RunSnapshot<'_>,
+    ) -> Vec<RuntimeMessage> {
+        if !Self::exposed(run) {
+            return Vec::new();
+        }
+        reminder_for_next_step(run.history, &self.current(run))
+            .into_iter()
+            .collect()
     }
 
-    fn before_finish(&mut self, run: crate::chat::agent::session::RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        if self.final_check_sent || !Self::exposed(run) || run.tool_records.is_empty() { return None; }
+    fn before_finish(
+        &mut self,
+        run: crate::chat::agent::session::RunSnapshot<'_>,
+    ) -> Option<RuntimeMessage> {
+        if self.final_check_sent || !Self::exposed(run) || run.tool_records.is_empty() {
+            return None;
+        }
         let reminder = final_check_reminder(&self.current(run))?;
         self.final_check_sent = true;
         Some(reminder)
@@ -351,12 +374,20 @@ pub fn state_from_messages(
 
 /// Last todo snapshot recorded on a successful tool call in `records`.
 pub(crate) fn latest_recorded_state(records: &[ToolCallRecord]) -> Option<AgentTodoState> {
-    latest_result_state(records.iter().rev().filter(|record| record.status == ToolCallStatus::Success)
-        .filter_map(|record| record.structured_content.as_ref()))
+    latest_result_state(
+        records
+            .iter()
+            .rev()
+            .filter(|record| record.status == ToolCallStatus::Success)
+            .filter_map(|record| record.structured_content.as_ref()),
+    )
 }
 
-pub(crate) fn latest_result_state<'a>(results: impl Iterator<Item = &'a serde_json::Value>) -> Option<AgentTodoState> {
-    results.filter_map(|result| result.get("todoState"))
+pub(crate) fn latest_result_state<'a>(
+    results: impl Iterator<Item = &'a serde_json::Value>,
+) -> Option<AgentTodoState> {
+    results
+        .filter_map(|result| result.get("todoState"))
         .find_map(|todo| serde_json::from_value::<AgentTodoState>(todo.clone()).ok())
 }
 

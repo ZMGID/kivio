@@ -212,7 +212,7 @@ pub(super) fn build_assistant_message(
     };
 
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: message_id,
         role: "assistant".to_string(),
         content: stored_content,
@@ -509,7 +509,7 @@ pub(super) fn build_partial_assistant_snapshot(
         &tool_records,
     );
     let draft = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: message_id.to_string(),
         role: "assistant".to_string(),
         content,
@@ -545,7 +545,11 @@ pub(super) async fn persist_partial_assistant_snapshot(
     segments: &[ChatMessageSegment],
     api_messages: &[crate::chat::agent::history::RuntimeMessage],
 ) -> Result<(), String> {
-    let Some(draft) = build_partial_assistant_snapshot(message_id, tool_records, segments, api_messages) else { return Ok(()); };
+    let Some(draft) =
+        build_partial_assistant_snapshot(message_id, tool_records, segments, api_messages)
+    else {
+        return Ok(());
+    };
     // 草稿不再整会话重写:追加进 append-only 日志(见 chat::draft_journal 模块注释),
     // 主会话文件与索引在 run 期间完全不动;终态写入后 push_assistant_message 清日志。
     let app_handle = app.clone();

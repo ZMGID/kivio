@@ -666,7 +666,9 @@ pub(crate) async fn run_external_cli_reply_in(
             .unwrap_or_else(|| composed.full_prompt.clone()),
     });
 
-    let run_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
+    let run_generation = state
+        .chat_runtime()
+        .begin_reply_generation(&conversation.id)
         .ok_or_else(|| "cancelled".to_string())?;
     let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
@@ -3035,7 +3037,9 @@ fn emit_live_subagent_progress(
             task_id: task_id.to_string(),
             name: "subagent".to_string(),
             model: None,
-            generation: None, child_run_id: None, progress: None,
+            generation: None,
+            child_run_id: None,
+            progress: None,
             depth: 1,
             status: status.to_string(),
             preview: (!preview.is_empty()).then_some(preview),
@@ -4009,7 +4013,9 @@ fn apply_unified_event(
                         task_id,
                         name: record.name.clone(),
                         model: None,
-                        generation: None, child_run_id: None, progress: None,
+                        generation: None,
+                        child_run_id: None,
+                        progress: None,
                         depth: 1,
                         status,
                         preview: (!preview.is_empty()).then_some(preview),

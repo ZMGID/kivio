@@ -138,29 +138,46 @@ pub(crate) async fn chat_cancel_stream(
     conversation_id: String,
     scope: Option<UserStopScope>,
 ) -> Result<(), String> {
-    let persisted = cancel_user_generation(state.inner(), &conversation_id, scope.unwrap_or_default(), || {
-        let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
-            .ok()
-            .filter(|conversation| conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin)
-            .and_then(|conversation| conversation.messages.into_iter().rev()
-                .find(|message| message.role == "user")
-                .map(|message| message.id));
-        last_user_id.map_or(Ok(()), |id| {
-            let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
-            crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
-        })
-    });
+    let persisted = cancel_user_generation(
+        state.inner(),
+        &conversation_id,
+        scope.unwrap_or_default(),
+        || {
+            let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
+                .ok()
+                .filter(|conversation| {
+                    conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin
+                })
+                .and_then(|conversation| {
+                    conversation
+                        .messages
+                        .into_iter()
+                        .rev()
+                        .find(|message| message.role == "user")
+                        .map(|message| message.id)
+                });
+            last_user_id.map_or(Ok(()), |id| {
+                let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
+                crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
+            })
+        },
+    );
     pause_goal_after_cancel(&app, &conversation_id).await?;
     persisted
 }
 
 pub(super) fn cancel_user_generation<R>(
-    state: &AppState, conversation_id: &str, scope: UserStopScope, persist_stop: impl FnOnce() -> R,
+    state: &AppState,
+    conversation_id: &str,
+    scope: UserStopScope,
+    persist_stop: impl FnOnce() -> R,
 ) -> R {
     state.sub_agents.interrupt_user_turn(conversation_id, || {
         match scope {
             UserStopScope::Generation => state.cancel_chat_generation(conversation_id),
-            UserStopScope::BackgroundWait => state.chat_runtime().cancel_conversation(conversation_id),
+            UserStopScope::BackgroundWait => {
+                state.chat_runtime().cancel_conversation(conversation_id)
+            }
         }
         persist_stop()
     })
@@ -801,7 +818,11 @@ pub(super) async fn wait_for_chat_cancel(state: &AppState, conversation_id: &str
 }
 
 pub(crate) fn emit_chat_tool_record(app: &AppHandle, run_id: &str, record: &ToolCallRecord) {
-    crate::chat::protocol::emit_run_event(app, run_id, crate::chat::agent_presentation::project_tool_event(record));
+    crate::chat::protocol::emit_run_event(
+        app,
+        run_id,
+        crate::chat::agent_presentation::project_tool_event(record),
+    );
 }
 
 /// 决定一次 `emit_chat_stream_delta` 要发哪几条事件：`(发 reasoning, 发 text)`。
@@ -827,7 +848,11 @@ pub(crate) fn emit_chat_stream_delta(
     reasoning_delta: Option<&str>,
     segment: Option<&ChatMessageSegment>,
 ) {
-    for event in crate::chat::agent_presentation::project_stream_delta(delta, reasoning_delta, segment) { crate::chat::protocol::emit_run_event(app, run_id, event); }
+    for event in
+        crate::chat::agent_presentation::project_stream_delta(delta, reasoning_delta, segment)
+    {
+        crate::chat::protocol::emit_run_event(app, run_id, event);
+    }
 }
 
 /// 审批卡要展示的两样东西：`target` 是这次操作的对象（文件路径 / 命令），用来在前端拼

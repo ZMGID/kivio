@@ -41,8 +41,8 @@ pub(crate) mod slash_commands;
 pub mod storage;
 pub mod sub_agent;
 pub mod todo;
-pub mod tools;
 pub(crate) mod tool_output;
+pub mod tools;
 pub mod types;
 pub(crate) mod video;
 mod video_analysis;
@@ -79,13 +79,13 @@ pub(crate) fn session_model_for_conversation(
 
 pub(crate) mod session_policy;
 
-pub(crate) mod recovery_policy;
-pub(crate) mod context_policy;
 pub(crate) mod context_estimate;
 pub(crate) mod context_measure;
+pub(crate) mod context_policy;
+pub(crate) mod recovery_policy;
 
 pub(crate) mod tool_runtime;
 
 pub(crate) mod agent_preparation;
-pub(crate) mod tool_filter;
 pub(crate) mod file_ledger;
+pub(crate) mod tool_filter;

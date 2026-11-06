@@ -1337,7 +1337,11 @@ fn handle_responses_stream_event(
                     state.usage = Some(usage);
                 }
                 if let Some(status) = response.get("status").and_then(Value::as_str) {
-                    state.finish_reason = Some(responses_finish_reason(status, response, !state.tool_calls.is_empty()));
+                    state.finish_reason = Some(responses_finish_reason(
+                        status,
+                        response,
+                        !state.tool_calls.is_empty(),
+                    ));
                 }
                 // 完整 output 里若还带 web_search_call / message 注解，合并进已流式累加的结果
                 // （不覆盖：hosted web_search_call 通常只在 output_item.done 里出现，不重现在此）。
@@ -1545,7 +1549,9 @@ pub fn output_from_responses(
     }
 
     let usage = model_usage_from_openai_value(value);
-    let finish_reason = value.get("status").and_then(Value::as_str)
+    let finish_reason = value
+        .get("status")
+        .and_then(Value::as_str)
         .map(|status| responses_finish_reason(status, value, !tool_calls.is_empty()));
 
     Ok(GenerateOutput {

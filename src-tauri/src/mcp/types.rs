@@ -91,7 +91,10 @@ impl From<&ChatToolDefinition> for ModelTool {
 }
 
 impl ChatToolDefinition {
-    pub(crate) fn for_run(&self, settings: &crate::settings::Settings) -> crate::chat::tools::ToolDefinition {
+    pub(crate) fn for_run(
+        &self,
+        settings: &crate::settings::Settings,
+    ) -> crate::chat::tools::ToolDefinition {
         let model = ModelTool::from(self);
         crate::chat::tools::ToolDefinition {
             key: self.id.clone(),
@@ -135,9 +138,9 @@ impl ChatToolDefinition {
                 .map_or(ToolTimeout::Default, |entry| entry.timeout),
             "mixer" => match self.name.as_str() {
                 "mixer_video_analysis" => ToolTimeout::AtLeast(300_000),
-                "mixer_generate_image" => ToolTimeout::AtLeast(
-                    crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS,
-                ),
+                "mixer_generate_image" => {
+                    ToolTimeout::AtLeast(crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS)
+                }
                 _ => ToolTimeout::Default,
             },
             _ => ToolTimeout::Default,

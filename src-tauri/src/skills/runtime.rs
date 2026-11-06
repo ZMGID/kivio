@@ -184,13 +184,17 @@ mod tests {
         let registry = Arc::new(SkillRegistry::default());
         let mut assistant: crate::chat::types::ChatAssistantSnapshot = serde_json::from_value(
             serde_json::json!({"id": "assistant", "name": "Assistant", "skill_ids": ["allowed"]}),
-        ).unwrap();
+        )
+        .unwrap();
         let context = SkillRunContext::for_run(registry.clone(), Some(&assistant));
         assistant.skill_ids.clear();
         assert!(context.skill_id_allowed("allowed"));
         assert!(!context.skill_id_allowed("other"));
         assert!(std::ptr::eq(context.registry(), registry.as_ref()));
-        assert!(!SkillRunContext::for_run(registry.clone(), Some(&assistant)).skill_id_allowed("allowed"));
+        assert!(
+            !SkillRunContext::for_run(registry.clone(), Some(&assistant))
+                .skill_id_allowed("allowed")
+        );
         assert!(SkillRunContext::for_run(registry.clone(), None).skill_id_allowed("other"));
         assistant.id = "asst_voice_orchestrator".into();
         assert!(SkillRunContext::for_run(registry, Some(&assistant)).skill_id_allowed("other"));

@@ -6,8 +6,8 @@ use std::{
     },
 };
 
-use super::context_measure::LiveContextMeasurement;
 use super::agent::SteeringMessage;
+use super::context_measure::LiveContextMeasurement;
 use super::types::ContextUsageSegment;
 
 /// Process-local ownership for Chat run coordination.
@@ -94,11 +94,19 @@ impl ChatRuntimeState {
     /// Admit a reply only while its send reservation has not been cancelled.
     pub(crate) fn begin_reply_generation(&self, conversation_id: &str) -> Option<u64> {
         let mut indexes = self.indexes();
-        if indexes.send_reservations.get(conversation_id).is_some_and(|(_, cancelled)| *cancelled) {
+        if indexes
+            .send_reservations
+            .get(conversation_id)
+            .is_some_and(|(_, cancelled)| *cancelled)
+        {
             return None;
         }
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        indexes.active_generations.entry(conversation_id.to_string()).or_default().insert(generation);
+        indexes
+            .active_generations
+            .entry(conversation_id.to_string())
+            .or_default()
+            .insert(generation);
         Some(generation)
     }
 
@@ -199,7 +207,12 @@ impl ChatRuntimeState {
             let notified = self.steering_arrived.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            if self.indexes().pending_steering.get(conversation_id).is_some_and(|messages| !messages.is_empty()) {
+            if self
+                .indexes()
+                .pending_steering
+                .get(conversation_id)
+                .is_some_and(|messages| !messages.is_empty())
+            {
                 return;
             }
             notified.await;
@@ -216,7 +229,11 @@ impl ChatRuntimeState {
         if !is_generation_active(&indexes, conversation_id, generation) {
             return false;
         }
-        indexes.pending_steering.entry(conversation_id.to_owned()).or_default().push(message);
+        indexes
+            .pending_steering
+            .entry(conversation_id.to_owned())
+            .or_default()
+            .push(message);
         drop(indexes);
         self.steering_arrived.notify_waiters();
         true
@@ -231,7 +248,10 @@ impl ChatRuntimeState {
         if !is_generation_active(&indexes, conversation_id, generation) {
             return Vec::new();
         }
-        indexes.pending_steering.remove(conversation_id).unwrap_or_default()
+        indexes
+            .pending_steering
+            .remove(conversation_id)
+            .unwrap_or_default()
     }
 
     pub(crate) fn push_follow_up(&self, conversation_id: &str, message: SteeringMessage) -> bool {
@@ -257,7 +277,11 @@ impl ChatRuntimeState {
         if !is_generation_active(&indexes, conversation_id, generation) {
             return false;
         }
-        indexes.pending_follow_up.entry(conversation_id.to_owned()).or_default().push(message);
+        indexes
+            .pending_follow_up
+            .entry(conversation_id.to_owned())
+            .or_default()
+            .push(message);
         true
     }
 
@@ -270,7 +294,10 @@ impl ChatRuntimeState {
         if !is_generation_active(&indexes, conversation_id, generation) {
             return Vec::new();
         }
-        indexes.pending_follow_up.remove(conversation_id).unwrap_or_default()
+        indexes
+            .pending_follow_up
+            .remove(conversation_id)
+            .unwrap_or_default()
     }
 
     pub(crate) fn has_pending_input(&self, conversation_id: &str) -> bool {
@@ -514,7 +541,9 @@ impl ChatRuntimeState {
             return false;
         }
         runs.insert(run_id.to_string());
-        indexes.send_reservations.insert(conversation_id.to_string(), (run_id.to_string(), false));
+        indexes
+            .send_reservations
+            .insert(conversation_id.to_string(), (run_id.to_string(), false));
         true
     }
 
@@ -539,7 +568,10 @@ impl ChatRuntimeState {
     /// atomic send reservation as `try_reserve_send`. Waiters re-check after
     /// every idle signal, so a user send that wins the race simply queues this
     /// one behind it again.
-    pub(crate) async fn reserve_send_when_idle<T>(&self, mut try_reserve: impl FnMut() -> Option<T>) -> T {
+    pub(crate) async fn reserve_send_when_idle<T>(
+        &self,
+        mut try_reserve: impl FnMut() -> Option<T>,
+    ) -> T {
         loop {
             let notified = self.reply_idle.notified();
             tokio::pin!(notified);
@@ -572,7 +604,10 @@ fn has_active_generation(indexes: &ChatRunIndexes, conversation_id: &str) -> boo
 }
 
 fn is_generation_active(indexes: &ChatRunIndexes, conversation_id: &str, generation: u64) -> bool {
-    indexes.active_generations.get(conversation_id).is_some_and(|active| active.contains(&generation))
+    indexes
+        .active_generations
+        .get(conversation_id)
+        .is_some_and(|active| active.contains(&generation))
 }
 
 /// Desktop conversation inputs remain shared across deliberate sibling answer arms.
@@ -583,43 +618,78 @@ pub(crate) struct ChatRunControl<'a> {
 }
 
 impl<'a> ChatRunControl<'a> {
-    pub(crate) fn new(runtime: &'a ChatRuntimeState, conversation_id: &'a str, generation: u64) -> Self {
-        Self { runtime, conversation_id, generation }
+    pub(crate) fn new(
+        runtime: &'a ChatRuntimeState,
+        conversation_id: &'a str,
+        generation: u64,
+    ) -> Self {
+        Self {
+            runtime,
+            conversation_id,
+            generation,
+        }
     }
 }
 
 impl super::agent::control::AgentRunControl for ChatRunControl<'_> {
     fn active(&self) -> bool {
-        self.runtime.is_generation_active(self.conversation_id, self.generation)
+        self.runtime
+            .is_generation_active(self.conversation_id, self.generation)
     }
 
     fn stop(&self) -> super::agent::control::StopAdmission {
         use super::agent::control::StopAdmission;
-        if self.runtime.cancel_generation(self.conversation_id, self.generation) {
+        if self
+            .runtime
+            .cancel_generation(self.conversation_id, self.generation)
+        {
             StopAdmission::Requested
         } else {
             StopAdmission::Inactive
         }
     }
 
-    fn submit(&self, kind: super::agent::events::InputKind, message: SteeringMessage) -> super::agent::control::InputAdmission {
+    fn submit(
+        &self,
+        kind: super::agent::events::InputKind,
+        message: SteeringMessage,
+    ) -> super::agent::control::InputAdmission {
         use super::agent::{control::InputAdmission, events::InputKind};
         let accepted = match kind {
-            InputKind::Steer => self.runtime.push_steering_for_generation(self.conversation_id, self.generation, message),
-            InputKind::FollowUp => self.runtime.push_follow_up_for_generation(self.conversation_id, self.generation, message),
+            InputKind::Steer => self.runtime.push_steering_for_generation(
+                self.conversation_id,
+                self.generation,
+                message,
+            ),
+            InputKind::FollowUp => self.runtime.push_follow_up_for_generation(
+                self.conversation_id,
+                self.generation,
+                message,
+            ),
         };
-        if accepted { InputAdmission::Accepted } else { InputAdmission::Inactive }
+        if accepted {
+            InputAdmission::Accepted
+        } else {
+            InputAdmission::Inactive
+        }
     }
 
     fn take(&self, kind: super::agent::events::InputKind) -> Vec<SteeringMessage> {
         match kind {
-            super::agent::events::InputKind::Steer => self.runtime.take_steering_for_generation(self.conversation_id, self.generation),
-            super::agent::events::InputKind::FollowUp => self.runtime.take_follow_up_for_generation(self.conversation_id, self.generation),
+            super::agent::events::InputKind::Steer => self
+                .runtime
+                .take_steering_for_generation(self.conversation_id, self.generation),
+            super::agent::events::InputKind::FollowUp => self
+                .runtime
+                .take_follow_up_for_generation(self.conversation_id, self.generation),
         }
     }
 
     fn wait_inactive(&self) -> super::agent::AgentHostFuture<'_, ()> {
-        Box::pin(self.runtime.wait_for_generation_inactive(self.conversation_id, self.generation))
+        Box::pin(
+            self.runtime
+                .wait_for_generation_inactive(self.conversation_id, self.generation),
+        )
     }
 }
 
@@ -636,7 +706,11 @@ fn retire_generation(indexes: &mut ChatRunIndexes, conversation_id: &str, genera
 
 /// Returns true when this retired the conversation's last reply slot.
 fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &str) -> bool {
-    if indexes.send_reservations.get(conversation_id).is_some_and(|(id, _)| id == run_id) {
+    if indexes
+        .send_reservations
+        .get(conversation_id)
+        .is_some_and(|(id, _)| id == run_id)
+    {
         indexes.send_reservations.remove(conversation_id);
     }
     if let Some(runs) = indexes.active_replies.get_mut(conversation_id) {
@@ -674,10 +748,20 @@ mod tests {
 
         assert!(futures::poll!(waiting.as_mut()).is_ready());
         assert!(runtime.is_generation_active("conversation", sibling));
-        assert!(runtime.take_steering_for_generation("conversation", first).is_empty());
-        assert!(runtime.take_follow_up_for_generation("conversation", first).is_empty());
-        assert_eq!(runtime.take_steering_for_generation("conversation", sibling), vec![message.clone()]);
-        assert_eq!(runtime.take_follow_up_for_generation("conversation", sibling), vec![message]);
+        assert!(runtime
+            .take_steering_for_generation("conversation", first)
+            .is_empty());
+        assert!(runtime
+            .take_follow_up_for_generation("conversation", first)
+            .is_empty());
+        assert_eq!(
+            runtime.take_steering_for_generation("conversation", sibling),
+            vec![message.clone()]
+        );
+        assert_eq!(
+            runtime.take_follow_up_for_generation("conversation", sibling),
+            vec![message]
+        );
         assert!(!runtime.try_reserve_send("conversation", "next"));
         runtime.finish_reply_generation("conversation", "first", first);
         assert!(!runtime.try_reserve_send("conversation", "next"));
@@ -702,13 +786,23 @@ mod tests {
 
         assert!(!runtime.push_steering_for_generation("conversation", old, message.clone()));
         assert!(!runtime.push_follow_up_for_generation("conversation", old, message.clone()));
-        assert!(runtime.take_steering_for_generation("conversation", old).is_empty());
-        assert!(runtime.take_follow_up_for_generation("conversation", old).is_empty());
+        assert!(runtime
+            .take_steering_for_generation("conversation", old)
+            .is_empty());
+        assert!(runtime
+            .take_follow_up_for_generation("conversation", old)
+            .is_empty());
         assert!(!runtime.cancel_generation("conversation", old));
 
         assert!(runtime.is_generation_active("conversation", current));
-        assert_eq!(runtime.take_steering_for_generation("conversation", current), vec![message.clone()]);
-        assert_eq!(runtime.take_follow_up_for_generation("conversation", current), vec![message]);
+        assert_eq!(
+            runtime.take_steering_for_generation("conversation", current),
+            vec![message.clone()]
+        );
+        assert_eq!(
+            runtime.take_follow_up_for_generation("conversation", current),
+            vec![message]
+        );
     }
 
     #[tokio::test]
@@ -718,7 +812,12 @@ mod tests {
         let runtime = ChatRuntimeState::default();
         let old_generation = runtime.begin_generation("conversation");
         let old_control = ChatRunControl::new(&runtime, "conversation", old_generation);
-        let identity = |generation| AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation };
+        let identity = |generation| AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation,
+        };
         let old = AgentRunHandle::new(identity(old_generation), &old_control);
         let message = |id: &str| SteeringMessage::new(id.into(), id).unwrap();
         assert_eq!(old.steer(message("old")), InputAdmission::Accepted);
@@ -810,7 +909,13 @@ mod tests {
 
         let waiter = tokio::spawn({
             let runtime = runtime.clone();
-            async move { runtime.reserve_send_when_idle(|| runtime.try_reserve_send("a", "queued").then_some(())).await }
+            async move {
+                runtime
+                    .reserve_send_when_idle(|| {
+                        runtime.try_reserve_send("a", "queued").then_some(())
+                    })
+                    .await
+            }
         });
         tokio::task::yield_now().await;
         runtime.end_reply("a", "run-1");
@@ -884,12 +989,30 @@ mod tests {
         let waiting = runtime.wait_for_steering("conversation");
         tokio::pin!(waiting);
         assert!(futures::poll!(waiting.as_mut()).is_pending());
-        assert!(runtime.push_follow_up("conversation", SteeringMessage { id: "follow".into(), text: "later".into() }));
+        assert!(runtime.push_follow_up(
+            "conversation",
+            SteeringMessage {
+                id: "follow".into(),
+                text: "later".into()
+            }
+        ));
         assert!(futures::poll!(waiting.as_mut()).is_pending());
-        assert!(runtime.push_steering("conversation", SteeringMessage { id: "steer".into(), text: "now".into() }));
+        assert!(runtime.push_steering(
+            "conversation",
+            SteeringMessage {
+                id: "steer".into(),
+                text: "now".into()
+            }
+        ));
         waiting.await;
-        assert_eq!(runtime.take_steering_for_generation("conversation", generation)[0].id, "steer");
-        assert_eq!(runtime.take_follow_up_for_generation("conversation", generation)[0].id, "follow");
+        assert_eq!(
+            runtime.take_steering_for_generation("conversation", generation)[0].id,
+            "steer"
+        );
+        assert_eq!(
+            runtime.take_follow_up_for_generation("conversation", generation)[0].id,
+            "follow"
+        );
     }
 
     #[test]
