@@ -649,6 +649,9 @@ pub(crate) async fn create_chat_conversation_internal(
         } else {
             let now = chrono::Local::now().timestamp();
             let conversation = Conversation {
+                external_history: None,
+                external_cwd: None,
+                runtime_locked: false,
                 id: format!("conv_{}", Uuid::new_v4()),
                 revision: 0,
                 title: super::title::PLACEHOLDER_CONVERSATION_TITLE.to_string(),
@@ -1055,6 +1058,9 @@ pub(crate) async fn chat_create_builder_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: format!("conv_{}", Uuid::new_v4()),
         revision: 0,
         title: "搭建新专家".to_string(),

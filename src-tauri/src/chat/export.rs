@@ -265,6 +265,9 @@ mod tests {
 
     fn conversation() -> Conversation {
         Conversation {
+            external_history: None,
+            external_cwd: None,
+            runtime_locked: false,
             id: "conv_test".to_string(),
             revision: 0,
             title: "Export test".to_string(),

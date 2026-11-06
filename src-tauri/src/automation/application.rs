@@ -837,6 +837,9 @@ async fn load_or_create_external_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id,
         revision: 0,
         title: format!("Automation {automation_id}"),

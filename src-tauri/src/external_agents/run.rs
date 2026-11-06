@@ -246,6 +246,11 @@ async fn run_external_cli_reply_owned(
     // CLI 要在这个目录里真的跑起来 ⇒ 必须确保存在（唯一需要建目录的路径之一）。
     let cwd = match working_directory {
         Some(path) => {
+            crate::external_agents::workspace::validate_working_directory_override(
+                app,
+                &conversation.id,
+                path,
+            )?;
             std::fs::create_dir_all(path)
                 .map_err(|err| format!("create automation workspace: {err}"))?;
             crate::utils::strip_windows_verbatim_prefix(path.to_path_buf())
@@ -384,15 +389,14 @@ async fn run_external_cli_reply_owned(
         None
     };
 
-    // A rewind truncated only Kivio's copy; the CLI's native session still holds the removed
-    // turns. Decide how to bring it back to the visible history before this prompt is sent.
-    use crate::external_agents::session::PendingRewind;
-    let rewind = (!is_slash && matches!(entry, AgentRunEntry::Send))
-        .then(|| crate::external_agents::session::pending_rewind(app, &conversation.id))
-        .flatten()
-        .map(|pending| match pending {
-            PendingRewind::Replay => NativeRewind::Replay,
-            PendingRewind::Native => plan_native_rewind(
+    use crate::chat::types::ExternalHistoryMethod;
+    let history_transition =
+        prepare_history_transition(app, conversation, run_generation, is_slash).await?;
+    let rewind = history_transition
+        .as_ref()
+        .map(|history| match history.method {
+            ExternalHistoryMethod::Replay => NativeRewind::Replay,
+            ExternalHistoryMethod::NativeRewind => plan_native_rewind(
                 app,
                 def,
                 &conversation.id,
@@ -400,10 +404,9 @@ async fn run_external_cli_reply_owned(
             ),
         });
     if rewind == Some(NativeRewind::Replay) {
-        // Dropped before resolving the resume context, so this turn opens a fresh native session
-        // and sends the session instructions again.
-        crate::external_agents::session::forget_native_session(app, &conversation.id);
+        crate::external_agents::session::forget_native_session(app, &conversation.id)?;
     }
+    let mut history_attempt = None;
 
     let resume_ctx = resolve_agent_resume_context(
         app,
@@ -482,14 +485,13 @@ async fn run_external_cli_reply_owned(
         Some(NativeRewind::Replay | NativeRewind::CodexRevert)
     )
     .then(|| {
-        crate::external_agents::prompt::compose_external_prompt_with_history(
+        crate::external_agents::prompt::compose_history_handoff(
+            conversation,
             composed.clone(),
-            &crate::external_agents::prompt::rewind_history_block(history_before_request(
-                &conversation.messages,
-            )),
             latest_user_message,
         )
-    });
+    })
+    .transpose()?;
     if rewind == Some(NativeRewind::Replay) {
         if let Some(prompt) = rewind_first_prompt.take() {
             composed = prompt;
@@ -946,6 +948,8 @@ async fn run_external_cli_reply_owned(
                         codex_visible_users: (rewind == Some(NativeRewind::CodexRevert))
                             .then(|| visible_user_prompts(conversation)),
                     },
+                    history_transition.as_ref().map(|history| history.id.as_str()),
+                    &mut history_attempt,
                     &mut emit_event,
                     &cancel_check,
                     approval_host.as_ref(),
@@ -1131,23 +1135,6 @@ async fn run_external_cli_reply_owned(
                             &daemon_instructions,
                             is_slash,
                         )?;
-                        // Only a completed turn proves the native history now matches.
-                        if rewind_settled {
-                            crate::external_agents::session::clear_history_rewound(
-                                app,
-                                &conversation_id,
-                            );
-                        } else if stream_outcome == "error"
-                            && matches!(
-                                rewind,
-                                Some(NativeRewind::PiFork | NativeRewind::ClaudeResumeAt(_))
-                            )
-                        {
-                            crate::external_agents::session::require_rewind_replay(
-                                app,
-                                &conversation_id,
-                            );
-                        }
                         Ok(())
                     })
                     .unwrap_or(Ok(()))
@@ -1202,6 +1189,7 @@ async fn run_external_cli_reply_owned(
         None,
         // 外部 CLI 走自己的协议，没有 agent 循环的降级兜底。
         None,
+        history_attempt.as_ref(),
     )
     .await?;
 
@@ -1397,6 +1385,72 @@ fn visible_user_prompts(conversation: &Conversation) -> Vec<String> {
         .collect()
 }
 
+pub(crate) async fn prepare_history_transition(
+    app: &AppHandle,
+    conversation: &mut Conversation,
+    run_generation: u64,
+    is_slash: bool,
+) -> Result<Option<crate::chat::types::ExternalHistoryTransition>, String> {
+    use crate::chat::types::{
+        ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition,
+    };
+    if crate::external_agents::session::has_legacy_rewind(app, &conversation.id)
+        && crate::chat::repository::repository(app)
+            .get(app, &conversation.id)
+            .await
+            .map_err(crate::chat::repository::repository_error)?
+            .external_history
+            .is_some()
+    {
+        crate::external_agents::session::clear_history_rewound(app, &conversation.id);
+    }
+    if !is_slash
+        && (conversation
+            .external_history
+            .as_ref()
+            .is_some_and(|history| {
+                matches!(
+                    history.delivery,
+                    ExternalHistoryDelivery::MayHaveSent { .. }
+                )
+            })
+            || (conversation.external_history.is_none()
+                && crate::external_agents::session::has_legacy_rewind(app, &conversation.id)))
+    {
+        let expected_history = conversation.external_history.clone();
+        let updated = crate::chat::repository::repository(app)
+            .mutate_expected(
+                app,
+                &conversation.id,
+                Some(conversation.revision),
+                |latest| {
+                    if !app
+                        .state::<AppState>()
+                        .chat_runtime()
+                        .is_generation_active(&conversation.id, run_generation)
+                        || latest.external_history != expected_history
+                    {
+                        return Err("External history transition changed".into());
+                    }
+                    let mut history =
+                        ExternalHistoryTransition::new(latest, ExternalHistoryMethod::Replay);
+                    history.through_message_id = history_before_request(&latest.messages)
+                        .last()
+                        .map(|message| message.id.clone());
+                    latest.external_history = Some(history);
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+        *conversation = updated;
+        crate::external_agents::session::clear_history_rewound(app, &conversation.id);
+    }
+    Ok((!is_slash)
+        .then(|| conversation.external_history.clone())
+        .flatten())
+}
+
 /// The visible history before the request being sent (everything before the last user message).
 fn history_before_request(
     messages: &[crate::chat::types::ChatMessage],
@@ -1469,6 +1523,8 @@ async fn run_persistent_turn<E, C>(
     additional_directories: &[String],
     pi_regenerate: Option<&PiRegenerateRequest>,
     rewind: PersistentRewind,
+    history_transition: Option<&str>,
+    history_attempt: &mut Option<crate::external_agents::session::HistoryAttempt>,
     emit: &mut E,
     cancel: &C,
     // 本轮的工具审批出口。`None` = 不接（协议不支持 / 用户没选会询问的权限档位）——
@@ -1500,6 +1556,22 @@ where
     let mut resumable_native: Option<String> = load_live_handle(app, conversation_id)
         .filter(|h| h.can_resume(agent_id, protocol_tag))
         .map(|h| h.native_id);
+
+    if let (Some(transition), Some(native_id)) = (
+        history_transition,
+        crate::external_agents::session::bound_native_session_id(app, conversation_id),
+    ) {
+        *history_attempt = Some(
+            crate::external_agents::session::begin_history_delivery(
+                app,
+                conversation_id,
+                transition,
+                run_generation,
+                &native_id,
+            )
+            .await?,
+        );
+    }
 
     // Establish the control channel: 1. reuse a live session in the registry; 2. resume a
     // persisted one; 3. connect fresh.
@@ -1697,6 +1769,9 @@ where
     let mut retried_after_failure = false;
     let mut reconnected_for_config = false;
     loop {
+        if cancel() {
+            return Err("cancelled".into());
+        }
         let delivery = crate::external_agents::session::live::TurnDelivery::default();
         let outcome = drive_persistent_turn(
             &control,
@@ -1714,6 +1789,12 @@ where
             emit,
             cancel,
             approvals,
+            history_transition.map(|transition_id| HistoryDispatch {
+                app,
+                transition_id,
+                native_id: resumable_native.as_deref().unwrap_or_default(),
+                attempt: &mut *history_attempt,
+            }),
         )
         .await;
 
@@ -2312,8 +2393,15 @@ fn permission_mode_from_args(args: &[String]) -> Option<&str> {
         .map(|w| w[1].as_str())
 }
 
+pub(crate) struct HistoryDispatch<'a> {
+    pub app: &'a AppHandle,
+    pub transition_id: &'a str,
+    pub native_id: &'a str,
+    pub attempt: &'a mut Option<crate::external_agents::session::HistoryAttempt>,
+}
+
 /// Send one turn and pump events; the caller bounds cancellation and finalizes the reply.
-async fn drive_persistent_turn<E, C>(
+pub(crate) async fn drive_persistent_turn<E, C>(
     control: &crate::external_agents::session::live::SessionControl,
     delivery: &crate::external_agents::session::live::TurnDelivery,
     launch_is_current: &impl Fn() -> bool,
@@ -2329,6 +2417,7 @@ async fn drive_persistent_turn<E, C>(
     emit: &mut E,
     cancel: &C,
     approvals: Option<&ApprovalHost<'_>>,
+    history: Option<HistoryDispatch<'_>>,
 ) -> Result<(), String>
 where
     E: FnMut(UnifiedAgentEvent, Option<Uuid>),
@@ -2371,6 +2460,24 @@ where
     }
     if !launch_is_current() {
         return Err("external CLI launch configuration changed; retry".into());
+    }
+    if let Some(history) = history {
+        if history
+            .attempt
+            .as_ref()
+            .is_none_or(|attempt| attempt.native_id != history.native_id)
+        {
+            *history.attempt = Some(
+                crate::external_agents::session::begin_history_delivery(
+                    history.app,
+                    conversation_id,
+                    history.transition_id,
+                    run_generation,
+                    history.native_id,
+                )
+                .await?,
+            );
+        }
     }
     state
         .chat_runtime()
@@ -2511,7 +2618,7 @@ impl<F: Fn(&[String])> Drop for PendingApprovals<F> {
 /// 但语义不同（那个是「新会话的默认档」，这个是「计划批准后要不要继续弹卡」的判据）。
 const FULL_ACCESS_PERMISSION_MODE: &str = "bypassPermissions";
 
-struct ApprovalHost<'a> {
+pub(crate) struct ApprovalHost<'a> {
     app: &'a AppHandle,
     state: &'a AppState,
     conversation_id: &'a str,
@@ -5908,9 +6015,22 @@ mod tests {
             let delivery = TurnDelivery::default();
             let mut emitted = Vec::new();
             let error = drive_persistent_turn(
-                &control, &delivery, &|| true, None, &state, "conversation", generation,
-                "execute this prompt once".into(), None, None, &[], &[], &mut |event, _| emitted.push(event),
-                &|| false, None,
+                &control,
+                &delivery,
+                &|| true,
+                None,
+                &state,
+                "conversation",
+                generation,
+                "execute this prompt once".into(),
+                None,
+                None,
+                &[],
+                &[],
+                &mut |event, _| emitted.push(event),
+                &|| false,
+                None,
+                None,
             )
             .await
             .unwrap_err();

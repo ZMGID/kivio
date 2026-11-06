@@ -94,7 +94,7 @@ import {
   pruneSettledOptimisticItems,
   settleOptimisticConversationListItems,
 } from './optimisticSidebar'
-import { additionalDirectoriesOf, isPlainBlankConversation } from './conversationFields'
+import { additionalDirectoriesOf, conversationRuntimeLocked, isPlainBlankConversation } from './conversationFields'
 import { isEmptyChatPresentation } from './emptyHero'
 import { scheduleIdleTask } from './idleTask'
 import {
@@ -2607,7 +2607,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         // 一 agent 一对话：有消息后锁死 kind/agent（内置 Kivio 与本地 CLI 一律）。
         // 拉出独立窗口后主窗卸掉了消息，仍按「已有对话」锁死。
         !!currentConversation && (
-          (currentConversation.messages?.length ?? 0) > 0
+          conversationRuntimeLocked(currentConversation)
           || popoutConversationIds.has(currentConversation.id)
         )
       }

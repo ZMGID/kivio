@@ -37,6 +37,23 @@ function intent(overrides: Record<string, unknown> = {}) {
 }
 
 describe('prepare conversation for send', () => {
+  it('retains an empty bound CLI conversation when draft defaults disagree', async () => {
+    const bound: Conversation = {
+      ...conversation('imported-empty'), provider_id: '', model: '', runtime_locked: true,
+      agent_runtime: { kind: 'external', externalAgentId: 'claude' },
+    }
+    const persistence = {
+      createConversation: vi.fn().mockResolvedValue(conversation('replacement')),
+      setAgentRuntime: vi.fn(), updateConversation: vi.fn(),
+    }
+    const result = await prepareConversationForSend(intent({
+      conversation: bound, draft: { ...intent().draft, knowledgeBaseIds: [] },
+    }), persistence, vi.fn())
+    expect(result).toEqual({ ok: true, conversation: bound, created: false })
+    expect(persistence.createConversation).not.toHaveBeenCalled()
+    expect(persistence.setAgentRuntime).not.toHaveBeenCalled()
+  })
+
   it('returns a created partial conversation and recoverable error when a draft patch fails', async () => {
     const created = conversation('new-a')
     const onProgress = vi.fn()

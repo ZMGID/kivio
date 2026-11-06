@@ -1886,6 +1886,9 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
 
 fn test_conversation_with_summary(stale: bool) -> Conversation {
     Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2335,6 +2338,9 @@ fn stale_summary_is_ignored_by_message_builder() {
 #[test]
 fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2636,6 +2642,9 @@ fn apply_reply_with_model_result_groups_existing_answer() {
 #[test]
 fn build_chat_api_messages_replays_hidden_tool_transcript() {
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2807,6 +2816,9 @@ fn sanitize_image_payloads_replaces_raw_base64_lines() {
 #[test]
 fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
     let conversation = Conversation {
+            external_history: None,
+            external_cwd: None,
+            runtime_locked: false,
             id: "conv_test".to_string(),
             revision: 0,
             title: "test".to_string(),
@@ -2943,6 +2955,9 @@ fn image_token_estimates_follow_provider_dimension_rules() {
 
 fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
     Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_multi".to_string(),
         revision: 0,
         title: "test".to_string(),
