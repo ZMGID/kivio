@@ -540,8 +540,9 @@ pub async fn ensure_profile_ready(
     reasoning: Option<&str>,
     preset: Option<&str>,
 ) -> Result<(), String> {
-    let dir =
-        profile_dir().ok_or_else(|| "无法定位 dsh 主目录（$DSH_HOME / ~/.dsh）".to_string())?;
+    let home =
+        dsh_home().ok_or_else(|| "无法定位 dsh 主目录（$DSH_HOME / ~/.dsh）".to_string())?;
+    let dir = home.join("profiles").join(KIVIO_PROFILE);
 
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 dsh profile 目录失败：{e}"))?;
     std::fs::write(dir.join(".npmrc"), PROFILE_NPMRC)
@@ -549,7 +550,7 @@ pub async fn ensure_profile_ready(
 
     let core_version = dsh_core_version(bin).await?;
     if !packages_match_core(&dir, &core_version) {
-        install_packages(bin, &core_version).await?;
+        install_packages(bin, &core_version, &home).await?;
     }
     normalize_profile_manifest(&dir)?;
 
@@ -604,18 +605,20 @@ fn normalize_profile_manifest(dir: &Path) -> Result<(), String> {
 /// `dsh plugin --profile kivio add <pkgs>`。
 ///
 /// 用探测到的那个绝对二进制（与跑轮次的是同一个），不走 PATH 再查一次。
-fn remove_provider_env_from_install(
+fn configure_profile_install(
     command: &mut tokio::process::Command,
     providers: &[ExternalCliProvider],
+    home: &Path,
 ) {
     for provider in providers.iter().filter(|provider| !provider.disabled) {
         for env in &provider.env {
             command.env_remove(&env.key);
         }
     }
+    command.env("DSH_HOME", home);
 }
 
-async fn install_packages(bin: &Path, core_version: &str) -> Result<(), String> {
+async fn install_packages(bin: &Path, core_version: &str, home: &Path) -> Result<(), String> {
     use tokio::io::AsyncReadExt;
 
     crate::external_agents::installer::expose_node_on_path();
@@ -627,7 +630,7 @@ async fn install_packages(bin: &Path, core_version: &str) -> Result<(), String> 
     crate::external_agents::spawn::strip_parent_session_env(&mut command);
     crate::external_agents::installer::pin_official_npm_registry(&mut command);
     let config = crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
-    remove_provider_env_from_install(&mut command, &config.providers);
+    configure_profile_install(&mut command, &config.providers, home);
     let package_specs = versioned_package_specs(core_version);
     #[cfg(unix)]
     {
@@ -842,10 +845,21 @@ mod tests {
     fn plugin_install_explicitly_removes_provider_key_env() {
         let provider = relay_provider();
         let mut command = tokio::process::Command::new("dsh");
-        remove_provider_env_from_install(&mut command, &[provider]);
+        configure_profile_install(&mut command, &[provider], Path::new("test-home"));
         let key = std::ffi::OsStr::new("KIVIO_DSH_RELAY_ONE_API_KEY");
         let entry = command.as_std().get_envs().find(|(name, _)| *name == key);
         assert!(matches!(entry, Some((_, None))));
+    }
+
+    #[test]
+    fn maintenance_review_install_uses_the_resolved_profile_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut command = tokio::process::Command::new("dsh");
+        configure_profile_install(&mut command, &[relay_provider()], temp.path());
+        let value = command.as_std().get_envs().find_map(|(key, value)| {
+            (key == "DSH_HOME").then_some(value).flatten()
+        });
+        assert_eq!(value, Some(temp.path().as_os_str()));
     }
 
     #[test]

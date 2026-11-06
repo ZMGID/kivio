@@ -177,25 +177,28 @@ impl LaunchIdentity {
                 )
             })
             .unwrap_or_default();
-        let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        let mut environment = std::process::Command::new(bin);
+        environment.envs(std::env::vars_os());
         let configured = env_for_config(def.id, config.as_ref());
         if def.launch.home == super::types::AgentHomeStrategy::WslSharedCodexHome
-            && !configured.contains_key("CODEX_HOME")
+            && !configured.keys().any(|key| {
+                if cfg!(windows) {
+                    key.eq_ignore_ascii_case("CODEX_HOME")
+                } else {
+                    key == "CODEX_HOME"
+                }
+            })
         {
             if let Some(home) = provider_profile::wsl_shared_codex_home(bin) {
-                env.insert("CODEX_HOME".into(), home.into_os_string());
+                environment.env("CODEX_HOME", home);
             }
         }
-        env.extend(
-            def.env
-                .iter()
-                .map(|(key, value)| ((*key).into(), (*value).into())),
-        );
-        env.extend(
-            configured
-                .into_iter()
-                .map(|(key, value)| (key.into(), value.into())),
-        );
+        environment.envs(def.env.iter().copied());
+        environment.envs(configured);
+        let env = environment
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
+            .collect();
         Self::from_environment(def, bin, revision, config.as_ref(), &env)
     }
 
@@ -292,6 +295,9 @@ fn merge_env(
     manual: &[crate::settings::CliEnvVar],
 ) -> HashMap<String, String> {
     for pair in manual {
+        if cfg!(windows) {
+            base.retain(|name, _| !name.eq_ignore_ascii_case(&pair.key));
+        }
         base.insert(pair.key.clone(), pair.value.clone());
     }
     base
@@ -461,5 +467,16 @@ mod tests {
         // 供应商里手填没提到的键要保留，否则换个键名就把整份供应商配置抹了。
         assert_eq!(merged["ANTHROPIC_AUTH_TOKEN"], "sk-provider");
         assert_eq!(merged["EXTRA"], "1");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn maintenance_review_manual_env_overrides_windows_aliases() {
+        let merged = merge_env(
+            HashMap::from([("CODEX_HOME".into(), "provider-home".into())]),
+            &[pair("codex_home", "manual-home")],
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged["codex_home"], "manual-home");
     }
 }

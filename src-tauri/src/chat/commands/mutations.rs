@@ -50,8 +50,22 @@ pub(super) fn remove_assistant_answer(
     if conversation.messages[idx].role != "assistant" {
         return Err("仅支持删除助手回复".to_string());
     }
+    let changes_pending_history = conversation.external_history.as_ref().is_some_and(|history| {
+        history.prefix(conversation).is_ok_and(|prefix| idx < prefix.len())
+    });
     mark_summary_stale_if_needed(conversation, idx);
     let removed = conversation.messages.remove(idx);
+    if changes_pending_history {
+        if let Some(history) = &mut conversation.external_history {
+            if history.through_message_id.as_deref() == Some(message_id) {
+                history.through_message_id = idx.checked_sub(1)
+                    .map(|previous| conversation.messages[previous].id.clone());
+            }
+            history.id = Uuid::new_v4().to_string();
+            history.committed_revision = conversation.revision.saturating_add(1);
+            history.method = crate::chat::types::ExternalHistoryMethod::Replay;
+        }
+    }
     if let Some(group_id) = removed.group_id.as_deref() {
         if conversation
             .group_selections

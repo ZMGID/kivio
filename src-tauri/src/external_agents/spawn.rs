@@ -366,7 +366,9 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     // 设置页里针对这个 CLI 填的环境变量覆盖（`ANTHROPIC_BASE_URL` 之类），按二进制名反查。
     // 必须用原始路径（UNC 的 file_stem 仍是 `claude`），不能用改写后的 `wsl.exe`。
     let extra = crate::external_agents::overrides::env_for_bin(Path::new(program));
-    let has_codex_home = extra.contains_key("CODEX_HOME");
+    let has_codex_home = extra.keys().any(|key| {
+        if cfg!(windows) { key.eq_ignore_ascii_case("CODEX_HOME") } else { key == "CODEX_HOME" }
+    });
     for (key, value) in extra {
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
@@ -432,7 +434,11 @@ pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> C
         apply_env_for_cli(&mut command, Path::new(program), key, value.to_string());
     }
     for (key, value) in crate::external_agents::overrides::env_for(def.id) {
-        has_codex_home |= key == "CODEX_HOME";
+        has_codex_home |= if cfg!(windows) {
+            key.eq_ignore_ascii_case("CODEX_HOME")
+        } else {
+            key == "CODEX_HOME"
+        };
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
     finish_codex_home(&mut command, Path::new(program), def.launch, has_codex_home);

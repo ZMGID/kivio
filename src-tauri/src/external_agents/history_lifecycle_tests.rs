@@ -804,6 +804,27 @@ fn external_history_publication_and_recovery_on_real_files() {
         .await
         .unwrap()
         .is_none());
+        legacy = repository(app).mutate(app, &empty_id, |latest| {
+            let mut history = ExternalHistoryTransition::new(latest, ExternalHistoryMethod::Replay);
+            history.through_message_id = Some("legacy_answer".into());
+            latest.messages.retain(|message| message.id != "legacy_answer");
+            latest.messages.push(message("repair_user", "user", "repair request"));
+            latest.external_history = Some(history);
+            Ok(())
+        }).await.unwrap();
+        let stale_transition = legacy.external_history.as_ref().unwrap().id.clone();
+        let repaired = crate::external_agents::run::prepare_history_transition(
+            app, &mut legacy, generation, false,
+        ).await.unwrap().unwrap();
+        assert_ne!(repaired.id, stale_transition);
+        assert_eq!(repaired.method, ExternalHistoryMethod::Replay);
+        assert!(repaired.prefix(&legacy).unwrap().iter().all(|message| message.id != "repair_user"));
+        let handoff = crate::external_agents::prompt::compose_history_handoff(
+            &legacy,
+            crate::external_agents::prompt::compose_external_prompt_passthrough("repair request"),
+            "repair request",
+        ).unwrap();
+        assert_eq!(handoff.full_prompt.matches("repair request").count(), 1);
         state.chat_runtime().end_generation(&empty_id, generation);
     });
 }
