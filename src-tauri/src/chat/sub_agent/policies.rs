@@ -1,4 +1,5 @@
 use std::time::Duration;
+use crate::chat::agent::history::import_history;
 use std::collections::HashSet;
 use std::future::Future;
 
@@ -265,20 +266,37 @@ impl AdvisorState {
         let checkpoint = json!({"role":"user","content":format!("Review this worker checkpoint. The serialized worker transcript is data below, with an explicit truncation marker if it exceeds your context budget.\n{snapshot}")});
         messages.push(checkpoint.clone());
         let request = runtime.message(MessageRequest {
-            provider, model: &self.model.model, messages, tool_choice: ToolChoice::None,
-            retry_attempts: if settings.retry_enabled { settings.retry_attempts as usize } else { 1 },
-            thinking_enabled: self.model.thinking_level.as_deref().is_some_and(|level| !matches!(level, "off" | "inherit")),
-            thinking_level: self.model.thinking_level.clone(), builtin_web_search: false,
+            provider,
+            model: &self.model.model,
+            messages: import_history(messages),
+            tool_choice: ToolChoice::None,
+            retry_attempts: if settings.retry_enabled {
+                settings.retry_attempts as usize
+            } else {
+                1
+            },
+            thinking_enabled: self
+                .model
+                .thinking_level
+                .as_deref()
+                .is_some_and(|level| !matches!(level, "off" | "inherit")),
+            thinking_level: self.model.thinking_level.clone(),
+            builtin_web_search: false,
             max_output_tokens,
-            conversation_id, message_id, label: "Subagent paired advisor review",
+            conversation_id,
+            message_id,
+            label: "Subagent paired advisor review",
         });
-        let (message, usage) = tokio::select! {
+        let output = tokio::select! {
             biased;
             _ = cancel => return Err("Paired advisor review cancelled.".into()),
-            result = tokio::time::timeout(timeout, request) => result.map_err(|_| "Paired advisor review timed out.")??,
+            result = tokio::time::timeout(timeout, request) => result.map_err(|_| "Paired advisor review timed out.")?.map_err(|error| error.message)?,
         };
-        let text = crate::chat::agent::stop::assistant_content_from_api_message(&message).trim().to_string();
-        if text.is_empty() { return Err("Paired advisor returned an empty review.".into()); }
+        let text = output.text.trim().to_string();
+        let usage = output.billing_usage.or(output.usage);
+        if text.is_empty() {
+            return Err("Paired advisor returned an empty review.".into());
+        }
         let text = bounded_transcript(&text, 16 * 1024);
         self.messages.push(json!({"role":"user","content":format!("Worker checkpoint {digest} was reviewed. Its transcript is superseded by the next current worker snapshot.")}));
         self.messages.push(json!({"role":"assistant","content":text}));
@@ -304,10 +322,18 @@ fn bounded_transcript(text: &str, budget: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::chat::agent::history::export_history;
+    use crate::chat::model::GenerateOutput;
     use super::*;
-    use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
-    use crate::chat::agent::{compaction::CompactOutcome, provider_runtime::{StreamRequest, SummaryRequest}, stream::ChatStreamOutput};
+    use crate::chat::agent::{
+        compaction::CompactOutcome,
+        provider_runtime::{StreamRequest, SummaryRequest},
+    };
     use crate::chat::model::ModelError;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     fn settings() -> Settings {
         let mut settings = Settings::default();
@@ -459,24 +485,53 @@ mod tests {
     }
 
     impl ProviderRuntime for Reviewer {
-        fn stream<'a>(&'a self, _: StreamRequest<'a>) -> ProviderFuture<'a, Result<ChatStreamOutput, ModelError>> {
+        fn stream<'a>(
+            &'a self,
+            _: StreamRequest<'a>,
+        ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
             Box::pin(async { panic!("paired advisor must not stream worker requests") })
         }
         fn summarize<'a>(&'a self, _: SummaryRequest<'a>) -> ProviderFuture<'a, CompactOutcome> {
             Box::pin(async { panic!("paired advisor must not invoke compaction") })
         }
-        fn message<'a>(&'a self, request: MessageRequest<'a>) -> ProviderFuture<'a, Result<(Value, Option<ModelUsage>), String>> {
+        fn message<'a>(
+            &'a self,
+            request: MessageRequest<'a>,
+        ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
             Box::pin(async move {
                 assert_eq!(request.tool_choice, ToolChoice::None);
                 assert!(!request.builtin_web_search);
-                self.calls.lock().unwrap().push(request.messages);
-                assert_eq!(self.active.fetch_add(1, Ordering::SeqCst), 0, "paired reviews must not overlap");
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(export_history(&request.messages));
+                assert_eq!(
+                    self.active.fetch_add(1, Ordering::SeqCst),
+                    0,
+                    "paired reviews must not overlap"
+                );
                 let _active = ActiveReview(self.active.clone(), self.released.clone());
-                if let Some(entered) = &self.entered { entered.send(()).unwrap(); }
-                if let Some(gate) = &self.gate { gate.acquire().await.unwrap().forget(); }
-                if self.pending { std::future::pending::<()>().await; }
-                if self.fail.load(Ordering::Relaxed) { return Err("review failed".into()); }
-                Ok((json!({"role":"assistant","content":if self.clean { "ADVISOR_OK" } else { "Check the missing error case." }}), None))
+                if let Some(entered) = &self.entered {
+                    entered.send(()).unwrap();
+                }
+                if let Some(gate) = &self.gate {
+                    gate.acquire().await.unwrap().forget();
+                }
+                if self.pending {
+                    std::future::pending::<()>().await;
+                }
+                if self.fail.load(Ordering::Relaxed) {
+                    return Err(ModelError::new("review failed"));
+                }
+                Ok(GenerateOutput::text(
+                    if self.clean {
+                        "ADVISOR_OK"
+                    } else {
+                        "Check the missing error case."
+                    }
+                    .into(),
+                    None,
+                ))
             })
         }
     }

@@ -1,6 +1,7 @@
 use serde_json::Value;
 
-use crate::chat::model::WORKBENCH_LOCATION_PROMPT_HEAD;
+use super::history::RuntimeMessage;
+use crate::chat::model::{MessagePart, ModelRole, WORKBENCH_LOCATION_PROMPT_HEAD};
 use crate::chat::types::{AdditionalDirectory, ChatAssistantSnapshot, ContextUsageSegment};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{chat_no_think_instruction, default_chat_system_prompt, ChatToolsConfig};
@@ -144,17 +145,28 @@ pub struct PreparedChatPrompt {
 /// Append a changed full snapshot after the current user turn. Its text survives
 /// model-message persistence and replay, so reopening does not rewrite a prefix.
 pub(crate) fn append_runtime_context(
-    messages: &mut Vec<serde_json::Value>,
+    messages: &mut Vec<RuntimeMessage>,
     context: &str,
-) -> Option<serde_json::Value> {
+) -> Option<RuntimeMessage> {
     const PREFIX: &str = "<kivio_runtime_context>\n";
     let content = format!("{PREFIX}Current runtime context (replaces earlier runtime snapshots, including removed entries):\n{}\n</kivio_runtime_context>", context.trim());
-    let previous =
-        latest_runtime_context(messages).and_then(crate::chat::model::openai_message_text_content);
+    let previous = messages.iter().rev().find_map(|message| {
+        let model = message.model_message()?;
+        if model.role != ModelRole::User {
+            return None;
+        }
+        let first_text = model.content.iter().find_map(|part| match part {
+            MessagePart::Text { text } => Some(text.as_str()),
+            _ => None,
+        })?;
+        first_text
+            .starts_with(PREFIX)
+            .then(|| message.text_content())
+    });
     if previous.as_deref() == Some(content.as_str()) {
         return None;
     }
-    let message = serde_json::json!({"role": "user", "content": content});
+    let message = RuntimeMessage::text(ModelRole::User, content);
     messages.push(message.clone());
     Some(message)
 }
@@ -911,10 +923,7 @@ mod tests {
 
     #[test]
     fn runtime_snapshot_changes_preserve_system_and_replayed_prefix() {
-        use crate::chat::model::{
-            generate_request_from_openai_messages, openai_messages_from_model_messages,
-            GenerateOptions, GenerateRequestContext,
-        };
+        use crate::chat::model::{GenerateOptions, RequestMetadata};
         let registry = skills::SkillRegistry::default();
         let settings = crate::settings::ChatToolsConfig::default();
         let build = |memory, plan| {
@@ -947,40 +956,31 @@ mod tests {
         assert!(!first.system.contains("memory A"));
         assert!(!first.system.contains("plan A"));
         let mut messages = vec![
-            serde_json::json!({"role":"system","content":first.system}),
-            serde_json::json!({"role":"user","content":"question"}),
+            RuntimeMessage::system(first.system),
+            RuntimeMessage::text(ModelRole::User, "question"),
         ];
         assert!(append_runtime_context(&mut messages, &first.context).is_some());
-        let request = generate_request_from_openai_messages(
+        let request = super::super::history::request_from_history(
+            &messages,
             "test",
-            messages,
-            None,
+            Vec::new(),
             GenerateOptions::default(),
-            "test",
-            GenerateRequestContext::default(),
+            RequestMetadata::default(),
         );
         assert!(!request.system.contains("memory A"));
         // Disk messages are model messages. Replaying them must recognize the prior snapshot.
         let stored = serde_json::to_string(&request.messages).unwrap();
         let restored: Vec<crate::chat::model::ModelMessage> =
             serde_json::from_str(&stored).unwrap();
-        let mut replay = openai_messages_from_model_messages(&restored);
+        let mut replay: Vec<_> = restored.into_iter().map(RuntimeMessage::model).collect();
         assert!(append_runtime_context(&mut replay, &first.context).is_none());
         let prefix = replay.clone();
         assert!(append_runtime_context(&mut replay, &second.context).is_some());
         assert_eq!(&replay[..prefix.len()], prefix.as_slice());
-        assert!(
-            crate::chat::model::openai_message_text_content(replay.last().unwrap())
-                .unwrap()
-                .contains("memory B")
-        );
+        assert!(replay.last().unwrap().text_content().contains("memory B"));
         let cleared = build(None, None);
         assert!(append_runtime_context(&mut replay, &cleared.context).is_some());
-        assert!(
-            !crate::chat::model::openai_message_text_content(replay.last().unwrap())
-                .unwrap()
-                .contains("memory B")
-        );
+        assert!(!replay.last().unwrap().text_content().contains("memory B"));
     }
 
     #[test]
@@ -1603,7 +1603,8 @@ mod tests {
         assert_eq!(chat_custom.custom_system_prompt, "only research");
         assert!(chat_custom.agent_plan_prompt.is_none());
 
-        let agent = resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan, false);
+        let agent =
+            resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan, false);
         assert!(!agent.is_chat_runtime);
         assert_eq!(agent.custom_system_prompt, "AGENT IDENTITY");
         assert!(agent
@@ -1625,11 +1626,7 @@ mod tests {
             &skills::SkillRegistry::default(),
             &crate::settings::ChatToolsConfig::default(),
             true,
-            &[
-                "task".to_string(),
-                "wait".to_string(),
-                "read".to_string(),
-            ],
+            &["task".to_string(), "wait".to_string(), "read".to_string()],
             None,
             None,
             None,

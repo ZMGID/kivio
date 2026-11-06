@@ -1272,25 +1272,29 @@ fn call_advisor(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .and_then(|nc| nc.tool_call_id.clone())
             .unwrap_or_default();
 
-        let (message, _usage) =
-            crate::chat::agent::planning::call_chat_completion_message_with_usage(
-                ctx.state,
-                &provider,
+        let output = crate::chat::agent::planning::generate_via_stream_collect(
+            ctx.state,
+            &provider,
+            retry_attempts,
+            crate::chat::model::generate_request_from_openai_messages(
                 &model,
                 messages,
                 None,
-                crate::chat::model::ToolChoice::Auto,
-                retry_attempts,
-                false,
-                None,
-                false,
-                max_output_tokens,
-                &conversation_id,
-                &message_id,
+                crate::chat::model::GenerateOptions {
+                    thinking_enabled: false,
+                    max_tokens: max_output_tokens,
+                    ..Default::default()
+                },
                 "Advisor consultation",
-            )
-            .await?;
-        let advice = crate::chat::agent::stop::assistant_content_from_api_message(&message);
+                crate::chat::model::GenerateRequestContext::new(
+                    Some(&conversation_id),
+                    Some(&message_id),
+                ),
+            ),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        let advice = output.text;
         let advice = advice.trim();
         if advice.is_empty() {
             return Err("Advisor returned an empty response.".to_string());

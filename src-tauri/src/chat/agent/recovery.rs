@@ -11,10 +11,7 @@
 //! 共用;并保证「产生过工具结果的轮次永不空手而归」这一不变式只在此处定义
 //! (`DegradeToGathered` → `assemble_results_from_tool_records`)。
 //!
-//! 不重复造轮子:沿用 `api::extract_status_code` 从错误串里取 HTTP 状态码(failover 逻辑
-//! 也是这么做的),内容审核 / 超长靠 body 关键词判定。错误既可能是流式 `ModelError`,
-//! 也可能是非流式 `String`,统一按消息文本分类即可,无需改动适配器返回类型。
-
+use crate::chat::model::{FinishKind, ModelError, ModelErrorKind};
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 
 /// 降级回答的结构化描述，落到 `ChatMessage.degraded` 供前端渲染成独立卡片。
@@ -64,12 +61,15 @@ impl FailureKind {
 }
 
 pub(crate) fn is_recoverable_text_length(
-    output: &super::stream::ChatStreamOutput,
+    output: &crate::chat::model::GenerateOutput,
     max_output_tokens: u32,
 ) -> bool {
     !output.cancelled
-        && output.finish_reason.as_deref() == Some("length")
-        && !output.content.trim().is_empty()
+        && output
+            .finish_reason
+            .as_ref()
+            .is_some_and(|reason| reason.kind == FinishKind::Length)
+        && !output.text.trim().is_empty()
         && output.tool_calls.is_empty()
         && output.images.is_empty()
         && max_output_tokens > 0
@@ -87,17 +87,17 @@ pub(crate) async fn stream_with_truncation_recovery(
     env: &super::loop_::LoopEnv<'_>,
     state: &mut super::loop_::RunState,
     mut request: super::provider_runtime::StreamRequest<'_>,
-) -> Result<super::stream::ChatStreamOutput, crate::chat::model::ModelError> {
-    use crate::chat::model::ModelError;
+) -> Result<crate::chat::model::GenerateOutput, crate::chat::model::ModelError> {
     let mut attempted = false;
     loop {
         let result = env.config.provider_runtime.stream(request.clone()).await;
         let output = match result {
             Ok(output) => output,
             Err(error) if attempted => {
-                return Err(ModelError::new(format!(
-                    "Truncated response recovery failed: {error}"
-                )))
+                return Err(ModelError::with_kind(
+                    format!("Truncated response recovery failed: {error}"),
+                    ModelErrorKind::TruncationRecoveryFailed,
+                ))
             }
             Err(error) => return Err(error),
         };
@@ -113,7 +113,7 @@ pub(crate) async fn stream_with_truncation_recovery(
             true,
         );
         if attempted {
-            return Err(ModelError::new("Truncated response recovery failed after one compact-and-retry attempt. Please reduce context or switch models."));
+            return Err(ModelError::with_kind("Truncated response recovery failed after one compact-and-retry attempt. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed));
         }
         attempted = true;
         let compacted = super::compaction::compact_send_view(
@@ -127,14 +127,13 @@ pub(crate) async fn stream_with_truncation_recovery(
             .host
             .is_generation_active(request.conversation_id, request.generation)
         {
-            return Ok(super::stream::ChatStreamOutput::new(
+            return Ok(crate::chat::model::GenerateOutput::cancelled(
                 String::new(),
-                String::new(),
-                true,
+                None,
             ));
         }
         if state.compaction_blocked || compacted == request.messages {
-            return Err(ModelError::new("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models."));
+            return Err(ModelError::with_kind("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed));
         }
         request.messages = compacted;
         if env.config.depth == 0 {
@@ -186,99 +185,6 @@ pub(crate) enum RecoveryAction {
     Surface,
 }
 
-/// 上下文超长信号:覆盖 OpenAI / Anthropic / Gemini / 各代理 / DeepSeek 及国内供应商
-/// 常见文案(对标 PI `ai/src/utils/overflow.ts` 的 `OVERFLOW_PATTERNS` 子集)。
-/// 命中其一即认为是「上下文撑爆」类失败,应走压缩重试而非快速失败。
-const OVERFLOW_PATTERNS: &[&str] = &[
-    // OpenAI / 通用
-    "maximum context",
-    "context length",
-    "context_length_exceeded",
-    "context window",
-    "too many tokens",
-    "reduce the length",
-    "reduce your prompt",
-    "input is too long",
-    "input too long",
-    // Anthropic
-    "prompt is too long",
-    "prompt too long",
-    "prompt exceeds max length",
-    "maximum prompt length",
-    "maximum allowed input length",
-    "range of input length should be",
-    "exceeds the available context size",
-    "request too large",
-    "request_too_large",
-    // Gemini / 其它代理
-    "exceeds the context",
-    "token limit",
-    "tokens limit",
-    "exceed the context",
-    "exceed context",
-    // 国内供应商 / 中文文案
-    "上下文长度",
-    "上下文过长",
-    "输入过长",
-    "tokens 超",
-];
-
-/// 排除项:这些文案虽含「limit/token」等词,实为限流/配额而非上下文超长,
-/// 命中则**不**判为 overflow(对标 PI `NON_OVERFLOW_PATTERNS`,防止把限流误判成 overflow)。
-const NON_OVERFLOW_PATTERNS: &[&str] = &[
-    "rate limit",
-    "rate_limit",
-    "too many requests",
-    "requests per",
-    "quota",
-    "insufficient",
-    "billing",
-    "usage limit",
-    "available balance",
-];
-
-/// 传输层没答完的信号：超时 / 连接断 / SSE 断包。这些**没有** HTTP 状态码，
-/// 只在 `extract_status_code` 返回 None 时才判定，免得把带状态码的 5xx 抢走。
-const TRANSPORT_PATTERNS: &[&str] = &[
-    "timed out",
-    "timeout",
-    "error sending request",
-    "connection reset",
-    "connection closed",
-    "connection refused",
-    "incomplete or invalid encoded stream chunk",
-    "dns error",
-    "流式响应读取中断",
-    "请求超时",
-    "without terminal",
-    "missing terminal",
-    "without finish_reason",
-    "stream ended without",
-];
-
-/// 判断错误文本是否为「上下文超长」(overflow)。先排除限流/配额误判,再匹配 overflow 文案。
-fn is_context_overflow(lower: &str) -> bool {
-    if NON_OVERFLOW_PATTERNS.iter().any(|n| lower.contains(n)) {
-        return false;
-    }
-    OVERFLOW_PATTERNS.iter().any(|n| lower.contains(n))
-        || (lower.contains("input token count") && lower.contains("exceeds the maximum"))
-        || (lower.contains("prompt has") && lower.contains("but the configured context size is"))
-}
-
-/// Some OpenAI-compatible streams report overflow as a successful terminal frame.
-pub(crate) fn is_context_overflow_finish(reason: &str) -> bool {
-    matches!(
-        reason.trim().to_ascii_lowercase().as_str(),
-        "context_exceeded"
-            | "context_length_exceeded"
-            | "context_window_exceeded"
-            | "model_context_window_exceeded"
-            | "model_context_exceeded"
-            | "prompt_too_long"
-    )
-}
-
 /// 静默超窗的判定线：provider 实报的 prompt token 占窗口的比例。
 /// 取 0.99 对齐 pi `isContextOverflow` 的 case 3；case 2 的「严格大于窗口」是它的子集,
 /// 一条线同时盖住两种形态。
@@ -308,54 +214,21 @@ pub(crate) fn is_silent_overflow(prompt_tokens: Option<u64>, window: usize) -> b
     prompt as f64 >= window as f64 * SILENT_OVERFLOW_RATIO
 }
 
-/// 把错误消息文本归类。`message` 为空视为 `Empty`(调用方在"成功但空响应"时传空串)。
 pub(crate) fn classify(message: &str) -> FailureKind {
-    let trimmed = message.trim();
-    if trimmed.is_empty() {
-        return FailureKind::Empty;
-    }
-    // A bounded length recovery already exhausted its semantic retry. Never re-enter
-    // overflow recovery merely because the final provider error mentions context.
-    if trimmed.starts_with("Truncated response recovery failed") {
-        return FailureKind::Other;
-    }
-    let status = crate::api::extract_status_code(trimmed);
-    let lower = trimmed.to_ascii_lowercase();
-    let has = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    failure_kind(ModelError::new(message).kind)
+}
 
-    if crate::api::is_invalid_image_error(trimmed) {
-        return FailureKind::InvalidImage;
-    }
-    // 内容审核:供应商措辞不一,关键词覆盖中英常见形态。
-    if has(&[
-        "content exists risk",
-        "content policy",
-        "content_policy",
-        "content filter",
-        "moderation",
-        "safety",
-        "sensitive",
-        "审核",
-        "违规",
-        "敏感",
-    ]) {
-        return FailureKind::ContentModeration;
-    }
-    // 上下文超长。先于 status 判定:overflow 多以 400 返回,若不在此截获会被下面
-    // 的确定性请求错误处理。命中 NON_OVERFLOW(限流/配额)则不算 overflow。
-    if is_context_overflow(&lower) {
-        return FailureKind::ContextOverflow;
-    }
-    if crate::api::is_permanent_provider_error(trimmed) {
-        return FailureKind::InvalidRequest;
-    }
-    match status {
-        Some(429) => FailureKind::Exhausted,
-        Some(400..=499) => FailureKind::InvalidRequest,
-        Some(code) if (500..600).contains(&code) => FailureKind::Exhausted,
-        // 无状态码 = 供应商压根没答完(超时 / 连接断 / SSE 断包)。别再叫"模型调用失败",
-        // 也别去敏重做——同样的大请求只会再超一次时。
-        None if TRANSPORT_PATTERNS.iter().any(|n| lower.contains(n)) => FailureKind::Timeout,
+pub(crate) fn failure_kind(kind: ModelErrorKind) -> FailureKind {
+    match kind {
+        ModelErrorKind::InvalidImage => FailureKind::InvalidImage,
+        ModelErrorKind::ContentModeration => FailureKind::ContentModeration,
+        ModelErrorKind::ContextOverflow => FailureKind::ContextOverflow,
+        ModelErrorKind::InvalidRequest
+        | ModelErrorKind::Auth
+        | ModelErrorKind::ToolsUnsupported => FailureKind::InvalidRequest,
+        ModelErrorKind::RateLimited | ModelErrorKind::ProviderUnavailable => FailureKind::Exhausted,
+        ModelErrorKind::Timeout | ModelErrorKind::Transport => FailureKind::Timeout,
+        ModelErrorKind::EmptyResponse => FailureKind::Empty,
         _ => FailureKind::Other,
     }
 }

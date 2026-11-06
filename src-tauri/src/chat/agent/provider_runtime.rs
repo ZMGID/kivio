@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     chat::{
-        model::{ModelError, ModelUsage, ToolChoice},
+        model::{GenerateOptions, GenerateOutput, ModelError, RequestMetadata, ToolChoice},
         types::ChatMessageSegment,
     },
     mcp::ChatToolDefinition,
@@ -19,8 +19,8 @@ use crate::{
 use super::{
     compaction::{summarize_history, CompactOutcome},
     host::AgentHost,
-    planning::{call_chat_completion_message_with_usage, stream_scoped_chat_completion_inner},
-    stream::{ChatStreamOutput, ToolCallDraftTracker, WebSearchCardTracker},
+    planning::{generate_via_stream_collect, stream_scoped_chat_completion_inner},
+    stream::{ToolCallDraftTracker, WebSearchCardTracker},
     types::AgentStreamPolicy,
 };
 
@@ -31,7 +31,7 @@ pub(crate) struct StreamRequest<'a> {
     pub host: &'a dyn AgentHost,
     pub provider: &'a ModelProvider,
     pub model: &'a str,
-    pub messages: Vec<Value>,
+    pub messages: Vec<super::history::RuntimeMessage>,
     pub tools: Option<&'a [ChatToolDefinition]>,
     pub tool_choice: ToolChoice,
     pub retry_attempts: usize,
@@ -54,7 +54,7 @@ pub(crate) struct StreamRequest<'a> {
 pub(crate) struct MessageRequest<'a> {
     pub provider: &'a ModelProvider,
     pub model: &'a str,
-    pub messages: Vec<Value>,
+    pub messages: Vec<super::history::RuntimeMessage>,
     pub tool_choice: ToolChoice,
     pub retry_attempts: usize,
     pub thinking_enabled: bool,
@@ -84,12 +84,12 @@ pub(crate) trait ProviderRuntime: Send + Sync {
     fn stream<'a>(
         &'a self,
         request: StreamRequest<'a>,
-    ) -> ProviderFuture<'a, Result<ChatStreamOutput, ModelError>>;
+    ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>>;
 
     fn message<'a>(
         &'a self,
         request: MessageRequest<'a>,
-    ) -> ProviderFuture<'a, Result<(Value, Option<ModelUsage>), String>>;
+    ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>>;
 
     fn summarize<'a>(&'a self, request: SummaryRequest<'a>) -> ProviderFuture<'a, CompactOutcome>;
 }
@@ -104,7 +104,7 @@ impl ProviderRuntime for AppState {
     fn stream<'a>(
         &'a self,
         request: StreamRequest<'a>,
-    ) -> ProviderFuture<'a, Result<ChatStreamOutput, ModelError>> {
+    ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
         if !allows_task_speculation(request.tool_choice, request.tools) {
             if let Some(tracker) = &request.tool_draft_tracker {
                 tracker.disable_speculation();
@@ -139,22 +139,31 @@ impl ProviderRuntime for AppState {
     fn message<'a>(
         &'a self,
         request: MessageRequest<'a>,
-    ) -> ProviderFuture<'a, Result<(Value, Option<ModelUsage>), String>> {
-        Box::pin(call_chat_completion_message_with_usage(
+    ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
+        let model_request = super::history::request_from_history(
+            &request.messages,
+            request.model,
+            Vec::new(),
+            GenerateOptions {
+                thinking_enabled: request.thinking_enabled,
+                thinking_level: request.thinking_level,
+                builtin_web_search: request.builtin_web_search,
+                tool_choice: request.tool_choice,
+                max_tokens: request.max_output_tokens,
+                ..GenerateOptions::default()
+            },
+            RequestMetadata {
+                label: request.label.to_string(),
+                conversation_id: Some(request.conversation_id.to_string()),
+                message_id: Some(request.message_id.to_string()),
+                ..Default::default()
+            },
+        );
+        Box::pin(generate_via_stream_collect(
             self,
             request.provider,
-            request.model,
-            request.messages,
-            None,
-            request.tool_choice,
             request.retry_attempts,
-            request.thinking_enabled,
-            request.thinking_level,
-            request.builtin_web_search,
-            request.max_output_tokens,
-            request.conversation_id,
-            request.message_id,
-            request.label,
+            model_request,
         ))
     }
 

@@ -1,35 +1,32 @@
 use reqwest::header::ACCEPT_ENCODING;
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
-use crate::settings::ModelProvider;
-use crate::state::AppState;
+use crate::api::{send_model_with_failover, with_chat_request_timeout};
+use crate::settings::CacheRetention;
 use crate::usage::{
     chat_usage_source_for_label, error_kind_from_message, model_usage_from_openai_value,
-    model_usage_from_stream_value, operation_from_label, record_model_call, UsageRecordInput,
+    model_usage_from_stream_value, operation_from_label, UsageRecordInput,
 };
 use crate::utils;
 
+use super::error::provider_error_code;
+use super::FinishReason;
 use super::{
     openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
     stream_read_error, FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
     LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall, StreamPart,
     StreamSink,
 };
+use super::{ModelTransport, ProviderConfig};
 
-pub struct OpenAiChatProvider<'a> {
-    state: &'a AppState,
-    provider: &'a ModelProvider,
-    retry_attempts: usize,
+pub(super) struct OpenAiChatProvider<'a> {
+    transport: ModelTransport<'a>,
+    config: ProviderConfig<'a>,
 }
 
 impl<'a> OpenAiChatProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
-        Self {
-            state,
-            provider,
-            retry_attempts,
-        }
+    pub(super) fn new(transport: ModelTransport<'a>, config: ProviderConfig<'a>) -> Self {
+        Self { transport, config }
     }
 }
 
@@ -66,24 +63,26 @@ impl OpenAiChatProvider<'_> {
         request: &GenerateRequest,
         stream: bool,
         label: &str,
-    ) -> Result<reqwest::Response, String> {
+    ) -> Result<reqwest::Response, ModelError> {
         let body = self.request_body(request, stream);
         let result = self.post_chat(request, &body, stream, label).await;
         if let Err(ref err) = result {
             let mut learned = false;
             // key 被拒：key 与 24h 一并消失（24h 只跟 key 一起发）。
-            if body.get("prompt_cache_key").is_some() && error_rejects_prompt_cache_key(err) {
-                self.state
-                    .provider_runtime()
-                    .mark_prompt_cache_key_unsupported(&self.provider.base_url);
+            if body.get("prompt_cache_key").is_some()
+                && error_rejects_prompt_cache_key(&err.message)
+            {
+                self.transport
+                    .runtime
+                    .mark_prompt_cache_key_unsupported(self.config.base_url);
                 learned = true;
             } else if body.get("prompt_cache_retention").is_some()
-                && error_rejects_prompt_cache_retention(err)
+                && error_rejects_prompt_cache_retention(&err.message)
             {
                 // 只拒 24h：保留 key，停发 retention。
-                self.state
-                    .provider_runtime()
-                    .mark_prompt_cache_retention_unsupported(&self.provider.base_url);
+                self.transport
+                    .runtime
+                    .mark_prompt_cache_retention_unsupported(self.config.base_url);
                 learned = true;
             }
             if learned {
@@ -102,27 +101,22 @@ impl OpenAiChatProvider<'_> {
         body: &Value,
         stream: bool,
         label: &str,
-    ) -> Result<reqwest::Response, String> {
+    ) -> Result<reqwest::Response, ModelError> {
         if crate::chat::video::has_video(request) {
-            crate::chat::video::validate_request(self.provider, request)
-                .map_err(|e| e.to_string())?;
-            crate::chat::video::validate_body(body).map_err(|e| e.to_string())?;
+            crate::chat::video::validate_request(self.config.source, request)?;
+            crate::chat::video::validate_body(body)?;
         }
-        if self.provider.is_opencode_free() && !crate::opencode_free::is_free_model(&request.model)
-        {
+        if self.config.opencode_free && !crate::opencode_free::is_free_model(&request.model) {
             return Err("OpenCode Free only supports free models; refresh the model list".into());
         }
-        send_with_failover(
-            self.state,
+        send_model_with_failover(
+            self.transport.runtime,
             label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
-                let req = self
-                    .state
-                    .client_for(self.provider)
-                    .post(self.chat_completions_url());
+                let req = self.transport.client.post(self.chat_completions_url());
                 let req = crate::provider_request::apply_api_key_auth(
                     req,
                     crate::settings::ProviderApiFormat::OpenAiChat,
@@ -135,7 +129,7 @@ impl OpenAiChatProvider<'_> {
                         stream,
                     ),
                     body,
-                    self.provider.compress_request_body,
+                    self.config.compress_request_body,
                 );
                 let req = if stream {
                     req
@@ -156,16 +150,22 @@ impl OpenAiChatProvider<'_> {
             .send_chat_body(&request, false, &label)
             .await
             .map_err(|err| {
-                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &err.message,
+                );
                 self.record_debug_failure(
                     &request,
                     &label,
                     false,
-                    &err,
+                    &err.message,
                     started_at,
                     started.elapsed(),
                 );
-                ModelError::new(err)
+                err
             })?;
 
         let raw = response.text().await.map_err(|err| {
@@ -232,23 +232,29 @@ impl OpenAiChatProvider<'_> {
             .send_chat_body(&request, true, &label)
             .await
             .map_err(|err| {
-                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &err.message,
+                );
                 self.record_debug_failure(
                     &request,
                     &label,
                     true,
-                    &err,
+                    &err.message,
                     started_at,
                     started.elapsed(),
                 );
-                ModelError::new(err)
+                err
             })?;
 
         let mut sse = super::sse::SseDecoder::default();
         let mut full = String::new();
         let mut reasoning_full = String::new();
         let mut tool_partials: Vec<PartialToolCall> = Vec::new();
-        let mut finish_reason: Option<String> = None;
+        let mut finish_reason = None;
         let mut usage: Option<ModelUsage> = None;
         let mut last_reasoning_summary_index: Option<u64> = None;
         // 代理仿 OpenRouter 出图：流式 chunk 的 `delta.images` 逐帧累积，finish 后并入 output。
@@ -290,7 +296,7 @@ impl OpenAiChatProvider<'_> {
                 }
                 if data == "[DONE]" {
                     let tool_calls = finish_tool_call_partials(&mut tool_partials, sink)?;
-                    let reason = finish_reason.unwrap_or_else(|| "done".to_string());
+                    let reason = finish_reason.unwrap_or_else(|| FinishReason::from_openai("done"));
                     sink.emit(StreamPart::Finish {
                         reason: reason.clone(),
                         full: full.clone(),
@@ -301,7 +307,6 @@ impl OpenAiChatProvider<'_> {
                         tool_calls,
                         usage,
                         finish_reason: Some(reason),
-                        provider_messages: Vec::new(),
                         cancelled: false,
                         web_search: None,
                         images,
@@ -333,10 +338,8 @@ impl OpenAiChatProvider<'_> {
                 };
                 if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
                     let message = format!("{label} stream error: {error}");
-                    sink.emit(StreamPart::Error {
-                        message: message.clone(),
-                    })?;
-                    return Err(ModelError::provider_stream_error(message));
+                    let code = provider_error_code(error);
+                    return Err(ModelError::from_provider_stream(code.as_deref(), message));
                 }
                 if let Some(next_usage) = model_usage_from_stream_value(&value) {
                     if let Some(input_tokens) = next_usage.input_tokens {
@@ -348,7 +351,7 @@ impl OpenAiChatProvider<'_> {
                     usage = Some(next_usage);
                 }
                 if let Some(reason) = openai_stream_finish_reason(&value) {
-                    finish_reason = Some(reason.to_string());
+                    finish_reason = Some(FinishReason::from_openai(reason));
                 }
                 handle_openai_stream_tool_calls(&value, &mut tool_partials, sink)?;
                 for fragment in collect_chat_reasoning_fragments(&value) {
@@ -395,7 +398,7 @@ impl OpenAiChatProvider<'_> {
             return Err(err);
         }
         let tool_calls = finish_tool_call_partials(&mut tool_partials, sink)?;
-        let reason = finish_reason.unwrap_or_else(|| "done".to_string());
+        let reason = finish_reason.unwrap_or_else(|| FinishReason::from_openai("done"));
         sink.emit(StreamPart::Finish {
             reason: reason.clone(),
             full: full.clone(),
@@ -406,7 +409,6 @@ impl OpenAiChatProvider<'_> {
             tool_calls,
             usage,
             finish_reason: Some(reason),
-            provider_messages: Vec::new(),
             cancelled: false,
             web_search: None,
             images,
@@ -436,7 +438,7 @@ impl OpenAiChatProvider<'_> {
     fn chat_completions_url(&self) -> String {
         format!(
             "{}/chat/completions",
-            self.provider.base_url.trim_end_matches('/')
+            self.config.base_url.trim_end_matches('/')
         )
     }
 
@@ -450,7 +452,7 @@ impl OpenAiChatProvider<'_> {
     ) -> reqwest::RequestBuilder {
         let mut request = request;
         for (name, value) in crate::provider_request::model_header_pairs(
-            self.provider,
+            self.config.source,
             metadata.conversation_id.as_deref(),
             true,
             stream,
@@ -469,13 +471,13 @@ impl OpenAiChatProvider<'_> {
         stream: bool,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
-        if let Some(key) = self.provider.preferred_api_key() {
+        if let Some(key) = self.config.preferred_api_key {
             headers.insert("Authorization".to_string(), format!("Bearer {key}"));
         }
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
         headers.insert("Content-Type".to_string(), "application/json".to_string());
         for (name, value) in crate::provider_request::model_header_pairs(
-            self.provider,
+            self.config.source,
             metadata.conversation_id.as_deref(),
             true,
             stream,
@@ -495,12 +497,12 @@ impl OpenAiChatProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -516,7 +518,7 @@ impl OpenAiChatProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -529,12 +531,12 @@ impl OpenAiChatProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -550,7 +552,7 @@ impl OpenAiChatProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
@@ -563,7 +565,7 @@ impl OpenAiChatProvider<'_> {
         }
         if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
             request.options.temperature,
-            Some(self.provider),
+            Some(self.config.source),
             &request.model,
         ) {
             body["temperature"] = serde_json::json!(temperature);
@@ -587,11 +589,11 @@ impl OpenAiChatProvider<'_> {
         // Prompt 缓存 short/long：硬发 `prompt_cache_key`（会话 id）；none 不发。
         // 严格端点 400 后学习停发。long → `prompt_cache_retention:24h`（对齐 pi，默认能力开）。
         // 不发驼峰 `promptCacheKey`。Anthropic 走 cache_control，不经这里。
-        if self.provider.prompt_caching_enabled()
+        if self.config.cache_retention != CacheRetention::None
             && !self
-                .state
-                .provider_runtime()
-                .prompt_cache_key_unsupported(&self.provider.base_url)
+                .transport
+                .runtime
+                .prompt_cache_key_unsupported(self.config.base_url)
         {
             if let Some(conversation_id) = request
                 .metadata
@@ -600,13 +602,11 @@ impl OpenAiChatProvider<'_> {
                 .filter(|id| !id.is_empty())
             {
                 body["prompt_cache_key"] = Value::String(conversation_id.to_string());
-                if matches!(
-                    self.provider.cache_retention(),
-                    crate::settings::CacheRetention::Long
-                ) && !self
-                    .state
-                    .provider_runtime()
-                    .prompt_cache_retention_unsupported(&self.provider.base_url)
+                if matches!(self.config.cache_retention, CacheRetention::Long)
+                    && !self
+                        .transport
+                        .runtime
+                        .prompt_cache_retention_unsupported(self.config.base_url)
                 {
                     body["prompt_cache_retention"] = Value::String("24h".to_string());
                 }
@@ -626,9 +626,9 @@ impl OpenAiChatProvider<'_> {
         let model_id = model_id.rsplit('/').next().unwrap_or(&model_id);
         let kimi_always_on = model_id.starts_with("kimi-k3") || model_id.starts_with("kimi-k2.7");
         let native_thinking_switch =
-            (utils::provider_supports_thinking_field(&self.provider.base_url) && !kimi_always_on)
+            (utils::provider_supports_thinking_field(self.config.base_url) && !kimi_always_on)
                 || (model_id.starts_with("deepseek-")
-                    && reqwest::Url::parse(&self.provider.base_url)
+                    && reqwest::Url::parse(self.config.base_url)
                         .ok()
                         .is_some_and(|url| url.host_str() == Some("hyper.charm.land")));
         if !request.options.thinking_enabled {
@@ -650,7 +650,8 @@ impl OpenAiChatProvider<'_> {
         // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
         // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
         if let Some(extra) = self
-            .provider
+            .config
+            .source
             .model_overrides
             .get(&request.model)
             .and_then(|info| info.extra_body.as_ref())
@@ -691,26 +692,23 @@ impl OpenAiChatProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -731,26 +729,23 @@ impl OpenAiChatProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -762,18 +757,24 @@ pub fn output_from_chat_completion(
     let choice = value
         .get("choices")
         .and_then(|choices| choices.get(0))
-        .ok_or_else(|| invalid_response(label, raw))?;
+        .ok_or_else(|| {
+            let error = invalid_response(label, raw);
+            if let Some(code) = value.get("error").and_then(provider_error_code) {
+                ModelError::from_provider_payload(Some(&code), error.message)
+            } else {
+                error
+            }
+        })?;
     let message = choice
         .get("message")
-        .cloned()
         .ok_or_else(|| invalid_response(label, raw))?;
-    let text = assistant_text_from_openai_message(&message);
-    let reasoning = reasoning_from_openai_message(&message);
-    let tool_calls = pending_tool_calls_from_openai_message(&message);
+    let text = assistant_text_from_openai_message(message);
+    let reasoning = reasoning_from_openai_message(message);
+    let tool_calls = pending_tool_calls_from_openai_message(message);
     let finish_reason = choice
         .get("finish_reason")
         .and_then(|value| value.as_str())
-        .map(str::to_string);
+        .map(FinishReason::from_openai);
     let usage = model_usage_from_openai_response(value);
     // 代理仿 OpenRouter 出图：非流式在 message.images 携带图片数组，解析为协议无关 images。
     let images = message
@@ -787,7 +788,6 @@ pub fn output_from_chat_completion(
         tool_calls,
         usage,
         finish_reason,
-        provider_messages: vec![message],
         cancelled: false,
         web_search: None,
         images,
@@ -1355,7 +1355,8 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::{GenerateOptions, MessagePart, ModelMessage, ModelRole};
-    use crate::settings::ModelInfo;
+    use crate::settings::{ModelInfo, ModelProvider};
+    use crate::state::AppState;
 
     /// Build a real OpenAI-compatible provider request body via the production
     /// `request_body` path and assert how thinking maps to the wire.
@@ -1394,7 +1395,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let adapter = OpenAiChatProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = GenerateRequest {
             model: model.into(),
             system: "sys".into(),
@@ -1444,7 +1448,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let adapter = OpenAiChatProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = GenerateRequest {
             model: "custom-temperature-model".into(),
             system: String::new(),
@@ -1586,7 +1593,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let adapter = OpenAiChatProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = GenerateRequest {
             model: "glm-5.3".into(),
             system: String::new(),
@@ -1659,7 +1669,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let adapter = OpenAiChatProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = GenerateRequest {
             model: "deepseek-ai/deepseek-v4-pro".into(),
             system: String::new(),
@@ -1709,16 +1722,14 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+        let adapter = OpenAiChatProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let tool = crate::chat::model::ModelTool {
-            id: "native__web_fetch".into(),
             name: "web_fetch".into(),
             description: "Fetch".into(),
-            source: "native".into(),
-            server_id: None,
-            server_name: None,
             input_schema: serde_json::json!({ "type": "object" }),
-            sensitive: false,
         };
         let mut request = GenerateRequest {
             model: "gpt-5".into(),
@@ -1775,7 +1786,10 @@ mod tests {
                 request: Default::default(),
                 active_key_index: 0,
             };
-            let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+            let adapter = OpenAiChatProvider::new(
+                ModelTransport::for_test(&state, &provider),
+                ProviderConfig::from_settings(&provider),
+            );
             let request = GenerateRequest {
                 model: "m".into(),
                 system: "sys".into(),
@@ -1836,7 +1850,10 @@ mod tests {
                 },
                 active_key_index: 0,
             };
-            let adapter = OpenAiChatProvider::new(&state, &provider, 1);
+            let adapter = OpenAiChatProvider::new(
+                ModelTransport::for_test(&state, &provider),
+                ProviderConfig::from_settings(&provider),
+            );
             adapter.request_body(
                 &GenerateRequest {
                     model: "m".into(),
@@ -1938,7 +1955,10 @@ mod tests {
             output.usage.as_ref().and_then(|usage| usage.total_tokens),
             Some(8)
         );
-        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
     }
 
     fn fold_chat_reasoning(chunks: &[Value]) -> String {

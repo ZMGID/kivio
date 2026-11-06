@@ -1,13 +1,11 @@
 //! In-memory provider request capture for the developer "Request Debug" panel.
 //!
 //! When `settings.chat_tools.request_debug_enabled` is on, each model adapter
-//! (`openai` / `anthropic` / `responses`) records the full request (url + sanitized
+//! records the full request (url + sanitized
 //! headers + body) and the aggregated response (text / tool_calls / finish_reason /
 //! usage / error) into a bounded ring buffer. The existing disk mirror remains
 //! best-effort; memory is process-local and clear removes both representations.
 //!
-//! **Zero overhead when disabled**: adapters must check `state.request_debug_enabled()`
-//! BEFORE constructing any body/headers/record — this module never runs otherwise.
 //!
 //! **No secret leak**: [`sanitize_headers`] masks `Authorization` / `x-api-key` style
 //! headers to a short preview (`Bearer sk-x…`); the request body never carries the key.
@@ -47,7 +45,7 @@ impl RequestDebugState {
         }
     }
 
-    fn record(&self, record: RequestDebugRecord) {
+    pub(crate) fn record(&self, record: RequestDebugRecord) {
         let _mirror = self.mirror_gate.lock().unwrap_or_else(|e| e.into_inner());
         let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
         while buffer.len() >= REQUEST_DEBUG_CAPACITY {
@@ -154,7 +152,10 @@ impl RequestDebugResponse {
             text: truncate_opt(&output.text),
             reasoning: output.reasoning.clone(),
             tool_calls: tool_calls_to_value(&output.tool_calls),
-            finish_reason: output.finish_reason.clone(),
+            finish_reason: output
+                .finish_reason
+                .as_ref()
+                .map(|reason| reason.legacy_name().to_string()),
             usage: output.usage.clone(),
             web_search: output
                 .web_search
@@ -260,7 +261,8 @@ fn redact_video_payloads(value: &mut Value) {
 /// [`REQUEST_DEBUG_CAPACITY`] requests survive a restart and can be inspected
 /// out-of-band. ponytail: full-buffer rewrite per call (≤50 capped records) —
 /// switch to append+rotate only if this ever shows up in a profile.
-pub fn record(state: &AppState, record: RequestDebugRecord) {
+#[cfg(test)]
+fn record(state: &AppState, record: RequestDebugRecord) {
     state.request_debug().record(record);
 }
 
@@ -547,8 +549,7 @@ mod tests {
                 total_tokens: Some(42),
                 ..Default::default()
             }),
-            finish_reason: Some("tool_calls".into()),
-            provider_messages: Vec::new(),
+            finish_reason: Some(crate::chat::model::FinishReason::from_openai("tool_calls")),
             cancelled: false,
             web_search: None,
             images: Vec::new(),

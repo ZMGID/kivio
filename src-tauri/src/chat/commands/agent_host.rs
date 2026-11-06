@@ -1,6 +1,7 @@
 use serde_json::Value;
 use tauri::AppHandle;
 
+use crate::chat::agent::history::RuntimeMessage;
 use crate::chat::{ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord};
 use crate::mcp::{self, ChatToolDefinition};
 use crate::skills;
@@ -42,11 +43,12 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        history: &'b [Value],
+        history: &'b [RuntimeMessage],
         _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
+    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history).await
+            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
+                .await
         })
     }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
@@ -192,7 +194,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         message_id: &str,
         provider_id: &str,
         model: &str,
-        messages: &[Value],
+        messages: &[RuntimeMessage],
         tools: &[ChatToolDefinition],
     ) {
         if !self.context_owner {
@@ -207,7 +209,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         // disk write: categories ride the first provider report. Until then,
         // refreshes retain the last reported request's total and categories.
         let settings = self.state.settings_read();
-        let segments = super::context::measure_request_segments(
+        let segments = crate::chat::agent::context_measure::measure_prepared_request(
             messages,
             tools,
             settings.get_provider(provider_id),
@@ -267,7 +269,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         message_id: &'a str,
         tool_records: &'a [ToolCallRecord],
         segments: &'a [ChatMessageSegment],
-        api_messages: &'a [Value],
+        api_messages: &'a [RuntimeMessage],
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             if self.suppress_partial_persist {
@@ -330,8 +332,11 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         Box::pin(async move {
             let _waiting = self.state.sub_agents.awaits.hold(
-                ctx.tool_conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID,
-                vec!["@user".into()], self.state.sub_agents.irc.mark(), false,
+                ctx.tool_conversation_id,
+                crate::chat::sub_agent::MAIN_AGENT_ID,
+                vec!["@user".into()],
+                self.state.sub_agents.irc.mark(),
+                false,
             );
             request_user_response(
                 &self.app,
@@ -406,9 +411,9 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        history: &'b [Value],
+        history: &'b [RuntimeMessage],
         _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
+    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
                 .await
@@ -488,7 +493,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         message_id: &'a str,
         tool_records: &'a [ToolCallRecord],
         segments: &'a [ChatMessageSegment],
-        api_messages: &'a [Value],
+        api_messages: &'a [RuntimeMessage],
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             if let Err(err) = persist_partial_assistant_snapshot(

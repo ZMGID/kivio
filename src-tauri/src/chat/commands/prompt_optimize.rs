@@ -3,7 +3,7 @@ use std::time::Duration;
 use tauri::{AppHandle, State};
 use tokio::time::timeout;
 
-use crate::chat::agent::{execute::truncate_chars, stop as agent_stop};
+use crate::chat::agent::execute::truncate_chars;
 use crate::chat::model_metadata::model_can_generate_images_directly;
 use crate::chat::ChatMessage;
 use crate::settings::{SessionModel, Settings};
@@ -218,18 +218,22 @@ async fn optimize_prompt_with_model(
         }),
     ];
     let spec = prompt_optimize_call_spec();
-    let message = crate::chat::agent::planning::call_chat_completion_message_streamed(
+    let output = crate::chat::agent::planning::generate_via_stream_collect(
         state,
         &provider,
-        &model,
-        messages,
-        None,
         retry_attempts,
-        spec.thinking_enabled,
-        spec.max_output_tokens,
-        conversation_id,
-        "",
-        spec.label,
+        crate::chat::model::generate_request_from_openai_messages(
+            &model,
+            messages,
+            None,
+            crate::chat::model::GenerateOptions {
+                thinking_enabled: spec.thinking_enabled,
+                max_tokens: spec.max_output_tokens,
+                ..Default::default()
+            },
+            spec.label,
+            crate::chat::model::GenerateRequestContext::new(Some(conversation_id), Some("")),
+        ),
     )
     .await
     .map_err(|err| {
@@ -239,7 +243,7 @@ async fn optimize_prompt_with_model(
             &format!("Prompt optimize failed: {err}"),
         )
     })?;
-    let raw = agent_stop::assistant_content_from_api_message(&message);
+    let raw = output.text;
     sanitize_optimized_prompt(&raw).ok_or_else(|| {
         localize(
             &language,

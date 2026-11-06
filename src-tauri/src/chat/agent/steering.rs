@@ -14,7 +14,9 @@ use crate::chat::types::{
     ToolCallStatus,
 };
 
+use super::history::RuntimeMessage;
 use super::loop_::{LoopEnv, RunState};
+use crate::chat::model::{GenerateOutput, ModelRole};
 
 /// 插话卡的保留工具名。前端按 `source == "native" && name == STEER_TOOL_NAME &&
 /// structured.type == "user_steer"` 三条一起认——这张卡渲染成「用户说过的话」，
@@ -164,14 +166,9 @@ fn append_injected_user_turn(
     record: ToolCallRecord,
 ) {
     let ids = env.ids();
-    state.runtime_messages.push(serde_json::json!({
-        "role": "user",
-        "content": message.text,
-    }));
-    state.generated_api_messages.push(serde_json::json!({
-        "role": "user",
-        "content": message.text,
-    }));
+    let injected = RuntimeMessage::text(ModelRole::User, message.text.clone());
+    state.runtime_messages.push(injected.clone());
+    state.generated_api_messages.push(injected);
 
     env.host
         .emit_tool_record(ids.conversation_id, ids.run_id, ids.message_id, &record);
@@ -185,11 +182,10 @@ fn append_injected_user_turn(
 /// 把本该收束的终答落成一条**中间** assistant 消息（对齐 pi：终答照常成为历史的一部分，
 /// 随后的插话开启新的一轮）。文本/推理段已由 planning 落进 `segment_builder`（时间线顺序
 /// 正确），这里只补两本历史账；下一轮 planning 的请求即带着这条 assistant + 新注入的插话。
-pub(crate) fn absorb_final_answer(state: &mut RunState, message: serde_json::Value) {
+pub(crate) fn absorb_final_answer(state: &mut RunState, message: GenerateOutput) {
+    let message = RuntimeMessage::model(message.replay_message());
     state.runtime_messages.push(message.clone());
     state.generated_api_messages.push(message);
-    // 下一轮 planning 重新决定是否流式收尾；上一轮终答的「已流出」状态不能带过去。
-    state.planning_final_streamed = false;
 }
 
 /// 插话卡的 `ToolCallRecord`。永远是 Success（它不是一次调用，是一件已经发生的事）。

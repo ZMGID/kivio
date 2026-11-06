@@ -11,17 +11,18 @@
 //! tool calls are `function_call` items and tool results are `function_call_output`
 //! items (see `responses_input_from_model_messages` in `types.rs`).
 
+use super::{FinishKind, FinishReason, ModelTransport, ProviderConfig};
 use reqwest::header::ACCEPT_ENCODING;
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
-use crate::settings::{ModelProvider, ProviderApiFormat};
-use crate::state::AppState;
+use crate::api::{send_model_with_failover, with_chat_request_timeout};
+use crate::settings::{CacheRetention, ProviderApiFormat};
 use crate::usage::{
     chat_usage_source_for_label, error_kind_from_message, model_usage_from_openai_value,
-    operation_from_label, record_model_call, UsageRecordInput,
+    operation_from_label, UsageRecordInput,
 };
 
+use super::error::provider_error_code;
 use super::{
     parse_tool_arguments, responses_input_from_model_messages, stream_read_error, BuiltinWebSearch,
     FirstTokenStreamSink, GenerateOutput, GenerateRequest, GeneratedImageData,
@@ -85,19 +86,14 @@ fn xai_include_values(tools: Option<&Value>) -> Vec<Value> {
     values
 }
 
-pub struct OpenAiResponsesProvider<'a> {
-    state: &'a AppState,
-    provider: &'a ModelProvider,
-    retry_attempts: usize,
+pub(super) struct OpenAiResponsesProvider<'a> {
+    transport: ModelTransport<'a>,
+    config: ProviderConfig<'a>,
 }
 
 impl<'a> OpenAiResponsesProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
-        Self {
-            state,
-            provider,
-            retry_attempts,
-        }
+    pub(super) fn new(transport: ModelTransport<'a>, config: ProviderConfig<'a>) -> Self {
+        Self { transport, config }
     }
 }
 
@@ -123,34 +119,34 @@ impl OpenAiResponsesProvider<'_> {
         request: &GenerateRequest,
         stream: bool,
         label: &str,
-    ) -> Result<reqwest::Response, String> {
+    ) -> Result<reqwest::Response, ModelError> {
         let body = self.request_body(request, stream);
         let result = self.post_responses(request, &body, stream, label).await;
         if let Err(ref err) = result {
             let mut learned = false;
             if body.get("prompt_cache_key").is_some()
-                && super::openai::error_rejects_prompt_cache_key(err)
+                && super::openai::error_rejects_prompt_cache_key(&err.message)
             {
-                self.state
-                    .provider_runtime()
-                    .mark_prompt_cache_key_unsupported(&self.provider.base_url);
+                self.transport
+                    .runtime
+                    .mark_prompt_cache_key_unsupported(self.config.base_url);
                 learned = true;
             } else if body.get("prompt_cache_retention").is_some()
-                && super::openai::error_rejects_prompt_cache_retention(err)
+                && super::openai::error_rejects_prompt_cache_retention(&err.message)
             {
-                self.state
-                    .provider_runtime()
-                    .mark_prompt_cache_retention_unsupported(&self.provider.base_url);
+                self.transport
+                    .runtime
+                    .mark_prompt_cache_retention_unsupported(self.config.base_url);
                 learned = true;
             } else if body_replays_reasoning_items(&body)
-                && error_maybe_rejects_reasoning_replay(err)
+                && error_maybe_rejects_reasoning_replay(&err.message)
             {
                 // 有些中转不实现 stateless reasoning 回放（对 input 里的 reasoning item
                 // 直接 4xx）。学习后本会话不再对该 base_url 回放——去掉 item 的请求永远
                 // 合法，所以这条重试是严格安全的降级（回到修复前的行为）。
-                self.state
-                    .provider_runtime()
-                    .mark_reasoning_replay_unsupported(&self.provider.base_url);
+                self.transport
+                    .runtime
+                    .mark_reasoning_replay_unsupported(self.config.base_url);
                 learned = true;
             }
             if learned {
@@ -170,17 +166,17 @@ impl OpenAiResponsesProvider<'_> {
         body: &Value,
         stream: bool,
         label: &str,
-    ) -> Result<reqwest::Response, String> {
-        send_with_failover(
-            self.state,
+    ) -> Result<reqwest::Response, ModelError> {
+        send_model_with_failover(
+            self.transport.runtime,
             label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
                 let mut req = self
-                    .state
-                    .client_for(self.provider)
+                    .transport
+                    .client
                     .post(self.responses_url())
                     .header(ACCEPT_ENCODING, "identity");
                 req = crate::provider_request::apply_api_key_auth(
@@ -192,7 +188,7 @@ impl OpenAiResponsesProvider<'_> {
                     req = req.header(name, value);
                 }
                 let req =
-                    crate::api::attach_json_body(req, body, self.provider.compress_request_body);
+                    crate::api::attach_json_body(req, body, self.config.compress_request_body);
                 let req = if stream {
                     req
                 } else {
@@ -213,16 +209,22 @@ impl OpenAiResponsesProvider<'_> {
             .send_responses_body(&request, false, &label)
             .await
             .map_err(|err| {
-                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &err.message,
+                );
                 self.record_debug_failure(
                     &request,
                     &label,
                     false,
-                    &err,
+                    &err.message,
                     started_at,
                     started.elapsed(),
                 );
-                ModelError::new(err)
+                err
             })?;
 
         let raw = response.text().await.map_err(|err| {
@@ -347,16 +349,22 @@ impl OpenAiResponsesProvider<'_> {
             .send_responses_body(&request, true, &label)
             .await
             .map_err(|err| {
-                self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
+                self.record_usage_failure(
+                    &request,
+                    &label,
+                    started_at,
+                    started.elapsed(),
+                    &err.message,
+                );
                 self.record_debug_failure(
                     &request,
                     &label,
                     true,
-                    &err,
+                    &err.message,
                     started_at,
                     started.elapsed(),
                 );
-                ModelError::new(err)
+                err
             })?;
 
         let mut sse = super::sse::SseDecoder::default();
@@ -395,17 +403,17 @@ impl OpenAiResponsesProvider<'_> {
                         &label,
                         started_at,
                         started.elapsed(),
-                        &err,
+                        &err.message,
                     );
                     self.record_debug_failure(
                         &request,
                         &label,
                         true,
-                        &err,
+                        &err.message,
                         started_at,
                         started.elapsed(),
                     );
-                    return Err(ModelError::provider_stream_error(err));
+                    return Err(err);
                 }
                 // response.completed/incomplete includes final usage and is
                 // authoritative even if a proxy never closes the HTTP body.
@@ -455,7 +463,7 @@ impl OpenAiResponsesProvider<'_> {
     }
 
     fn responses_url(&self) -> String {
-        let base = self.provider.base_url.trim_end_matches('/');
+        let base = self.config.base_url.trim_end_matches('/');
         // 官方 DeepSeek 文档是 `POST https://api.deepseek.com/responses`。
         // Chat Completions 预设常带 `/v1`，直接拼接会打到 `/v1/responses`；剥掉 `/v1`。
         // `/anthropic` 不能走这条（那边是 Messages，不是 Responses）。
@@ -478,15 +486,15 @@ impl OpenAiResponsesProvider<'_> {
     fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
         // 协议来自用户在设置里选的「Grok (xAI)」，不是猜 base_url——中转站可以把 grok
         // 挂在任意域名上，靠域名判断必然漏。
-        let is_xai = self.provider.api_format_kind() == ProviderApiFormat::XaiResponses;
+        let is_xai = self.config.api_format == ProviderApiFormat::XaiResponses;
         // 历史里的原生 reasoning item 随 input 回放（Codex 同款；思维链跨工具轮延续的
         // 关键）。xAI 不回放（types 的回放一直丢弃推理项，且我们不向它要密文）；被学习为
         // 「该端点不认回放」的 base_url 也跳过（send_responses_body 的 4xx 兜底会写入）。
         let reasoning_replay = (!is_xai
             && !self
-                .state
-                .provider_runtime()
-                .reasoning_replay_unsupported(&self.provider.base_url))
+                .transport
+                .runtime
+                .reasoning_replay_unsupported(self.config.base_url))
         .then_some(request.model.as_str());
         let mut body = serde_json::json!({
             "model": request.model,
@@ -494,7 +502,7 @@ impl OpenAiResponsesProvider<'_> {
         });
         if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
             request.options.temperature,
-            Some(self.provider),
+            Some(self.config.source),
             &request.model,
         ) {
             body["temperature"] = serde_json::json!(temperature);
@@ -609,11 +617,11 @@ impl OpenAiResponsesProvider<'_> {
         // Prompt 缓存 short/long：与 Chat Completions 同发 `prompt_cache_key`；
         // long → `prompt_cache_retention:24h`（对齐 pi）。xAI 永不发（靠 previous_response_id）。
         if !is_xai
-            && self.provider.prompt_caching_enabled()
+            && self.config.cache_retention != CacheRetention::None
             && !self
-                .state
-                .provider_runtime()
-                .prompt_cache_key_unsupported(&self.provider.base_url)
+                .transport
+                .runtime
+                .prompt_cache_key_unsupported(self.config.base_url)
         {
             if let Some(conversation_id) = request
                 .metadata
@@ -622,13 +630,11 @@ impl OpenAiResponsesProvider<'_> {
                 .filter(|id| !id.is_empty())
             {
                 body["prompt_cache_key"] = Value::String(conversation_id.to_string());
-                if matches!(
-                    self.provider.cache_retention(),
-                    crate::settings::CacheRetention::Long
-                ) && !self
-                    .state
-                    .provider_runtime()
-                    .prompt_cache_retention_unsupported(&self.provider.base_url)
+                if matches!(self.config.cache_retention, CacheRetention::Long)
+                    && !self
+                        .transport
+                        .runtime
+                        .prompt_cache_retention_unsupported(self.config.base_url)
                 {
                     body["prompt_cache_retention"] = Value::String("24h".to_string());
                 }
@@ -637,7 +643,7 @@ impl OpenAiResponsesProvider<'_> {
         // 无状态：我们每轮都自带完整 input、从不用 previous_response_id，服务端存的副本没人用
         // （`store` 默认 true）。pi 与 Codex 官方都无条件发 false，这里不再只在思考分支里发。
         body["store"] = Value::Bool(false);
-        if crate::provider_request::is_codex_identity(self.provider) && !is_xai {
+        if self.config.codex_identity && !is_xai {
             apply_codex_cli_body(&mut body, request);
         }
         if let Some(overrides) = request.options.provider_options.as_object() {
@@ -645,7 +651,7 @@ impl OpenAiResponsesProvider<'_> {
                 body[key] = value.clone();
             }
         }
-        if crate::provider_oauth::is_codex(self.provider) {
+        if self.config.codex_oauth {
             crate::provider_oauth::codex_body(&mut body);
         }
         if request.options.tool_choice == crate::chat::model::ToolChoice::None {
@@ -664,7 +670,7 @@ impl OpenAiResponsesProvider<'_> {
         body: &Value,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
-        if let Some(key) = self.provider.preferred_api_key() {
+        if let Some(key) = self.config.preferred_api_key {
             headers.insert("Authorization".to_string(), format!("Bearer {key}"));
         }
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
@@ -686,9 +692,9 @@ impl OpenAiResponsesProvider<'_> {
         body: &Value,
     ) -> Vec<(String, String)> {
         crate::provider_request::model_header_pairs(
-            self.provider,
+            self.config.source,
             metadata.conversation_id.as_deref(),
-            !crate::provider_request::is_codex_identity(self.provider),
+            !self.config.codex_identity,
             body["stream"] == true,
         )
     }
@@ -703,13 +709,13 @@ impl OpenAiResponsesProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -725,7 +731,7 @@ impl OpenAiResponsesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -738,13 +744,13 @@ impl OpenAiResponsesProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -760,7 +766,7 @@ impl OpenAiResponsesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     fn record_usage_success(
@@ -782,26 +788,23 @@ impl OpenAiResponsesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -822,26 +825,23 @@ impl OpenAiResponsesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -866,7 +866,7 @@ struct ResponsesStreamState {
     /// 工具循环里保持思维链连续的关键（Codex 官方客户端同款做法）。
     reasoning_items: Vec<Value>,
     tool_calls: Vec<ResponsesToolPartial>,
-    finish_reason: Option<String>,
+    finish_reason: Option<FinishReason>,
     usage: Option<ModelUsage>,
     /// 内置搜索引用：在 `response.completed` 事件里从完整 `response.output` 一次性解析。
     web_search: Option<BuiltinWebSearch>,
@@ -1028,9 +1028,9 @@ impl ResponsesStreamState {
             .collect();
         let reason = self.finish_reason.clone().unwrap_or_else(|| {
             if tool_calls.is_empty() {
-                "stop".to_string()
+                FinishReason::new(FinishKind::Stop, "")
             } else {
-                "tool_calls".to_string()
+                FinishReason::new(FinishKind::ToolCalls, "")
             }
         });
         sink.emit(StreamPart::Finish {
@@ -1067,7 +1067,6 @@ impl ResponsesStreamState {
             tool_calls,
             usage: self.usage,
             finish_reason: Some(reason),
-            provider_messages: Vec::new(),
             cancelled: false,
             web_search: self.web_search,
             images: self.images,
@@ -1149,7 +1148,7 @@ fn handle_responses_stream_event(
     value: &Value,
     state: &mut ResponsesStreamState,
     sink: &mut (dyn StreamSink + Send),
-) -> Result<Option<String>, ModelError> {
+) -> Result<Option<ModelError>, ModelError> {
     let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
     match event_type {
         "response.output_text.delta" => {
@@ -1372,8 +1371,14 @@ fn handle_responses_stream_event(
             }
         }
         "response.failed" | "error" => {
+            let code = responses_error_payload(value)
+                .and_then(provider_error_code)
+                .or_else(|| value["code"].as_str().map(str::to_string));
             let message = responses_stream_error_text(value);
-            return Ok(Some(message));
+            return Ok(Some(ModelError::from_provider_stream(
+                code.as_deref(),
+                message,
+            )));
         }
         _ => {}
     }
@@ -1385,7 +1390,7 @@ fn process_sse_data(
     data: &str,
     state: &mut ResponsesStreamState,
     sink: &mut (dyn StreamSink + Send),
-) -> Result<Option<String>, ModelError> {
+) -> Result<Option<ModelError>, ModelError> {
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
         return Ok(None);
@@ -1415,7 +1420,7 @@ fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
     let mut sink = DiscardSink;
     for data in super::sse::SseDecoder::default().push(body.as_bytes()) {
         if let Some(err) = process_sse_data(&data, &mut state, &mut sink)? {
-            return Err(ModelError::provider_stream_error(err));
+            return Err(err);
         }
         if state.finish_reason.is_some() {
             break;
@@ -1465,10 +1470,11 @@ pub fn output_from_responses(
         None | Some(Value::Null) => {}
         Some(error) if error.as_object().is_some_and(|obj| obj.is_empty()) => {}
         Some(error) => {
-            return Err(ModelError::new(format!(
-                "{label}: {}",
-                responses_error_message(error)
-            )));
+            let code = provider_error_code(error);
+            return Err(ModelError::from_provider_payload(
+                code.as_deref(),
+                format!("{label}: {}", responses_error_message(error)),
+            ));
         }
     }
     let output = value
@@ -1548,7 +1554,6 @@ pub fn output_from_responses(
         tool_calls,
         usage,
         finish_reason,
-        provider_messages: Vec::new(),
         cancelled: false,
         web_search: web_search_from_responses_output(output),
         canonical_message: None,
@@ -1701,25 +1706,22 @@ fn web_search_from_responses_output(output: &[Value]) -> Option<BuiltinWebSearch
     }
 }
 
-fn responses_finish_reason(status: &str, response: &Value, has_tool_calls: bool) -> String {
-    match status {
-        "completed" if has_tool_calls => "tool_calls".to_string(),
-        "completed" => "stop".to_string(),
-        // Responses 的输出截断不叫 length：status=="incomplete" + incomplete_details.reason
-        // =="max_output_tokens"。归一化为 Chat Completions 的 "length"，让上层
-        // 「finish_reason==length ⇒ 整批工具调用作废」的防护对 openai_responses /
-        // xai_responses 同样生效（anthropic/gemini 适配器已各自归一化，这里此前漏了）。
-        "incomplete"
-            if response
-                .get("incomplete_details")
-                .and_then(|details| details.get("reason"))
-                .and_then(Value::as_str)
-                == Some("max_output_tokens") =>
-        {
-            "length".to_string()
+fn responses_finish_reason(status: &str, response: &Value, has_tool_calls: bool) -> FinishReason {
+    let detail = response["incomplete_details"]["reason"].as_str();
+    let kind = match (status, detail) {
+        ("completed", _) if has_tool_calls => FinishKind::ToolCalls,
+        ("completed", _) => FinishKind::Stop,
+        ("incomplete", Some("max_output_tokens")) => FinishKind::Length,
+        _ => FinishReason::from_openai(status).kind,
+    };
+    let mut reason = FinishReason::new(kind, status);
+    if status == "incomplete" {
+        reason.detail = detail.map(str::to_string);
+        if kind != FinishKind::Length {
+            reason = reason.with_legacy_name(status);
         }
-        other => other.to_string(),
     }
+    reason
 }
 
 fn request_label(request: &GenerateRequest, fallback: &str) -> String {
@@ -1766,12 +1768,15 @@ fn responses_error_message(error: &Value) -> String {
 /// `response.failed` 把原因放在 `response.error`；OpenAI 的 `type: error` 事件把
 /// `message` 放在顶层；部分中转把 `error` 直接写成字符串。三条都要读到，否则缺终态
 /// 的那条文案会变成笼统的 "Responses stream failed"，无法正确识别可重试错误。
-fn responses_stream_error_text(value: &Value) -> String {
-    let nested = value
+fn responses_error_payload(value: &Value) -> Option<&Value> {
+    value
         .get("response")
         .and_then(|response| response.get("error"))
-        .or_else(|| value.get("error"));
-    if let Some(error) = nested {
+        .or_else(|| value.get("error"))
+}
+
+fn responses_stream_error_text(value: &Value) -> String {
+    if let Some(error) = responses_error_payload(value) {
         if let Some(text) = error.as_str().map(str::trim).filter(|s| !s.is_empty()) {
             return text.to_string();
         }
@@ -1810,7 +1815,7 @@ fn non_empty(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use crate::chat::model::{GenerateOptions, MessagePart, ModelMessage, ModelRole};
-    use crate::settings::ModelInfo;
+    use crate::settings::{ModelInfo, ModelProvider};
 
     fn responses_temperature_body(
         provider_temperature: Option<f64>,
@@ -1860,7 +1865,11 @@ mod tests {
             },
             metadata: Default::default(),
         };
-        OpenAiResponsesProvider::new(&state, &provider, 1).request_body(&request, false)
+        OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        )
+        .request_body(&request, false)
     }
 
     fn xai_body(model: &str, effort: Option<&str>, builtin_search: bool) -> Value {
@@ -1912,7 +1921,11 @@ mod tests {
                 ..Default::default()
             },
         };
-        OpenAiResponsesProvider::new(&state, &provider, 1).request_body(&request, false)
+        OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        )
+        .request_body(&request, false)
     }
 
     #[test]
@@ -2024,7 +2037,11 @@ mod tests {
                 ..Default::default()
             },
         };
-        let body = OpenAiResponsesProvider::new(&state, &provider, 1).request_body(&request, false);
+        let body = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        )
+        .request_body(&request, false);
         assert_eq!(body["instructions"], "你是 Kivio");
         assert_eq!(body["store"], false);
         assert_eq!(body["reasoning"]["effort"], "high");
@@ -2067,14 +2084,9 @@ mod tests {
                 content: vec![MessagePart::Text { text: "hi".into() }],
             }],
             tools: vec![crate::chat::model::ModelTool {
-                id: "read".into(),
                 name: "read".into(),
                 description: "read".into(),
-                source: "native".into(),
-                server_id: None,
-                server_name: None,
                 input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-                sensitive: false,
             }],
             options: GenerateOptions {
                 thinking_enabled: thinking,
@@ -2085,7 +2097,10 @@ mod tests {
                 ..Default::default()
             },
         };
-        let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
+        let adapter = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         (
             adapter.request_body(&request, false),
             adapter
@@ -2126,7 +2141,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
+        let adapter = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let metadata = Default::default();
         // SSE 请求不能报 Accept: application/json（Codex OAuth 会把体强制改成 stream:true）。
         let streaming = serde_json::json!({ "stream": true });
@@ -2199,7 +2217,11 @@ mod tests {
                     ..Default::default()
                 },
             };
-            OpenAiResponsesProvider::new(&state, &provider, 1).request_body(&request, false)
+            OpenAiResponsesProvider::new(
+                ModelTransport::for_test(&state, &provider),
+                ProviderConfig::from_settings(&provider),
+            )
+            .request_body(&request, false)
         };
         assert!(body_with("none").get("prompt_cache_key").is_none());
         let short = body_with("short");
@@ -2248,7 +2270,10 @@ mod tests {
             options: GenerateOptions::default(),
             metadata: Default::default(),
         };
-        let adapter = OpenAiResponsesProvider::new(&state, &provider, 1);
+        let adapter = OpenAiResponsesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         // off ⇒ 无 tools。
         let off = adapter.request_body(&base, false);
         assert!(off.get("tools").is_none(), "body: {off}");
@@ -2535,7 +2560,11 @@ mod tests {
             options: Default::default(),
             metadata: Default::default(),
         };
-        OpenAiResponsesProvider::new(state, &provider, 1).request_body(&request, false)
+        OpenAiResponsesProvider::new(
+            ModelTransport::for_test(state, &provider),
+            ProviderConfig::from_settings(&provider),
+        )
+        .request_body(&request, false)
     }
 
     fn fresh_state() -> crate::state::AppState {
@@ -2694,7 +2723,10 @@ mod tests {
         assert_eq!(call.function_name, "web_search");
         assert_eq!(call.arguments["query"], "吉林市 明天 天气");
         assert!(call.arguments_parse_error.is_none());
-        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
         assert_eq!(output.usage.and_then(|u| u.total_tokens), Some(15));
         assert!(parts
             .iter()
@@ -2713,7 +2745,10 @@ mod tests {
         ];
         let (parts, output) = run_events(&events);
         assert_eq!(output.text, "你好，世界");
-        assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("stop")
+        );
         assert_eq!(
             parts
                 .iter()
@@ -2816,7 +2851,10 @@ mod tests {
         let output = output_from_responses(&value, "{}", "test").expect("output");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].arguments["query"], "a");
-        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
 
         let text_value = serde_json::json!({
             "status": "completed",
@@ -2824,7 +2862,10 @@ mod tests {
         });
         let out = output_from_responses(&text_value, "{}", "test").expect("output");
         assert_eq!(out.text, "hi");
-        assert_eq!(out.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            out.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("stop")
+        );
     }
 
     #[test]
@@ -2834,7 +2875,7 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
         );
         let error = output_from_sse_body(body).expect_err("blank line is required to commit");
-        assert!(error.is_stream_read_interrupted());
+        assert!(error.is_retryable_stream_error());
     }
 
     #[test]
@@ -2847,7 +2888,10 @@ mod tests {
         );
         let output = output_from_sse_body(body).expect("complete multiline SSE");
         assert_eq!(output.text, "你好");
-        assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("stop")
+        );
     }
 
     /// A provider that streams an SSE body despite `stream:false`. `output_from_sse_body`
@@ -2881,7 +2925,10 @@ mod tests {
         assert_eq!(call.function_name, "web_search");
         assert_eq!(call.arguments["query"], "吉林市 明天 天气");
         assert!(call.arguments_parse_error.is_none());
-        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
         assert_eq!(output.usage.and_then(|u| u.total_tokens), Some(15));
     }
 
@@ -2969,7 +3016,10 @@ mod tests {
         );
         let output = output_from_sse_body(body).expect("sse output");
         assert_eq!(output.text, "你好，世界");
-        assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("stop")
+        );
     }
 
     /// Both official top-level error codes and nested relay codes preserve
@@ -2997,7 +3047,7 @@ mod tests {
             let err =
                 output_from_sse_body(&format!("data: {event}\n\n")).expect_err("provider failure");
             assert!(err.to_string().contains("boom"));
-            assert_eq!(err.is_stream_read_interrupted(), retryable, "{event}");
+            assert_eq!(err.is_retryable_stream_error(), retryable, "{event}");
         }
     }
 
@@ -3012,7 +3062,7 @@ mod tests {
             let body = format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\n\ndata: {error}\n\n");
             let err =
                 output_from_sse_body(&body).expect_err("partial stream must not count as success");
-            assert!(err.is_stream_read_interrupted(), "{err}");
+            assert!(err.is_retryable_stream_error(), "{err}");
         }
     }
 
@@ -3092,7 +3142,7 @@ mod tests {
             "incomplete_details": { "reason": "max_output_tokens" }
         });
         assert_eq!(
-            responses_finish_reason("incomplete", &truncated, has_tool_calls),
+            responses_finish_reason("incomplete", &truncated, has_tool_calls).legacy_name(),
             "length"
         );
         // 其它 incomplete 原因（如 content_filter）原样透传，不冒充截断。
@@ -3101,11 +3151,14 @@ mod tests {
             "incomplete_details": { "reason": "content_filter" }
         });
         assert_eq!(
-            responses_finish_reason("incomplete", &filtered, has_tool_calls),
+            responses_finish_reason("incomplete", &filtered, has_tool_calls).legacy_name(),
             "incomplete"
         );
         // completed 的两条既有映射不受影响。
         let done = serde_json::json!({ "status": "completed" });
-        assert_eq!(responses_finish_reason("completed", &done, has_tool_calls), "stop");
+        assert_eq!(
+            responses_finish_reason("completed", &done, has_tool_calls).legacy_name(),
+            "stop"
+        );
     }
 }

@@ -1,4 +1,5 @@
-use serde_json::Value;
+use super::history::{export_history, import_history, RuntimeMessage};
+use crate::chat::model::ModelRole;
 
 use crate::chat::hooks::{HookDispatcher, HookEvent};
 use crate::chat::types::ToolCallRecord;
@@ -36,26 +37,14 @@ fn append_todo_reminder(config: &AgentRunConfig<'_>, state: &mut RunState) {
     }
 }
 
-/// At the final answer: when this run did work (wrote the list or called tools) but
-/// the list still has open items, absorb the answer and append a reminder so the
-/// model closes the list out before the turn ends. Once per run. Returns whether the
-/// loop should take another step.
-fn todo_final_check_continues(config: &AgentRunConfig<'_>, state: &mut RunState) -> bool {
+fn todo_final_check_reminder(
+    config: &AgentRunConfig<'_>,
+    state: &RunState,
+) -> Option<RuntimeMessage> {
     if state.todo_final_check_sent || !todo_exposed(state) || state.tool_records.is_empty() {
-        return false;
+        return None;
     }
-    let Some(reminder) =
-        crate::chat::todo::final_check_reminder(&current_todo_state(config, state))
-    else {
-        return false;
-    };
-    state.todo_final_check_sent = true;
-    if let Some(message) = state.planning_final_message.take() {
-        absorb_final_answer(state, message);
-    }
-    state.runtime_messages.push(reminder.clone());
-    state.generated_api_messages.push(reminder);
-    true
+    crate::chat::todo::final_check_reminder(&current_todo_state(config, state))
 }
 
 fn todo_exposed(state: &RunState) -> bool {
@@ -98,23 +87,20 @@ pub(crate) struct RunIds<'a> {
 
 /// Mutable accumulators threaded through the loop phases.
 pub(crate) struct RunState {
-    pub(crate) runtime_messages: Vec<Value>,
+    pub(crate) runtime_messages: Vec<RuntimeMessage>,
     pub(crate) tools: Vec<ChatToolDefinition>,
     pub(crate) blocked_tool_calls: Vec<ChatToolDefinition>,
-    pub(crate) generated_api_messages: Vec<Value>,
+    pub(crate) generated_api_messages: Vec<RuntimeMessage>,
     pub(crate) tool_records: Vec<ToolCallRecord>,
     pub(crate) planning_reasoning_parts: Vec<String>,
     pub(crate) segment_builder: SegmentBuilder,
     pub(crate) step_number: u8,
     pub(crate) provider_tools_unsupported: bool,
     pub(crate) tried_skill_only_tools: bool,
-    pub(crate) planning_final_message: Option<Value>,
-    pub(crate) planning_final_streamed: bool,
     /// 空响应重试守门（一次）：抽风网关会间歇性返回 200 + 空正文（无文本无工具调用）。
     /// 第一次遇到时 planning 返回 `RetryEmptyResponse` 原地重试；已重试过则照旧走
     /// FinalAnswer → finalize 报 "empty assistant response"。
     pub(crate) planning_empty_retried: bool,
-    /// The end-of-turn todo check (`todo_final_check_continues`) already ran this run.
     pub(crate) todo_final_check_sent: bool,
     /// 待注入的用户插话本地队列（对齐 pi `PendingMessageQueue`）：信箱一次取空后暂存在
     /// 这里，`inject_steering_messages` 每个轮次边界只弹一条（one-at-a-time），剩余的由
@@ -349,7 +335,7 @@ pub async fn run_agent_loop(
     config.settings.chat_tools.approval_policy
         .clone_from(&config.effective_chat_tools.approval_policy);
     let mut state = RunState {
-        runtime_messages: std::mem::take(&mut config.runtime_messages),
+        runtime_messages: import_history(std::mem::take(&mut config.runtime_messages)),
         tools: std::mem::take(&mut config.tools),
         blocked_tool_calls: std::mem::take(&mut config.blocked_tool_calls),
         generated_api_messages: Vec::new(),
@@ -359,8 +345,6 @@ pub async fn run_agent_loop(
         step_number: 0,
         provider_tools_unsupported: false,
         tried_skill_only_tools: false,
-        planning_final_message: None,
-        planning_final_streamed: false,
         planning_empty_retried: false,
         todo_final_check_sent: false,
         pending_steering: std::collections::VecDeque::new(),
@@ -417,7 +401,7 @@ pub async fn run_agent_loop(
     let resumed = state
         .runtime_messages
         .iter()
-        .any(|m| m["role"] == "assistant");
+        .any(|m| m.role() == Some(ModelRole::Assistant));
     let mut hook_context = crate::chat::workflow_hooks::start_context(
         host,
         &config.conversation_id,
@@ -460,7 +444,7 @@ pub async fn run_agent_loop(
         host,
         executor,
     };
-    if tool_loop_ran {
+    let planning_final = if tool_loop_ran {
         let mut round = 0u32;
         loop {
             round = round.saturating_add(1);
@@ -498,12 +482,12 @@ pub async fn run_agent_loop(
             state.generated_api_messages.extend(
                 incoming
                     .into_iter()
-                    .filter(|message| message["subagent_parent_persisted"] != true),
+                    .filter(|message| message.source.subagent_parent_persisted != Some(true)),
             );
             append_todo_reminder(&config, &mut state);
 
             let planned = match planning_step(&env, &mut state, round).await? {
-                PlanningStepOutcome::FinalAnswer => {
+                PlanningStepOutcome::FinalAnswer(message) => {
                     let incoming = host
                         .checkpoint_runtime(
                             &config.conversation_id,
@@ -513,29 +497,23 @@ pub async fn run_agent_loop(
                         )
                         .await?;
                     if !incoming.is_empty() {
-                        if let Some(message) = state.planning_final_message.take() {
-                            absorb_final_answer(&mut state, message);
-                        }
+                        absorb_final_answer(&mut state, message);
                         state.runtime_messages.extend(incoming.iter().cloned());
-                        state.generated_api_messages.extend(
-                            incoming
-                                .into_iter()
-                                .filter(|message| message["subagent_parent_persisted"] != true),
-                        );
+                        state
+                            .generated_api_messages
+                            .extend(incoming.into_iter().filter(|message| {
+                                message.source.subagent_parent_persisted != Some(true)
+                            }));
                         continue;
                     }
                     // 立刻引导：终答时还有没送达的插话 ⇒ 吸收终答、下一轮轮首注入。
                     // 原生 follow-up：等终答，不打断工具循环；吸收后在本边界注入一条再续跑。
                     if steering_pending(&env, &mut state) {
-                        if let Some(message) = state.planning_final_message.take() {
-                            absorb_final_answer(&mut state, message);
-                        }
+                        absorb_final_answer(&mut state, message);
                         continue;
                     }
                     if follow_up_pending(&env, &mut state) {
-                        if let Some(message) = state.planning_final_message.take() {
-                            absorb_final_answer(&mut state, message);
-                        }
+                        absorb_final_answer(&mut state, message);
                         inject_follow_up_messages(&env, &mut state, round).await?;
                         continue;
                     }
@@ -554,9 +532,7 @@ pub async fn run_agent_loop(
                         return Ok(attach_usage(result, &mut state));
                     }
                     if child_activity {
-                        if let Some(message) = state.planning_final_message.take() {
-                            absorb_final_answer(&mut state, message);
-                        }
+                        absorb_final_answer(&mut state, message);
                         // Follow-ups can arrive while waiting, after the check
                         // above. Inject them before the next model request.
                         if follow_up_pending(&env, &mut state) {
@@ -564,12 +540,16 @@ pub async fn run_agent_loop(
                         }
                         continue;
                     }
-                    if todo_final_check_continues(&config, &mut state) {
+                    if let Some(reminder) = todo_final_check_reminder(&config, &state) {
+                        state.todo_final_check_sent = true;
+                        absorb_final_answer(&mut state, message);
+                        state.runtime_messages.push(reminder.clone());
+                        state.generated_api_messages.push(reminder);
                         continue;
                     }
-                    break;
+                    break Some(message);
                 }
-                PlanningStepOutcome::ToolsUnsupported => break,
+                PlanningStepOutcome::ToolsUnsupported => break None,
                 PlanningStepOutcome::RetryWithSkillTools => continue,
                 PlanningStepOutcome::RetryEmptyResponse => continue,
                 PlanningStepOutcome::DraftFailed(result) => {
@@ -630,10 +610,12 @@ pub async fn run_agent_loop(
             state.generated_api_messages.extend(
                 incoming
                     .into_iter()
-                    .filter(|message| message["subagent_parent_persisted"] != true),
+                    .filter(|message| message.source.subagent_parent_persisted != Some(true)),
             );
         }
-    }
+    } else {
+        None
+    };
 
     // A managed tool may finish cleanup after cancellation. Recheck before
     // synthesis.
@@ -653,7 +635,7 @@ pub async fn run_agent_loop(
     state.generated_api_messages.extend(
         incoming
             .into_iter()
-            .filter(|message| message["subagent_parent_persisted"] != true),
+            .filter(|message| message.source.subagent_parent_persisted != Some(true)),
     );
 
     if state.provider_tools_unsupported {
@@ -671,8 +653,8 @@ pub async fn run_agent_loop(
         }
     }
 
-    if let Some(message) = state.planning_final_message.take() {
-        return finalize_planning_final(&env, &mut state, message)
+    if let Some(message) = planning_final {
+        return finalize_planning_final(&mut state, message)
             .map(|result| attach_usage(result, &mut state));
     }
 
@@ -700,9 +682,11 @@ fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunRes
     result.last_step_usage = state.last_step_usage.take();
     if state.compacted {
         let mut history = std::mem::take(&mut state.runtime_messages);
-        let final_message =
-            super::stop::final_assistant_api_message(&result.content, result.reasoning.as_deref());
-        history.push(final_message);
+        let final_message = result.final_message.take().unwrap_or_else(|| {
+            super::stop::final_assistant_message(&result.content, result.reasoning.as_deref())
+        });
+        history.push(RuntimeMessage::model(final_message));
+        let history = export_history(&history);
         if let Some(summary) = &mut state.pending_compaction_summary {
             if let Some(replay) = &mut summary.replay {
                 replay.messages = super::compaction::replacement_body(&history);

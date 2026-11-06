@@ -1,9 +1,6 @@
-use serde_json::Value;
-
 use crate::chat::model::{
-    generate_request_from_openai_messages, stream_with_chat_provider, GenerateOptions,
-    GenerateOutput, GenerateRequest, GenerateRequestContext, ModelError, PendingToolCall,
-    StreamPart, StreamSink,
+    stream_with_chat_provider, FinishKind, GenerateOptions, GenerateOutput, GenerateRequest,
+    ModelError, ModelErrorKind, PendingToolCall, StreamPart, StreamSink,
 };
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
 use crate::mcp::ChatToolDefinition;
@@ -14,31 +11,22 @@ use super::finalize::{
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::rounds::visible_tool_segment_calls;
-use super::stop::{
-    assistant_content_from_api_message, extract_reasoning_content, extract_tool_calls,
-    is_tools_unsupported_error, sanitize_assistant_text_response,
-};
+use super::stop::sanitize_assistant_text_response;
 use super::stream::{
-    validate_stream_output, AgentStreamSink, ChatStreamOutput, ToolCallDraftTracker,
+    normalize_stream_output, validate_stream_output, AgentStreamSink, ToolCallDraftTracker,
     WebSearchCardTracker,
 };
 use super::types::{AgentRunResult, AgentStreamPolicy};
 
-pub(crate) struct ChatPlanningStep {
-    pub(crate) message: Value,
-    pub(crate) streamed: bool,
-}
-
 pub(crate) struct PlannedToolRound {
-    pub(crate) message: Value,
+    pub(crate) message: crate::chat::model::ModelMessage,
+    pub(crate) finish_kind: Option<FinishKind>,
     pub(crate) tool_calls: Vec<PendingToolCall>,
     pub(crate) drafts: ToolCallDraftTracker,
 }
 
 pub(crate) enum PlanningStepOutcome {
-    /// `state.planning_final_message` / `planning_final_streamed` were written;
-    /// the skeleton breaks out of the tool loop.
-    FinalAnswer,
+    FinalAnswer(GenerateOutput),
     /// Planning produced tool calls; the skeleton hands them to `run_tool_round`.
     ToolCalls(PlannedToolRound),
     /// `state.tools` was narrowed to skill-native tools; the skeleton retries.
@@ -209,7 +197,7 @@ pub(crate) async fn planning_step(
         {
             Ok(mut stream) => {
                 if stream.cancelled {
-                    let partial = sanitize_assistant_text_response(&stream.content);
+                    let partial = sanitize_assistant_text_response(&stream.text);
                     if partial.trim().is_empty() || planning_tool_drafts.has_started() {
                         // No preservable partial answer (empty text, or tool-arg
                         // drafting had started and is now incomplete). The stream
@@ -270,10 +258,8 @@ pub(crate) async fn planning_step(
                     true,
                 );
                 state.generated_images.append(&mut stream.images);
-                break Ok(ChatPlanningStep {
-                    message: stream.to_openai_compatible_message(),
-                    streamed: true,
-                });
+                let finish_kind = stream.finish_reason.as_ref().map(|reason| reason.kind);
+                break Ok((stream, finish_kind));
             }
             Err(err) if planning_tool_drafts.has_started() => {
                 eprintln!(
@@ -293,29 +279,22 @@ pub(crate) async fn planning_step(
                     ),
                 ));
             }
-            Err(err)
-                if !overflow_attempted
-                    && super::recovery::classify(&err.to_string())
-                        == super::recovery::FailureKind::ContextOverflow =>
-            {
+            Err(err) if !overflow_attempted && err.kind == ModelErrorKind::ContextOverflow => {
                 overflow_attempted = true;
                 let previous = send_messages.clone();
                 send_messages =
                     super::compaction::compact_send_view(env, state, true, &active_tools).await?;
                 if state.compaction_blocked || previous == send_messages {
-                    break Err(err.to_string());
+                    break Err(err);
                 }
                 continue;
             }
-            Err(err) => break Err(err.to_string()),
+            Err(err) => break Err(err),
         }
     };
-    let message = match planning_result {
-        Ok(step) => {
-            state.planning_final_streamed = step.streamed;
-            step.message
-        }
-        Err(err) if is_tools_unsupported_error(&err) => {
+    let (message, finish_kind) = match planning_result {
+        Ok(planned) => planned,
+        Err(err) if err.kind == ModelErrorKind::ToolsUnsupported => {
             let skill_only: Vec<ChatToolDefinition> = state
                 .tools
                 .iter()
@@ -346,7 +325,9 @@ pub(crate) async fn planning_step(
             // 整轮报错丢弃成果——走与 synthesis 同一条恢复阶梯(去敏重做 → 确定性兜底),
             // 而非直接堆原始结果。
             if !state.tool_records.is_empty() {
-                let content = super::synthesis::recover_synthesis(env, state, &err).await?;
+                let recovered = super::synthesis::recover_synthesis(env, state, &err).await?;
+                let replay = recovered.replay;
+                let content = recovered.text;
                 if !content.trim().is_empty() {
                     eprintln!("Chat planning call failed mid-run; recovered: {err}");
                     // 降级文案是本轮的**正文**，段 phase 必须是 Synthesis（不能留 ToolLoop）：
@@ -359,6 +340,7 @@ pub(crate) async fn planning_step(
                             .segment(&segment)
                             .emit_done("done")
                             .outcome("recovered")
+                            .replay(replay)
                             .degraded(state.degraded.take())
                             .finish(
                                 std::mem::take(&mut state.segment_builder),
@@ -369,7 +351,7 @@ pub(crate) async fn planning_step(
                     ));
                 }
             }
-            return Err(err);
+            return Err(err.message);
         }
     };
     // 内置搜索：实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
@@ -381,14 +363,11 @@ pub(crate) async fn planning_step(
             state.tool_records.push(record);
         }
     }
-    let tool_calls = extract_tool_calls(&message);
-    planning_tool_drafts.reconcile_speculation(
-        &tool_calls,
-        message.get("finish_reason").and_then(Value::as_str) == Some("length"),
-    );
+    let tool_calls = message.tool_calls.clone();
+    planning_tool_drafts
+        .reconcile_speculation(&tool_calls, finish_kind == Some(FinishKind::Length));
     if tool_calls.is_empty() {
-        let response =
-            sanitize_assistant_text_response(&assistant_content_from_api_message(&message));
+        let response = sanitize_assistant_text_response(&message.text);
         // 空响应重试（一次）：正文空 + 无工具调用 = 抽风网关的典型症状（HTTP 200 但
         // 正文什么都没给，可能残留一段 reasoning）。这种消息走到 finalize 必报
         // "empty assistant response"——与其断轮不如原地重试一次；再空则照旧报错。
@@ -405,49 +384,50 @@ pub(crate) async fn planning_step(
         if !response.trim().is_empty() {
             let mut segment = planning_text_segment.clone();
             segment.phase = ChatMessageSegmentPhase::Plain;
-            if state.planning_final_streamed {
-                host.emit_stream_delta(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &config.message_id,
-                    "",
-                    None,
-                    Some(&segment),
-                );
-            }
+            host.emit_stream_delta(
+                &config.conversation_id,
+                &config.run_id,
+                &config.message_id,
+                "",
+                None,
+                Some(&segment),
+            );
             state
                 .segment_builder
                 .append_text_from_template(&segment, response);
         }
-        if let Some(reasoning) = extract_reasoning_content(&message) {
+        if let Some(reasoning) = message
+            .reasoning
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+        {
             let mut segment = planning_reasoning_segment.clone();
             segment.phase = ChatMessageSegmentPhase::Plain;
-            if state.planning_final_streamed {
-                host.emit_stream_delta(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &config.message_id,
-                    "",
-                    None,
-                    Some(&segment),
-                );
-            }
+            host.emit_stream_delta(
+                &config.conversation_id,
+                &config.run_id,
+                &config.message_id,
+                "",
+                None,
+                Some(&segment),
+            );
             state
                 .segment_builder
                 .append_text_from_template(&segment, reasoning);
         }
-        state.planning_final_message = Some(message);
-        return Ok(PlanningStepOutcome::FinalAnswer);
+        return Ok(PlanningStepOutcome::FinalAnswer(message));
     }
-    state.planning_final_streamed = false;
-    let planning_text =
-        sanitize_assistant_text_response(&assistant_content_from_api_message(&message));
+    let planning_text = sanitize_assistant_text_response(&message.text);
     if !planning_text.trim().is_empty() {
         state
             .segment_builder
             .append_text_from_template(&planning_text_segment, planning_text);
     }
-    if let Some(reasoning) = extract_reasoning_content(&message) {
+    if let Some(reasoning) = message
+        .reasoning
+        .clone()
+        .filter(|text| !text.trim().is_empty())
+    {
         state
             .segment_builder
             .append_text_from_template(&planning_reasoning_segment, reasoning.clone());
@@ -480,169 +460,19 @@ pub(crate) async fn planning_step(
             .append_existing_segments(draft_tool_segments);
     }
     Ok(PlanningStepOutcome::ToolCalls(PlannedToolRound {
-        message,
+        message: message.replay_message(),
+        finish_kind,
         tool_calls,
         drafts: planning_tool_drafts,
     }))
 }
 
-/// 模型调用并同时返回 provider 报告的 usage，
-/// 供循环把每次模型调用的 token 消耗累计进 AgentRunResult。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_chat_completion_message_with_usage(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    tool_choice: crate::chat::model::ToolChoice,
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    thinking_level: Option<String>,
-    builtin_web_search: bool,
-    max_output_tokens: u32,
-    conversation_id: &str,
-    message_id: &str,
-    label: &str,
-) -> Result<(Value, Option<crate::chat::model::ModelUsage>), String> {
-    let (message, usage, _web_search, _images) = call_chat_completion_output_with_usage(
-        state,
-        provider,
-        model,
-        messages,
-        tools,
-        tool_choice,
-        retry_attempts,
-        thinking_enabled,
-        thinking_level,
-        builtin_web_search,
-        max_output_tokens,
-        conversation_id,
-        message_id,
-        label,
-    )
-    .await?;
-    Ok((message, usage))
-}
-
-/// 同 `call_chat_completion_message_with_usage`，但额外回传适配器解析出的内置搜索引用
-/// （`GenerateOutput.web_search`）。非流式答案路径用它把内置搜索可视化成工具卡（任务 07-23）。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_chat_completion_output_with_usage(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    tool_choice: crate::chat::model::ToolChoice,
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    thinking_level: Option<String>,
-    builtin_web_search: bool,
-    max_output_tokens: u32,
-    conversation_id: &str,
-    message_id: &str,
-    label: &str,
-) -> Result<
-    (
-        Value,
-        Option<crate::chat::model::ModelUsage>,
-        Option<crate::chat::model::BuiltinWebSearch>,
-        Vec<crate::chat::model::GeneratedImageData>,
-    ),
-    String,
-> {
-    let request = generate_request_from_openai_messages(
-        model,
-        messages,
-        tools,
-        GenerateOptions {
-            thinking_enabled,
-            thinking_level,
-            builtin_web_search,
-            tool_choice,
-            max_tokens: max_output_tokens,
-            ..GenerateOptions::default()
-        },
-        label,
-        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
-    );
-    // **一律走流式**（`generate_via_stream_collect`），哪怕调用方只要一个完整结果。
-    // 部分 openai_responses 代理只可靠地服务流式请求，非流式 `generate` 直接报
-    // "Unknown Responses API error" —— 压缩、标题总结都各自被这个坑绊过一次。
-    // 这里是所有「要完整结果」的模型调用的唯一出口（planning / synthesis / 恢复重试 /
-    // 原生工具都汇到这儿），改在这一处就等于全线走流式；`GenerateOutput` 两条路径同型，
-    // usage / web_search / images 照旧回传（正常答案路径本来就只走流式，是被走熟的那条）。
-    let output = generate_via_stream_collect(state, provider, retry_attempts, request)
-        .await
-        .map_err(|err| err.to_string())?;
-    let usage = output.usage.clone();
-    let web_search = output.web_search.clone();
-    let images = output.images.clone();
-    Ok((
-        output.to_openai_compatible_message(),
-        usage,
-        web_search,
-        images,
-    ))
-}
-
-/// 与 `call_chat_completion_message_with_usage` 同形（返回 `to_openai_compatible_message()` Value），
-/// 但走**流式**路径而非非流式 `generate`：内部用 `generate_via_stream_collect` 触发流式后
-/// 取回 provider 组装好的 `GenerateOutput`。
-///
-/// 动机：压缩的摘要调用是 agent 里**唯一**的非流式模型调用；部分 provider（如 `openai_responses`
-/// 代理）只可靠地服务流式请求，非流式摘要调用会失败（"Unknown Responses API error"），导致压缩在
-/// 这类 provider 上永远摘不动。整个 agent 的 planning/synthesis 已经证明流式在该 provider 上可用，
-/// 故把摘要调用也改走流式。流式被所有 provider 普遍支持，对支持非流式的 GUI provider 也无退化。
-///
-/// 这是**无头**收集（不涉及 `AgentHost`、不发任何 host 事件），与手动压缩/非 UI 路径一致。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn call_chat_completion_message_streamed(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    retry_attempts: usize,
-    thinking_enabled: bool,
-    max_output_tokens: u32,
-    conversation_id: &str,
-    message_id: &str,
-    label: &str,
-) -> Result<Value, String> {
-    let request = generate_request_from_openai_messages(
-        model,
-        messages,
-        tools,
-        GenerateOptions {
-            thinking_enabled,
-            max_tokens: max_output_tokens,
-            ..GenerateOptions::default()
-        },
-        label,
-        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
-    );
-    let output = generate_via_stream_collect(state, provider, retry_attempts, request)
-        .await
-        .map_err(|err| err.to_string())?;
-    let mut message = output.to_openai_compatible_message();
-    if let Some(reason) = output.finish_reason {
-        message["finish_reason"] = serde_json::json!(reason);
-    }
-    Ok(message)
-}
-
 /// 无头流式收集 sink：丢弃所有增量。摘要调用只消费返回的 `GenerateOutput.text`
 /// （所有 provider 适配器都在流式路径上从累积增量填好 `text`），故无需在此累积；
-/// 仅把 `StreamPart::Error` 上抛为 `ModelError`。不向任何 `AgentHost` 发事件。
 struct DiscardStreamSink;
 
 impl StreamSink for DiscardStreamSink {
-    fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
-        if let StreamPart::Error { message } = part {
-            return Err(ModelError::new(message));
-        }
+    fn emit(&mut self, _: StreamPart) -> Result<(), ModelError> {
         Ok(())
     }
 }
@@ -668,7 +498,7 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
     host: &dyn AgentHost,
     provider: &crate::settings::ModelProvider,
     model: &str,
-    messages: Vec<Value>,
+    messages: Vec<super::history::RuntimeMessage>,
     tools: Option<&[ChatToolDefinition]>,
     tool_choice: crate::chat::model::ToolChoice,
     retry_attempts: usize,
@@ -686,7 +516,7 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
     reasoning_segment: Option<ChatMessageSegment>,
     tool_draft_tracker: Option<ToolCallDraftTracker>,
     web_search_tracker: Option<WebSearchCardTracker>,
-) -> Result<ChatStreamOutput, ModelError> {
+) -> Result<GenerateOutput, ModelError> {
     host.begin_context_request(
         conversation_id,
         message_id,
@@ -695,10 +525,10 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
         &messages,
         tools.unwrap_or_default(),
     );
-    let request = generate_request_from_openai_messages(
+    let request = super::history::request_from_history(
+        &messages,
         model,
-        messages,
-        tools,
+        tools.unwrap_or_default().iter().map(Into::into).collect(),
         GenerateOptions {
             thinking_enabled,
             thinking_level,
@@ -707,8 +537,12 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
             max_tokens: max_output_tokens,
             ..GenerateOptions::default()
         },
-        label,
-        GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
+        crate::chat::model::RequestMetadata {
+            label: label.to_string(),
+            conversation_id: Some(conversation_id.to_string()),
+            message_id: Some(message_id.to_string()),
+            ..Default::default()
+        },
     );
     crate::api::with_retry_budget(retry_attempts, async {
         let budget = crate::api::RetryBudget::current_or_new(retry_attempts);
@@ -747,15 +581,14 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
             };
             let Some(result) = result else {
                 let (content, reasoning) = sink.snapshot();
-                return Ok(ChatStreamOutput::new(
+                return Ok(GenerateOutput::cancelled(
                     content.trim().to_string(),
-                    reasoning.trim().to_string(),
-                    true,
+                    (!reasoning.trim().is_empty()).then(|| reasoning.trim().to_string()),
                 ));
             };
             let output = match result {
                 Ok(output) => output,
-                Err(err) if err.is_stream_read_interrupted() => {
+                Err(err) if err.is_retryable_stream_error() => {
                     let Some((retry, delay_ms)) = budget.schedule(None, "Stream interrupted", false) else {
                         return Err(err);
                     };
@@ -765,7 +598,7 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {},
                         _ = host.wait_for_generation_inactive(conversation_id, generation) => {
-                            return Ok(ChatStreamOutput::new(String::new(), String::new(), true));
+                            return Ok(GenerateOutput::cancelled(String::new(), None));
                         }
                     }
                     continue;
@@ -780,17 +613,19 @@ pub(crate) async fn stream_scoped_chat_completion_inner(
                 host.emit_tool_record(conversation_id, run_id, message_id, &record);
             }
             let (snapshot_content, snapshot_reasoning) = sink.snapshot();
-            let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
+            let stream_output = normalize_stream_output(
                 output,
                 snapshot_content,
                 snapshot_reasoning,
+                policy,
             );
             // Roll back exactly what this sink emitted, including Unicode and
             // provider-specific text normalization, before semantic recovery.
             if super::recovery::is_recoverable_text_length(&stream_output, max_output_tokens) {
                 sink.discard_attempt();
             }
-            validate_stream_output(label, policy, &stream_output).map_err(ModelError::new)?;
+            validate_stream_output(label, policy, &stream_output)
+                .map_err(|message| ModelError::with_kind(message, ModelErrorKind::EmptyResponse))?;
             return Ok(stream_output);
         }
     }).await

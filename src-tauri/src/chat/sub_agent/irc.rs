@@ -1,3 +1,4 @@
+use crate::chat::agent::history::RuntimeMessage;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
@@ -133,9 +134,6 @@ pub(crate) struct IncomingClaim<'a> {
 impl IncomingClaim<'_> {
     pub fn messages(&self) -> &[Message] {
         &self.messages
-    }
-    pub fn inputs(&self) -> Vec<Value> {
-        self.messages.iter().map(Message::model_input).collect()
     }
     pub fn commit(&mut self) {
         self.committed = true;
@@ -556,8 +554,8 @@ pub async fn collect_for_main(
     app: &AppHandle,
     root: &str,
     _run: &str,
-    history: &[Value],
-) -> Result<Vec<Value>, String> {
+    history: &[RuntimeMessage],
+) -> Result<Vec<RuntimeMessage>, String> {
     let state = app.state::<AppState>();
     let mut claim = state.sub_agents.irc.claim(root, MAIN_AGENT_ID, |_| true);
     for message in claim.messages() {
@@ -568,13 +566,14 @@ pub async fn collect_for_main(
         .iter()
         .filter(|message| {
             !history.iter().any(|item| {
-                item["_subagent_irc_id"] == message.id
-                    || item[super::delivery::REPORT_MESSAGE_ID_KEY]
-                        == format!("subagent-irc-{}", message.id)
-                    || item["_ui_message_id"] == format!("subagent-irc-{}", message.id)
+                item.source.subagent_irc_id.as_deref() == Some(message.id.as_str())
+                    || item.source.subagent_result_id.as_deref()
+                        == Some(format!("subagent-irc-{}", message.id).as_str())
+                    || item.source.ui_message_id.as_deref()
+                        == Some(format!("subagent-irc-{}", message.id).as_str())
             })
         })
-        .map(Message::model_input)
+        .filter_map(|message| RuntimeMessage::from_legacy(message.model_input()))
         .collect();
     claim.commit();
     Ok(inputs)
