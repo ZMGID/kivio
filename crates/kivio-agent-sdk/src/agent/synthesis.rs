@@ -1,4 +1,4 @@
-use super::content::{ContentBlock, ContentKind};
+use super::content::ContentKind;
 use super::history::RuntimeMessage;
 use crate::model::{
     GenerateOutput, ModelError, ModelErrorKind, ModelMessage, StreamPart, StreamSink,
@@ -20,13 +20,13 @@ pub(crate) struct SynthesisCompleted {
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) response_reasoning: Option<String>,
-    pub(crate) response_segment: ContentBlock,
-    pub(crate) response_reasoning_segment: ContentBlock,
+    pub(crate) generated_message: Option<RuntimeMessage>,
 }
 
 pub(crate) enum SynthesisFlow {
     Completed(SynthesisCompleted),
     Early(AgentRunResult),
+    CancelledState,
 }
 
 pub(crate) async fn synthesis_step(
@@ -151,33 +151,33 @@ pub(crate) async fn synthesis_step(
         Err(err) => return Err(err.message),
     };
     if stream.cancelled {
-        if !state.tool_records.is_empty() {
-            return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, stream.text.clone())
-                    .segment(&response_segment)
-                    .api_reasoning(stream.reasoning.clone())
-                    .reasoning_tail(stream.reasoning)
-                    .outcome(super::types::AgentRunStatus::Cancelled)
-                    .finish(
-                        std::mem::take(&mut state.segment_builder),
-                        &state.planning_reasoning_parts,
-                        std::mem::take(&mut state.tool_records),
-                        std::mem::take(&mut state.generated_api_messages),
-                    ),
-            ));
+        let partial = if state.tool_records.is_empty() {
+            sanitize_assistant_text_response(&stream.text)
+        } else {
+            stream.text.clone()
+        };
+        if partial.trim().is_empty()
+            && stream
+                .reasoning
+                .as_deref()
+                .is_none_or(|reasoning| reasoning.trim().is_empty())
+            && stream.canonical_message.is_none()
+            && stream.reasoning_items.is_empty()
+        {
+            return Ok(SynthesisFlow::CancelledState);
         }
-        let partial = sanitize_assistant_text_response(&stream.text);
-        if partial.trim().is_empty() {
-            return Err("cancelled".to_string());
+        if let Some(reasoning) = stream.reasoning.as_deref() {
+            state
+                .segment_builder
+                .append_text_from_template(&response_reasoning_segment, reasoning.trim());
         }
-        // Plain-text streaming was cancelled after partial output; the stream
-        // layer already emitted the single done("cancelled") event. Preserve
-        // the generated text instead of dropping the whole turn.
+        let replay = stream.replay_message();
         return Ok(SynthesisFlow::Early(
             RunResultBuilder::new(host, partial)
                 .segment(&response_segment)
                 .api_reasoning(stream.reasoning.clone())
                 .reasoning_tail(stream.reasoning)
+                .replay(Some(replay))
                 .outcome(super::types::AgentRunStatus::Cancelled)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
@@ -198,6 +198,7 @@ pub(crate) async fn synthesis_step(
     let reasoning = merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone());
     let response = sanitize_assistant_text_response(&stream.text);
     let replay;
+    let generated_message;
     let (response, reasoning, response_reasoning) = if response.trim().is_empty() {
         if !state.tool_records.is_empty() {
             log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
@@ -214,26 +215,25 @@ pub(crate) async fn synthesis_step(
             } else {
                 recovered.text
             };
-            let fallback = RunResultBuilder::new(host, content)
-                .emit_segment_opt(Some(response_segment.clone()))
-                .api_reasoning(final_reasoning_for_api.clone())
-                .emit_done("done")
-                .replay(replay.clone())
-                .emit_and_record(&mut state.generated_api_messages);
-            (fallback, reasoning, final_reasoning_for_api)
+            host.content(&content, None, Some(&response_segment));
+            generated_message = (!state.generated_api_messages.is_empty()).then(|| {
+                RuntimeMessage::model(replay.clone().unwrap_or_else(|| {
+                    super::stop::final_assistant_message(
+                        &content,
+                        final_reasoning_for_api.as_deref(),
+                    )
+                }))
+            });
+            (content, reasoning, final_reasoning_for_api)
         } else {
             return Err(empty_assistant_response_error("Chat stream"));
         }
     } else {
         let message = stream.replay_message();
-        if !state.generated_api_messages.is_empty()
+        generated_message = (!state.generated_api_messages.is_empty()
             || stream.canonical_message.is_some()
-            || !stream.reasoning_items.is_empty()
-        {
-            state
-                .generated_api_messages
-                .push(RuntimeMessage::model(message.clone()));
-        }
+            || !stream.reasoning_items.is_empty())
+        .then(|| RuntimeMessage::model(message.clone()));
         replay = Some(message);
         (response, reasoning, final_reasoning_for_api)
     };
@@ -247,13 +247,21 @@ pub(crate) async fn synthesis_step(
         }
     }
 
+    state
+        .segment_builder
+        .append_text_from_template(&response_segment, response.clone());
+    if let Some(reasoning_part) = response_reasoning.as_deref() {
+        state
+            .segment_builder
+            .append_text_from_template(&response_reasoning_segment, reasoning_part.trim());
+    }
+
     Ok(SynthesisFlow::Completed(SynthesisCompleted {
         replay,
         response,
         reasoning,
         response_reasoning,
-        response_segment,
-        response_reasoning_segment,
+        generated_message,
     }))
 }
 

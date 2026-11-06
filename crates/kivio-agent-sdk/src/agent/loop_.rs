@@ -11,11 +11,10 @@ use super::host::AgentHost;
 use super::planning::{planning_step, PlanningStepOutcome};
 use super::rounds::{run_tool_round, ToolRoundOutcome};
 use super::steering::{
-    absorb_final_answer, follow_up_pending, inject_follow_up_messages, inject_steering_messages,
-    steering_pending,
+    follow_up_pending, inject_follow_up_messages, inject_steering_messages, steering_pending,
 };
 use super::stop::patch_system_message;
-use super::synthesis::{synthesis_step, SynthesisFlow};
+use super::synthesis::{synthesis_step, SynthesisCompleted, SynthesisFlow};
 use super::types::{AgentRunConfig, AgentRunResult};
 
 /// Immutable per-run environment shared by every loop phase.
@@ -238,6 +237,186 @@ pub async fn run_agent_loop(
     result
 }
 
+enum Answer {
+    Planning(crate::model::GenerateOutput),
+    Synthesis(SynthesisCompleted),
+}
+
+impl Answer {
+    fn absorb(self, state: &mut RunState) {
+        let message = match self {
+            Self::Planning(output) => RuntimeMessage::model(output.replay_message()),
+            Self::Synthesis(completed) => {
+                if let Some(reasoning) = completed.response_reasoning.as_deref() {
+                    if !reasoning.trim().is_empty() {
+                        state.planning_reasoning_parts.push(reasoning.to_owned());
+                    }
+                }
+                completed.generated_message.unwrap_or_else(|| {
+                    RuntimeMessage::model(completed.replay.unwrap_or_else(|| {
+                        super::stop::final_assistant_message(
+                            &completed.response,
+                            completed.response_reasoning.as_deref(),
+                        )
+                    }))
+                })
+            }
+        };
+        state.runtime_messages.push(message.clone());
+        state.generated_api_messages.push(message);
+        state.runtime_len_at_last_call = state.runtime_messages.len();
+    }
+
+    fn finish(self, state: &mut RunState) -> Result<AgentRunResult, String> {
+        match self {
+            Self::Planning(output) => finalize_planning_final(state, output),
+            Self::Synthesis(completed) => Ok(finalize_completed(state, completed)),
+        }
+    }
+
+    fn cancel(self, state: &mut RunState) -> Result<AgentRunResult, String> {
+        let mut result = self.finish(state)?;
+        result.status = super::types::AgentRunStatus::Cancelled;
+        Ok(attach_usage(result, state))
+    }
+}
+
+enum AnswerBoundary {
+    Continue,
+    Finish(Answer),
+    Cancelled(AgentRunResult),
+}
+
+async fn admit_step(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+    round: u32,
+    session: &mut dyn super::session::SessionPolicy,
+) -> Result<(), String> {
+    inject_steering_messages(env, state, round, session).await?;
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    let incoming = env
+        .host
+        .checkpoint_runtime(
+            &env.config.conversation_id,
+            &env.config.run_id,
+            &state.runtime_messages,
+            false,
+        )
+        .await?;
+    state
+        .runtime_messages
+        .extend(incoming.iter().map(|input| input.message.clone()));
+    state.generated_api_messages.extend(
+        incoming
+            .into_iter()
+            .filter(|input| input.persistence == super::host::InputPersistence::Append)
+            .map(|input| input.message),
+    );
+    if env.host.control.active() {
+        let inputs = session.before_step(state.snapshot());
+        state.runtime_messages.extend(inputs.iter().cloned());
+        state.generated_api_messages.extend(inputs);
+    }
+    Ok(())
+}
+
+async fn answer_boundary(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+    round: u32,
+    session: &mut dyn super::session::SessionPolicy,
+    answer: Answer,
+) -> Result<AnswerBoundary, String> {
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    let incoming = env
+        .host
+        .checkpoint_runtime(
+            &env.config.conversation_id,
+            &env.config.run_id,
+            &state.runtime_messages,
+            true,
+        )
+        .await?;
+    if !env.host.control.active() {
+        let mut result = answer.cancel(state)?;
+        if result.generated_history.is_empty()
+            && incoming
+                .iter()
+                .any(|input| input.persistence == super::host::InputPersistence::Append)
+        {
+            result
+                .generated_history
+                .extend(result.final_message.clone().map(RuntimeMessage::model));
+        }
+        result
+            .history
+            .extend(incoming.iter().map(|input| input.message.clone()));
+        result.generated_history.extend(
+            incoming
+                .into_iter()
+                .filter(|input| input.persistence == super::host::InputPersistence::Append)
+                .map(|input| input.message),
+        );
+        return Ok(AnswerBoundary::Cancelled(result));
+    }
+    if !incoming.is_empty() {
+        answer.absorb(state);
+        state
+            .runtime_messages
+            .extend(incoming.iter().map(|input| input.message.clone()));
+        state.generated_api_messages.extend(
+            incoming
+                .into_iter()
+                .filter(|input| input.persistence == super::host::InputPersistence::Append)
+                .map(|input| input.message),
+        );
+        return Ok(AnswerBoundary::Continue);
+    }
+    if steering_pending(env, state) {
+        answer.absorb(state);
+        return Ok(AnswerBoundary::Continue);
+    }
+    if follow_up_pending(env, state) {
+        answer.absorb(state);
+        inject_follow_up_messages(env, state, round, session).await?;
+        return Ok(AnswerBoundary::Continue);
+    }
+    let child_activity = env
+        .host
+        .wait_for_child_results(
+            &env.config.conversation_id,
+            &env.config.run_id,
+            env.config.generation,
+        )
+        .await?;
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    if child_activity {
+        answer.absorb(state);
+        if follow_up_pending(env, state) {
+            inject_follow_up_messages(env, state, round, session).await?;
+        }
+        return Ok(AnswerBoundary::Continue);
+    }
+    let reminder = session.before_finish(state.snapshot());
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    if let Some(reminder) = reminder {
+        answer.absorb(state);
+        state.runtime_messages.push(reminder.clone());
+        state.generated_api_messages.push(reminder);
+        return Ok(AnswerBoundary::Continue);
+    }
+    Ok(AnswerBoundary::Finish(answer))
+}
+
 async fn run_agent_loop_inner(
     mut config: AgentRunConfig<'_>,
     host: &super::context::AgentContext<'_>,
@@ -279,8 +458,8 @@ async fn run_agent_loop_inner(
         host,
         executor,
     };
+    let mut round = 0u32;
     let planning_final = if tool_loop_ran {
-        let mut round = 0u32;
         loop {
             round = round.saturating_add(1);
             state.step_number = state.step_number.saturating_add(1);
@@ -291,101 +470,34 @@ async fn run_agent_loop_inner(
                 // Ok(cancelled_result) instead of a bare Err("cancelled") — the
                 // latter skipped persistence and dropped the whole turn.
                 let result = cancelled_run_result_from_state(&mut state);
-                return Ok(attach_usage(result, &mut state));
+                return Ok(attach_run_state(result, &mut state));
             }
 
             // 本轮的 turn_start / message_start 由 guard 构造时发；turn_end / message_end
             // 由它的 Drop 补齐，所以下面任何一条 return / continue / `?` 都不会漏配对。
             let mut turn = HookTurnGuard::new(&host.events, round);
 
-            // 用户在生成期间点了「立刻引导」：轮次边界是唯一安全的注入点（上一轮的工具结果
-            // 已经落进历史，本轮还没开始调模型）。信箱为空时零开销。
-            inject_steering_messages(&env, &mut state, round, session).await?;
-
-            let incoming = host
-                .checkpoint_runtime(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &state.runtime_messages,
-                    false,
-                )
-                .await?;
-            state
-                .runtime_messages
-                .extend(incoming.iter().map(|input| input.message.clone()));
-            state.generated_api_messages.extend(
-                incoming
-                    .into_iter()
-                    .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                    .map(|input| input.message),
-            );
-            let inputs = session.before_step(state.snapshot());
-            state.runtime_messages.extend(inputs.iter().cloned());
-            state.generated_api_messages.extend(inputs);
+            admit_step(&env, &mut state, round, session).await?;
+            if !host.control.active() {
+                let result = cancelled_run_result_from_state(&mut state);
+                return Ok(attach_run_state(result, &mut state));
+            }
 
             let planned = match planning_step(&env, &mut state, round, session).await? {
                 PlanningStepOutcome::FinalAnswer(message) => {
-                    let incoming = host
-                        .checkpoint_runtime(
-                            &config.conversation_id,
-                            &config.run_id,
-                            &state.runtime_messages,
-                            true,
-                        )
-                        .await?;
-                    if !incoming.is_empty() {
-                        absorb_final_answer(&mut state, message);
-                        state
-                            .runtime_messages
-                            .extend(incoming.iter().map(|input| input.message.clone()));
-                        state.generated_api_messages.extend(
-                            incoming
-                                .into_iter()
-                                .filter(|input| {
-                                    input.persistence == super::host::InputPersistence::Append
-                                })
-                                .map(|input| input.message),
-                        );
-                        continue;
+                    match answer_boundary(
+                        &env,
+                        &mut state,
+                        round,
+                        session,
+                        Answer::Planning(message),
+                    )
+                    .await?
+                    {
+                        AnswerBoundary::Continue => continue,
+                        AnswerBoundary::Finish(answer) => break Some(answer),
+                        AnswerBoundary::Cancelled(result) => return Ok(result),
                     }
-                    // 立刻引导：终答时还有没送达的插话 ⇒ 吸收终答、下一轮轮首注入。
-                    // 原生 follow-up：等终答，不打断工具循环；吸收后在本边界注入一条再续跑。
-                    if steering_pending(&env, &mut state) {
-                        absorb_final_answer(&mut state, message);
-                        continue;
-                    }
-                    if follow_up_pending(&env, &mut state) {
-                        absorb_final_answer(&mut state, message);
-                        inject_follow_up_messages(&env, &mut state, round, session).await?;
-                        continue;
-                    }
-                    let child_activity = host
-                        .wait_for_child_results(
-                            &config.conversation_id,
-                            &config.run_id,
-                            config.generation,
-                        )
-                        .await?;
-                    if !host.control.active() {
-                        let result = cancelled_run_result_from_state(&mut state);
-                        return Ok(attach_usage(result, &mut state));
-                    }
-                    if child_activity {
-                        absorb_final_answer(&mut state, message);
-                        // Follow-ups can arrive while waiting, after the check
-                        // above. Inject them before the next model request.
-                        if follow_up_pending(&env, &mut state) {
-                            inject_follow_up_messages(&env, &mut state, round, session).await?;
-                        }
-                        continue;
-                    }
-                    if let Some(reminder) = session.before_finish(state.snapshot()) {
-                        absorb_final_answer(&mut state, message);
-                        state.runtime_messages.push(reminder.clone());
-                        state.generated_api_messages.push(reminder);
-                        continue;
-                    }
-                    break Some(message);
                 }
                 PlanningStepOutcome::ToolsUnsupported => break None,
                 PlanningStepOutcome::RetryWithTools => continue,
@@ -456,7 +568,7 @@ async fn run_agent_loop_inner(
     // synthesis.
     if !host.control.active() {
         let result = cancelled_run_result_from_state(&mut state);
-        return Ok(attach_usage(result, &mut state));
+        return Ok(attach_run_state(result, &mut state));
     }
     let incoming = host
         .checkpoint_runtime(
@@ -485,21 +597,47 @@ async fn run_agent_loop_inner(
     }
 
     if let Some(message) = planning_final {
-        return finalize_planning_final(&mut state, message)
+        return message
+            .finish(&mut state)
             .map(|result| attach_usage(result, &mut state));
     }
 
-    // 无工具会话（工具全关 / provider 不支持）整段跳过上面的循环，一个 turn/message 事件
-    // 都不会发——只剩 agent_start/agent_end。这里的 synthesis 就是那一「轮」，补上配对
-    // （对齐 LiveAgent 的 runTextConversationTurn 也走 startTurn/endTurn）。工具循环跑过
-    // 的情况下它自己的 guard 已经配好了，不能再发一次。
-    let _text_turn = (!tool_loop_ran).then(|| HookTurnGuard::new(&host.events, 1));
-
-    match synthesis_step(&env, &mut state, session).await? {
-        SynthesisFlow::Early(result) => Ok(attach_usage(result, &mut state)),
-        SynthesisFlow::Completed(completed) => {
-            let result = finalize_completed(&env, &mut state, completed);
-            Ok(attach_usage(result, &mut state))
+    loop {
+        if !host.control.active() {
+            let result = cancelled_run_result_from_state(&mut state);
+            return Ok(attach_run_state(result, &mut state));
+        }
+        round = round.saturating_add(1);
+        let _turn = HookTurnGuard::new(&host.events, round);
+        admit_step(&env, &mut state, round, session).await?;
+        if !host.control.active() {
+            let result = cancelled_run_result_from_state(&mut state);
+            return Ok(attach_run_state(result, &mut state));
+        }
+        let completed = match synthesis_step(&env, &mut state, session).await? {
+            SynthesisFlow::Early(result) => return Ok(attach_usage(result, &mut state)),
+            SynthesisFlow::CancelledState => {
+                let result = cancelled_run_result_from_state(&mut state);
+                return Ok(attach_run_state(result, &mut state));
+            }
+            SynthesisFlow::Completed(completed) => completed,
+        };
+        match answer_boundary(
+            &env,
+            &mut state,
+            round,
+            session,
+            Answer::Synthesis(completed),
+        )
+        .await?
+        {
+            AnswerBoundary::Continue => continue,
+            AnswerBoundary::Finish(answer) => {
+                return answer
+                    .finish(&mut state)
+                    .map(|result| attach_usage(result, &mut state))
+            }
+            AnswerBoundary::Cancelled(result) => return Ok(result),
         }
     }
 }
@@ -507,18 +645,24 @@ async fn run_agent_loop_inner(
 /// 把本轮累计的 provider usage 挂到运行结果上（finalize 构造器们不感知 usage）。
 /// 同时：本轮若发生过 L2 压缩，把压缩后的完整历史 +最终 assistant 回答回传到
 /// `compacted_history`，供跨轮调用方替换其累积历史（finalize 构造器们也不感知压缩）。
-fn attach_usage(mut result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
-    result.usage = state.usage.take();
-    result.cache_pairs = state.cache_pairs.take();
-    result.last_step_usage = state.last_step_usage.take();
-    result.history = std::mem::take(&mut state.runtime_messages);
+fn attach_usage(result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
     if let Some(final_message) = result.final_message.clone().or_else(|| {
         (!result.content.is_empty() || result.reasoning.is_some()).then(|| {
             super::stop::final_assistant_message(&result.content, result.reasoning.as_deref())
         })
     }) {
-        result.history.push(RuntimeMessage::model(final_message));
+        state
+            .runtime_messages
+            .push(RuntimeMessage::model(final_message));
     }
+    attach_run_state(result, state)
+}
+
+fn attach_run_state(mut result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
+    result.usage = state.usage.take();
+    result.cache_pairs = state.cache_pairs.take();
+    result.last_step_usage = state.last_step_usage.take();
+    result.history = std::mem::take(&mut state.runtime_messages);
     result.compacted = state.compacted;
     result.images = std::mem::take(&mut state.generated_images);
     result

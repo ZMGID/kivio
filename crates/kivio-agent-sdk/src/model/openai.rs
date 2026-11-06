@@ -1,4 +1,4 @@
-//! Shared OpenAI-compatible Chat Completions wire protocol and one-attempt HTTP provider.
+//! Shared OpenAI-compatible Chat Completions wire protocol and host-configured HTTP provider.
 use super::error::provider_error_code;
 use super::usage::{model_usage_from_openai_value, model_usage_from_stream_value};
 use super::{
@@ -44,8 +44,9 @@ impl OpenAiChatConfig {
     }
 }
 
-/// Executes one HTTP attempt per invocation, with no retry, key rotation, or cache fallback.
-/// Dropping a generation future cancels its HTTP read. Hosts own retry and cancellation policy.
+/// Calls the supplied client's send once per invocation, without an SDK retry loop,
+/// key rotation, or cache fallback. The client owns HTTP retries and redirects.
+/// Dropping a generation future cancels its HTTP read.
 pub struct OpenAiChatProvider {
     client: reqwest::Client,
     config: OpenAiChatConfig,
