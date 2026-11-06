@@ -1167,8 +1167,32 @@ async fn call_native_tool(
         return Err(format!("Unknown native tool: {}", tool.name));
     }
 
+    if tool.name == "write" {
+        if let Some(path) = arguments.get("path").and_then(Value::as_str).filter(|path| path.starts_with("agent://")) {
+            let ctx = native_ctx.as_ref().ok_or("write agent:// requires an agent context")?;
+            let sender = state.sub_agents.owner_for_run(&ctx.run_id);
+            if ctx.depth > 0 && sender == crate::chat::sub_agent::MAIN_AGENT_ID { return Err("The sending agent is no longer active".into()); }
+            let content = arguments.get("content").and_then(Value::as_str).ok_or("Agent messages require text content")?;
+            let runtime_conversation = state.sub_agents.registry.find_by_run(&ctx.run_id)
+                .filter(|(root, _)| root == &ctx.conversation_id)
+                .and_then(|(root,id)| state.sub_agents.registry.get(&root,&id))
+                .map_or_else(|| ctx.conversation_id.clone(), |record| record.child_conversation_id);
+            if !state.chat_runtime().is_generation_active(&runtime_conversation, ctx.generation) { return Err("cancelled".into()); }
+            let receipt = tokio::select! {
+                biased;
+                _ = state.chat_runtime().wait_for_generation_inactive(&runtime_conversation, ctx.generation) => return Err("cancelled".into()),
+                receipt = crate::chat::sub_agent::irc::send(app, &ctx.conversation_id, &sender, path, content) => receipt?,
+            };
+            return Ok(McpToolCallResult { content: serde_json::to_string(&receipt).map_err(|error| error.to_string())?, structured_content: Some(serde_json::to_value(&receipt).map_err(|error| error.to_string())?), ..Default::default() });
+        }
+    }
     if tool.name == "read" {
         if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+            if path.starts_with("proc://") {
+                let ctx = native_ctx.as_ref().ok_or("read proc:// requires an agent context")?;
+                let content = crate::chat::sub_agent::services::read(app, &ctx.conversation_id, &ctx.run_id, path).await?;
+                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
+            }
             if path.starts_with("agent://") || path.starts_with("history://") {
                 let ctx = native_ctx.as_ref()
                     .ok_or_else(|| "read requires an agent context for internal URLs".to_string())?;
@@ -1369,6 +1393,9 @@ async fn resolve_native_workspace(
     let Some(native_ctx) = native_ctx else {
         return Ok(NativeToolWorkspace::standalone());
     };
+    if let Some(directory) = crate::chat::sub_agent::lifecycle::cwd_for_run(&app.state::<AppState>().sub_agents, &native_ctx.run_id) {
+        return Ok(NativeToolWorkspace::conversation(directory));
+    }
     if let Some(workspace) = crate::automation::workspace_for_conversation(
         working_directory,
         &native_ctx.conversation_id,

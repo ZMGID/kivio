@@ -1,0 +1,14 @@
+.kv-modal.kv-agent-hub { width: min(1040px, calc(100vw - 32px)); max-width: 1040px; max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; }
+.kv-agent-hub-body { display: flex; height: min(700px, calc(100dvh - 145px)); min-height: 0; }
+.kv-agent-hub-roster { display: flex; flex-direction: column; width: 280px; flex-shrink: 0; min-height: 0; border-right: 1px solid var(--color-border); }
+.kv-agent-hub-row { display: block; width: 100%; padding: 10px 8px; text-align: start; border-radius: var(--radius-menu, 6px); }
+.kv-agent-hub-row:hover, .kv-agent-hub-row[aria-current="true"] { background: var(--bg-hover); }
+.kv-agent-hub-row:focus-visible { outline: 2px solid var(--color-ring); outline-offset: -2px; }
+.kv-agent-hub-detail { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.kv-agent-hub-transcript { flex: 1; min-height: 0; overflow: auto; padding: 0 16px; }
+.kv-agent-hub-detail > header, .kv-agent-hub-detail > footer { flex-shrink: 0; }
+@media (max-width: 640px) {
+  .kv-agent-hub-body { flex-direction: column; overflow: auto; }
+  .kv-agent-hub-roster { width: 100%; max-height: 220px; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .kv-agent-hub-detail { min-height: 400px; flex-shrink: 0; }
+}

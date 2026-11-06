@@ -1136,7 +1136,10 @@ async fn compact_send_view_inner(
     let window = context_window_for_model(Some(&config.provider), &config.model).0;
     // The main meter is provider-only. Safety budgeting is deliberately separate:
     // keep a local floor so a stale/under-reported anchor cannot hide context growth.
-    let budget = request_context_budget(window, config.max_output_tokens);
+    let window = if window == 0 { 200_000 } else { window };
+    let hard_limit = window.saturating_sub(config.max_output_tokens as usize);
+    let budget = env.host.compaction_threshold(window)
+        .map_or_else(|| request_context_budget(window, config.max_output_tokens), |threshold| threshold.min(hard_limit));
     // Include the schemas actually sent with each request in the local safety floor.
     // 按「工具名集合哈希」做轮间缓存：每轮为上百个工具重建整份 schema JSON 只为估个
     // token 数太浪费；工具集只在 Skill 激活时变（同名工具的 schema run 内稳定）。
@@ -1162,8 +1165,6 @@ async fn compact_send_view_inner(
     let estimate_full =
         estimate_request_tokens(&state.runtime_messages, &config.provider, &config.model)
             .saturating_add(tool_schema_tokens);
-    let hard_limit = (if window == 0 { 200_000 } else { window })
-        .saturating_sub(config.max_output_tokens as usize);
     let hard_pressure = estimate_full > hard_limit;
     let trigger = if force || hard_pressure {
         "reactive"
@@ -1657,6 +1658,7 @@ mod tests {
 
     fn chat_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            irc_message: None,
             id: id.to_string(),
             role: role.to_string(),
             content: content.to_string(),

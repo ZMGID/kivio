@@ -564,6 +564,7 @@ mod tests {
 
     fn message(id: &str, role: &str, content: &str, usage: Option<ModelUsage>) -> ChatMessage {
         ChatMessage {
+            irc_message: None,
             id: id.to_string(),
             role: role.to_string(),
             content: content.to_string(),

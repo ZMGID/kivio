@@ -757,6 +757,15 @@ pub enum ChatRunEvent {
         task_id: String,
         name: String,
         model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        generation: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        child_run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        progress: Option<Value>,
         depth: u8,
         status: String,
         preview: Option<String>,
@@ -1158,6 +1167,15 @@ pub enum ChatSubagentSnapshot {
         task_id: String,
         name: String,
         model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        generation: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        child_run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        progress: Option<Value>,
         depth: u8,
         status: String,
         preview: Option<String>,
@@ -1789,6 +1807,9 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             task_id,
             name,
             model,
+            generation,
+            child_run_id,
+            progress,
             depth,
             status,
             preview,
@@ -1799,6 +1820,9 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 task_id: task_id.clone(),
                 name: name.clone(),
                 model: model.clone(),
+                generation: *generation,
+                child_run_id: child_run_id.clone(),
+                progress: progress.clone(),
                 depth: *depth,
                 status: status.clone(),
                 preview: preview.clone(),
@@ -2285,7 +2309,7 @@ pub async fn emit_run_event_or_live_durable(
     mut event: ChatRunEvent,
 ) -> Result<(), String> {
     let progress = if let ChatRunEvent::SubagentUpdated {
-        parent_tool_call_id, task_id, name, model, depth, status, preview, steps,
+        parent_tool_call_id, task_id, name, model, generation, child_run_id, progress: detail, depth, status, preview, steps,
     } = &event {
         let state = app.state::<AppState>();
         match state.sub_agents.registry.get(conversation_id, task_id) {
@@ -2301,6 +2325,9 @@ pub async fn emit_run_event_or_live_durable(
                     task_id: task_id.clone(),
                     name: name.clone(),
                     model: model.clone(),
+                    generation: *generation,
+                    run_id: child_run_id.clone(),
+                    progress: detail.clone(),
                     depth: *depth,
                     status: status.clone(),
                     preview: preview.clone(),

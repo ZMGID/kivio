@@ -658,6 +658,16 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::task::dispatch),
     },
     NativeToolEntry {
+        name: "eval",
+        def: crate::chat::sub_agent::eval::definition,
+        enabled: |_, _, _| false,
+        parallel_safe: false,
+        bypasses_approval: false,
+        read_only: false,
+        requires_session_consent: true,
+        call: NativeToolCall::SubAgent(crate::chat::sub_agent::eval::dispatch),
+    },
+    NativeToolEntry {
         name: crate::chat::sub_agent::WAIT_TOOL_NAME,
         def: crate::chat::sub_agent::wait::definition,
         enabled: |_, _, _| false,
@@ -820,6 +830,21 @@ fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         } else {
             serde_json::json!({ "path": raw_path })
         };
+        let summarize = ctx.native_ctx.and_then(|native| {
+            crate::chat::sub_agent::lifecycle::read_summarize_for_run(
+                &ctx.state.sub_agents,
+                &native.run_id,
+            )
+        });
+        if summarize == Some(true) {
+            let workspace = ctx.workspace.clone();
+            let arguments = read_args.clone();
+            if let Ok(Some(summary)) = tokio::task::spawn_blocking(move || {
+                crate::native_tools::read_file_summary(&workspace, &arguments)
+            }).await {
+                return Ok(text_tool_result(summary));
+            }
+        }
         let result = crate::native_tools::read_file(ctx.workspace, &read_args)?;
         super::registry::read_file_tool_result(result)
     })
@@ -1320,11 +1345,12 @@ fn call_memory_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 
 fn call_run_command(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
+        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
         let content = crate::native_tools::run_command(
             ctx.workspace,
             ctx.arguments,
             Some(ctx.state),
-            ctx.native_ctx.map(|c| c.conversation_id.as_str()),
+            owner.as_deref(),
         )
         .await?;
         Ok(text_tool_result(content))
@@ -1340,7 +1366,8 @@ fn call_bash_output(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .and_then(|value| value.as_str())
             .map(|id| !id.trim().is_empty())
             .unwrap_or(false);
-        let conversation_id = ctx.native_ctx.map(|c| c.conversation_id.as_str());
+        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
+        let conversation_id = owner.as_deref();
         let content = if has_job {
             crate::native_tools::bash_output(ctx.state, ctx.arguments, conversation_id).await?
         } else {
@@ -1352,10 +1379,11 @@ fn call_bash_output(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 
 fn call_kill_background(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
+        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
         let content = crate::native_tools::kill_background(
             ctx.state,
             ctx.arguments,
-            ctx.native_ctx.map(|c| c.conversation_id.as_str()),
+            owner.as_deref(),
         )?;
         Ok(text_tool_result(content))
     })
@@ -1818,6 +1846,7 @@ mod tests {
         "schedule_delete",
         "ask_user",
         "task",
+        "eval",
         "wait",
     ];
 

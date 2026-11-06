@@ -122,6 +122,7 @@ impl<'a> ChatReplyGuard<'a> {
         {
             return None;
         }
+        state.sub_agents.irc.begin_turn(conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID);
         Some(Self {
             state,
             conversation_id: conversation_id.to_string(),

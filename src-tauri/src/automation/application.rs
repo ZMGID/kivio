@@ -699,6 +699,7 @@ fn extra_loaded_skill_bodies(
 
 fn workflow_user_message(content: String) -> ChatMessage {
     ChatMessage {
+            irc_message: None,
         id: format!("msg_{}", uuid::Uuid::new_v4()),
         role: "user".to_string(),
         content,

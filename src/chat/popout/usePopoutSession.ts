@@ -54,6 +54,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
   const viewActiveRef = useRef(false)
+  const incomingReadEpoch = useRef(0)
   const [executionOwner] = useState(createChatExecutionOwner)
   const [previewOwner] = useState(createStreamPreviewOwner)
   const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
@@ -68,6 +69,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   }, [])
 
   useEffect(() => {
+    incomingReadEpoch.current += 1
     viewActiveRef.current = true
     previewOwner.attach()
     previewOwner.activate(conversationId)
@@ -88,6 +90,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     }).catch(() => {})
     return () => {
       cancelled = true
+      incomingReadEpoch.current += 1
       viewActiveRef.current = false
       executionOwner.observe({ kind: 'drop', conversationId })
       previewOwner.dispose()
@@ -265,6 +268,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     void chatApi.getConversation(id).then((updated) => {
       if (id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
     }).catch((error) => console.error('Failed to refresh generated title:', error))
+  }, [acceptPersistedConversation])
+
+  useTauriEvent(api.onChatSubagentIrc, (message) => {
+    const id = message.conversationId
+    if (message.observation || id !== conversationIdRef.current) return
+    const epoch = incomingReadEpoch.current
+    void chatApi.getConversation(id).then(updated => {
+      if (epoch === incomingReadEpoch.current && id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
+    }).catch(error => console.error('Failed to refresh incoming agent message:', error))
   }, [acceptPersistedConversation])
 
   const settlementPorts = useMemo<Parameters<typeof executionOwner.finish>[2]>(() => ({

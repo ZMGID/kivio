@@ -5,6 +5,15 @@ import { mergeSubagentProgress } from './streamApply'
 import type { ChatMessage } from './types'
 
 describe('sub-agent result receipts in the parent timeline', () => {
+  it('renders saved agent messages with agent attribution and no user action controls', () => {
+    render(<MessageList conversationId="root" messages={[{ id: 'irc-record', role: 'assistant', content: 'Raw message', timestamp: 1,
+      irc_message: { id: 'irc', conversationId: 'root', fromAgent: 'reviewer', toAgent: 'main', content: 'Peer evidence', replyTo: null, progress: false, broadcast: false, observation: false, timestamp: 1 },
+    }]} />)
+    expect(screen.getByRole('article', { name: '代理消息' })).toHaveTextContent('reviewer → main')
+    expect(screen.getByText('Peer evidence')).toBeVisible()
+    expect(screen.queryByText('Raw message')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /重新生成|复制/ })).not.toBeInTheDocument()
+  })
   it('keeps persisted worker reports out of the timeline while showing the final answer', () => {
     const messages: ChatMessage[] = [
       { id: 'question', role: 'user', content: '调查这个项目', timestamp: 1 },

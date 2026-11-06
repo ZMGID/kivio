@@ -22,6 +22,7 @@ vi.mock('../../api/tauri', () => ({
     onChatStream: listen('stream'),
     onChatTool: listen('tool'),
     onChatSubagent: listen('subagent'),
+    onChatSubagentIrc: listen('irc'),
     onChatToolConfirm: listen('toolConfirm'),
     onChatToolConfirmWithdraw: listen('toolConfirmWithdraw'),
     onChatSessionConsent: listen('sessionConsent'),
@@ -108,6 +109,27 @@ const subagentProgress = (overrides: Partial<ChatSubagentPayload> = {}): ChatSub
 })
 
 describe('usePopoutSession run settle', () => {
+  it('reloads durable agent messages and keeps observations out of persisted conversation state', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    const rendered = renderHook(({ id }) => usePopoutSession(id, 'zh'), { initialProps: { id: CONVERSATION_ID } })
+    await flush()
+    const message = { id: 'irc', conversationId: CONVERSATION_ID, fromAgent: 'worker', toAgent: 'main', content: 'Durable peer evidence', replyTo: null, progress: false, broadcast: false, observation: false, timestamp: 2 }
+    mockGetConversation.mockResolvedValueOnce({ ...userOnly, revision: 2, messages: [...userOnly.messages, { id: 'irc-message', role: 'assistant', content: message.content, timestamp: 2, irc_message: message }] })
+    await act(async () => { handlers.get('irc')?.(message) })
+    await flush()
+    expect(rendered.result.current.conversation?.messages.at(-1)?.irc_message?.content).toBe('Durable peer evidence')
+    const calls = mockGetConversation.mock.calls.length
+    await act(async () => { handlers.get('irc')?.({ ...message, observation: true }); handlers.get('irc')?.({ ...message, conversationId: 'other' }) })
+    expect(mockGetConversation.mock.calls).toHaveLength(calls)
+    let resolveOld: (value: Conversation) => void = () => {}
+    mockGetConversation.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve }))
+    await act(async () => { handlers.get('irc')?.(message) })
+    mockGetConversation.mockResolvedValueOnce({ ...userOnly, id: 'next' })
+    rendered.rerender({ id: 'next' })
+    await flush()
+    await act(async () => { resolveOld({ ...userOnly, revision: 99 }) })
+    expect(rendered.result.current.conversation?.id).toBe('next')
+  })
   it('withdraws only the resolved question while the run continues', async () => {
     const { result } = await setupStreamedAnswer()
     const prompt = (runId: string, toolCallId: string) => ({

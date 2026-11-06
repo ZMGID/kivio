@@ -784,6 +784,7 @@ pub(crate) async fn chat_import_external_conversation(
             }
         }
         conversation.messages.push(ChatMessage {
+            irc_message: None,
             id: format!("msg_{}", Uuid::new_v4()),
             role: role.to_string(),
             content: entry.content,

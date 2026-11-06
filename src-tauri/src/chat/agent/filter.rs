@@ -108,6 +108,8 @@ mod tests {
             description: String::new(),
             system_prompt: String::new(),
             model: None,
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
             tools: tools.map(|items| items.iter().map(|item| (*item).into()).collect()),

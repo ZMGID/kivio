@@ -24,9 +24,10 @@ use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, Settings};
 use crate::state::AppState;
 
-use super::{delivery, prompts, registry, task};
+use super::{delivery, prompts, registry, task, session};
 
 pub(crate) struct Request {
+    pub options: super::spawn::SpawnOptions,
     pub record: registry::AgentRecord,
     pub job_id: String,
     pub index: usize,
@@ -136,6 +137,7 @@ struct Progress {
     budget_wrapping: bool,
     hard_budget: bool,
     status: &'static str,
+    structured_output: Option<Value>,
     dirty: bool,
 }
 
@@ -149,7 +151,10 @@ fn count_assistant_request(progress: &mut Progress, budget: u32) {
     progress.dirty = true;
 }
 
+const PREWALK_HANDOFF: &str = "subagent prewalk handoff";
+
 struct Host {
+    options: super::spawn::SpawnOptions,
     app: AppHandle,
     record: registry::AgentRecord,
     job_id: String,
@@ -164,6 +169,7 @@ struct Host {
     interactive_host: bool,
     completion_probe_enabled: bool,
     runtime_limit_ms: u64,
+    compaction_threshold: Option<crate::settings::TaskCompactionThreshold>,
     parent_run_id: String,
     parent_tool_call_id: String,
     model: Mutex<String>,
@@ -175,6 +181,32 @@ struct Host {
     journal: tokio::sync::Mutex<Journal>,
     workflow_hooks: OnceLock<crate::chat::workflow_hooks::Runtime>,
     progress: Mutex<Progress>,
+    slot: Arc<session::Slot>,
+    yields: Mutex<super::structured::YieldAssembly>,
+    yielded_error: Mutex<Option<String>>,
+    empty_yields: Mutex<u8>,
+    accept_irc: bool,
+    shared_tools: Mutex<Vec<super::eval::SharedTool>>,
+    policies: OnceLock<Arc<tokio::sync::Mutex<super::policies::SessionPolicies>>>,
+    todo_available: OnceLock<bool>,
+    runtime_generation: OnceLock<u64>,
+    advisor_run: OnceLock<std::sync::Weak<tokio::sync::Mutex<super::policies::AdvisorScheduler>>>,
+    self_ref: OnceLock<std::sync::Weak<Host>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedWorker {
+    provider: ModelProvider,
+    model: String,
+    thinking_enabled: bool,
+    thinking_level: Option<String>,
+    tools: Vec<ChatToolDefinition>,
+    prompt: crate::chat::agent::prepare::PreparedChatPrompt,
+    skills: Arc<crate::skills::SkillRegistry>,
+    hooks: crate::chat::workflow_hooks::Runtime,
+    cwd: std::path::PathBuf,
+    isolation: Option<Arc<Mutex<super::isolation::IsolationLease>>>,
+    shared_tools: Vec<super::eval::SharedTool>,
 }
 
 #[derive(Default)]
@@ -184,6 +216,17 @@ struct Journal {
 }
 
 impl Host {
+    fn completed_stream(&self, content: String) -> ChatStreamOutput {
+        let mut output = ChatStreamOutput::new(content.clone(), String::new(), false);
+        output.finish_reason = Some("stop".into());
+        let mut progress = self.lock();
+        progress.last_finish_reason = Some("stop".into());
+        progress.last_assistant = content;
+        output
+    }
+    fn owns_turn(&self) -> bool {
+        self.record.run_id.as_deref().is_some_and(|run| self.slot.owns(self.record.generation, run))
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, Progress> {
         self.progress.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -290,14 +333,16 @@ impl Host {
             "contextTokens": p.context_tokens, "contextWindow": p.context_window,
             "cost": p.cost, "durationMs": self.started.elapsed().as_millis() as u64,
             "completionPercent": p.completion_percent, "stage": p.stage, "watch": p.watch,
+            "structuredOutput": p.structured_output,
         }))
     }
 
     fn progress_event(&self, force: bool) -> Option<crate::chat::protocol::ChatRunEvent> {
+        if !self.owns_turn() { return None; }
         let progress = self.snapshot(force)?;
         let state = self.app.state::<AppState>();
         state.sub_agents.jobs.report_progress(&self.job_id, progress.clone());
-        state.sub_agents.registry.update(&self.record.root, &self.record.id, |record| {
+        state.sub_agents.registry.update_checked(&self.record.root, &self.record.id, self.record.generation, self.record.run_id.as_deref(), |record| {
             if record.generation == self.record.generation {
                 record.last_activity = registry::now_ms();
                 record.activity = if progress["status"] == "running" {
@@ -315,6 +360,7 @@ impl Host {
         }).collect()).unwrap_or_default();
         Some(crate::chat::protocol::ChatRunEvent::SubagentUpdated {
             parent_tool_call_id: self.parent_tool_call_id.clone(), task_id: self.record.id.clone(),
+            generation: Some(self.record.generation), child_run_id: self.record.run_id.clone(), progress: Some(progress.clone()),
             name: self.record.display_name.clone(), model: Some(self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()),
             depth: self.record.depth, status: progress["status"].as_str().unwrap_or("running").to_string(),
             preview: Some(output), steps,
@@ -329,6 +375,7 @@ impl Host {
 
     async fn emit_terminal_progress(&self) {
         if let Some(event) = self.progress_event(true) {
+            if self.parent_tool_call_id.is_empty() { return; }
             if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
                 &self.app, &self.record.root, &self.parent_run_id, event,
             ).await {
@@ -338,6 +385,7 @@ impl Host {
     }
 
     async fn append_journal(&self, entries: &[Value]) -> Result<(), String> {
+        if !self.owns_turn() { return Err("cancelled".into()); }
         let mut data = Vec::new();
         for entry in entries {
             serde_json::to_writer(&mut data, entry).map_err(|error| error.to_string())?;
@@ -372,10 +420,91 @@ impl Host {
         Ok(())
     }
 
+    async fn checkpoint_policies(&self, history: &[Value], finishing: bool) -> Result<Vec<Value>, String> {
+        let Some(policies) = self.policies.get() else { return Ok(Vec::new()); };
+        let mut retained = policies.lock().await;
+        let before = serde_json::to_value(&*retained).map_err(|error| error.to_string())?;
+        let mut next = retained.clone();
+        let records = self.lock().records.clone();
+        let update = next.observe_tools(&records, self.todo_available.get().copied().unwrap_or(false));
+        let mut messages = Vec::new();
+        if let Some(nudge) = update.nudge {
+            messages.push(json!({"role":"user","content":nudge,"_subagent_prewalk":true}));
+        }
+        if update.handoff.is_none() && history.iter().any(|message| message["role"] == "assistant") {
+            if let Some(advisor) = &mut next.advisor {
+                let scheduler = self.advisor_run.get().and_then(std::sync::Weak::upgrade)
+                    .ok_or("Paired advisor run is unavailable")?;
+                let mut scheduler = scheduler.lock().await;
+                let app = self.app.clone();
+                let weak_host = self.self_ref.get().cloned().ok_or("Paired advisor host is unavailable")?;
+                let conversation = self.record.child_conversation_id.clone();
+                let message = format!("advisor-{}", self.job_id);
+                let generation = *self.runtime_generation.get().ok_or("Subagent policy generation is unavailable")?;
+                let cancel = self.cancel.clone();
+                let deadline = self.deadline.clone();
+                let reviews = scheduler.checkpoint(advisor, history, finishing,
+                    self.wait_for_generation_inactive(&self.record.child_conversation_id, generation), Duration::from_secs(30),
+                    move |mut advisor, history| {
+                        let app = app.clone();
+                        let weak_host = weak_host.clone();
+                        let conversation = conversation.clone();
+                        let message = message.clone();
+                        let mut cancel = cancel.clone();
+                        let mut deadline = deadline.clone();
+                        async move {
+                            let state = app.state::<AppState>();
+                            let settings = state.settings_read().clone();
+                            let stopped = async {
+                                if *cancel.borrow() || *deadline.borrow() { return; }
+                                tokio::select! {
+                                    _ = cancel.changed() => {},
+                                    _ = deadline.changed() => {},
+                                    _ = state.chat_runtime().wait_for_generation_inactive(&conversation, generation) => {},
+                                }
+                            };
+                            let review = advisor.review(&*state, &settings, &history, &conversation, &message,
+                                Box::pin(stopped), Duration::from_secs(30)).await?;
+                            if let Some(review) = &review {
+                                if let Some(host) = weak_host.upgrade() {
+                                    let provider = review.model.provider(&settings).ok_or("Paired advisor provider or model is unavailable.")?;
+                                    host.note_usage(provider, &review.model.model, review.usage.as_ref(), false);
+                                }
+                            }
+                            Ok((advisor, review))
+                        }
+                    }).await?;
+                for review in reviews {
+                    if review.requires_action {
+                        messages.push(json!({"role":"user","content":format!("Paired advisor review:\n{}", review.text),"_subagent_advisor":true}));
+                    }
+                }
+            }
+        }
+        let changed = serde_json::to_value(&next).map_err(|error| error.to_string())? != before;
+        if changed || !messages.is_empty() {
+            let mut journal = self.journal.lock().await;
+            if journal.failed { return Err("Subagent transcript append previously failed".into()); }
+            if let Err(error) = self.append_journal(&[json!({"type":"policy_state","policies":next,"messages":messages})]).await {
+                journal.failed = true;
+                return Err(error);
+            }
+            journal.history.extend(messages.iter().cloned());
+            *retained = next;
+            let mut saved = history.to_vec();
+            saved.extend(messages.iter().cloned());
+            self.lock().history = saved;
+        }
+        if update.handoff.is_some() { return Err(PREWALK_HANDOFF.into()); }
+        Ok(messages)
+    }
+
     async fn wait_children(&self, conversation: &str, generation: u64) -> Result<bool, String> {
         let state = self.app.state::<AppState>();
         let jobs = &state.sub_agents.jobs;
         let mut changed = jobs.subscribe();
+        let irc = super::irc::wait_for_interrupting(&state.sub_agents, &self.record.root, &self.record.id);
+        tokio::pin!(irc);
         let running = !jobs.running(&self.record.root, &self.record.id).is_empty();
         if !running {
             return Ok(!jobs.undelivered(&self.record.root, &self.record.id).is_empty());
@@ -387,6 +516,7 @@ impl Host {
             if jobs.running(&self.record.root, &self.record.id).is_empty() { break; }
             tokio::select! {
                 result = changed.changed() => if result.is_err() { break; },
+                _ = &mut irc => return Ok(true),
                 result = cancel.changed() => if result.is_err() || *cancel.borrow() { return Err("cancelled".into()); },
                 _ = deadline.changed() => return Err("cancelled".into()),
                 _ = state.chat_runtime().wait_for_generation_inactive(conversation, generation) => return Err("cancelled".into()),
@@ -396,7 +526,7 @@ impl Host {
     }
 }
 
-fn history_delta(previous: &[Value], current: &[Value]) -> (bool, usize) {
+pub(super) fn history_delta(previous: &[Value], current: &[Value]) -> (bool, usize) {
     if current.starts_with(previous) { return (false, previous.len()); }
     let mut best = (0, 0);
     for end in 1..=current.len() {
@@ -413,21 +543,21 @@ fn journal_entries(previous: &[Value], history: &[Value], records: &[ToolCallRec
     annotate_tool_results(&mut annotated, records);
     let mut entries = Vec::new();
     if replaced {
-        entries.push(json!({"type": "compaction", "messages": history}));
+        entries.push(json!({"type": "compaction", "messages": annotated, "appendStart": start}));
     }
     entries.extend_from_slice(&annotated[start..]);
     entries
 }
 
 fn annotate_tool_results(history: &mut [Value], records: &[ToolCallRecord]) {
-    let mut statuses: HashMap<&str, Vec<bool>> = HashMap::new();
+    let mut statuses: HashMap<&str, Vec<(bool, &ToolCallRecord)>> = HashMap::new();
     for record in records {
         let failed = match record.status {
             ToolCallStatus::Success => false,
             ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped => true,
             ToolCallStatus::Pending | ToolCallStatus::Running => continue,
         };
-        statuses.entry(&record.id).or_default().push(failed);
+        statuses.entry(&record.id).or_default().push((failed, record));
     }
     let mut counts: HashMap<String, usize> = HashMap::new();
     for message in history.iter().filter(|message| message["role"] == "tool") {
@@ -435,18 +565,24 @@ fn annotate_tool_results(history: &mut [Value], records: &[ToolCallRecord]) {
             *counts.entry(id.to_string()).or_default() += 1;
         }
     }
-    let mut offsets: HashMap<String, usize> = counts.into_iter().map(|(id, count)| {
-        let offset = statuses.get(id.as_str()).map_or(0, |items| items.len().saturating_sub(count));
-        (id, offset)
+    let mut offsets: HashMap<String, (usize, usize)> = counts.into_iter().map(|(id, count)| {
+        let records = statuses.get(id.as_str()).map_or(0, Vec::len);
+        (id, (records.saturating_sub(count), count.saturating_sub(records)))
     }).collect();
     for message in history.iter_mut().filter(|message| message["role"] == "tool") {
         let failure = message["tool_call_id"].as_str().and_then(|id| {
-            let offset = offsets.get_mut(id)?;
+            let (offset, skip) = offsets.get_mut(id)?;
+            if *skip > 0 { *skip -= 1; return None; }
             let status = statuses.get(id)?.get(*offset).copied();
             *offset += 1;
             status
         });
-        if let Some(failure) = failure { message["is_error"] = json!(failure); }
+        if let Some((failure, record)) = failure {
+            message["is_error"] = json!(failure);
+            if let Some(saved) = session::policy_tool_record(record) {
+                message["_subagent_policy_tool"] = saved;
+            }
+        }
     }
 }
 
@@ -463,16 +599,25 @@ fn tool_intent(record: &ToolCallRecord) -> Option<String> {
 }
 
 impl AgentHost for Host {
+    fn compaction_threshold(&self, context_window: usize) -> Option<usize> {
+        self.compaction_threshold.as_ref()?.tokens(context_window)
+    }
     fn requires_tool_completion(&self) -> bool { true }
     fn speculative_task_app(&self) -> Option<AppHandle> { Some(self.app.clone()) }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> { self.workflow_hooks.get() }
 
-    fn checkpoint_runtime<'a>(&'a self, _conversation: &'a str, _run: &'a str, history: &'a [Value], _finishing: bool) -> AgentHostFuture<'a, Result<Vec<Value>, String>> {
+    fn checkpoint_runtime<'a>(&'a self, _conversation: &'a str, _run: &'a str, history: &'a [Value], finishing: bool) -> AgentHostFuture<'a, Result<Vec<Value>, String>> {
         Box::pin(async move {
             self.lock().history = history.to_vec();
             self.save_history(history).await?;
             let state = self.app.state::<AppState>();
             let (mut claim, mut incoming) = delivery::claim_inputs(&state.sub_agents.jobs, &self.record.root, &self.record.id);
+            let mut irc = state.sub_agents.irc.claim(&self.record.root, &self.record.id, |message| {
+                self.accept_irc && (!finishing || (!message.broadcast && (message.from == "@user" || message.from == self.record.parent_id
+                    || state.sub_agents.registry.is_ancestor(&self.record.root, &self.record.id, &message.from))))
+            });
+            let parent_steer = irc.messages().iter().any(|message| !message.broadcast && message.from == self.record.parent_id);
+            incoming.extend(irc.messages().iter().map(|message| message.worker_input(&self.record.parent_id)));
             for message in &mut incoming {
                 if let Some(object) = message.as_object_mut() { object.remove("subagent_parent_persisted"); }
             }
@@ -483,6 +628,14 @@ impl AgentHost for Host {
                 self.lock().history = saved;
             }
             claim.commit();
+            irc.commit();
+            if parent_steer && self.accept_irc && self.record.published {
+                state.sub_agents.jobs.promote_inline(&self.record.root, &self.job_id);
+            }
+            let mut current = history.to_vec();
+            current.extend(incoming.iter().cloned());
+            incoming.extend(self.checkpoint_policies(&current, finishing).await?);
+            if !incoming.is_empty() { self.yields.lock().unwrap_or_else(|error| error.into_inner()).require_updated_submission(); }
             Ok(incoming)
         })
     }
@@ -541,7 +694,7 @@ impl AgentHost for Host {
     }
     fn is_generation_active(&self, conversation: &str, generation: u64) -> bool {
         let p = self.lock();
-        !self.stopped() && !p.hard_budget && !p.budget_stop
+        self.owns_turn() && !self.stopped() && !p.hard_budget && !p.budget_stop
             && self.app.state::<AppState>().chat_runtime().is_generation_active(conversation, generation)
     }
     fn wait_for_generation_inactive<'a>(&'a self, conversation: &'a str, generation: u64) -> AgentHostFuture<'a, ()> {
@@ -577,6 +730,39 @@ impl ToolExecutor for Executor {
     fn call<'a>(&'a self, ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition, args: Value, skill_context: Option<&'a mut crate::skills::SkillRunContext>) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             if self.host.forced() { return Err("Request budget crossed; tools are disabled for the final report".into()); }
+            if tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name) {
+                return Ok(crate::chat::todo::tool_result(&crate::chat::todo::apply_todo_write(args)?));
+            }
+            if tool.source == "eval" {
+                let shared = self.host.shared_tools.lock().unwrap_or_else(|error| error.into_inner()).iter().find(|shared| shared.definition.id == tool.id).cloned()
+                    .ok_or("The eval tool is outside this session's saved grant")?;
+                return super::eval::invoke(&shared, args).await;
+            }
+            if tool.id == "native__yield" {
+                if !self.host.options.workpool_items.is_empty() {
+                    let (key, data) = workpool_yield(&args, self.host.options.workpool_items.len())?;
+                    let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner())
+                        .submit_workpool(key, data, &self.host.options.workpool_items, &self.host.options.completion)?;
+                    return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "All workpool items are complete; ending this turn." } else { "Workpool item submitted." }.into(), ..Default::default() });
+                }
+                if let Some(error) = empty_yield(&args, &mut self.host.empty_yields.lock().unwrap_or_else(|error| error.into_inner()))? {
+                    *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
+                    return Ok(crate::mcp::types::McpToolCallResult { content: error, ..Default::default() });
+                }
+                if let Some(error) = yield_error(&args)? {
+                    *self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()) = Some(error.clone());
+                    let structured = json!({"data": null, "schemaOverridden": false, "error": error});
+                    self.host.app.state::<AppState>().sub_agents.jobs.set_structured_output(&self.host.job_id, structured.clone());
+                    self.host.lock().structured_output = Some(structured);
+                    return Ok(crate::mcp::types::McpToolCallResult { content: "Failure accepted.".into(), ..Default::default() });
+                }
+                let mut arguments = args;
+                if let Some(arguments) = arguments.as_object_mut() { arguments.remove("error"); }
+                let input = serde_json::from_value(arguments).map_err(|error| format!("Invalid yield arguments: {error}"))?;
+                let text = self.host.lock().last_assistant.clone();
+                let terminal = self.host.yields.lock().unwrap_or_else(|error| error.into_inner()).submit(input, &self.host.options.completion, &text)?;
+                return Ok(crate::mcp::types::McpToolCallResult { content: if terminal { "Result accepted." } else { "Incremental result recorded." }.into(), ..Default::default() });
+            }
             let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
             crate::mcp::registry::call_tool(&self.app, &self.app.state::<AppState>(), tool, args, skill_context, Some(native_ctx)).await
         })
@@ -598,6 +784,15 @@ impl Drop for ActiveStream<'_> {
 impl ProviderRuntime for Metered<'_> {
     fn stream<'a>(&'a self, mut request: StreamRequest<'a>) -> ProviderFuture<'a, Result<ChatStreamOutput, ModelError>> {
         Box::pin(async move {
+            let yielded_error = self.host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()).clone();
+            if let Some(error) = yielded_error { return Ok(self.host.completed_stream(error)); }
+            if self.host.yields.lock().unwrap_or_else(|error| error.into_inner()).has_current_terminal() {
+                let text = self.host.lock().last_assistant.clone();
+                let result = self.host.yields.lock().unwrap_or_else(|error| error.into_inner()).finish(&self.host.options.completion, &text)
+                    .map_err(|error| ModelError::with_kind(error, ModelErrorKind::Other))?;
+                let content = serde_json::to_string(&result.data).map_err(|error| ModelError::with_kind(error.to_string(), ModelErrorKind::Other))?;
+                return Ok(self.host.completed_stream(content));
+            }
             let forced = self.host.forced();
             if !self.host.begin_request() { return Err(ModelError::with_kind("Subagent request budget exhausted", ModelErrorKind::Cancelled)); }
             if forced {
@@ -893,14 +1088,14 @@ fn result_summary(id: &str, agent: &str, status: &str, output: &str, error: Opti
         "truncated": truncated, "meta": {"lineCount": lines, "charSize": size_text(count)},
         "preview": delivery::escape_harness_tags(if truncated { preview } else { shown_output }),
         "abortReason": if aborted { error.map(delivery::escape_harness_tags) } else { None },
-        "resumable": false, "error": shown_error.map(delivery::escape_harness_tags), "mergeSummary": "",
+        "resumable": true, "error": shown_error.map(delivery::escape_harness_tags), "mergeSummary": "",
     }));
     let mut summary = render_summary(output_available && has_output && count > INLINE_CHARS);
     if output_available && has_output && count <= INLINE_CHARS && count > PREVIEW_CHARS && utf16_len(&summary) > 12_000 {
         summary = render_summary(true);
     }
     let follow_up = prompts::render(prompts::TASK_FOLLOW_UP, &json!({
-        "agentId": id, "aborted": aborted, "resumable": false, "ircEnabled": false, "transcriptAvailable": transcript_available,
+        "agentId": id, "aborted": aborted, "resumable": true, "ircEnabled": true, "transcriptAvailable": transcript_available,
     }));
     format!("{}\n\n{}", summary.trim(), follow_up.trim())
 }
@@ -1123,6 +1318,77 @@ fn retain_mcp_grants(tools: &mut Vec<ChatToolDefinition>, grants: &[(String, Str
     }));
 }
 
+fn clamp_tools(tools: &mut Vec<ChatToolDefinition>, saved: &session::SessionContract) {
+    tools.retain(|tool| (saved.tools.contains(&tool.id) || (tool.id == "native__yield" && matches!(saved.options.completion, super::spawn::CompletionPolicy::Yield { .. }))) && (!saved.read_only || tool.is_read_only_tool()));
+    retain_mcp_grants(tools, &saved.mcp_tool_ids, &saved.mcp_server_ids);
+}
+
+fn append_yield(tools: &mut Vec<ChatToolDefinition>, options: &super::spawn::SpawnOptions) {
+    if !matches!(options.completion, super::spawn::CompletionPolicy::Yield { .. }) { return; }
+    let pool = !options.workpool_items.is_empty();
+    let input_schema = if pool {
+        json!({"type":"object","properties":{"key":{"enum":(1..=options.workpool_items.len()).collect::<Vec<_>>()},"data":{},"error":{"type":["string","null"]}},"required":["key"],"additionalProperties":false})
+    } else {
+        json!({"type":"object","properties":{"type":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}]},"data":{},"error":{"type":["string","null"]},"useLastTurn":{"type":"boolean"}},"additionalProperties":false})
+    };
+    tools.push(ChatToolDefinition {
+        id: "native__yield".into(), name: "yield".into(), source: "native".into(), server_id: None, server_name: Some("Kivio".into()),
+        description: (if pool { "Submit exactly one outcome per batch-local numeric key, using either data or error. Duplicate keys are rejected. The last item ends this turn automatically." } else { "Submit an incremental or final structured task result. Omit type for a final result. Use type labels for incremental sections. A final result must include all new child results, messages and advice received since the previous submission." }).into(),
+        input_schema,
+        sensitive: false, annotations: Some(json!({"readOnlyHint":true})), output_schema: None,
+    });
+}
+
+fn yield_error(arguments: &Value) -> Result<Option<String>, String> {
+    match arguments.get("error").filter(|error| !error.is_null()) {
+        Some(Value::String(error)) => {
+            let error = error.trim();
+            let has_data = !arguments["data"].is_null();
+            if error.is_empty() || (has_data && matches!(error.to_ascii_lowercase().as_str(),
+                "ignore" | "ignored" | "n/a" | "none" | "not applicable" | "null" | "placeholder" | "undefined" | "unused")) { return Ok(None); }
+            if has_data { return Err("Yield requires either data or error, not both".into()); }
+            Ok(Some(error.to_string()))
+        },
+        Some(_) => Err("Yield error must be a string".into()),
+        None => Ok(None),
+    }
+}
+
+fn workpool_yield(arguments: &Value, count: usize) -> Result<(usize, Value), String> {
+    let object = arguments.as_object().ok_or("Workpool yield requires an object")?;
+    if object.keys().any(|key| !matches!(key.as_str(), "key" | "data" | "error")) { return Err("Workpool yield accepts only key, data and error".into()); }
+    let key = arguments["key"].as_f64().filter(|key| key.is_finite() && key.fract() == 0.0 && *key >= 1.0 && *key <= count as f64)
+        .ok_or("Workpool key must identify a batch-local item number")? as usize;
+    let error = yield_error(arguments)?;
+    match (!arguments["data"].is_null(), error) {
+        (true, None) => Ok((key, arguments["data"].clone())),
+        (false, Some(error)) => Ok((key, json!({"error":error}))),
+        _ => Err("Workpool yield requires exactly one of data or error".into()),
+    }
+}
+
+fn empty_yield(arguments: &Value, failures: &mut u8) -> Result<Option<String>, String> {
+    let error = yield_error(arguments)?;
+    if arguments["data"].is_null() && error.is_none() && arguments["type"].is_null() && arguments["useLastTurn"] != true {
+        *failures = failures.saturating_add(1);
+        if *failures > 3 { *failures = 0; return Ok(Some("Yield result stayed empty after four consecutive attempts; child aborted.".into())); }
+        return Err(format!("Yield requires data or error. Empty result retries remaining before abort: {}", 3 - *failures));
+    }
+    *failures = 0;
+    Ok(None)
+}
+
+fn clamp_spawns(saved: &str, current: Option<&str>) -> String {
+    let current = current.unwrap_or("*");
+    if saved == "*" { return current.to_string(); }
+    saved.split(',').map(str::trim).filter(|name| !name.is_empty() && (current == "*" || current.split(',').any(|allowed| allowed.trim().eq_ignore_ascii_case(name)))).collect::<Vec<_>>().join(",")
+}
+
+fn current_approval_policy(saved: &str, current: &str) -> String {
+    if saved == "always_confirm" || current == "always_confirm" { "always_confirm".into() }
+    else if saved != "auto" { saved.into() } else { current.into() }
+}
+
 fn attribute_model_error(error: &str, provider: &str, model: &str) -> String {
     let text = if error.trim().is_empty() { "Subagent failed" } else { error };
     if !provider.is_empty() && text.to_lowercase().contains(&provider.to_lowercase()) { return text.to_string(); }
@@ -1140,16 +1406,25 @@ fn validate_final_stop(reason: Option<&str>) -> Result<(), String> {
     else { Err(format!("Subagent did not finish normally ({})", reason.unwrap_or("missing stop reason"))) }
 }
 
-async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition, context: &str, parent_provider: &str, parent_model: &str, generation: u64) -> Result<String, String> {
+async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition, context: &str, parent_provider: &str, parent_model: &str, generation: u64, worker: &mut session::WorkerSession) -> Result<PreparedWorker, String> {
     if host.stopped() { return Err("cancelled".into()); }
     let state = app.state::<AppState>();
     let state: &AppState = &state;
     let mut settings = state.settings_read().clone();
     settings.chat_tools.approval_policy = host.approval_policy.clone();
-    let definition = worker_definition(definition, &host.plan_state);
-    let (provider, model, role_thinking) = resolve_model(&settings, parent_provider, parent_model, definition.model.as_deref())?;
-    let requested_thinking = definition.thinking_level.as_deref().or(role_thinking.as_deref());
-    let (thinking_enabled, thinking_level) = if requested_thinking == Some("auto") {
+    let mut definition = worker_definition(definition, &host.plan_state);
+    if let Some(saved) = &worker.contract { definition.spawns = Some(clamp_spawns(&saved.spawns, definition.spawns.as_deref())); }
+    let resolved = super::spawn::resolve_model(&settings, &host.options.model, parent_provider, parent_model)?;
+    let (provider, model, role_thinking) = (resolved.provider, resolved.model, resolved.thinking_level);
+    if let Some(saved) = &worker.contract {
+        if saved.resolved_model.provider != provider.id || saved.resolved_model.model != model {
+            return Err("Saved exact subagent model is no longer authorized".into());
+        }
+    }
+    let requested_thinking = role_thinking.as_deref().or(definition.thinking_level.as_deref());
+    let (thinking_enabled, thinking_level) = if let Some(saved) = &worker.contract {
+        (saved.thinking_enabled, saved.resolved_thinking_level.clone())
+    } else if requested_thinking == Some("auto") {
         auto_thinking(state, host, &settings, &provider, &model, parent_provider, parent_model).await
     } else if requested_thinking == Some("inherit") {
         (true, None)
@@ -1163,19 +1438,56 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
             requested_thinking, settings.chat.thinking_enabled, Some(&provider), &model,
         )?
     };
+    let thinking_level = match thinking_level.as_deref() {
+        Some(level) => super::spawn::cap_thinking(&provider, &model, level, settings.chat_tools.task_max_effort.as_deref())?,
+        None => None,
+    };
+    let source = super::policies::PolicyModel { provider_id: provider.id.clone(), model: model.clone(), thinking_level: thinking_level.clone() };
+    if worker.contract.is_none() {
+        *worker.policies.lock().await = super::policies::SessionPolicies::resolve(&settings, &definition, &source, host.options.model.selector.is_some());
+    }
+    let policies = worker.policies.lock().await.clone();
+    let _ = host.policies.set(worker.policies.clone());
+    let _ = host.runtime_generation.set(generation);
+    {
+        let mut control = host.slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        control.read_summarize = policies.read_summarize;
+        control.completion_schema = match &host.options.completion {
+            super::spawn::CompletionPolicy::Yield { schema, .. } => schema.clone(),
+            _ => None,
+        };
+    }
+    let (provider, model, thinking_enabled, thinking_level) = if let Some(target) = policies.handoff_model() {
+        let provider = target.provider(&settings).ok_or("Saved prewalk target is no longer authorized")?.clone();
+        let level = target.thinking_level.as_deref().or(thinking_level.as_deref());
+        let level = level.map(|level| super::spawn::cap_thinking(&provider, &target.model, level, settings.chat_tools.task_max_effort.as_deref())).transpose()?.flatten();
+        let enabled = level.as_deref().map_or(thinking_enabled, |level| level != "off");
+        (provider, target.model.clone(), enabled, level)
+    } else { (provider, model, thinking_enabled, thinking_level) };
     if host.stopped() { return Err("cancelled".into()); }
     *host.model.lock().unwrap_or_else(|e| e.into_inner()) = model.clone();
     host.lock().context_window = crate::chat::model_metadata::context_window_for_model(Some(&provider), &model).0;
-    let cwd = crate::chat::storage::load_conversation(app, &host.record.root).ok().and_then(|conversation| {
-        crate::chat::storage::resolve_conversation_working_directory(app, &conversation, &settings.chat_tools.native_tools.working_directory).ok()
-    });
+    let conversation = crate::chat::storage::load_conversation(app, &host.record.root)?;
+    let current_cwd = super::lifecycle::cwd_for_run(&state.sub_agents, &host.parent_run_id).map(Ok).unwrap_or_else(||
+        crate::chat::storage::resolve_conversation_working_directory(app, &conversation, &settings.chat_tools.native_tools.working_directory))?;
+    let isolation = if let super::spawn::WorkspacePolicy::Isolated { .. } = host.options.workspace {
+        if worker.contract.is_some() { return Err("An isolated worker cannot be cold-revived after its lease ended".into()); }
+        let parent = current_cwd.clone();
+        let artifacts = registry::artifacts_dir(app, &host.record.root)?;
+        Some(Arc::new(Mutex::new(host.until_inactive(generation, tauri::async_runtime::spawn_blocking(move || super::isolation::IsolationLease::prepare(&parent, &artifacts))).await?.map_err(|error| error.to_string())??)))
+    } else { None };
+    let cwd = Some(isolation.as_ref().map(|lease| lease.lock().unwrap_or_else(|error| error.into_inner()).cwd().to_path_buf())
+        .unwrap_or_else(|| worker.contract.as_ref().map_or(current_cwd.clone(), |saved| saved.cwd.clone())));
+    if !cwd.as_ref().is_some_and(|cwd| cwd.is_dir()) { return Err("Saved subagent working directory is unavailable".into()); }
+    if worker.contract.as_ref().is_some_and(|saved| saved.cwd != current_cwd) { return Err("Saved subagent directory is no longer authorized by its owner".into()); }
     let resources = host.until_inactive(generation, state.chat_runtime().resource_catalog(
         app, &host.record.root, &settings.chat_tools.skill_scan_paths, cwd.as_deref(), false,
     )).await??;
-    let _ = host.workflow_hooks.set(crate::plugins::packages::hook_runtime(
+    let seance = super::seance::is_bundled(&definition);
+    let _ = host.workflow_hooks.set(if seance { Default::default() } else { crate::plugins::packages::hook_runtime(
         &resources.hooks, cwd.clone().unwrap_or_else(std::env::temp_dir),
         definition.name.clone(), Some(host.task.clone()),
-    ));
+    ) });
     let catalog = resources.skills.clone();
     let selected = definition.skills.clone();
     let loaded = host.until_inactive(generation, tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected)))
@@ -1196,14 +1508,25 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         *tool = task::tool_definition_with_policy(&resources.agents, &settings, definition.spawns.as_deref());
     }
     crate::chat::agent::filter::filter_tools_for_agent(&mut tools, &definition, host.record.depth, settings.chat_tools.task_max_recursion_depth);
+    if seance { tools.retain(|tool| tool.source != "mcp" && tool.is_read_only_tool() && tool.name != super::TASK_TOOL_NAME); }
     if host.plan_state.mode == crate::chat::types::AgentPlanMode::Plan {
         constrain_plan_tools(&mut tools, &definition);
     }
+    if policies.prewalk.target.is_some() { crate::chat::todo::append_tool_definitions(&mut tools); }
+    append_yield(&mut tools, &host.options);
+    let shared_tools = state.sub_agents.eval.shared(&host.record.root, &host.record.parent_id, &host.options.tools).await?;
+    if let Some(saved) = &worker.contract {
+        if serde_json::to_value(shared_tools.iter().map(super::eval::SharedTool::saved).collect::<Vec<_>>()).ok()
+            != serde_json::to_value(&saved.eval_tools).ok() { return Err("Saved eval tools are no longer available from their original kernel".into()); }
+    }
+    tools.extend(shared_tools.iter().map(|shared| shared.definition.clone()));
+    if let Some(saved) = &worker.contract { clamp_tools(&mut tools, saved); }
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
     let effective = settings.chat_tools.clone();
     let language = settings.settings_language.clone().unwrap_or_else(|| "zh".into());
     let workdir = cwd.as_ref().map(|path| path.to_string_lossy().into_owned());
-    let prompt = prepare_worker_prompt(&language, thinking_enabled, &resources.skills, &effective, &tools, &persona, workdir.as_deref());
+    let mut prompt = prepare_worker_prompt(&language, thinking_enabled, &resources.skills, &effective, &tools, &persona, workdir.as_deref());
+    if let Some(saved) = &worker.contract { prompt.system = saved.system_prompt.clone(); prompt.context = saved.runtime_context.clone(); }
     let assignment = prompts::render(prompts::SUBAGENT_USER, &json!({"assignment": host.task.trim()}));
     let hooks: Vec<Value> = resources.hooks.iter().map(|hook| json!({
         "owner": hook.owner, "event": hook.event, "matcher": hook.matcher.as_ref().map(|value| value.as_str()),
@@ -1216,7 +1539,7 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         "sessionFile": host.record.session_file, "outputFile": host.record.output_file,
         "cwd": workdir, "systemPrompt": prompt.system, "runtimeContext": prompt.context,
         "task": host.task, "solutionSpace": host.solution_space, "context": context,
-        "agent": definition.name, "agentDefinition": definition, "spawns": definition.spawns,
+        "agent": definition.name, "agentDefinition": definition, "spawns": definition.spawns.as_deref().unwrap_or("*"),
     });
     let Value::Object(contract) = json!({
         "tools": tools.iter().map(|tool| &tool.id).collect::<Vec<_>>(),
@@ -1229,17 +1552,97 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         "softRequestBudget": host.budget, "maxRuntimeMs": host.runtime_limit_ms,
         "completionProbe": host.interactive_host && host.record.depth == 1 && host.completion_probe_enabled,
         "skills": definition.skills, "planState": host.plan_state, "hooks": hooks,
+        "options": host.options,
+        "policies": policies,
+        "evalTools": shared_tools.iter().map(super::eval::SharedTool::saved).collect::<Vec<_>>(),
     }) else { unreachable!("session contract is an object") };
     session_init.as_object_mut().expect("session init is an object").extend(contract);
-    host.save_session_init(session_init).await?;
-    let initial = vec![json!({"role": "system", "content": prompt.system}), json!({"role": "user", "content": assignment})];
-    host.save_history(&initial).await?;
+    if worker.contract.is_none() {
+        let contract = serde_json::from_value(session_init.clone()).map_err(|error| format!("Invalid prepared subagent contract: {error}"))?;
+        host.save_session_init(session_init).await?;
+        worker.contract = Some(contract);
+        worker.history = vec![json!({"role": "system", "content": prompt.system})];
+        if seance {
+            let source = host.options.source_session.clone().ok_or("Historical consultation requires a source session")?;
+            let destination = host.record.session_file.with_extension("evidence");
+            let history = host.until_inactive(generation, tauri::async_runtime::spawn_blocking(move || {
+                let source = super::seance::read_source(std::path::Path::new(&source))?;
+                super::seance::fork_source(&source, &destination)?;
+                Ok::<_, String>(source.history)
+            })).await?.map_err(|error| error.to_string())??;
+            worker.history.extend(history.into_iter().filter(|message| message["role"] != "system"));
+        }
+        worker.history.push(json!({"role": "user", "content": assignment}));
+        host.save_history(&worker.history).await?;
+    }
+    Ok(PreparedWorker { provider, model, thinking_enabled, thinking_level, tools, prompt, skills: resources.skills.clone(), hooks: host.workflow_hooks.get().cloned().unwrap_or_default(), cwd: cwd.ok_or("Subagent cwd unavailable")?, isolation, shared_tools })
+}
+
+async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition, context: &str, parent_provider: &str, parent_model: &str, generation: u64, worker: &mut session::WorkerSession) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    let state: &AppState = &state;
+    let prepared = match worker.prepared.take() {
+        Some(prepared) => prepared,
+        None => prepare(app, host, definition, context, parent_provider, parent_model, generation, worker).await?,
+    };
+    let PreparedWorker { provider, model, thinking_enabled, thinking_level, mut tools, prompt, skills, hooks, cwd, isolation, shared_tools } = prepared;
+    let mut settings = state.settings_read().clone();
+    let resolved = super::spawn::resolve_model(&settings, &host.options.model, parent_provider, parent_model)?;
+    let policies = worker.policies.lock().await.clone();
+    let _ = host.policies.set(worker.policies.clone());
+    let _ = host.runtime_generation.set(generation);
+    let advisor_run = Arc::new(tokio::sync::Mutex::new(super::policies::AdvisorScheduler::default()));
+    let _ = host.advisor_run.set(Arc::downgrade(&advisor_run));
+    let _ = host.self_ref.set(Arc::downgrade(host));
+    if let Some(saved) = &worker.contract {
+        if saved.resolved_model.provider != resolved.provider.id || saved.resolved_model.model != resolved.model {
+            return Err("Saved exact subagent model is no longer authorized".into());
+        }
+    }
+    let expected = policies.handoff_model().cloned().unwrap_or(super::policies::PolicyModel {
+        provider_id: resolved.provider.id.clone(), model: resolved.model.clone(), thinking_level: thinking_level.clone(),
+    });
+    if expected.provider(&settings).is_none() || expected.provider_id != provider.id || expected.model != model {
+        return Err("Saved exact subagent model is no longer authorized".into());
+    }
+    let mut available = host.until_inactive(generation,
+        crate::mcp::registry::list_enabled_tool_catalog_for_run(app, state, Some(&host.mcp_server_ids)),
+    ).await?.tools;
+    super::append_tool_definitions(&mut available, &settings, &[]);
+    tools.retain(|tool| (tool.source == "eval" && shared_tools.iter().any(|shared| shared.definition.id == tool.id)) || available.iter().any(|current| current.id == tool.id && current.server_id == tool.server_id));
+    crate::chat::agent::filter::filter_tools_for_agent(&mut tools, definition, host.record.depth, settings.chat_tools.task_max_recursion_depth);
+    settings.chat_tools.approval_policy = current_approval_policy(&host.approval_policy, &state.settings_read().chat_tools.approval_policy);
+    if policies.prewalk.target.is_some() { crate::chat::todo::append_tool_definitions(&mut tools); }
+    if let Some(contract) = &worker.contract { clamp_tools(&mut tools, contract); }
+    let _ = host.todo_available.set(tools.iter().any(|tool| tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)));
+    {
+        let mut control = host.slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        control.read_summarize = policies.read_summarize;
+        control.completion_schema = match &host.options.completion {
+            super::spawn::CompletionPolicy::Yield { schema, .. } => schema.clone(),
+            _ => None,
+        };
+    }
+    let _ = host.workflow_hooks.set(hooks.clone());
+    *host.model.lock().unwrap_or_else(|error| error.into_inner()) = model.clone();
+    host.lock().context_window = crate::chat::model_metadata::context_window_for_model(Some(&provider), &model).0;
+    let initial = worker.history.clone();
+    host.slot.control.lock().unwrap_or_else(|error| error.into_inner()).cwd = Some(cwd.clone());
+    host.slot.control.lock().unwrap_or_else(|error| error.into_inner()).spawns = Some(worker.contract.as_ref()
+        .map_or_else(|| definition.spawns.clone().unwrap_or_else(|| "*".into()), |saved| clamp_spawns(&saved.spawns, definition.spawns.as_deref())));
     host.lock().history = initial.clone();
+    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+    let effective = settings.chat_tools.clone();
+    let language = settings.settings_language.clone().unwrap_or_else(|| "zh".into());
+    *host.shared_tools.lock().unwrap_or_else(|error| error.into_inner()) = shared_tools.clone();
+    worker.prepared = Some(PreparedWorker { provider: provider.clone(), model: model.clone(), thinking_enabled, thinking_level: thinking_level.clone(), tools: tools.clone(), prompt: prompt.clone(), skills: skills.clone(), hooks, cwd, isolation, shared_tools });
     let probe = if host.record.depth == 1 && host.interactive_host && host.completion_probe_enabled {
         Some(tokio::spawn(completion_probes(host.clone(), provider.clone(), model.clone(), format!("submsg-{}", host.job_id))))
     } else { None };
     let metered = Metered { state, host };
     let executor = Executor { app: app.clone(), host: host.clone() };
+    tools.retain(|tool| tool.id != "native__yield");
+    append_yield(&mut tools, &host.options);
     let max_output_tokens = settings.chat.max_output_tokens;
     let retry_attempts = if settings.retry_enabled { settings.retry_attempts as usize } else { 1 };
     let mut config = AgentRunConfig {
@@ -1253,11 +1656,44 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         effective_chat_tools: effective, language, thinking_enabled, thinking_level,
         web_search_mode: WebSearchMode::Off, max_output_tokens, retry_attempts, assistant_snapshot: None,
         provider_tools_fallback_prompt: prompt, initial_cache_usage: None, initial_anchor_total_tokens: None,
-        initial_anchor_trailing_estimate: 0, skill_registry: resources.skills.clone(), todo_state: Default::default(),
+        initial_anchor_trailing_estimate: 0, skill_registry: skills, todo_state: policies.todo_state.clone(),
     };
+    let completion_instruction = match &host.options.completion {
+        super::spawn::CompletionPolicy::Yield { schema, strict } => format!("Submit this turn's final result with yield. Validation is {}. Schema: {}", if *strict { "strict" } else { "permissive" }, schema.as_ref().map(Value::to_string).unwrap_or_else(|| "any JSON value".into())),
+        super::spawn::CompletionPolicy::Text => "This turn uses an ordinary final text response. Previous workpool item submissions and yield contracts have ended.".into(),
+    };
+    config.runtime_context = Some(format!("{}\n\n{completion_instruction}", config.runtime_context.take().unwrap_or_default()));
     let outcome = async {
         loop {
+            config.todo_state = worker.policies.lock().await.todo_state.clone();
             let attempt = run_agent_loop(config.clone(), host.as_ref(), &executor).await;
+            if attempt.as_ref().is_err_and(|error| error == PREWALK_HANDOFF) {
+                let target = worker.policies.lock().await.handoff_model().cloned().ok_or("Prewalk handoff has no saved target")?;
+                let live_settings = state.settings_read().clone();
+                let provider = target.provider(&live_settings).ok_or("Prewalk target is no longer authorized")?.clone();
+                let level = target.thinking_level.as_deref().or(config.thinking_level.as_deref());
+                let level = level.map(|level| super::spawn::cap_thinking(&provider, &target.model, level, live_settings.chat_tools.task_max_effort.as_deref())).transpose()?.flatten();
+                config.thinking_enabled = level.as_deref().map_or(config.thinking_enabled, |level| level != "off");
+                config.thinking_level = level;
+                config.provider = provider;
+                config.model = target.model;
+                config.runtime_messages = host.lock().history.clone();
+                config.runtime_messages.retain(|message| message["_subagent_prewalk"] != true);
+                host.save_history(&config.runtime_messages).await?;
+                host.lock().history = config.runtime_messages.clone();
+                config.runtime_context = None;
+                config.initial_cache_usage = None;
+                config.initial_anchor_total_tokens = None;
+                config.initial_anchor_trailing_estimate = 0;
+                *host.model.lock().unwrap_or_else(|error| error.into_inner()) = config.model.clone();
+                host.lock().context_window = crate::chat::model_metadata::context_window_for_model(Some(&config.provider), &config.model).0;
+                let retained = worker.prepared.as_mut().ok_or("Prewalk lost its retained worker")?;
+                retained.provider = config.provider.clone();
+                retained.model = config.model.clone();
+                retained.thinking_enabled = config.thinking_enabled;
+                retained.thinking_level = config.thinking_level.clone();
+                continue;
+            }
             let budget_stop = {
                 let mut progress = host.lock();
                 if progress.budget_stop && !progress.hard_budget && !host.stopped() {
@@ -1332,32 +1768,144 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
             let last = history.iter().rev().find(|message| message["role"] == "assistant");
             let output = last.filter(|message| message["tool_calls"].as_array().is_none_or(Vec::is_empty))
                 .and_then(crate::chat::model::openai_message_text_content).unwrap_or_default();
+            if let Some(error) = host.yielded_error.lock().unwrap_or_else(|error| error.into_inner()).clone() { return Err(error); }
+            if matches!(host.options.completion, super::spawn::CompletionPolicy::Yield { .. }) {
+                let result = host.yields.lock().unwrap_or_else(|error| error.into_inner()).finish(&host.options.completion, &output)?;
+                return serde_json::to_string(&result).map_err(|error| error.to_string());
+            }
             return if output.trim().is_empty() { Err(EMPTY_FINAL.into()) } else { Ok(output) };
         }
     }.await;
     if let Some(probe) = probe { probe.abort(); let _ = probe.await; }
+    drop(advisor_run);
     outcome
 }
 
-pub(crate) async fn run(app: AppHandle, req: Request) {
+pub(crate) async fn prepare_idle(app: &AppHandle, record: &registry::AgentRecord, slot: &Arc<session::Slot>, worker: &mut session::WorkerSession) -> Result<(), String> {
+    if worker.prepared.is_some() { return Ok(()); }
+    let saved = worker.contract.clone().ok_or("Subagent has no saved contract")?;
     let state = app.state::<AppState>();
+    let settings = state.settings_read().clone();
+    let catalog = state.chat_runtime().resource_catalog(app, &record.root, &settings.chat_tools.skill_scan_paths, Some(&saved.cwd), false).await?;
+    let definition = crate::agents::find_definition(&catalog.agents, &saved.agent_definition.name)
+        .ok_or("Saved subagent role is no longer authorized")?.clone();
+    let run = format!("open-{}", uuid::Uuid::new_v4());
+    if !slot.begin(record, &run) { return Err("Subagent is busy or killed".into()); }
+    let generation = state.chat_runtime().begin_generation(&record.child_conversation_id);
+    let mut live_record = record.clone();
+    live_record.run_id = Some(run.clone());
+    let (_cancel_tx, cancel) = watch::channel(false);
+    let (_deadline_tx, deadline) = watch::channel(false);
+    let host = Arc::new(Host {
+        options: saved.options.clone(),
+        app: app.clone(), record: live_record, job_id: run.clone(), index: 0,
+        agent: definition.name.clone(), task: saved.task.clone(), solution_space: saved.solution_space.clone(),
+        plan_state: saved.plan_state.clone(), mcp_tool_ids: saved.mcp_tool_ids.clone(), mcp_server_ids: saved.mcp_server_ids.clone(),
+        approval_policy: current_approval_policy(&saved.approval_policy, &settings.chat_tools.approval_policy),
+        interactive_host: false, completion_probe_enabled: false, runtime_limit_ms: 0, compaction_threshold: None,
+        parent_run_id: String::new(), parent_tool_call_id: String::new(), model: Mutex::new(saved.resolved_model.model.clone()),
+        started: Instant::now(), cancel, deadline,
+        budget: 0, permit: tokio::sync::Mutex::new(None), journal: tokio::sync::Mutex::new(Journal { history: worker.history.clone(), failed: false }),
+        workflow_hooks: OnceLock::new(), progress: Mutex::new(Progress::default()), slot: slot.clone(), yields: Mutex::new(Default::default()), yielded_error: Mutex::new(None), empty_yields: Mutex::new(0), accept_irc: true, shared_tools: Mutex::new(Vec::new()), policies: OnceLock::new(), todo_available: OnceLock::new(), runtime_generation: OnceLock::new(), advisor_run: OnceLock::new(), self_ref: OnceLock::new(),
+    });
+    let prepared = prepare(app, &host, &definition, &saved.context, &saved.resolved_model.provider, &saved.resolved_model.model, generation, worker).await;
+    let owns = slot.finish(record.generation, &run);
+    state.chat_runtime().cancel_conversation(&record.child_conversation_id);
+    if !owns { return Err("Subagent changed while being revived".into()); }
+    let prepared = prepared?;
+    slot.control.lock().unwrap_or_else(|error| error.into_inner()).cwd = Some(prepared.cwd.clone());
+    worker.prepared = Some(prepared);
+    Ok(())
+}
+
+pub(crate) async fn run(app: AppHandle, req: Request) {
+    run_turn(app, req, true).await
+}
+
+struct WakeReservation {
+    app: AppHandle,
+    record: registry::AgentRecord,
+    slot: Arc<session::Slot>,
+}
+
+impl Drop for WakeReservation {
+    fn drop(&mut self) {
+        self.slot.control.lock().unwrap_or_else(|error| error.into_inner()).wake_reserved = false;
+        super::irc::schedule_wake(&self.app, &self.record);
+    }
+}
+
+struct CancelInlineOnDrop { app: AppHandle, root: String, owner: String, job: String }
+
+impl Drop for CancelInlineOnDrop {
+    fn drop(&mut self) {
+        self.app.state::<AppState>().sub_agents.jobs.cancel(&self.root, &self.job, &self.owner);
+    }
+}
+
+pub(crate) async fn run_inline_followup(app: &AppHandle, record: &registry::AgentRecord, task: String, completion: super::spawn::CompletionPolicy, items: Vec<String>) -> Result<super::jobs::JobSnapshot, String> {
+    let record = super::lifecycle::ensure_live(app, &record.root, &record.id, record.generation).await?;
+    let state = app.state::<AppState>();
+    let slot = state.sub_agents.sessions.slot(&record)?;
+    {
+        let mut control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        if control.active_run.is_some() || control.wake_reserved { return Err("Worker is busy".into()); }
+        control.wake_reserved = true;
+    }
+    let reservation = WakeReservation { app: app.clone(), record: record.clone(), slot: slot.clone() };
+    let result = async {
+        let mut guard = slot.worker.lock().await;
+        let worker = guard.as_mut().ok_or("Worker session is unavailable")?;
+        let saved = worker.contract.clone().ok_or("Worker contract is unavailable")?;
+        worker.history.push(json!({"role":"user","content":task}));
+        session::append_context(&record.session_file, &worker.history).await?;
+        let mut options = saved.options;
+        options.workpool_items = items;
+        options.completion = completion;
+        let (job, mut cancel) = state.sub_agents.jobs.register_inline(&record.root, &record.parent_id, &record.id, &task);
+        let _cancel = CancelInlineOnDrop { app: app.clone(), root: record.root.clone(), owner: record.parent_id.clone(), job: job.clone() };
+        drop(guard);
+        let permit = state.sub_agents.admission.acquire_wake(app, &record.root, &record.parent_id, &mut cancel).await.ok_or("Worker item cancelled before execution")?;
+        let request = Request {
+            options, record: record.clone(), job_id: job.clone(), index: 0, definition: saved.agent_definition,
+            task, solution_space: saved.solution_space, context: saved.context, plan_state: saved.plan_state,
+            mcp_tool_ids: saved.mcp_tool_ids, mcp_server_ids: saved.mcp_server_ids, approval_policy: saved.approval_policy,
+            interactive_host: false, parent_run_id: String::new(), parent_tool_call_id: String::new(),
+            parent_provider_id: saved.resolved_model.provider, parent_model: saved.resolved_model.model, cancel_rx: cancel, permit,
+        };
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _reservation = reservation;
+            run_turn(handle, request, false).await;
+        }).await.map_err(|error| error.to_string())?;
+        state.sub_agents.jobs.take_inline(&record.root, &job).ok_or("Worker result expired".into())
+    }.await;
+    result
+}
+
+async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
+    let state = app.state::<AppState>();
+    state.sub_agents.irc.begin_turn(&req.record.root, &req.record.id);
     if *req.cancel_rx.borrow() {
-        state.sub_agents.registry.update(&req.record.root, &req.record.id, |record| {
+        state.sub_agents.registry.update_checked(&req.record.root, &req.record.id, req.record.generation, None, |record| {
             if record.generation == req.record.generation {
                 record.status = registry::AgentStatus::Idle;
                 record.run_id = None;
                 record.activity = None;
             }
         });
-        if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
-            &app, &req.record.root, &req.parent_run_id,
-            crate::chat::protocol::ChatRunEvent::SubagentUpdated {
-                parent_tool_call_id: req.parent_tool_call_id.clone(), task_id: req.record.id.clone(),
-                name: req.record.display_name.clone(), model: None, depth: req.record.depth,
-                status: "aborted".into(), preview: Some("Cancelled by caller".into()), steps: Vec::new(),
-            },
-        ).await {
-            eprintln!("Cannot persist subagent terminal progress: {error}");
+        if !req.parent_tool_call_id.is_empty() {
+            if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
+                &app, &req.record.root, &req.parent_run_id,
+                crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+                    parent_tool_call_id: req.parent_tool_call_id.clone(), task_id: req.record.id.clone(),
+                    generation: Some(req.record.generation), child_run_id: req.record.run_id.clone(), progress: None,
+                    name: req.record.display_name.clone(), model: None, depth: req.record.depth,
+                    status: "aborted".into(), preview: Some("Cancelled by caller".into()), steps: Vec::new(),
+                },
+            ).await {
+                eprintln!("Cannot persist subagent terminal progress: {error}");
+            }
         }
         state.sub_agents.jobs.settle(&req.job_id, Err("Cancelled by caller".into()));
         return;
@@ -1365,18 +1913,32 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
     let settings = state.settings_read().clone();
     let mut record = req.record.clone();
     let run_id = format!("subrun-{}-{}", record.generation, req.job_id);
-    let registered = state.sub_agents.registry.update(&record.root, &record.id, |current| {
-        if current.generation == record.generation { current.run_id = Some(run_id.clone()); }
-    }).is_some_and(|current| current.generation == record.generation);
+    let slot = match state.sub_agents.sessions.slot(&record) {
+        Ok(slot) => slot,
+        Err(error) => { state.sub_agents.jobs.settle(&req.job_id, Err(error)); return; }
+    };
+    if !slot.begin(&record, &run_id) {
+        state.sub_agents.jobs.settle(&req.job_id, Err("Subagent already has an active run or was killed".into()));
+        return;
+    }
+    let registered = state.sub_agents.registry.update_checked(&record.root, &record.id, record.generation, None, |current| {
+        current.run_id = Some(run_id.clone());
+        current.status = registry::AgentStatus::Running;
+    }).is_some();
     if !registered {
+        slot.finish(record.generation, &run_id);
         state.sub_agents.jobs.settle(&req.job_id, Err("Subagent identity is no longer active".into()));
         return;
     }
+    let mut session_guard = slot.worker.lock().await;
+    let worker = session_guard.get_or_insert_with(session::WorkerSession::fresh);
+    let continuing = worker.contract.is_some();
     record.run_id = Some(run_id);
     let generation = state.chat_runtime().begin_generation(&record.child_conversation_id);
     let (deadline_tx, deadline_rx) = watch::channel(false);
     let completed = Arc::new(AtomicBool::new(false));
     let host = Arc::new(Host {
+        options: req.options,
         app: app.clone(), record, job_id: req.job_id.clone(), index: req.index,
         agent: req.definition.name.clone(), task: req.task.clone(), parent_run_id: req.parent_run_id,
         solution_space: req.solution_space, plan_state: req.plan_state,
@@ -1384,13 +1946,16 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
         approval_policy: req.approval_policy, interactive_host: req.interactive_host,
         completion_probe_enabled: settings.chat_tools.task_completion_probe_enabled,
         runtime_limit_ms: settings.chat_tools.task_max_runtime_ms,
+        compaction_threshold: settings.chat_tools.task_agent_compaction_threshold_overrides
+            .get(&req.definition.name).cloned().flatten(),
         parent_tool_call_id: req.parent_tool_call_id, model: Mutex::new(req.parent_model.clone()), started: Instant::now(),
         cancel: req.cancel_rx, deadline: deadline_rx,
         budget: budget_for(&req.definition.name, settings.chat_tools.task_soft_request_budget),
         permit: tokio::sync::Mutex::new(Some(req.permit)),
-        journal: tokio::sync::Mutex::new(Journal::default()),
+        journal: tokio::sync::Mutex::new(Journal { history: worker.history.clone(), failed: false }),
         workflow_hooks: OnceLock::new(),
         progress: Mutex::new(Progress { status: "running", dirty: true, ..Default::default() }),
+        slot: slot.clone(), yields: Mutex::new(Default::default()), yielded_error: Mutex::new(None), empty_yields: Mutex::new(0), accept_irc, shared_tools: Mutex::new(Vec::new()), policies: OnceLock::new(), todo_available: OnceLock::new(), runtime_generation: OnceLock::new(), advisor_run: OnceLock::new(), self_ref: OnceLock::new(),
     });
     let runtime_ms = host.runtime_limit_ms;
     let timer = if runtime_ms > 0 {
@@ -1413,15 +1978,47 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
         let mut interval = tokio::time::interval(Duration::from_millis(150));
         loop { interval.tick().await; progress_host.emit_progress(false); }
     });
-    let initial_file = create_transcript(&host.record.session_file, &host.record.output_file).await;
+    let initial_file = if continuing { Ok(()) } else { create_transcript(&host.record.session_file, &host.record.output_file).await };
     let transcript_created = initial_file.is_ok();
-    let label = transcript_created.then(|| tokio::spawn(generate_task_label(
+    let label = (transcript_created && !continuing).then(|| tokio::spawn(generate_task_label(
         host.clone(), settings.clone(), req.parent_provider_id.clone(), req.parent_model.clone(),
     )));
-    let outcome = match initial_file {
-        Ok(()) => execute(&app, &host, &req.definition, &req.context, &req.parent_provider_id, &req.parent_model, generation).await,
+    let mut outcome = match initial_file {
+        Ok(()) => {
+            let start = json!({
+                "type": "turn_start", "jobId": host.job_id, "ownerId": host.record.parent_id,
+                "runId": host.record.run_id, "parentRunId": host.parent_run_id,
+                "parentToolCallId": host.parent_tool_call_id,
+            });
+            match host.append_journal(&[start]).await {
+                Ok(()) => execute(&app, &host, &req.definition, &req.context, &req.parent_provider_id, &req.parent_model, generation, worker).await,
+                Err(error) => Err(error),
+            }
+        },
         Err(error) => Err(error),
     };
+    if matches!(host.options.completion, super::spawn::CompletionPolicy::Yield { .. }) {
+        if let Ok(output) = &outcome {
+            if let Ok(structured) = serde_json::from_str::<Value>(output) {
+                state.sub_agents.jobs.set_structured_output(&host.job_id, structured.clone());
+                host.lock().structured_output = Some(structured);
+            }
+        }
+    }
+    if let Some(isolation) = worker.prepared.as_ref().and_then(|prepared| prepared.isolation.clone()) {
+        if let super::spawn::WorkspacePolicy::Isolated { mode, apply } = host.options.workspace {
+            let cancelled = outcome.is_err() || host.cancelled() || !host.owns_turn();
+            let finalized = tauri::async_runtime::spawn_blocking(move || isolation.lock().unwrap_or_else(|error| error.into_inner()).finish(mode, apply, cancelled)).await;
+            match finalized {
+                Ok(Ok(isolation)) => {
+                    if let Ok(output) = &mut outcome { output.push_str(&format!("\n\nIsolation result: {}", serde_json::to_string(&isolation).unwrap_or_default())); }
+                }
+                Ok(Err(error)) => outcome = Err(error),
+                Err(error) => outcome = Err(format!("Isolation finalization failed: {error}")),
+            }
+            worker.prepared = None;
+        }
+    }
     completed.store(true, Ordering::Release);
     if let Some(timer) = timer { timer.abort(); let _ = timer.await; }
     drop(deadline_tx);
@@ -1463,8 +2060,9 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
         error = Some("Cancelled by caller".into());
         if output.trim().is_empty() { output = salvage(&tail, requests, tokens); }
     }
-    let output_available = if transcript_created {
-        match write_new_artifact(&host.record.output_file, output.as_bytes()).await {
+    let turn_output = if continuing { host.record.output_file.with_file_name(format!("{}.{}.md", host.record.id, host.job_id)) } else { host.record.output_file.clone() };
+    let output_available = if transcript_created && host.owns_turn() {
+        match write_new_artifact(&turn_output, output.as_bytes()).await {
             Ok(()) => true,
             Err(err) => {
                 let message = format!("Cannot write subagent output: {err}");
@@ -1474,24 +2072,28 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
             }
         }
     } else { false };
-    let status = if aborted { "cancelled" } else if error.is_some() { "failed (exit 1)" } else { "completed" };
-    let summary = result_summary(&host.record.id, &host.agent, status, &output, error.as_deref(), host.started.elapsed().as_millis() as u64, requests, transcript_available, output_available);
     {
         let mut p = host.lock();
         p.status = if aborted { "aborted" } else if error.is_some() { "failed" } else { "completed" };
         p.terminal_preview = Some(terminal_preview(&host.record.id, &output, error.as_deref(), output_available));
         p.dirty = true;
     }
+    let closed_as_aborted = aborted;
+    let mut journal_closed = false;
     if let Some(progress) = host.snapshot(true) {
+        if transcript_created && host.owns_turn() {
+            match host.append_journal(&[json!({"type":"turn_end", "runId":host.record.run_id, "progress":progress,
+                "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(), "outputFile":turn_output})]).await {
+                Ok(()) => journal_closed = true,
+                Err(failure) => { add_failure(&mut error, failure); worker.prepared = None; }
+            }
+        }
         state.sub_agents.jobs.report_progress(&host.job_id, progress);
     }
+    let status = if aborted { "cancelled" } else if error.is_some() { "failed (exit 1)" } else { "completed" };
+    let summary = result_summary(&host.record.id, &host.agent, status, &output, error.as_deref(), host.started.elapsed().as_millis() as u64, requests, transcript_available, output_available);
     let state = app.state::<AppState>();
     state.chat_runtime().cancel_conversation(&host.record.child_conversation_id);
-    state.sub_agents.registry.update(&host.record.root, &host.record.id, |record| {
-        if record.generation == host.record.generation {
-            record.status = registry::AgentStatus::Idle; record.run_id = None; record.activity = None;
-        }
-    });
     if error.is_some() || aborted { state.sub_agents.jobs.settle(&host.job_id, Err(summary)); }
     else { state.sub_agents.jobs.settle(&host.job_id, Ok(summary)); }
     if !aborted && state.sub_agents.jobs.get(&host.job_id)
@@ -1502,7 +2104,7 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
         if output.trim().is_empty() {
             output = salvage(&tail, requests, tokens);
             if output_available && !output.is_empty() {
-                if let Err(err) = write_artifact(&host.record.output_file, output.as_bytes()).await {
+                if let Err(err) = write_artifact(&turn_output, output.as_bytes()).await {
                     eprintln!("Cannot save cancelled subagent output: {err}");
                 }
             }
@@ -1515,12 +2117,93 @@ pub(crate) async fn run(app: AppHandle, req: Request) {
         p.dirty = true;
     }
     host.emit_terminal_progress().await;
+    let terminal = host.snapshot(true).unwrap_or_default();
+    if transcript_created && host.owns_turn() {
+        if !journal_closed || closed_as_aborted != aborted {
+            if let Err(error) = host.append_journal(&[json!({"type":"turn_end", "runId":host.record.run_id, "progress":terminal, "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(),"outputFile":turn_output})]).await {
+                eprintln!("Cannot finalize subagent transcript: {error}");
+                worker.prepared = None;
+            }
+        }
+        worker.history = host.lock().history.clone();
+        worker.interrupted = None;
+        worker.last_progress = Some(terminal.clone());
+        worker.model = Some(host.model.lock().unwrap_or_else(|error| error.into_inner()).clone());
+        let mut control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        control.last_progress = Some(terminal);
+        control.model = worker.model.clone();
+    }
+    super::irc::finish_turn(&app, &host.record, &output, error.as_deref(), aborted).await;
     drop(host.permit.lock().await.take());
+    if slot.finish(host.record.generation, host.record.run_id.as_deref().unwrap_or_default()) {
+        state.sub_agents.registry.update_checked(&host.record.root, &host.record.id, host.record.generation, host.record.run_id.as_deref(), |record| {
+            record.status = registry::AgentStatus::Idle;
+            record.run_id = None;
+            record.activity = None;
+            if output_available { record.output_file = turn_output; }
+        });
+    }
+    drop(session_guard);
+    super::lifecycle::schedule_idle(&app, &host.record);
+    super::irc::schedule_wake(&app, &host.record);
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yield_error_is_terminal_without_success_data_or_schema_validation() {
+        assert_eq!(yield_error(&json!({"error":"unavailable"})).unwrap(), Some("unavailable".into()));
+        assert!(yield_error(&json!({"error":"failure","data":{"irrelevant":true}})).is_err());
+        assert_eq!(yield_error(&json!({"error":null,"data":1})).unwrap(), None);
+        assert!(yield_error(&json!({"error":false})).is_err());
+        assert_eq!(yield_error(&json!({"error":"  boom\n"})).unwrap(), Some("boom".into()));
+        assert_eq!(yield_error(&json!({"error":"   "})).unwrap(), None);
+        for placeholder in ["ignore", "ignored", "n/a", "none", "not applicable", "null", "placeholder", "undefined", "unused"] {
+            assert_eq!(yield_error(&json!({"data":false,"error":format!(" {} ", placeholder.to_uppercase())})).unwrap(), None);
+            assert_eq!(yield_error(&json!({"error":placeholder})).unwrap(), Some(placeholder.into()));
+        }
+    }
+
+    #[test]
+    fn empty_yield_aborts_after_four_attempts_and_valid_input_resets_it() {
+        let mut failures = 0;
+        for _ in 0..3 { assert!(empty_yield(&json!({"data":null,"error":"   "}), &mut failures).is_err()); }
+        assert!(empty_yield(&json!({"error":"\n"}), &mut failures).unwrap().is_some());
+        assert_eq!(failures, 0);
+        assert!(empty_yield(&json!({"data":0}), &mut failures).unwrap().is_none());
+        assert_eq!(failures, 0);
+        assert!(empty_yield(&json!({}), &mut failures).is_err());
+    }
+
+    #[test]
+    fn workpool_keys_require_exactly_one_item_outcome() {
+        assert_eq!(workpool_yield(&json!({"key":2,"data":false,"error":" unused "}), 2).unwrap(), (2, json!(false)));
+        assert_eq!(workpool_yield(&json!({"key":1.0,"error":"  failed\n"}), 2).unwrap(), (1, json!({"error":"failed"})));
+        for arguments in [json!({"key":0,"data":1}), json!({"key":3,"data":1}), json!({"key":1.5,"data":1}),
+            json!({"key":"1","data":1}), json!({"key":1,"error":"  "}), json!({"key":1,"data":1,"error":"failed"}),
+            json!({"key":1,"data":1,"type":["old-id"]})] {
+            assert!(workpool_yield(&arguments, 2).is_err(), "{arguments}");
+        }
+    }
+
+    #[test]
+    fn policy_annotations_follow_current_turn_when_old_tool_ids_are_reused() {
+        let record: ToolCallRecord = serde_json::from_value(json!({"id":"reused","name":"write","source":"native",
+            "status":"error","arguments":"{\"path\":\"code.rs\",\"content\":\"do not duplicate this body\"}","round":1,"trace_id":"new-run"})).unwrap();
+        let mut history = vec![
+            json!({"role":"tool","tool_call_id":"reused","content":"old turn","is_error":false}),
+            json!({"role":"tool","tool_call_id":"reused","content":"new turn"}),
+        ];
+        annotate_tool_results(&mut history, &[record]);
+        assert_eq!(history[0]["is_error"], false);
+        assert!(history[0].get("_subagent_policy_tool").is_none());
+        assert_eq!(history[1]["is_error"], true);
+        assert_eq!(history[1]["_subagent_policy_tool"]["trace_id"], "new-run");
+        assert!(!history[1]["_subagent_policy_tool"].to_string().contains("do not duplicate this body"));
+    }
 
     #[test]
     fn progress_tokens_exclude_repeated_cache_reads() {

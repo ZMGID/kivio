@@ -1361,6 +1361,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "childRunId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "conversationId": {
               "type": "string"
             },
@@ -1369,6 +1375,14 @@
               "maximum": 255,
               "minimum": 0,
               "type": "integer"
+            },
+            "generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "messageId": {
               "type": "string"
@@ -1391,6 +1405,7 @@
                 "null"
               ]
             },
+            "progress": true,
             "protocolVersion": {
               "const": 1,
               "type": "integer"

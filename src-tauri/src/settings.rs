@@ -1105,6 +1105,15 @@ pub struct SubAgentModelSelection {
     pub thinking_level: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskPerCallModel {
+    #[default]
+    Off,
+    Eval,
+    On,
+}
+
 /// 当前 Chat 会话的主模型（顶栏选择），用于混音器 auto 时解析副任务路由。
 #[derive(Debug, Clone, Copy)]
 pub struct SessionModel<'a> {
@@ -1513,6 +1522,26 @@ fn sanitize_hooks(hooks: &mut Vec<HookDef>) {
     });
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum TaskCompactionThreshold {
+    Tokens(usize),
+    Percentage(String),
+}
+
+impl TaskCompactionThreshold {
+    pub(crate) fn tokens(&self, window: usize) -> Option<usize> {
+        match self {
+            Self::Tokens(tokens) => (*tokens > 0).then_some(*tokens),
+            Self::Percentage(text) => {
+                let percent: f64 = text.trim().strip_suffix('%')?.parse().ok()?;
+                (percent > 0.0 && percent <= 100.0)
+                    .then(|| ((window as f64 * percent / 100.0) as usize).max(1))
+            }
+        }
+    }
+}
+
 /**
  * Chat 工具与 Skill 配置。
  */
@@ -1559,6 +1588,35 @@ pub struct ChatToolsConfig {
     /// Side-request progress probes for direct children of interactive hosts.
     #[serde(default = "default_true")]
     pub task_completion_probe_enabled: bool,
+    #[serde(default)]
+    pub task_file_enabled: bool,
+    #[serde(default)]
+    pub task_structured: bool,
+    #[serde(default)]
+    pub task_enable_effort: bool,
+    #[serde(default)]
+    pub task_max_effort: Option<String>,
+    #[serde(default)]
+    pub task_per_call_model: TaskPerCallModel,
+    /// Operator-owned exact model identities. Project role files cannot grant models.
+    #[serde(default)]
+    pub task_per_call_model_allow: Vec<String>,
+    #[serde(default)]
+    pub task_isolation_enabled: bool,
+    #[serde(default)]
+    pub task_agent_soft_request_budget: std::collections::BTreeMap<String, Option<u32>>,
+    #[serde(default)]
+    pub task_agent_model_overrides: std::collections::BTreeMap<String, Option<Vec<String>>>,
+    #[serde(default)]
+    pub task_agent_compaction_threshold_overrides: std::collections::BTreeMap<String, Option<TaskCompactionThreshold>>,
+    #[serde(default)]
+    pub task_prewalk: bool,
+    #[serde(default)]
+    pub task_agent_prewalk: std::collections::BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub task_agent_advisor: std::collections::BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub task_eval_workpool_fresh_agents: bool,
     /// Legacy global override, consumed into sub_agent_models.task during normalization.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub_agent_provider_id: String,
@@ -1604,6 +1662,20 @@ impl Default for ChatToolsConfig {
             task_speculative_launch: true,
             task_max_runtime_ms: 0,
             task_completion_probe_enabled: true,
+            task_file_enabled: false,
+            task_structured: false,
+            task_enable_effort: false,
+            task_max_effort: None,
+            task_per_call_model: TaskPerCallModel::Off,
+            task_per_call_model_allow: Vec::new(),
+            task_isolation_enabled: false,
+            task_agent_soft_request_budget: Default::default(),
+            task_agent_model_overrides: Default::default(),
+            task_agent_compaction_threshold_overrides: Default::default(),
+            task_prewalk: false,
+            task_agent_prewalk: Default::default(),
+            task_agent_advisor: Default::default(),
+            task_eval_workpool_fresh_agents: false,
             sub_agent_provider_id: String::new(),
             sub_agent_model: String::new(),
             sub_agent_models: Default::default(),
@@ -3870,6 +3942,21 @@ fn normalize_hotkey(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_compaction_thresholds_support_exact_tokens_and_model_percentages() {
+        let config: super::ChatToolsConfig = serde_json::from_value(serde_json::json!({
+            "taskAgentCompactionThresholdOverrides": {
+                "scout": 90_000, "reviewer": "75.5%", "inherit": null, "invalid": "101%"
+            }
+        })).unwrap();
+        let values = config.task_agent_compaction_threshold_overrides;
+        assert_eq!(values["scout"].as_ref().unwrap().tokens(100_000), Some(90_000));
+        assert_eq!(values["reviewer"].as_ref().unwrap().tokens(100_000), Some(75_500));
+        assert_eq!(values["reviewer"].as_ref().unwrap().tokens(200_000), Some(151_000));
+        assert!(values["inherit"].is_none());
+        assert_eq!(values["invalid"].as_ref().unwrap().tokens(100_000), None);
+    }
+
     #[test]
     fn settings_json_owner_preserves_additional_keys_and_uses_private_atomic_files() {
         let directory = tempfile::tempdir().unwrap();

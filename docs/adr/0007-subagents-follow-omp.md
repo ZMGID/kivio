@@ -5,7 +5,7 @@ supersedes: 0005
 
 # 子代理改用 OMP 设计
 
-2026-11-05，用户确认：内置运行时的子代理整体改为 oh-my-pi（OMP，`can1357/oh-my-pi` commit `5dec65e`，MIT）的设计，原有实现放弃，不迁移、不兼容。实施计划见 [OMP 子代理三步计划](../prd/omp-subagents-plan.md)。
+2026-11-05，用户确认：内置运行时的子代理整体改为 oh-my-pi（OMP，`can1357/oh-my-pi` commit `5dec65e`，MIT）的设计，原有实现放弃，不迁移、不兼容。实施计划见 [OMP 子代理完整实现计划](../prd/omp-subagents-plan.md)。2026-11-06 用户要求先完成源码调查和文档，再完整实现与测试，取代按三个阶段分别交付的安排。
 
 源码契约与证据见 [OMP 子代理实现与运行调查](../research/omp-subagents-implementation.md)。本文是目标决定，不表示当前实现已通过对齐验收。
 

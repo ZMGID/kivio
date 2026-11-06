@@ -9,6 +9,10 @@ use super::execute::ToolExecutionContext;
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait AgentHost: Send + Sync {
+    fn compaction_threshold(&self, _context_window: usize) -> Option<usize> {
+        None
+    }
+
     /// Parallel answer arms cannot share an interactive approval mailbox safely.
     fn supports_interactive_approval(&self) -> bool {
         true

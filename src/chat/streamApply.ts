@@ -4,7 +4,8 @@ import type {
   ChatToolProgressPayload,
   ChatUserPromptPayload,
 } from '../api/tauri'
-import { isTerminalSubagentStatus, mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
+import { mergeSubagentEntry, mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
+import { record } from '../api/subagents'
 import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, segmentStepNumber, segmentToolCallId } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
@@ -348,26 +349,22 @@ export function mergeSubagentProgress(
 ): ToolCallRecord {
   const existing = toolStructured(tool)
   if (tool.source === 'native' && canonicalToolName(tool) === 'task') {
-    const byTask = existing.subagentProgressByTask && typeof existing.subagentProgressByTask === 'object'
-      && !Array.isArray(existing.subagentProgressByTask)
-      ? existing.subagentProgressByTask as Record<string, { status?: string; preview?: string; steps?: string[] }>
-      : {}
+    const byTask = record(existing.subagentProgressByTask)
     const previous = Object.prototype.hasOwnProperty.call(byTask, payload.taskId) ? byTask[payload.taskId] : undefined
-    if (isTerminalSubagentStatus(previous?.status)
-      || (previous?.status === 'running' && payload.status === 'pending')) return tool
+    const progress = mergeSubagentEntry(previous, {
+      ...record(payload.progress),
+      taskId: payload.taskId, name: payload.name, model: payload.model ?? '', depth: payload.depth, status: payload.status,
+      ...(payload.generation != null ? { generation: payload.generation } : {}),
+      ...(payload.childRunId ? { runId: payload.childRunId } : {}),
+      ...(payload.preview ? { preview: payload.preview } : {}),
+      ...(payload.steps?.length ? { steps: payload.steps } : {}),
+    })
+    if (progress === previous) return tool
     const nextStructured = {
       ...existing,
       subagentProgressByTask: {
         ...byTask,
-        [payload.taskId]: {
-          taskId: payload.taskId,
-          name: payload.name,
-          model: payload.model ?? '',
-          depth: payload.depth,
-          status: payload.status,
-          preview: payload.preview || previous?.preview || '',
-          steps: payload.steps?.length ? payload.steps : previous?.steps ?? [],
-        },
+        [payload.taskId]: progress,
       },
     }
     return { ...tool, structuredContent: nextStructured, structured_content: nextStructured }

@@ -212,6 +212,7 @@ pub(super) fn build_assistant_message(
     };
 
     ChatMessage {
+            irc_message: None,
         id: message_id,
         role: "assistant".to_string(),
         content: stored_content,
@@ -509,6 +510,7 @@ pub(super) async fn persist_partial_assistant_snapshot(
         &tool_records,
     );
     let draft = ChatMessage {
+            irc_message: None,
         id: message_id.to_string(),
         role: "assistant".to_string(),
         content,

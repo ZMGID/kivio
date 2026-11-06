@@ -103,13 +103,14 @@ pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
             root,
             owner: &owner,
         });
+        coordinated_wait(ctx.app, &ctx.state.sub_agents, root, &owner, async {
         wait_with_updates(
             &ctx.state.sub_agents.jobs,
             &WAIT_LADDERS,
             root,
             &owner,
             cancelled,
-            steering,
+            std::future::pending(),
             |snapshots| {
                 if owner != super::MAIN_AGENT_ID {
                     ctx.state.sub_agents.jobs.report_wait_progress(root, &owner, Some(json!({
@@ -130,7 +131,120 @@ pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
                 );
             },
         ).await
+        }, cancelled_for_coordination(ctx.state, generation_conversation, ctx.native_ctx.generation), steering).await
     })
+}
+
+async fn cancelled_for_coordination(state: &crate::state::AppState, conversation: &str, generation: u64) {
+    state.chat_runtime().wait_for_generation_inactive(conversation, generation).await
+}
+
+async fn coordinated_wait(
+    app: &tauri::AppHandle,
+    manager: &super::SubAgentManager,
+    root: &str,
+    owner: &str,
+    job_wait: impl Future<Output = Result<McpToolCallResult, String>>,
+    cancelled: impl Future<Output = ()>,
+    steering: impl Future<Output = ()>,
+) -> Result<McpToolCallResult, String> {
+    wait_for_events(manager, root, owner, job_wait, cancelled, steering, CoordinationIo {
+        services: super::services::subscribe(app),
+        service_ids: super::services::running(app, root, owner)?,
+        completed_services: |ids: &[String]| super::services::completed(app, root, owner, ids),
+        persist_message: |message| async move { super::irc::persist_message(app, &message).await },
+    }).await
+}
+
+struct CoordinationIo<C, P> {
+    services: tokio::sync::watch::Receiver<u64>,
+    service_ids: Vec<String>,
+    completed_services: C,
+    persist_message: P,
+}
+
+async fn wait_for_events<C, P, F>(
+    manager: &super::SubAgentManager,
+    root: &str,
+    owner: &str,
+    job_wait: impl Future<Output = Result<McpToolCallResult, String>>,
+    cancelled: impl Future<Output = ()>,
+    steering: impl Future<Output = ()>,
+    mut io: CoordinationIo<C, P>,
+) -> Result<McpToolCallResult, String>
+where
+    C: Fn(&[String]) -> Result<Vec<Value>, String>,
+    P: Fn(super::irc::Message) -> F,
+    F: Future<Output = Result<(), String>>,
+{
+    let mut incoming = manager.irc.subscribe();
+    let mut changed_jobs = manager.jobs.subscribe();
+    let jobs = manager.jobs.running(root, owner);
+    let mut has_jobs = !jobs.is_empty() || !manager.jobs.undelivered(root, owner).is_empty();
+    let mut asked = manager.irc.pending_replies(root, owner);
+    let mut targets: Vec<_> = jobs.iter().map(|job| job.agent_id.clone()).collect();
+    targets.extend(asked.iter().map(|debt| debt.target.clone()));
+    let _hold = io.service_ids.is_empty().then(|| manager.awaits.hold(root, owner, targets, manager.irc.mark(), true));
+    tokio::pin!(job_wait);
+    tokio::pin!(cancelled);
+    tokio::pin!(steering);
+    let deadline = tokio::time::sleep(Duration::from_secs(300));
+    tokio::pin!(deadline);
+    loop {
+        let asked_targets: Vec<_> = asked.iter().map(|debt| debt.target.clone()).collect();
+        let parent = manager.registry.get(root, owner).map(|record| record.parent_id);
+        let mut claim = manager.irc.claim(root, owner, |message| {
+            (!message.progress || parent.as_ref() == Some(&message.from)) && (!message.broadcast || asked_targets.contains(&message.from))
+        });
+        if !claim.messages().is_empty() {
+            let messages = claim.messages().to_vec();
+            if owner == super::MAIN_AGENT_ID {
+                for message in &messages { (io.persist_message)(message.clone()).await?; }
+            }
+            let mut output = result(messages.iter().map(|message| format!("{}: {}", message.from, message.body)).collect::<Vec<_>>().join("\n\n"), &[]);
+            output.raw["messages"] = json!(messages);
+            output.raw["useless"] = json!(false);
+            output.structured_content = Some(output.raw.clone());
+            claim.commit();
+            return Ok(output);
+        }
+        claim.commit();
+        drop(claim);
+        let completed = (io.completed_services)(&io.service_ids)?;
+        if !completed.is_empty() {
+            let mut output = result("Background service finished.".into(), &[]);
+            output.raw["services"] = json!(completed);
+            output.raw["useless"] = json!(false);
+            output.structured_content = Some(output.raw.clone());
+            return Ok(output);
+        }
+        asked = manager.irc.pending_replies(root, owner);
+        let mut blocked = Vec::new();
+        asked.retain(|debt| {
+            let is_blocked = manager.awaits.blocks_on(root, &debt.target, owner, debt.sequence)
+                || manager.awaits.blocks_on(root, &debt.target, "@user", debt.sequence);
+            let alive = debt.target == super::MAIN_AGENT_ID || manager.registry.get(root, &debt.target)
+                .is_some_and(|record| record.status == super::registry::AgentStatus::Running
+                    || (record.status != super::registry::AgentStatus::Aborted && (debt.promised || manager.irc.has_pending(root, &debt.target))));
+            if is_blocked { blocked.push(debt.target.clone()); }
+            if !alive || is_blocked { manager.irc.release_debt(root, owner, &debt.target); false } else { true }
+        });
+        has_jobs |= !manager.jobs.running(root, owner).is_empty()
+            || !manager.jobs.undelivered(root, owner).is_empty();
+        if !has_jobs && io.service_ids.is_empty() && asked.is_empty() {
+            return Ok(result(if blocked.is_empty() { NOTHING_TO_WAIT_FOR.into() } else { format!("Cannot wait for agents blocked on this caller or the user: {}.", blocked.join(", ")) }, &[]));
+        }
+        tokio::select! {
+            biased;
+            _ = &mut cancelled => return Err("cancelled".into()),
+            _ = &mut steering => return Ok(steering_result()),
+            changed = incoming.changed() => if changed.is_err() { return Err("Agent message bus stopped".into()); },
+            changed = changed_jobs.changed() => if changed.is_err() { return Err("Subagent job manager stopped".into()); },
+            changed = io.services.changed() => if changed.is_err() { return Err("Background service manager stopped".into()); },
+            output = &mut job_wait, if has_jobs => return output,
+            _ = &mut deadline => return Ok(result("Nothing new after 5m.".into(), &[])),
+        }
+    }
 }
 
 struct ChildWaitProgress<'a> {
@@ -179,15 +293,17 @@ async fn wait_with_updates(
     tokio::select! {
         biased;
         _ = cancelled => Err("cancelled".into()),
-        _ = steering => {
-            let mut output = result("Wait interrupted by user steering.".into(), &[]);
-            output.raw["useless"] = json!(false);
-            output.raw["interrupted"] = json!(true);
-            output.structured_content = Some(output.raw.clone());
-            Ok(output)
-        },
+        _ = steering => Ok(steering_result()),
         result = wait_for_jobs(jobs, ladders, root, owner, &on_progress) => Ok(result),
     }
+}
+
+fn steering_result() -> McpToolCallResult {
+    let mut output = result("Wait interrupted by user steering.".into(), &[]);
+    output.raw["useless"] = json!(false);
+    output.raw["interrupted"] = json!(true);
+    output.structured_content = Some(output.raw.clone());
+    output
 }
 
 async fn wait_for_jobs(
@@ -420,6 +536,167 @@ mod tests {
     use super::*;
     use std::future::pending;
     use std::sync::Arc;
+
+    fn peer_message(sequence: u64, from: &str, to: &str, progress: bool) -> super::super::irc::Message {
+        super::super::irc::Message {
+            id: sequence.to_string(), root: "root".into(), from: from.into(), to: to.into(),
+            body: format!("message {sequence}"), sequence, reply_to: None, progress,
+            broadcast: false, wake_relay: false, timestamp: 0,
+        }
+    }
+
+    fn seed_reply_wait(manager: &super::super::SubAgentManager) {
+        manager.registry.register(serde_json::from_value(json!({
+            "id":"Peer", "root":"root", "parentId":"Main", "generation":0,
+            "displayName":"Peer", "agentType":"task", "status":"running", "depth":1,
+            "childConversationId":"subagent-root-Peer", "runId":null,
+            "sessionFile":"Peer.jsonl", "outputFile":"Peer.md", "lastActivity":0,
+            "activity":null, "published":true,
+        })).unwrap());
+        manager.irc.seed_message(peer_message(1, "Main", "Peer", false));
+    }
+
+    async fn reply_wait(
+        manager: &super::super::SubAgentManager,
+        ladders: &Mutex<WaitLadders>,
+        cancelled: impl Future<Output = ()>,
+        steering: impl Future<Output = ()>,
+    ) -> Result<McpToolCallResult, String> {
+        let (_services, changed) = tokio::sync::watch::channel(0);
+        wait_for_events(manager, "root", "Main",
+            wait(&manager.jobs, ladders, "root", "Main", pending()), cancelled, steering,
+            CoordinationIo {
+                services: changed,
+                service_ids: Vec::new(),
+                completed_services: |_: &[String]| Ok(Vec::new()),
+                persist_message: |_| std::future::ready(Ok(())),
+            },
+        ).await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reply_wait_observes_promoted_jobs_without_an_irc_relay() {
+        for settled_before_observation in [false, true] {
+            let manager = super::super::SubAgentManager::default();
+            let ladders = Mutex::new(WaitLadders::default());
+            seed_reply_wait(&manager);
+            let (job, _) = manager.jobs.register_inline("root", "Main", "Peer", "wake");
+            let mut waiting = Box::pin(reply_wait(&manager, &ladders, pending(), pending()));
+            assert!(futures::poll!(&mut waiting).is_pending());
+
+            for (root, owner) in [("other-root", "Main"), ("root", "Other")] {
+                let (private, _) = manager.jobs.register(root, owner, "Private", "unrelated");
+                manager.jobs.settle(&private, Ok("private result".into()));
+            }
+            assert!(futures::poll!(&mut waiting).is_pending());
+            if settled_before_observation {
+                manager.jobs.settle(&job, Ok("promoted result".into()));
+            }
+            assert!(manager.jobs.promote_inline("root", &job));
+            if !settled_before_observation {
+                assert!(futures::poll!(&mut waiting).is_pending());
+                manager.jobs.settle(&job, Ok("promoted result".into()));
+            }
+            let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+                panic!("a newly owned job must finish the reply wait");
+            };
+            let output = output.unwrap();
+            assert!(output.content.contains("promoted result"));
+            assert!(!output.content.contains("private result"));
+            assert_eq!(output.raw["useless"], false);
+            assert!(output.raw.get("messages").is_none());
+            assert!(!manager.irc.has_pending("root", "Main"));
+            assert!(manager.jobs.take_deliverable("root", "Main").is_empty());
+            assert_eq!(manager.jobs.take_deliverable("root", "Other").len(), 1);
+            assert_eq!(manager.jobs.take_deliverable("other-root", "Main").len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reply_wait_preserves_progress_promises_and_stays_quiet() {
+        let manager = super::super::SubAgentManager::default();
+        let ladders = Mutex::new(WaitLadders::default());
+        seed_reply_wait(&manager);
+        let mut question = manager.irc.claim("root", "Peer", |_| true);
+        question.commit();
+        drop(question);
+        manager.irc.seed_message(peer_message(2, "Peer", "Main", true));
+        manager.registry.set_status("root", "Peer", super::super::registry::AgentStatus::Idle);
+        let changed = manager.irc.subscribe();
+        let mut waiting = Box::pin(reply_wait(&manager, &ladders, pending(), pending()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert!(!changed.has_changed().unwrap());
+        assert!(manager.irc.pending_replies("root", "Main")[0].promised);
+        assert!(manager.irc.has_pending("root", "Main"));
+
+        let (unrelated, _) = manager.jobs.register("root", "Other", "Other", "unrelated");
+        manager.jobs.settle(&unrelated, Ok("private result".into()));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        assert!(!changed.has_changed().unwrap(), "an empty claim must not wake its own wait");
+        assert!(manager.irc.pending_replies("root", "Main")[0].promised);
+
+        manager.irc.seed_message(peer_message(3, "Peer", "Main", false));
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("the actual reply must wake the wait");
+        };
+        assert_eq!(output.unwrap().raw["messages"][0]["id"], "3");
+        assert!(manager.irc.pending_replies("root", "Main").is_empty());
+        let progress = manager.irc.claim("root", "Main", |_| true);
+        assert_eq!(progress.messages().len(), 1);
+        assert!(progress.messages()[0].progress);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promoted_jobs_release_watchers_after_reply_wait_cancellation_or_drop() {
+        for cancel in [false, true] {
+            let manager = super::super::SubAgentManager::default();
+            let ladders = Mutex::new(WaitLadders::default());
+            seed_reply_wait(&manager);
+            let (first, _) = manager.jobs.register_inline("root", "Main", "First", "one");
+            let (second, _) = manager.jobs.register_inline("root", "Main", "Second", "two");
+            let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+            let mut waiting = Box::pin(reply_wait(&manager, &ladders, async { let _ = cancel_rx.await; }, pending()));
+            assert!(futures::poll!(&mut waiting).is_pending());
+            manager.jobs.promote_inline("root", &first);
+            manager.jobs.promote_inline("root", &second);
+            assert!(futures::poll!(&mut waiting).is_pending());
+            manager.jobs.settle(&first, Ok("preserved result".into()));
+            assert!(futures::poll!(&mut waiting).is_pending());
+            assert!(manager.jobs.take_deliverable("root", "Main").is_empty());
+            if cancel {
+                cancel_tx.send(()).unwrap();
+                let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+                    panic!("cancellation must stop an active reply wait");
+                };
+                assert_eq!(output.unwrap_err(), "cancelled");
+            }
+            drop(waiting);
+            let delivered = manager.jobs.take_deliverable("root", "Main");
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(delivered[0].result.as_deref(), Some("preserved result"));
+            manager.jobs.settle(&second, Ok("later result".into()));
+            assert_eq!(manager.jobs.take_deliverable("root", "Main").len(), 1);
+            assert!(manager.jobs.take_deliverable("root", "Main").is_empty());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reply_wait_without_jobs_is_interrupted_by_user_steering() {
+        let manager = super::super::SubAgentManager::default();
+        let ladders = Mutex::new(WaitLadders::default());
+        seed_reply_wait(&manager);
+        let (steer, steered) = tokio::sync::oneshot::channel::<()>();
+        let mut waiting = Box::pin(reply_wait(&manager, &ladders, pending(), async { let _ = steered.await; }));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        steer.send(()).unwrap();
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("user steering must interrupt a reply-only wait");
+        };
+        let output = output.unwrap();
+        assert_eq!(output.raw["interrupted"], true);
+        assert_eq!(output.raw["useless"], false);
+        assert_eq!(manager.irc.pending_replies("root", "Main").len(), 1);
+    }
 
     #[test]
     fn definition_has_no_parameters() {

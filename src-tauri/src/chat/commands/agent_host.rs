@@ -46,8 +46,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await
+            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history).await
         })
     }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
@@ -330,6 +329,10 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         Box::pin(async move {
+            let _waiting = self.state.sub_agents.awaits.hold(
+                ctx.tool_conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID,
+                vec!["@user".into()], self.state.sub_agents.irc.mark(), false,
+            );
             request_user_response(
                 &self.app,
                 self.state,
@@ -407,7 +410,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<Value>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::delivery::collect_for_main(&self.app, conversation_id, run_id, history)
+            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
                 .await
         })
     }

@@ -181,7 +181,7 @@ pub(crate) async fn resume_subagents_when_idle(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
-    let incoming = crate::chat::sub_agent::delivery::collect_for_main(app, conversation_id, "", &[]).await?;
+    let incoming = crate::chat::sub_agent::collect_for_main(app, conversation_id, "", &[]).await?;
     if incoming.is_empty() || state.sub_agents.user_interrupted(conversation_id) {
         return Ok(());
     }
@@ -344,6 +344,7 @@ async fn send_reserved(
 
     // 创建用户消息
     let user_message = ChatMessage {
+            irc_message: None,
         id: user_message_id,
         role: "user".to_string(),
         content: content.clone(),

@@ -1,6 +1,7 @@
 pub(crate) mod background_registry;
 mod fetch;
 mod files;
+mod read_summary;
 mod sandbox_exports;
 mod shell;
 
@@ -11,6 +12,7 @@ pub use files::{
     ReadFileResult,
 };
 pub(crate) use files::read_text_content;
+pub(crate) use read_summary::read_file_summary;
 pub(crate) use sandbox_exports::preflight_directory_merge;
 pub use sandbox_exports::{
     build_delivery_artifact_for_path, cleanup_stale_sandbox_exports, export_sandbox_artifacts,

@@ -316,7 +316,7 @@ pub(crate) async fn chat_update_message(
 }
 
 fn is_subagent_report(message: &ChatMessage) -> bool {
-    message.role == "assistant" && message.id.starts_with("subagent-result-")
+    message.role == "assistant" && (message.id.starts_with("subagent-result-") || message.irc_message.is_some())
 }
 
 fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {

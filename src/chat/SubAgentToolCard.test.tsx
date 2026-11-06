@@ -241,3 +241,54 @@ it('keeps a rejected task and its error inspectable without claiming it ran', ()
   expect(screen.getByRole('alert')).toHaveTextContent('Task rejected')
   expect(screen.getByText('Read package.json')).toBeVisible()
 })
+
+it('renders mixed inline results once while keeping rich asynchronous progress and current context separate', () => {
+  render(<ToolCallBlock toolCall={{ id: 'mixed', source: 'native', name: 'task', status: 'success', structured_content: {
+    agents: [{ agentId: 'inline', name: 'Inline', jobId: 'job-inline' }, { agentId: 'async', name: 'Background', jobId: 'job-async' }],
+    results: [{ id: 'job-inline', agentId: 'inline', status: 'completed', result: 'Complete inline result' }],
+    subagentProgressByTask: { inline: { status: 'completed', preview: 'Duplicate preview' }, async: { status: 'running', model: 'provider/model', requests: 3, toolCount: 7, tokens: 10000, contextTokens: 2000, contextWindow: 32000, durationMs: 1500, stage: 'Inspecting source', currentToolIntent: 'Read registry' } },
+  } }} />)
+  expect(screen.getByText('1 个运行中')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getAllByText('Complete inline result')).toHaveLength(1)
+  expect(screen.queryByText('Duplicate preview')).not.toBeInTheDocument()
+  expect(screen.getByText(/10,000 累计 token · 上下文 2,000 \/ 32,000/)).toBeVisible()
+  expect(screen.getByText('Read registry')).toBeVisible()
+})
+
+it('keeps failures visible among settled rows and the live edge visible for long active batches', () => {
+  const agents = Array.from({ length: 6 }, (_, index) => ({ agentId: `a${index}`, name: `Agent ${index}` }))
+  const final = Object.fromEntries(agents.map((agent, index) => [agent.agentId, { status: index === 5 ? 'failed' : 'completed', preview: `Output ${index}`, durationMs: index * 100 }]))
+  const view = render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'success', structured_content: { agents, subagentProgressByTask: final } }} />)
+  expect(screen.getByText('Agent 5')).toBeVisible()
+  expect(screen.queryByText('Agent 4')).not.toBeInTheDocument()
+  expect(screen.getByText('另有 2 项 · 展开查看全部')).toBeVisible()
+  view.rerender(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'success', structured_content: { agents, subagentProgressByTask: Object.fromEntries(agents.map(agent => [agent.agentId, { status: 'running' }])) } }} />)
+  expect(screen.getByText('Agent 5')).toBeVisible()
+  expect(screen.queryByText('Agent 0')).not.toBeInTheDocument()
+})
+
+it('distinguishes a successful interrupted wait from completion and shows its inbox message', () => {
+  render(<ToolCallBlock toolCall={{ id: 'wait', source: 'native', name: 'wait', status: 'success', structured_content: { interrupted: true, reason: 'Incoming peer question', messages: [{ id: 'irc', fromAgent: 'reviewer', toAgent: 'main', content: 'Which branch should I inspect?' }] } }} />)
+  expect(screen.getByText('等待已打断')).toBeVisible()
+  expect(screen.queryByText('已完成')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: /等待子代理/ }))
+  expect(screen.getByText('Incoming peer question')).toBeVisible()
+  expect(screen.getByText('Which branch should I inspect?')).toBeVisible()
+})
+
+it('isolates generations and admitted child runs while retaining richer metrics through receipt merges', () => {
+  const tool: ToolCallRecord = { id: 'task', source: 'native', name: 'task', status: 'success' }
+  const event = { parentConversationId: 'root', parentRunId: 'parent', parentToolCallId: 'task', taskId: 'worker', name: 'Worker', depth: 1, generation: 1, childRunId: 'first' }
+  const first = mergeSubagentProgress(tool, { ...event, status: 'completed', preview: 'First output', progress: { requests: 2, contextTokens: 100 } })
+  const next = mergeSubagentProgress(first, { ...event, generation: 2, childRunId: 'second', status: 'running', preview: 'Current output', progress: { requests: 1, contextTokens: 50 } })
+  expect(mergeSubagentProgress(next, { ...event, status: 'completed', preview: 'Late old output' })).toBe(next)
+  expect(mergeSubagentProgress(next, { ...event, generation: 2, childRunId: 'other', status: 'running', preview: 'Wrong run' })).toBe(next)
+  const receipt = mergeToolRecord(next, { ...tool, structured_content: { agents: [{ agentId: 'worker', name: 'Worker' }], subagentProgressByTask: { worker: { generation: 1, status: 'completed', preview: 'Old receipt' } } } })
+  render(<ToolCallBlock toolCall={receipt} />)
+  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getByText('Current output')).toBeVisible()
+  expect(screen.getByText(/1 请求 · 上下文 50/)).toBeVisible()
+  expect(screen.queryByText('First output')).not.toBeInTheDocument()
+  expect(screen.queryByText('Old receipt')).not.toBeInTheDocument()
+})

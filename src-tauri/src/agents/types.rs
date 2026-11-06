@@ -1,10 +1,17 @@
 //! `AgentDefinition` data model and the built-in agent types.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AgentModelPolicy {
+    Enabled(bool),
+    Model(String),
+}
 
 /// A subagent persona. An omitted builtin tool list selects defaults; an
 /// explicitly empty list selects no builtin tools. `skills` are autoloaded.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefinition {
     pub id: String,
@@ -12,6 +19,19 @@ pub struct AgentDefinition {
     pub description: String,
     pub system_prompt: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub structured: bool,
+    pub output: Option<serde_json::Value>,
+    #[serde(default)]
+    pub prewalk: Option<AgentModelPolicy>,
+    #[serde(default)]
+    pub advisor: Option<AgentModelPolicy>,
+    #[serde(default)]
+    pub read_summarize: Option<bool>,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
     pub thinking_level: Option<String>,
     pub blocking: bool,
     pub tools: Option<Vec<String>>,
@@ -33,6 +53,8 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "General-purpose subagent with full capabilities for delegated multi-step tasks".into(),
             system_prompt: AGENT_TASK.into(),
             model: Some("@task".into()),
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: Some("auto".into()),
             blocking: false,
             tools: None,
@@ -47,6 +69,8 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Low-reasoning agent for strictly mechanical updates or data collection only".into(),
             system_prompt: AGENT_TASK.into(),
             model: Some("@smol".into()),
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: Some("medium".into()),
             blocking: false,
             tools: None,
@@ -61,6 +85,8 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "MUST be used for exploratory codebase research, rapid code analysis, and broad pattern searches. Fast read-only scout returning compressed context for handoff.".into(),
             system_prompt: AGENT_SCOUT.into(),
             model: Some("@smol".into()),
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: Some("medium".into()),
             blocking: false,
             tools: Some(["read", "find", "grep", "glob", "ast_grep", "web_search"].into_iter().map(String::from).collect()),
@@ -75,6 +101,8 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Code review specialist for quality/security analysis".into(),
             system_prompt: AGENT_REVIEWER.into(),
             model: Some("@slow".into()),
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
             tools: Some(["read", "find", "grep", "glob", "bash", "lsp", "web_search", "ast_grep"].into_iter().map(String::from).collect()),
@@ -89,6 +117,8 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Read-only security specialist for evidence-backed repository vulnerability discovery".into(),
             system_prompt: AGENT_SECURITY_REVIEWER.into(),
             model: None,
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
             tools: Some(["read", "find", "grep", "glob", "lsp", "ast_grep"].into_iter().map(String::from).collect()),
@@ -103,13 +133,15 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Read a historical session and nested transcripts to answer a consult.".into(),
             system_prompt: AGENT_SEANCE.into(),
             model: None,
+            models: Vec::new(), structured: false, output: None,
+            prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
             tools: Some(["read", "grep", "glob"].into_iter().map(String::from).collect()),
             spawns: None,
             skills: Vec::new(),
             source: "builtin".into(),
-            unsupported: vec!["historical session fork (sourceSession)".into()],
+            unsupported: Vec::new(),
         },
     ]
 }
@@ -136,6 +168,6 @@ mod tests {
         assert!(defs[3].tools.as_ref().unwrap().iter().any(|tool| tool == "bash"));
         assert!(defs[4].system_prompt.contains("attacker-controlled"));
         assert_eq!(defs[5].name, "seance");
-        assert!(!defs[5].unsupported.is_empty());
+        assert!(defs[5].unsupported.is_empty());
     }
 }

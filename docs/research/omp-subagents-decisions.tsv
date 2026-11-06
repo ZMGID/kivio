@@ -1,0 +1,9 @@
+ts	phase	decision	why	evidence	result
+2026-11-06T00:00:00+08:00	frame	按用户要求先完成源码调查与文档再实施完整子代理	旧第一步只有代码和定向检查且后两步未实现	docs/prd/omp-subagents-plan.md;672013832a8eb59dc230e528bd9fa861c69a9b89	open
+2026-11-06T00:30:39.9460032+08:00	baseline	重跑当前提交的子代理及全量测试	先区分已有失败与新增回归	.scratch/omp-completion/baseline-rust.log;.scratch/omp-completion/baseline-rust-all.log;.scratch/omp-completion/baseline-vitest.log	子代理84通过;Rust全量9失败;前端全量10失败
+2026-11-06T00:36:47.6267897+08:00	design	保留每身份的已准备会话并为每轮创建新Host	两种独立设计均确认取消预算和作业不能跨轮复用;warm会话避免重复初始化	.scratch/omp-completion/design-a.md;.scratch/omp-completion/design-b.md	采用A并补充B的重放及写失败约束
+2026-11-06T01:51:41.380523+08:00	audit	首行时间为任务起始日期占位并非实际采样时刻	保留原始记录并明确更正	首行2026-11-06T00:00:00+08:00	自本行使用系统实际时间
+2026-11-06T01:51:41.380523+08:00	integration	收件、角色配置与每轮执行复用现有负责人	避免GUI和probe的IRC行为分叉;保留会话不复用取消和预算	commands/agent_host.rs;sub_agent/session.rs;sub_agent/executor.rs	首轮子代理155通过;全量前端2967通过;继续最终验收
+2026-11-06T02:48:26.5772676+08:00	restore	持久化正式接纳与原任务卡路由;同一中断只接纳一次	真实强退后结果与父续轮成功但任务卡仍显示运行中	.scratch/omp-completion/restart-result.json;registry.rs;session.rs;jobs.rs	已修复并通过并发和跨根ID回归
+2026-11-06T02:48:26.5772676+08:00	verify	重跑最终Rust全量和协议类型	恢复路由、IRC和角色压缩阈值落地后重新校验	.scratch/omp-completion/rust-all-final-2.log;.scratch/omp-completion/typecheck-final-2.log	3131通过;55忽略;协议及类型通过
+2026-11-06T02:51:21.9311082+08:00	acceptance	新版桌面强退后连续两次从Hub恢复	核对同一身份、恰好一次执行和送达、原任务卡终态	.scratch/omp-completion/restart-result-final.json	800行逐一正确;1次恢复;1份报告;父自动续轮;原任务卡完成

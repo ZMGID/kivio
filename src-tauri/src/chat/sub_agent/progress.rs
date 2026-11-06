@@ -9,6 +9,12 @@ use crate::chat::Conversation;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct TerminalProgress {
+    #[serde(default)]
+    pub generation: Option<u64>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub progress: Option<Value>,
     pub message_id: Option<String>,
     pub tool_call_id: String,
     pub task_id: String,
@@ -109,6 +115,7 @@ pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, Termin
                 if !existing.and_then(|value| value.get("status")).and_then(Value::as_str).is_some_and(is_terminal) {
                     map.insert(progress.task_id.clone(), json!({
                         "taskId": progress.task_id, "name": progress.name, "model": progress.model,
+                        "generation": progress.generation, "runId": progress.run_id, "progress": progress.progress,
                         "depth": progress.depth, "status": progress.status,
                         "preview": progress.preview, "steps": progress.steps,
                     }));
@@ -173,6 +180,7 @@ mod tests {
 
     fn progress(id: &str, status: &str, preview: &str) -> TerminalProgress {
         TerminalProgress {
+            generation: Some(1), run_id: Some("child-run".into()), progress: Some(json!({"requests":2,"cost":0.1})),
             message_id: Some("message".into()), tool_call_id: "call".into(), task_id: id.into(),
             name: id.into(), model: None, depth: 1, status: status.into(),
             preview: Some(preview.into()), steps: Vec::new(),

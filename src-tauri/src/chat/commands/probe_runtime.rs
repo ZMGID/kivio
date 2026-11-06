@@ -106,6 +106,7 @@ pub(crate) async fn run_chat_probe(
         });
     }
     let user_message = ChatMessage {
+            irc_message: None,
         id: format!("msg_{}", Uuid::new_v4()),
         role: "user".to_string(),
         content: req.prompt.clone(),

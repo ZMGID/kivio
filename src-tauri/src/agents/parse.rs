@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_yaml::Value;
 use crate::skills::slugify;
 
-use super::types::AgentDefinition;
+use super::types::{AgentDefinition, AgentModelPolicy};
 
 /// Parse one agent `.md`, falling back to the file stem when its name is omitted.
 pub fn parse_agent_markdown(
@@ -60,14 +60,12 @@ pub fn parse_agent_markdown(
         .or_else(|| frontmatter.get("skills")));
     let blocking = frontmatter.get("blocking").and_then(parse_bool).unwrap_or(false);
     let mut unsupported = Vec::new();
-    if models.len() > 1 {
-        unsupported.push("multiple model fallbacks".into());
-    }
     for (key, value) in &frontmatter {
         let unsupported_value = match key.as_str() {
             "name" | "description" | "tools" | "spawns" => false,
             "model" | "autoloadSkills" | "autoload-skills" | "skills" => {
                 !matches!(value, Value::Null | Value::String(_) | Value::Sequence(_))
+                    || value.as_sequence().is_some_and(|items| items.iter().any(|item| !item.is_string()))
             }
             "thinkingLevel" | "thinking-level" | "thinking" => match value {
                 Value::Null => false,
@@ -76,14 +74,19 @@ pub fn parse_agent_markdown(
                 _ => true,
             },
             "blocking" => !value.is_null() && parse_bool(value).is_none(),
-            // Native read is already verbatim, matching readSummarize: false.
             "readSummarize" | "read-summarize" => {
-                !value.is_null() && parse_bool(value) != Some(false)
+                !value.is_null() && parse_bool(value).is_none()
             }
-            "structured" | "prewalk" | "advisor" => {
-                !value.is_null() && parse_bool(value) != Some(false)
+            "structured" => !value.is_null() && parse_bool(value).is_none(),
+            "output" => !value.is_null() && serde_json::to_value(value).ok().is_none_or(|schema| {
+                crate::chat::sub_agent::structured::validate_schema(&schema).is_err()
+            }),
+            "prewalk" | "advisor" => {
+                !value.is_null() && parse_model_policy(value).is_none()
             }
-            "output" | "disallowed_tools" | "disallowed-tools" | "disallowedTools" => !value.is_null(),
+            "disallowed_tools" | "disallowed-tools" | "disallowedTools"
+            | "serviceTier" | "service-tier" | "accountPool" | "account-pool"
+            | "compaction" => !value.is_null(),
             _ => false,
         };
         if unsupported_value {
@@ -98,6 +101,13 @@ pub fn parse_agent_markdown(
         description,
         system_prompt,
         model,
+        models,
+        structured: frontmatter.get("structured").and_then(parse_bool).unwrap_or(false),
+        output: frontmatter.get("output").filter(|value| !value.is_null()).and_then(|value| serde_json::to_value(value).ok()),
+        prewalk: frontmatter.get("prewalk").and_then(parse_model_policy),
+        advisor: frontmatter.get("advisor").and_then(parse_model_policy),
+        read_summarize: frontmatter.get("readSummarize").or_else(|| frontmatter.get("read-summarize")).and_then(parse_bool),
+        metadata: frontmatter.iter().filter_map(|(key, value)| serde_json::to_value(value).ok().map(|value| (key.clone(), value))).collect(),
         thinking_level,
         blocking,
         tools,
@@ -136,6 +146,12 @@ fn parse_bool(value: &Value) -> Option<bool> {
         Value::String(value) if value.trim().eq_ignore_ascii_case("false") => Some(false),
         _ => None,
     }
+}
+
+fn parse_model_policy(value: &Value) -> Option<AgentModelPolicy> {
+    if let Some(value) = parse_bool(value) { return Some(AgentModelPolicy::Enabled(value)); }
+    value.as_str().map(str::trim).filter(|value| !value.is_empty())
+        .map(|value| AgentModelPolicy::Model(value.to_string()))
 }
 
 fn normalize_thinking(value: &str) -> Option<&'static str> {
@@ -206,7 +222,7 @@ mod tests {
         let def = parse_agent_markdown("x", nested_override, "user", None).unwrap();
         assert_eq!(def.name, "x");
         assert_eq!(def.tools, Some(vec![]));
-        assert_eq!(def.unsupported, ["output"]);
+        assert!(def.unsupported.is_empty());
         assert_eq!(def.spawns, None);
     }
 
@@ -256,11 +272,32 @@ mod tests {
     fn unsupported_capabilities_are_reported_but_unknown_metadata_is_ignored() {
         let raw = "---\nmodel: [first, fallback]\nstructured: true\noutput:\n  type: object\nprewalk: true\nadvisor: other\nextraField: value\n---\nbody";
         let def = parse_agent_markdown("x", raw, "user", None).unwrap();
-        for field in ["multiple model fallbacks", "structured", "output", "prewalk", "advisor"] {
-            assert!(def.unsupported.iter().any(|item| item == field), "{field}");
-        }
+        assert!(def.unsupported.is_empty());
+        assert_eq!(def.prewalk, Some(AgentModelPolicy::Enabled(true)));
+        assert_eq!(def.advisor, Some(AgentModelPolicy::Model("other".into())));
+        assert_eq!(def.metadata.get("extraField"), Some(&serde_json::json!("value")));
         assert!(!def.unsupported.iter().any(|item| item == "extraField"));
+        assert_eq!(def.models, ["first", "fallback"]);
+        assert!(def.structured);
+        assert_eq!(def.output, Some(serde_json::json!({"type":"object"})));
         let disabled = parse_agent_markdown("x", "---\nstructured: false\nprewalk: false\nadvisor: false\nread-summarize: false\n---\nbody", "user", None).unwrap();
         assert!(disabled.unsupported.is_empty());
+    }
+
+    #[test]
+    fn policy_frontmatter_handles_boolean_strings_nulls_and_nested_metadata() {
+        let role = parse_agent_markdown("x", "---\nprewalk: 'true'\nadvisor: ' test/model:low '\nreadSummarize: true\nextra:\n  tags: [one, two]\n---\nbody", "project", None).unwrap();
+        assert_eq!(role.prewalk, Some(AgentModelPolicy::Enabled(true)));
+        assert_eq!(role.advisor, Some(AgentModelPolicy::Model("test/model:low".into())));
+        assert_eq!(role.read_summarize, Some(true));
+        assert_eq!(role.metadata["extra"], serde_json::json!({"tags":["one", "two"]}));
+        assert!(role.unsupported.is_empty());
+        let nulls = parse_agent_markdown("x", "---\nprewalk: null\nadvisor: null\nreadSummarize: null\n---\nbody", "project", None).unwrap();
+        assert!(nulls.prewalk.is_none() && nulls.advisor.is_none() && nulls.read_summarize.is_none());
+        assert!(nulls.unsupported.is_empty());
+        let invalid = parse_agent_markdown("x", "---\nprewalk: [test/model]\nadvisor: 42\nreadSummarize: maybe\naccountPool: private\nserviceTier: priority\n---\nbody", "project", None).unwrap();
+        for key in ["prewalk", "advisor", "readSummarize", "accountPool", "serviceTier"] {
+            assert!(invalid.unsupported.iter().any(|field| field == key));
+        }
     }
 }
