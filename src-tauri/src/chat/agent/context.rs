@@ -60,33 +60,12 @@ impl AgentContext<'_> {
     pub(crate) fn retry(&self, retry: super::events::RetryStatus) {
         self.events.emit(AgentEventKind::Retry(retry));
     }
-    pub(crate) fn compaction(
-        &self,
-        phase: &str,
-        trigger: Option<&str>,
-        boundary: Option<&crate::chat::types::CompactionBoundaryRecord>,
-    ) {
-        self.events.emit(AgentEventKind::Compaction {
-            phase,
-            trigger,
-            boundary: boundary.map(|boundary| super::events::CompactionFact {
-                id: &boundary.id,
-                covered_through: &boundary.source_until_message_id,
-                history_tail: boundary.display_after_message_id.as_deref(),
-                tokens_before: boundary.token_estimate_before,
-                tokens_after: boundary.token_estimate_after,
-                summary: &boundary.summary_content,
-                trigger: &boundary.trigger,
-                created_at: boundary.created_at,
-            }),
-        });
-    }
     pub(crate) fn context_prepared(
         &self,
         provider_id: &str,
         model: &str,
         messages: &[super::history::RuntimeMessage],
-        tools: &[crate::mcp::ChatToolDefinition],
+        tools: &[crate::chat::model::ModelTool],
     ) {
         self.events.emit(AgentEventKind::ContextPrepared {
             provider_id,
@@ -114,5 +93,15 @@ impl AgentContext<'_> {
             window,
             cache,
         });
+    }
+}
+
+impl super::session::PolicyProgress for AgentContext<'_> {
+    fn compaction(&self, phase: &str, trigger: Option<&str>, boundary: Option<super::events::CompactionFact<'_>>) {
+        self.events.emit(AgentEventKind::Compaction { phase, trigger, boundary });
+    }
+
+    fn context_reset(&self, window: Option<u64>) {
+        self.context_usage(0, None, window, None);
     }
 }

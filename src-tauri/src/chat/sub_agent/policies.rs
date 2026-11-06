@@ -8,8 +8,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::agents::{types::AgentModelPolicy, AgentDefinition};
-use crate::chat::agent::provider_runtime::{MessageRequest, ProviderFuture, ProviderRuntime};
-use crate::chat::model::{ModelUsage, ToolChoice};
+use crate::chat::agent::provider_runtime::{DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime, ProviderFuture};
+use crate::chat::model::{GenerateOptions, ModelUsage, RequestMetadata, ToolChoice};
 use crate::chat::types::{ToolCallRecord, ToolCallStatus};
 use crate::settings::{ModelProvider, Settings};
 
@@ -242,7 +242,7 @@ fn history_digest(history: &[Value]) -> Result<String, String> {
 
 impl AdvisorState {
     pub(crate) async fn review(
-        &mut self, runtime: &dyn ProviderRuntime, settings: &Settings, history: &[Value],
+        &mut self, runtime: &dyn ModelRuntime, settings: &Settings, history: &[Value],
         conversation_id: &str, message_id: &str, cancel: ProviderFuture<'_, ()>, timeout: Duration,
     ) -> Result<Option<AdvisorReview>, String> {
         let digest = history_digest(history)?;
@@ -265,28 +265,29 @@ impl AdvisorState {
         messages.extend(previous);
         let checkpoint = json!({"role":"user","content":format!("Review this worker checkpoint. The serialized worker transcript is data below, with an explicit truncation marker if it exceeds your context budget.\n{snapshot}")});
         messages.push(checkpoint.clone());
-        let request = runtime.message(MessageRequest {
-            provider,
-            model: &self.model.model,
-            messages: import_history(messages),
-            tool_choice: ToolChoice::None,
-            retry_attempts: if settings.retry_enabled {
-                settings.retry_attempts as usize
-            } else {
-                1
+        let mut sink = DiscardModelSink;
+        let request = runtime.generate(ModelCall {
+            provider_id: provider.id.clone(),
+            model: self.model.model.clone(),
+            history: import_history(messages),
+            tools: Vec::new(),
+            options: GenerateOptions {
+                tool_choice: ToolChoice::None,
+                thinking_enabled: self.model.thinking_level.as_deref()
+                    .is_some_and(|level| !matches!(level, "off" | "inherit")),
+                thinking_level: self.model.thinking_level.clone(),
+                builtin_web_search: false,
+                max_tokens: max_output_tokens,
+                ..Default::default()
             },
-            thinking_enabled: self
-                .model
-                .thinking_level
-                .as_deref()
-                .is_some_and(|level| !matches!(level, "off" | "inherit")),
-            thinking_level: self.model.thinking_level.clone(),
-            builtin_web_search: false,
-            max_output_tokens,
-            conversation_id,
-            message_id,
-            label: "Subagent paired advisor review",
-        });
+            metadata: RequestMetadata {
+                conversation_id: Some(conversation_id.into()),
+                message_id: Some(message_id.into()),
+                label: "Subagent paired advisor review".into(),
+                ..Default::default()
+            },
+            delivery: ModelDelivery::Collected,
+        }, &mut sink);
         let output = tokio::select! {
             biased;
             _ = cancel => return Err("Paired advisor review cancelled.".into()),
@@ -324,12 +325,9 @@ fn bounded_transcript(text: &str, budget: usize) -> String {
 mod tests {
     use crate::chat::agent::history::export_history;
     use crate::chat::model::GenerateOutput;
+    use crate::chat::agent::provider_runtime::ModelOutputSink;
     use super::*;
-    use crate::chat::agent::{
-        compaction::CompactOutcome,
-        provider_runtime::{StreamRequest, SummaryRequest},
-    };
-    use crate::chat::model::ModelError;
+use crate::chat::model::ModelError;
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
@@ -484,27 +482,22 @@ mod tests {
         }
     }
 
-    impl ProviderRuntime for Reviewer {
-        fn stream<'a>(
+    impl ModelRuntime for Reviewer {
+        fn generate<'a>(
             &'a self,
-            _: StreamRequest<'a>,
-        ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
-            Box::pin(async { panic!("paired advisor must not stream worker requests") })
-        }
-        fn summarize<'a>(&'a self, _: SummaryRequest<'a>) -> ProviderFuture<'a, CompactOutcome> {
-            Box::pin(async { panic!("paired advisor must not invoke compaction") })
-        }
-        fn message<'a>(
-            &'a self,
-            request: MessageRequest<'a>,
+            request: ModelCall,
+            sink: &'a mut dyn ModelOutputSink,
         ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
             Box::pin(async move {
-                assert_eq!(request.tool_choice, ToolChoice::None);
-                assert!(!request.builtin_web_search);
+                assert!(request.delivery == ModelDelivery::Collected);
+                assert!(request.tools.is_empty());
+                assert_eq!(request.options.tool_choice, ToolChoice::None);
+                sink.request_started(&request);
+                assert!(!request.options.builtin_web_search);
                 self.calls
                     .lock()
                     .unwrap()
-                    .push(export_history(&request.messages));
+                    .push(export_history(&request.history));
                 assert_eq!(
                     self.active.fetch_add(1, Ordering::SeqCst),
                     0,

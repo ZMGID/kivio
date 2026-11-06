@@ -84,7 +84,7 @@ pub enum AgentEventKind<'a> {
         provider_id: &'a str,
         model: &'a str,
         messages: &'a [RuntimeMessage],
-        tools: &'a [crate::mcp::ChatToolDefinition],
+        tools: &'a [crate::chat::model::ModelTool],
     },
     ContextCache {
         cache: Option<(u64, u64)>,

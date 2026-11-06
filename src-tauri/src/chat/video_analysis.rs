@@ -91,7 +91,7 @@ impl VideoTool {
         &mut self,
         app: &tauri::AppHandle,
         state: &AppState,
-        ctx: &super::agent::ToolExecutionContext<'_>,
+        ctx: &super::tool_runtime::ToolExecutionContext<'_>,
         arguments: &Value,
     ) -> Result<crate::mcp::types::McpToolCallResult, String> {
         let settings = state.settings_read().clone();
@@ -440,7 +440,7 @@ pub(super) async fn analyze(
     let provider = settings
         .get_provider(&model.provider_id)
         .ok_or("视频分析模型不可用，请在混音器中重新选择。")?;
-    let output = super::agent::planning::generate_via_stream_collect(
+    let output = super::model::generate_via_stream_collect(
         state,
         provider,
         retry_attempts,

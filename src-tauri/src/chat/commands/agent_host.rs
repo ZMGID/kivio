@@ -2,6 +2,7 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::chat::agent::history::RuntimeMessage;
+use crate::chat::agent::host::{InputPersistence, SessionInput};
 use crate::chat::CompactionBoundaryRecord;
 use crate::mcp::{self, ChatToolDefinition};
 use crate::skills;
@@ -13,6 +14,16 @@ use super::interaction::{
     request_user_response,
 };
 use super::messages::persist_partial_assistant_snapshot;
+
+fn session_input(message: RuntimeMessage) -> SessionInput {
+    let persistence = if message.source.subagent_parent_persisted == Some(true) {
+        InputPersistence::AlreadyPersisted
+    } else {
+        InputPersistence::Append
+    };
+    SessionInput { message, persistence }
+}
+
 pub(super) struct ChatAgentHost<'a> {
     pub(super) app: AppHandle,
     pub(super) state: &'a AppState,
@@ -51,7 +62,7 @@ impl ChatAgentHost<'_> {
         provider_id: &str,
         model: &str,
         messages: &[RuntimeMessage],
-        tools: &[ChatToolDefinition],
+        tools: &[crate::chat::model::ModelTool],
     ) {
         if !self.context_owner {
             return;
@@ -65,7 +76,7 @@ impl ChatAgentHost<'_> {
         // disk write: categories ride the first provider report. Until then,
         // refreshes retain the last reported request's total and categories.
         let settings = self.state.settings_read();
-        let segments = crate::chat::agent::context_measure::measure_prepared_request(
+        let segments = crate::chat::context_measure::measure_prepared_request(
             messages,
             tools,
             settings.get_provider(provider_id),
@@ -169,18 +180,9 @@ AgentEventKind::ContextUsage { used_tokens, source, window, cache } => self.emit
  crate::chat::agent::events::EventDelivery::Accepted
  }}
 impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
-    fn supports_interactive_approval(&self) -> bool {
-        self.interactive_approval
-    }
 
-    fn start_speculation(
-        &self,
-        settings: &crate::settings::Settings,
-        tools: &[ChatToolDefinition],
-        context: &crate::chat::agent::ToolExecutionContext<'_>,
-    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
-        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
-    }
+
+
 
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
@@ -192,26 +194,14 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         run_id: &'b str,
         history: &'b [RuntimeMessage],
         _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
+    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await
+            Ok(crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
+                .await?
+                .into_iter()
+                .map(session_input)
+                .collect())
         })
-    }
-    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
-        Some(&self.workflow_hooks)
-    }
-
-    fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
-        self.state
-            .chat_runtime()
-            .auto_compact_failures(conversation_id)
-    }
-
-    fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
-        self.state
-            .chat_runtime()
-            .set_auto_compact_failures(conversation_id, failures);
     }
 
     fn persist_partial_assistant<'a>(
@@ -242,9 +232,55 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         })
     }
 
+
+
+
+
+
+
+    fn hooks(&self) -> Option<&dyn crate::chat::agent::events::AgentEventSink> {
+        self.hooks.as_ref().map(|hooks| hooks as &dyn crate::chat::agent::events::AgentEventSink)
+    }
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
+    fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
+        self.state
+            .chat_runtime()
+            .auto_compact_failures(conversation_id)
+    }
+
+    fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
+        self.state
+            .chat_runtime()
+            .set_auto_compact_failures(conversation_id, failures);
+    }
+
+    fn tool_execution_hooks_active(&self) -> bool {
+        self.hooks.as_ref().is_some_and(|hooks| hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
+            || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd))
+    }
+
+    fn supports_interactive_approval(&self) -> bool {
+        self.interactive_approval
+    }
+
+    fn start_speculation(
+        &self,
+        settings: &crate::settings::Settings,
+        tools: &[ChatToolDefinition],
+        context: &crate::chat::tool_runtime::ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
+        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
+    }
+
+    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
+        Some(&self.workflow_hooks)
+    }
+
     fn request_tool_approval<'a>(
         &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async move {
@@ -263,7 +299,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
 
     fn request_session_consent<'a>(
         &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async move {
             request_session_consent(
@@ -279,7 +315,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
 
     fn request_user_response<'a>(
         &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         record: &'a crate::chat::agent::content::AgentToolCall,
         prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
@@ -304,10 +340,6 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             .await
         })
     }
-
-    fn hooks(&self) -> Option<&crate::chat::hooks::HookDispatcher> {
-        self.hooks.as_ref()
-    }
 }
 
 /// 无头测试通道（probe）的 AgentHost，仅 debug 构建。跑的是与 GUI 完全相同的生成核心
@@ -330,14 +362,7 @@ impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost<'_> {
  }}
 #[cfg(debug_assertions)]
 impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
-    fn start_speculation(
-        &self,
-        settings: &crate::settings::Settings,
-        tools: &[ChatToolDefinition],
-        context: &crate::chat::agent::ToolExecutionContext<'_>,
-    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
-        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
-    }
+
 
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
@@ -349,10 +374,13 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         run_id: &'b str,
         history: &'b [RuntimeMessage],
         _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
+    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await
+            Ok(crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
+                .await?
+                .into_iter()
+                .map(session_input)
+                .collect())
         })
     }
 
@@ -383,9 +411,27 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         })
     }
 
+
+
+
+
+
+
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost<'_> {
+    fn start_speculation(
+        &self,
+        settings: &crate::settings::Settings,
+        tools: &[ChatToolDefinition],
+        context: &crate::chat::tool_runtime::ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
+        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
+    }
+
     fn request_tool_approval<'a>(
         &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         _record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async { true })
@@ -393,35 +439,34 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
 
     fn request_session_consent<'a>(
         &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
 
     fn request_user_response<'a>(
         &'a self,
-        _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         _record: &'a crate::chat::agent::content::AgentToolCall,
         _prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         // 无头：不能向用户提问，直接返回取消态让 loop 继续（不阻塞）。
         Box::pin(async { crate::chat::ask_user::cancelled_response() })
     }
-
 }
 
 pub(super) struct RegistryToolExecutor<'a> {
     pub(super) app: AppHandle,
     pub(super) state: &'a AppState,
+    pub(super) skills: skills::SkillRunContext,
     pub(super) video_analysis: tokio::sync::Mutex<crate::chat::video_analysis::VideoTool>,
 }
-impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
+impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
     fn call<'a>(
         &'a self,
-        ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> crate::chat::agent::ToolExecutorFuture<'a> {
         Box::pin(async move {
             let result_arguments = arguments.clone();
@@ -455,7 +500,7 @@ impl crate::chat::agent::ToolExecutor for RegistryToolExecutor<'_> {
                     self.state,
                     tool,
                     arguments,
-                    skill_context,
+                    Some(&self.skills),
                     Some(native_ctx),
                 )
                 .await;

@@ -1,6 +1,6 @@
 use tauri::AppHandle;
 
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::mcp::{self, ChatToolDefinition};
 use crate::settings::{SessionModel, Settings};
 use crate::skills;

@@ -55,6 +55,7 @@ pub(crate) async fn inject_steering_messages(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     round: u32,
+    session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), String> {
     state
         .pending_steering
@@ -62,7 +63,7 @@ pub(crate) async fn inject_steering_messages(
     let Some(message) = state.pending_steering.pop_front() else {
         return Ok(());
     };
-    apply_prompt_hooks(env, state, &message.text).await?;
+    apply_prompt_hooks(env, state, &message.text, session).await?;
     append_injected_user_turn(
         env,
         state,
@@ -98,11 +99,12 @@ pub(crate) async fn inject_follow_up_messages(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     round: u32,
+    session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), String> {
     let Some(message) = state.pending_follow_up.pop_front() else {
         return Ok(());
     };
-    apply_prompt_hooks(env, state, &message.text).await?;
+    apply_prompt_hooks(env, state, &message.text, session).await?;
     append_injected_user_turn(
         env,
         state,
@@ -114,31 +116,12 @@ pub(crate) async fn inject_follow_up_messages(
 }
 
 async fn apply_prompt_hooks(
-    env: &LoopEnv<'_>,
-    state: &mut RunState,
-    prompt: &str,
+    env: &LoopEnv<'_>, state: &mut RunState, prompt: &str,
+    session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), String> {
-    let Some(runtime) = env.host.workflow_hooks().filter(|r| !r.hooks.is_empty()) else {
-        return Ok(());
-    };
-    let mut input = runtime.input("UserPromptSubmit", &env.config.conversation_id);
-    input["prompt"] = serde_json::json!(prompt);
-    let out = crate::chat::workflow_hooks::run_for_host(env.host, "UserPromptSubmit", input)
-    .await?;
-    if let Some(reason) = out.denied {
-        return Err(reason);
-    }
-    crate::chat::workflow_hooks::remember_context(
-        runtime,
-        &env.config.conversation_id,
-        &out.context,
-    )
-    .await;
-    if let Some(message) =
-        crate::chat::workflow_hooks::inject_context(&mut state.runtime_messages, &out.context)
-    {
-        state.generated_api_messages.push(message);
-    }
+    let inputs = session.input(prompt, env.host.control.clone()).await?;
+    state.runtime_messages.extend(inputs.iter().cloned());
+    state.generated_api_messages.extend(inputs);
     Ok(())
 }
 

@@ -1,18 +1,22 @@
 use super::*;
 use crate::chat::agent::content::{AgentToolCall, AgentToolStatus};
 use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunOutcome, EventDelivery};
+use crate::chat::agent::execute::ToolExecutorFuture;
 use crate::chat::agent::loop_::tests::{test_app_state, test_run_config, MockModelServer, MockResponse, RecordingExecutor};
+use crate::chat::session_policy::run_session;
+use crate::chat::tool_runtime::{ToolDispatcher, ToolExecutionContext};
 
 struct JournalHost {
     path: std::path::PathBuf,
     progress: Mutex<Progress>,
     journal: tokio::sync::Mutex<Journal>,
     outcomes: Mutex<Vec<AgentRunOutcome>>,
+    incoming: Mutex<Vec<RuntimeMessage>>,
 }
 
 impl JournalHost {
     fn new(path: std::path::PathBuf) -> Self {
-        Self { path, progress: Mutex::default(), journal: tokio::sync::Mutex::default(), outcomes: Mutex::default() }
+        Self { path, progress: Mutex::default(), journal: tokio::sync::Mutex::default(), outcomes: Mutex::default(), incoming: Mutex::default() }
     }
 }
 
@@ -29,19 +33,30 @@ impl AgentEventSink for JournalHost {
 impl AgentHost for JournalHost {
     fn requires_tool_completion(&self) -> bool { true }
     fn checkpoint_runtime<'a>(&'a self, _: &'a str, _: &'a str, history: &'a [RuntimeMessage], _: bool)
-        -> AgentHostFuture<'a, Result<Vec<RuntimeMessage>, String>> {
+        -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
             let records = self.progress.lock().unwrap().records.clone();
             self.journal.lock().await.save_history(&self.path, history, &records).await?;
-            Ok(Vec::new())
+            let incoming = std::mem::take(&mut *self.incoming.lock().unwrap());
+            if !incoming.is_empty() {
+                let mut saved = history.to_vec();
+                saved.extend(incoming.iter().cloned());
+                self.journal.lock().await.save_history(&self.path, &saved, &records).await?;
+            }
+            Ok(incoming.into_iter().map(SessionInput::append).collect())
         })
     }
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for JournalHost {
     fn request_tool_approval<'a>(&'a self, _: &'a ToolExecutionContext<'a>, _: &'a AgentToolCall) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
+
     fn request_session_consent<'a>(&'a self, _: &'a ToolExecutionContext<'a>) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
+
     fn request_user_response<'a>(&'a self, _: &'a ToolExecutionContext<'a>, _: &'a AgentToolCall, _: AskUserPromptPayload)
         -> AgentHostFuture<'a, AskUserResponseResult> {
         Box::pin(async { AskUserResponseResult { phase: "cancelled".into(), answers: HashMap::new() } })
@@ -81,6 +96,36 @@ async fn transcript(record: &registry::AgentRecord, cwd: &std::path::Path) {
 }
 
 #[tokio::test]
+async fn child_checkpoint_input_survives_final_history_with_parent_persistence_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = record(dir.path());
+    transcript(&record, dir.path()).await;
+    let host = JournalHost::new(record.session_file.clone());
+    *host.incoming.lock().unwrap() = import_history(vec![json!({
+        "role":"user", "content":"nested child report", "subagent_parent_persisted":true,
+    })]);
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        json!({"choices":[{"delta":{"content":"report received"},"finish_reason":"stop"}]}).to_string(),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let generation = state.chat_runtime().begin_generation("conversation");
+    let control = crate::chat::runtime_state::ChatRunControl::new(state.chat_runtime(), "conversation", generation);
+    let config = test_run_config(&state, &server.base_url);
+    let mut history = config.runtime_messages.clone();
+    let result = run_session(config, &host, &RecordingExecutor::default(), &host,
+        AgentRunHandle::new(identity(), &control)).await.unwrap();
+    history.extend(result.api_messages);
+    let reports: Vec<_> = history.iter().filter(|message| message["content"] == "nested child report").collect();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["subagent_parent_persisted"], true);
+    host.journal.lock().await.save_history(&record.session_file, &import_history(history), &[]).await.unwrap();
+    let bytes = tokio::fs::read(&record.session_file).await.unwrap();
+    let replayed = session::replay(&bytes, "r", "A").unwrap();
+    assert_eq!(replayed.history.iter().filter(|message| message["content"] == "nested child report").count(), 1);
+}
+
+#[tokio::test]
 async fn real_loop_omp_projection_journal_replay_and_slot_release() {
     let dir = tempfile::tempdir().unwrap();
     let record = record(dir.path());
@@ -97,7 +142,8 @@ async fn real_loop_omp_projection_journal_replay_and_slot_release() {
     let control = crate::chat::runtime_state::ChatRunControl::new(state.chat_runtime(), "conversation", generation);
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default(), &host, AgentRunHandle::new(identity(), &control)).await.unwrap();
+    let executor = RecordingExecutor::default();
+    let result = run_session(config, &host, &executor, &host, AgentRunHandle::new(identity(), &control)).await.unwrap();
     assert!(matches!(result.status, crate::chat::agent::types::AgentRunStatus::Completed));
     let progress = host.progress.lock().unwrap();
     assert!(progress.text.contains("A😀中"));
@@ -129,6 +175,10 @@ async fn real_loop_omp_projection_journal_replay_and_slot_release() {
     assert!(!slot.finish(1, "first"));
     assert!(slot.owns(1, "second"));
     assert!(slot.finish(1, "second"));
+    let tool_calls = executor.events().iter().filter(|event| event.starts_with("start:")).count();
+    let saved_tools = replayed.history.iter().filter(|entry| entry["role"] == "tool").count();
+    assert_eq!((server.captured_bodies().len(), tool_calls, saved_tools), (2, 1, 1));
+    eprintln!("SDK_CONTRACT {}", json!({"host":"omp","requests":server.captured_bodies().len(),"tool_calls":tool_calls,"saved_tools":saved_tools,"released":!slot.owns(1,"second")}));
 }
 
 #[tokio::test]
@@ -141,7 +191,7 @@ async fn omp_journal_failure_is_sticky_and_preserves_history_cursor() {
     let control = crate::chat::runtime_state::ChatRunControl::new(state.chat_runtime(), "conversation", generation);
     let host = JournalHost::new(missing.clone());
     let config = test_run_config(&state, "http://127.0.0.1:1/v1");
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default(), &host, AgentRunHandle::new(identity(), &control)).await;
+    let result = run_session(config, &host, &RecordingExecutor::default(), &host, AgentRunHandle::new(identity(), &control)).await;
     assert!(result.unwrap_err().contains("Cannot open subagent transcript"));
     assert!(matches!(host.outcomes.lock().unwrap().as_slice(), [AgentRunOutcome::Failed(_)]));
     assert!(host.journal.lock().await.failed);
@@ -190,9 +240,8 @@ struct CleanupExecutor {
     release: tokio::sync::Notify,
 }
 
-impl ToolExecutor for CleanupExecutor {
-    fn call<'a>(&'a self, _: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition, _: Value,
-        _: Option<&'a mut crate::skills::SkillRunContext>) -> ToolExecutorFuture<'a> {
+impl ToolDispatcher for CleanupExecutor {
+    fn call<'a>(&'a self, _: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition, _: Value) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
@@ -221,7 +270,7 @@ async fn stopped_managed_tool_keeps_slot_busy_until_cleanup_and_journal_finish()
     let executor = CleanupExecutor { started: tokio::sync::Notify::new(), release: tokio::sync::Notify::new() };
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
-    let run = run_agent_loop(config, &host, &executor, &host, handle.clone());
+    let run = run_session(config, &host, &executor, &host, handle.clone());
     tokio::pin!(run);
     tokio::select! {
         _ = executor.started.notified() => {},
@@ -254,4 +303,7 @@ async fn stopped_managed_tool_keeps_slot_busy_until_cleanup_and_journal_finish()
     assert!(slot.owns(1, "second"));
     assert_eq!(host.outcomes.lock().unwrap().len(), 1);
     assert!(slot.finish(1, "second"));
+    let cleaned_tools = replayed.history.iter().filter(|entry| entry["role"] == "tool" && entry["content"] == "cleanup complete").count();
+    assert_eq!((server.captured_bodies().len(), cleaned_tools), (1, 1));
+    eprintln!("SDK_CONTRACT {}", json!({"host":"omp-cancel","requests":server.captured_bodies().len(),"cleaned_saved_tools":cleaned_tools,"terminals":host.outcomes.lock().unwrap().len(),"released":!slot.owns(1,"second")}));
 }

@@ -2,6 +2,7 @@ use super::*;
 use crate::chat::agent::control::AgentRunHandle;
 use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery};
 use crate::chat::agent::loop_::tests::{test_app_state, test_run_config, MockModelServer, MockResponse, RecordingExecutor, TestHost};
+use crate::chat::session_policy::run_session;
 
 fn event(kind: AgentEventKind<'_>) -> AgentEvent<'_> {
     AgentEvent {
@@ -38,7 +39,8 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
         EventDelivery::Accepted
     };
     let handle = AgentRunHandle::new(event(AgentEventKind::RunStarted).identity, &control);
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default(), &sink, handle).await.unwrap();
+    let executor = RecordingExecutor::default();
+    let result = run_session(config, &host, &executor, &sink, handle).await.unwrap();
     assert!(tools.lock().unwrap().iter().any(|output| output.as_deref() == Some("result:read")));
     assert!(events.text.lock().unwrap().contains("A😀中"));
     let mut fallback_result = result.clone();
@@ -61,6 +63,7 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     super::super::history::write_run_in(dir.path(), &run).unwrap();
     let saved = super::super::history::read_run_file(&dir.path().join(format!("{}.json", run.id))).unwrap();
     assert_eq!(saved.status, "success");
+    assert_eq!(saved.nodes.len(), 1);
     assert!(saved.finished_at.is_some());
     assert_eq!(saved.nodes[0].status, "success");
     let stored = saved.nodes[0].result.as_ref().unwrap();
@@ -70,6 +73,9 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "file").unwrap();
     assert!(super::super::history::write_run_in(&blocker, &run).is_err());
+    let tool_calls = executor.events().iter().filter(|event| event.starts_with("start:")).count();
+    assert_eq!((server.captured_bodies().len(), tool_calls), (2, 1));
+    eprintln!("SDK_CONTRACT {}", serde_json::json!({"host":"workflow","requests":server.captured_bodies().len(),"tool_calls":tool_calls,"saved_nodes":saved.nodes.len(),"status":saved.status}));
 }
 
 #[test]

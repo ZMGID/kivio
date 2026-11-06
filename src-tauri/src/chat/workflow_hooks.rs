@@ -500,24 +500,26 @@ fn session_cell(runtime: &Runtime, session: &str) -> SessionCell {
 
 /// Cancellation covers stdin, process output and all handlers, not only tool execution.
 pub async fn run_for_host(
-    host: &crate::chat::agent::context::AgentContext<'_>,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     event: &str,
     input: Value,
 ) -> Result<Outcome, String> {
     let Some(runtime) = host.workflow_hooks() else {
         return Ok(Outcome::default());
     };
-    if !host.control.active() {
+    if !control.active() {
         return Err("cancelled".into());
     }
     tokio::select! {
         result = runtime.run(event, input) => result,
-        _ = host.control.wait_inactive() => Err("cancelled".into()),
+        _ = control.wait_inactive() => Err("cancelled".into()),
     }
 }
 
 pub async fn start_context(
-    host: &crate::chat::agent::context::AgentContext<'_>,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     session: &str,
     resumed: bool,
     subagent: bool,
@@ -531,7 +533,7 @@ pub async fn start_context(
     let cell = session_cell(runtime, session);
     let mut cached = tokio::select! {
         guard = cell.lock() => guard,
-        _ = host.control.wait_inactive() => return Err("cancelled".into()),
+        _ = control.wait_inactive() => return Err("cancelled".into()),
     };
     if let Some(context) = &*cached {
         return Ok(context.clone());
@@ -545,7 +547,7 @@ pub async fn start_context(
     if !subagent {
         input["source"] = json!(if resumed { "resume" } else { "startup" });
     }
-    let out = run_for_host(host, event, input).await?;
+    let out = run_for_host(host, control, event, input).await?;
     if let Some(reason) = out.denied {
         return Err(reason);
     }
@@ -571,7 +573,8 @@ pub async fn remember_context(runtime: &Runtime, session: &str, context: &[Strin
 }
 
 pub async fn compact_context(
-    host: &crate::chat::agent::context::AgentContext<'_>,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     session: &str,
 ) -> Result<Vec<String>, String> {
     let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) else {
@@ -579,7 +582,7 @@ pub async fn compact_context(
     };
     let mut input = runtime.input("SessionStart", session);
     input["source"] = json!("compact");
-    let outcome = run_for_host(host, "SessionStart", input).await?;
+    let outcome = run_for_host(host, control, "SessionStart", input).await?;
     if let Some(reason) = outcome.denied {
         return Err(reason);
     }

@@ -1,7 +1,7 @@
 //! Opt-in, bounded real-provider stress tests. Only synthetic history is sent.
 //! Settings are read for one provider; user settings and conversations are never written.
 use super::*;
-use crate::chat::agent::{compaction, planning};
+use crate::chat::context_policy as compaction;
 use serde_json::{json, Value};
 use std::time::Instant;
 
@@ -93,7 +93,7 @@ async fn recall(
     id: &str,
 ) -> Result<String, String> {
     messages.push(json!({"role":"user","content":recall_question()}));
-    let output = planning::generate_via_stream_collect(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         provider,
         1,

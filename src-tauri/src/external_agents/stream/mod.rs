@@ -102,7 +102,7 @@ pub struct CliUsageParts {
     ///   codex 实测属此类：`inputTokens 16865 + outputTokens 7 = 16872 = totalTokens`，
     ///   而 `cachedInputTokens` 是其中的 3456（2026-07-26 本机 codex-cli 0.145.0 实测）。
     ///
-    /// 这个区分与内置路径的 `chat::agent::context_estimate::anchor_total_tokens`
+    /// 这个区分与内置路径的 `crate::chat::model::context_usage::anchor_total_tokens`
     /// 按 `api_format` 分家族消歧是同一件事——别在这里统一，会算错一整类 provider。
     pub cache_included_in_input: bool,
     /// CLI 自报的上下文窗口总大小（ACP `usage_update.size`）。
@@ -113,7 +113,7 @@ pub struct CliUsageParts {
 ///
 /// `total_tokens` 是**上下文占用**口径（不是计费口径）：缓存命中的 token 依然占据窗口，
 /// 所以在 cache 与 input 不相交时必须相加——这**不是笔误**，与内置路径
-/// `chat::agent::context_estimate::anchor_total_tokens` 的 `anthropic_messages` 分支一致。
+/// `crate::chat::model::context_usage::anchor_total_tokens` 的 `anthropic_messages` 分支一致。
 /// 漏掉 cache 会让长会话的用量低估一个数量级（实测 kimi 侧 cache 占 97.6%、pi 62%）。
 ///
 /// 反过来，cache 已含在 input 里时（codex 实测）再加一遍就是双算，进度条会虚高——

@@ -7,12 +7,11 @@
 
 use serde_json::Value;
 
-use super::compaction::estimate_runtime_message_tokens;
-use super::history::{RuntimeBody, RuntimeMessage};
-use super::prepare::{estimate_tokens, estimate_value_tokens, IMAGE_PART_TYPES};
-use crate::chat::model::{MessagePart, ModelUsage};
+use super::context_policy::estimate_runtime_message_tokens;
+use crate::chat::agent::history::{RuntimeBody, RuntimeMessage};
+use crate::chat::agent_preparation::{estimate_tokens, estimate_value_tokens, IMAGE_PART_TYPES};
+use crate::chat::model::{MessagePart, ModelTool};
 use crate::chat::types::{ContextRequestMeasurement, ContextUsageSegment};
-use crate::mcp::ChatToolDefinition;
 use crate::settings::ModelProvider;
 
 /// In-process measurement. Higher `seq` wins over anything already on disk.
@@ -119,23 +118,21 @@ fn push_category(
         label: label.to_string(),
         estimated_tokens: tokens,
         chars,
-        color: super::prepare::context_segment_color(id).map(str::to_string),
+        color: crate::chat::agent_preparation::context_segment_color(id).map(str::to_string),
     });
 }
 
 /// Three display groups measured from the request that is about to be sent.
 pub(crate) fn measure_prepared_request(
     messages: &[RuntimeMessage],
-    tools: &[ChatToolDefinition],
+    tools: &[ModelTool],
     provider: Option<&ModelProvider>,
     model: &str,
 ) -> Vec<ContextUsageSegment> {
     measure_request(
         messages.iter().map(|message| {
             let tokens = estimate_runtime_message_tokens(message)
-                + crate::chat::commands::context::runtime_message_image_tokens(
-                    message, provider, model,
-                );
+                + super::context_estimate::runtime_message_image_tokens(message, provider, model);
             let chars = match &message.body {
                 RuntimeBody::System(text) => utf16_text_chars(text),
                 RuntimeBody::Model(message) => message
@@ -170,7 +167,7 @@ pub(crate) fn measure_prepared_request(
 
 fn measure_request(
     messages: impl Iterator<Item = (bool, usize, usize)>,
-    tools: &[ChatToolDefinition],
+    tools: &[ModelTool],
 ) -> Vec<ContextUsageSegment> {
     let mut system_tokens = 0usize;
     let mut system_chars = 0usize;
@@ -188,7 +185,7 @@ fn measure_request(
     let mut tool_tokens = 0usize;
     let mut tool_chars = 0usize;
     for tool in tools {
-        let name = tool.openai_tool_name();
+        let name = &tool.name;
         tool_tokens += estimate_tokens(&name)
             + estimate_tokens(&tool.description)
             + estimate_value_tokens(&tool.input_schema);
@@ -213,45 +210,6 @@ fn measure_request(
         conversation_chars,
     );
     segments
-}
-
-/// Add one request's cache pair. A missing cache or input field is skipped entirely,
-/// so it cannot shrink the denominator the way a zero would.
-pub(crate) fn accumulate_cache_pair(
-    total: &mut Option<(u64, u64)>,
-    usage: &ModelUsage,
-    api_format: &str,
-) {
-    let Some(pair) = super::context_estimate::cache_usage(usage, api_format) else {
-        return;
-    };
-    add_cache_pairs(total, Some(pair));
-}
-
-pub(crate) fn add_cache_pairs(total: &mut Option<(u64, u64)>, next: Option<(u64, u64)>) {
-    let Some((input, read)) = next else {
-        return;
-    };
-    if input == 0 || read > input {
-        return;
-    }
-    match total {
-        Some((acc_input, acc_read)) => {
-            *acc_input = acc_input.saturating_add(input);
-            *acc_read = acc_read.saturating_add(read);
-        }
-        None => *total = Some((input, read)),
-    }
-}
-
-pub(crate) fn combine_cache(
-    initial: Option<(u64, u64)>,
-    run_pairs: Option<(u64, u64)>,
-) -> Option<(u64, u64)> {
-    let mut total = None;
-    add_cache_pairs(&mut total, initial);
-    add_cache_pairs(&mut total, run_pairs);
-    total
 }
 
 fn legacy_display(conversation: &crate::chat::types::Conversation) -> DisplayMeasurement {
@@ -369,33 +327,6 @@ pub(crate) fn resolve_display(
 mod tests {
     use super::*;
 
-    fn usage(input: Option<u64>, cached: Option<u64>) -> ModelUsage {
-        ModelUsage {
-            input_tokens: input,
-            output_tokens: Some(1),
-            cached_input_tokens: cached,
-            ..ModelUsage::default()
-        }
-    }
-
-    #[test]
-    fn incomplete_cache_pair_does_not_change_the_denominator() {
-        let mut one_run = None;
-        accumulate_cache_pair(&mut one_run, &usage(Some(100), Some(90)), "openai_chat");
-        accumulate_cache_pair(&mut one_run, &usage(Some(900), None), "openai_chat");
-
-        let mut first = None;
-        accumulate_cache_pair(&mut first, &usage(Some(100), Some(90)), "openai_chat");
-        let mut second = None;
-        accumulate_cache_pair(&mut second, &usage(Some(900), None), "openai_chat");
-        let mut two_runs = None;
-        add_cache_pairs(&mut two_runs, first);
-        add_cache_pairs(&mut two_runs, second);
-
-        assert_eq!(one_run, Some((100, 90)));
-        assert_eq!(two_runs, one_run);
-    }
-
     #[test]
     fn prepared_request_skips_image_payloads_and_keeps_three_groups() {
         let payload = format!("data:image/png;base64,{}", "A".repeat(4_000));
@@ -406,20 +337,13 @@ mod tests {
                 {"type": "text", "text": "hi"}
             ]}),
         ];
-        let tool = ChatToolDefinition {
-            id: "read".into(),
+        let tool = ModelTool {
             name: "read".into(),
             description: String::new(),
-            source: "native".into(),
-            server_id: None,
-            server_name: None,
             input_schema: serde_json::json!({}),
-            sensitive: false,
-            annotations: None,
-            output_schema: None,
         };
         let segments = measure_prepared_request(
-            &super::super::history::import_history(messages),
+            &crate::chat::agent::history::import_history(messages),
             &[tool],
             None,
             "gpt-4o",

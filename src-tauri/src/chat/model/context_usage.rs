@@ -8,7 +8,7 @@
 //! - trailing 估算只覆盖锚点响应**之后**新增的消息（响应本身用真实 output 计入锚点，不重复估）；
 //! - 有有效实报就使用实报，只估算其后的新增内容；没有有效实报才整体估算。
 
-use crate::chat::model::ModelUsage;
+use super::ModelUsage;
 
 /// provider 实报 `usage` → 「上次整个 prompt + 该次响应」的 token 总数（对齐 pi 的
 /// `calculateContextTokens = totalTokens || input+output+cacheRead+cacheWrite`），按 provider
@@ -89,6 +89,45 @@ pub(crate) fn effective_context_tokens(
         ),
         None => (estimate_full, false),
     }
+}
+
+/// Add one request's cache pair. A missing cache or input field is skipped entirely,
+/// so it cannot shrink the denominator the way a zero would.
+pub(crate) fn accumulate_cache_pair(
+    total: &mut Option<(u64, u64)>,
+    usage: &ModelUsage,
+    api_format: &str,
+) {
+    let Some(pair) = cache_usage(usage, api_format) else {
+        return;
+    };
+    add_cache_pairs(total, Some(pair));
+}
+
+pub(crate) fn add_cache_pairs(total: &mut Option<(u64, u64)>, next: Option<(u64, u64)>) {
+    let Some((input, read)) = next else {
+        return;
+    };
+    if input == 0 || read > input {
+        return;
+    }
+    match total {
+        Some((acc_input, acc_read)) => {
+            *acc_input = acc_input.saturating_add(input);
+            *acc_read = acc_read.saturating_add(read);
+        }
+        None => *total = Some((input, read)),
+    }
+}
+
+pub(crate) fn combine_cache(
+    initial: Option<(u64, u64)>,
+    run_pairs: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    let mut total = None;
+    add_cache_pairs(&mut total, initial);
+    add_cache_pairs(&mut total, run_pairs);
+    total
 }
 
 #[cfg(test)]
@@ -198,5 +237,47 @@ mod tests {
         let u = usage(None, Some(10), Some(10));
         assert_eq!(prompt_tokens(&u, "anthropic_messages"), None);
         assert_eq!(prompt_tokens(&u, "openai_chat"), None);
+    }
+    fn cache_test_usage(input: Option<u64>, cached: Option<u64>) -> ModelUsage {
+        ModelUsage {
+            input_tokens: input,
+            output_tokens: Some(1),
+            cached_input_tokens: cached,
+            ..ModelUsage::default()
+        }
+    }
+
+    #[test]
+    fn incomplete_cache_pair_does_not_change_the_denominator() {
+        let mut one_run = None;
+        accumulate_cache_pair(
+            &mut one_run,
+            &cache_test_usage(Some(100), Some(90)),
+            "openai_chat",
+        );
+        accumulate_cache_pair(
+            &mut one_run,
+            &cache_test_usage(Some(900), None),
+            "openai_chat",
+        );
+
+        let mut first = None;
+        accumulate_cache_pair(
+            &mut first,
+            &cache_test_usage(Some(100), Some(90)),
+            "openai_chat",
+        );
+        let mut second = None;
+        accumulate_cache_pair(
+            &mut second,
+            &cache_test_usage(Some(900), None),
+            "openai_chat",
+        );
+        let mut two_runs = None;
+        add_cache_pairs(&mut two_runs, first);
+        add_cache_pairs(&mut two_runs, second);
+
+        assert_eq!(one_run, Some((100, 90)));
+        assert_eq!(two_runs, one_run);
     }
 }

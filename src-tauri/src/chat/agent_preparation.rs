@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::history::RuntimeMessage;
+use crate::chat::agent::history::RuntimeMessage;
 use crate::chat::model::{MessagePart, ModelRole, WORKBENCH_LOCATION_PROMPT_HEAD};
 use crate::chat::types::{AdditionalDirectory, ChatAssistantSnapshot, ContextUsageSegment};
 use crate::mcp::ChatToolDefinition;
@@ -960,7 +960,7 @@ mod tests {
             RuntimeMessage::text(ModelRole::User, "question"),
         ];
         assert!(append_runtime_context(&mut messages, &first.context).is_some());
-        let request = super::super::history::request_from_history(
+        let request = crate::chat::agent::history::request_from_history(
             &messages,
             "test",
             Vec::new(),

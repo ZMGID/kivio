@@ -5,13 +5,11 @@ use serde_json::Value;
 
 use crate::chat::model::PendingToolCall;
 
-use crate::mcp::ChatToolDefinition;
-use crate::settings::Settings;
-use crate::skills;
+use crate::chat::tools::ToolDefinition;
 
 use super::execute::{
-    disabled_tool_content, execute_tool_call, invalid_tool_arguments_record, match_tool_call,
-    pending_tool_record, tool_requires_approval, unknown_tool_record, ToolExecutionContext, ToolExecutor,
+    execute_tool_call, invalid_tool_arguments_record, match_tool_call,
+    pending_tool_record, unknown_tool_record, ToolExecutionContext, ToolExecutor,
 };
 use super::finalize::cancelled_tool_round_run_result;
 use super::loop_::{LoopEnv, RunState};
@@ -44,7 +42,7 @@ pub(crate) async fn run_tool_round(
     state.generated_api_messages.push(assistant_message);
     let mut task_records = planned.tool_calls.iter().filter_map(|call| {
         let tool = match_tool_call(&state.tools, &call.function_name)?;
-        (tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME)
+        tool.checkpoint_before_dispatch
             .then(|| pending_tool_record(tool, call, round))
     });
     if let Some(first) = task_records.next() {
@@ -63,28 +61,17 @@ pub(crate) async fn run_tool_round(
     let round_result = execute_tool_round(
         host,
         env.executor,
-        &config.settings,
         ToolRoundContext {
             conversation_id: &config.conversation_id,
             run_id: &config.run_id,
             message_id: &config.message_id,
-            provider: &config.provider,
-            model: &config.model,
             generation: config.generation,
             round,
-            depth: config.depth,
-            tool_conversation_id: &config.tool_conversation_id,
-            plan_state: &config.plan_state,
-            mcp_tool_ids: &config.mcp_tool_ids,
-            mcp_server_ids: &config.mcp_server_ids,
-            approval_policy: &config.effective_chat_tools.approval_policy,
-            interactive_host: config.interactive_host,
             finish_reason: planned.finish_kind,
         },
         &state.tools,
         &state.blocked_tool_calls,
         planned.tool_calls,
-        &mut state.skill_context,
     )
     .await;
     let round_cancelled = round_result.cancelled;
@@ -104,24 +91,12 @@ pub(crate) async fn run_tool_round(
 }
 
 pub(crate) struct ToolRoundContext<'a> {
-    pub(crate) conversation_id: &'a str,
-    pub(crate) run_id: &'a str,
-    pub(crate) message_id: &'a str,
-    pub(crate) provider: &'a crate::settings::ModelProvider,
-    pub(crate) model: &'a str,
-    pub(crate) generation: u64,
-    pub(crate) round: u32,
-    pub(crate) depth: u8,
-    pub(crate) tool_conversation_id: &'a str,
-    pub(crate) plan_state: &'a crate::chat::types::AgentPlanState,
-    pub(crate) mcp_tool_ids: &'a [(String, String)],
-    pub(crate) mcp_server_ids: &'a [String],
-    pub(crate) approval_policy: &'a str,
-    pub(crate) interactive_host: bool,
-    /// finish_reason of the generation that produced these tool calls. When
-    /// `"length"`, the model hit max_output_tokens and any tool-call JSON is
-    /// truncated — so we explain *that* instead of "invalid JSON, retry".
-    pub(crate) finish_reason: Option<FinishKind>,
+    pub conversation_id: &'a str,
+    pub run_id: &'a str,
+    pub message_id: &'a str,
+    pub generation: u64,
+    pub round: u32,
+    pub finish_reason: Option<FinishKind>,
 }
 
 pub(crate) struct ToolRoundResult {
@@ -141,12 +116,13 @@ struct ToolExecutionResult {
 
 struct ExecutableToolCall<'a> {
     call: PendingToolCall,
-    tool: &'a ChatToolDefinition,
+    tool: &'a ToolDefinition,
 }
 
 pub(crate) fn visible_tool_segment_calls(
-    tools: &[ChatToolDefinition],
-    blocked_tool_calls: &[ChatToolDefinition],
+    executor: &dyn ToolExecutor,
+    tools: &[ToolDefinition],
+    blocked_tool_calls: &[ToolDefinition],
     tool_calls: &[PendingToolCall],
 ) -> Vec<PendingToolCall> {
     tool_calls
@@ -154,7 +130,7 @@ pub(crate) fn visible_tool_segment_calls(
         .filter(|call| {
             match_tool_call(tools, &call.function_name).is_some()
                 || match_tool_call(blocked_tool_calls, &call.function_name).is_some()
-                || disabled_tool_content(call).is_none()
+                || executor.unknown_feedback(&call.function_name).is_none()
         })
         .cloned()
         .collect()
@@ -163,12 +139,10 @@ pub(crate) fn visible_tool_segment_calls(
 pub(crate) async fn execute_tool_round(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     ctx: ToolRoundContext<'_>,
-    tools: &[ChatToolDefinition],
-    blocked_tool_calls: &[ChatToolDefinition],
+    tools: &[ToolDefinition],
+    blocked_tool_calls: &[ToolDefinition],
     tool_calls: Vec<PendingToolCall>,
-    skill_context: &mut skills::SkillRunContext,
 ) -> ToolRoundResult {
     // 对齐 pi `failToolCallsFromTruncatedMessage`：finish_reason=="length" 说明整条响应
     // 在 max_output_tokens 处被拦腰截断——流式工具参数经 salvage 收尾后完全可能「JSON 合法
@@ -202,7 +176,6 @@ pub(crate) async fn execute_tool_round(
                 &mut tool_records,
                 host,
                 executor,
-                settings,
                 &ctx,
             )
             .await
@@ -227,7 +200,7 @@ pub(crate) async fn execute_tool_round(
                 break;
             }
             let result =
-                unknown_or_disabled_tool_result(host, &ctx, tools, blocked_tool_calls, tool_call);
+                unknown_or_disabled_tool_result(host, executor, &ctx, tools, blocked_tool_calls, tool_call);
             push_tool_execution_result(result, &mut response_messages, &mut tool_records);
             continue;
         };
@@ -239,7 +212,6 @@ pub(crate) async fn execute_tool_round(
                 &mut tool_records,
                 host,
                 executor,
-                settings,
                 &ctx,
             )
             .await
@@ -268,7 +240,7 @@ pub(crate) async fn execute_tool_round(
             continue;
         }
 
-        if tool_call_parallel_eligible(settings, tool) {
+        if tool.parallel_safe {
             parallel_batch.push(ExecutableToolCall {
                 call: tool_call,
                 tool,
@@ -280,7 +252,6 @@ pub(crate) async fn execute_tool_round(
                     &mut tool_records,
                     host,
                     executor,
-                    settings,
                     &ctx,
                 )
                 .await
@@ -306,7 +277,6 @@ pub(crate) async fn execute_tool_round(
             &mut tool_records,
             host,
             executor,
-            settings,
             &ctx,
         )
         .await
@@ -333,11 +303,9 @@ pub(crate) async fn execute_tool_round(
         let result = execute_serial_tool_call(
             host,
             executor,
-            settings,
             &ctx,
             tool,
             tool_call,
-            skill_context,
         )
         .await;
         if push_tool_execution_result(result, &mut response_messages, &mut tool_records) {
@@ -361,7 +329,6 @@ pub(crate) async fn execute_tool_round(
             &mut tool_records,
             host,
             executor,
-            settings,
             &ctx,
         )
         .await;
@@ -401,7 +368,6 @@ async fn flush_parallel_batch(
     tool_records: &mut Vec<AgentToolCall>,
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     ctx: &ToolRoundContext<'_>,
 ) -> bool {
     if batch.is_empty() {
@@ -412,7 +378,7 @@ async fn flush_parallel_batch(
     while !batch.is_empty() {
         let limit = batch.len().min(MAX_PARALLEL_TOOL_CALLS_PER_ROUND);
         let mut chunk = batch.drain(..limit).collect::<Vec<_>>();
-        let results = execute_parallel_chunk(host, executor, settings, ctx, &mut chunk).await;
+        let results = execute_parallel_chunk(host, executor, ctx, &mut chunk).await;
         for result in results {
             cancelled |= push_tool_execution_result(result, response_messages, tool_records);
         }
@@ -430,7 +396,6 @@ async fn flush_parallel_batch(
 async fn execute_parallel_chunk(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     ctx: &ToolRoundContext<'_>,
     chunk: &mut [ExecutableToolCall<'_>],
 ) -> Vec<ToolExecutionResult> {
@@ -440,7 +405,7 @@ async fn execute_parallel_chunk(
     futures::future::join_all(
         chunk
             .iter()
-            .map(|item| execute_parallel_tool_call(host, executor, settings, ctx, item)),
+            .map(|item| execute_parallel_tool_call(host, executor, ctx, item)),
     )
     .await
 }
@@ -448,18 +413,15 @@ async fn execute_parallel_chunk(
 async fn execute_parallel_tool_call(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     ctx: &ToolRoundContext<'_>,
     item: &ExecutableToolCall<'_>,
 ) -> ToolExecutionResult {
     execute_tool_call_result(
         host,
         executor,
-        settings,
         ctx,
         item.tool,
         item.call.clone(),
-        None,
     )
     .await
 }
@@ -467,20 +429,16 @@ async fn execute_parallel_tool_call(
 async fn execute_serial_tool_call(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     ctx: &ToolRoundContext<'_>,
-    tool: &ChatToolDefinition,
+    tool: &ToolDefinition,
     tool_call: PendingToolCall,
-    skill_context: &mut skills::SkillRunContext,
 ) -> ToolExecutionResult {
     execute_tool_call_result(
         host,
         executor,
-        settings,
         ctx,
         tool,
         tool_call,
-        Some(skill_context),
     )
     .await
 }
@@ -488,41 +446,28 @@ async fn execute_serial_tool_call(
 async fn execute_tool_call_result(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
-    settings: &Settings,
     round_ctx: &ToolRoundContext<'_>,
-    tool: &ChatToolDefinition,
+    tool: &ToolDefinition,
     tool_call: PendingToolCall,
-    skill_context: Option<&mut skills::SkillRunContext>,
 ) -> ToolExecutionResult {
     let tool_call_id = tool_call.id.clone();
     let execution_ctx = ToolExecutionContext {
         conversation_id: round_ctx.conversation_id,
         run_id: round_ctx.run_id,
         message_id: round_ctx.message_id,
-        provider: round_ctx.provider,
-        model: round_ctx.model,
         generation: round_ctx.generation,
         round: round_ctx.round,
-        depth: round_ctx.depth,
-        tool_conversation_id: round_ctx.tool_conversation_id,
-        plan_state: round_ctx.plan_state,
-        mcp_tool_ids: round_ctx.mcp_tool_ids,
-        mcp_server_ids: round_ctx.mcp_server_ids,
-        approval_policy: round_ctx.approval_policy,
-        interactive_host: round_ctx.interactive_host,
         tool_call_id: &tool_call_id,
     };
     // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个
     // 工具的事件会交错——那是真实语义，脚本靠 toolCallId 自己配对，不做重排。
-    let mut lifecycle = super::events::ToolEventGuard::new(&host.events, round_ctx.round, &tool_call_id, &tool.name);
+    let mut lifecycle = super::events::ToolEventGuard::new(&host.events, round_ctx.round, &tool_call_id, &tool.label.name);
     let (record, tool_content, follow_up_messages) = execute_tool_call(
         host,
         executor,
-        settings,
         &execution_ctx,
         tool,
         tool_call,
-        skill_context,
     )
     .await;
     lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
@@ -538,7 +483,7 @@ async fn execute_tool_call_result(
 fn push_cancelled_tool_calls(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
-    tools: &[ChatToolDefinition],
+    tools: &[ToolDefinition],
     tool_calls: impl IntoIterator<Item = PendingToolCall>,
     response_messages: &mut Vec<Value>,
     tool_records: &mut Vec<AgentToolCall>,
@@ -551,7 +496,7 @@ fn push_cancelled_tool_calls(
 fn push_cancelled_tool_call(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
-    tools: &[ChatToolDefinition],
+    tools: &[ToolDefinition],
     tool_call: PendingToolCall,
     response_messages: &mut Vec<Value>,
     tool_records: &mut Vec<AgentToolCall>,
@@ -565,18 +510,18 @@ fn cancelled_tool_result(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tool_call: &PendingToolCall,
-    tool: Option<&ChatToolDefinition>,
+    tool: Option<&ToolDefinition>,
 ) -> ToolExecutionResult {
     let now = chrono::Local::now().timestamp();
     let record = AgentToolCall {
         id: tool_call.id.clone(),
         name: tool
-            .map(|tool| tool.name.clone())
+            .map(|tool| tool.label.name.clone())
             .unwrap_or_else(|| tool_call.function_name.clone()),
         source: tool
-            .map(|tool| tool.source.clone())
+            .map(|tool| tool.label.source.clone())
             .unwrap_or_else(|| "unknown".to_string()),
-        server_id: tool.and_then(|tool| tool.server_id.clone()),
+        server_id: tool.and_then(|tool| tool.label.server_id.clone()),
         arguments: tool_call.arguments_raw.clone(),
         status: AgentToolStatus::Cancelled,
         output: None,
@@ -586,7 +531,7 @@ fn cancelled_tool_result(
         started_at: Some(now),
         completed_at: Some(now),
         round: ctx.round,
-        sensitive: tool.map(|tool| tool.sensitive).unwrap_or(false),
+        sensitive: tool.map(|tool| tool.label.sensitive).unwrap_or(false),
         artifacts: Vec::new(),
         draft: None,
         structured_content: None,
@@ -602,16 +547,14 @@ fn cancelled_tool_result(
 
 fn unknown_or_disabled_tool_result(
     host: &super::context::AgentContext<'_>,
+    executor: &dyn ToolExecutor,
     ctx: &ToolRoundContext<'_>,
-    tools: &[ChatToolDefinition],
-    blocked_tool_calls: &[ChatToolDefinition],
+    tools: &[ToolDefinition],
+    blocked_tool_calls: &[ToolDefinition],
     tool_call: PendingToolCall,
 ) -> ToolExecutionResult {
     if let Some(tool) = match_tool_call(blocked_tool_calls, &tool_call.function_name) {
-        let error = format!(
-            "Tool `{}` is blocked in Plan mode. Switch to Act / execute the plan before using side-effecting tools.",
-            tool.openai_tool_name()
-        );
+        let error = executor.blocked_feedback(tool);
         let record = skipped_tool_record(ctx, &tool_call, tool, error.clone());
         host.tool_updated(&record);
         return ToolExecutionResult {
@@ -622,7 +565,7 @@ fn unknown_or_disabled_tool_result(
         };
     }
 
-    let disabled = disabled_tool_content(&tool_call);
+    let disabled = executor.unknown_feedback(&tool_call.function_name);
     let record = if disabled.is_none() {
         let error = format!("Unknown tool requested: {}", tool_call.function_name);
         let record = unknown_tool_record(&tool_call, ctx.round, error);
@@ -633,7 +576,7 @@ fn unknown_or_disabled_tool_result(
     };
     // 喂回自愈（对齐 opencode）：错误作为 tool result 返回时附上已声明工具清单，
     // 让模型下一轮自我纠正（Cursor 系模型会间歇性按训练时的工具名出牌，如大写 Grep）。
-    let mut available: Vec<String> = tools.iter().map(|tool| tool.openai_tool_name()).collect();
+    let mut available: Vec<String> = tools.iter().map(|tool| tool.model.name.clone()).collect();
     available.sort();
     available.dedup();
     let reason = disabled.unwrap_or_else(|| format!("Unknown tool: {}.", tool_call.function_name));
@@ -653,15 +596,15 @@ fn unknown_or_disabled_tool_result(
 fn skipped_tool_record(
     ctx: &ToolRoundContext<'_>,
     call: &PendingToolCall,
-    tool: &ChatToolDefinition,
+    tool: &ToolDefinition,
     error: String,
 ) -> AgentToolCall {
     let now = chrono::Local::now().timestamp();
     AgentToolCall {
         id: call.id.clone(),
-        name: tool.name.clone(),
-        source: tool.source.clone(),
-        server_id: tool.server_id.clone(),
+        name: tool.label.name.clone(),
+        source: tool.label.source.clone(),
+        server_id: tool.label.server_id.clone(),
         arguments: call.arguments_raw.clone(),
         status: AgentToolStatus::Skipped,
         output: None,
@@ -671,7 +614,7 @@ fn skipped_tool_record(
         started_at: Some(now),
         completed_at: Some(now),
         round: ctx.round,
-        sensitive: tool.sensitive,
+        sensitive: tool.label.sensitive,
         artifacts: Vec::new(),
         draft: None,
         structured_content: None,
@@ -682,7 +625,7 @@ fn invalid_tool_arguments_result(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tool_call: &PendingToolCall,
-    tool: &ChatToolDefinition,
+    tool: &ToolDefinition,
     error: String,
 ) -> ToolExecutionResult {
     // finish_reason == "length" means the model hit max_output_tokens and the
@@ -726,7 +669,7 @@ fn invalid_tool_arguments_result(
 fn truncated_tool_call_result(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
-    tools: &[ChatToolDefinition],
+    tools: &[ToolDefinition],
     tool_call: PendingToolCall,
 ) -> ToolExecutionResult {
     let error = "Not executed: the response hit the max output token limit \
@@ -758,13 +701,6 @@ pub(crate) fn tool_message(tool_call_id: String, content: impl Into<String>) -> 
         "tool_call_id": tool_call_id,
         "content": content.into(),
     })
-}
-
-pub(crate) fn tool_call_parallel_eligible(settings: &Settings, tool: &ChatToolDefinition) -> bool {
-    if tool_requires_approval(settings, tool) {
-        return false;
-    }
-    tool.parallel_safe()
 }
 
 #[cfg(test)]

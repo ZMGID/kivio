@@ -288,7 +288,7 @@ pub(crate) async fn push_assistant_message(
     anchor_usage: Option<crate::chat::model::ModelUsage>,
     agent_plan: Option<AgentPlanState>,
     // 降级兜底的结构化描述；Some 时前端渲染成独立错误卡片。
-    degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
+    degraded: Option<crate::chat::recovery_policy::DegradedAnswer>,
 ) -> Result<(), String> {
     let message = build_assistant_message(
         message_id,

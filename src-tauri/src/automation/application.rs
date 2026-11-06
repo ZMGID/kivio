@@ -3,6 +3,8 @@
 //! and Chat runs do not write a sidebar conversation (`auto_{id}` workspace
 //! only). External CLI needs a `conv_` session, so it uses an archived
 //! `conv_auto_{id}` conversation that stays off the default sidebar.
+use crate::chat::session_policy::{run_session as run_agent_loop, ApplicationRunConfig as AgentRunConfig};
+use crate::chat::tool_runtime::{ToolDispatcher as ToolExecutor, ToolExecutionContext};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -11,10 +13,10 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
+use crate::chat::agent_preparation::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::agent::{
-    run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry,
-    ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+    AgentHost, AgentHostFuture, AgentRunEntry,
+    ToolExecutorFuture,
 };
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::types::{
@@ -200,9 +202,18 @@ impl crate::chat::agent::events::AgentEventSink for WorkflowAgentEvents {
 struct WorkflowAgentHost;
 
 impl AgentHost for WorkflowAgentHost {
+
+
+
+
+
+
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for WorkflowAgentHost {
     fn request_tool_approval<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         _record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
@@ -210,14 +221,14 @@ impl AgentHost for WorkflowAgentHost {
 
     fn request_session_consent<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
     ) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
 
     fn request_user_response<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         _record: &'a crate::chat::agent::content::AgentToolCall,
         _prompt: AskUserPromptPayload,
     ) -> AgentHostFuture<'a, AskUserResponseResult> {
@@ -228,11 +239,11 @@ impl AgentHost for WorkflowAgentHost {
             }
         })
     }
-
 }
 
 struct WorkflowToolExecutor {
     app: AppHandle,
+    skills: skills::SkillRunContext,
 }
 
 impl ToolExecutor for WorkflowToolExecutor {
@@ -241,7 +252,6 @@ impl ToolExecutor for WorkflowToolExecutor {
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             let result_arguments = arguments.clone();
@@ -252,7 +262,7 @@ impl ToolExecutor for WorkflowToolExecutor {
                     &self.app.state::<AppState>(),
                     tool,
                     arguments,
-                    skill_context,
+                    Some(&self.skills),
                     Some(native_ctx),
                 )
                 .await
@@ -474,7 +484,7 @@ async fn run_builtin_agent_node(
 
     let host = WorkflowAgentHost;
     let events = WorkflowAgentEvents::default();
-    let executor = WorkflowToolExecutor { app: app.clone() };
+    let executor = WorkflowToolExecutor { app: app.clone(), skills: skills::SkillRunContext::for_run(registry.clone(), None) };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
@@ -485,7 +495,9 @@ async fn run_builtin_agent_node(
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
 
     let config = AgentRunConfig {
-        provider_runtime: state,
+        state,
+        provider_runtime: None,
+        todo_state: Default::default(),
         conversation_id: conversation_id.clone(),
         tool_conversation_id: conversation_id.clone(),
         depth: 0,
@@ -515,8 +527,6 @@ async fn run_builtin_agent_node(
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_registry: registry,
-        todo_state: Default::default(),
     };
 
     let control = crate::chat::runtime_state::ChatRunControl::new(
@@ -539,7 +549,7 @@ async fn run_builtin_agent_node(
 }
 
 fn builtin_agent_node_output(
-    outcome: Result<crate::chat::agent::types::AgentRunResult, String>,
+    outcome: Result<crate::chat::session_policy::ApplicationRunResult, String>,
     fallback_text: String,
 ) -> Result<NodeOutput, String> {
     let result = outcome?;
@@ -579,7 +589,7 @@ fn apply_agent_tool_whitelist(
             return true;
         }
         ids.iter()
-            .any(|entry| crate::chat::agent::filter::entry_matches(tool, entry))
+            .any(|entry| crate::chat::tool_filter::entry_matches(tool, entry))
     });
     if !ids.is_empty() && tools.is_empty() {
         return Err("None of the selected tools are currently available".into());

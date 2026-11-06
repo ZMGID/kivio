@@ -1,10 +1,7 @@
-use super::content::{ContentBlock, AgentToolCall};
+use super::content::{AgentToolCall, ContentBlock};
 use std::{future::Future, pin::Pin};
 
-use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
-use crate::chat::hooks::HookDispatcher;
-
-use super::execute::ToolExecutionContext;
+use super::events::AgentEventSink;
 
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -16,25 +13,28 @@ pub trait SpeculativeTaskScope: Send + Sync {
     fn discard(&self);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputPersistence {
+    Append,
+    AlreadyPersisted,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionInput {
+    pub message: super::history::RuntimeMessage,
+    pub persistence: InputPersistence,
+}
+
+impl SessionInput {
+    pub fn append(message: super::history::RuntimeMessage) -> Self {
+        Self {
+            message,
+            persistence: InputPersistence::Append,
+        }
+    }
+}
+
 pub trait AgentHost: Send + Sync {
-    fn compaction_threshold(&self, _context_window: usize) -> Option<usize> {
-        None
-    }
-
-    /// Parallel answer arms cannot share an interactive approval mailbox safely.
-    fn supports_interactive_approval(&self) -> bool {
-        true
-    }
-
-    fn start_speculation(
-        &self,
-        _settings: &crate::settings::Settings,
-        _tools: &[crate::mcp::ChatToolDefinition],
-        _context: &ToolExecutionContext<'_>,
-    ) -> Option<Box<dyn SpeculativeTaskScope>> {
-        None
-    }
-
     /// Hosts may require an in-flight tool to finish before cancellation returns.
     fn requires_tool_completion(&self) -> bool {
         false
@@ -57,20 +57,9 @@ pub trait AgentHost: Send + Sync {
         _run_id: &'a str,
         _history: &'a [super::history::RuntimeMessage],
         _finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<super::history::RuntimeMessage>, String>> {
+    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
-    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
-        None
-    }
-
-    /// Consecutive automatic compaction failures remembered for the conversation, so the
-    /// ZCode circuit breaker outlives one run. Default: nothing is remembered between runs.
-    fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
-        0
-    }
-
-    fn set_auto_compact_failures(&self, _conversation_id: &str, _failures: u32) {}
 
     /// Persist a best-effort snapshot of the in-progress assistant message to
     /// durable storage after a completed tool round. The full assistant message
@@ -93,34 +82,8 @@ pub trait AgentHost: Send + Sync {
         Box::pin(async {})
     }
 
-    fn request_tool_approval<'a>(
-        &'a self,
-        ctx: &'a ToolExecutionContext<'a>,
-        record: &'a AgentToolCall,
-    ) -> AgentHostFuture<'a, bool>;
-
-    /// Ask the user once per conversation to authorize the file/shell tool
-    /// family (full-disk read/write + command execution). Hosts that can prompt
-    /// (the chat window) surface a consent dialog and cache the grant.
-    /// Default denies — a host must opt in.
-    fn request_session_consent<'a>(
-        &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-    ) -> AgentHostFuture<'a, bool> {
-        Box::pin(async { false })
-    }
-
-    fn request_user_response<'a>(
-        &'a self,
-        ctx: &'a ToolExecutionContext<'a>,
-        record: &'a AgentToolCall,
-        prompt: AskUserPromptPayload,
-    ) -> AgentHostFuture<'a, AskUserResponseResult>;
-
-    /// User-configured lifecycle hooks for this run, or `None` when the host has
-    /// none (sub-agents, probe, tests) or the user configured zero enabled hooks.
-    /// `None` is the whole zero-cost path: the loop never builds a payload.
-    fn hooks(&self) -> Option<&HookDispatcher> {
+    /// Optional lifecycle observer, independent of authorization and cancellation.
+    fn hooks(&self) -> Option<&dyn AgentEventSink> {
         None
     }
 }

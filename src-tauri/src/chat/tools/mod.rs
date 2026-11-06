@@ -7,6 +7,8 @@ use serde_json::Value;
 use super::model::ModelMessage;
 
 pub mod schema;
+pub mod definition;
+pub use definition::{ToolDefinition, ToolLabel};
 #[cfg(test)]
 mod tests;
 

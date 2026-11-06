@@ -91,6 +91,24 @@ impl From<&ChatToolDefinition> for ModelTool {
 }
 
 impl ChatToolDefinition {
+    pub(crate) fn for_run(&self, settings: &crate::settings::Settings) -> crate::chat::tools::ToolDefinition {
+        let model = ModelTool::from(self);
+        crate::chat::tools::ToolDefinition {
+            key: self.id.clone(),
+            aliases: LEGACY_TOOL_ALIASES.iter().filter(|(_, to)| *to == self.name || *to == model.name)
+                .map(|(from, _)| (*from).into()).collect(),
+            model,
+            label: crate::chat::tools::ToolLabel {
+                name: self.name.clone(), source: self.source.clone(), server_id: self.server_id.clone(), sensitive: self.sensitive,
+            },
+            parallel_safe: self.parallel_safe() && !crate::chat::tool_runtime::tool_requires_approval(settings, self),
+            checkpoint_before_dispatch: self.source == "native" && self.name == crate::chat::sub_agent::TASK_TOOL_NAME,
+            speculative: self.source == "native" && self.name == crate::chat::sub_agent::TASK_TOOL_NAME,
+            argument_limit: (self.openai_tool_name() == "present_artifacts").then_some(PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS),
+            argument_limit_error: (self.openai_tool_name() == "present_artifacts").then(|| format!("{} arguments are too large. Pass only artifact_ids or paths; never file contents, base64, or data URLs.", self.name)),
+        }
+    }
+
     pub fn openai_tool_name(&self) -> String {
         wire_tool_name(
             &self.source,

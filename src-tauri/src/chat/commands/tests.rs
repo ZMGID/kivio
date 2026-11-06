@@ -1,6 +1,7 @@
 use std::{collections::HashMap, path::Path};
 
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::context_estimate::estimate_image_tokens;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::compose_user_content_for_api;
 use crate::chat::model::{
     openai_messages_from_model_messages, MessagePart, ModelMessage, ModelRole,
@@ -16,8 +17,8 @@ use crate::skills;
 
 use super::catalog::{assistant_from_builder_args, strip_transcripts_for_frontend};
 use super::context::{
-    apply_context_clear, build_chat_api_messages, conversation_cache_usage, count_tokens_in_value,
-    estimate_image_tokens, group_answer_excluded_from_context, mark_summary_stale_if_needed,
+    accumulate_source_ids, apply_context_clear, build_chat_api_messages, conversation_cache_usage,
+    count_tokens_in_value, group_answer_excluded_from_context, mark_summary_stale_if_needed,
     resolve_usage_anchor,
 };
 use super::interaction::{format_tool_approval_summary, stream_delta_event_kinds};
@@ -39,6 +40,70 @@ use super::tooling::{
     should_answer_inline_without_file_write, try_apply_skill_slash_trigger,
 };
 use super::*;
+
+#[test]
+fn accumulate_source_ids_unions_previous_and_new_range() {
+    use crate::chat::types::ConversationContextState;
+    let messages: Vec<ChatMessage> = ["m0", "m1", "m2", "m3", "m4"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let mut conversation = test_conversation_with_messages(messages);
+    // 已有 S1 覆盖 m0..=m1（source_until = m1，ids = [m0, m1]）。
+    conversation.context_state = ConversationContextState {
+        summary: Some(ConversationContextSummary {
+            id: "ctxsum_prev".to_string(),
+            content: "prev".to_string(),
+            source_message_ids: vec!["m0".to_string(), "m1".to_string()],
+            source_until_message_id: "m1".to_string(),
+            token_estimate_before: 0,
+            token_estimate_after: 0,
+            created_at: 0,
+            provider_id: "p".to_string(),
+            model: "m".to_string(),
+            stale: false,
+            file_ledger: None,
+            replay: None,
+        }),
+        ..Default::default()
+    };
+    // 新压缩覆盖到 m3 → ids = S1.ids ∪ (m2, m3)。
+    let ids = accumulate_source_ids(&conversation, "m3");
+    assert_eq!(ids, vec!["m0", "m1", "m2", "m3"]);
+    // until_id 未找到 → 仅旧 ids。
+    assert_eq!(
+        accumulate_source_ids(&conversation, "nope"),
+        vec!["m0", "m1"]
+    );
+}
+
+#[test]
+fn accumulate_source_ids_no_previous_summary() {
+    let messages: Vec<ChatMessage> = ["a", "b", "c"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let conversation = test_conversation_with_messages(messages);
+    // 无旧 summary → 从头累积到 until_id。
+    assert_eq!(accumulate_source_ids(&conversation, "b"), vec!["a", "b"]);
+}
+
+#[test]
+fn accumulate_source_ids_starts_after_context_clear() {
+    let messages: Vec<ChatMessage> = ["a", "b", "c"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let mut conversation = test_conversation_with_messages(messages);
+    conversation.context_state.clear_boundaries.push(
+        crate::chat::types::ContextClearBoundaryRecord {
+            id: "clr".to_string(),
+            source_until_message_id: "a".to_string(),
+            created_at: 1,
+        },
+    );
+    assert_eq!(accumulate_source_ids(&conversation, "c"), vec!["b", "c"]);
+}
 
 #[test]
 fn history_window_and_pages_resolve_only_missing_artifact_dependencies() {
@@ -3681,7 +3746,7 @@ fn file_ledger_flows_into_replayed_summary_message() {
     // Recompute the ledger over the covered history and store it (mirrors both
     // compaction persist sites).
     let ledger =
-        crate::chat::agent::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
+        crate::chat::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
     assert!(!ledger.is_empty(), "ledger should capture the two ops");
     conversation
         .context_state
@@ -3908,7 +3973,7 @@ fn display_meter_ignores_an_older_anchor_when_the_latest_request_did_not_report(
             reported_tokens: None,
             segments: Vec::new(),
         });
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, None);
+    let display = crate::chat::context_measure::resolve_display(&conversation, None);
     assert_eq!(display.reported_tokens, None);
     let provider = test_provider("openai", "OpenAI", vec!["gpt-4o"]);
     assert_eq!(
@@ -3931,7 +3996,7 @@ fn live_measurement_outranks_an_older_disk_report_and_a_lower_seq_does_not() {
             reported_tokens: Some(7_100),
             segments: Vec::new(),
         });
-    let live = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let live = crate::chat::context_measure::LiveContextMeasurement {
         seq: 9,
         lifecycle_id: 1,
         request_id: "run".into(),
@@ -3941,20 +4006,20 @@ fn live_measurement_outranks_an_older_disk_report_and_a_lower_seq_does_not() {
         report_received: true,
         ..Default::default()
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&live));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&live));
     assert_eq!(display.reported_tokens, Some(53_000));
-    let stale = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let stale = crate::chat::context_measure::LiveContextMeasurement {
         seq: 1,
         reported_tokens: Some(1_000),
         ..live
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&stale));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&stale));
     assert_eq!(display.reported_tokens, Some(7_100));
-    let blank = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let blank = crate::chat::context_measure::LiveContextMeasurement {
         seq: 99,
         ..Default::default()
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&blank));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&blank));
     assert_eq!(display.reported_tokens, Some(7_100));
 }
 
@@ -3967,7 +4032,7 @@ fn returning_to_a_previous_model_does_not_restore_its_display_report() {
     conversation.context_state.reported_context_tokens = None;
     conversation.context_state.token_count_source = None;
     conversation.context_state.request_measurement = None;
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, None);
+    let display = crate::chat::context_measure::resolve_display(&conversation, None);
     assert_eq!(display.reported_tokens, None);
     let provider = test_provider("openai", "OpenAI", vec!["gpt-4o"]);
     assert_eq!(
@@ -4004,7 +4069,7 @@ fn persisted_cache_pairs_keep_the_same_total_when_a_later_request_omits_telemetr
 
 #[test]
 fn request_measurement_refresh_preserves_last_report_until_replacement() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     use crate::chat::runtime_state::ChatRuntimeState;
 
     let runtime = ChatRuntimeState::default();
@@ -4109,7 +4174,7 @@ fn request_measurement_refresh_preserves_last_report_until_replacement() {
 
 #[test]
 fn model_switch_back_and_restart_keep_invalidated_measurements_unknown() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     use crate::chat::runtime_state::ChatRuntimeState;
 
     let runtime = ChatRuntimeState::default();
@@ -4175,7 +4240,7 @@ fn review_regression_request_images_have_independent_cost_without_character_infl
 
 #[test]
 fn review_regression_branch_selection_invalidates_memory_disk_and_late_reports() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     let state = crate::state::test_app_state();
     let mut first = assistant_with_anchor("first", 1, 100);
     first.group_id = Some("group".into());

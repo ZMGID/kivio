@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::chat::agent::execute::truncate_chars;
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::{
     compose_text_attachments_for_api, text_attachments_from_attachments,
 };
@@ -29,7 +29,9 @@ use super::agent_host::{ChatAgentHost, RegistryToolExecutor};
 use super::catalog::{
     chat_memory_prompt_for_request, is_builder_conversation, project_prompt_context_for,
 };
-use super::context::{build_chat_api_messages_with_video, resolve_usage_anchor};
+use super::context::{
+    accumulate_source_ids, build_chat_api_messages_with_video, resolve_usage_anchor,
+};
 use super::direct_image::complete_direct_image_generation_reply;
 use super::interaction::{emit_chat_stream_delta, emit_chat_tool_record, wait_for_chat_cancel};
 use super::messages::{
@@ -843,7 +845,7 @@ pub(super) async fn complete_assistant_reply_inner(
         app: app.clone(),
         state: state.inner(),
     };
-    let host: &dyn crate::chat::agent::AgentHost = {
+    let host: &dyn crate::chat::tool_runtime::ApplicationHost = {
         #[cfg(debug_assertions)]
         {
             if probe {
@@ -861,6 +863,7 @@ pub(super) async fn complete_assistant_reply_inner(
     let executor = RegistryToolExecutor {
         app: app.clone(),
         state: state.inner(),
+        skills: crate::skills::SkillRunContext::for_run(skill_registry.clone(), conversation.assistant_snapshot.as_ref()),
         video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
             conversation.clone(),
             video_plan,
@@ -900,9 +903,11 @@ pub(super) async fn complete_assistant_reply_inner(
         #[cfg(not(debug_assertions))]
         { &chat_host }
     };
-    let result = crate::chat::agent::run_agent_loop(
-        crate::chat::agent::AgentRunConfig {
-            provider_runtime: state.inner(),
+    let result = crate::chat::session_policy::run_session(
+        crate::chat::session_policy::ApplicationRunConfig {
+            state: state.inner(),
+            provider_runtime: None,
+            todo_state: conversation.agent_todo_state.clone(),
             conversation_id: conversation.id.clone(),
             tool_conversation_id: conversation.id.clone(),
             depth: 0,
@@ -936,8 +941,6 @@ pub(super) async fn complete_assistant_reply_inner(
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
-            skill_registry: skill_registry.clone(),
-            todo_state: conversation.agent_todo_state.clone(),
         },
         host,
         &executor,
@@ -1045,15 +1048,13 @@ pub(super) async fn complete_assistant_reply_inner(
     if let Some(mut summary) = result.compaction_summary.clone() {
         // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
         // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
-        // 与落盘路径 compact_conversation_inner 口径一致。必须在替换 summary **之前**读旧 S1。
-        summary.source_message_ids = crate::chat::agent::compaction::accumulate_source_ids(
-            conversation,
-            &summary.source_until_message_id,
-        );
+        // 与落盘路径 compress_conversation_context 口径一致。必须在替换 summary **之前**读旧 S1。
+        summary.source_message_ids =
+            accumulate_source_ids(conversation, &summary.source_until_message_id);
         // Files-touched ledger: recompute cumulatively here (this L2 summary was
         // built on the runtime Value stream, which lacks the Conversation). Same
         // recompute as the disk path, so neither clobbers the other's ledger.
-        let ledger = crate::chat::agent::file_ledger::build_for_boundary(
+        let ledger = crate::chat::file_ledger::build_for_boundary(
             conversation,
             &summary.source_until_message_id,
         );
@@ -1065,8 +1066,8 @@ pub(super) async fn complete_assistant_reply_inner(
             .compression_count
             .saturating_add(1);
         conversation.context_state.summary = Some(summary);
-        // R-4：多次链式压缩后提示准确性下降（与 compact_conversation 口径一致）。
-        conversation.context_state.warning = crate::chat::agent::compaction::decay_warning_for(
+        // R-4：多次链式压缩后提示准确性下降（与 compress_conversation_context 口径一致）。
+        conversation.context_state.warning = crate::chat::context_policy::decay_warning_for(
             conversation.context_state.compression_count,
         );
     }

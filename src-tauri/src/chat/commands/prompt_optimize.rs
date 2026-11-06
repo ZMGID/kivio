@@ -218,7 +218,7 @@ async fn optimize_prompt_with_model(
         }),
     ];
     let spec = prompt_optimize_call_spec();
-    let output = crate::chat::agent::planning::generate_via_stream_collect(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         &provider,
         retry_attempts,
