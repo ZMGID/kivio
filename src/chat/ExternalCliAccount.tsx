@@ -4,6 +4,7 @@ import { RefreshCw } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { externalCliSettingsApi, type DetectedExternalAgent, type ExternalCliAccount as Account } from '../api/externalCliSettings'
+import { peekSettings, subscribeSettings } from '../api/settingsCache'
 import { usePopoverMenu } from './usePopoverMenu'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 
@@ -50,6 +51,19 @@ export function ExternalCliAccount({ agent, conversationId }: {
   useEffect(() => {
     void refresh()
   }, [refresh])
+  useEffect(() => {
+    if (!agentId) return
+    let config = JSON.stringify(peekSettings()?.chat?.externalCliAgents?.[agentId])
+    return subscribeSettings((settings) => {
+      const next = JSON.stringify(settings.chat?.externalCliAgents?.[agentId])
+      if (next === config) return
+      config = next
+      request.current.version++
+      setStatus(null)
+      setOpen(false)
+      void refresh()
+    })
+  }, [agentId, refresh])
   if (!agentId) return null
   // 非账号登录（API key 等）读不到额度：圆环没有可画的数据，整个不显示。
   if (!status?.windows.length) return null

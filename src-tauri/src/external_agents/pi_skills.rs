@@ -648,9 +648,14 @@ pub async fn chat_pi_skill_set_enabled(
     package_source: Option<String>,
     enabled: bool,
 ) -> Result<(), String> {
+    let revision = super::overrides::launch_revision("pi");
     let skill = find_inventory_skill(&path, package_source.as_deref()).await?;
     if !skill.can_toggle {
         return Err("该 Package 使用 autoload:false，请用 pi config 管理".to_string());
+    }
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:pi".into()], true)?;
+    if revision.is_none() || super::overrides::launch_revision("pi") != revision {
+        return Err("Pi 配置已变更，请刷新后重试".into());
     }
     let agent_dir = agent_dir()?;
     let settings_path = agent_dir.join("settings.json");
@@ -728,6 +733,7 @@ pub async fn chat_pi_skill_set_enabled(
 
 #[tauri::command]
 pub fn chat_pi_skill_commands_set_enabled(enabled: bool) -> Result<(), String> {
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:pi".into()], true)?;
     let agent_dir = agent_dir()?;
     let _lock = lock_settings_file(&agent_dir.join("settings.json"))?;
     let mut settings = read_settings(&agent_dir)?;
@@ -754,6 +760,7 @@ pub fn chat_pi_skill_add_path(path: String) -> Result<(), String> {
     }
     let canonical = std::fs::canonicalize(&candidate)
         .map_err(|err| format!("解析 Skill 扫描路径失败：{err}"))?;
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:pi".into()], true)?;
     let agent_dir = agent_dir()?;
     let _lock = lock_settings_file(&agent_dir.join("settings.json"))?;
     let mut settings = read_settings(&agent_dir)?;
@@ -777,6 +784,7 @@ pub fn chat_pi_skill_add_path(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn chat_pi_skill_remove_path(path: String) -> Result<(), String> {
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:pi".into()], true)?;
     let agent_dir = agent_dir()?;
     let _lock = lock_settings_file(&agent_dir.join("settings.json"))?;
     let mut settings = read_settings(&agent_dir)?;

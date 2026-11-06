@@ -60,30 +60,32 @@ export function resetCliInstallJobsForTests() {
  */
 export async function startCliInstall(
   agentId: string,
+  planId: string,
   hooks: {
-    install: (id: string) => Promise<void>
+    install: (id: string, planId: string) => Promise<void>
     afterDone?: (id: string) => Promise<void>
   },
 ): Promise<void> {
   if (inFlight.has(agentId)) return
   inFlight.add(agentId)
   write(agentId, { running: true, log: [], result: null })
-  const unlisten = await onExternalCliInstallLog((event) => {
-    if (event.agentId !== agentId) return
-    if (event.done) {
-      write(agentId, {
-        ...snapshot(agentId),
-        running: false,
-        result: event.success ? 'ok' : 'fail',
-      })
-      return
-    }
-    if (event.line === null) return
-    const current = snapshot(agentId)
-    write(agentId, { ...current, log: [...current.log, event.line] })
-  })
+  let unlisten: (() => void) | undefined
   try {
-    await hooks.install(agentId)
+    unlisten = await onExternalCliInstallLog((event) => {
+      if (event.agentId !== agentId || event.planId !== planId) return
+      if (event.done) {
+        write(agentId, {
+          ...snapshot(agentId),
+          running: false,
+          result: event.success ? 'ok' : 'fail',
+        })
+        return
+      }
+      if (event.line === null) return
+      const current = snapshot(agentId)
+      write(agentId, { ...current, log: [...current.log, event.line] })
+    })
+    await hooks.install(agentId, planId)
     const current = snapshot(agentId)
     write(agentId, { ...current, running: false, result: current.result ?? 'ok' })
   } catch (err) {
@@ -94,7 +96,7 @@ export async function startCliInstall(
       log: [...current.log, String(err)],
     })
   } finally {
-    unlisten()
+    unlisten?.()
     inFlight.delete(agentId)
     try {
       await hooks.afterDone?.(agentId)

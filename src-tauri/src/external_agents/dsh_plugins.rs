@@ -166,13 +166,7 @@ pub struct DshNativeProviderDetail {
 }
 
 fn dsh_home() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("DSH_HOME") {
-        let path = PathBuf::from(home);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".dsh"))
+    super::dsh_profile::dsh_home()
 }
 
 fn settings_path() -> Result<PathBuf, String> {
@@ -883,7 +877,9 @@ pub fn chat_dsh_plugin_settings_get() -> Result<DshPluginSettingsSnapshot, Strin
 pub fn chat_dsh_plugin_settings_save(
     patch: DshPluginSettingsPatch,
 ) -> Result<DshPluginSettingsSnapshot, String> {
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:dsh".into()], true)?;
     let path = settings_path()?;
+    let _update = super::provider_profile::native_file_update(&path)?;
     let root = apply_patch(load_root_mapping(&path)?, &patch);
     persist_settings(&path, root)?;
     if let Some(web_search) = &patch.web_search {
@@ -917,7 +913,10 @@ pub async fn chat_dsh_plugin_inventory() -> Result<Vec<DshPluginEntry>, String> 
 
 #[tauri::command]
 pub fn chat_dsh_open_settings_file(app: AppHandle) -> Result<(), String> {
-    open_settings_file(&app, &settings_path()?)
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:dsh".into()], true)?;
+    let path = settings_path()?;
+    let _update = super::provider_profile::native_file_update(&path)?;
+    open_settings_file(&app, &path)
 }
 
 fn reject_managed_official_provider(id: &str) -> Result<(), String> {
@@ -1053,7 +1052,7 @@ fn delete_native_provider_in(root: &mut Mapping, id: &str) {
     clear_default_if_matches(root, id);
 }
 
-fn delete_native_provider_at(settings_path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_native_provider_at(settings_path: &Path, id: &str) -> Result<(), String> {
     reject_managed_official_provider(id)?;
     let mut root = load_root_mapping(settings_path)?;
     delete_native_provider_in(&mut root, id);
@@ -1290,7 +1289,7 @@ fn apply_provider_caps(
     changed
 }
 
-fn sync_kivio_model_capabilities_at(
+pub(crate) fn sync_kivio_model_capabilities_at(
     settings_path: &Path,
     providers: &[ExternalCliProvider],
 ) -> Result<(), String> {
@@ -1315,17 +1314,6 @@ fn sync_kivio_model_capabilities_at(
 
 /// 把 Kivio 已保存的模型 `input` / `reasoningEfforts` 写回已存在的 `settings.yaml` 路由。
 /// 不新建供应商，也不写密钥；官方 web 的贴图和 effort 选择只认这些字段。
-pub(crate) fn sync_kivio_model_capabilities(
-    providers: &[ExternalCliProvider],
-) -> Result<(), String> {
-    let Ok(path) = settings_path() else {
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    sync_kivio_model_capabilities_at(&path, providers)
-}
 
 #[tauri::command]
 pub fn chat_dsh_native_provider_get(id: String) -> Result<DshNativeProviderDetail, String> {
@@ -1334,7 +1322,10 @@ pub fn chat_dsh_native_provider_get(id: String) -> Result<DshNativeProviderDetai
 
 #[tauri::command]
 pub fn chat_dsh_native_provider_delete(id: String) -> Result<(), String> {
-    delete_native_provider_at(&settings_path()?, id.trim())
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:dsh".into()], true)?;
+    let path = settings_path()?;
+    let _update = super::provider_profile::native_file_update(&path)?;
+    delete_native_provider_at(&path, id.trim())
 }
 
 #[tauri::command]

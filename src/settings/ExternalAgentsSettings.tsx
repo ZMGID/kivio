@@ -20,7 +20,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { AgentIcon } from '../components/AgentIcon'
 import {
   externalCliSettingsApi as externalAgentSettingsApi,
-  type CcSwitchProvider,
+  type ImportedCcSwitchProvider,
   type DetectedExternalAgent,
   type DshOfficialCredential,
   type ExternalCliInstallInfo,
@@ -421,7 +421,7 @@ function AgentDetail({
       ? isVersionNewer(localVersion, info.latestVersion)
       : null
   const updateAvailable = versionComparison ?? info?.updateAvailable ?? false
-  const needsRepair = Boolean(agent.available && !localVersion && info?.command)
+  const needsRepair = Boolean(agent.available && !localVersion && info?.planId)
   const versionStatus = !agent.available
     ? null
     : checking
@@ -434,7 +434,7 @@ function AgentDetail({
           ? { label: t.externalAgentsLatestVersionUnknown, tone: 'warn' }
           : updateAvailable
             ? {
-                label: (info.command
+                label: (info.planId
                   ? t.externalAgentsUpdateAvailable
                   : t.externalAgentsManualUpdateAvailable
                 ).replace('{version}', info.latestVersion),
@@ -443,7 +443,7 @@ function AgentDetail({
             : { label: t.externalAgentsUpToDate, tone: 'ok' }
   const showInstallAction = Boolean(
     running ||
-      (info?.command && !checking && (!agent.available || updateAvailable || needsRepair)),
+      (info?.planId && !checking && (!agent.available || updateAvailable || needsRepair)),
   )
 
   if (showPlugins && agent.id === 'dsh') {
@@ -495,6 +495,12 @@ function AgentDetail({
           <RefreshCw size={13} className={checking ? 'animate-spin' : ''} />
         </IconButton>
       </div>
+      {info?.manualReason && <p className="kv-row-desc">{info.manualReason}</p>}
+      {info?.planId && showInstallAction && (
+        <p className="kv-row-desc break-all">
+          {[info.source, info.environment, info.targetVersion, info.binaryPath].filter(Boolean).join(' · ')}
+        </p>
+      )}
       {(running || result) && (
         <div
           className={`kv-cli-install-banner ${running ? 'running' : result === 'ok' ? (needsRepair ? 'warn' : 'ok') : 'fail'}`}
@@ -985,18 +991,6 @@ function ProviderSection({
       providers: providers.filter((p) => p.id !== provider.id),
       ...(current === provider.id ? { currentProvider: '' } : {}),
     })
-    void externalAgentSettingsApi.externalCliProviderCleanup(
-      agentId,
-      provider.id,
-      provider.nativeProviderId,
-      provider.name,
-    )
-    if (agentId === 'dsh' && provider.nativeProviderId) {
-      void externalAgentSettingsApi
-        .dshNativeProviderDelete(provider.nativeProviderId)
-        .then(() => reloadAgents(true))
-        .catch(() => {})
-    }
   }
 
   const editNative = async (native: NativeProviderSummary) => {
@@ -1014,29 +1008,24 @@ function ProviderSection({
       confirmLabel: t.dialogDelete,
       danger: true,
     }))) return
-    try {
-      await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
-    } catch (err) {
-      void notifyError(err instanceof Error ? err.message : String(err))
-      return
-    }
     const adopted = providers.find((provider) => provider.nativeProviderId === native.id)
     if (adopted) {
       onPatch({
         providers: providers.filter((provider) => provider.id !== adopted.id),
         ...(current === adopted.id ? { currentProvider: '' } : {}),
       })
-      void externalAgentSettingsApi.externalCliProviderCleanup(
-        agentId,
-        adopted.id,
-        adopted.nativeProviderId,
-        adopted.name,
-      )
+      return
+    }
+    try {
+      await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
+    } catch (err) {
+      void notifyError(err instanceof Error ? err.message : String(err))
+      return
     }
     await reloadAgents(true)
   }
 
-  const importFromCcSwitch = (items: CcSwitchProvider[]) => {
+  const importFromCcSwitch = (items: ImportedCcSwitchProvider[]) => {
     // 保留 cc-switch 的原 id：同一条再导一次是更新，不会堆出重复项。
     const merged = [...providers]
     for (const item of items) {
@@ -1297,14 +1286,16 @@ function useInstall(agentId: string, reloadAgents: (force?: boolean) => Promise<
     return () => window.clearTimeout(timer)
   }, [agentId, result, running])
 
-  const runInstall = () =>
-    startCliInstall(agentId, {
-      install: (id) => externalAgentSettingsApi.externalCliInstall(id),
+  const runInstall = () => {
+    if (!info?.planId) return
+    return startCliInstall(agentId, info.planId, {
+      install: (id, planId) => externalAgentSettingsApi.externalCliInstall(id, planId),
       afterDone: async () => {
         await refresh()
         await reloadAgents(true)
       },
     })
+  }
 
   return { info, checking, running, log, result, logRef, refresh, runInstall }
 }

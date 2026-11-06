@@ -19,9 +19,21 @@ describe('cliInstallJobs', () => {
     mockOnInstallLog.mockResolvedValue(() => {})
   })
 
+  it('releases the job after log subscription fails so the user can retry', async () => {
+    mockOnInstallLog.mockRejectedValueOnce(new Error('event subscription unavailable'))
+    const install = vi.fn().mockResolvedValue(undefined)
+    await startCliInstall('claude', 'plan-claude', { install }).catch(() => {})
+    expect(getCliInstallJob('claude')).toMatchObject({ running: false, result: 'fail' })
+    expect(install).not.toHaveBeenCalled()
+
+    await startCliInstall('claude', 'plan-claude', { install })
+    expect(install).toHaveBeenCalledOnce()
+    expect(getCliInstallJob('claude')).toMatchObject({ running: false, result: 'ok' })
+  })
+
   it('marks the job running before install() is awaited', async () => {
     let finish = () => {}
-    const started = startCliInstall('claude', {
+    const started = startCliInstall('claude', 'plan-claude', {
       install: () =>
         new Promise<void>((resolve) => {
           finish = resolve
@@ -45,16 +57,19 @@ describe('cliInstallJobs', () => {
       return () => {}
     })
     let finish = () => {}
-    const started = startCliInstall('claude', {
+    const started = startCliInstall('claude', 'plan-claude', {
       install: () =>
         new Promise<void>((resolve) => {
           finish = resolve
         }),
     })
     await Promise.resolve()
-    emit?.({ agentId: 'claude', line: '$ npm', done: false, success: false })
-    emit?.({ agentId: 'codex', line: 'ignore me', done: false, success: false })
+    emit?.({ agentId: 'claude', planId: 'plan-claude', line: '$ npm', done: false, success: false })
+    emit?.({ agentId: 'codex', planId: 'other-plan', line: 'ignore me', done: false, success: false })
+    emit?.({ agentId: 'claude', planId: 'expired-plan', line: 'stale output', done: false, success: false })
+    emit?.({ agentId: 'claude', planId: 'expired-plan', line: null, done: true, success: true })
     expect(getCliInstallJob('claude').log).toEqual(['$ npm'])
+    expect(getCliInstallJob('claude').running).toBe(true)
     finish()
     await started
   })
@@ -67,10 +82,10 @@ describe('cliInstallJobs', () => {
           finish = resolve
         }),
     )
-    const first = startCliInstall('claude', { install })
+    const first = startCliInstall('claude', 'plan-claude', { install })
     await Promise.resolve()
     expect(install).toHaveBeenCalledTimes(1)
-    await startCliInstall('claude', { install })
+    await startCliInstall('claude', 'plan-claude', { install })
     expect(install).toHaveBeenCalledTimes(1)
     finish()
     await first
@@ -85,16 +100,16 @@ describe('cliInstallJobs', () => {
     })
     let rejectInstall: (error: Error) => void = () => {}
     const afterDone = vi.fn().mockResolvedValue(undefined)
-    const started = startCliInstall('pi', {
+    const started = startCliInstall('pi', 'plan-pi', {
       install: () => new Promise<void>((_resolve, reject) => { rejectInstall = reject }),
       afterDone,
     })
     await Promise.resolve()
-    emit?.({ agentId: 'pi', line: 'added 144 packages', done: false, success: false })
+    emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'added 144 packages', done: false, success: false })
     expect(getCliInstallJob('pi')).toMatchObject({ running: true, result: null })
 
-    emit?.({ agentId: 'pi', line: 'Pi startup verification failed', done: false, success: false })
-    emit?.({ agentId: 'pi', line: null, done: true, success: false })
+    emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'Pi startup verification failed', done: false, success: false })
+    emit?.({ agentId: 'pi', planId: 'plan-pi', line: null, done: true, success: false })
     rejectInstall(new Error('Pi startup verification failed'))
     await started
     expect(getCliInstallJob('pi')).toMatchObject({ running: false, result: 'fail' })
@@ -102,10 +117,10 @@ describe('cliInstallJobs', () => {
     expect(unlisten).toHaveBeenCalledOnce()
     expect(afterDone).toHaveBeenCalledWith('pi')
 
-    await startCliInstall('pi', {
+    await startCliInstall('pi', 'plan-pi', {
       install: async () => {
-        emit?.({ agentId: 'pi', line: 'Pi 0.87.1 verified', done: false, success: false })
-        emit?.({ agentId: 'pi', line: null, done: true, success: true })
+        emit?.({ agentId: 'pi', planId: 'plan-pi', line: 'Pi 0.87.1 verified', done: false, success: false })
+        emit?.({ agentId: 'pi', planId: 'plan-pi', line: null, done: true, success: true })
       },
     })
     expect(getCliInstallJob('pi')).toEqual({

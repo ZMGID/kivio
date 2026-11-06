@@ -195,6 +195,7 @@ pub(crate) async fn run_external_cli_reply_in(
         &lease,
         &finalizes_reply,
     );
+    let run = super::session::live::PROCESS_CONVERSATION.scope(conversation_id.clone(), run);
     tokio::pin!(run);
     let result = tokio::select! {
         result = &mut run => result,
@@ -242,6 +243,7 @@ async fn run_external_cli_reply_owned(
         .ok_or_else(|| "未选择外部 Agent".to_string())?;
 
     let def = get_agent_def(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
+    let _resource = super::session::live::ResourceLease::pending(def.id)?;
 
     // CLI 要在这个目录里真的跑起来 ⇒ 必须确保存在（唯一需要建目录的路径之一）。
     let cwd = match working_directory {

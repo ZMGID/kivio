@@ -39,7 +39,9 @@ pub(crate) fn bypass_loopback_proxy(command: &mut Command) {
 
 /// Owns the CLI process group or Windows Job from spawn through cleanup.
 pub struct AgentChild {
-    child: Box<dyn process_wrap::tokio::ChildWrapper>,
+    child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+    _maintenance: Option<super::session::live::ResourceLease>,
+    _resource: Option<super::session::live::ResourceLease>,
     pub stdin: Option<tokio::process::ChildStdin>,
     pub stdout: Option<tokio::process::ChildStdout>,
     pub stderr: Option<ChildStderr>,
@@ -49,15 +51,53 @@ pub struct AgentChild {
 
 impl AgentChild {
     pub fn id(&self) -> Option<u32> {
-        self.child.id()
+        self.child.as_ref().and_then(|child| child.id())
     }
 
     fn leader(&mut self) -> &mut Child {
         // Only observe exit through this borrow; replacing the child would detach it from its Job.
-        unsafe { self.child.try_inner_child_mut() }.expect("native CLI child")
+        unsafe {
+            self.child
+                .as_mut()
+                .expect("owned child")
+                .try_inner_child_mut()
+        }
+        .expect("native CLI child")
     }
 
     pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        let marker = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_owned());
+        command.env_remove("KIVIO_INTERNAL_CLI_RESOURCE");
+        let resource = marker
+            .map(|value| {
+                let (agent, binary, expected, revision): (
+                    Option<String>,
+                    PathBuf,
+                    String,
+                    Option<u64>,
+                ) = serde_json::from_str(&value.to_string_lossy())
+                    .map_err(std::io::Error::other)?;
+                if super::session::live::resource_path(&binary) != expected {
+                    return Err(std::io::Error::other("CLI executable changed before spawn"));
+                }
+                let keys = super::session::live::runtime_resources(agent.as_deref(), &binary);
+                let lease = super::session::live::ResourceLease::acquire(keys, false)
+                    .map_err(std::io::Error::other)?;
+                if agent.as_deref().is_some_and(|agent| {
+                    revision.is_none() || super::overrides::launch_revision(agent) != revision
+                }) {
+                    return Err(std::io::Error::other(
+                        "CLI configuration changed before spawn",
+                    ));
+                }
+                Ok(lease)
+            })
+            .transpose()?;
         #[cfg(unix)]
         command.process_group(0);
         command.kill_on_drop(true);
@@ -81,7 +121,11 @@ impl AgentChild {
             stdin: child.stdin().take(),
             stdout: child.stdout().take(),
             stderr: child.stderr().take(),
-            child,
+            child: Some(child),
+            _maintenance: super::session::live::MAINTENANCE_OWNER
+                .try_with(Clone::clone)
+                .ok(),
+            _resource: resource,
         })
     }
     pub async fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
@@ -118,13 +162,13 @@ impl AgentChild {
             crate::native_tools::kill_process_group(pid);
         }
         #[cfg(windows)]
-        self.child.start_kill()?;
+        self.child.as_mut().expect("owned child").start_kill()?;
         Ok(())
     }
     pub fn start_kill(&mut self) -> std::io::Result<()> {
         self.retire_group()?;
         #[cfg(not(windows))]
-        self.child.start_kill()?;
+        self.child.as_mut().expect("owned child").start_kill()?;
         Ok(())
     }
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
@@ -144,6 +188,23 @@ impl AgentChild {
 impl Drop for AgentChild {
     fn drop(&mut self) {
         let _ = self.start_kill();
+        if let Some(mut child) = self.child.take() {
+            let resource = self._resource.take();
+            let maintenance = self._maintenance.take();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                    drop(child);
+                    drop(resource);
+                    drop(maintenance);
+                });
+            } else {
+                // No runtime remains to reap. Keep exclusion until application exit.
+                drop(child);
+                std::mem::forget(resource);
+                std::mem::forget(maintenance);
+            }
+        }
     }
 }
 
@@ -294,6 +355,8 @@ fn finish_codex_home(
 
 pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
+    let agent = resource_agent(Path::new(program));
+    let revision = agent.and_then(super::overrides::launch_revision);
     let mut command = command_for_program(program);
     #[cfg(unix)]
     command.process_group(0);
@@ -307,7 +370,47 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     }
     let launch = compatibility_launch_policy_for_bin(Path::new(program));
     finish_codex_home(&mut command, Path::new(program), launch, has_codex_home);
+    mark_resource(&mut command, agent, Path::new(program), revision);
     command
+}
+
+fn resource_agent(binary: &Path) -> Option<&'static str> {
+    super::registry::AGENT_DEFS
+        .iter()
+        .find(|def| {
+            super::overrides::custom_path(def.id).is_some_and(|path| {
+                super::session::live::resource_path(&path)
+                    == super::session::live::resource_path(binary)
+            }) || binary.file_stem().is_some_and(|stem| {
+                std::iter::once(def.bin)
+                    .chain(def.fallback_bins.iter().copied())
+                    .any(|name| {
+                        if cfg!(windows) {
+                            stem.to_string_lossy().eq_ignore_ascii_case(name)
+                        } else {
+                            stem == name
+                        }
+                    })
+            })
+        })
+        .map(|def| def.id)
+}
+pub(super) fn mark_resource(
+    command: &mut Command,
+    agent: Option<&str>,
+    binary: &Path,
+    revision: Option<u64>,
+) {
+    let marker = (
+        agent,
+        binary,
+        super::session::live::resource_path(binary),
+        revision,
+    );
+    command.env(
+        "KIVIO_INTERNAL_CLI_RESOURCE",
+        serde_json::to_string(&marker).expect("resource identity serializes"),
+    );
 }
 
 /// `cli_command` + 该 agent 的静态 `def.env`。有 `def` 在手时用它，覆盖按 id 精确取。
@@ -316,6 +419,7 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
 /// 只在跑轮次时注入的话，认证探测仍打官方端点，设置页会显示「未认证」而实际能用。
 pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
+    let revision = super::overrides::launch_revision(def.id);
     let mut command = command_for_program(program);
     #[cfg(unix)]
     command.process_group(0);
@@ -330,6 +434,7 @@ pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> C
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
     finish_codex_home(&mut command, Path::new(program), def.launch, has_codex_home);
+    mark_resource(&mut command, Some(def.id), Path::new(program), revision);
     command
 }
 
@@ -806,6 +911,33 @@ pub fn parse_json_line(line: &str) -> Option<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn spawn_rejects_stale_command_revision_before_starting_process() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("missing-fixture");
+        let def = crate::external_agents::registry::get_agent_def("claude").unwrap();
+        let mut command = agent_cli_command(def, &binary);
+        mark_resource(&mut command, Some(def.id), &binary, Some(u64::MAX));
+        let error = match AgentChild::spawn(&mut command) {
+            Ok(_) => panic!("stale command spawned"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("configuration changed"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn resource_marker_recognizes_case_insensitive_fallback_names() {
+        let command = cli_command(r"C:\fixture\OpenCode.cmd");
+        let marker = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
+            .and_then(|(_, value)| value)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&marker.to_string_lossy()).unwrap();
+        assert_eq!(value[0], "opencode");
+    }
 
     #[test]
     fn probe_identity_detects_same_size_replacement_within_one_second() {
